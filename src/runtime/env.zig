@@ -52,6 +52,7 @@ const fatal = @import("fatal.zig");
 const ffi = @import("ffi.zig");
 const fibers = @import("value/fibers.zig");
 const filewatch = @import("filewatch.zig");
+const fingerprint = @import("../api/fingerprint.zig");
 const functions = @import("value/functions.zig");
 const gc_alloc = @import("gc.zig");
 const gc_mark = @import("gc/mark.zig");
@@ -88,6 +89,10 @@ const wrap = @import("value/helpers/wrap.zig");
 // ==========================================================================
 // Constants
 // ==========================================================================
+
+/// `api/fingerprint.zig`'s number, as the sixteen digits `janet/api` is bound
+/// to.
+const api_z = fingerprint.hex(fingerprint.api);
 
 /// Whether this build has 64-bit integer types, and the six other feature
 /// gates `loadLibs` reads. `build.zig` decides each and hands it over as a
@@ -202,9 +207,14 @@ fn Concat(comptime finish: anytype) type {
     };
 }
 
-/// `_janet_mod_config`: the version and bit configuration a module was built
-/// against, which `native` compares with the host's.
-pub const ModuleConfig = ?*const fn () callconv(.c) abi.BuildConfig;
+/// `_janet_mod_config`: what a module was built against, which `native`
+/// compares with the host's.
+///
+/// The module writes into the `abi.BuildConfig` the caller supplies, writing
+/// the smaller of the caller's width and its own, and returns its own width.
+/// A module built against a shorter `abi.BuildConfig` therefore reads as that
+/// prefix rather than as a struct of the wrong size.
+pub const ModuleConfig = ?*const fn (out: *abi.BuildConfig, size: usize) callconv(.c) usize;
 
 /// `_janet_init`: the environment to define into, and the table of every
 /// crossing the module may make.
@@ -443,6 +453,15 @@ inline fn assert(condition: bool, message: [*:0]const u8) void {
     if (!condition) fatal.fatal(message);
 }
 
+/// Spells a configuration bit set as hexadecimal digits in `buf`, at least
+/// four of them, and returns `buf` as a C string.
+///
+/// `buf` is written over and holds the result until its caller returns.
+fn bitsText(buf: *[16]u8, bits: c_uint) [*:0]const u8 {
+    _ = c.snprintf(buf, buf.len, "%.4x", bits);
+    return @ptrCast(buf);
+}
+
 /// Assembled from scratch, in the image generator. Everything here ends up in
 /// the image, so this is the only place these thirty-odd bindings exist.
 fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
@@ -582,6 +601,10 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
     // Platform detection
     registry.def(env, "janet/version", value.fromBytes(version_z, .string), "The version number of the running janet program.");
     registry.def(env, "janet/build", value.fromBytes(build_z, .string), "The build identifier of the running janet program.");
+    registry.def(env, "janet/api", value.fromBytes(&api_z, .string), "The fingerprint of the native module interface this program was built " ++
+        "with, as sixteen hexadecimal digits. A native module loads only into a " ++
+        "program whose janet/api and janet/config-bits are the same as the " ++
+        "module's own, and that was built with the same version of Zig.");
     // The docstring is upstream's, `janetconf.h` and all: it is text a Janet
     // program reads with `(doc janet/config-bits)`, so it is behaviour rather
     // than prose and is preserved exactly.
@@ -1014,6 +1037,43 @@ fn cfunUntrace(argv: []repr.Value) raise.Raising(repr.Value) {
     return argv[0];
 }
 
+/// Builds the refusal `native` reports when a field of `abi.BuildConfig`
+/// differs.
+///
+/// `field` names the field that differed, and `host_value` and `module_value`
+/// are that field's two values already spelled as text. `host` and
+/// `module_config` supply the two Janet versions, which the message reports
+/// and `native` does not compare.
+fn configMismatch(
+    field: [*:0]const u8,
+    host: abi.BuildConfig,
+    module_config: abi.BuildConfig,
+    host_value: [*:0]const u8,
+    module_value: [*:0]const u8,
+) strings.String {
+    var errbuf: [256]u8 = undefined;
+    // Both versions are spelled with `%d`. `%.d` is precision zero, which
+    // writes nothing at all for a value of zero, so a host built from an
+    // `x.0.y` release would report itself as `x..y` beside a module reporting
+    // `x.0.y`: one message, two spellings of one field.
+    _ = c.snprintf(
+        &errbuf,
+        errbuf.len,
+        "config mismatch - %s - host %d.%d.%d(%s) vs. module %d.%d.%d(%s) - " ++
+            "native needs to be recompiled!",
+        field,
+        host.major,
+        host.minor,
+        host.patch,
+        host_value,
+        module_config.major,
+        module_config.minor,
+        module_config.patch,
+        module_value,
+    );
+    return strings.cstring(@ptrCast(&errbuf));
+}
+
 /// The string a dynamic binding names, or `dflt` where the binding is absent.
 /// An embedded NUL is a raise, since the result is handed on as a C string.
 fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Raising([*:0]const u8) {
@@ -1080,13 +1140,12 @@ fn imageCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
     vm_state.current().core_env = env;
 
     // The image is emitted by `janet-boot`, which is built for the build host,
-    // so a value it holds is the host's. `janet/config-bits` is the one
-    // binding whose value can differ between the two, through the NaN-box
-    // pointer shift, so its value is this compilation's word.
-    const bits = tables.get(env, wrap.fromSymbol(symbols.csymbol("janet/config-bits")));
-    if (repr.checkType(bits, repr.Tag.table)) {
-        tables.put(wrap.toTable(bits), value.fromBytes("value", .keyword), wrap.fromInteger(constants.JANET_CURRENT_CONFIG_BITS));
-    }
+    // so a value it holds is the host's. Two bindings can differ between the
+    // two: `janet/config-bits`, through the NaN-box pointer shift, and
+    // `janet/api`, whose number is over layouts the target decides.
+    // Each is rewritten with this compilation's own.
+    overwriteBinding(env, "janet/config-bits", wrap.fromInteger(constants.JANET_CURRENT_CONFIG_BITS));
+    overwriteBinding(env, "janet/api", value.fromBytes(&api_z, .string));
 
     // Invert the image dict here rather than in `boot.janet`, where it would
     // break deterministic builds.
@@ -1331,8 +1390,11 @@ inline fn matches(p: [*]const u8, comptime literal: [:0]const u8) bool {
 /// Loads a native module and returns its `_janet_init`, or nothing with the
 /// reason in `err`.
 ///
-/// The module's `_janet_mod_config` is compared with this build's version and
-/// bit configuration, and a mismatch is a refusal rather than a load.
+/// The module's `_janet_mod_config` is compared with this build's
+/// configuration bits, compiler version and interface fingerprint, in that
+/// order, and the first difference is a refusal rather than a load. Janet's
+/// own version is reported in a refusal and is not compared, so a module built
+/// against one release loads into another whose interface is the same.
 fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(ModuleEntry) {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"dynamic_modules"}));
     const processed_name = utils.getProcessedName(name);
@@ -1348,39 +1410,47 @@ fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(ModuleEntry)
         return null;
     }
     const getter: ModuleConfig = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_mod_config")));
-    const modconf = if (getter) |mod_config| mod_config() else {
+    // Zeroed first, so that a module whose `abi.BuildConfig` is shorter than
+    // this one's leaves the fields it does not have at zero rather than at
+    // whatever the stack held. The width the module reports back is what a
+    // later loader reads to tell a short report from a full one; nothing here
+    // needs it, because a zero never matches a field this build compares.
+    var modconf: abi.BuildConfig = .{};
+    if (getter) |mod_config| {
+        _ = mod_config(&modconf, @sizeOf(abi.BuildConfig));
+    } else {
         err.* = strings.cstring("could not find the _janet_mod_config symbol");
         return null;
-    };
-    const host: abi.BuildConfig = .{
-        .major = config.version_major,
-        .minor = config.version_minor,
-        .patch = config.version_patch,
-        .bits = constants.JANET_CURRENT_CONFIG_BITS,
-    };
-    if (host.major != modconf.major or
-        host.minor != modconf.minor or
-        host.bits != modconf.bits)
-    {
-        var errbuf: [128]u8 = undefined;
-        // Both versions are spelled the same way. `%.d` is precision zero,
-        // which writes nothing at all for a value of zero, so a host built
-        // from an `x.0.y` release would report itself as `x..y` beside a
-        // module reporting `x.0.y`: one message, two spellings of one field.
-        _ = c.snprintf(
-            &errbuf,
-            errbuf.len,
-            "config mismatch - host %d.%d.%d(%.4x) vs. module %d.%d.%d(%.4x) - native needs to be recompiled!",
-            host.major,
-            host.minor,
-            host.patch,
-            host.bits,
-            modconf.major,
-            modconf.minor,
-            modconf.patch,
-            modconf.bits,
+    }
+    const host = fingerprint.build_config;
+    if (host.bits != modconf.bits) {
+        var host_text: [16]u8 = undefined;
+        var module_text: [16]u8 = undefined;
+        err.* = configMismatch(
+            "bits",
+            host,
+            modconf,
+            bitsText(&host_text, host.bits),
+            bitsText(&module_text, modconf.bits),
         );
-        err.* = strings.cstring(@ptrCast(&errbuf));
+        return null;
+    }
+    if (!std.mem.eql(u8, &host.zig, &modconf.zig)) {
+        var host_text: [33]u8 = undefined;
+        var module_text: [33]u8 = undefined;
+        err.* = configMismatch(
+            "zig version",
+            host,
+            modconf,
+            zigText(&host_text, host.zig),
+            zigText(&module_text, modconf.zig),
+        );
+        return null;
+    }
+    if (host.api != modconf.api) {
+        const host_text = fingerprint.hex(host.api);
+        const module_text = fingerprint.hex(modconf.api);
+        err.* = configMismatch("api version", host, modconf, &host_text, &module_text);
         return null;
     }
     return init;
@@ -1508,6 +1578,17 @@ inline fn opSSS(op: anytype, a: u32, b: u32, d: u32) u32 {
 /// combined with operand bits.
 inline fn opword(op: anytype) u32 {
     return if (@TypeOf(op) == constants.Opcode) op.number() else @intCast(op);
+}
+
+/// Replaces the value of a binding the unmarshalled image already holds.
+///
+/// `name` is the binding's symbol and `v` is what its `:value` becomes.
+/// Nothing is written where the image has no such binding, which is what a
+/// build with a smaller core environment leaves behind.
+fn overwriteBinding(env: *tables.Table, name: [*:0]const u8, v: repr.Value) void {
+    const binding = tables.get(env, wrap.fromSymbol(symbols.csymbol(name)));
+    if (!repr.checkType(binding, repr.Tag.table)) return;
+    tables.put(wrap.toTable(binding), value.fromBytes("value", .keyword), v);
 }
 
 /// Assembles one function from a bytecode array, for the bootstrap.
@@ -1659,4 +1740,18 @@ fn varargOf(flags: functions.FuncDefFlags) functions.FuncDefFlags {
     var out = flags;
     out.vararg = true;
     return out;
+}
+
+/// Spells a compiler version in `buf` and returns `buf` as a C string.
+///
+/// `raw` is the NUL-padded field of an `abi.BuildConfig`, which a module fills
+/// in and so may hold anything. Copying stops at the first byte outside
+/// printable ASCII, which is what the padding is, and a terminator is
+/// appended. `buf` is written over and holds the result until its caller
+/// returns.
+fn zigText(buf: *[33]u8, raw: [32]u8) [*:0]const u8 {
+    var len: usize = 0;
+    while (len < raw.len and raw[len] >= ' ' and raw[len] < 0x7F) : (len += 1) buf[len] = raw[len];
+    buf[len] = 0;
+    return @ptrCast(buf);
 }

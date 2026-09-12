@@ -161,22 +161,32 @@ pub const AbstractType = struct {
     unmarshal: ?*const fn (u: *Unmarshal) error{JanetSignal}!?*anyopaque = null,
 };
 
-/// The version and feature bits a module was built against.
+/// What a module was built against: a Janet version, the configuration bits,
+/// the interface fingerprint and the compiler's version.
 ///
-/// `module.entry` exports a function named `_janet_mod_config` that returns a
+/// `module.entry` exports a function named `_janet_mod_config` that writes a
 /// `BuildConfig`. The loader looks `_janet_mod_config` up in the loaded shared
-/// object, calls what it finds, and refuses the module unless `major`, `minor`
-/// and `bits` match the runtime's own. `patch` is reported in the refusal
-/// message but is not compared.
+/// object, calls what it finds, and compares three fields in this order:
+/// `bits`, `zig` and `api`. A difference in any of the three is a refusal
+/// naming that field.
 ///
-/// The loader reads the returned struct field by field, so both
-/// `_janet_mod_config` and this layout are part of the published interface: a
-/// change to either breaks a module that is already compiled.
+/// `api` is `api/fingerprint.zig`'s number, and `zig` is the compiler's
+/// version string NUL-padded to thirty-two bytes and compared byte for byte.
+/// `major`, `minor` and `patch` are the Janet version. They appear in a
+/// refusal message and are not compared, so a module built against one release
+/// loads into another whose interface is the same.
+///
+/// The loader reads this struct field by field, so both `_janet_mod_config`
+/// and this layout are part of the published interface. `_janet_mod_config`
+/// takes the width the loader has and returns the width the module has, so a
+/// later loader can read a shorter, older `BuildConfig` than its own.
 pub const BuildConfig = extern struct {
     major: c_uint = 0,
     minor: c_uint = 0,
     patch: c_uint = 0,
     bits: c_uint = 0,
+    api: u64 = 0,
+    zig: [32]u8 = std.mem.zeroes([32]u8),
 };
 
 /// A byte sequence and its length.

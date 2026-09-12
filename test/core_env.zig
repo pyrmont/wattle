@@ -61,6 +61,7 @@ const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 const fibers = @import("subsystems").value.fibers;
+const fingerprint = @import("subsystems").fingerprint;
 const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
 const io_core = @import("subsystems").io;
@@ -534,6 +535,24 @@ fn theConfigBitsAreJanetHs() raise.Raising(void) {
     expect(wrap.toNumber(out) == @as(f64, @floatFromInt(want)));
 }
 
+/// `janet/api` is `api/fingerprint.zig`'s number, spelled as sixteen
+/// lowercase hexadecimal digits. A module and the runtime compare the number
+/// at load, and the binding is how a Janet program reads the runtime's own.
+///
+/// The oracle reads the number back out of the digits rather than spelling
+/// the number again, so the two sides of the comparison are the text and the
+/// number and not one function called twice.
+fn theApiVersionIsTheFingerprint() raise.Raising(void) {
+    var out = wrap.fromNil();
+    expect(try doString("janet/api", "contract", &out) == 0);
+    expect(harness.isType(out, repr.Tag.string));
+    const spelled = wrap.toString(out);
+    const digits = spelled[0..strings.head(spelled).length];
+    expect(digits.len == 16);
+    for (digits) |ch| expect((ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f'));
+    expect((std.fmt.parseInt(u64, digits, 16) catch unreachable) == fingerprint.api);
+}
+
 fn nativeReportsALoaderError() void {
     var err: ?strings.String = null;
     const init = core_env.nativeAbi("./contract-no-such-module.so", &err);
@@ -637,6 +656,7 @@ fn body() raise.Raising(void) {
     try theLookupTableTakesReplacements();
     try getlineReadsALineThroughTheDyn();
     try theConfigBitsAreJanetHs();
+    try theApiVersionIsTheFingerprint();
     nativeReportsALoaderError();
     try sandboxAccumulatesEveryCapability();
     nativeIsBehindTheSandbox();

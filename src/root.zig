@@ -54,6 +54,7 @@ pub const ffi_classify = @import("runtime/ffi/classify.zig");
 pub const ffi_marshal = @import("runtime/ffi/marshal.zig");
 pub const ffi_types = @import("runtime/ffi/types.zig");
 pub const filewatch = @import("runtime/filewatch.zig");
+pub const fingerprint = @import("api/fingerprint.zig");
 pub const fs = @import("runtime/os/fs.zig");
 pub const gc_alloc = @import("runtime/gc.zig");
 pub const gc_mark = @import("runtime/gc/mark.zig");
@@ -166,4 +167,9 @@ comptime {
     if (options.vm) _ = @import("runtime/vm.zig");
     if (options.vm_entry) _ = @import("runtime/vm/entry.zig");
     if (options.lifecycle) _ = @import("runtime/vm/lifecycle.zig");
+
+    // The module boundary. Behind no option, because every configuration
+    // compiles `api/fingerprint.zig`. A test build analyses none of the calls
+    // that reach it, so its `test` blocks need this name.
+    _ = @import("api/fingerprint.zig");
 }

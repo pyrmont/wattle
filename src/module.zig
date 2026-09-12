@@ -137,8 +137,8 @@ const std = @import("std");
 
 const abi = @import("abi");
 const abstract_type = @import("api/abstract_type.zig");
-const config = @import("config");
 const constants = @import("constants");
+const fingerprint = @import("api/fingerprint.zig");
 const interface = @import("api/interface.zig");
 const raise = @import("api/raise.zig");
 const repr = @import("repr");
@@ -579,15 +579,25 @@ pub fn dictionaryView(v: Value) ?Pairs {
 /// ```
 ///
 /// where `defs` is of type `fn (*module.Env) Error!void`.
+///
+/// `_janet_mod_config` reports the configuration bits, the interface
+/// fingerprint and the compiler's version, and the loader refuses the module
+/// unless all three match the runtime's own. `_janet_init` takes the
+/// environment to define into and the runtime table, and runs `defs`.
 pub fn entry(comptime defs: fn (*Env) Error!void) void {
     const Shim = struct {
-        fn modConfig() callconv(.c) abi.BuildConfig {
-            return .{
-                .major = config.version_major,
-                .minor = config.version_minor,
-                .patch = config.version_patch,
-                .bits = constants.JANET_CURRENT_CONFIG_BITS,
-            };
+        /// Writes this module's `abi.BuildConfig` and returns its own width.
+        ///
+        /// `size` is the width the loader has room for and `out` is where
+        /// the bytes go. Writing the smaller of the two widths lets a loader
+        /// whose `abi.BuildConfig` is longer than this module's read the
+        /// fields the module does have.
+        fn modConfig(out: *abi.BuildConfig, size: usize) callconv(.c) usize {
+            const mine = @sizeOf(abi.BuildConfig);
+            const written = @min(size, mine);
+            const source = std.mem.asBytes(&fingerprint.build_config);
+            @memcpy(@as([*]u8, @ptrCast(out))[0..written], source[0..written]);
+            return mine;
         }
         /// Stores the runtime table, then runs `defs`.
         ///

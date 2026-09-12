@@ -597,6 +597,69 @@ pub fn build(b: *std.Build) void {
     );
     installTest(b, options, digest_module);
 
+    // The three load refusals: one shared object per field the loader
+    // compares. Each exports `_janet_mod_config` and `_janet_init` by hand,
+    // so that it reports a configuration it was not built with, which is what
+    // a module built through `module.entry` cannot do. Its import list is the
+    // boundary's layouts, the version and the configuration bits and nothing
+    // else, because that is all a report needs.
+    const refusalModule = struct {
+        fn make(
+            bb: *std.Build,
+            g: ?RuntimeGraph,
+            t: std.Build.ResolvedTarget,
+            o: std.builtin.OptimizeMode,
+            root: []const u8,
+            name: []const u8,
+        ) *std.Build.Step.Compile {
+            const mod = bb.createModule(.{
+                .root_source_file = bb.path(root),
+                .target = t,
+                .optimize = o,
+            });
+            if (g) |graph| {
+                mod.addImport("abi", graph.abi);
+                mod.addImport("config", graph.config);
+                mod.addImport("constants", graph.constants);
+            }
+            const lib = bb.addLibrary(.{
+                .name = name,
+                .linkage = .dynamic,
+                .root_module = mod,
+            });
+            lib.linker_allow_shlib_undefined = true;
+            return lib;
+        }
+    }.make;
+
+    const wrong_bits_module = refusalModule(
+        b,
+        runtime_graph,
+        target,
+        optimize,
+        "test/module-load/wrong_bits.zig",
+        "module-load-wrong-bits",
+    );
+    installTest(b, options, wrong_bits_module);
+    const wrong_zig_module = refusalModule(
+        b,
+        runtime_graph,
+        target,
+        optimize,
+        "test/module-load/wrong_zig.zig",
+        "module-load-wrong-zig",
+    );
+    installTest(b, options, wrong_zig_module);
+    const wrong_api_module = refusalModule(
+        b,
+        runtime_graph,
+        target,
+        optimize,
+        "test/module-load/wrong_api.zig",
+        "module-load-wrong-api",
+    );
+    installTest(b, options, wrong_api_module);
+
     // The three host translations -- `os/abi.h`, `net/abi.h`, `filewatch/abi.h`
     // -- have no oracle and need none: each keeps what it declares inside one
     // subsystem, and every name it publishes has a Zig caller that fails to
@@ -957,7 +1020,7 @@ pub fn build(b: *std.Build) void {
     const zig_side = [_]*std.Build.Step{ zig_contracts_step, runtime_tests_step };
     // What the suites wait on: the native-module runs when they are built,
     // which themselves wait on `zig_side`, and `zig_side` otherwise.
-    var module_side: [4]*std.Build.Step = undefined;
+    var module_side: [5]*std.Build.Step = undefined;
     var suites_after: []const *std.Build.Step = &zig_side;
 
     // The native-module fixture is a dynamic library and is skipped under TSan
@@ -999,7 +1062,23 @@ pub fn build(b: *std.Build) void {
         for (zig_side) |step| run_digest.step.dependOn(step);
         test_step.dependOn(&run_digest.step);
 
-        module_side = .{ &run_native_test.step, &run_numarray.step, &run_url.step, &run_digest.step };
+        // The three refusals, in the order the loader compares the fields.
+        const run_refused = b.addRunArtifact(client);
+        run_refused.setCwd(b.path("."));
+        run_refused.addArg("test/zig-native-refused.janet");
+        run_refused.addFileArg(wrong_bits_module.getEmittedBin());
+        run_refused.addFileArg(wrong_zig_module.getEmittedBin());
+        run_refused.addFileArg(wrong_api_module.getEmittedBin());
+        for (zig_side) |step| run_refused.step.dependOn(step);
+        test_step.dependOn(&run_refused.step);
+
+        module_side = .{
+            &run_native_test.step,
+            &run_numarray.step,
+            &run_url.step,
+            &run_digest.step,
+            &run_refused.step,
+        };
         suites_after = &module_side;
     }
 

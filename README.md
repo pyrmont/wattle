@@ -328,6 +328,12 @@ can invoke one. The same applies to a `JanetAbstractType`'s callbacks.
 Native modules are therefore written in Zig. `examples/numarray/numarray.zig`
 imports `janet` and nothing else, which is the whole of the interface.
 
+A module records the interface it was built against as a fingerprint, and the
+loader refuses it unless that fingerprint, the configuration bits and the Zig
+version all match the runtime's own. `janet/api` is the runtime's
+fingerprint. Janet's version is not compared, so a module built against one
+release loads into another whose interface is the same.
+
 ## Discussion
 
 Feel free to ask questions and join the discussion on the [Janet Zulip Instance](https://janet.zulipchat.com/)

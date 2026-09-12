@@ -48,17 +48,23 @@
 //! where the header declared an `int`. Nothing links against these by C
 //! signature, so the Zig type is free to say the true thing.
 //!
-//! ## The layout guard
+//! ## The two guards
 //!
-//! `size` is `@sizeOf(Runtime)` as the runtime that filled the table
-//! understood it. `module.entry`'s shim compares it before any author code
-//! runs and raises on any difference, so a module built against another shape
-//! of the table fails the load rather than calling through a wrong pointer.
-//! The guard is strict rather than a prefix test, so the table is free to
-//! change in any way: a field nothing crosses is removed rather than kept, and
-//! a shorter table is not an older one. A prefix test, which would let a
-//! module built against a shorter table load on a longer one, is deferred
-//! until a table has shipped and there is something to stay compatible with.
+//! `api/fingerprint.zig` hashes this table, and the rest of what the two
+//! compilations share, into one number. Both compute it from this file, the
+//! module reports its own through `_janet_mod_config`, and the loader compares
+//! the two before it calls into the module at all. That comparison is what
+//! decides compatibility. It is an exact match by design, so the table is free
+//! to change in any way: a field nothing crosses is removed rather than kept,
+//! and a shorter table is not an older one. A module built against a shorter
+//! table does not load on a longer one, and append-only compatibility is not a
+//! goal.
+//!
+//! `size` is the second guard. It is `@sizeOf(Runtime)` as the runtime that
+//! filled the table understood it, and `module.entry`'s shim compares it
+//! before any author code runs and raises on any difference. The comparison is
+//! inside the module, so it holds where something other than this loader
+//! opened the shared object.
 
 // ==========================================================================
 // Standard library imports
@@ -106,11 +112,11 @@ const Value = repr.Value;
 
 /// The whole of what a module may call.
 ///
-/// `size` is the layout guard the file header describes. Every other field is
-/// one crossing. The six raising crossings follow `size` in a fixed order,
-/// because the shim's refusal of a mismatched table is delivered through them;
-/// every other field is in alphabetical order, and nothing reads it by
-/// position.
+/// `size` is the second of the two guards the file header describes. Every
+/// other field is one crossing. The six raising crossings follow `size` in a
+/// fixed order, because the shim's refusal of a mismatched table is delivered
+/// through them; every other field is in alphabetical order, and nothing reads
+/// it by position.
 ///
 /// The six raising crossings are what a module's `raise.zig` reaches: a signal
 /// to record, a message to build, the C-raise flag to take, and an abort.
