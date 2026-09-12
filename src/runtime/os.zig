@@ -545,7 +545,7 @@ fn cfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const cstr = try args_core.getCString(argv, 0);
     oa.lockEnviron();
-    const res = environGet(@ptrCast(cstr));
+    const res = environGet(cstr);
     const ret = if (res) |val|
         value.fromBytes(std.mem.span(val), .string)
     else if (argv.len == 2)
@@ -584,7 +584,7 @@ fn cfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
     const ks = try args_core.getCString(argv, 0);
     const vs = try args_core.optCString(argv, 1, null);
     oa.lockEnviron();
-    _ = environSet(@ptrCast(ks), @ptrCast(vs));
+    _ = environSet(ks, vs);
     oa.unlockEnviron();
     return wrap.fromNil();
 }

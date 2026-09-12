@@ -16,7 +16,7 @@
 //! `collect` moves the fields into a `Spec(T)`, and `Erased` generates the
 //! vtable stored in the result.
 //!
-//! A stored slot takes the payload as `?*anyopaque`, because the runtime
+//! A stored slot takes the payload as `*anyopaque`, because the runtime
 //! dispatches without the payload's type. `Erased` is the one place that
 //! pointer is cast back to `*T`, from the type given to `define`, so a
 //! callback writes no cast of its own. A dispatch begins in the runtime with
@@ -104,7 +104,7 @@ pub const Spec = module.Spec;
 ///
 /// `T` is the payload type and `spec` is the collected callbacks over `*T`.
 /// The returned type has one `pub` function per slot, in the order `slots`
-/// names them. Each takes the payload as `?*anyopaque`, which is the shape the
+/// names them. Each takes the payload as `*anyopaque`, which is the shape the
 /// runtime stores, casts it back to `*T` or `*const T`, and calls the callback
 /// in `spec`.
 ///
@@ -112,36 +112,34 @@ pub const Spec = module.Spec;
 /// to `define`, so an author writes no cast in a callback.
 pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
     return struct {
-        // A dispatch starts from a live abstract's header, so the payload is
-        // never null and both of these unwrap it with `.?`.
-        inline fn mut(p: ?*anyopaque) *T {
-            return @ptrCast(@alignCast(p.?));
+        inline fn mut(p: *anyopaque) *T {
+            return @ptrCast(@alignCast(p));
         }
-        inline fn ro(p: ?*anyopaque) *const T {
-            return @ptrCast(@alignCast(p.?));
+        inline fn ro(p: *anyopaque) *const T {
+            return @ptrCast(@alignCast(p));
         }
 
         // The erased slots.
 
-        pub fn gc(p: ?*anyopaque, len: usize) callconv(.c) void {
+        pub fn gc(p: *anyopaque, len: usize) callconv(.c) void {
             return spec.gc.?(mut(p), len);
         }
-        pub fn gcmark(p: ?*anyopaque, len: usize) callconv(.c) void {
+        pub fn gcmark(p: *anyopaque, len: usize) callconv(.c) void {
             return spec.gcmark.?(mut(p), len);
         }
-        pub fn gcperthread(p: ?*anyopaque, len: usize) callconv(.c) void {
+        pub fn gcperthread(p: *anyopaque, len: usize) callconv(.c) void {
             return spec.gcperthread.?(mut(p), len);
         }
-        pub fn get(p: ?*anyopaque, key: repr.Value) raise.Error!?repr.Value {
+        pub fn get(p: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
             return spec.get.?(mut(p), key);
         }
-        pub fn put(p: ?*anyopaque, key: repr.Value, value: repr.Value) raise.Error!void {
+        pub fn put(p: *anyopaque, key: repr.Value, value: repr.Value) raise.Error!void {
             return spec.put.?(mut(p), key, value);
         }
-        pub fn next(p: ?*anyopaque, key: repr.Value) raise.Error!repr.Value {
+        pub fn next(p: *anyopaque, key: repr.Value) raise.Error!repr.Value {
             return spec.next.?(mut(p), key);
         }
-        pub fn length(p: ?*anyopaque, len: usize) raise.Error!usize {
+        pub fn length(p: *anyopaque, len: usize) raise.Error!usize {
             return spec.length.?(mut(p), len);
         }
         /// Rebuilds the argument slice from the pointer and count the
@@ -150,23 +148,23 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         /// This is the one slot whose shape changes on the way through. A
         /// module author writes `call` over a `[]Value`, as a cfunction is
         /// written.
-        pub fn call(p: ?*anyopaque, argc: i32, argv: [*]repr.Value) raise.Error!repr.Value {
+        pub fn call(p: *anyopaque, argc: i32, argv: [*]repr.Value) raise.Error!repr.Value {
             return spec.call.?(mut(p), argv[0..@intCast(argc)]);
         }
-        pub fn compare(lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) i32 {
+        pub fn compare(lhs: *anyopaque, rhs: *anyopaque) callconv(.c) i32 {
             return spec.compare.?(ro(lhs), ro(rhs));
         }
-        pub fn hash(p: ?*anyopaque, len: usize) callconv(.c) i32 {
+        pub fn hash(p: *anyopaque, len: usize) callconv(.c) i32 {
             return spec.hash.?(ro(p), len);
         }
-        pub fn tostring(p: ?*anyopaque, render: *abi.Render) raise.Error!void {
+        pub fn tostring(p: *anyopaque, render: *abi.Render) raise.Error!void {
             return spec.tostring.?(mut(p), render);
         }
-        pub fn bytes(p: ?*anyopaque, len: usize) callconv(.c) abi.ByteView {
+        pub fn bytes(p: *anyopaque, len: usize) callconv(.c) abi.ByteView {
             const b = spec.bytes.?(ro(p), len);
             return .{ .bytes = b.ptr, .len = b.len };
         }
-        pub fn marshal(p: ?*anyopaque, m: *abi.Marshal) raise.Error!void {
+        pub fn marshal(p: *anyopaque, m: *abi.Marshal) raise.Error!void {
             return spec.marshal.?(mut(p), m);
         }
         pub fn unmarshal(u: *abi.Unmarshal) raise.Error!?*anyopaque {

@@ -43,7 +43,7 @@ set -e
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 
-driver=zig-out/bin/janet-zig-contract-test
+driver=zig-out/test/janet-zig-contract-test
 if [ ! -x "$driver" ]; then
     echo "leaks.sh: no $driver -- run \`zig build\` first" >&2
     exit 2

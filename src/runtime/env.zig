@@ -660,8 +660,8 @@ fn cfunDyn(argv: []repr.Value) raise.Error!repr.Value {
 /// `(module/expand-path path template)`.
 fn cfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
-    const input: [*:0]const u8 = @ptrCast(try args_core.getCString(argv, 0));
-    const template: [*:0]const u8 = @ptrCast(try args_core.getCString(argv, 1));
+    const input = try args_core.getCString(argv, 0);
+    const template = try args_core.getCString(argv, 1);
     const curfile = try dynCString("current-file", "");
     const syspath = try dynCString("syspath", "");
     const out = buffers.new(0);

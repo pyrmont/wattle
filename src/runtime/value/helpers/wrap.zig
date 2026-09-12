@@ -154,8 +154,11 @@ pub const abi = struct {
         return outer.fromTable(x);
     }
 
-    pub fn fromAbstract(x: abstracts.Abstract) callconv(.c) repr.Value {
-        return outer.fromAbstract(x);
+    /// The one nullable spelling. `Abstract` is not optional, but this is a
+    /// `Runtime` field and `api/interface.zig` declares it over C's `void *`,
+    /// so the tag is applied here rather than through `outer.fromAbstract`.
+    pub fn fromAbstract(x: ?*anyopaque) callconv(.c) repr.Value {
+        return repr.wrapPointer(x, repr.Tag.abstract);
     }
 
     pub fn fromPointer(x: ?*anyopaque) callconv(.c) repr.Value {
@@ -299,7 +302,7 @@ pub fn nanboxToPointer(x: repr.Value) ?*anyopaque {
 /// test comes before the conversion, and outside the range the result saturates
 /// rather than trapping, for the reason the file header gives.
 pub fn toAbstract(x: repr.Value) abstracts.Abstract {
-    return toPointer(x);
+    return @ptrCast(@alignCast(toPointer(x)));
 }
 
 pub fn toArray(x: repr.Value) *arrays.Array {

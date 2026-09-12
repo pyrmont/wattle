@@ -725,7 +725,7 @@ fn cfunPosixChroot(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
     const root = try args_core.getCString(argv, 0);
-    if (changeRoot(@ptrCast(root)) == -1) {
+    if (changeRoot(root) == -1) {
         return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
     }
     return wrap.fromNil();
@@ -810,7 +810,7 @@ fn cfunProcWait(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunShell(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 0, 1);
-    const cmd: ?[*:0]const u8 = if (argv.len != 0) @ptrCast(try args_core.getCString(argv, 0)) else null;
+    const cmd: ?[*:0]const u8 = if (argv.len != 0) try args_core.getCString(argv, 0) else null;
     if (has_ev) {
         var cmd_copy: ?*anyopaque = null;
         if (cmd) |src| {
@@ -936,12 +936,12 @@ fn execEscape(args: []const repr.Value) raise.Error!*buffers.Buffer {
     for (0..args.len) |i| {
         const arg = try args_core.getCString(args, i);
         if (i != 0) try buffers.pushU8(b, ' ');
-        const needed = escapeArgument(@ptrCast(arg), null, 0);
+        const needed = escapeArgument(arg, null, 0);
         if (needed < 0) return raise.panic("command line string too long (max 8191 characters)");
         // The checked conversion: `escapeArgument` gives back a signed length
         // and negative is its overflow report, which the line above consumed.
         try buffers.extra(b, @intCast(needed));
-        _ = escapeArgument(@ptrCast(arg), b.data.? + b.count, needed);
+        _ = escapeArgument(arg, b.data.? + b.count, needed);
         b.count += @intCast(needed);
     }
     try buffers.pushU8(b, 0);
@@ -1408,7 +1408,7 @@ fn spawnPosix(
     const count: usize = exargs.len;
     const child_argv: [*]?[*:0]const u8 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(?*u8) * (count + 1))));
     for (0..count) |i| {
-        child_argv[i] = @ptrCast(try args_core.getCString(exargs, i));
+        child_argv[i] = try args_core.getCString(exargs, i);
     }
     child_argv[count] = null;
     const cargv: [*:null]const ?[*:0]const u8 = @ptrCast(child_argv);

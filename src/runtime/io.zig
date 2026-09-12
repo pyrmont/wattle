@@ -194,7 +194,7 @@ pub fn assertWriteable(iof: *File) raise.Error!void {
 }
 
 /// The payload of a file value, or null where the value is not a file.
-pub fn checkfile(j: repr.Value) abstracts.Abstract {
+pub fn checkfile(j: repr.Value) ?abstracts.Abstract {
     return args_core.checkabstract(j, &fileType);
 }
 

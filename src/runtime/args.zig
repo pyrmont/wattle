@@ -404,13 +404,8 @@ fn IndexAbi(comptime f: anytype) type {
 /// so a bad argument does not jump out of the frame that looked at
 /// it.
 pub fn Opt(comptime G: type) type {
-    // A pointer default may be absent; a number default may not. `[*c]` is
-    // already nullable and is left alone, or the abi below would need an
-    // optional in a `callconv(.c)` signature.
-    const D = if (@typeInfo(G.Value) == .pointer and @typeInfo(G.Value).pointer.size != .c)
-        ?G.Value
-    else
-        G.Value;
+    // A pointer default may be absent; a number default may not.
+    const D = if (@typeInfo(G.Value) == .pointer) ?G.Value else G.Value;
     return struct {
         pub fn get(argv: []const repr.Value, n: usize, dflt: D) raise.Error!D {
             if (argIsdefault(argv, n)) return dflt;
@@ -1030,9 +1025,9 @@ pub fn getBytes(argv: []const repr.Value, n: usize) raise.Error!abi.ByteView {
 ///
 /// The two buffer shapes are performed here rather than in the kernel: one
 /// pushes a byte and one calls `gc.smalloc`, and both can raise.
-pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
+pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*:0]const u8 {
     var fault: Fault = undefined;
-    var cstr: [*c]const u8 = undefined;
+    var cstr: [*:0]const u8 = undefined;
     var len: usize = undefined;
     switch (argCbytes(argv, n)) {
         .copy_buffer => {
@@ -1044,7 +1039,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
             const copy: [*]u8 = @ptrCast(gc_alloc.smalloc(count + 1));
             @memcpy(copy[0..count], buffer.slice()[0..count]);
             copy[count] = 0;
-            cstr = copy;
+            cstr = @ptrCast(copy);
             len = @intCast(buffer.count);
         },
         .copy_view => {
@@ -1055,7 +1050,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
             const copy: [*]u8 = @ptrCast(gc_alloc.smalloc(view.len + 1));
             if (view.len != 0) @memcpy(copy[0..view.len], view.bytes.?[0..view.len]);
             copy[view.len] = 0;
-            cstr = copy;
+            cstr = @ptrCast(copy);
             len = view.len;
         },
         .terminate => {
@@ -1063,12 +1058,12 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
             const buffer = wrap.toBuffer(argv[n]);
             try buffers.pushU8(buffer, 0);
             buffer.count -= 1;
-            cstr = buffer.data;
+            cstr = @ptrCast(buffer.data.?);
             len = buffer.count;
         },
         .view => {
             const view = try getBytes(argv, n);
-            cstr = view.bytes;
+            cstr = @ptrCast(view.bytes.?);
             len = view.len;
         },
     }
@@ -1077,7 +1072,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
 }
 
 /// `getCBytes`, refusing anything that is not a string.
-pub fn getCString(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
+pub fn getCString(argv: []const repr.Value, n: usize) raise.Error![*:0]const u8 {
     var fault: Fault = undefined;
     if (!argChecktype(argv, n, repr.Tag.string, repr.TagSet.one(.string), &fault)) {
         return raiseFault(argv, fault);
@@ -1213,13 +1208,13 @@ pub fn optAbstract(
 }
 
 /// `getCBytes` with a default for an absent or nil slot.
-pub fn optCBytes(argv: []const repr.Value, n: usize, dflt: [*c]const u8) raise.Error![*c]const u8 {
+pub fn optCBytes(argv: []const repr.Value, n: usize, dflt: ?[*:0]const u8) raise.Error!?[*:0]const u8 {
     if (argIsdefault(argv, n)) return dflt;
     return getCBytes(argv, n);
 }
 
 /// `getCString` with a default for an absent or nil slot.
-pub fn optCString(argv: []const repr.Value, n: usize, dflt: [*c]const u8) raise.Error![*c]const u8 {
+pub fn optCString(argv: []const repr.Value, n: usize, dflt: ?[*:0]const u8) raise.Error!?[*:0]const u8 {
     if (argIsdefault(argv, n)) return dflt;
     return getCString(argv, n);
 }
@@ -1274,10 +1269,9 @@ pub fn symeq(x: repr.Value, cstring: [*:0]const u8) bool {
 ///
 /// `ByteView` is `extern` because an abstract type's `bytes` callback gives
 /// one back across the module boundary, so its two fields cannot be a slice,
-/// and its pointer is genuinely null for an empty collection:
-/// `buffers.init(b, 0)` leaves `data` null and the callback may hand that
-/// straight back. Slicing a null pointer traps even for an empty range, so the
-/// recovery is here rather than at each call site.
+/// and its pointer is nullable because a module author may hand back a null
+/// one for an empty view. Slicing a null pointer traps even for an empty
+/// range, so the recovery is here rather than at each call site.
 pub inline fn viewBytes(view: abi.ByteView) []const u8 {
     if (view.bytes) |p| return p[0..view.len];
     return &.{};

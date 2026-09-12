@@ -195,7 +195,7 @@ inline fn gcType(mem: anytype) gc_alloc.MemoryType {
 /// table write, which can allocate, so this is one of the few places in the
 /// walk that can end the process, and the only place it can do so before
 /// anything has been marked.
-fn markAbstract(adata: ?*anyopaque) void {
+fn markAbstract(adata: *anyopaque) void {
     const head = abi.abstractHead(adata);
     if (has_ev) {
         if (gc_alloc.memoryTypeOf(&head.gc) == .threaded_abstract) {
@@ -269,10 +269,10 @@ fn markFiber(fiber_in: *fibers.Fiber) void {
 
         if (has_ev) {
             if (fiber.supervisor_channel != null) {
-                markAbstract(fiber.supervisor_channel);
+                markAbstract(fiber.supervisor_channel.?);
             }
             if (fiber.ev_stream != null) {
-                markAbstract(fiber.ev_stream);
+                markAbstract(fiber.ev_stream.?);
             }
             if (fiber.ev_callback) |callback| {
                 ev_callback.dispatchTotal(ev_callback.of(callback), fiber, constants.AsyncEvent.mark);

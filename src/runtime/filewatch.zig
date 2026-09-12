@@ -384,7 +384,7 @@ const inotify = struct {
     }
 
     fn mark(watcher: *Watcher) void {
-        gc_mark.mark(wrap.fromAbstract(watcher.stream));
+        if (watcher.stream) |stream| gc_mark.mark(wrap.fromAbstract(stream));
     }
 };
 
@@ -590,7 +590,7 @@ const kqueue = struct {
     }
 
     fn mark(watcher: *Watcher) void {
-        gc_mark.mark(wrap.fromAbstract(watcher.stream));
+        if (watcher.stream) |stream| gc_mark.mark(wrap.fromAbstract(stream));
     }
 
     /// Drop one descriptor from the owned list. Linear, and the list is the
@@ -1200,7 +1200,7 @@ fn filewatchGc(watcher: *Watcher, _: usize) void {
 fn filewatchMark(watcher: *Watcher, _: usize) void {
     if (watcher.channel == null) return; // Incomplete initialization
     be.mark(watcher);
-    gc_mark.mark(wrap.fromAbstract(watcher.channel));
+    gc_mark.mark(wrap.fromAbstract(watcher.channel.?));
     gc_mark.mark(wrap.fromTable(watcher.watch_descriptors.?));
 }
 

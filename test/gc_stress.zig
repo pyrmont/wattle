@@ -266,7 +266,6 @@ fn hammerRefcount() void {
 /// is not one.
 fn theRefcountIsAtomicAcrossThreads() !void {
     shared_abstract = abstracts.threaded(&at_shared, 16);
-    expect(shared_abstract != null);
 
     var threads: [stress_threads]std.Thread = undefined;
     for (&threads) |*thread| thread.* = try std.Thread.spawn(.{}, hammerRefcount, .{});

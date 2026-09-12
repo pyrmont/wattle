@@ -237,7 +237,7 @@ fn pointerRoundTrips() void {
 fn nullPayloadsRoundTrip() void {
     expect(wrap.toPointer(wrap.abi.fromFiber(null)) == null);
     expect(wrap.toPointerAbi(wrap.abi.fromPointer(null)) == null);
-    expect(wrap.toAbstract(wrap.abi.fromAbstract(null)) == null);
+    expect(wrap.toPointer(wrap.abi.fromAbstract(null)) == null);
     expect(repr.typeOf(wrap.abi.fromFiber(null)) == repr.Tag.fiber);
     expect(!harness.isType(wrap.abi.fromPointer(null), repr.Tag.nil));
 

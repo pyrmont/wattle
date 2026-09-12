@@ -51,8 +51,8 @@
 //!   range above it.
 //!
 //! - `tagged` is a struct of `as` and `type`, and uses no NaN space. It is
-//!   sixteen bytes on a 64-bit target where the other two are eight or
-//!   twelve.
+//!   sixteen bytes on a 64-bit target and twelve or sixteen on a 32-bit one,
+//!   where either NaN-boxed layout is eight.
 //!
 //! Every function in an arm writes one member of a union and reads another,
 //! which is defined for an `extern union` in Zig, so none needs a `@bitCast`
@@ -300,17 +300,13 @@ pub const Value = switch (config.value_repr) {
     },
 };
 
-/// The 32-bit NaN box, which is a twelve-byte value on a four-byte-pointer
-/// target.
+/// The 32-bit NaN box: an eight-byte value on a four-byte-pointer target.
 ///
-/// This arm is cross-compiled and never executed. `riscv32-linux-musl` is the
-/// one 32-bit target the tree cross-compiles for, and
-/// `tools/testing/matrix.janet` lists it as a build job rather than a test
-/// job. Zig 0.16 and clang disagree about how many argument registers an
-/// eight-byte union consumes under riscv32 ILP32D, so a lone `Value`
-/// parameter arrives intact and every argument behind one arrives displaced:
-/// a call taking only a `Value` gives the right result, and a call taking a
-/// `Value` and a tag reads a wrong tag.
+/// `build.zig` selects this arm wherever the pointer is four bytes wide and
+/// `-Dnanbox` is not false, which is the default on such a target.
+/// `tools/testing/matrix.janet` runs the suites on it under wasmtime through
+/// the `wasm32-wasi` entry, and builds it for `riscv32-linux-musl`,
+/// `x86-linux-musl` and `arm-linux-musleabihf`.
 pub const nanbox32 = struct {
     const bias: u32 = @intCast(double_offset);
 
@@ -522,8 +518,8 @@ pub const nanbox64 = struct {
 };
 
 /// The tagged layout: a payload union and a separate tag field, with no NaN
-/// space in use. Sixteen bytes on a 64-bit target where either NaN-boxed
-/// layout is eight or twelve.
+/// space in use. Sixteen bytes on a 64-bit target and twelve or sixteen on a
+/// 32-bit one, where either NaN-boxed layout is eight.
 pub const tagged = struct {
     /// The `as.u64 = 0` clears the whole payload word, so that a target whose
     /// pointer is narrower than eight bytes leaves no bits of a previous value

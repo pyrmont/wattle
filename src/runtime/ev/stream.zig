@@ -544,7 +544,7 @@ fn cfunToFile(argv: []repr.Value) raise.Error!repr.Value {
     const s = try getStream(argv, 0);
     const iof = try getFileForStream(s);
     if (iof == null) return raise.panic("cannot make file from stream");
-    return wrap.fromAbstract(iof);
+    return wrap.fromAbstract(iof.?);
 }
 
 /// Closes the underlying handle, unregistering it first where the backend
@@ -604,7 +604,7 @@ fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Error!voi
             else
                 wrap.fromString(state.src.str));
             if (state.mode == write_mode_sendto) {
-                gc_mark.mark(wrap.fromAbstract(state.dest_abst));
+                gc_mark.mark(wrap.fromAbstract(state.dest_abst.?));
             }
         },
         constants.AsyncEvent.close => {

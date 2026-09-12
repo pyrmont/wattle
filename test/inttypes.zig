@@ -329,7 +329,7 @@ fn theFlooredDivision() !void {
         expect(inttypes.isInt(result) == constants.IntType.s64);
 
         const b: *buffers.Buffer = buffers.new(0);
-        try render(janet_s64_type, wrap.toAbstract(result).?, b);
+        try render(janet_s64_type, wrap.toAbstract(result), b);
         expect(bufferIs(b, case[1]));
     }
 

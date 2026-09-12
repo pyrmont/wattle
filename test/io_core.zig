@@ -414,10 +414,10 @@ fn theMethodOrder() raise.Error!void {
     // `next` and `get` ignore the payload, reading the method table instead,
     // so what is passed here stands in for a file without being one.
     // The runtime cannot: a dispatch starts from a live abstract's header, so
-    // the payload is always a real `io.File`. The typed callback says so and
-    // the erased shim asserts it, so the contract supplies one.
+    // the payload is always a real `io.File`. Both the typed callback and the
+    // erased slot say so, so the contract supplies one.
     var borrowed: io_core.File = std.mem.zeroes(io_core.File);
-    const payload: ?*anyopaque = &borrowed;
+    const payload: *anyopaque = &borrowed;
 
     var key = wrap.fromNil();
     var i: usize = 0;

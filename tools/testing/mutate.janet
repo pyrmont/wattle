@@ -815,7 +815,7 @@
     # link failing: a Zig contract cannot fail to link, and a configuration
     # that cannot compile one fails `zig build` above as "uncompilable".
     (def run (twice "contracts"
-                    (fn [] (tools/sh (string prefix "/bin/janet-zig-contract-test")
+                    (fn [] (tools/sh (string prefix "/test/janet-zig-contract-test")
                                      :timeout bound))))
     (def missed (contract-catcher (tools/both run)))
     (when (run :timeout)
@@ -996,7 +996,7 @@
             (if (= stage "default")
               (string/format ", %d sections" (length baseline))
               "")))
-  (def run (tools/sh (string prefix "/bin/janet-zig-contract-test") :timeout bound))
+  (def run (tools/sh (string prefix "/test/janet-zig-contract-test") :timeout bound))
   (unless (tools/ok? run)
     (tools/die "\nABORT: the contract driver fails on unmutated source.\n"
                "Every mutant would be scored as caught by it. Fix that first."))

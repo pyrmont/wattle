@@ -714,7 +714,6 @@ pub fn build(b: *std.Build) void {
         // registers a cfunction the runtime later names needs its own symbols
         // visible for the same reason the client does.
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
-        installTest(b, options, exe);
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
         // Installed unconditionally, for the same reason
         // `janet-contract-support.o` is: the narrow loop is a first-class
@@ -723,11 +722,18 @@ pub fn build(b: *std.Build) void {
         // a `zig cc` of its own -- there is no source for a shallow link to
         // compile, and no link either, because the runtime it tests is inside.
         //
+        // Into `test` rather than `bin`, which is `installTest`'s directory, so
+        // that an install for use carries `janet` and nothing else. This is the
+        // unconditional install and `installTest` is the flagged one, so the
+        // driver is not passed to it: that would install it twice.
+        //
         // Not on wasm, where none of the four readers of it --
         // `contract.sh`, `leaks.sh`, `mutate.janet` and `matrix.janet` --
         // can run the file they would find: it needs a wasm host, and each of
-        // them executes `<prefix>/bin/janet-zig-contract-test` directly.
-        if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{}).step);
+        // them executes `<prefix>/test/janet-zig-contract-test` directly.
+        if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = "test" } },
+        }).step);
         const run = b.addRunArtifact(exe);
         run.setCwd(b.path("."));
         zig_contracts_step.dependOn(&run.step);
@@ -921,10 +927,12 @@ pub fn build(b: *std.Build) void {
         module.addImport("subsystems", graph.subsystems);
         const exe = b.addTest(.{ .name = "janet-fuzz-test", .root_module = module });
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
-        installTest(b, options, exe);
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
-        // Beside the contract driver, and off on wasm for the same reason.
-        if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{}).step);
+        // Beside the contract driver, in the same directory and not through
+        // `installTest` for the same reasons, and off on wasm for the same one.
+        if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = "test" } },
+        }).step);
         const run = b.addRunArtifact(exe);
         run.setCwd(b.path("."));
         fuzz_step.dependOn(&run.step);
@@ -1293,11 +1301,16 @@ fn checkContractsListed(b: *std.Build) void {
     }
 }
 
-/// Install a test executable under `<prefix>/test` when -Dinstall-tests is set.
+/// Install a test artifact under `<prefix>/test` when -Dinstall-tests is set.
 ///
 /// `zig build test` runs what it builds, which is impossible when the target is
-/// not the host. Installing the executables lets a cross-compiled build be
+/// not the host. Installing the artifacts lets a cross-compiled build be
 /// carried to the target machine and run there.
+///
+/// The contract and fuzz drivers are not among them. Both install themselves
+/// into this same directory unconditionally, because `contract.sh` and its
+/// three fellow readers need one there on every build, so passing either here
+/// would install it twice.
 fn installTest(b: *std.Build, options: BuildOptions, exe: *std.Build.Step.Compile) void {
     if (!options.install_tests) return;
     const install = b.addInstallArtifact(exe, .{
@@ -1349,7 +1362,7 @@ fn readOptions(b: *std.Build) BuildOptions {
     const pointer_shift = b.option(i32, "nanbox-pointer-shift", "Override the NaN-box pointer shift (0 through 2 on aarch64, 0 elsewhere)");
 
     const options: BuildOptions = .{
-        .install_tests = b.option(bool, "install-tests", "Install the contract, fuzz and runtime test executables so they can be run on another machine") orelse false,
+        .install_tests = b.option(bool, "install-tests", "Also install the runtime-test executable and the native-module and module-load fixtures under <prefix>/test, beside the contract and fuzz drivers, so a cross-compiled build can be run on another machine") orelse false,
         .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),

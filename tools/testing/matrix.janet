@@ -431,7 +431,7 @@
             # already inside the driver `build.zig` installs
             # unconditionally. This runs it by name, which is what
             # `tools/testing/contract.sh` does too.
-            (def run (tools/sh (string prefix "/bin/janet-zig-contract-test " t)
+            (def run (tools/sh (string prefix "/test/janet-zig-contract-test " t)
                                :timeout run-timeout))
             (unless (tools/ok? run)
               (return done [j "FAIL"

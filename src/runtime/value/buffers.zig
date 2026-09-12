@@ -101,8 +101,10 @@ pub const Buffer = struct {
     count: usize = 0,
     capacity: usize = 0,
     data: ?[*]u8 = null,
-    /// The bytes written so far. Empty rather than a trap for a buffer that
-    /// has never been grown: `init(b, 0)` leaves `data` null.
+    /// The bytes written so far. Empty rather than a trap where `data` is
+    /// null, which is a default-initialised `Buffer` or a foreign one wrapping
+    /// a null pointer. `initImpl` floors the capacity at four, so `init`,
+    /// `new` and `newFrom` always leave a payload behind.
     pub inline fn slice(self: anytype) utils.View(@TypeOf(self), u8) {
         if (self.count == 0) return &.{};
         return self.data.?[0..self.count];

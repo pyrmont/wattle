@@ -334,7 +334,7 @@ pub const marshalAbi = raise.panicking(marshal).abi;
 /// it travels as a reference. A callback that writes an abstract of its own
 /// calls this.
 pub fn marshalAbstract(m: *abi.Marshal, abstract: ?*anyopaque) void {
-    markSeen(marshalState(m), wrap.fromAbstract(abstract));
+    markSeen(marshalState(m), wrap.abi.fromAbstract(abstract));
 }
 
 /// Writes one byte.
@@ -453,7 +453,7 @@ pub fn unmarshalAbstractReuse(u: *abi.Unmarshal, p: ?*anyopaque) raise.Error!voi
     if (st.at == null) {
         return raise.panic("janet_unmarshal_abstract called more than once");
     }
-    scratch_vector.push(&st.lookup, wrap.fromAbstract(p));
+    scratch_vector.push(&st.lookup, wrap.abi.fromAbstract(p));
     st.at = null;
 }
 
@@ -1324,7 +1324,7 @@ fn unmarshalOne(
                     _ = abstracts.decref(ptr);
                     out = wrap.fromNil();
                 } else {
-                    out = wrap.fromAbstract(ptr);
+                    out = wrap.abi.fromAbstract(ptr);
                     const check = tables.get(&vm_state.current().ev.threaded_abstracts, out);
                     if (repr.checkType(check, repr.Tag.nil)) {
                         // Transfers the reference from the channel's buffer to
@@ -1601,7 +1601,7 @@ fn unmarshalOneAbstract(
         st.at = stored_at;
         const abst = try unmarshal_fn(@ptrCast(st));
         marshAssert(abst != null, "null pointer abstract");
-        const decoded = wrap.fromAbstract(abst);
+        const decoded = wrap.fromAbstract(abst.?);
         if (st.at != null) return raise.panic("janet_unmarshal_abstract not called");
         return .{ .value = decoded, .next = st.data.? };
     }

@@ -121,9 +121,12 @@ pub const AbstractHead = extern struct {
 ///
 /// Every callback but `unmarshal` takes a pointer to the custom Zig type as
 /// its first argument. It is written here in its type erased form (as
-/// `?*anyopaque` rather than `*T`) but the module author should use `*T` in
+/// `*anyopaque` rather than `*T`) but the module author should use `*T` in
 /// their callbacks. `module.define` generates the shim that handles this
-/// casting.
+/// casting. `unmarshal` builds a payload rather than receiving one, and its
+/// result is optional so that the runtime can test it: `runtime/marsh.zig`
+/// ends the process with "null pointer abstract" where a module returned
+/// null.
 ///
 /// Six of the callbacks cannot raise: `gc`, `gcmark`, `gcperthread`,
 /// `compare`, `hash` and `bytes`. Their types have no error union, so a module
@@ -137,27 +140,27 @@ pub const AbstractType = struct {
     name: []const u8,
 
     // The collector.
-    gc: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
-    gcmark: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
-    gcperthread: ?*const fn (data: ?*anyopaque, len: usize) callconv(.c) void = null,
+    gc: ?*const fn (data: *anyopaque, len: usize) callconv(.c) void = null,
+    gcmark: ?*const fn (data: *anyopaque, len: usize) callconv(.c) void = null,
+    gcperthread: ?*const fn (data: *anyopaque, len: usize) callconv(.c) void = null,
 
     // Access.
-    get: ?*const fn (data: ?*anyopaque, key: repr.Value) error{JanetSignal}!?repr.Value = null,
-    put: ?*const fn (data: ?*anyopaque, key: repr.Value, value: repr.Value) error{JanetSignal}!void = null,
-    next: ?*const fn (p: ?*anyopaque, key: repr.Value) error{JanetSignal}!repr.Value = null,
-    length: ?*const fn (p: ?*anyopaque, len: usize) error{JanetSignal}!usize = null,
-    call: ?*const fn (p: ?*anyopaque, argc: i32, argv: [*]repr.Value) error{JanetSignal}!repr.Value = null,
+    get: ?*const fn (data: *anyopaque, key: repr.Value) error{JanetSignal}!?repr.Value = null,
+    put: ?*const fn (data: *anyopaque, key: repr.Value, value: repr.Value) error{JanetSignal}!void = null,
+    next: ?*const fn (p: *anyopaque, key: repr.Value) error{JanetSignal}!repr.Value = null,
+    length: ?*const fn (p: *anyopaque, len: usize) error{JanetSignal}!usize = null,
+    call: ?*const fn (p: *anyopaque, argc: i32, argv: [*]repr.Value) error{JanetSignal}!repr.Value = null,
 
     // Identity.
-    compare: ?*const fn (lhs: ?*anyopaque, rhs: ?*anyopaque) callconv(.c) i32 = null,
-    hash: ?*const fn (p: ?*anyopaque, len: usize) callconv(.c) i32 = null,
+    compare: ?*const fn (lhs: *anyopaque, rhs: *anyopaque) callconv(.c) i32 = null,
+    hash: ?*const fn (p: *anyopaque, len: usize) callconv(.c) i32 = null,
 
     // Rendering.
-    tostring: ?*const fn (p: ?*anyopaque, render: *Render) error{JanetSignal}!void = null,
-    bytes: ?*const fn (p: ?*anyopaque, len: usize) callconv(.c) ByteView = null,
+    tostring: ?*const fn (p: *anyopaque, render: *Render) error{JanetSignal}!void = null,
+    bytes: ?*const fn (p: *anyopaque, len: usize) callconv(.c) ByteView = null,
 
     // Marshalling.
-    marshal: ?*const fn (p: ?*anyopaque, m: *Marshal) error{JanetSignal}!void = null,
+    marshal: ?*const fn (p: *anyopaque, m: *Marshal) error{JanetSignal}!void = null,
     unmarshal: ?*const fn (u: *Unmarshal) error{JanetSignal}!?*anyopaque = null,
 };
 

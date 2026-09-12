@@ -542,7 +542,7 @@ fn primInfo(prim: Prim) PrimInfo {
 fn signatureMark(sig: *Signature, _: usize) void {
     for (sig.args[0..sig.arg_count]) |arg| {
         const t = arg.type;
-        if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st));
+        if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st.?));
     }
 }
 
@@ -551,7 +551,7 @@ fn structMark(st: *Struct, _: usize) void {
     const members = Struct.fields(st);
     for (members[0..st.field_count]) |member| {
         const t = member.type;
-        if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st));
+        if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st.?));
     }
 }
 

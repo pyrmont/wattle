@@ -167,7 +167,7 @@ fn headOf(abstract: ?*anyopaque) *abi.AbstractHead {
 /// freeing the block while `vm.ev.threaded_abstracts` is still keyed on it
 /// leaves the next collection reading a freed header. Every threaded case here
 /// ends this way rather than by calling `abstracts.decrefMaybeFree` alone.
-fn drop(a: ?*anyopaque) i32 {
+fn drop(a: *anyopaque) i32 {
     _ = tables.remove(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
     return abstracts.decrefMaybeFree(a);
 }
@@ -175,7 +175,7 @@ fn drop(a: ?*anyopaque) i32 {
 /// Whether the visit record has an entry for this abstract. `tables.get`
 /// returns nil for an absent key and the stored boolean for a present one, and
 /// the sweep tells the two apart, so this does as well.
-fn tracked(a: ?*anyopaque) bool {
+fn tracked(a: *anyopaque) bool {
     const entry = tables.get(&harness.vm().ev.threaded_abstracts, wrap.fromAbstract(a));
     return !harness.isType(entry, repr.Tag.nil);
 }
@@ -507,7 +507,7 @@ fn decrefMaybeFreeFinalizesOnce() void {
     threaded_gc_len = 0;
     perthread_calls = 0;
     const a = abstracts.threaded(threaded(), 24);
-    const payload: [*]u8 = @ptrCast(a.?);
+    const payload: [*]u8 = @ptrCast(a);
     @memset(payload[0..24], 0x7e);
 
     expect(abstracts.incref(a) == 2);

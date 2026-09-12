@@ -52,7 +52,7 @@ const wrap = @import("helpers/wrap.zig");
 /// The payload Janet passes an abstract around as: the address just past the
 /// head. It has no type of its own, and the `AbstractType` in the head is what
 /// says what is there.
-pub const Abstract = ?*anyopaque;
+pub const Abstract = *anyopaque;
 
 // ==========================================================================
 // Public functions
@@ -131,7 +131,7 @@ pub fn beginBytes(atype: *const abi.AbstractType, size: usize) *anyopaque {
 /// of state with different owners, the collector's byte budget and the event
 /// loop's visit record, and naming the thing that has both hides neither.
 /// `threaded` is where the current VM is looked up.
-pub fn beginThreaded(v: *vm_state.Vm, atype: *const abi.AbstractType, size: usize) ?*anyopaque {
+pub fn beginThreaded(v: *vm_state.Vm, atype: *const abi.AbstractType, size: usize) *anyopaque {
     const header: *abi.AbstractHead = @ptrCast(@alignCast(utils.rawAlloc(
         abi.abstract_payload +% size,
     )));
@@ -192,14 +192,14 @@ pub fn decrefMaybeFree(abst: ?*anyopaque) i32 {
 /// after `beginBytes`, so the or leaves the tag behind; `reachable` and
 /// `disabled` are separate fields of `abi.GCFlags` and neither write reaches
 /// them.
-pub fn end(x: ?*anyopaque) ?*anyopaque {
+pub fn end(x: *anyopaque) *anyopaque {
     gcSetType(abi.abstractHead(x), gc_alloc.MemoryType.abstract);
     return x;
 }
 
 /// The threaded counterpart of `end`, returning `x`. `beginThreaded` has
 /// already written this tag, so this sets bits that are already set.
-pub fn endThreaded(x: ?*anyopaque) ?*anyopaque {
+pub fn endThreaded(x: *anyopaque) *anyopaque {
     gcSetType(abi.abstractHead(x), gc_alloc.MemoryType.threaded_abstract);
     return x;
 }
@@ -212,7 +212,7 @@ pub fn incref(abst: ?*anyopaque) i32 {
 /// `beginBytes` and `end` in one call, for a payload the caller fills in
 /// afterwards or not at all.
 pub fn newBytes(atype: *const abi.AbstractType, size: usize) *anyopaque {
-    return @ptrCast(end(beginBytes(atype, size)).?);
+    return end(beginBytes(atype, size));
 }
 
 /// The same as `newBytes`, for a payload that is exactly a `T`.
@@ -225,7 +225,7 @@ pub inline fn newFor(comptime T: type, atype: *const abi.AbstractType) *T {
 }
 
 /// `beginThreaded` and `endThreaded` in one call, over the current VM.
-pub fn threaded(atype: *const abi.AbstractType, size: usize) ?*anyopaque {
+pub fn threaded(atype: *const abi.AbstractType, size: usize) *anyopaque {
     return endThreaded(beginThreaded(vm_state.current(), atype, size));
 }
 

@@ -515,8 +515,8 @@ fn theByteAndCstringShapes() raise.Error!void {
     v = try args.getBytes(a, 2);
     expect(v.len == 2 and std.mem.eql(u8, v.bytes.?[0..2], "kw"));
 
-    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCString(a, 0)))), "hi"));
-    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.getCBytes(a, 1)))), "buf"));
+    expect(std.mem.eql(u8, std.mem.span(try args.getCString(a, 0)), "hi"));
+    expect(std.mem.eql(u8, std.mem.span(try args.getCBytes(a, 1)), "buf"));
     // The terminating shape leaves the buffer's visible count alone: the zero
     // is written past the end and the count is put back.
     expect(wrap.toBuffer(argv[1]).count == 3);
@@ -585,7 +585,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Error!void {
 
     var argv = [_]repr.Value{wrap.fromBuffer(b)};
     const s = try args.getCBytes(slots(&argv), 0);
-    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "abc"));
+    expect(std.mem.eql(u8, std.mem.span(s), "abc"));
     // The copy is a separate allocation, not the buffer's own storage.
     expect(@intFromPtr(s) != @intFromPtr(&backing));
     expect(b.count == 3);
@@ -685,7 +685,7 @@ fn cbytesTerminatesAnAbstractsView() raise.Error!void {
 
     // What comes back is a terminated copy of the view rather than the view.
     const s = try args.getCBytes(a, 0);
-    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(s))), "xyz"));
+    expect(std.mem.eql(u8, std.mem.span(s), "xyz"));
     expect(@intFromPtr(s) != @intFromPtr(v.bytes.?));
     // And the payload is untouched.
     expect(std.mem.eql(u8, @as([*]const u8, @ptrCast(q))[0..8], "xyzZZZZZ"));
@@ -714,9 +714,9 @@ fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Error!void {
     expect(try args.optNumber(a, 0, 0.0) == 5.0);
     expect(harness.stringIs((try args.optString(a, 2, null)).?, "s"));
     expect(try args.optString(a, 1, null) == null);
-    expect(harness.stringIs(@ptrCast(try args.optCString(a, 2, "d")), "s"));
-    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCString(a, 1, "d")))), "d"));
-    expect(std.mem.eql(u8, std.mem.span(@as([*:0]const u8, @ptrCast(try args.optCBytes(a, 1, "d")))), "d"));
+    expect(harness.stringIs((try args.optCString(a, 2, "d")).?, "s"));
+    expect(std.mem.eql(u8, std.mem.span((try args.optCString(a, 1, "d")).?), "d"));
+    expect(std.mem.eql(u8, std.mem.span((try args.optCBytes(a, 1, "d")).?), "d"));
     expect(try args.optBoolean(a, 1, true));
     expect(try args.optPointer(a, 1, null) == null);
     expect(try args.optCFunction(a, 1, null) == null);

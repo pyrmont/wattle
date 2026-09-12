@@ -413,7 +413,7 @@ pub fn asyncEnd(fiber: *fibers.Fiber) void {
         if (fiber.ev_stream.?.read_fiber == fiber) fiber.ev_stream.?.read_fiber = null;
         if (fiber.ev_stream.?.write_fiber == fiber) fiber.ev_stream.?.write_fiber = null;
         ev_callback.dispatchTotal(ev_callback.of(cb), fiber, constants.AsyncEvent.deinit);
-        _ = gc_alloc.gcunroot(wrap.fromAbstract(fiber.ev_stream));
+        _ = gc_alloc.gcunroot(wrap.fromAbstract(fiber.ev_stream.?));
         fiber.ev_callback = null;
         if (!fiber.flags.evInFlight()) {
             if (fiber.ev_state) |state| {
@@ -1285,7 +1285,7 @@ fn cfunThread(argv: []repr.Value) raise.Error!repr.Value {
         try marsh.marshal(buffer, wrap.fromTable(vm_state.current().abstract_registry.?), null, constants.JANET_MARSHAL_UNSAFE);
     }
     if (flags & thread_supervisor_flag != 0) {
-        try marsh.marshal(buffer, wrap.fromAbstract(supervisor), null, constants.JANET_MARSHAL_UNSAFE);
+        try marsh.marshal(buffer, wrap.fromAbstract(supervisor.?), null, constants.JANET_MARSHAL_UNSAFE);
     }
     if (flags & 0x4 == 0) {
         assert(@src(), vm_state.current().registry.rows.items.len <= std.math.maxInt(i32), "assert failed size check");
