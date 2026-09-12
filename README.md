@@ -403,10 +403,11 @@ Usually, one of a few reasons:
 ### Can I bind to Rust/Zig/Go/Java/Nim/C++/D/Pascal/Fortran/Odin/Jai/(Some new "Systems" Programming Language)?
 
 Probably, if that language has a good interface with C. But the programmer may need to do
-some extra work to map Janet's internal memory model to that of the bound language. Janet
-also uses `setjmp`/`longjmp` for non-local returns internally. This
-approach is out of favor with many programmers now and doesn't always play well with other languages
-that have exceptions or stack-unwinding.
+some extra work to map Janet's internal memory model to that of the bound language. A raise
+here is a Zig error return rather than a `setjmp`/`longjmp` jump, so no non-local jump crosses
+a frame of the bound language: an abi records the raise and returns, and its caller tests for it
+on the next statement. Defining a cfunction is a separate question. A cfunction returns an error
+union over Zig's own calling convention, so a native module is written in Zig.
 
 ### Why is my terminal spitting out junk when I run the REPL?
 

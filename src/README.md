@@ -54,7 +54,7 @@ owes before it is believed.
   needed a second declaration of every crossing and a check to compare the two.
   A table needs one declaration, and the check is the compiler's.
 
-- Pointers say what is true. `DESIGN.md` section 9 has the conventions and the
+- Pointers say what is true. `DESIGN.md` section 7 has the conventions and the
   exceptions: no `[*c]` outside the boundary, a counted byte range is a slice, a
   pointer to one object is `*T` or `?*T` where absence is a state the code
   tests, and a C string is `[*:0]const u8` only where the NUL is demonstrably
@@ -168,7 +168,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
   because `cabi` names the same six and a file of `root` cannot be imported by
   `cabi`. Every Janet aggregate lives with the operations over it instead,
   giving `tables.Table`, `fibers.Fiber`, `functions.FuncDef` and
-  `ev_stream.Stream`, which is `DESIGN.md` section 13.
+  `ev_stream.Stream`, which is `DESIGN.md` section 11.
 - `cabi` is the external declarations.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only
   reader.
@@ -233,7 +233,7 @@ writes `try`; a caller that cannot flattens it, and there are four spellings:
 
 | form | what it does |
 | --- | --- |
-| `raise.reported(result)` | turn a raise into the out-of-band report |
+| `raise.toAbi(result)` | the value the call produced, or a determinate zero if it raised |
 | `raise.report(Error)` | report without a result |
 | `reportToAbi` | the same, at a `callconv(.c)` boundary |
 | `raise.panicking(f).abi` | wrap a raising function as a C-ABI function |
@@ -387,10 +387,11 @@ Invisible when building only for the development host:
   report a model the code generator rejects. It is also why cross-compiling
   works at all: the generator has to run here.
 
-- `-Dinstall-tests=true` installs the contract, fuzz and runtime test
-  executables and the native module into `<prefix>/test`, which is how a
-  cross-compiled build gets tested: `zig build test` runs what it builds, and
-  cannot when the target is not the host.
+- `-Dinstall-tests=true` adds the runtime-test executable and the native-module
+  and module-load fixtures to `<prefix>/test`, beside the contract and fuzz
+  drivers every non-wasm build installs there. That is how a cross-compiled
+  build gets tested: `zig build test` runs what it builds, and cannot when the
+  target is not the host.
 
 Two limitations qualify any result. Zig links musl targets statically, and
 musl's static `dlopen` is a stub that always fails, so the native-module test

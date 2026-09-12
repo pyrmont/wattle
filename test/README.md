@@ -37,8 +37,9 @@ is fixed.
 A second platform can be exercised locally, before any public CI exists.  `zig
 build test` cannot do this on its own: it runs what it builds, which is
 impossible when the target is not the host. Build with `-Dinstall-tests=true`
-instead, which installs the contract, fuzz and runtime test executables and the
-dynamic native module into `<prefix>/test`, then run them on the target machine.
+instead, which adds the runtime-test executable and the native-module and
+module-load fixtures to `<prefix>/test`, beside the contract and fuzz drivers
+every non-wasm build installs there, then run them on the target machine.
 
 The development recipe uses a container for the target userland:
 
@@ -74,10 +75,10 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
     tar -C /src --exclude=.zig-cache --exclude=zig-out --exclude=xbuild \
                 --exclude=.git -cf - . | tar -C /work -xf -
     cd /work
-    /xb/bin/janet-zig-contract-test          # the driver, all 65 in one process
+    /xb/test/janet-zig-contract-test         # the driver, all 65 in one process
     for c in $(grep -o "with(list, \"[a-z_0-9]*\"" test/contracts.zig |
                sed "s/.*\"\(.*\)\"/\1/"); do
-      /xb/bin/janet-zig-contract-test $c || echo "FAIL $c"
+      /xb/test/janet-zig-contract-test $c || echo "FAIL $c"
     done
     for s in test/suite-*.janet; do /xb/bin/janet $s || echo "FAIL $s"; done'
 
@@ -125,10 +126,11 @@ failures, and was ours all along. What is still genuinely translate-c's is
 `x86-windows-gnu`, which fails in mingw's `malloc.h` on `_ALLOCA_S_MARKER`;
 `x86_64-windows-gnu` builds.
 
-The eight targets `.github/workflows/test.yml` builds are the current set. A
-32-bit target still belongs in it as a compile, for the reason the original
-paragraph gave: Zig analyses only the branches it selects, so nothing else
-type-checks `JANET_NANBOX_32`.
+The eight targets `.github/workflows/test.yml` cross-builds are the current set,
+and `wasm32-wasi` is a ninth entry, which runs rather than only building. A
+32-bit target belongs in the build set for a narrowed form of the reason the
+original paragraph gave: Zig analyses only the branches it selects, and no other
+build analyses the Linux host layer at a four-byte pointer.
 
 ### The superseded 32-bit paragraph
 
@@ -152,17 +154,20 @@ zig build -Dtarget=riscv32-linux-musl -Dcpu=baseline \
 rm -rf /tmp/janet-xc-rv /tmp/janet-out-rv
 ```
 
-It is the only target that selects the 32-bit NaN-boxed layout and the 32-bit
-arm of every pointer-width branch, and Zig analyses only the branches it
-selects, so this build is the only thing anywhere that type-checks that code.
+Four targets select the 32-bit NaN-boxed layout and the 32-bit arm of every
+pointer-width branch. `riscv32-linux-musl`, `x86-linux-musl` and
+`arm-linux-musleabihf` build it, and `wasm32-wasi` builds and runs it. Zig
+analyses only the branches it selects, so those four are what type-check that
+code.
 
 The binaries can be run: Alpine ships `qemu-riscv32`, and the contracts passed
 under it on 2026-08-20, which is how the 32-bit NaN-boxing arm of
 `test/value_wrap.zig` was validated. Running them is deliberately not part of
-the per-increment set. It costs a `-Dinstall-tests=true` prefix, a container and
-an emulator, and what it gains over the compile is one arm of one contract. The
-recipe is the `-Dinstall-tests=true` recipe above under the aarch64 example,
-with `apk add qemu-riscv32` and `qemu-riscv32` in front of each binary.
+the per-increment set. It costs a container and an emulator, and `wasm32-wasi`
+runs the suites and the contracts on the same 32-bit layout without either. The
+contract driver needs no build option: every non-wasm build installs it under
+`<prefix>/test`. The recipe is the aarch64 example above, with `apk add
+qemu-riscv32` and `qemu-riscv32` in front of each binary.
 
 ### The riscv32 ABI hazard
 
@@ -176,52 +181,50 @@ inconsistency inside Zig, and with no clang at the boundary every call is
 Zig-to-Zig and both sides agree with each other, whether or not they agree with
 the psABI.
 
-### The 32-bit deferral
+### The 32-bit position
 
-A 32-bit target is a deferred goal rather than a non-goal, so the deferral is
-split deliberately rather than taken wholesale. Two costs differ and only one of
-them grows while nothing is done:
+A 32-bit target is verified rather than deferred. `wasm32-wasi` runs the suites
+and the registered contracts on the 32-bit NaN-boxed layout under wasmtime, in
+Debug and in ReleaseSmall, in CI. `riscv32-linux-musl`, `x86-linux-musl` and
+`arm-linux-musleabihf` are build jobs, and three things keep them there:
 
-- Code that is never analysed grows, and that is checked continuously. Zig
-  analyses only the comptime branches it selects, so on a 64-bit host every
-  32-bit path in the tree is never compiled rather than untested, and a typo in
-  such a path builds clean forever. Three were first type-checked on 2026-08-20
-  by the first riscv32 build ever run against this tree: the 32-bit NaN-boxing
-  branch in the representation, the 32-bit arm of `lengthv` in the access layer,
-  and the pointer-hash else-branch in the comparison layer. All three were
-  correct, and nobody knew, so `riscv32-linux-musl` is in the per-increment
-  cross-compile set, as a compile, on the same footing and for the same reason
-  as the Windows target.
-- Behavioural verification does not grow, so it is deferred. Running anything
-  there needs the ABI disagreement resolved, which no amount of work in this
-  tree achieves, so deferring it costs nothing that doing it later would not
-  cost anyway. No emulation, no `qemu-riscv32` in the per-increment set.
+- Code that no configuration analyses is unchecked rather than untested. Zig
+  analyses only the comptime branches it selects, so a typo in such a path
+  builds clean forever. Three were first type-checked on 2026-08-20 by the first
+  riscv32 build ever run against this tree: the 32-bit NaN-boxing branch in the
+  representation, the 32-bit arm of `lengthv` in the access layer, and the
+  pointer-hash else-branch in the comparison layer. All three were correct, and
+  nobody knew.
+- The Linux host layer at a four-byte pointer is theirs alone. A WASI build
+  turns off the event loop, networking, the FFI and the file watcher, so the
+  epoll, socket and inotify arms in `runtime/ev/stream.zig`, `runtime/net.zig`
+  and `runtime/filewatch.zig` are analysed at 32 bits only by a 32-bit Linux
+  build.
+- musl's own 32-bit headers are translated only there, which is what the
+  translate-c failure above was about.
 
 ### Reporting the ABI disagreement upstream
 
-Reporting the ABI disagreement upstream was deferred, deliberately, on
-2026-08-20, and it is the one cost that cannot be compressed later: an upstream
-fix has a lead time of months, and a 32-bit build of this runtime needs such a
-fix, so filing it late means waiting while blocked. The minimal reproducer was
-`probe-8/unionabi.zig` and went with that directory, so filing now starts by
-rewriting it. It is a Zig object exporting `callconv(.c)` functions that take a
-`Janet` by value in three shapes, alone, followed by a scalar, and followed by a
-second `Janet`, each returning what it received rather than writing through an
-out-pointer, since an out-pointer is itself a second argument and would hide the
-lone-`Janet` case that works. The measurements above are what it printed.
+Filing the disagreement upstream is not a blocker. No C function takes a `Janet`
+by value here, because the tree compiles no C, so no build of this runtime waits
+on a fix. What is left is a disagreement between two compilers that nothing here
+exercises.
 
-What is not measured is the `Janet`-by-value return. Every probe here covers
-parameters. Returns appear sound: a riscv32 build with only the Zig
-implementation of value wrapping enabled, through a build option since retired,
-ran dozens of `Janet`-returning Zig calls before its first failure, which was a
-two-argument predicate. Those runs are evidence rather than isolation, and they
-belong with the deferred behavioural work.
+Filing it would start by rewriting the minimal reproducer, which went with
+`probe-8/unionabi.zig`. It is a Zig object exporting `callconv(.c)` functions
+that take a `Janet` by value in three shapes, alone, followed by a scalar, and
+followed by a second `Janet`, each returning what it received rather than
+writing through an out-pointer, since an out-pointer is itself a second argument
+and would hide the lone-`Janet` case that works. Every probe covered parameters,
+so the `Janet`-by-value return was never isolated.
 
 ### The install prefix
 
 Delete the prefix when the run is done, and keep it inside the repository. An
-`-Dinstall-tests=true` prefix is about 2.5GB, because it installs an unstripped
-binary for every contract test. Earlier revisions of this recipe put it at
+`-Dinstall-tests=true` prefix holds the runtime-test executable, the seven
+fixture libraries and the contract and fuzz drivers, all unstripped. Measured on
+2026-09-12 in Debug, it is 40MB, of which `test/` is 29MB and `bin/` and `lib/`
+about 5MB each. Earlier revisions of this recipe put it at
 `../xbuild-arm`, outside the checkout, where `.gitignore` could not see it and
 no cleanup step ever ran; several sessions' worth accumulated in the parent
 directory and filled the disk. `/xbuild` is now gitignored, and the `tar` above
@@ -251,7 +254,8 @@ identical to a test that passed.
 | Linux aarch64 musl   | cross-compile, native container   | All 65 contracts, all 42 in-file tests, and 32 of 34 suites, NaN-boxed default. The two are named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
 | Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only, and each contract is run by name, because `peg` ends the process under emulation. `peg`, `vm_run` and `ffi_core` fail there, and `suite-peg` with them. An `x86_64-macos` build with the same representation passes all four under Rosetta. The cause is not established without x86-64 hardware |
 | Windows x86-64 MinGW | cross-compile                     | Builds, and is a matrix entry. Binaries have never been executed                                                                                    |
-| Linux riscv32 musl   | cross-compile                     | Builds only. One of three 32-bit targets: `x86-linux-musl` and `arm-linux-musleabihf` build too. Those three are what compile the 32-bit NaN-boxing and pointer-width branches; binaries deliberately unexecuted, see below |
+| Linux riscv32 musl   | cross-compile                     | Builds only, with `x86-linux-musl` and `arm-linux-musleabihf`. Those three compile the 32-bit NaN-boxing and pointer-width branches against musl's 32-bit headers, and the Linux host layer at a four-byte pointer. `wasm32-wasi` is the 32-bit target that runs |
+| wasm32-wasi          | cross-compile, wasmtime           | `zig build test` runs every suite and the 56 contracts this configuration registers, in Debug and in ReleaseSmall, in CI. 32-bit NaN-boxed layout, single-threaded, no event loop; networking, the FFI, the file watcher and processes are off with it, which is what leaves nine contracts unregistered. The fork cases in `value_alloc` and `os_surface` are skipped by their own guards |
 | Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 65 of 65 by name, all 42 in-file tests, 32 of 34 suites, the same two as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. Run at a phase gate rather than in CI, which tests Linux against musl |
 
 ### The two suites that do not pass on Linux
@@ -262,7 +266,10 @@ is a libc difference:
 - `suite-io.janet:241`, one assertion of 88. It asserts that `file/open` with a
   buffer size of `2^53 - 1` raises `failed to set buffer size for file`. Linux's
   `setvbuf` accepts the size where macOS refuses it, so the suite is asserting a
-  refusal only one platform makes.
+  refusal only one platform makes. The suite skips the same assertion on `wasm`:
+  wasi-libc's stdio, which comes from musl, records the size and allocates
+  nothing, so no size is refused there, and `2^53 - 1` is not a size at a
+  four-byte pointer width.
 - `suite-filewatch.janet`, six assertions of 79, all of them inotify event
   ordering: the suite asserts `:create` and `:close-write` as separate events in
   order, and under the container's filesystem they coalesce and the previous
