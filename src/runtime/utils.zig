@@ -128,7 +128,19 @@ pub const statusNames: [16][*:0]const u8 = .{
 /// Indexed by `repr.Tag`, so the order is Janet's and not alphabetical.
 /// A caller writes `typeNames[@intFromEnum(tag)]`: the tag is an `enum(u4)`
 /// and an enum is deliberately not an index.
-pub const typeNames: [16][*:0]const u8 = .{
+///
+/// Sentinel-terminated *slices* rather than pointers, so the length is stored
+/// beside the pointer instead of being recovered with `strlen` at each use.
+/// Five of the six readers want a `[]const u8` and a `[:0]const u8` coerces to
+/// one; `value/helpers/access.zig`'s `badKey` wants a C string for `%s` and
+/// takes `.ptr`. The sentinel is kept for that one reader alone, and the abstract
+/// arm beside every one of these already carries `AbstractType.name` as a slice.
+///
+/// It was measured. `(type x)` is `env.zig`'s `cfunType`, and on the `tables`
+/// workload `sample` put 170 of its 175 samples inside `_platform_strlen`,
+/// against 25 for the whole of upstream C's binary; `pp/format.zig`'s
+/// `pushtypes` reached a second one through `buffers.pushCString`.
+pub const typeNames: [16][:0]const u8 = .{
     "number",
     "nil",
     "boolean",

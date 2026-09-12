@@ -684,11 +684,11 @@ fn anOverflowThroughTheInterpreter() void {
     const arr = arrays.new(4);
     const args = [_]repr.Value{ wrap.fromFunction(identity), wrap.fromArray(arr) };
 
-    const handle = gc_alloc.gclock();
+    const handle = gc_alloc.gclock(vm_state.current());
     arr.count = std.math.maxInt(i32);
     var resumed = vm_entry.pcall(splice, &args, null);
     arr.count = 0;
-    gc_alloc.gcunlock(handle);
+    gc_alloc.gcunlock(vm_state.current(), handle);
 
     expect(resumed.signal == abi.Signal.@"error");
     expect(harness.stringValueIs(resumed.value, "stack overflow"));

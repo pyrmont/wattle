@@ -46,6 +46,7 @@ const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const utils = @import("subsystems").utils;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -406,24 +407,24 @@ fn theRootSetGrows() void {
 fn theSuspendCounterNests() void {
     const base = harness.vm().gc.suspend_count;
 
-    const outer = gc_alloc.gclock();
+    const outer = gc_alloc.gclock(vm_state.current());
     expect(outer == base);
     expect(harness.vm().gc.suspend_count == base + 1);
 
-    const inner = gc_alloc.gclock();
+    const inner = gc_alloc.gclock(vm_state.current());
     expect(inner == base + 1);
     expect(harness.vm().gc.suspend_count == base + 2);
 
-    gc_alloc.gcunlock(inner);
+    gc_alloc.gcunlock(vm_state.current(), inner);
     expect(harness.vm().gc.suspend_count == base + 1);
-    gc_alloc.gcunlock(outer);
+    gc_alloc.gcunlock(vm_state.current(), outer);
     expect(harness.vm().gc.suspend_count == base);
 
-    const held = gc_alloc.gclock();
-    _ = gc_alloc.gclock();
-    _ = gc_alloc.gclock();
+    const held = gc_alloc.gclock(vm_state.current());
+    _ = gc_alloc.gclock(vm_state.current());
+    _ = gc_alloc.gclock(vm_state.current());
     expect(harness.vm().gc.suspend_count == base + 3);
-    gc_alloc.gcunlock(held);
+    gc_alloc.gcunlock(vm_state.current(), held);
     expect(harness.vm().gc.suspend_count == base);
 }
 
@@ -431,11 +432,11 @@ fn theSuspendCounterNests() void {
 /// counter exists for, and it is checked through `gc/mark.zig`'s `collect`
 /// rather than by reading the field back.
 fn aSuspendedCollectorDoesNotCollect() void {
-    const handle = gc_alloc.gclock();
+    const handle = gc_alloc.gclock(vm_state.current());
     harness.vm().gc.next_collection = 12345;
     gc_mark.collect();
     expect(harness.vm().gc.next_collection == 12345);
-    gc_alloc.gcunlock(handle);
+    gc_alloc.gcunlock(vm_state.current(), handle);
     gc_mark.collect();
     expect(harness.vm().gc.next_collection == 0);
 }

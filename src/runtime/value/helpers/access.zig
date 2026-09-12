@@ -601,7 +601,7 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
 /// `vtype` is the container's type, `key` the key and `max` the exclusive
 /// bound. It is the one copy of that message.
 fn badKey(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error {
-    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intFromEnum(vtype)], @as(c_int, max), key });
+    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intFromEnum(vtype)].ptr, @as(c_int, max), key });
 }
 
 /// Checks that a key is an integer, non-negative and below `max`, and returns

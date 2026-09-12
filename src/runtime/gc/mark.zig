@@ -88,9 +88,12 @@ pub fn collect() void {
     // collector's own counters, the root set it walks, the scratch table it
     // empties at the end, and the root fiber, which is language state rather
     // than collector state.
-    const v = vm_state.current();
-    const g = &v.gc;
-    const roots = &v.roots;
+    // Captured rather than fetched per use. On Darwin each read through an
+    // uncaptured `current()` is a `_tlv_get_addr` call, and this function
+    // carried twenty-six of them; `vm_state.pinned` has the mechanism.
+    const vm = vm_state.pinned();
+    const g = &vm.gc;
+    const roots = &vm.roots;
     if (g.suspend_count != 0) return;
     g.depth = config.recursion_guard;
     g.mark_phase = true;
@@ -109,24 +112,34 @@ pub fn collect() void {
     if (has_ev) ev_loop.evMark();
 
     // Null outside the interpreter loop, which `collect` may be called from.
-    if (v.root_fiber) |root| markFiber(root);
+    if (vm.root_fiber) |root| markFiber(vm, root);
 
     var i: usize = 0;
     while (i < g.orig_rootcount) : (i += 1) {
-        mark(roots.items[i]);
+        markGuarded(vm, roots.items[i]);
     }
     while (g.orig_rootcount < roots.items.len) {
         const x = roots.pop().?;
-        mark(x);
+        markGuarded(vm, x);
     }
 
     g.mark_phase = false;
     gc_sweep.sweep();
     g.next_collection = 0;
-    gc_alloc.freeAllScratch(&v.scratch);
+    gc_alloc.freeAllScratch(&vm.scratch);
 }
 
 /// Marks `x` as reachable, along with everything it refers to.
+///
+/// This is the entry for a caller that arrives with no VM in hand: an abstract
+/// type's `gcmark` callback, the event loop's markers, and `capi.zig`. It
+/// captures one and hands it to `markGuarded`, which is where the traversal
+/// itself lives.
+pub fn mark(x: repr.Value) void {
+    markGuarded(vm_state.pinned(), x);
+}
+
+/// `mark` on a VM the caller already holds, and the recursive step of the walk.
 ///
 /// The guard is the whole shape of this function. Every recursive marker
 /// re-enters here, so decrementing on the way in and restoring on the way out
@@ -135,20 +148,26 @@ pub fn collect() void {
 /// drains those roots and marks them from a fresh budget. A graph deeper than
 /// `config.recursion_guard` is therefore marked completely, in slices, rather
 /// than overflowing the stack or being lost.
-pub fn mark(x: repr.Value) void {
-    const g = &vm_state.current().gc;
+///
+/// The VM travels as a parameter for the same reason it does in `vm.zig`'s
+/// `Interp`: this is the per-object step, and recursing through `mark` would
+/// fetch the thread-local again at every object, which on Darwin is a
+/// `_tlv_get_addr` call. `vm_state.pinned` has the mechanism. It is a `*Vm`
+/// rather than a `*Collector` because `markAbstract` reaches `vm.ev`.
+fn markGuarded(vm: *vm_state.Vm, x: repr.Value) void {
+    const g = &vm.gc;
     if (g.depth != 0) {
         g.depth -= 1;
         switch (repr.typeOf(x)) {
             repr.Tag.string, repr.Tag.keyword, repr.Tag.symbol => markString(wrap.toString(x)),
-            repr.Tag.function => markFunction(wrap.toFunction(x)),
-            repr.Tag.array => markArray(wrap.toArray(x)),
-            repr.Tag.table => markTable(wrap.toTable(x)),
-            repr.Tag.@"struct" => markStruct(wrap.toStruct(x)),
-            repr.Tag.tuple => markTuple(wrap.toTuple(x)),
+            repr.Tag.function => markFunction(vm, wrap.toFunction(x)),
+            repr.Tag.array => markArray(vm, wrap.toArray(x)),
+            repr.Tag.table => markTable(vm, wrap.toTable(x)),
+            repr.Tag.@"struct" => markStruct(vm, wrap.toStruct(x)),
+            repr.Tag.tuple => markTuple(vm, wrap.toTuple(x)),
             repr.Tag.buffer => markBuffer(wrap.toBuffer(x)),
-            repr.Tag.fiber => markFiber(wrap.toFiber(x)),
-            repr.Tag.abstract => markAbstract(wrap.toAbstract(x)),
+            repr.Tag.fiber => markFiber(vm, wrap.toFiber(x)),
+            repr.Tag.abstract => markAbstract(vm, wrap.toAbstract(x)),
             else => {},
         }
         g.depth += 1;
@@ -195,11 +214,11 @@ inline fn gcType(mem: anytype) gc_alloc.MemoryType {
 /// table write, which can allocate, so this is one of the few places in the
 /// walk that can end the process, and the only place it can do so before
 /// anything has been marked.
-fn markAbstract(adata: *anyopaque) void {
+fn markAbstract(vm: *vm_state.Vm, adata: *anyopaque) void {
     const head = abi.abstractHead(adata);
     if (has_ev) {
         if (gc_alloc.memoryTypeOf(&head.gc) == .threaded_abstract) {
-            tables.put(&vm_state.current().ev.threaded_abstracts, wrap.fromAbstract(adata), wrap.fromTrue());
+            tables.put(&vm.ev.threaded_abstracts, wrap.fromAbstract(adata), wrap.fromTrue());
             return;
         }
     }
@@ -217,11 +236,11 @@ fn markAbstract(adata: *anyopaque) void {
 /// weak array does not keep alive, and the sweep nils out whichever of them
 /// the rest of the heap did not reach. The type test is the whole difference
 /// between the two array kinds during marking.
-fn markArray(array: *arrays.Array) void {
+fn markArray(vm: *vm_state.Vm, array: *arrays.Array) void {
     if (gcReachable(array)) return;
     gcMark(array);
     if (gcType(array) == gc_alloc.MemoryType.array) {
-        markMany(array.slice());
+        markMany(vm, array.slice());
     }
 }
 
@@ -242,37 +261,37 @@ fn markBuffer(buffer: *buffers.Buffer) void {
 /// The child chain is followed iteratively for the same reason the prototype
 /// chain is: a long chain of resumed fibers would otherwise cost a stack frame
 /// per link, on top of the frames the fiber's own contents already need.
-fn markFiber(fiber_in: *fibers.Fiber) void {
+fn markFiber(vm: *vm_state.Vm, fiber_in: *fibers.Fiber) void {
     var fiber = fiber_in;
     while (true) {
         if (gcReachable(fiber)) return;
         gcMark(fiber);
 
-        mark(fiber.last_value);
+        markGuarded(vm, fiber.last_value);
 
         // Values on the argument stack.
-        markMany(run(repr.Value, stackAt(fiber.data.?, fiber.stackstart), fiber.stacktop -% fiber.stackstart));
+        markMany(vm, run(repr.Value, stackAt(fiber.data.?, fiber.stackstart), fiber.stacktop -% fiber.stackstart));
 
         var i = fiber.frame;
         var j = fiber.stackstart -% frame_size;
         while (i > 0) {
             const frame: *vm_state.StackFrame = @ptrCast(@alignCast(stackAt(fiber.data.?, i -% frame_size)));
-            if (frame.func) |func| markFunction(func);
-            if (frame.env) |env| markFuncenv(env);
+            if (frame.func) |func| markFunction(vm, func);
+            if (frame.env) |env| markFuncenv(vm, env);
             // Locals of this frame, up to where the frame above it starts.
-            markMany(run(repr.Value, stackAt(fiber.data.?, i), j -% i));
+            markMany(vm, run(repr.Value, stackAt(fiber.data.?, i), j -% i));
             j = i -% frame_size;
             i = frame.prevframe;
         }
 
-        if (fiber.env) |env| markTable(env);
+        if (fiber.env) |env| markTable(vm, env);
 
         if (has_ev) {
             if (fiber.supervisor_channel != null) {
-                markAbstract(fiber.supervisor_channel.?);
+                markAbstract(vm, fiber.supervisor_channel.?);
             }
             if (fiber.ev_stream != null) {
-                markAbstract(fiber.ev_stream.?);
+                markAbstract(vm, fiber.ev_stream.?);
             }
             if (fiber.ev_callback) |callback| {
                 ev_callback.dispatchTotal(ev_callback.of(callback), fiber, constants.AsyncEvent.mark);
@@ -289,11 +308,11 @@ fn markFiber(fiber_in: *fibers.Fiber) void {
 
 /// Marks a funcdef, its constants, its nested definitions and its debug
 /// strings.
-fn markFuncdef(def: *functions.FuncDef) void {
+fn markFuncdef(vm: *vm_state.Vm, def: *functions.FuncDef) void {
     if (gcReachable(def)) return;
     gcMark(def);
-    markMany(def.constantValues());
-    for (def.subdefs()) |subdef| markFuncdef(subdef);
+    markMany(vm, def.constantValues());
+    for (def.subdefs()) |subdef| markFuncdef(vm, subdef);
     if (def.source) |source| markString(source);
     if (def.name) |name| markString(name);
     if (def.symbolmap != null) {
@@ -307,14 +326,14 @@ fn markFuncdef(def: *functions.FuncDef) void {
 /// The detach is not an optimisation the collector could skip: an environment
 /// that still points at a dead fiber would keep the whole fiber alive, stack
 /// included, through the mark below.
-fn markFuncenv(env: *functions.FuncEnv) void {
+fn markFuncenv(vm: *vm_state.Vm, env: *functions.FuncEnv) void {
     if (gcReachable(env)) return;
     gcMark(env);
     functions.envMaybeDetach(env);
     if (env.offset > 0) {
-        markFiber(env.as.fiber.?);
+        markFiber(vm, env.as.fiber.?);
     } else {
-        markMany(run(repr.Value, env.as.values, env.length));
+        markMany(vm, run(repr.Value, env.as.values, env.length));
     }
 }
 
@@ -323,34 +342,34 @@ fn markFuncenv(env: *functions.FuncEnv) void {
 /// The null test on `def` is not defensive: a function is allocated, marked
 /// reachable, and only then given its definition, so a collection triggered
 /// between those two steps sees exactly this state.
-fn markFunction(func: *functions.Function) void {
+fn markFunction(vm: *vm_state.Vm, func: *functions.Function) void {
     if (gcReachable(func)) return;
     gcMark(func);
     if (func.def) |def| {
         const numenvs = def.environments_length;
         for (0..numenvs) |i| {
-            markFuncenv(funcEnv(func, i));
+            markFuncenv(vm, funcEnv(func, i));
         }
-        markFuncdef(def);
+        markFuncdef(vm, def);
     }
 }
 
 /// Marks the key of every entry in `kvs`, for a weak-valued table.
-fn markKeys(kvs: []const tables.KV) void {
-    for (kvs) |kv| mark(kv.key);
+fn markKeys(vm: *vm_state.Vm, kvs: []const tables.KV) void {
+    for (kvs) |kv| markGuarded(vm, kv.key);
 }
 
 /// Marks both halves of every entry in `kvs`.
-fn markKvs(kvs: []const tables.KV) void {
+fn markKvs(vm: *vm_state.Vm, kvs: []const tables.KV) void {
     for (kvs) |kv| {
-        mark(kv.key);
-        mark(kv.value);
+        markGuarded(vm, kv.key);
+        markGuarded(vm, kv.value);
     }
 }
 
 /// Marks every value in `values`.
-fn markMany(values: []const repr.Value) void {
-    for (values) |x| mark(x);
+fn markMany(vm: *vm_state.Vm, values: []const repr.Value) void {
+    for (values) |x| markGuarded(vm, x);
 }
 
 /// Marks a string, symbol or keyword, all three of which are one head with no
@@ -361,13 +380,13 @@ fn markString(str: [*]const u8) void {
 
 /// Marks a struct, its entries and its prototype chain, following the chain
 /// iteratively so that a long chain costs no stack frame per link.
-fn markStruct(st_in: [*]const tables.KV) void {
+fn markStruct(vm: *vm_state.Vm, st_in: [*]const tables.KV) void {
     var st = st_in;
     while (true) {
         const head = structs.head(st);
         if (gcReachable(head)) return;
         gcMark(head);
-        markKvs(st[0..head.capacity]);
+        markKvs(vm, st[0..head.capacity]);
         st = head.proto orelse return;
     }
 }
@@ -380,18 +399,18 @@ fn markStruct(st_in: [*]const tables.KV) void {
 /// weak-keyed table keeps its values alive, a weak-valued table keeps its
 /// keys, and a table weak in both keeps neither, which is the case with no
 /// branch of its own.
-fn markTable(table_in: *tables.Table) void {
+fn markTable(vm: *vm_state.Vm, table_in: *tables.Table) void {
     var table = table_in;
     while (true) {
         if (gcReachable(table)) return;
         gcMark(table);
         const memtype = gcType(table);
         if (memtype == gc_alloc.MemoryType.table_weakk) {
-            markValues(table.slots());
+            markValues(vm, table.slots());
         } else if (memtype == gc_alloc.MemoryType.table_weakv) {
-            markKeys(table.slots());
+            markKeys(vm, table.slots());
         } else if (memtype == gc_alloc.MemoryType.table) {
-            markKvs(table.slots());
+            markKvs(vm, table.slots());
         }
         // Nothing for `MemoryType.table_weakkv`.
         if (table.proto) |proto| {
@@ -403,16 +422,16 @@ fn markTable(table_in: *tables.Table) void {
 }
 
 /// Marks a tuple and its elements.
-fn markTuple(tuple: [*]const repr.Value) void {
+fn markTuple(vm: *vm_state.Vm, tuple: [*]const repr.Value) void {
     const head = tuples.head(tuple);
     if (gcReachable(head)) return;
     gcMark(head);
-    markMany(tuple[0..head.length]);
+    markMany(vm, tuple[0..head.length]);
 }
 
 /// Marks the value of every entry in `kvs`, for a weak-keyed table.
-fn markValues(kvs: []const tables.KV) void {
-    for (kvs) |kv| mark(kv.value);
+fn markValues(vm: *vm_state.Vm, kvs: []const tables.KV) void {
+    for (kvs) |kv| markGuarded(vm, kv.value);
 }
 
 /// The run of `n` items at `p`, or an empty slice.

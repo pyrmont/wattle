@@ -1165,9 +1165,9 @@ fn lookupMissing(
         return null;
     };
     fiber.env = compiler.env;
-    const lock = gc_alloc.gclock();
+    const lock = gc_alloc.gclock(vm_state.current());
     const resumed = vm_entry.continueFiber(fiber, wrapNil());
-    gc_alloc.gcunlock(lock);
+    gc_alloc.gcunlock(vm_state.current(), lock);
     if (resumed.signal != abi.Signal.ok) {
         recordError(compiler, try pp_format.formatc("(lookup) %V", .{resumed.value}));
         return null;
@@ -1339,7 +1339,7 @@ fn runMacro(
         return null;
     };
     fiber.env = compiler.env;
-    const lock = gc_alloc.gclock();
+    const lock = gc_alloc.gclock(vm_state.current());
     const form_keyword = value.fromBytes("macro-form", .keyword);
     tables.put(compiler.env.?, form_keyword, form_value);
     const lints_keyword = value.fromBytes("macro-lints", .keyword);
@@ -1349,7 +1349,7 @@ fn runMacro(
     const resumed = vm_entry.continueFiber(fiber, wrapNil());
     tables.put(compiler.env.?, form_keyword, wrapNil());
     tables.put(compiler.env.?, lints_keyword, wrapNil());
-    gc_alloc.gcunlock(lock);
+    gc_alloc.gcunlock(vm_state.current(), lock);
     if (resumed.signal != abi.Signal.ok) {
         compiler.result.macrofiber = fiber;
         recordError(compiler, try pp_format.formatc("(macro) %V", .{resumed.value}));

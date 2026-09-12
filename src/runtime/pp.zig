@@ -30,12 +30,6 @@
 //! must consume.
 
 // ==========================================================================
-// Standard library imports
-// ==========================================================================
-
-const std = @import("std");
-
-// ==========================================================================
 // Project imports
 // ==========================================================================
 
@@ -242,7 +236,7 @@ fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Error!void 
 /// unregistered cfunction, a function with no name, and everything with no
 /// case of its own.
 fn genericDescriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
-    try stringDescriptionB(buffer, std.mem.span(utils.typeNames[@intFromEnum(repr.typeOf(x))]), wrap.toPointer(x));
+    try stringDescriptionB(buffer, utils.typeNames[@intFromEnum(repr.typeOf(x))], wrap.toPointer(x));
 }
 
 /// One hex digit, from the shared alphabet.

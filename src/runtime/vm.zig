@@ -1307,12 +1307,12 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             if (try self.maybeAutoSuspend(true)) |s| return s;
             if (try self.assertType(self.stack[fB(self.pc)], repr.Tag.fiber)) |s| return s;
             const child = wrap.toFiber(self.stack[fB(self.pc)]);
-            if (vm_entry.checkCanResume(child, false)) |refusal| {
+            if (vm_entry.checkCanResume(self.vm, child, false)) |refusal| {
                 self.commit();
                 return try self.raisev(refusal.value);
             }
             fiber.child = child;
-            const resumed = vm_entry.continueNoCheck(child, self.stack[fC(self.pc)]);
+            const resumed = vm_entry.continueNoCheck(self.vm, child, self.stack[fC(self.pc)]);
             const retreg = resumed.value;
             const sig = resumed.signal;
             self.reload();
@@ -1356,7 +1356,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         .cancel => {
             if (try self.assertType(self.stack[fB(self.pc)], repr.Tag.fiber)) |s| return s;
             const child = wrap.toFiber(self.stack[fB(self.pc)]);
-            if (vm_entry.checkCanResume(child, true)) |refusal| {
+            if (vm_entry.checkCanResume(self.vm, child, true)) |refusal| {
                 self.commit();
                 return try self.raisev(refusal.value);
             }

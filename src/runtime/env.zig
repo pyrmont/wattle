@@ -1026,7 +1026,7 @@ fn cfunType(argv: []repr.Value) raise.Error!repr.Value {
     if (t == .abstract) {
         return value.fromBytes(abi.abstractHead(wrap.toAbstract(argv[0])).type.name, .keyword);
     }
-    return value.fromBytes(std.mem.span(utils.typeNames[@intFromEnum(t)]), .keyword);
+    return value.fromBytes(utils.typeNames[@intFromEnum(t)], .keyword);
 }
 
 /// `(untrace f)`.

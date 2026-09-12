@@ -121,7 +121,11 @@ pub const TraversalNode = struct {
 pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
     var x = x_in;
     var y = y_in;
-    const stack = &vm_state.current().traversal;
+    // Captured rather than fetched. The traversal stack's three fields are read
+    // per step of the walk, so on Darwin an uncaptured `current()` is a
+    // `_tlv_get_addr` call per step rather than one per call;
+    // `vm_state.pinned` has the mechanism.
+    const stack = &vm_state.pinned().traversal;
     stack.at = stack.base;
     var status: i32 = 0;
     while (true) {
@@ -220,7 +224,8 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
 pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
     var x = x_in;
     var y = y_in;
-    const stack = &vm_state.current().traversal;
+    // Captured, for the reason `compare` gives.
+    const stack = &vm_state.pinned().traversal;
     stack.at = stack.base;
     while (true) {
         if (repr.typeOf(x) != repr.typeOf(y)) return false;

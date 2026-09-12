@@ -259,7 +259,11 @@ pub inline fn gcalloc(comptime T: type, mtype: MemoryType) *T {
 /// wrappers, and a contract whose subject is the list itself. Everything else
 /// names the type it is allocating and lets `gcalloc` return a pointer to it.
 pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
-    const v = vm_state.current();
+    // Captured rather than fetched per use. Five VM fields are read below, and
+    // on Darwin an uncaptured `current()` is a `_tlv_get_addr` call at each of
+    // them; `vm_state.pinned` has the mechanism. Every allocation in the
+    // runtime arrives here, so the five are five per allocation.
+    const v = vm_state.pinned();
     const g = &v.gc;
 
     // The liveness probe, which is `vm/state.zig`'s and is asked here for the
@@ -267,7 +271,7 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
     // question of a *thread* and says so differently; the predicate is
     // declared once so the two messages cannot come to disagree about what
     // they are testing.
-    if (!vm_state.isInitialised()) fatal.fatal("please initialize janet before use");
+    if (!vm_state.isInitialised(v)) fatal.fatal("please initialize janet before use");
 
     const mem: *abi.GCObject = @ptrCast(@alignCast(utils.rawAlloc(size)));
 
@@ -315,13 +319,18 @@ pub inline fn gcallocWithPayload(
     return @ptrCast(@alignCast(gcallocBytes(mtype, total)));
 }
 
-/// Suspends collection and returns the previous nesting depth.
+/// Suspends collection on `vm` and returns the previous nesting depth.
 ///
 /// The handle is the depth to restore rather than a token to match, so
 /// unlocking with a stale handle deliberately unwinds every lock taken since
 /// it was issued.
-pub fn gclock() u32 {
-    const g = &vm_state.current().gc;
+///
+/// The VM is the caller's. `vm/entry.zig`'s `call` locks and unlocks around
+/// every host-to-Janet call and has one captured already; a fetch here would be
+/// two thread-local accesses per call on Darwin. A caller with none passes
+/// `vm_state.current()`.
+pub fn gclock(vm: *vm_state.Vm) u32 {
+    const g = &vm.gc;
     const previous = g.suspend_count;
     g.suspend_count = previous +% 1;
     return previous;
@@ -340,13 +349,17 @@ pub fn gcpressure(s: usize) void {
 /// Rooting the same value twice requires unrooting it twice: the root set is a
 /// multiset, so this appends unconditionally.
 pub fn gcroot(root: repr.Value) void {
-    const r = &vm_state.current().roots;
+    // Captured rather than fetched. The list's pointer, length and capacity are
+    // three reads through this, so an uncaptured `current()` is three
+    // `_tlv_get_addr` calls on Darwin rather than one; `vm_state.pinned` has the
+    // mechanism. This has the largest call-site population in the tree, at 226.
+    const r = &vm_state.pinned().roots;
     r.append(utils.heap, root) catch fatal.outOfMemory();
 }
 
-/// Restores the suspend depth to `handle`. See `gclock`.
-pub fn gcunlock(handle: u32) void {
-    vm_state.current().gc.suspend_count = handle;
+/// Restores `vm`'s suspend depth to `handle`. See `gclock`.
+pub fn gcunlock(vm: *vm_state.Vm, handle: u32) void {
+    vm.gc.suspend_count = handle;
 }
 
 /// Drops one rooting of `root`, and returns whether there was one to drop.
@@ -354,7 +367,8 @@ pub fn gcunlock(handle: u32) void {
 /// Removal swaps the last root into the vacated slot, so the root set has no
 /// order a caller may depend on.
 pub fn gcunroot(root: repr.Value) bool {
-    const r = &vm_state.current().roots;
+    // Captured, for the reason `gcroot` gives.
+    const r = &vm_state.pinned().roots;
     const top = r.items.len;
     // Bottom to top. The set is small and unordered, so the direction is not
     // a performance claim; `gcunrootall` scans the same way.
@@ -373,7 +387,8 @@ pub fn gcunroot(root: repr.Value) bool {
 /// from the top, so the element now at `i` has not been examined; advancing
 /// past it leaves half the rootings behind and still reports success.
 pub fn gcunrootall(root: repr.Value) bool {
-    const r = &vm_state.current().roots;
+    // Captured, for the reason `gcroot` gives.
+    const r = &vm_state.pinned().roots;
     var found = false;
     var i: usize = 0;
     while (i < r.items.len) {

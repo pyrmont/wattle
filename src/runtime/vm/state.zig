@@ -260,7 +260,7 @@ pub fn interpreterInterruptHandled(vm: ?*Vm) void {
     _ = abstracts.atomicDec(&target.auto_suspend);
 }
 
-/// Whether this thread's VM has been brought up.
+/// Whether `vm` has been brought up.
 ///
 /// The symbol cache is the probe, read as a liveness question rather than as
 /// cache work. `vm/lifecycle.zig`'s `init` calls `symbols.cacheInit` second,
@@ -268,17 +268,21 @@ pub fn interpreterInterruptHandled(vm: ?*Vm) void {
 /// `symbols.cacheDeinit` puts `entries` back to null on the way out. So a null
 /// `entries` means this thread is not between those two calls.
 ///
-/// It reads a `threadlocal var` and dereferences nothing. `storage.vm` is
-/// thread-local in every build but `-Dsingle-threaded`, so a thread that never
-/// ran `lifecycle.init` sees the zeroed one and this is false; on a thread that
-/// did, it is one load and a compare.
+/// It dereferences `vm` and nothing else. `storage.vm` is thread-local in every
+/// build but `-Dsingle-threaded`, so a thread that never ran `lifecycle.init`
+/// sees the zeroed one and this is false; on a thread that did, it is one load
+/// and a compare.
+///
+/// The VM is the caller's rather than fetched here, so a caller that has
+/// already captured one does not pay a second thread-local access to ask this.
+/// `requireJanetThread` below passes `current()`, which is the thread question.
 ///
 /// Two callers ask it, for two different failures, and each states its own
 /// message. `gc.gcallocBytes` asks whether an embedder forgot to bring the VM
 /// up at all. `capi.zig`'s entry points and `args.zig`'s `*Abi` shims ask
 /// whether the calling thread is one that runs Janet.
-pub inline fn isInitialised() bool {
-    return current().symcache.entries != null;
+pub inline fn isInitialised(vm: *Vm) bool {
+    return vm.symcache.entries != null;
 }
 
 /// `current()`, under the name `test/vm_state.zig` calls it by to say that the
@@ -356,7 +360,7 @@ pub inline fn pinned() *Vm {
 /// It is here rather than in `fatal.zig` because the question is about the
 /// storage above. `fatal.zig` is how to give up and nothing about a VM.
 pub inline fn requireJanetThread() void {
-    if (!isInitialised()) fatal.fatal("called from a thread that is not running Janet");
+    if (!isInitialised(current())) fatal.fatal("called from a thread that is not running Janet");
 }
 
 /// Binds `name` to `val` in the dynamic bindings.

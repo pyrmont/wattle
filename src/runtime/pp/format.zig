@@ -600,7 +600,7 @@ fn pushtypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
             // `remaining == 1` is exactly the test for being on it.
             try buffers.pushCString(b, if (remaining == 1) " or " else ", ");
         }
-        try buffers.pushCString(b, utils.typeNames[i]);
+        try buffers.pushBytes(b, utils.typeNames[i]);
     }
 }
 
@@ -754,5 +754,5 @@ fn scanFormat(strfrmt: [*]const u8, start: usize) raise.Error!Specifier {
 fn typestr(x: repr.Value) []const u8 {
     const t = repr.typeOf(x);
     if (t == .abstract) return abi.abstractHead(wrap.toAbstract(x)).type.name;
-    return std.mem.span(utils.typeNames[@intFromEnum(t)]);
+    return utils.typeNames[@intFromEnum(t)];
 }

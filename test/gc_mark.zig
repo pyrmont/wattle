@@ -575,13 +575,13 @@ fn theFiberChildChain() void {
 /// is finished, and it is long enough that building it would otherwise trigger
 /// one.
 fn buildChain(chain: []*arrays.Array) void {
-    const handle = gc_alloc.gclock();
+    const handle = gc_alloc.gclock(vm_state.current());
     chain[0] = arrays.new(1);
     for (1..chain.len) |index| {
         chain[index] = arrays.new(1);
         harness.arrayPush(chain[index - 1], wrap.fromArray(chain[index]));
     }
-    gc_alloc.gcunlock(handle);
+    gc_alloc.gcunlock(vm_state.current(), handle);
 }
 
 /// The guard is exact, and where it stops is the contract. Marking a chain one
@@ -701,7 +701,7 @@ fn theMarkPhaseFlag() void {
 fn aLockedCollectorDoesNothing() void {
     freshHeap();
 
-    const handle = gc_alloc.gclock();
+    const handle = gc_alloc.gclock(vm_state.current());
     harness.vm().gc.next_collection = 4242;
     const blocks = harness.vm().gc.block_count;
 
@@ -710,7 +710,7 @@ fn aLockedCollectorDoesNothing() void {
     expect(harness.vm().gc.next_collection == 4242);
     expect(harness.vm().gc.block_count == blocks);
 
-    gc_alloc.gcunlock(handle);
+    gc_alloc.gcunlock(vm_state.current(), handle);
     gc_mark.collect();
     expect(harness.vm().gc.next_collection == 0);
 }

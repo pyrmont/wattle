@@ -153,7 +153,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
     // Set up.
     const oldn = v.stackn;
     v.stackn += 1;
-    const handle = gc_alloc.gclock();
+    const handle = gc_alloc.gclock(v);
 
     // Run vm.
     vm_state.fiberOf(v).flags.resume_no_useval = true;
@@ -165,7 +165,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 
     // Teardown.
     v.stackn = oldn;
-    gc_alloc.gcunlock(handle);
+    gc_alloc.gcunlock(v, handle);
     if (dirty_stack != 0) {
         fibers.popframe(vm_state.fiberOf(v));
         vm_state.fiberOf(v).stacktop += dirty_stack;
@@ -222,11 +222,19 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 /// `argv` may be the caller's own, which is the ordinary case and is a slice
 /// of this same stack. `fibers.pushn` handles that where the hazard is, in the
 /// branch that grows and therefore reallocates; nothing is needed here.
+///
+/// The VM is captured through `vm_state.pinned()` for the reason `call` gives.
+/// The fiber is bound once rather than re-read at each use as `call` does:
+/// `methodInvoke` below can re-enter the loop, and the frame this function
+/// pushed is the one `popframe` has to take off afterwards, so the binding is
+/// the fiber that frame is on rather than whichever fiber the loop left
+/// current.
 pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.Value {
-    if (vm_state.current().fiber == null) {
+    const v = vm_state.pinned();
+    if (v.fiber == null) {
         return raise.panic("janet_call failed because there is no current fiber");
     }
-    const fiber = vm_state.currentFiber();
+    const fiber = vm_state.fiberOf(v);
     // The stack is clean here, and this is where that is checked rather than
     // assumed. Every route to this function runs under a frame that left it
     // so: `vm.zig`'s `.call` arm installs a `cframe` before invoking a
@@ -261,26 +269,26 @@ pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.
 
 /// Whether `fiber` may be resumed, and the message if not.
 ///
-/// `is_cancel` selects the wording of the root-fiber refusal. Null means the
-/// fiber may be resumed: a refusal is the case that has a value to give back,
-/// so the optional says which of the two happened without a caller comparing
-/// against `.ok`.
+/// `vm` is the VM the caller has already captured; `is_cancel` selects the
+/// wording of the root-fiber refusal. Null means the fiber may be resumed: a
+/// refusal is the case that has a value to give back, so the optional says
+/// which of the two happened without a caller comparing against `.ok`.
 ///
 /// All three refusals return a signal rather than raising. The first also
 /// marks the fiber errored, which the other two do not: a fiber refused for
 /// recursion depth has had nothing done to it, while one refused for its
 /// status already has the status that refused it.
-pub fn checkCanResume(fiber: *fibers.Fiber, is_cancel: bool) ?Resumed {
+pub fn checkCanResume(vm: *vm_state.Vm, fiber: *fibers.Fiber, is_cancel: bool) ?Resumed {
     // Check conditions.
     const old_status = fibers.status(fiber);
-    if (vm_state.current().stackn >= config.recursion_guard) {
+    if (vm.stackn >= config.recursion_guard) {
         setStatus(fiber, fibers.FiberStatus.@"error");
         return .fail("C stack recursed too deeply");
     }
     // If a "task" fiber is trying to be used as a normal fiber, detect that.
     // See bug #920. Fibers must be marked as root fibers manually, or by the ev
     // scheduler.
-    if (vm_state.current().fiber != null and fibers.evFlags(fiber).root) {
+    if (vm.fiber != null and fibers.evFlags(fiber).root) {
         return .fail(if (has_ev)
             (if (is_cancel)
                 "cannot cancel root fiber, use ev/cancel"
@@ -314,10 +322,21 @@ pub fn checkCanResume(fiber: *fibers.Fiber, is_cancel: bool) ?Resumed {
 }
 
 /// Enters the main VM loop, refusing a fiber `checkCanResume` rejects.
+///
+/// This is where the resume path captures the VM, so a caller that has one
+/// already calls `continueChecked` instead of paying a second fetch.
 pub fn continueFiber(fiber: *fibers.Fiber, in: repr.Value) Resumed {
+    return continueChecked(vm_state.pinned(), fiber, in);
+}
+
+/// `continueFiber` on a VM the caller has already captured.
+///
+/// `continueNoCheck` resumes a child fiber through this rather than through
+/// `continueFiber`, which would fetch the thread-local again one frame down.
+pub fn continueChecked(vm: *vm_state.Vm, fiber: *fibers.Fiber, in: repr.Value) Resumed {
     // Check conditions.
-    if (checkCanResume(fiber, false)) |refusal| return refusal;
-    return continueNoCheck(fiber, in);
+    if (checkCanResume(vm, fiber, false)) |refusal| return refusal;
+    return continueNoCheck(vm, fiber, in);
 }
 
 /// Resumes `fiber`, with the protected scope every resume re-establishes.
@@ -332,10 +351,16 @@ pub fn continueFiber(fiber: *fibers.Fiber, in: repr.Value) Resumed {
 /// `signalRecord` writes it; the payload is in `tstate.payload`, where
 /// `return_reg` pointed.
 ///
-/// `continueFiber` and `continueSignal` are the two callers that check first,
-/// `JOP_RESUME` reaches it by import from `vm.zig`, and `test/gc_pcall.zig` is
-/// the contract on its rooting.
-pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
+/// `vm` is the VM the caller has already captured. Every VM field below is
+/// read through it rather than through `vm_state.current()`: on Darwin each
+/// such call is a `_tlv_get_addr` call, and this function reads thirteen
+/// fields, so fetching per use is thirteen calls per resume. `vm_state.pinned`
+/// has the mechanism and `runVm`'s `Interp.vm` is the same decision.
+///
+/// `continueChecked` and `continueSignal` are the two callers that check
+/// first, `JOP_RESUME` reaches it by import from `vm.zig`, and
+/// `test/gc_pcall.zig` is the contract on its rooting.
+pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
     var in = in_init;
     const old_status = fibers.status(fiber);
 
@@ -346,14 +371,14 @@ pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
 
     // Continue child fiber if it exists.
     if (fiber.child) |child| {
-        if (vm_state.current().root_fiber == null) vm_state.current().root_fiber = fiber;
+        if (vm.root_fiber == null) vm.root_fiber = fiber;
         const instr = fiberFrame(fiber).pc.bytecode.?[0];
-        vm_state.current().stackn += 1;
-        const resumed = continueFiber(child, in);
+        vm.stackn += 1;
+        const resumed = continueChecked(vm, child, in);
         const sig = resumed.signal;
         in = resumed.value;
-        vm_state.current().stackn -= 1;
-        if (vm_state.current().root_fiber == fiber) vm_state.current().root_fiber = null;
+        vm.stackn -= 1;
+        if (vm.root_fiber == fiber) vm.root_fiber = null;
         if (sig != abi.Signal.ok and !child.flags.traps.has(sig)) {
             // The two vocabularies share their first fourteen values, which is
             // what `signal.zig`'s comptime block asserts and what this line
@@ -395,19 +420,19 @@ pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
     // without this a nested fiber, one from a `pcall` inside a cfunction for
     // instance, would be invisible to the collector and could be freed while
     // actively running.
-    const fiber_rooted = vm_state.current().root_fiber != null;
+    const fiber_rooted = vm.root_fiber != null;
     if (fiber_rooted) gc_alloc.gcroot(wrap.fromFiber(fiber));
 
     // Save global state, and run.
     var tstate: vm_state.TryState = undefined;
     signal_core.tryInit(&tstate);
-    if (vm_state.current().root_fiber == null) vm_state.current().root_fiber = fiber;
-    vm_state.current().fiber = fiber;
+    if (vm.root_fiber == null) vm.root_fiber = fiber;
+    vm.fiber = fiber;
     setStatus(fiber, fibers.FiberStatus.alive);
-    const sig = vm_run.runVm(fiber, in) catch vm_state.current().pending_signal;
+    const sig = vm_run.runVm(fiber, in) catch vm.pending_signal;
 
     // Restore.
-    if (vm_state.current().root_fiber == fiber) vm_state.current().root_fiber = null;
+    if (vm.root_fiber == fiber) vm.root_fiber = null;
     setStatus(fiber, @enumFromInt(@intFromEnum(sig)));
     signal_core.restore(&tstate);
     if (fiber_rooted) _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
@@ -418,11 +443,12 @@ pub fn continueNoCheck(fiber: *fibers.Fiber, in_init: repr.Value) Resumed {
 
 /// Enters the main VM loop and immediately delivers `sig` into the fiber.
 pub fn continueSignal(fiber: *fibers.Fiber, in: repr.Value, sig: abi.Signal) Resumed {
-    if (checkCanResume(fiber, sig != abi.Signal.ok)) |refusal| return refusal;
+    const v = vm_state.pinned();
+    if (checkCanResume(v, fiber, sig != abi.Signal.ok)) |refusal| return refusal;
     if (sig != abi.Signal.ok) {
         signal_core.signalInject(fiber, sig);
     }
-    return continueNoCheck(fiber, in);
+    return continueNoCheck(v, fiber, in);
 }
 
 /// Calls a function on a fresh or recycled fiber, and reports rather than

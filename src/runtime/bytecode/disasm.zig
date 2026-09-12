@@ -23,6 +23,7 @@ const symbols = @import("../value/symbols.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const verify = @import("verify.zig");
+const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
 // ==========================================================================
@@ -73,8 +74,8 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
         return wrap.fromInteger(@bitCast(instruction));
     };
 
-    const gc_lock = gc_alloc.gclock();
-    defer gc_alloc.gcunlock(gc_lock);
+    const gc_lock = gc_alloc.gclock(vm_state.current());
+    defer gc_alloc.gcunlock(vm_state.current(), gc_lock);
 
     const name = asmWrapSymbol(name_bytes);
     const opcode = instruction & 0x7f;
@@ -148,8 +149,8 @@ pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value
 /// The lock covers the whole walk because every arm allocates and none of the
 /// intermediate values is rooted.
 pub fn disassembleFieldExport(definition: *functions.FuncDef, field_value: c_int) repr.Value {
-    const gc_lock = gc_alloc.gclock();
-    defer gc_alloc.gcunlock(gc_lock);
+    const gc_lock = gc_alloc.gclock(vm_state.current());
+    defer gc_alloc.gcunlock(vm_state.current(), gc_lock);
     return disassembleField(definition, @enumFromInt(field_value));
 }
 

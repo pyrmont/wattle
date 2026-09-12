@@ -61,6 +61,7 @@ const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vm_state = @import("subsystems").vm_state;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -1114,7 +1115,7 @@ fn theRelationsHoldOverACorpus() void {
     // Built under a lock and rooted before it is released: the corpus is a Zig
     // array, so every element after the first would be unreachable during the
     // allocation of the next one.
-    const lock = gc_alloc.gclock();
+    const lock = gc_alloc.gclock(vm_state.current());
     const root = tables.new(64);
     gc_alloc.gcroot(wrap.fromTable(root));
     defer _ = gc_alloc.gcunroot(wrap.fromTable(root));
@@ -1150,7 +1151,7 @@ fn theRelationsHoldOverACorpus() void {
         wrap.fromCfunction(null),
     };
     for (corpus, 0..) |entry, i| tables.put(root, intv(@intCast(i)), entry);
-    gc_alloc.gcunlock(lock);
+    gc_alloc.gcunlock(vm_state.current(), lock);
 
     for (corpus) |left| {
         expect(order.compare(left, left) == 0);

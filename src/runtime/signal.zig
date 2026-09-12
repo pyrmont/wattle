@@ -191,7 +191,8 @@ pub fn signalv(sig: abi.Signal, message: repr.Value) void {
 /// collector and then raised has its lock released here rather than where it
 /// was taken.
 pub fn restore(state: *vm_state.TryState) void {
-    const v = vm_state.current();
+    // Captured, for the reason `tryInit` gives.
+    const v = vm_state.pinned();
     // ...and one outstanding when a scope closes was made inside it. See the
     // note in `tryInit`.
     if (v.c_raised) fatal.fatal("a raise was reported across the C ABI and never consumed");
@@ -351,7 +352,11 @@ pub fn topLevelSignal(msg: [*]const u8) noreturn {
 /// This is the only protected scope there is. A caller opens one by calling
 /// this and closes it with `restore`.
 pub fn tryInit(state: *vm_state.TryState) void {
-    const v = vm_state.current();
+    // Captured rather than fetched per use: eight VM fields are read below and
+    // on Darwin an uncaptured `current()` is a `_tlv_get_addr` call at each of
+    // them. Every resume opens a scope, so `vm/entry.zig`'s `continueNoCheck`
+    // pays these per resume. `vm_state.pinned` has the mechanism.
+    const v = vm_state.pinned();
     // A report outstanding when a scope opens belongs to whatever ran before
     // it. This assertion and its twin in `restore` bracket an unconsumed
     // report to one scope, which is what makes it findable: the symptom

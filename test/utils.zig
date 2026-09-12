@@ -430,7 +430,7 @@ fn theTablesAreIndexedByTheNumbersACallerHas() void {
         "function", "cfunction", "abstract", "pointer",
     };
     for (expected_types, 0..) |want, i| {
-        expect(std.mem.eql(u8, std.mem.span(utils.typeNames[i]), want));
+        expect(std.mem.eql(u8, utils.typeNames[i], want));
     }
 
     expect(std.mem.eql(u8, std.mem.span(utils.statusNames[0]), "dead"));
