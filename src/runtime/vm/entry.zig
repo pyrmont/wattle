@@ -106,88 +106,85 @@ pub const Resumed = struct {
 /// `fun` is the callee and `argv` the arguments, which are copied onto the
 /// fiber's stack.
 ///
-/// The VM's `fiber` is re-read at every use rather than kept in a local. The
-/// last two uses are after `vm.zig`'s `runVm` has returned, and the loop can
-/// re-enter fibers underneath it. `vm_state.currentFiber()` is that re-read:
-/// the entry check refuses a null fiber, and nothing between there and the
+/// The VM is captured once and its `fiber` field is read again at every use.
+/// Those are two decisions, and they point opposite ways.
+///
+/// The VM's address is fixed for the life of the thread, so `vm_state.pinned()`
+/// takes it once at the top. On Darwin every thread-local access is a
+/// `_tlv_get_addr` call, and holding the pointer is what keeps this function
+/// from paying one per use; `pinned()`'s own comment has the mechanism.
+///
+/// The `fiber` field is not fixed. The last two uses are after `vm.zig`'s
+/// `runVm` has returned, and the loop can re-enter fibers underneath it, so
+/// each use reads the field again through `vm_state.fiberOf` rather than
+/// binding it once. The entry check below is what earns that accessor's
+/// invariant here: it refuses a null fiber, and nothing between it and the
 /// return can put the field back to null, `signal.restore` writing back the
 /// fiber it saved on the way in.
 pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr.Value {
+    const v = vm_state.pinned();
+
     // Check entry conditions.
-    if (vm_state.current().fiber == null) {
+    if (v.fiber == null) {
         return raise.panic("janet_call failed because there is no current fiber");
     }
-    if (vm_state.current().stackn >= config.recursion_guard) {
+    if (v.stackn >= config.recursion_guard) {
         return raise.panic("C stack recursed too deeply");
     }
 
     // Dirty stack.
-    const dirty_stack: i32 = vm_state.currentFiber().stacktop - vm_state.currentFiber().stackstart;
+    const dirty_stack: i32 = vm_state.fiberOf(v).stacktop - vm_state.fiberOf(v).stackstart;
     if (dirty_stack != 0) {
-        fibers.cframe(vm_state.currentFiber(), raise.stored(&voidCFunction));
+        fibers.cframe(vm_state.fiberOf(v), raise.stored(&voidCFunction));
     }
 
     // Tracing.
     if (functions.isTraced(fun)) {
-        vm_state.current().stackn += 1;
+        v.stackn += 1;
         try vm_run.traceArgv(fun, argv);
-        vm_state.current().stackn -= 1;
+        v.stackn -= 1;
     }
 
     // Push frame.
-    try fibers.pushn(vm_state.currentFiber(), argv);
-    fibers.funcframe(vm_state.currentFiber(), fun) catch {
-        const min = fun.def.?.min_arity;
-        const max = fun.def.?.max_arity;
-        const funv = wrap.fromFunction(fun);
-        // `%d` renders through an `i64`; the arities are the funcdef's own
-        // `i32` and the count is the slice's.
-        const got: i64 = @intCast(argv.len);
-        if (min == max and min != argv.len) {
-            return pp_format.panicf("arity mismatch in %v, expected %d, got %d", .{ funv, min, got });
-        }
-        if (min >= 0 and argv.len < min) {
-            return pp_format.panicf("arity mismatch in %v, expected at least %d, got %d", .{ funv, min, got });
-        }
-        return pp_format.panicf("arity mismatch in %v, expected at most %d, got %d", .{ funv, max, got });
-    };
-    fiberFrame(vm_state.currentFiber()).flags.entrance = true;
+    try fibers.pushn(vm_state.fiberOf(v), argv);
+    fibers.funcframe(vm_state.fiberOf(v), fun) catch return arityMismatch(fun, argv.len);
+    fiberFrame(vm_state.fiberOf(v)).flags.entrance = true;
 
     // Set up.
-    const oldn = vm_state.current().stackn;
-    vm_state.current().stackn += 1;
+    const oldn = v.stackn;
+    v.stackn += 1;
     const handle = gc_alloc.gclock();
 
     // Run vm.
-    vm_state.currentFiber().flags.resume_no_useval = true;
-    vm_state.currentFiber().flags.resume_no_skip = true;
-    const old_coerce_error = vm_state.current().coerce_error;
-    vm_state.current().coerce_error = true;
-    const signal = try vm_run.runVm(vm_state.currentFiber(), wrap.fromNil());
-    vm_state.current().coerce_error = old_coerce_error;
+    vm_state.fiberOf(v).flags.resume_no_useval = true;
+    vm_state.fiberOf(v).flags.resume_no_skip = true;
+    const old_coerce_error = v.coerce_error;
+    v.coerce_error = true;
+    const signal = try vm_run.runVm(vm_state.fiberOf(v), wrap.fromNil());
+    v.coerce_error = old_coerce_error;
 
     // Teardown.
-    vm_state.current().stackn = oldn;
+    v.stackn = oldn;
     gc_alloc.gcunlock(handle);
     if (dirty_stack != 0) {
-        fibers.popframe(vm_state.currentFiber());
-        vm_state.currentFiber().stacktop += dirty_stack;
+        fibers.popframe(vm_state.fiberOf(v));
+        vm_state.fiberOf(v).stacktop += dirty_stack;
     }
 
     if (signal != abi.Signal.ok) {
         // Should match the logic in `signal.signalRecord`.
         if (has_ev) {
-            if (vm_state.current().root_fiber) |root| {
+            if (v.root_fiber) |root| {
                 if (signal == abi.Signal.event) root.sched_id +%= 1;
             }
         }
         if (signal != abi.Signal.@"error") {
-            vm_state.current().return_reg.?.* = wrap.fromString(try pp_format.formatc("%v coerced from %s to error", .{ vm_state.current().return_reg.?.*, utils.signalNames[@intFromEnum(signal)] }));
+            v.return_reg.?.* = wrap.fromString(try pp_format.formatc("%v coerced from %s to error", .{ v.return_reg.?.*, utils.signalNames[@intFromEnum(signal)] }));
         }
-        return raise.panicv(vm_state.current().return_reg.?.*);
+        return raise.panicv(v.return_reg.?.*);
     }
 
-    return vm_state.current().return_reg.?.*;
+    return v.return_reg.?.*;
 }
 
 /// Calls any value `(f ...)` calls, from a host frame, raising as `call` does.
@@ -522,6 +519,32 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
 // ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// The raise for a `funcframe` that refused `argc` arguments, naming which of
+/// the three arity bounds was missed.
+///
+/// `fun` is the callee and `argc` the count it was offered. The caller has
+/// already had `fibers.funcframe` refuse, so this only decides the wording.
+///
+/// It is `noinline` because it is `call`'s only cold region and the largest:
+/// three `panicf` calls with distinct comptime formats instantiate three
+/// renderings, and inlined they sit in the frame of a function whose hot path
+/// is a host-to-Janet call.
+noinline fn arityMismatch(fun: *functions.Function, argc: usize) raise.Error {
+    const min = fun.def.?.min_arity;
+    const max = fun.def.?.max_arity;
+    const funv = wrap.fromFunction(fun);
+    // `%d` renders through an `i64`; the arities are the funcdef's own `i32`
+    // and the count is the slice's.
+    const got: i64 = @intCast(argc);
+    if (min == max and min != argc) {
+        return pp_format.panicf("arity mismatch in %v, expected %d, got %d", .{ funv, min, got });
+    }
+    if (min >= 0 and argc < min) {
+        return pp_format.panicf("arity mismatch in %v, expected at least %d, got %d", .{ funv, min, got });
+    }
+    return pp_format.panicf("arity mismatch in %v, expected at most %d, got %d", .{ funv, max, got });
+}
 
 /// A signed instruction field as a pointer offset. Zig's pointer arithmetic
 /// takes an unsigned offset, so the two's complement is taken explicitly.

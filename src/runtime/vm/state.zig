@@ -202,16 +202,10 @@ pub inline fn current() *Vm {
 }
 
 /// The fiber this thread is running, for the callers that have already
-/// established there is one.
-///
-/// The invariant is at or below the interpreter loop. `continueNoCheck`
-/// assigns `fiber` before it enters the loop and `signal.restore` puts back
-/// whatever was there before, so a cfunction body, an opcode handler, or
-/// `vm/entry.zig`'s `call` after its own entry check cannot observe a null
-/// here. A caller that can also be reached from outside the loop reads
-/// `current().fiber` and handles the null instead.
+/// established there is one. `fiberOf` on this thread's VM, and the invariant
+/// is stated there.
 pub inline fn currentFiber() *fibers.Fiber {
-    return current().fiber orelse unreachable;
+    return fiberOf(current());
 }
 
 /// The dynamic binding `name` names, or nil.
@@ -228,6 +222,24 @@ pub fn dyn(name: [*:0]const u8) repr.Value {
     }
     const dyns = v.top_dyns orelse return wrap.fromNil();
     return tables.get(dyns, value.fromBytes(std.mem.span(name), .keyword));
+}
+
+/// The fiber `vm` is running, for the callers that have already established
+/// there is one.
+///
+/// The invariant is at or below the interpreter loop. `continueNoCheck`
+/// assigns `fiber` before it enters the loop and `signal.restore` puts back
+/// whatever was there before, so a cfunction body, an opcode handler, or
+/// `vm/entry.zig`'s `call` after its own entry check cannot observe a null
+/// here. A caller that can also be reached from outside the loop reads
+/// `vm.fiber` and handles the null instead.
+///
+/// The field is read on each call rather than bound, so a caller that holds
+/// this across a re-entry of the loop sees whatever the loop left behind.
+/// `currentFiber` is this on the calling thread's VM; this form is for a
+/// caller that has already captured the VM through `pinned`.
+pub inline fn fiberOf(vm: *Vm) *fibers.Fiber {
+    return vm.fiber orelse unreachable;
 }
 
 /// Asks the interpreter to leave its loop at the next call or backwards jump.
