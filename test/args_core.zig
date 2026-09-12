@@ -129,7 +129,7 @@ fn slots(argv: []const repr.Value) []const repr.Value {
     return argv;
 }
 
-fn arityIsCheckedAtBothBounds() raise.Raising(void) {
+fn arityIsCheckedAtBothBounds() raise.Error!void {
     const two = slots(&.{ wrap.fromNil(), wrap.fromNil() });
     try args.fixarity(two, 2);
     try args.arity(two, 1, 3);
@@ -149,7 +149,7 @@ fn arityIsCheckedAtBothBounds() raise.Raising(void) {
     refuses(args.arityCount, .{ 1, 0, 0 }, "arity mismatch, expected at most 0, got 1");
 }
 
-fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
+fn everyTypeGetterNamesItsSlotAndItsType() raise.Error!void {
     var argv = [_]repr.Value{
         wrap.fromNil(),
         harness.wrapInteger(7),
@@ -191,7 +191,7 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Raising(void) {
     expect(try args.getBoolean(a, 3));
 }
 
-fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
+fn everyExpectationCodeHasItsOwnNoun() raise.Error!void {
     var argv = [_]repr.Value{
         wrap.fromNil(),
         wrap.fromNumber(1.5),
@@ -239,7 +239,7 @@ fn everyExpectationCodeHasItsOwnNoun() raise.Raising(void) {
 
 /// The boundaries of each width, taken from both sides, because an off-by-one
 /// in a range test is invisible to every other test here.
-fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
+fn theWidthsAcceptExactlyTheirRange() raise.Error!void {
     var argv = [_]repr.Value{wrap.fromNil()};
 
     // A getter cannot be passed as a value, `args.getInteger` being
@@ -337,7 +337,7 @@ fn theWidthsAcceptExactlyTheirRange() raise.Raising(void) {
 /// A lower bound of `FLT_MIN`, the smallest positive *normal* float, is the
 /// shape this pins against: it would reject zero, every negative value and
 /// every subnormal, and report that `-1.5` is not representable as a float.
-fn getFloatTakesTheWholeFloatRange() raise.Raising(void) {
+fn getFloatTakesTheWholeFloatRange() raise.Error!void {
     var argv = [_]repr.Value{wrap.fromNumber(1.5)};
     const a = slots(&argv);
     expect(try args.getFloat(a, 0) == 1.5);
@@ -371,7 +371,7 @@ fn getFloatTakesTheWholeFloatRange() raise.Raising(void) {
     refuses(args.getFloat, .{ a, 0 }, "bad slot #0, expected float number, got 1");
 }
 
-fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
+fn theTwoFoldingsDifferInOneEnd() raise.Error!void {
     var argv = [_]repr.Value{
         harness.wrapInteger(0),
         harness.wrapInteger(3),
@@ -429,7 +429,7 @@ fn theTwoFoldingsDifferInOneEnd() raise.Raising(void) {
     expect(try args.getStartRange(a, 0, 10) == 4);
 }
 
-fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
+fn getSliceCollapsesAnInvertedRange() raise.Error!void {
     var argv = [_]repr.Value{ wrap.fromNil(), wrap.fromNil(), wrap.fromNil() };
     const array = arrays.new(0);
     harness.arrayPush(array, harness.wrapInteger(1));
@@ -464,7 +464,7 @@ fn getSliceCollapsesAnInvertedRange() raise.Raising(void) {
     );
 }
 
-fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
+fn eachCharacterContributesTheBitAtItsPosition() raise.Error!void {
     var argv = [_]repr.Value{ value.fromBytes("acb", .keyword), value.fromBytes("z", .keyword) };
     const a = slots(&argv);
 
@@ -498,7 +498,7 @@ fn eachCharacterContributesTheBitAtItsPosition() raise.Raising(void) {
         @as(u64, 1) << 63);
 }
 
-fn theByteAndCstringShapes() raise.Raising(void) {
+fn theByteAndCstringShapes() raise.Error!void {
     var argv = [_]repr.Value{
         value.fromBytes("hi", .string),
         wrap.fromBuffer(buffers.new(8)),
@@ -559,7 +559,7 @@ fn theByteAndCstringShapes() raise.Raising(void) {
 /// allocator instead, which the suites never reach: nothing in the runtime
 /// sets `JANET_BUFFER_FLAG_NO_REALLOC`, so such a buffer is only ever built by
 /// hand, as this case does.
-fn cbytesCopiesAFullNoReallocBuffer() raise.Raising(void) {
+fn cbytesCopiesAFullNoReallocBuffer() raise.Error!void {
     const b = buffers.new(0);
     var backing = [_]u8{ 'a', 'b', 'c' };
 
@@ -605,7 +605,7 @@ fn probeBytes(p: *const anyopaque, _: usize) []const u8 {
     return @as([*]const u8, @ptrCast(p))[0..3];
 }
 
-fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
+fn theAbstractGettersAndTheBytesCallback() raise.Error!void {
     const p = abstracts.newBytes(&probe_at, 4);
     const q = abstracts.newBytes(&probe_bytes_at, 4);
     @memcpy(@as([*]u8, @ptrCast(q))[0..3], "xyz");
@@ -666,7 +666,7 @@ fn theAbstractGettersAndTheBytesCallback() raise.Raising(void) {
 /// The payload here is eight bytes of `Z` with `xyz` written over the first
 /// three, so a walk from the view's start reaches byte 8 and the view reaches
 /// byte 3. Both are asserted.
-fn cbytesTerminatesAnAbstractsView() raise.Raising(void) {
+fn cbytesTerminatesAnAbstractsView() raise.Error!void {
     const q = abstracts.newBytes(&probe_bytes_at, 8);
     @memset(@as([*]u8, @ptrCast(q))[0..8], 'Z');
     @memcpy(@as([*]u8, @ptrCast(q))[0..3], "xyz");
@@ -695,7 +695,7 @@ fn cbytesTerminatesAnAbstractsView() raise.Raising(void) {
     refuses(args.getCBytes, .{ a, 0 }, "bytes contain embedded 0s");
 }
 
-fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Raising(void) {
+fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Error!void {
     var argv = [_]repr.Value{
         harness.wrapInteger(5),
         wrap.fromNil(),
@@ -762,13 +762,13 @@ fn theThreeStrlikeComparisonsCheckTheTypeToo() void {
     expect(args.streq(value.fromBytes("", .string), ""));
 }
 
-fn methodOne(argv: []repr.Value) raise.Raising(repr.Value) {
+fn methodOne(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1);
 }
 
-fn methodTwo(argv: []repr.Value) raise.Raising(repr.Value) {
+fn methodTwo(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(2);
@@ -872,7 +872,7 @@ fn theViewHelpersAnswerNothingRatherThanRefusing() void {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     try arityIsCheckedAtBothBounds();
     try everyTypeGetterNamesItsSlotAndItsType();
     try everyExpectationCodeHasItsOwnNoun();

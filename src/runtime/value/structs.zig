@@ -37,7 +37,7 @@
 //! ## The cfunction surface
 //!
 //! A published `CFunction` has no error channel in its signature, so the
-//! `cfunStruct*` functions deliver a raise through `raise.Raising` and
+//! `cfunStruct*` functions deliver a raise through `raise.Error!` and
 //! `corefn.reg` stores them. Nothing in them is stranded across a call that
 //! can raise.
 
@@ -386,7 +386,7 @@ pub fn toTable(st: [*]const tables.KV) *tables.Table {
 /// The pair-count bound is an upper bound and deliberately loose: a key that
 /// appears in both a struct and its prototype is counted twice, so the
 /// accumulator is over-allocated rather than resized. `end` compacts it.
-fn cfunStructFlatten(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStructFlatten(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const st = try args_core.getStruct(argv, 0);
 
@@ -412,7 +412,7 @@ fn cfunStructFlatten(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `struct/getproto`: the prototype, or nil where there is none.
-fn cfunStructGetproto(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStructGetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const st = try args_core.getStruct(argv, 0);
     const proto = head(st).proto;
@@ -420,7 +420,7 @@ fn cfunStructGetproto(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `struct/rawget`: a lookup that does not follow the prototype chain.
-fn cfunStructRawget(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStructRawget(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const st = try args_core.getStruct(argv, 0);
     return rawget(st, argv[1]);
@@ -431,7 +431,7 @@ fn cfunStructRawget(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The loop body runs at least once, so a struct with no prototype still
 /// produces one table, and `recursive` decides only whether the walk continues
 /// past the first.
-fn cfunStructToTable(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStructToTable(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const st = try args_core.getStruct(argv, 0);
     const recursive = argv.len > 1 and repr.truthy(argv[1]);
@@ -461,7 +461,7 @@ fn cfunStructToTable(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `struct/with-proto`: the struct constructor with a prototype in front of
 /// the pairs.
-fn cfunStructWithProto(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStructWithProto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const proto = try args_core.optStruct(argv, 0, null);
     if (argv.len & 1 == 0) return raise.panic("expected odd number of arguments");

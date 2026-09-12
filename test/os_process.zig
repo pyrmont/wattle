@@ -277,7 +277,7 @@ fn theHostOperations() void {
 
 /// How many scratch blocks the VM holds, for a Janet case to read on either
 /// side of a call that allocates and releases them.
-fn cfunScratch(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunScratch(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return harness.wrapInteger(@intCast(harness.vm().scratch.items.len));
 }

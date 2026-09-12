@@ -115,7 +115,7 @@ fn sameValue(a: repr.Value, b: repr.Value) bool {
 }
 
 /// A cfunction to wrap. Its address is the only function pointer in the file.
-fn aCFunction(argv: []repr.Value) raise.Raising(repr.Value) {
+fn aCFunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.abi.fromNil();

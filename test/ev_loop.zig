@@ -153,11 +153,11 @@ fn doString(source: [*:0]const u8) repr.Value {
     return out;
 }
 
-fn raisesContractPanic() raise.Raising(void) {
+fn raisesContractPanic() raise.Error!void {
     return raise.panic("contract panic");
 }
 
-fn returnsQuietly() raise.Raising(void) {
+fn returnsQuietly() raise.Error!void {
     return;
 }
 
@@ -177,7 +177,7 @@ fn theProtectedScope() void {
     // inner `signal.tryInit` moves `vm.return_reg` and `signal.restore` has to
     // put back what was there, not null.
     const outer = harness.raised(struct {
-        fn body() raise.Raising(void) {
+        fn body() raise.Error!void {
             expect(harness.raised(returnsQuietly, .{}) == null);
             const inner = harness.raised(raisesContractPanic, .{}).?;
             expect(inner.says("contract panic"));
@@ -297,7 +297,7 @@ fn theChannelGetters() void {
     expect(try_(channel.optChannel(argv[0..2], 0, null)) == chan);
 }
 
-fn probeMethod(argv: []repr.Value) raise.Raising(repr.Value) {
+fn probeMethod(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("probe", .keyword);
@@ -723,7 +723,7 @@ fn theOrderedTimeouts() void {
 /// at all: `ev/read`'s optional timeout and the socket layer both take the
 /// error one. So the contract lends the core environment a cfunction of its
 /// own and drives it from a task, which is the only way to reach the pair.
-fn cfunAddTimeout(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAddTimeout(argv: []repr.Value) raise.Error!repr.Value {
     try subsystems.args.fixarity(argv, 2);
     const sec = try subsystems.args.getNumber(argv, 0);
     if (try subsystems.args.getBoolean(argv, 1)) {

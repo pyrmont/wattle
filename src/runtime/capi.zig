@@ -743,7 +743,7 @@ pub fn janet_zig_signal_record(sig: c_uint, message: repr.Value) callconv(.c) vo
 // ==========================================================================
 
 /// The loop this thread is running, or a refusal where the build has none.
-fn currentLoop() raise.Raising(*abi.Loop) {
+fn currentLoop() raise.Error!*abi.Loop {
     if (comptime !config.ev) return raise.panic("event loop not enabled");
     return @ptrCast(impl.vm_state.current());
 }
@@ -768,7 +768,7 @@ fn installSentinel(
 /// frame: `raise.toAbi` gives back a determinate zero, and a zeroed `*Buffer`
 /// is not something to hand to `fromBuffer` even though no caller may read
 /// what comes back.
-fn newBufferValue(bytes: []const u8) raise.Raising(repr.Value) {
+fn newBufferValue(bytes: []const u8) raise.Error!repr.Value {
     return impl.value_helpers_wrap.abi.fromBuffer(try impl.value_buffers.newFrom(bytes));
 }
 
@@ -789,7 +789,7 @@ const requireJanetThread = impl.vm_state.requireJanetThread;
 /// field is optional rather than because a caller can meet it:
 /// `vm/entry.zig`'s `continueNoCheck` assigns `root_fiber` before it enters
 /// `runVm`, so anything running under the interpreter has one.
-fn rootFiberValue() raise.Raising(repr.Value) {
+fn rootFiberValue() raise.Error!repr.Value {
     const fiber = impl.vm_state.current().root_fiber orelse
         return raise.panic("no fiber is running");
     return impl.value_helpers_wrap.fromFiber(fiber);

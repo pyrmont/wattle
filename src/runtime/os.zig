@@ -303,7 +303,7 @@ pub fn gettimeAbi(spec: *Timespec, source: c_uint) c_int {
 
 /// Registers the `os/` family, which is four cfunctions in a reduced build and
 /// the whole table otherwise.
-pub fn libOs(env: *tables.Table) raise.Raising(void) {
+pub fn libOs(env: *tables.Table) raise.Error!void {
     // Upstream's `os/` registration opens with a Windows critical-section
     // initialisation guarded by `JANET_THREADS`, which no build in this tree
     // defines. It is recorded here rather than written: a branch no
@@ -411,14 +411,14 @@ pub fn timeNow() f64 {
 // ==========================================================================
 
 /// `(os/arch)`.
-fn cfunArch(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunArch(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     if (arch_name_override) |name| return value.fromBytes(name, .keyword);
     return value.fromBytes(std.mem.span(osArch()), .keyword);
 }
 
 /// `(os/clock &opt source format)`.
-fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunClock(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
     try args_core.arity(argv, 0, 2);
 
@@ -459,13 +459,13 @@ fn cfunClock(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/compiler)`.
-fn cfunCompiler(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCompiler(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return value.fromBytes(std.mem.span(osCompiler()), .keyword);
 }
 
 /// `(os/cpu-count &opt dflt)`.
-fn cfunCpuCount(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const count = osCpuCount();
     if (count < 0) return if (argv.len > 0) argv[0] else wrap.fromNil();
@@ -473,7 +473,7 @@ fn cfunCpuCount(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/cryptorand n &opt buf)`.
-fn cfunCryptorand(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCryptorand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const n = try args_core.getInteger(argv, 0);
     if (n < 0) return raise.panic("expected positive integer");
@@ -494,7 +494,7 @@ fn cfunCryptorand(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/environ)`.
-fn cfunEnviron(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunEnviron(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.fixarity(argv, 0);
     oa.lockEnviron();
@@ -520,7 +520,7 @@ fn cfunEnviron(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/exit &opt x force)`.
-fn cfunExit(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunExit(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"exit"}));
     var status: c_int = 0;
@@ -540,7 +540,7 @@ fn cfunExit(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/getenv variable &opt dflt)`.
-fn cfunGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const cstr = try args_core.getCString(argv, 0);
@@ -557,7 +557,7 @@ fn cfunGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/isatty &opt file)`.
-fn cfunIsatty(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const f: ?*io_core.FILE = if (argv.len == 1)
         try io_core.getfile(argv, 0, null)
@@ -578,7 +578,7 @@ fn cfunIsatty(argv: []repr.Value) raise.Raising(repr.Value) {
 /// It declares an arity of one to two and reads two arguments, so
 /// `(os/setenv "K")` unsets. The result of the host call is discarded, so a
 /// refusal is not reported.
-fn cfunSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const ks = try args_core.getCString(argv, 0);
@@ -590,7 +590,7 @@ fn cfunSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/setlocale &opt locale category)`.
-fn cfunSetlocale(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
     var category: c_int = h.LC_ALL;
@@ -607,7 +607,7 @@ fn cfunSetlocale(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/sleep n)`.
-fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSleep(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const delay = try args_core.getNumber(argv, 0);
     // A negative delay, a NaN and a value outside `time_t`'s range are one
@@ -621,13 +621,13 @@ fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/time)`.
-fn cfunTime(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(timeNow());
 }
 
 /// `(os/which)`.
-fn cfunWhich(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunWhich(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     if (argv.len == 1 and repr.truthy(argv[0])) {
         _ = try args_core.getKeyword(argv, 0); // Constrain to keywords.

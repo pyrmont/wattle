@@ -142,7 +142,7 @@ fn expectSandboxRefusal(source: []const u8) void {
     expect(harness.stringValueIs(resumed.value, "operation forbidden by sandbox"));
 }
 
-/// `debug.debugFrame`. It is `raise.Raising(Value)` because
+/// `debug.debugFrame`. It is `raise.Error!Value` because
 /// the trace decoding under it can reach an abstract's `tostring`; nothing in
 /// this file builds such a frame, so a raise here would be a defect rather
 /// than a case.
@@ -195,7 +195,7 @@ fn scribbleOverTheVm() void {
 /// during init, and `root_count` is one because that registry is rooted.
 /// Asserting those rather than the assigned values is deliberate: they are
 /// what the next line of an embedder's code sees.
-fn theStateInitLeaves() raise.Raising(void) {
+fn theStateInitLeaves() raise.Error!void {
     scribbleOverTheVm();
     expect(try vm_lifecycle.init() == 0);
 
@@ -294,7 +294,7 @@ fn deepen(inner: repr.Value) repr.Value {
 /// So what this pins is the invariant rather than the code: anything teardown
 /// frees, teardown clears, and `init` assigning a field is what says the field
 /// is part of the reset.
-fn whatDeinitClears() raise.Raising(void) {
+fn whatDeinitClears() raise.Error!void {
     var dummy: i32 = 0;
     expect(try vm_lifecycle.init() == 0);
     _ = harness.coreEnv();
@@ -353,7 +353,7 @@ fn whatDeinitClears() raise.Raising(void) {
 
 /// A teardown that leaks looks exactly like one that does not until something
 /// reuses the runtime. Two full cycles, each doing real work.
-fn aSecondCycle() raise.Raising(void) {
+fn aSecondCycle() raise.Error!void {
     for (0..2) |_| {
         var out = wrap.fromNil();
         expect(try vm_lifecycle.init() == 0);
@@ -539,7 +539,7 @@ fn aPrefixedCfunctionFrame() void {
 ///
 /// It reports its own frame, which is the only way to see a cframe that is not
 /// `debug/stack` itself.
-fn cfunSelfframe(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSelfframe(argv: []repr.Value) raise.Error!repr.Value {
     try subsystems.args.fixarity(argv, 0);
     return decode(harness.frame.current(harness.vm().fiber.?));
 }
@@ -589,7 +589,7 @@ fn aFrameWithNoProgramCounter() void {
 /// A cfunction that was never passed through `registry.cfuns` has no registry
 /// entry. The C implementation read the entry anyway; `debug.traceFrame`
 /// checks. See the header.
-fn unregisteredCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
+fn unregisteredCfunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.fromNil();
@@ -611,7 +611,7 @@ fn anUnregisteredCfunctionFrame() void {
 
 /// The sandbox accumulates and never narrows, and `sandboxAssert` is the only
 /// thing that reads it. Run in its own cycle, because nothing can undo it.
-fn theSandboxIsOneWay() raise.Raising(void) {
+fn theSandboxIsOneWay() raise.Error!void {
     expect(try vm_lifecycle.init() == 0);
     test_env = harness.coreEnv();
 
@@ -658,7 +658,7 @@ fn theSandboxIsOneWay() raise.Raising(void) {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     // Three cycles of their own, before anything shared exists.
     try theStateInitLeaves();
     try whatDeinitClears();

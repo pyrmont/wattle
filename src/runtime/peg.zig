@@ -306,7 +306,7 @@ const Reserve = struct {
 
 /// What compiles one special: the builder, and the special's arguments with
 /// the head of the form already taken off.
-const Special = *const fn (*Builder, []const repr.Value) raise.Raising(void);
+const Special = *const fn (*Builder, []const repr.Value) raise.Error!void;
 
 /// One row of `peg_specials`: the name a grammar spells, and its compiler.
 const SpecialPair = struct {
@@ -329,7 +329,7 @@ const Verdict = struct {
 // ==========================================================================
 
 /// Registers the six `peg/*` cfunctions and the abstract type they return.
-pub fn libPeg(env: *tables.Table) raise.Raising(void) {
+pub fn libPeg(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("peg/compile", &cfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
@@ -409,14 +409,14 @@ fn capSave(s: *PegState) CapState {
 }
 
 /// `(peg/compile peg)`.
-fn cfunPegCompile(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPegCompile(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromAbstract(try compilePeg(argv[0]));
 }
 
 /// `(peg/find peg text &opt start & args)`, which is the first offset the
 /// pattern matches at, or nil.
-fn cfunPegFind(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegCfunInit(argv, false);
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
@@ -429,7 +429,7 @@ fn cfunPegFind(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(peg/find-all peg text &opt start & args)`.
-fn cfunPegFindAll(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegCfunInit(argv, false);
     const ret = arrays.new(0);
     var i = call.start;
@@ -444,26 +444,26 @@ fn cfunPegFindAll(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(peg/match peg text &opt start & args)`, which is the captures as an
 /// array, or nil where the pattern does not match.
-fn cfunPegMatch(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegCfunInit(argv, false);
     const result = try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(call.start)));
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
 
 /// `(peg/replace peg subst text &opt start & args)`.
-fn cfunPegReplace(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPegReplace(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, true);
 }
 
 /// `(peg/replace-all peg subst text &opt start & args)`.
-fn cfunPegReplaceAll(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPegReplaceAll(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, false);
 }
 
 /// The compiler's entry point: a grammar as a Janet value, compiled into the
 /// abstract the matcher runs. `(dyn :peg-grammar)` supplies the defaults a
 /// name falls back to.
-fn compilePeg(x: repr.Value) raise.Raising(*Peg) {
+fn compilePeg(x: repr.Value) raise.Error!*Peg {
     var builder: Builder = .{
         .grammar = tables.new(0),
         .default_grammar = null,
@@ -488,7 +488,7 @@ fn compilePeg(x: repr.Value) raise.Raising(*Peg) {
 
 /// Spends a frame of the matcher's budget. Pre-decrement and compare against
 /// zero, so the budget is spent one frame before the message says it is.
-inline fn down1(s: *PegState) raise.Raising(void) {
+inline fn down1(s: *PegState) raise.Error!void {
     s.depth -= 1;
     if (s.depth == 0) return raise.panic("peg/match recursed too deeply");
 }
@@ -544,7 +544,7 @@ fn emitRule(r: Reserve, op: constants.PegRule, n: i32, body: [*]const u32) void 
 /// The number a capture tag keyword is given, the same number for every
 /// mention of it in one grammar. A tag rides in one byte of the tag buffer, so
 /// a grammar may name up to 255 of them.
-fn emitTag(b: *Builder, t: repr.Value) raise.Raising(u32) {
+fn emitTag(b: *Builder, t: repr.Value) raise.Error!u32 {
     if (!repr.checkType(t, repr.Tag.keyword))
         return pegPanicf(b, "expected keyword for capture tag, got %v", .{t});
     const check = tables.get(b.tags, t);
@@ -564,7 +564,7 @@ fn emitTag(b: *Builder, t: repr.Value) raise.Raising(u32) {
 /// Written out here the same way `debug.zig` writes it out, except that the
 /// format is a run-time value: `(??)` picks between a coloured and a plain
 /// rendering per line.
-inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Error!void {
     // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function,
     // and calling it can. Every caller here is raising, so the raise is
     // returned.
@@ -677,7 +677,7 @@ inline fn overflows(index: u32, limit: u32, n: u64) bool {
 
 /// A grammar error unless the special was given between `min` and `max`
 /// arguments. A negative bound is no bound.
-fn pegArity(b: *Builder, arity: usize, min: i32, max: i32) raise.Raising(void) {
+fn pegArity(b: *Builder, arity: usize, min: i32, max: i32) raise.Error!void {
     if (min >= 0 and arity < min)
         return pegPanicf(b, "arity mismatch, expected at least %d, got %d", .{ min, @as(i64, @intCast(arity)) });
     if (max >= 0 and arity > max)
@@ -704,7 +704,7 @@ fn pegCallReset(call: *PegCall) void {
 
 /// The state every `peg/...` call needs, including compiling the pattern where
 /// it arrives as source rather than as a `<core/peg>`.
-fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Raising(PegCall) {
+fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Error!PegCall {
     var ret: PegCall = undefined;
     const min: usize = if (get_replace) 3 else 2;
     try args_core.arity(argv, @intCast(min), -1);
@@ -751,7 +751,7 @@ fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Raising(PegCall) {
 ///
 /// A keyword is resolved against the grammar tables first, then the compiled
 /// form is cached, so a rule named twice is emitted once.
-fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Raising(u32) {
+fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
     var peg = peg_in;
 
     // Keep track of the form being compiled, for error messages.
@@ -902,7 +902,7 @@ fn pegConvertU64S64(from: u64, width: i32) i64 {
 }
 
 /// A grammar error unless the special was given exactly `arity` arguments.
-fn pegFixarity(b: *Builder, argc: usize, arity: i32) raise.Raising(void) {
+fn pegFixarity(b: *Builder, argc: usize, arity: i32) raise.Error!void {
     if (argc != arity) {
         return pegPanicf(b, "expected %d argument%s, got %d", .{
             arity,
@@ -913,14 +913,14 @@ fn pegFixarity(b: *Builder, argc: usize, arity: i32) raise.Raising(void) {
 }
 
 /// A special's integer argument, or a grammar error.
-fn pegGetinteger(b: *Builder, x: repr.Value) raise.Raising(i32) {
+fn pegGetinteger(b: *Builder, x: repr.Value) raise.Error!i32 {
     if (!args_core.checkint(x))
         return pegPanicf(b, "expected integer, got %v", .{x});
     return wrap.toInteger(x);
 }
 
 /// A special's non-negative integer argument, or a grammar error.
-fn pegGetnat(b: *Builder, x: repr.Value) raise.Raising(i32) {
+fn pegGetnat(b: *Builder, x: repr.Value) raise.Error!i32 {
     const i = try pegGetinteger(b, x);
     if (i < 0)
         return pegPanicf(b, "expected non-negative integer, got %v", .{x});
@@ -929,7 +929,7 @@ fn pegGetnat(b: *Builder, x: repr.Value) raise.Raising(i32) {
 
 /// A special's two-character range argument, or a grammar error. An empty
 /// range is refused here rather than compiled to a rule that never matches.
-fn pegGetrange(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
+fn pegGetrange(b: *Builder, x: repr.Value) raise.Error![*]const u8 {
     if (!repr.checkType(x, repr.Tag.string))
         return pegPanic(b, "expected string for character range");
     const str = wrap.toString(x);
@@ -941,14 +941,14 @@ fn pegGetrange(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
 }
 
 /// A special's character-set argument, or a grammar error.
-fn pegGetset(b: *Builder, x: repr.Value) raise.Raising([*]const u8) {
+fn pegGetset(b: *Builder, x: repr.Value) raise.Error![*]const u8 {
     if (!repr.checkType(x, repr.Tag.string))
         return pegPanic(b, "expected string for character set");
     return wrap.toString(x);
 }
 
 /// The method lookup behind `(:match peg text)` and its siblings.
-fn pegGetter(_: *Peg, key: repr.Value) raise.Raising(?repr.Value) {
+fn pegGetter(_: *Peg, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&peg_methods));
 }
 
@@ -959,7 +959,7 @@ fn pegMark(peg: *Peg, _: usize) void {
 }
 
 /// Writes the two counts, then the bytecode, then the constants.
-fn pegMarshal(peg: *Peg, m: *abi.Marshal) raise.Raising(void) {
+fn pegMarshal(peg: *Peg, m: *abi.Marshal) raise.Error!void {
     try marsh.marshalSize(m, peg.bytecode_len);
     try marsh.marshalInt(m, @bitCast(peg.num_constants));
     marsh.marshalAbstract(m, peg);
@@ -968,7 +968,7 @@ fn pegMarshal(peg: *Peg, m: *abi.Marshal) raise.Raising(void) {
 }
 
 /// The iteration order behind `next` and `(keys peg)`.
-fn pegNext(_: *Peg, key: repr.Value) raise.Raising(repr.Value) {
+fn pegNext(_: *Peg, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&peg_methods), key);
 }
 
@@ -994,7 +994,7 @@ fn pegPanicf(b: *Builder, comptime format: [:0]const u8, args: anytype) raise.Er
 
 /// The body of `peg/replace` and `peg/replace-all`, which differ only in
 /// whether the walk stops at the first match.
-fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Raising(repr.Value) {
+fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Error!repr.Value {
     var call = try pegCfunInit(argv, true);
     const ret = buffers.new(0);
     var trail: i32 = 0;
@@ -1040,7 +1040,7 @@ fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Raising(repr.Valu
 /// another rule assigns `rule` and `continue`s rather than recursing, which is
 /// what keeps `(some ...)` over a long input off the machine stack. Every
 /// other arm returns, so falling out of the `switch` is not reachable.
-fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Raising(?[*]const u8) {
+fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Error!?[*]const u8 {
     var rule = rule_in;
     var text = text_in;
     while (true) {
@@ -1701,7 +1701,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Rais
 
 /// Reads a compiled peg back from a stream, and verifies its bytecode before
 /// returning it.
-fn pegUnmarshal(u: *abi.Unmarshal) raise.Raising(*Peg) {
+fn pegUnmarshal(u: *abi.Unmarshal) raise.Error!*Peg {
     const bytecode_len = try marsh.unmarshalSize(u);
     const num_constants: u32 = @bitCast(try marsh.unmarshalInt(u));
 
@@ -1771,7 +1771,7 @@ fn pegUnmarshal(u: *abi.Unmarshal) raise.Raising(*Peg) {
 
 /// Adds a capture, to whichever of the three stacks the current mode and the
 /// grammar's use of backrefs call for.
-fn pushcap(s: *PegState, capture: repr.Value, tag: u32) raise.Raising(void) {
+fn pushcap(s: *PegState, capture: repr.Value, tag: u32) raise.Error!void {
     if (s.mode == .accumulate) try pp_describe.toStringB(s.scratch, capture);
     if (s.mode == .normal) try arrays.push(s.captures, capture);
     if (s.has_backref) {
@@ -1813,18 +1813,18 @@ inline fn skip(pointer: [*]const u8, delta: usize) [*]const u8 {
 }
 
 /// `(% patt)` and `(accumulate patt)`.
-fn specAccumulate(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specAccumulate(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.accumulate);
 }
 
 /// `(any patt)`.
-fn specAny(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specAny(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specRepeater(b, argv, 0);
 }
 
 /// `(argument n &opt tag)`, which captures one of the extra arguments
 /// `peg/match` was given.
-fn specArgument(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specArgument(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
@@ -1833,7 +1833,7 @@ fn specArgument(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(at-least n patt)`.
-fn specAtleast(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specAtleast(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
@@ -1842,7 +1842,7 @@ fn specAtleast(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(at-most n patt)`.
-fn specAtmost(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specAtmost(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
@@ -1851,13 +1851,13 @@ fn specAtmost(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(backmatch &opt tag)`, which matches the text of a tagged capture.
-fn specBackmatch(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specBackmatch(b: *Builder, argv: []const repr.Value) raise.Error!void {
     b.has_backref = true;
     return specTag1(b, argv, constants.PegRule.backmatch);
 }
 
 /// `(between lo hi patt)`, which every other repetition special compiles to.
-fn specBetween(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specBetween(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegFixarity(b, argv.len, 3);
     const r = reserve(b, 4);
     const lo = try pegGetnat(b, argv[0]);
@@ -1868,7 +1868,7 @@ fn specBetween(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 
 /// The two-rule branching specials, whose rule is `[rule, rule]` and whose
 /// first rule decides whether the second runs.
-fn specBranch(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specBranch(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 3);
     const rule_a = try pegCompile1(b, argv[0]);
@@ -1877,7 +1877,7 @@ fn specBranch(b: *Builder, argv: []const repr.Value, op: constants.PegRule) rais
 }
 
 /// The capturing specials, whose rule is `[rule, tag]`.
-fn specCap1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specCap1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
@@ -1886,12 +1886,12 @@ fn specCap1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.
 }
 
 /// `(<- patt)`, `(capture patt)` and `(quote patt)`.
-fn specCapture(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specCapture(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.capture);
 }
 
 /// `(number patt &opt base tag)`, which scans the matched text as a number.
-fn specCaptureNumber(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specCaptureNumber(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 3);
     const r = reserve(b, 4);
     var base: u32 = 0;
@@ -1908,17 +1908,17 @@ fn specCaptureNumber(b: *Builder, argv: []const repr.Value) raise.Raising(void) 
 }
 
 /// `(+ patt ...)` and `(choice patt ...)`.
-fn specChoice(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specChoice(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specVariadic(b, argv, constants.PegRule.choice);
 }
 
 /// `(column &opt tag)`.
-fn specColumn(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specColumn(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTag1(b, argv, constants.PegRule.column);
 }
 
 /// `(constant k &opt tag)`, which captures `k` without consuming text.
-fn specConstant(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specConstant(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
@@ -1926,7 +1926,7 @@ fn specConstant(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(??)` and `(debug)`, which print the matcher's position and captures.
-fn specDebug(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specDebug(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 0, 0);
     const r = reserve(b, 1);
     const empty = [_]u32{0};
@@ -1934,13 +1934,13 @@ fn specDebug(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(drop patt)`.
-fn specDrop(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specDrop(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.drop);
 }
 
 /// `(error &opt patt)`. With no argument the pattern is the empty match, so
 /// the error is raised wherever it is reached.
-fn specError(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specError(b: *Builder, argv: []const repr.Value) raise.Error!void {
     if (argv.len == 0) {
         const r = reserve(b, 2);
         const rule = try pegCompile1(b, wrap.fromNumber(0));
@@ -1951,44 +1951,44 @@ fn specError(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(group patt &opt tag)`.
-fn specGroup(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specGroup(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.group);
 }
 
 /// `(if cond patt)`.
-fn specIf(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specIf(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specBranch(b, argv, constants.PegRule.@"if");
 }
 
 /// `(if-not cond patt)`.
-fn specIfnot(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specIfnot(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specBranch(b, argv, constants.PegRule.ifnot);
 }
 
 /// `(int-be width &opt tag)`.
-fn specIntBe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specIntBe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x30);
 }
 
 /// `(int width &opt tag)`.
-fn specIntLe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specIntLe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x10);
 }
 
 /// `(lenprefix n patt)`, where the first rule's capture is how many times the
 /// second runs.
-fn specLenprefix(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specLenprefix(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specBranch(b, argv, constants.PegRule.lenprefix);
 }
 
 /// `(line &opt tag)`.
-fn specLine(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specLine(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTag1(b, argv, constants.PegRule.line);
 }
 
 /// `(> n patt)` and `(look n patt)`, which match `patt` at an offset without
 /// consuming it.
-fn specLook(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specLook(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const rulearg: i32 = if (argv.len == 2) 1 else 0;
@@ -1998,13 +1998,13 @@ fn specLook(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(cmt patt fn &opt tag)`.
-fn specMatchtime(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specMatchtime(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specMatchtimeImpl(b, argv, constants.PegRule.matchtime);
 }
 
 /// The two matchtime specials, which check that the second argument is
 /// something callable and put it in the constant table.
-fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
@@ -2020,17 +2020,17 @@ fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: constants.PegRul
 }
 
 /// `(cms patt fn &opt tag)`.
-fn specMatchtimeSplice(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specMatchtimeSplice(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specMatchtimeImpl(b, argv, constants.PegRule.matchsplice);
 }
 
 /// `(! patt)` and `(not patt)`.
-fn specNot(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specNot(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.not);
 }
 
 /// `(nth n patt &opt tag)`.
-fn specNth(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specNth(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
     const nth = try pegGetnat(b, argv[0]);
@@ -2040,7 +2040,7 @@ fn specNth(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// The specials whose rule is `[rule]`.
-fn specOnerule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specOnerule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 2);
     const rule = try pegCompile1(b, argv[0]);
@@ -2048,12 +2048,12 @@ fn specOnerule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) rai
 }
 
 /// `(only-tags patt)`.
-fn specOnlyTags(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specOnlyTags(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.only_tags);
 }
 
 /// `(? patt)` and `(opt patt)`.
-fn specOpt(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specOpt(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
@@ -2061,13 +2061,13 @@ fn specOpt(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `($ &opt tag)` and `(position &opt tag)`.
-fn specPosition(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specPosition(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTag1(b, argv, constants.PegRule.position);
 }
 
 /// `(range "az" ...)`. A single range compiles to a range rule and several
 /// compile to a set.
-fn specRange(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specRange(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, -1);
     if (argv.len == 1) {
         const r = reserve(b, 2);
@@ -2088,7 +2088,7 @@ fn specRange(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 
 /// The four fixed-width integer specials, whose mask says the width's
 /// signedness and byte order.
-fn specReadint(b: *Builder, argv: []const repr.Value, mask: u32) raise.Raising(void) {
+fn specReadint(b: *Builder, argv: []const repr.Value, mask: u32) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const tag: u32 = if (argv.len == 2) try emitTag(b, argv[1]) else 0;
@@ -2100,7 +2100,7 @@ fn specReadint(b: *Builder, argv: []const repr.Value, mask: u32) raise.Raising(v
 }
 
 /// `(-> tag)` and `(backref tag)`, which recapture a tagged capture.
-fn specReference(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specReference(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
     const search = try emitTag(b, argv[0]);
@@ -2111,7 +2111,7 @@ fn specReference(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 
 /// `(repeat n patt)`, and the `(n patt)` form a grammar writes with an integer
 /// at the head.
-fn specRepeat(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specRepeat(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 4);
     const n = try pegGetnat(b, argv[0]);
@@ -2120,7 +2120,7 @@ fn specRepeat(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// The two unbounded repetitions, which differ only in their lower bound.
-fn specRepeater(b: *Builder, argv: []const repr.Value, min: u32) raise.Raising(void) {
+fn specRepeater(b: *Builder, argv: []const repr.Value, min: u32) raise.Error!void {
     try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
@@ -2128,7 +2128,7 @@ fn specRepeater(b: *Builder, argv: []const repr.Value, min: u32) raise.Raising(v
 }
 
 /// `(/ patt subst)` and `(replace patt subst)`.
-fn specReplace(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specReplace(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
     const subrule = try pegCompile1(b, argv[0]);
@@ -2138,12 +2138,12 @@ fn specReplace(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(* patt ...)` and `(sequence patt ...)`.
-fn specSequence(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specSequence(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specVariadic(b, argv, constants.PegRule.sequence);
 }
 
 /// `(set "abc")`.
-fn specSet(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specSet(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegFixarity(b, argv.len, 1);
     const r = reserve(b, 9);
     const str = try pegGetset(b, argv[0]);
@@ -2153,22 +2153,22 @@ fn specSet(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
 }
 
 /// `(some patt)`.
-fn specSome(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specSome(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specRepeater(b, argv, 1);
 }
 
 /// `(split sep patt)`.
-fn specSplit(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specSplit(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTworule(b, argv, constants.PegRule.split);
 }
 
 /// `(sub window patt)`.
-fn specSub(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specSub(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTworule(b, argv, constants.PegRule.sub);
 }
 
 /// The specials whose rule is `[tag]`.
-fn specTag1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specTag1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     try pegArity(b, argv.len, 0, 1);
     const r = reserve(b, 2);
     const tag: u32 = if (argv.len != 0) try emitTag(b, argv[0]) else 0;
@@ -2176,23 +2176,23 @@ fn specTag1(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.
 }
 
 /// `(thru patt)`.
-fn specThru(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specThru(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.thru);
 }
 
 /// `(til stop patt)`.
-fn specTil(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specTil(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTworule(b, argv, constants.PegRule.til);
 }
 
 /// `(to patt)`.
-fn specTo(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specTo(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.to);
 }
 
 /// The specials whose rule is `[rule, rule]` and that run the second inside
 /// what the first matched.
-fn specTworule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specTworule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     try pegFixarity(b, argv.len, 2);
     const r = reserve(b, 3);
     const subrule1 = try pegCompile1(b, argv[0]);
@@ -2201,22 +2201,22 @@ fn specTworule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) rai
 }
 
 /// `(uint-be width &opt tag)`.
-fn specUintBe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specUintBe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x20);
 }
 
 /// `(uint width &opt tag)`.
-fn specUintLe(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specUintLe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x0);
 }
 
 /// `(unref patt &opt tag)`.
-fn specUnref(b: *Builder, argv: []const repr.Value) raise.Raising(void) {
+fn specUnref(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.unref);
 }
 
 /// The specials whose rule is `[len, rules...]`.
-fn specVariadic(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Raising(void) {
+fn specVariadic(b: *Builder, argv: []const repr.Value, op: constants.PegRule) raise.Error!void {
     const rule: u32 = @intCast(b.bytecode.items.len);
     scratch_vector.push(&b.bytecode, op.number());
     scratch_vector.push(&b.bytecode, @as(u32, @intCast(argv.len)));

@@ -75,7 +75,7 @@ const wrap = @import("wrap.zig");
 /// The array, tuple and buffer arm shares one integer check across three
 /// containers, so it is written as a nested `if` on the type rather than as
 /// three cases.
-pub fn get(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
+pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
     const t = repr.typeOf(ds);
     switch (t) {
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
@@ -141,7 +141,7 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
 /// difference between this and `in` on the same value: both panic when the type
 /// has no `get` at all, but a `get` that runs and reports absence is an error
 /// to `in` and a nil to `getIndex`.
-pub fn getIndex(ds: repr.Value, index: i32) raise.Raising(repr.Value) {
+pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
     var val: repr.Value = undefined;
     if (index < 0) return raise.panic("expected non-negative index");
     switch (repr.typeOf(ds)) {
@@ -210,7 +210,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Raising(repr.Value) {
 /// its `get` callback reports presence separately from the value it produces,
 /// and absence is defined as an error here. The trailing space in that message
 /// is part of the text a program sees and is not a typo to tidy.
-pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
+pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
     var val: repr.Value = undefined;
     const vtype = repr.typeOf(ds);
     switch (vtype) {
@@ -272,7 +272,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
 /// reads as a `u64`. The two agree only where a `usize` is 64 bits, which is
 /// every target this project builds for, and the widening is what keeps the
 /// rendering identical there.
-pub fn length(x: repr.Value) raise.Raising(i32) {
+pub fn length(x: repr.Value) raise.Error!i32 {
     switch (repr.typeOf(x)) {
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return @intCast(strings.head(wrap.toString(x)).length),
         repr.Tag.array => return @intCast(wrap.toArray(x).count),
@@ -317,7 +317,7 @@ pub fn length(x: repr.Value) raise.Raising(i32) {
 /// 32 bits, so every value it can take is exactly representable. It is a
 /// `comptime` branch rather than a deletion, even though no target this project
 /// builds for selects it.
-pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
+pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
     switch (repr.typeOf(x)) {
         repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.fromInteger(@intCast(strings.head(wrap.toString(x)).length)),
         repr.Tag.array => return wrap.fromInteger(@intCast(wrap.toArray(x).count)),
@@ -367,7 +367,7 @@ pub fn lengthv(x: repr.Value) raise.Raising(repr.Value) {
 /// rather than being re-raised. Nothing in the tree calls it, because the
 /// interpreter always passes the flag set. It exists for a module, which is the
 /// one caller that may reach the fiber arm with no fiber of its own running.
-pub fn next(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
+pub fn next(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
     return nextImpl(ds, key, false);
 }
 
@@ -380,7 +380,7 @@ pub fn next(ds: repr.Value, key: repr.Value) raise.Raising(repr.Value) {
 ///
 /// This is not a published symbol. `next` is the one caller outside the
 /// interpreter, and it reaches it by `@import`.
-pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Raising(repr.Value) {
+pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Error!repr.Value {
     const t = repr.typeOf(ds);
     switch (t) {
         repr.Tag.table, repr.Tag.@"struct" => {
@@ -502,7 +502,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Rai
 /// are identical, because the order in which each raises is observable: `put`
 /// on a buffer checks the key before the value, so `(put @"" :x :y)` complains
 /// about the key and `(put @"" 0 :y)` complains about the value.
-pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Raising(void) {
+pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Error!void {
     const vtype = repr.typeOf(ds);
     switch (vtype) {
         repr.Tag.array => {
@@ -551,7 +551,7 @@ pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Raising(void)
 /// An array or buffer written past its end grows to fit, and the growth is
 /// where the two differ: an array fills the gap with nil in a loop, and a
 /// buffer zeroes it with `memset`, because a buffer's elements are bytes.
-pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Raising(void) {
+pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
     const vtype = repr.typeOf(ds);
     switch (vtype) {
         repr.Tag.array => {
@@ -610,7 +610,7 @@ fn badKey(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error {
 /// `vtype` is the container's type, `key` the key and `max` the exclusive
 /// bound. Any of the three failing raises the same message, through `badKey`.
 /// It is the bounds check the panicking accessors share.
-fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Raising(i32) {
+fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error!i32 {
     if (!args_core.checkint(key)) return badKey(vtype, key, max);
     const ret = wrap.toInteger(key);
     if (ret < 0) return badKey(vtype, key, max);

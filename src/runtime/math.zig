@@ -72,7 +72,7 @@ const rng_methods = [_]method_type.Method{
 /// name.
 fn Math2Op(comptime fop: anytype) type {
     return struct {
-        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 2);
             const lhs = try args_core.getNumber(argv, 0);
             const rhs = try args_core.getNumber(argv, 1);
@@ -103,7 +103,7 @@ const MathEntry = struct {
 /// and reaching the same implementation is the only way to guarantee that.
 fn MathOp(comptime fop: anytype) type {
     return struct {
-        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 1);
             return wrap.fromNumber(fop(try args_core.getNumber(argv, 0)));
         }
@@ -152,7 +152,7 @@ pub fn lcm(x: f64, y: f64) f64 {
 
 /// Registers `math/*`, `not`, the RNG abstract type, and the numeric constants
 /// the bootstrap puts in the image.
-pub fn libMath(env: *tables.Table) raise.Raising(void) {
+pub fn libMath(env: *tables.Table) raise.Error!void {
     const ops = [_]MathEntry{
         .{ .janet_name = "acos", .fop = &c.acos, .doc = "Returns the arccosine of x." },
         .{ .janet_name = "asin", .fop = &c.asin, .doc = "Returns the arcsin of x." },
@@ -364,7 +364,7 @@ pub fn rngU32(rng: *Rng) u32 {
 // ==========================================================================
 
 /// `(math/frexp x)`, as a tuple of the mantissa and the exponent.
-fn cfunFrexp(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFrexp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     var exp: c_int = undefined;
     const mantissa = c.frexp(try args_core.getNumber(argv, 0), &exp);
@@ -375,19 +375,19 @@ fn cfunFrexp(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(math/gcd x y)`.
-fn cfunGcd(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGcd(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return wrap.fromNumber(gcd(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
 /// `(math/lcm x y)`.
-fn cfunLcm(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunLcm(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return wrap.fromNumber(lcm(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
 /// `(math/ldexp m e)`.
-fn cfunLdexp(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunLdexp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const x = try args_core.getNumber(argv, 0);
     const y = try args_core.getInteger(argv, 1);
@@ -395,20 +395,20 @@ fn cfunLdexp(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(not x)`, registered by `libMath` along with the `math/` names.
-fn cfunNot(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNot(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(!repr.truthy(argv[0]));
 }
 
 /// `(math/random)`, from the VM's own generator.
-fn cfunRand(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(rngDouble(&vm_state.current().rng));
 }
 
 /// `(math/rng-buffer rng n &opt buf)`. The space is reserved through
 /// `buffers.extra`, which raises before any byte is written.
-fn cfunRngBuffer(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     const n: usize = @intCast(try args_core.getNat(argv, 1));
@@ -421,7 +421,7 @@ fn cfunRngBuffer(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(math/rng-int rng &opt max)`. A `max` of zero gives zero, and no `max`
 /// means the whole non-negative `i32` range.
-fn cfunRngInt(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     if (argv.len == 1) return wrap.fromInteger(@bitCast(rngU32(rng) >> 1));
@@ -431,7 +431,7 @@ fn cfunRngInt(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(math/rng &opt seed)`, seeding from an integer or from a byte sequence.
-fn cfunRngMake(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRngMake(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const rng: *Rng = abstracts.newFor(Rng, &rngType);
     if (argv.len == 1) {
@@ -448,14 +448,14 @@ fn cfunRngMake(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(math/rng-uniform rng)`.
-fn cfunRngUniform(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRngUniform(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     return wrap.fromNumber(rngDouble(rng));
 }
 
 /// `(math/seedrandom seed)`, seeding the VM's own generator.
-fn cfunSrand(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSrand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (args_core.checkint(argv[0])) {
         rngSeed(&vm_state.current().rng, @bitCast(try args_core.getInteger(argv, 0)));
@@ -467,12 +467,12 @@ fn cfunSrand(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// The method lookup behind `(:int rng 10)` and its siblings.
-fn rngGet(_: *Rng, key: repr.Value) raise.Raising(?repr.Value) {
+fn rngGet(_: *Rng, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&rng_methods));
 }
 
 /// Writes the five words of state.
-fn rngMarshal(rng: *Rng, m: *abi.Marshal) raise.Raising(void) {
+fn rngMarshal(rng: *Rng, m: *abi.Marshal) raise.Error!void {
     marsh.marshalAbstract(m, rng);
     try marsh.marshalInt(m, @bitCast(rng.a));
     try marsh.marshalInt(m, @bitCast(rng.b));
@@ -482,12 +482,12 @@ fn rngMarshal(rng: *Rng, m: *abi.Marshal) raise.Raising(void) {
 }
 
 /// The iteration order behind `next` and `(keys rng)`.
-fn rngNext(_: *Rng, key: repr.Value) raise.Raising(repr.Value) {
+fn rngNext(_: *Rng, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&rng_methods), key);
 }
 
 /// Reads the five words of state back.
-fn rngUnmarshal(u: *abi.Unmarshal) raise.Raising(*Rng) {
+fn rngUnmarshal(u: *abi.Unmarshal) raise.Error!*Rng {
     const rng: *Rng = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Rng))));
     rng.a = @bitCast(try marsh.unmarshalInt(u));
     rng.b = @bitCast(try marsh.unmarshalInt(u));

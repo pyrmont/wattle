@@ -163,8 +163,8 @@ fn Box(comptime T: type) type {
         const at: *const abi.AbstractType = if (T == i64) &s64Type else &u64Type;
         /// The raising conversion, not the abi beside it.
         ///
-        /// Reaching the abi from a `raise.Raising` caller swallows the
-        /// refusal: every `call` below is `raise.Raising`, so a binding that
+        /// Reaching the abi from a raise-capable caller swallows the
+        /// refusal: every `call` below is raise-capable, so a binding that
         /// named the abi would make `(+ (int/s64 1) {})` kill the process
         /// instead of raising a catchable error.
         ///
@@ -200,13 +200,13 @@ pub fn Boxed(comptime T: type) type {
 
         /// Both boxes marshal identically: eight bytes, with the type coming
         /// from the abstract header rather than from the payload.
-        pub fn marshal(box: *T, m: *abi.Marshal) raise.Raising(void) {
+        pub fn marshal(box: *T, m: *abi.Marshal) raise.Error!void {
             marsh.marshalAbstract(m, box);
             try marsh.marshalInt64(m, @bitCast(box.*));
         }
 
         /// Reads back what `marshal` wrote, into a fresh abstract.
-        pub fn unmarshal(u: *abi.Unmarshal) raise.Raising(*T) {
+        pub fn unmarshal(u: *abi.Unmarshal) raise.Error!*T {
             const box: *T = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(T))));
             box.* = @bitCast(try marsh.unmarshalInt64(u));
             return box;
@@ -223,7 +223,7 @@ pub const BoxedU64 = Boxed(u64);
 /// quotient, and `on_zero` what a zero divisor does.
 fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) type {
     return struct {
-        fn apply(acc: *T, val: T) raise.Raising(void) {
+        fn apply(acc: *T, val: T) raise.Error!void {
             if (val == 0) {
                 switch (on_zero) {
                     .panic => return raise.panic("division by zero"),
@@ -240,14 +240,14 @@ fn DivMethod(comptime T: type, comptime rem: bool, comptime on_zero: DivZero) ty
             acc.* = if (rem) @rem(acc.*, val) else @divTrunc(acc.*, val);
         }
 
-        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.arity(argv, 2, -1);
             var acc = try Box(T).unwrap(argv[0]);
             for (argv[1..]) |arg| try apply(&acc, try Box(T).unwrap(arg));
             return Box(T).make(acc);
         }
 
-        fn calli(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn calli(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 2);
             var acc = try Box(T).unwrap(argv[1]);
             try apply(&acc, try Box(T).unwrap(argv[0]));
@@ -264,7 +264,7 @@ const DivZero = enum { panic, identity };
 /// Builds the one unary method, bitwise complement.
 fn NotMethod(comptime T: type) type {
     return struct {
-        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 1);
             return Box(T).make(~try Box(T).unwrap(argv[0]));
         }
@@ -274,7 +274,7 @@ fn NotMethod(comptime T: type) type {
 /// Builds a variadic method that folds `op` left over its arguments.
 fn OpMethod(comptime T: type, comptime op: BinOp) type {
     return struct {
-        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.arity(argv, 2, -1);
             var acc: u64 = @bitCast(try Box(T).unwrap(argv[0]));
             for (argv[1..]) |arg| {
@@ -290,7 +290,7 @@ fn OpMethod(comptime T: type, comptime op: BinOp) type {
 /// fixed-arity where the plain form is variadic.
 fn OpMethodInvert(comptime T: type, comptime op: BinOp) type {
     return struct {
-        fn call(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn call(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 2);
             const lhs: u64 = @bitCast(try Box(T).unwrap(argv[1]));
             const rhs: u64 = @bitCast(try Box(T).unwrap(argv[0]));
@@ -411,7 +411,7 @@ pub fn isInt(x: repr.Value) constants.IntType {
 
 /// Installs the `int/` cfunctions into `env` and registers both abstract
 /// types.
-pub fn libInttypes(env: *tables.Table) raise.Raising(void) {
+pub fn libInttypes(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("int/s64", &cfunS64New, @src(), "(int/s64 value)", "Create a boxed signed 64 bit integer from a string value or a number."),
         corefn.reg("int/u64", &cfunU64New, @src(), "(int/u64 value)", "Create a boxed unsigned 64 bit integer from a string value or a number."),
@@ -455,7 +455,7 @@ pub fn s64Mod(op1: i64, op2: i64) i64 {
 /// payload is reinterpreted rather than range-checked, so
 /// `(int/s64 (int/u64 0xFFFFFFFFFFFFFFFF))` is -1 rather than an error, which
 /// is what a program sees.
-pub fn unwrapS64(x: repr.Value) raise.Raising(i64) {
+pub fn unwrapS64(x: repr.Value) raise.Error!i64 {
     switch (repr.typeOf(x)) {
         repr.Tag.number => {
             const d = wrap.toNumber(x);
@@ -478,7 +478,7 @@ pub fn unwrapS64(x: repr.Value) raise.Raising(i64) {
 }
 
 /// The unsigned form of `unwrapS64`, with the same reinterpretation rule.
-pub fn unwrapU64(x: repr.Value) raise.Raising(u64) {
+pub fn unwrapU64(x: repr.Value) raise.Error!u64 {
     switch (repr.typeOf(x)) {
         repr.Tag.number => {
             const d = wrap.toNumber(x);
@@ -542,7 +542,7 @@ fn boxed(comptime T: type, at: *const abi.AbstractType, val: T) repr.Value {
 
 /// The `compare` method of `int/s64`, which orders a box against a number, an
 /// `int/s64` or an `int/u64`, and returns nil for anything else.
-fn cfunS64Compare(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunS64Compare(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != .s64) {
         return raise.panic("compare method requires int/s64 as first argument");
@@ -569,7 +569,7 @@ fn cfunS64Compare(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `div`: floored division, refusing a zero divisor.
-fn cfunS64Divf(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunS64Divf(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
@@ -579,7 +579,7 @@ fn cfunS64Divf(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `rdiv`: `div` with the operands swapped.
-fn cfunS64Divfi(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunS64Divfi(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
@@ -589,7 +589,7 @@ fn cfunS64Divfi(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `mod`: floored modulo, which returns the dividend for a zero divisor.
-fn cfunS64Mod(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunS64Mod(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
@@ -598,7 +598,7 @@ fn cfunS64Mod(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `rmod`: `mod` with the operands swapped.
-fn cfunS64Modi(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunS64Modi(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
@@ -607,14 +607,14 @@ fn cfunS64Modi(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `int/s64`: a boxed signed integer from a number, a string or another box.
-fn cfunS64New(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunS64New(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrapS64(try unwrapS64(argv[0]));
 }
 
 /// `int/to-bytes`: the eight bytes of a box, in a chosen order, appended to a
 /// buffer.
-fn cfunToBytes(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunToBytes(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     if (isInt(argv[0]) == .none) {
         return pp_format.panicf("int/to-bytes: expected an int/s64 or int/u64, got %q", .{argv[0]});
@@ -663,7 +663,7 @@ fn cfunToBytes(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The bound is `intmax_int64` and not `maxInt(i64)`: beyond it a double
 /// cannot tell neighbouring integers apart, so the conversion would silently
 /// round.
-fn cfunToNumber(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunToNumber(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (repr.typeOf(argv[0]) == repr.Tag.abstract) {
         const abst = wrap.toAbstract(argv[0]);
@@ -683,7 +683,7 @@ fn cfunToNumber(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// The `compare` method of `int/u64`, the unsigned twin of `cfunS64Compare`.
-fn cfunU64Compare(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunU64Compare(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != .u64) {
         return raise.panic("compare method requires int/u64 as first argument");
@@ -710,7 +710,7 @@ fn cfunU64Compare(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `int/u64`: a boxed unsigned integer from a number, a string or another box.
-fn cfunU64New(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunU64New(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrapU64(try unwrapU64(argv[0]));
 }
@@ -745,19 +745,19 @@ fn compareScalar(comptime T: type, x: T, y: T) c_int {
 /// first. The four hand-written division methods call this where the generated
 /// `/` and `%` make the same test inline; without it `@divTrunc` and `@rem`
 /// have illegal behaviour there.
-fn divCheck(op1: i64, op2: i64) raise.Raising(void) {
+fn divCheck(op1: i64, op2: i64) raise.Error!void {
     if (op2 == -1 and op1 == std.math.minInt(i64)) {
         return raise.panic("INT64_MIN divided by -1");
     }
 }
 
 /// `int/s64`'s `next` method: the name of the method after `key` in the table.
-fn int64Next(_: *i64, key: repr.Value) raise.Raising(repr.Value) {
+fn int64Next(_: *i64, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&s64_methods), key);
 }
 
 /// `int/s64`'s `get` callback: a method looked up by name.
-fn itS64Get(_: *i64, key: repr.Value) raise.Raising(?repr.Value) {
+fn itS64Get(_: *i64, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&s64_methods));
 }
 
@@ -771,19 +771,19 @@ fn itS64Get(_: *i64, key: repr.Value) raise.Raising(?repr.Value) {
 /// Reserving 32 bytes is what makes writing straight into
 /// `buffer.data + buffer.count` safe: the longest decimal rendering of a
 /// 64-bit integer is 20 characters.
-fn itS64Tostring(box: *i64, render: *abi.Render) raise.Raising(void) {
+fn itS64Tostring(box: *i64, render: *abi.Render) raise.Error!void {
     const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
     try buffers.extra(buffer, 32);
     buffer.count += @intCast(formatS64(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
 }
 
 /// `int/u64`'s `get` callback: a method looked up by name.
-fn itU64Get(_: *u64, key: repr.Value) raise.Raising(?repr.Value) {
+fn itU64Get(_: *u64, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&u64_methods));
 }
 
 /// `int/u64`'s `tostring` callback, the unsigned twin of `itS64Tostring`.
-fn itU64Tostring(box: *u64, render: *abi.Render) raise.Raising(void) {
+fn itU64Tostring(box: *u64, render: *abi.Render) raise.Error!void {
     const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
     try buffers.extra(buffer, 32);
     buffer.count += @intCast(formatU64(box.*, buffer.data.? + @as(usize, @intCast(buffer.count))));
@@ -808,6 +808,6 @@ fn threeWay(comptime T: type, x: T, y: T) f64 {
 }
 
 /// `int/u64`'s `next` method: the name of the method after `key` in the table.
-fn uint64Next(_: *u64, key: repr.Value) raise.Raising(repr.Value) {
+fn uint64Next(_: *u64, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&u64_methods), key);
 }

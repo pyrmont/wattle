@@ -145,12 +145,12 @@ const Pending = struct {
 // ==========================================================================
 
 /// The channel argument at `argv[n]`, or a raise where it is not a channel.
-fn channelArg(argv: []const repr.Value, n: usize) raise.Raising(*Channel) {
+fn channelArg(argv: []const repr.Value, n: usize) raise.Error!*Channel {
     return try args_core.getAbstract(Channel, argv, n, &channelType);
 }
 
 /// Gives a value to a channel from Zig, with no fiber to suspend.
-pub fn channelGive(chan: ?*Channel, x: repr.Value) raise.Raising(bool) {
+pub fn channelGive(chan: ?*Channel, x: repr.Value) raise.Error!bool {
     return push(unwrap(chan), x, .detached);
 }
 
@@ -176,7 +176,7 @@ pub fn channelMakeThreaded(limit: u32) ?*Channel {
 }
 
 /// Takes a value from a channel from Zig, with no fiber to suspend.
-pub fn channelTake(chan: ?*Channel, out: *repr.Value) raise.Raising(bool) {
+pub fn channelTake(chan: ?*Channel, out: *repr.Value) raise.Error!bool {
     return pop(unwrap(chan), out, .detached);
 }
 
@@ -215,7 +215,7 @@ pub fn entries() []const corefn.Entry {
 }
 
 /// The channel at slot `n`, or a raise where it is not a channel.
-pub fn getChannel(argv: []const repr.Value, n: usize) raise.Raising(?*Channel) {
+pub fn getChannel(argv: []const repr.Value, n: usize) raise.Error!?*Channel {
     return try args_core.getAbstract(Channel, argv, n, &channelType);
 }
 
@@ -236,7 +236,7 @@ pub fn optChannel(
     argv: []const repr.Value,
     n: usize,
     dflt: ?*Channel,
-) raise.Raising(?*Channel) {
+) raise.Error!?*Channel {
     if (argv.len > n and !repr.checkType(argv[n], repr.Tag.nil)) {
         return getChannel(argv, n);
     }
@@ -244,14 +244,14 @@ pub fn optChannel(
 }
 
 /// Takes the lock, pops a value, and releases it.
-pub fn pop(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Raising(bool) {
+pub fn pop(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Error!bool {
     lock(chan);
     defer unlock(chan);
     return popWithLock(chan, item, is_choice);
 }
 
 /// Takes the lock, pushes a value, and releases it.
-pub fn push(chan: *Channel, x: repr.Value, mode: Caller) raise.Raising(bool) {
+pub fn push(chan: *Channel, x: repr.Value, mode: Caller) raise.Error!bool {
     lock(chan);
     defer unlock(chan);
     return pushWithLock(chan, x, mode);
@@ -262,7 +262,7 @@ pub fn push(chan: *Channel, x: repr.Value, mode: Caller) raise.Raising(bool) {
 // ==========================================================================
 
 /// `(ev/capacity ch)`.
-fn cfunCapacity(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCapacity(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -272,7 +272,7 @@ fn cfunCapacity(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/select & clauses)`.
-fn cfunChoice(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunChoice(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
 
     if (vm_state.current().coerce_error) {
@@ -330,7 +330,7 @@ fn cfunChoice(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/chan-close ch)`.
-fn cfunClose(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunClose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -386,7 +386,7 @@ fn cfunClose(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/count ch)`.
-fn cfunCount(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCount(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -395,7 +395,7 @@ fn cfunCount(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/full ch)`.
-fn cfunFull(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFull(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -404,7 +404,7 @@ fn cfunFull(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/give ch x)`.
-fn cfunGive(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGive(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const chan = try channelArg(argv, 0);
     if (vm_state.current().coerce_error) {
@@ -415,7 +415,7 @@ fn cfunGive(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/chan &opt capacity)`.
-fn cfunNew(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
     const chan = unwrap(abstracts.newFor(Channel, &channelType));
@@ -424,7 +424,7 @@ fn cfunNew(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/thread-chan &opt limit)`.
-fn cfunNewThreaded(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNewThreaded(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
     const chan = unwrap(abstracts.threaded(&channelType, @sizeOf(Channel)));
@@ -433,13 +433,13 @@ fn cfunNewThreaded(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/rselect & clauses)`.
-fn cfunRchoice(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRchoice(argv: []repr.Value) raise.Error!repr.Value {
     fisherYatesArgs(argv);
     return cfunChoice(argv);
 }
 
 /// `(ev/take ch)`.
-fn cfunTake(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTake(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     var item: repr.Value = undefined;
@@ -465,7 +465,7 @@ fn chanatGCPerThread(chan: *Channel, _: usize) void {
 }
 
 /// The method lookup behind `(:give ch x)` and its siblings.
-fn chanatGet(_: *Channel, key: repr.Value) raise.Raising(?repr.Value) {
+fn chanatGet(_: *Channel, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&chanat_methods));
 }
 
@@ -479,7 +479,7 @@ fn chanatMark(chan: *Channel, _: usize) void {
 }
 
 /// Writes an unthreaded channel's contents and capacity.
-fn chanatMarshal(chan: *Channel, m: *abi.Marshal) raise.Raising(void) {
+fn chanatMarshal(chan: *Channel, m: *abi.Marshal) raise.Error!void {
     try marsh.marshalByte(m, @intFromBool(chan.is_threaded));
     marsh.marshalAbstract(m, chan);
     try marsh.marshalByte(m, @intFromBool(chan.closed));
@@ -491,13 +491,13 @@ fn chanatMarshal(chan: *Channel, m: *abi.Marshal) raise.Raising(void) {
 }
 
 /// The iteration order behind `next` and `(keys ch)`.
-fn chanatNext(_: *Channel, key: repr.Value) raise.Raising(repr.Value) {
+fn chanatNext(_: *Channel, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&chanat_methods), key);
 }
 
 /// Reads a channel back, refusing a threaded one, which cannot be rebuilt from
 /// a portable stream.
-fn chanatUnmarshal(u: *abi.Unmarshal) raise.Raising(*Channel) {
+fn chanatUnmarshal(u: *abi.Unmarshal) raise.Error!*Channel {
     // The lead byte `chanatMarshal` wrote says which heap the channel lived
     // on. A threaded channel cannot be rebuilt from a portable stream: it
     // needs an allocation on the threaded heap and a reference count handed to
@@ -616,7 +616,7 @@ fn markFQ(fq: *ev.Queue(Pending)) void {
 /// Reports true on failure. The five types listed are self-contained words and
 /// cross as they are; everything else becomes a buffer of an unsafe
 /// marshalling, which `unpack` reverses.
-fn pack(chan: *Channel, x: *repr.Value) raise.Raising(bool) {
+fn pack(chan: *Channel, x: *repr.Value) raise.Error!bool {
     if (!isThreaded(chan)) return false;
     switch (repr.typeOf(x.*)) {
         repr.Tag.nil, repr.Tag.number, repr.Tag.pointer, repr.Tag.boolean, repr.Tag.cfunction => return false,
@@ -646,7 +646,7 @@ fn pack(chan: *Channel, x: *repr.Value) raise.Raising(bool) {
 /// `pushWithLock` gives, and for one more of its own: the `.detached` arm
 /// below returns without unlocking, so an empty threaded channel would stay
 /// locked if the release were this function's.
-fn popWithLock(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Raising(bool) {
+fn popWithLock(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Error!bool {
     var writer: Pending = undefined;
     if (chan.closed) {
         item.* = wrap.fromNil();
@@ -694,7 +694,7 @@ fn popWithLock(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Raisi
 /// Releasing it here instead, on each of this function's own returns, is what
 /// the two raising paths inside `pack` and `unpack` go straight past, and a
 /// threaded channel left locked is locked against every other thread.
-fn pushWithLock(chan: *Channel, x_in: repr.Value, mode: Caller) raise.Raising(bool) {
+fn pushWithLock(chan: *Channel, x_in: repr.Value, mode: Caller) raise.Error!bool {
     var x = x_in;
     var reader: Pending = undefined;
     if (chan.closed) return raise.panic("cannot write to closed channel");
@@ -838,7 +838,7 @@ fn unlock(chan: *Channel) void {
 }
 
 /// Reverses `pack` for a value that has crossed a thread.
-fn unpack(chan: *Channel, x: *repr.Value, is_cleanup: bool) raise.Raising(bool) {
+fn unpack(chan: *Channel, x: *repr.Value, is_cleanup: bool) raise.Error!bool {
     if (!isThreaded(chan)) return false;
     switch (repr.typeOf(x.*)) {
         repr.Tag.nil, repr.Tag.number, repr.Tag.pointer, repr.Tag.boolean, repr.Tag.cfunction => return false,

@@ -200,7 +200,7 @@ fn theFuncframeLayout(add: *functions.Function) void {
 /// A rejected arity must leave the fiber exactly as it was, because
 /// `vm/entry.zig`'s `pcall` is built on the return value rather than on
 /// recovering from a partially built frame.
-fn theFuncframeArityRejection(add: *functions.Function) raise.Raising(void) {
+fn theFuncframeArityRejection(add: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
         harness.wrapInteger(2),
@@ -293,7 +293,7 @@ fn theFuncframeStructargs(keyed: *functions.Function) void {
 /// A tail call reuses the current frame: the arguments move down over the
 /// outgoing function's slots, the rest are nil'd, and the frame is repointed
 /// without its base moving.
-fn theFuncframeTail(add: *functions.Function, other: *functions.Function) raise.Raising(void) {
+fn theFuncframeTail(add: *functions.Function, other: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const base = fiber.frame;
@@ -318,7 +318,7 @@ fn theFuncframeTail(add: *functions.Function, other: *functions.Function) raise.
     expect(fiber.stackstart == fiber.stacktop);
 }
 
-fn theFuncframeTailArityRejection(add: *functions.Function, other: *functions.Function) raise.Raising(void) {
+fn theFuncframeTailArityRejection(add: *functions.Function, other: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     try fibers.push(fiber, harness.wrapInteger(9));
@@ -336,7 +336,7 @@ fn theFuncframeTailArityRejection(add: *functions.Function, other: *functions.Fu
 /// The variadic tail of a tail call is built before the arguments move,
 /// because the move copies the tail's slot along with them. Getting that order
 /// wrong moves an uninitialised slot and loses the tail.
-fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) raise.Raising(void) {
+fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     var fiber = rootedFiber(add, args[0..2]);
     var base = fiber.frame;
@@ -369,7 +369,7 @@ fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) 
     expect(tuples.head(wrap.toTuple(tail)).length == 0);
 }
 
-fn aCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
+fn aCfunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.fromNil();
@@ -377,7 +377,7 @@ fn aCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// A C frame puts the function in the slot a Janet frame uses for its
 /// program counter, and is recognised by its null `func`.
-fn theCframeAndPopframe(add: *functions.Function) raise.Raising(void) {
+fn theCframeAndPopframe(add: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const base = fiber.frame;
@@ -418,7 +418,7 @@ fn theCframeAndPopframe(add: *functions.Function) raise.Raising(void) {
     expect(fiber.stackstart == stacktop);
 }
 
-fn thePushes(add: *functions.Function) raise.Raising(void) {
+fn thePushes(add: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const start = fiber.stacktop;
@@ -477,7 +477,7 @@ fn thePushes(add: *functions.Function) raise.Raising(void) {
 
 /// The four bounds, one apart, all four reached by import. The header comment
 /// has the argument for why they are no longer eight cases.
-fn thePushBounds(add: *functions.Function) raise.Raising(void) {
+fn thePushBounds(add: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const saved = fiber.stacktop;
@@ -510,7 +510,7 @@ fn thePushBounds(add: *functions.Function) raise.Raising(void) {
 
 /// A push or a frame that ends exactly at the capacity fits, so none of them
 /// grows the stack.
-fn anExactFitDoesNotGrow(add: *functions.Function) raise.Raising(void) {
+fn anExactFitDoesNotGrow(add: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const saved = fiber.stacktop;
@@ -546,7 +546,7 @@ fn anExactFitDoesNotGrow(add: *functions.Function) raise.Raising(void) {
 /// A tail call whose arguments fill the callee's fixed parameters and end at
 /// the capacity has an empty variadic tail to store one slot past the end, so
 /// the stack grows for it.
-fn aTailCallAtTheCapacityGrowsForItsTail(add: *functions.Function, rest: *functions.Function) raise.Raising(void) {
+fn aTailCallAtTheCapacityGrowsForItsTail(add: *functions.Function, rest: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fiber = rootedFiber(add, args[0..2]);
     const base = fiber.frame;
@@ -572,7 +572,7 @@ fn aTailCallAtTheCapacityGrowsForItsTail(add: *functions.Function, rest: *functi
 /// grows the stack copies it from the new block. Each round reads back what it
 /// pushed, and a copy from the block the growth released reads whatever the
 /// allocator left there.
-fn aRunFromTheFirstSlotSurvivesTheGrowth(add: *functions.Function) raise.Raising(void) {
+fn aRunFromTheFirstSlotSurvivesTheGrowth(add: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const zero = harness.wrapInteger(0);
     var round: i32 = 0;
@@ -601,7 +601,7 @@ fn aRunFromTheFirstSlotSurvivesTheGrowth(add: *functions.Function) raise.Raising
 /// each ending at exactly `maxInt(i32)`. The fiber is on the stack and on no
 /// heap list, its slots are address space reserved for it, and each push
 /// writes into the last page.
-fn theReservedPushCeilings() raise.Raising(void) {
+fn theReservedPushCeilings() raise.Error!void {
     const ceiling: i32 = std.math.maxInt(i32);
     const bytes = @as(usize, @intCast(ceiling)) * @sizeOf(repr.Value);
     const memory = reserve(bytes) orelse return;
@@ -628,7 +628,7 @@ fn theReservedPushCeilings() raise.Raising(void) {
 /// capacity, so the growth reallocates to sixteen gigabytes of address space
 /// and the push writes one slot of it. A host that will not serve the size
 /// skips the case.
-fn growthAtHalfTheCeilingDoubles() raise.Raising(void) {
+fn growthAtHalfTheCeilingDoubles() raise.Error!void {
     const need: i32 = @divTrunc(std.math.maxInt(i32), 2);
     const doubled: i32 = 2 * need;
     const bytes = fibers.stackBytes(doubled);
@@ -898,7 +898,7 @@ fn theCurrentAndRootFiber(add: *functions.Function) void {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     test_env = harness.coreEnv();
     gc_alloc.gcroot(wrap.fromTable(test_env));
 

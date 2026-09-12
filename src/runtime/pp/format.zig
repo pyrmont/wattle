@@ -105,7 +105,7 @@ const Item = struct {
 
     /// Append what was rendered, if anything. A driver that wrote to the
     /// buffer directly leaves `count` at zero and pushes nothing here.
-    fn flush(self: *const Item, b: *buffers.Buffer) raise.Raising(void) {
+    fn flush(self: *const Item, b: *buffers.Buffer) raise.Error!void {
         if (self.count >= max_item) return raise.panic("format buffer overflow");
         if (self.count > 0) try buffers.pushBytes(b, self.bytes[0..@intCast(self.count)]);
     }
@@ -218,7 +218,7 @@ pub fn bufferFormat(
     strfrmt: [*]const u8,
     first: usize,
     argv: []repr.Value,
-) raise.Raising(void) {
+) raise.Error!void {
     const startlen = b.count;
     var arg = first;
     var at: usize = 0;
@@ -303,7 +303,7 @@ pub fn dynprintf(
     dflt_file: ?*host.FILE,
     comptime format: [:0]const u8,
     args: anytype,
-) raise.Raising(void) {
+) raise.Error!void {
     var x: repr.Value = wrap.fromNil();
     var xtype: repr.Tag = .nil;
     if (name) |dyn_name| {
@@ -352,7 +352,7 @@ pub fn formatTuple(
     b: *buffers.Buffer,
     comptime format: [:0]const u8,
     args: anytype,
-) raise.Raising(void) {
+) raise.Error!void {
     const ops = comptime compileFormat(format);
     comptime {
         var wanted: usize = 0;
@@ -386,7 +386,7 @@ pub fn formatb(
     buffer: *buffers.Buffer,
     comptime format: [:0]const u8,
     args: anytype,
-) raise.Raising(*buffers.Buffer) {
+) raise.Error!*buffers.Buffer {
     try formatTuple(buffer, format, args);
     return buffer;
 }
@@ -395,7 +395,7 @@ pub fn formatb(
 ///
 /// The `errdefer` frees that buffer on the path a raise from `%v`'s `tostring`
 /// callback takes out of here.
-pub fn formatc(comptime format: [:0]const u8, args: anytype) raise.Raising(strings.String) {
+pub fn formatc(comptime format: [:0]const u8, args: anytype) raise.Error!strings.String {
     var buffer: buffers.Buffer = undefined;
     _ = buffers.init(&buffer, @intCast(format.len));
     errdefer buffers.deinit(&buffer);
@@ -584,7 +584,7 @@ inline fn isDigit(byte: u8) bool {
 
 /// `pushtypes`. Renders a type set, the bitmask an argument check reports, as
 /// `"a, b or c"`.
-fn pushtypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Raising(void) {
+fn pushtypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
     var remaining = typeflags.bits();
     var first = true;
     var i: usize = 0;
@@ -617,7 +617,7 @@ inline fn renderConversion(
     comptime conversion: u8,
     arg: anytype,
     startlen: usize,
-) raise.Raising(void) {
+) raise.Error!void {
     const local: Specifier = spec;
     var item = Item{};
     switch (conversion) {
@@ -681,7 +681,7 @@ inline fn renderConversion(
 /// `b` is the destination, `conversion` the conversion character, `spec` its
 /// specifier, `x` the value, and `startlen` where the message being formatted
 /// began in `b`, which is what the pretty printer measures a line from.
-fn renderPretty(b: *buffers.Buffer, conversion: u8, spec: *const Specifier, x: repr.Value, startlen: usize) raise.Raising(void) {
+fn renderPretty(b: *buffers.Buffer, conversion: u8, spec: *const Specifier, x: repr.Value, startlen: usize) raise.Error!void {
     if (conversion == 'j') {
         var depth = Specifier.number(&spec.precision);
         if (depth < 1) depth = recursion_guard;
@@ -699,7 +699,7 @@ fn renderPretty(b: *buffers.Buffer, conversion: u8, spec: *const Specifier, x: r
 /// rebuild copies through the conversion character inclusively, so `%5d`
 /// becomes `%5lld` rather than `%5`, which lets a caller name an unrecognised
 /// conversion in full in the message that reports it.
-fn scanFormat(strfrmt: [*]const u8, start: usize) raise.Raising(Specifier) {
+fn scanFormat(strfrmt: [*]const u8, start: usize) raise.Error!Specifier {
     var spec = Specifier{ .form = undefined, .width = .{ 0, 0, 0 }, .precision = .{ 0, 0, 0 }, .at = start };
 
     var p = start;

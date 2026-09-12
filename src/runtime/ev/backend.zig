@@ -90,7 +90,7 @@ const Epoll = struct {
 
     const max_events = 64;
 
-    fn init() raise.Raising(void) {
+    fn init() raise.Error!void {
         SelfPipe.setup();
         const b = &vm_state.current().ev.backend;
         b.epoll = c.epoll_create1(EPOLL_CLOEXEC);
@@ -114,7 +114,7 @@ const Epoll = struct {
         b.epoll = 0;
     }
 
-    fn registerImpl(s: *stream_mod.Stream, mod: bool, edge_trigger: bool) raise.Raising(void) {
+    fn registerImpl(s: *stream_mod.Stream, mod: bool, edge_trigger: bool) raise.Error!void {
         var event: c.EpollEvent = .{
             .events = if (edge_trigger) EPOLLET else 0,
             .data = .{ .ptr = @intFromPtr(s) },
@@ -139,15 +139,15 @@ const Epoll = struct {
         }
     }
 
-    fn register(s: *stream_mod.Stream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Error!void {
         try registerImpl(s, false, true);
     }
 
-    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Error!void {
         try registerImpl(s, true, true);
     }
 
-    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Error!void {
         try registerImpl(s, true, false);
     }
 
@@ -157,14 +157,14 @@ const Epoll = struct {
     /// being removed by. Deregistering something that is not registered is the
     /// state this is trying to reach, and kqueue reaches it silently. Anything
     /// else is still raised.
-    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Error!void {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
         const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
         if (status == -1 and c.errno() != @intFromEnum(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Error!void {
         const b = &vm_state.current().ev.backend;
         if (b.timer_enabled or has_timeout) {
             var its = std.mem.zeroes(c.ITimerSpec);
@@ -204,7 +204,7 @@ const Epoll = struct {
 
 /// The Windows backend, over an IO completion port.
 const Iocp = struct {
-    fn init() raise.Raising(void) {
+    fn init() raise.Error!void {
         const b = &vm_state.current().ev.backend;
         b.iocp = @ptrCast(@alignCast(c.CreateIoCompletionPort(
             @ptrFromInt(std.math.maxInt(usize)),
@@ -219,7 +219,7 @@ const Iocp = struct {
         _ = c.CloseHandle(ev.iocpHandle());
     }
 
-    fn register(s: *stream_mod.Stream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Error!void {
         if (c.CreateIoCompletionPort(s.handle, ev.iocpHandle(), @intFromPtr(s), 0) == null) {
             const listenable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_WRITABLE | constants.JANET_STREAM_ACCEPTABLE);
             if (s.flags & listenable != 0) {
@@ -230,19 +230,19 @@ const Iocp = struct {
     }
 
     /// The completion port has no per-stream registration to undo.
-    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Error!void {
         _ = s;
     }
 
-    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Error!void {
         _ = s;
     }
 
-    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Error!void {
         _ = s;
     }
 
-    fn loop1(has_timeout: bool, to: ev.Timestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, to: ev.Timestamp) raise.Error!void {
         var completion_key: usize = 0;
         var num_bytes_transferred: u32 = 0;
         var overlapped: ?*c.OVERLAPPED = null;
@@ -349,11 +349,11 @@ const Kqueue = struct {
         if (apply(kevs[0..length]) == -1) s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn register(s: *stream_mod.Stream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Error!void {
         registerImpl(s, true);
     }
 
-    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Error!void {
         registerImpl(s, true);
     }
 
@@ -361,14 +361,14 @@ const Kqueue = struct {
     /// re-registered without `EV_CLEAR`, or the new registration keeps
     /// `EV_CLEAR` set. Whether that is a kernel bug or a vague specification
     /// is not settled; the delete is what makes the re-registration take.
-    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Error!void {
         var kevs: [2]Kevent = undefined;
         const length = changes(&kevs, s, @intCast(std.c.EV.DELETE));
         _ = apply(kevs[0..length]);
         registerImpl(s, false);
     }
 
-    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Error!void {
         if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
         var kevs: [2]Kevent = undefined;
         const length = changes(&kevs, s, @intCast(std.c.EV.DELETE));
@@ -377,7 +377,7 @@ const Kqueue = struct {
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn init() raise.Raising(void) {
+    fn init() raise.Error!void {
         // Unresolved: the self pipe could be an `EVFILT_USER` instead.
         SelfPipe.setup();
         const b = &vm_state.current().ev.backend;
@@ -399,7 +399,7 @@ const Kqueue = struct {
         b.kq = 0;
     }
 
-    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Error!void {
         // The interval is calculated per iteration. When it drops to zero or
         // below the timeout is zero; an infinite timeout would make other
         // fibers miss theirs. `ev.kqueueInterval` is what keeps it within
@@ -478,7 +478,7 @@ const Poll = struct {
         return @ptrCast(@alignCast(vm_state.current().ev.backend.streams));
     }
 
-    fn register(s: *stream_mod.Stream) raise.Raising(void) {
+    fn register(s: *stream_mod.Stream) raise.Error!void {
         const b = &vm_state.current().ev.backend;
         s.index = @intCast(b.stream_count);
         const new_count = b.stream_count + 1;
@@ -494,7 +494,7 @@ const Poll = struct {
         b.stream_count = new_count;
     }
 
-    fn unregister(s: *stream_mod.Stream) raise.Raising(void) {
+    fn unregister(s: *stream_mod.Stream) raise.Error!void {
         const b = &vm_state.current().ev.backend;
         const i = s.index;
         const j = b.stream_count - 1;
@@ -507,15 +507,15 @@ const Poll = struct {
         s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
     }
 
-    fn edgeTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn edgeTriggered(s: *stream_mod.Stream) raise.Error!void {
         _ = s;
     }
 
-    fn levelTriggered(s: *stream_mod.Stream) raise.Raising(void) {
+    fn levelTriggered(s: *stream_mod.Stream) raise.Error!void {
         _ = s;
     }
 
-    fn init() raise.Raising(void) {
+    fn init() raise.Error!void {
         const b = &vm_state.current().ev.backend;
         b.fds = null;
         SelfPipe.setup();
@@ -535,7 +535,7 @@ const Poll = struct {
         b.streams = null;
     }
 
-    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
+    fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Error!void {
         const b = &vm_state.current().ev.backend;
 
         // Set event flags.
@@ -703,7 +703,7 @@ const impl = switch (selected) {
 
 /// Puts a stream into edge-triggered mode, which is what a stream reading
 /// through a callback needs.
-pub fn edgeTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
+pub fn edgeTriggeredStream(s: *stream_mod.Stream) raise.Error!void {
     try impl.edgeTriggered(s);
 }
 
@@ -715,29 +715,29 @@ pub fn evDeinit() void {
 
 /// Sets the backend up at VM startup, including the self pipe where the
 /// backend has one.
-pub fn evInit() raise.Raising(void) {
+pub fn evInit() raise.Error!void {
     ev.evInitCommon();
     try impl.init();
 }
 
 /// Puts a stream into level-triggered mode, which is the default.
-pub fn levelTriggeredStream(s: *stream_mod.Stream) raise.Raising(void) {
+pub fn levelTriggeredStream(s: *stream_mod.Stream) raise.Error!void {
     try impl.levelTriggered(s);
 }
 
 /// One turn of the loop: waits for readiness up to the timeout, and delivers
 /// what arrived.
-pub inline fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Raising(void) {
+pub inline fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Error!void {
     try impl.loop1(has_timeout, timeout);
 }
 
 /// Registers a stream with the backend.
-pub inline fn registerStream(s: *stream_mod.Stream) raise.Raising(void) {
+pub inline fn registerStream(s: *stream_mod.Stream) raise.Error!void {
     try impl.register(s);
 }
 
 /// Removes a stream from the backend, which a closing stream does.
-pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Raising(void) {
+pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Error!void {
     try impl.unregister(s);
 }
 
@@ -747,7 +747,7 @@ pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Raising(void) {
 
 /// Delivers one event to whichever fiber is waiting on `s`, for the two
 /// backends that report a bare readiness mask.
-fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Raising(void) {
+fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Error!void {
     const rf = s.read_fiber;
     const wf = s.write_fiber;
     if (rf) |f| {

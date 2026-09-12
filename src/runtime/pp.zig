@@ -23,7 +23,7 @@
 //! through these frames. Nothing here is stranded when it does.
 //!
 //! The scratch buffer is released on every path. `description` and `toString`
-//! initialise a `buffers.Buffer` on the stack and call the `raise.Raising`
+//! initialise a `buffers.Buffer` on the stack and call the raise-capable
 //! half through `raise.toAbi`, which catches, so `intern`, and the
 //! `buffers.deinit` inside it, runs whether or not a `tostring` callback
 //! raised. What a raise does leave is a report, which the caller of these two
@@ -81,7 +81,7 @@ pub fn description(x: repr.Value) strings.String {
 ///
 /// A container is not walked: it comes out as `<tuple 0x...>`. An abstract
 /// with a `tostring` callback is rendered through it, inside angle brackets.
-pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
+pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => return try buffers.pushCString(buffer, "nil"),
         repr.Tag.keyword => try buffers.pushU8(buffer, ':'),
@@ -117,7 +117,7 @@ pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) 
 /// nothing else observes it, so a width consistently two too small would show
 /// up only as slightly wrong wrapping in output no test compares. The contract
 /// asserts it through this function and takes the error.
-pub fn escapeString(buffer: *buffers.Buffer, str: []const u8) raise.Raising(i32) {
+pub fn escapeString(buffer: *buffers.Buffer, str: []const u8) raise.Error!i32 {
     try buffers.pushU8(buffer, '"');
     var align_count: i32 = 1;
     for (str) |byte| {
@@ -158,7 +158,7 @@ pub fn toString(x: repr.Value) strings.String {
 }
 
 /// Renders `x` the way `(string x)` does, into `buffer`.
-pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
+pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => try buffers.pushCString(buffer, ""),
         repr.Tag.boolean => try buffers.pushCString(
@@ -222,7 +222,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
 /// already moved `count` past it: `(buffer/format b "%v" b)` on a buffer of
 /// `a` would give `a@"a@"`. The pretty printer keeps the same record under the
 /// name `bufstartlen`.
-fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Raising(void) {
+fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Error!void {
     const count: usize = @intCast(source.count);
     if (source == buffer) {
         // Reserve the worst case up front so that the buffer cannot resize
@@ -234,14 +234,14 @@ fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Raising
 }
 
 /// `escapeString` over a Janet string, discarding the width.
-fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Raising(void) {
+fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Error!void {
     _ = try escapeString(buffer, str[0..strings.head(str).length]);
 }
 
 /// The `<type 0x...>` fallback, which three cases in `toStringB` reach: an
 /// unregistered cfunction, a function with no name, and everything with no
 /// case of its own.
-fn genericDescriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Raising(void) {
+fn genericDescriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     try stringDescriptionB(buffer, std.mem.span(utils.typeNames[@intFromEnum(repr.typeOf(x))]), wrap.toPointer(x));
 }
 
@@ -265,7 +265,7 @@ fn intern(buffer: *buffers.Buffer) strings.String {
 ///
 /// An integral value inside the exactly-representable range prints without an
 /// exponent or a fraction; everything else gets `DBL_DIG` significant digits.
-fn numberToStringB(buffer: *buffers.Buffer, x: f64) raise.Raising(void) {
+fn numberToStringB(buffer: *buffers.Buffer, x: f64) raise.Error!void {
     try buffers.ensure(buffer, buffer.count + bufsize, 2);
     const integral = x == @floor(x) and x <= constants.JANET_INTMAX_DOUBLE and x >= constants.JANET_INTMIN_DOUBLE;
     const format: [*:0]const u8 = if (integral) "%.0f" else "%.15g";
@@ -299,7 +299,7 @@ fn shortEscape(byte: u8) ?*const [2]u8 {
 
 /// Pushes `<title 0xHEXHEX...>` into `buffer`, with the title truncated to 32
 /// bytes so that the whole thing fits the `bufsize` reservation.
-fn stringDescriptionB(buffer: *buffers.Buffer, title: []const u8, pointer: ?*const anyopaque) raise.Raising(void) {
+fn stringDescriptionB(buffer: *buffers.Buffer, title: []const u8, pointer: ?*const anyopaque) raise.Error!void {
     try buffers.ensure(buffer, buffer.count + bufsize, 2);
     const bytes: [@sizeOf(?*const anyopaque)]u8 = @bitCast(@intFromPtr(pointer));
     var at = buffer.data.? + @as(usize, @intCast(buffer.count));

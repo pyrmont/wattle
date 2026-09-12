@@ -407,7 +407,7 @@ fn theAbstractType() void {
 /// The method table is scanned linearly and walked in order, so its order is
 /// observable through `next` and is part of the contract rather than a
 /// tidiness.
-fn theMethodOrder() raise.Raising(void) {
+fn theMethodOrder() raise.Error!void {
     const at = &io_core.fileType;
     const expected = [_][*:0]const u8{ "close", "flush", "read", "seek", "tell", "write" };
 
@@ -436,7 +436,7 @@ fn theMethodOrder() raise.Raising(void) {
     expect((try at.get.?(payload, value.fromBytes("read", .string))) == null);
 }
 
-fn thePublicApi() raise.Raising(void) {
+fn thePublicApi() raise.Error!void {
     const raw = io_core.open(scratch, "wb").?;
 
     // `io.makejfile` hands back the payload; `io.makefile` wraps it. The
@@ -517,17 +517,17 @@ fn theDynamicFile() void {
     vm_state.setdyn("io-core-out", wrap.fromNil());
 }
 
-fn marshalled(buffer: *buffers.Buffer, val: repr.Value, flags: c_int) raise.Raising(void) {
+fn marshalled(buffer: *buffers.Buffer, val: repr.Value, flags: c_int) raise.Error!void {
     return marsh.marshal(buffer, val, null, flags);
 }
 
-fn unmarshalled(buffer: *buffers.Buffer, flags: c_int) raise.Raising(repr.Value) {
+fn unmarshalled(buffer: *buffers.Buffer, flags: c_int) raise.Error!repr.Value {
     return marsh.unmarshal(buffer.slice(), flags, null, null);
 }
 
 /// A file marshals only under `JANET_MARSHAL_UNSAFE`, which no Janet caller
 /// can ask for, so the whole callback pair is unreachable from the language.
-fn theMarshalling() raise.Raising(void) {
+fn theMarshalling() raise.Error!void {
     const raw = io_core.open(scratch, "wb").?;
     const file = wrap.fromAbstract(io_core.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE));
 
@@ -576,7 +576,7 @@ fn theMarshalling() raise.Raising(void) {
 /// The recorded buffer size is restored by a real `setvbuf` on the way back
 /// in, which is only visible if it is not the default: an unbuffered stream
 /// reaches the filesystem with no flush and a buffered one does not.
-fn theMarshalledBufferSize() raise.Raising(void) {
+fn theMarshalledBufferSize() raise.Error!void {
     // The round trip needs a marshalled closeable file, which WASI cannot
     // make; `theMarshalling` is where that is pinned.
     if (builtin.os.tag == .wasi) return;
@@ -610,7 +610,7 @@ fn theMarshalledBufferSize() raise.Raising(void) {
 /// stream. A borrowed file is written with its own descriptor, so closing the
 /// stream before the unmarshal is what frees it. The recorded buffer size is
 /// not the default, and there is no stream to apply it to.
-fn theUnreopenableDescriptor() raise.Raising(void) {
+fn theUnreopenableDescriptor() raise.Error!void {
     // The closed descriptor is what makes `fdopen` fail, and on WASI it does
     // not: wasi-libc's `fdopen` does not ask the host whether the descriptor
     // is open, so the reopened file comes back usable and this path has

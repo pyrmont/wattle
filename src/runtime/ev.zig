@@ -450,7 +450,7 @@ pub fn asyncStartFiber(
     mode: constants.AsyncMode,
     callback: ev_callback.EVCallback,
     state: ?*anyopaque,
-) raise.Raising(void) {
+) raise.Error!void {
     assert(@src(), fiber.?.ev_callback == null, "double async on fiber");
     if (mode.read) s.read_fiber = fiber;
     if (mode.write) s.write_fiber = fiber;
@@ -469,7 +469,7 @@ pub fn awaitEvent() raise.Error {
 }
 
 /// Cancels a fiber, so that a pending resumption is dropped.
-pub fn cancel(fiber: *fibers.Fiber, val: repr.Value) raise.Raising(void) {
+pub fn cancel(fiber: *fibers.Fiber, val: repr.Value) raise.Error!void {
     if (!fibers.evFlags(fiber).root) {
         return raise.panic("cannot cancel non-task fiber");
     }
@@ -701,7 +701,7 @@ pub const levelTriggeredStream = backend.levelTriggeredStream;
 /// Installs the `ev/` bindings. The six groups go in upstream Janet's own
 /// registration order: the ten channel rows, the six scheduler rows, the four
 /// stream rows, the eight lock rows, `ev/to-file` and `ev/all-tasks`.
-pub fn libEv(env: *tables.Table) raise.Raising(void) {
+pub fn libEv(env: *tables.Table) raise.Error!void {
     var table: [64]corefn.Entry = undefined;
     var n: usize = 0;
     const push = struct {
@@ -727,7 +727,7 @@ pub fn libEv(env: *tables.Table) raise.Raising(void) {
 }
 
 /// Runs the loop until nothing is left to wait for.
-pub fn loop() raise.Raising(void) {
+pub fn loop() raise.Error!void {
     while (!loopDone()) {
         if (try loop1()) |interrupted| schedule(interrupted, wrap.fromNil());
     }
@@ -738,7 +738,7 @@ pub fn loop() raise.Raising(void) {
 /// Gives back the fiber an interrupt stopped, or nothing. The three stages and
 /// their order are what a caller depends on, including that the poll is
 /// skipped when the timer scan drained the heap.
-pub fn loop1() raise.Raising(?*fibers.Fiber) {
+pub fn loop1() raise.Error!?*fibers.Fiber {
     const v = vm_state.current();
     const sched = &v.ev;
 
@@ -948,7 +948,7 @@ pub fn threadedCall(
     fp: ThreadedSubroutine,
     arguments: GenericMessage,
     cb: ThreadedCallback,
-) raise.Raising(void) {
+) raise.Error!void {
     const sched = &vm_state.current().ev;
     const init: *ThreadInit = @ptrCast(@alignCast(utils.malloc(@sizeOf(ThreadInit)) orelse
         outOfMemory(@src())));
@@ -1049,7 +1049,7 @@ fn addFiberTimeout(sec: f64, is_error: bool) void {
 }
 
 /// `(ev/all-tasks)`.
-fn cfunAllTasks(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAllTasks(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const sched = &vm_state.current().ev;
@@ -1062,7 +1062,7 @@ fn cfunAllTasks(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/cancel fiber err)`.
-fn cfunCancel(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCancel(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const fiber = try args_core.getFiber(argv, 0);
     try cancel(fiber, argv[1]);
@@ -1070,7 +1070,7 @@ fn cfunCancel(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/deadline sec &opt tocancel body interrupt)`.
-fn cfunDeadline(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var sec = try args_core.getNumber(argv, 0);
     if (sec < 0) sec = 0;
@@ -1132,7 +1132,7 @@ fn cfunDeadline(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/give-supervisor tag & payload)`.
-fn cfunGiveSupervisor(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGiveSupervisor(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const chanv = vm_state.current().root_fiber.?.supervisor_channel;
     if (chanv != null) {
@@ -1145,7 +1145,7 @@ fn cfunGiveSupervisor(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/go func &opt value supervisor)`.
-fn cfunGo(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const val = if (argv.len >= 2) argv[1] else wrap.fromNil();
     const supervisor = try args_core.optAbstract(
@@ -1182,7 +1182,7 @@ fn cfunGo(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/lock)`.
-fn cfunMutex(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMutex(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const mutex = abstracts.threaded(&mutexType, os_locks.mutexSize());
@@ -1191,7 +1191,7 @@ fn cfunMutex(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/acquire-lock lock)`.
-fn cfunMutexAcquire(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMutexAcquire(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const mutex = try args_core.getAbstract(anyopaque, argv, 0, &mutexType);
     os_locks.mutexLock(@ptrCast(mutex));
@@ -1199,7 +1199,7 @@ fn cfunMutexAcquire(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/release-lock lock)`.
-fn cfunMutexRelease(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMutexRelease(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const mutex = try args_core.getAbstract(anyopaque, argv, 0, &mutexType);
     try os_locks.mutexUnlock(@ptrCast(mutex));
@@ -1207,7 +1207,7 @@ fn cfunMutexRelease(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/rwlock)`.
-fn cfunRwlock(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRwlock(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const rwlock = abstracts.threaded(&rwlockType, os_locks.rwlockSize());
@@ -1216,7 +1216,7 @@ fn cfunRwlock(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/acquire-rlock rwlock)`.
-fn cfunRwlockReadLock(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRwlockReadLock(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockRlock(@ptrCast(rwlock));
@@ -1224,7 +1224,7 @@ fn cfunRwlockReadLock(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/release-rlock rwlock)`.
-fn cfunRwlockReadRelease(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRwlockReadRelease(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockRunlock(@ptrCast(rwlock));
@@ -1232,7 +1232,7 @@ fn cfunRwlockReadRelease(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/acquire-wlock rwlock)`.
-fn cfunRwlockWriteLock(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRwlockWriteLock(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockWlock(@ptrCast(rwlock));
@@ -1240,7 +1240,7 @@ fn cfunRwlockWriteLock(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/release-wlock rwlock)`.
-fn cfunRwlockWriteRelease(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRwlockWriteRelease(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockWunlock(@ptrCast(rwlock));
@@ -1248,14 +1248,14 @@ fn cfunRwlockWriteRelease(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/sleep sec)`.
-fn cfunSleep(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSleep(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const sec = try args_core.getNumber(argv, 0);
     return sleepAwait(sec);
 }
 
 /// `(ev/thread func &opt value flags supervisor)`.
-fn cfunThread(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunThread(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"threads"}));
     try args_core.arity(argv, 1, 4);
     const val = if (argv.len >= 2) argv[1] else wrap.fromNil();
@@ -1348,7 +1348,7 @@ inline fn freeThreadedPayload(return_value: GenericMessage) void {
 
 /// The body `goThreadProtect` runs between `signal_core.tryInit` and
 /// `signal_core.restore`.
-fn goThreadBody(ctx: *GoThreadContext) raise.Raising(void) {
+fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
     const v = vm_state.current();
     const flags = ctx.flags;
 
@@ -1441,7 +1441,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Raising(void) {
     fiber.supervisor_channel = v.user;
     schedule(fiber, val);
     // The raise is returned rather than flattened: this function is
-    // `raise.Raising`, and a report nobody here consumes is exactly what
+    // raise-capable, and a report nobody here consumes is exactly what
     // `tools/check/swallowed.janet` finds.
     try loop();
     ctx.args.tag = constants.JANET_EV_TCTAG_NIL;

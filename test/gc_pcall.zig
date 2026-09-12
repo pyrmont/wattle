@@ -113,7 +113,7 @@ fn rooted(fiber: *fibers.Fiber) bool {
 /// Called from Janet source running on the nested fiber, which is the only
 /// place the situation exists. Everything it needs is read off the VM rather
 /// than passed in, because the point is what the *collector* can see.
-fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCollectHere(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const nested = harness.vm().fiber.?;
@@ -155,7 +155,7 @@ fn cfunCollectHere(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `pcall` reports its signal rather than raising, so the refusal is re-raised
 /// here through `raise.panicv`, which is what makes a failure inside the
 /// callback arrive at the Janet caller as an ordinary error.
-fn cfunCallViaPcall(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCallViaPcall(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const function = try args_core.getFunction(argv, 0);
 

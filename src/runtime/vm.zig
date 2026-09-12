@@ -598,7 +598,7 @@ pub fn callNonfn(fiber: *fibers.Fiber, callee: repr.Value) raise.Error!repr.Valu
 /// string out of a half-filled buffer, and the outstanding report would kill
 /// the process at the next scope boundary, arbitrarily far from the cause. An
 /// ordinary import is all it takes not to need the abi at all.
-pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Raising(void) {
+pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Error!void {
     for (mem) |x| try pp_describe.toStringB(buffer, x);
 }
 
@@ -683,7 +683,7 @@ pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Val
 ///
 /// The name is interned on every call, through `value.fromBytes`. The symbol
 /// cache makes the second and later calls a lookup rather than an allocation.
-pub fn methodLookup(x: repr.Value, name: [*:0]const u8) raise.Raising(repr.Value) {
+pub fn methodLookup(x: repr.Value, name: [*:0]const u8) raise.Error!repr.Value {
     return methodToFun(value.fromBytes(std.mem.span(name), .keyword), x);
 }
 
@@ -1553,7 +1553,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
 /// Both raise. `dynprintf` can, because `(dyn :err)` may be a Janet function,
 /// and both callers, `runVm` and `vm/entry.call`, are raising already, so the
 /// raise a traced call's rendering produces is returned rather than reported.
-pub fn traceArgv(func: *functions.Function, argv: []const repr.Value) raise.Raising(void) {
+pub fn traceArgv(func: *functions.Function, argv: []const repr.Value) raise.Error!void {
     try traceHeader(func);
     for (argv) |a| try eprintf(" %p", .{a});
     try eprintf(")\n", .{});
@@ -1561,7 +1561,7 @@ pub fn traceArgv(func: *functions.Function, argv: []const repr.Value) raise.Rais
 
 /// Prints a traced call and its arguments to `(dyn :err)`, reading the
 /// arguments off the fiber stack. See `traceArgv`.
-pub fn traceFiber(func: *functions.Function, argc: i32, fiber: *fibers.Fiber) raise.Raising(void) {
+pub fn traceFiber(func: *functions.Function, argc: i32, fiber: *fibers.Fiber) raise.Error!void {
     try traceHeader(func);
     // `argv` is re-derived per argument on purpose: `eprintf` reaches
     // `(dyn :err)`, which may be a Janet function, and running one can grow the
@@ -1610,7 +1610,7 @@ inline fn checkRange(comptime T: type, dval: f64) bool {
 }
 
 /// Prints to `(dyn :err)`, falling back to the standard error handle.
-inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Error!void {
     return pp_format.dynprintf("err", stdio.err(), format, args);
 }
 
@@ -1683,12 +1683,12 @@ inline fn isNil(x: repr.Value) bool {
 /// its operands swapped, and both of its callers are here.
 ///
 /// It is raising, and it has to be. Every caller in the chain above is
-/// `raise.Raising`, and an abstract's `get` callback can refuse, so a
+/// raise-capable, and an abstract's `get` callback can refuse, so a
 /// reporting form here would leave a report nobody consumes: the binop
 /// fallback looks `:r+` up on the right operand and that lookup is this
 /// function, which is what makes `(+ (int/s64 1) {})` a catchable error rather
 /// than a dead process.
-inline fn methodToFun(method: repr.Value, obj: repr.Value) raise.Raising(repr.Value) {
+inline fn methodToFun(method: repr.Value, obj: repr.Value) raise.Error!repr.Value {
     return access.get(obj, method);
 }
 
@@ -1699,7 +1699,7 @@ inline fn stackFrame(values: [*]repr.Value) *vm_state.StackFrame {
 
 /// Prints the opening of a traced call: the function's name where it has one,
 /// and its rendering where it does not.
-fn traceHeader(func: *functions.Function) raise.Raising(void) {
+fn traceHeader(func: *functions.Function) raise.Error!void {
     if (func.def.?.name != null) {
         try eprintf("trace (%S", .{func.def.?.name});
     } else {

@@ -556,7 +556,7 @@ inline fn setStatus(fiber: *fibers.Fiber, status: fibers.FiberStatus) void {
 /// address is not observable: the frame stores it in `pc` with `func` left
 /// null, and an unregistered `CFunction` renders as `<cfunction>` in a stack
 /// trace either way.
-fn voidCFunction(argv: []repr.Value) raise.Raising(repr.Value) {
+fn voidCFunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
 
     return raise.panic("placeholder");

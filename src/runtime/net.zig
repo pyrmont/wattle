@@ -273,23 +273,23 @@ pub fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime m
 }
 
 /// `(net/address-unpack address)`.
-pub fn cfunAddressUnpack(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunAddressUnpack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return soGetName(try args_core.getAbstract(anyopaque, argv, 0, &addressType));
 }
 
 /// `(net/peername stream)`.
-pub fn cfunGetpeername(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunGetpeername(argv: []repr.Value) raise.Error!repr.Value {
     return endpointName(argv, true);
 }
 
 /// `(net/localname stream)`.
-pub fn cfunGetsockname(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunGetsockname(argv: []repr.Value) raise.Error!repr.Value {
     return endpointName(argv, false);
 }
 
 /// `(net/address host port &opt type)`.
-pub fn cfunSockaddr(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunSockaddr(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"})); // connect OR listen
     try args_core.arity(argv, 2, 4);
     const socktype = try socketType(argv, 2);
@@ -336,7 +336,7 @@ pub fn getAddrInfo(
     offset: usize,
     socktype: c_int,
     passive: bool,
-) raise.Raising(AddrInfo) {
+) raise.Error!AddrInfo {
     // Unix socket support - not yet supported on windows.
     if (!windows) {
         if (args_core.keyeq(argv[offset], "unix")) {
@@ -493,7 +493,7 @@ pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
 /// conditional, since there is no `AF_INET6` without IPv6 and no
 /// `struct sockaddr_un` on Windows, and a `switch` prong cannot be compiled
 /// out the way a nested comptime `if` body can.
-pub fn soGetName(sa_any: ?*const anyopaque) raise.Raising(repr.Value) {
+pub fn soGetName(sa_any: ?*const anyopaque) raise.Error!repr.Value {
     const sa: *const h.struct_sockaddr = @ptrCast(@alignCast(sa_any));
     var buffer: [net_abi.sa_addrstrlen]u8 = undefined;
     const family: c_int = sa.sa_family;
@@ -554,7 +554,7 @@ pub inline fn sockOf(s: *const ev_stream.Stream) net_abi.JSock {
 
 /// The `&opt type` argument the socket cfunctions share: `:stream` or
 /// `:datagram`.
-pub fn socketType(argv: []repr.Value, n: usize) raise.Raising(c_int) {
+pub fn socketType(argv: []repr.Value, n: usize) raise.Error!c_int {
     const stype = try args_core.optKeyword(argv, n, null);
     // An absent type is `:stream`, and its arm is the fallthrough below
     // rather than the first test.
@@ -578,7 +578,7 @@ pub fn socketType(argv: []repr.Value, n: usize) raise.Raising(c_int) {
 /// Raising, as `acceptWindows` beside it is. An accept callback returns
 /// `raise.Error!void`, so an accept whose stream the backend refuses reports
 /// `failed to accept connection` rather than going on with a null stream.
-fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Raising(void) {
+fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
     if (event != constants.AsyncEvent.init and event != constants.AsyncEvent.read) return;
     const stream: *ev_stream.Stream = fiber.ev_stream.?;
     const connfd: JSock = if (builtin.os.tag == .linux)
@@ -608,7 +608,7 @@ fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.Asyn
 }
 
 /// The Windows accept: takes the connection the completion port reported.
-fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Raising(void) {
+fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
     if (event != constants.AsyncEvent.complete) return;
     const astream = state.astream.?;
     if (astream.flags & stream_closed != 0) {
@@ -660,7 +660,7 @@ fn addressAbstract(from: ?*const anyopaque, len: usize) repr.Value {
 }
 
 /// `(net/accept stream &opt timeout)`.
-fn cfunAccept(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAccept(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_acceptable | stream_socket);
@@ -670,7 +670,7 @@ fn cfunAccept(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/accept-loop stream handler)`.
-fn cfunAcceptLoop(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAcceptLoop(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_acceptable | stream_socket);
@@ -688,7 +688,7 @@ fn cfunAcceptLoop(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/chunk stream n &opt buf timeout)`.
-fn cfunChunk(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_readable | stream_socket);
@@ -700,7 +700,7 @@ fn cfunChunk(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/connect host port &opt type bindhost bindport)`.
-fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"}));
     try args_core.arity(argv, 2, 5);
 
@@ -852,7 +852,7 @@ fn cfunConnect(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/flush stream)`.
-fn cfunFlush(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFlush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_writable | stream_socket);
@@ -866,7 +866,7 @@ fn cfunFlush(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/listen host port &opt type no-reuse)`.
-fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunListen(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_listen"}));
     try args_core.arity(argv, 2, 4);
 
@@ -924,7 +924,7 @@ fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/read stream n &opt buf timeout)`.
-fn cfunRead(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_readable | stream_socket);
@@ -941,7 +941,7 @@ fn cfunRead(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/recv-from stream n buf &opt timeout)`.
-fn cfunRecvFrom(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_udpserver | stream_socket);
@@ -953,7 +953,7 @@ fn cfunRecvFrom(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/send-to stream dest data &opt timeout)`.
-fn cfunSendTo(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSendTo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_udpserver | stream_socket);
@@ -970,7 +970,7 @@ fn cfunSendTo(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/setsockopt stream option value)`.
-fn cfunSetsockopt(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 3);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_socket);
@@ -1039,7 +1039,7 @@ fn cfunSetsockopt(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/shutdown stream &opt mode)`.
-fn cfunShutdown(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_socket);
@@ -1069,7 +1069,7 @@ fn cfunShutdown(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/socket host port &opt type)`.
-fn cfunSocket(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
 
     const socktype = try socketType(argv, 0);
@@ -1111,7 +1111,7 @@ fn cfunSocket(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(net/write stream data &opt timeout)`.
-fn cfunWrite(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_writable | stream_socket);
@@ -1129,7 +1129,7 @@ fn cfunWrite(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `(net/localname)` and `(net/peername)` are the same cfunction but for the
 /// host call and one word of the failure message. `net.c` writes them out
 /// twice; the duplication is not part of the behaviour.
-fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Raising(repr.Value) {
+fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const js: *ev_stream.Stream = try args_core.getAbstract(ev_stream.Stream, argv, 0, &ev_stream.streamType);
     if (js.flags & stream_closed != 0) return raise.panic("stream closed");
@@ -1153,7 +1153,7 @@ fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Raising(repr.Valu
 /// this file rather than by symbol. The module is named rather than the
 /// constant: an alias of a `const` is a copy, and `&copy` is not the address
 /// an abstract is defined by.
-fn getStream(argv: []const repr.Value, n: usize) raise.Raising(*ev_stream.Stream) {
+fn getStream(argv: []const repr.Value, n: usize) raise.Error!*ev_stream.Stream {
     return try args_core.getAbstract(ev_stream.Stream, argv, n, &ev_stream.streamType);
 }
 
@@ -1188,18 +1188,18 @@ fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
 /// poll set for free.
 ///
 /// Raising, and it must be: `registerStream` refuses a descriptor the backend
-/// will not take, and every caller below is inside a `raise.Raising` function,
+/// will not take, and every caller below is inside a raise-capable function,
 /// the four cfunctions and both halves of the accept callback, because
 /// `ev_callback.EVCallback` is `raise.Error!void` too. A reporting form here
 /// would leave the refusal as a report nobody consumes, with a null stream
 /// pointer dereferenced on top of it.
-fn makeStream(handle: JSock, flags: u32) raise.Raising(*ev_stream.Stream) {
+fn makeStream(handle: JSock, flags: u32) raise.Error!*ev_stream.Stream {
     const jh: platform.Handle = if (windows) @ptrFromInt(handle) else handle;
     return ev_loop.makeStream(jh, flags | stream_socket | stream_nodups, @ptrCast(&net_stream_methods));
 }
 
 /// What the loop calls when an accepting socket has a connection.
-fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
     const state: *NetStateAccept = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
         constants.AsyncEvent.mark => {
@@ -1224,7 +1224,7 @@ fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Ra
 }
 
 /// What the loop calls when a connect completes.
-fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
     const stream: *ev_stream.Stream = fiber.ev_stream.?;
     switch (event) {
         // Windows does not support an async connect through this path and
@@ -1304,7 +1304,7 @@ fn schedAccept(stream: *ev_stream.Stream, fun: ?*functions.Function) raise.Error
 
 /// The Windows half: puts an accepting socket and a buffer in flight. True on
 /// failure, with `*err` set.
-fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Value) raise.Raising(bool) {
+fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Value) raise.Error!bool {
     const lsock = sockOf(state.lstream.?);
     const asock = h.WSASocketW(h.AF_INET, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
     if (asock == h.INVALID_SOCKET) {

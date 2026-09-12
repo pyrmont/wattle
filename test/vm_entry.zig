@@ -254,7 +254,7 @@ fn cancellingASuspendedFiber() void {
 /// function shares, so a step that failed to restore one would leave a
 /// permanent breakpoint behind, which is what the second half of each case
 /// below checks.
-fn stepToCompletion(fiber: *fibers.Fiber, out: *repr.Value, stops: *[max_stops]i32) raise.Raising(usize) {
+fn stepToCompletion(fiber: *fibers.Fiber, out: *repr.Value, stops: *[max_stops]i32) raise.Error!usize {
     const def = harness.frame.current(fiber).func.?.def.?;
     var nstops: usize = 0;
     var sig: abi.Signal = undefined;
@@ -270,7 +270,7 @@ fn stepToCompletion(fiber: *fibers.Fiber, out: *repr.Value, stops: *[max_stops]i
     return nstops;
 }
 
-fn steppingStraightLineCode() raise.Raising(void) {
+fn steppingStraightLineCode() raise.Error!void {
     // Four instructions, no jumps: two loads, an add and a return.
     const source = "(fn [] (let [a 1 b 2] (+ a b)))";
     var out = wrap.fromNil();
@@ -307,7 +307,7 @@ fn stoppedAt(stops: []const i32, offset: i32) bool {
 /// separate the two, nineteen with the second breakpoint and fifteen without,
 /// but it pins the compiler's instruction selection for one expression rather
 /// than the property being tested.
-fn steppingAcrossBranches() raise.Raising(void) {
+fn steppingAcrossBranches() raise.Error!void {
     const source = "(fn [] (var i 0) (while (< i 3) (++ i)) (if (= i 3) :yes :no))";
     var out = wrap.fromNil();
     const fiber = fiberOver(source);
@@ -366,7 +366,7 @@ fn callingWithoutAFiber() void {
 
 /// Five things need `vm.fiber` to be set, and the only honest way to get
 /// that is to be called by the interpreter.
-fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunProbe(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const self = harness.vm().fiber.?;
@@ -436,7 +436,7 @@ fn cfunProbe(argv: []repr.Value) raise.Raising(repr.Value) {
     return wrap.fromNil();
 }
 
-fn cfunArityVariants(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
@@ -457,7 +457,7 @@ fn cfunArityVariants(argv: []repr.Value) raise.Raising(repr.Value) {
 /// A cfunction of its own because a refused call leaves its arguments pushed,
 /// and a second call after it finds the stack dirty and pushes a guard frame
 /// that the refusal leaves standing too.
-fn cfunCrossedArity(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCrossedArity(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
@@ -470,7 +470,7 @@ fn cfunCrossedArity(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `stackn` as a number, for a Janet function to report the depth it runs at.
-fn cfunDepth(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDepth(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return harness.wrapInteger(@intCast(harness.vm().stackn));
 }
@@ -558,7 +558,7 @@ fn theDepthACallRunsAt() void {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     test_env = harness.coreEnv();
     registry.cfuns(test_env, null, &cfuns);
 

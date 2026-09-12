@@ -9,7 +9,7 @@
 //! asked for a symbol in the process rather than in a loaded library, walks
 //! every loaded module and panics where `c.EnumProcessModules` fails. Nothing
 //! else reports anything but a null pointer. So `symbol` returns
-//! `raise.Raising(?*anyopaque)` on every platform while only the Windows arm
+//! `raise.Error!?*anyopaque` on every platform while only the Windows arm
 //! ever returns the error: one source line, `try dynlib.symbol(...)`, cannot
 //! need a `try` on Windows and not on Linux. `ev/backend.zig`'s four backends
 //! are the same shape.
@@ -117,7 +117,7 @@ pub fn load(name: ?[*:0]const u8) Handle {
 ///
 /// The error is declared on every platform and returned only on Windows; the
 /// head of this file says why.
-pub fn symbol(lib: Handle, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
+pub fn symbol(lib: Handle, sym: [*:0]const u8) raise.Error!?*anyopaque {
     if (!has_dynamic_modules) return null;
     if (windows) return symbolClib(lib, sym);
     return std.c.dlsym(lib, sym);
@@ -179,7 +179,7 @@ fn loadClib(name: ?[*:0]const u8) ?*anyopaque {
 /// nothing here grows the array or notices the truncation, so a process with
 /// more than 1024 modules searches the first 1024 and says nothing. It is
 /// defined behaviour, and a limit nobody documented.
-fn symbolClib(lib: ?*anyopaque, sym: [*:0]const u8) raise.Raising(?*anyopaque) {
+fn symbolClib(lib: ?*anyopaque, sym: [*:0]const u8) raise.Error!?*anyopaque {
     if (lib != c.GetModuleHandleA(null)) {
         return c.GetProcAddress(lib, sym);
     }

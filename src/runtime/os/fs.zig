@@ -118,13 +118,13 @@ pub fn canonicalPath(path: [*:0]const u8) ?[*:0]u8 {
 }
 
 /// `(os/perm-int perm)`.
-pub fn cfunPermissionInt(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunPermissionInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromInteger(try stat.getUnixMode(argv, 0));
 }
 
 /// `(os/perm-string perm)`.
-pub fn cfunPermissionString(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunPermissionString(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return stat.makePermstring(try stat.getUnixMode(argv, 0));
 }
@@ -359,7 +359,7 @@ pub fn touch(path: [*:0]const u8, has_times: bool, actime: f64, modtime: f64) i3
 // ==========================================================================
 
 /// `(os/cd path)`.
-fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCd(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
@@ -370,7 +370,7 @@ fn cfunCd(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/chmod path mode)`.
-fn cfunChmod(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunChmod(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 2);
     const path = try args_core.getCString(argv, 0);
@@ -385,7 +385,7 @@ fn cfunChmod(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/cwd)`.
-fn cfunCwd(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCwd(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     var buf: [h.FILENAME_MAX]u8 = undefined;
     if (hostGetcwd(&buf, h.FILENAME_MAX) != 0) {
@@ -395,7 +395,7 @@ fn cfunCwd(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/dir path &opt array)`.
-fn cfunDir(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDir(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
     const dir = try args_core.getCString(argv, 0);
@@ -405,7 +405,7 @@ fn cfunDir(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/link oldpath newpath &opt symlink)`.
-fn cfunLink(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunLink(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 2, 3);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
@@ -423,7 +423,7 @@ fn cfunLink(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/mkdir path)`.
-fn cfunMkdir(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMkdir(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
@@ -435,7 +435,7 @@ fn cfunMkdir(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(os/readlink path)`. Like `os/rm`, this asserts a sandbox permission
 /// before anything else, and its is filesystem read.
-fn cfunReadlink(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunReadlink(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.fixarity(argv, 1);
     if (windows) return raise.panic("not supported on Windows");
@@ -449,7 +449,7 @@ fn cfunReadlink(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/realpath path)`.
-fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRealpath(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.fixarity(argv, 1);
     const src = try args_core.getCString(argv, 0);
@@ -481,7 +481,7 @@ fn cfunRealpath(argv: []repr.Value) raise.Raising(repr.Value) {
 ///
 /// The assertion goes before the arity check, which is the order all nine
 /// neighbours use and which a program can observe.
-fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRemove(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
@@ -493,7 +493,7 @@ fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(os/rename oldpath newpath)`. The one failure message in this family that
 /// is the bare `strerror` text rather than a `%s: %s` naming the path.
-fn cfunRename(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRename(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 2);
     const src = try args_core.getCString(argv, 0);
@@ -505,7 +505,7 @@ fn cfunRename(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/rmdir path)`.
-fn cfunRmdir(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRmdir(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const path = try args_core.getCString(argv, 0);
@@ -516,7 +516,7 @@ fn cfunRmdir(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/symlink oldpath newpath)`.
-fn cfunSymlink(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSymlink(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 2);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
@@ -529,7 +529,7 @@ fn cfunSymlink(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/touch path &opt actime modtime)`.
-fn cfunTouch(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTouch(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);
@@ -549,7 +549,7 @@ fn cfunTouch(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/umask mask)`.
-fn cfunUmask(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunUmask(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.fixarity(argv, 1);
     const mask = try stat.getMode(argv, 0);
@@ -592,7 +592,7 @@ inline fn readEntryName(handle: *anyopaque) ?[*:0]const u8 {
 /// The POSIX enumeration, through an explicit iterator. The close-then-panic
 /// on a failed read is the C original's, and the errno is saved across the
 /// close because closing can overwrite it.
-fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
+fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
     const dfd = dirOpen(@ptrCast(dir)) orelse {
         return pp_format.panicf("cannot open directory %s: %s", .{ dir, utils.strerrorSafe(c.errno()) });
     };
@@ -613,7 +613,7 @@ fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
 /// The Windows enumeration, written here rather than left in C: `_finddata_t`
 /// translates completely on mingw, which the design note for a separate paths
 /// file had assumed it would not.
-fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Raising(void) {
+fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
     var afile: h._finddata_t = undefined;
     var pattern: [h.MAX_PATH + 1]u8 = undefined;
     const dirlen = std.mem.len(@as([*:0]const u8, @ptrCast(dir)));

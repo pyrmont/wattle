@@ -53,7 +53,7 @@ const Type = ffi_types.Type;
 // ==========================================================================
 
 /// Every Janet type that can stand in for a C pointer.
-pub fn getPointer(argv: []const repr.Value, n: usize) raise.Raising(?*anyopaque) {
+pub fn getPointer(argv: []const repr.Value, n: usize) raise.Error!?*anyopaque {
     return switch (repr.typeOf(argv[n])) {
         repr.Tag.pointer,
         repr.Tag.string,
@@ -79,7 +79,7 @@ pub fn getPointer(argv: []const repr.Value, n: usize) raise.Raising(?*anyopaque)
 
 /// The inverse of `writeOne`, on the assumption that the memory is what the
 /// type says it is.
-pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Raising(repr.Value) {
+pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Error!repr.Value {
     if (recur == 0) return raise.panic("recursion too deep");
 
     if (ty.array_count >= 0) {

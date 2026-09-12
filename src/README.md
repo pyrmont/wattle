@@ -29,7 +29,7 @@ owes before it is believed.
   therefore what makes a raise catchable. The `setjmp` was never the scope, only
   the transfer. `defer` and `errdefer` are legal everywhere.
 
-- A raising function returns `raise.Raising(T)`, and each caller either
+- A raising function returns `raise.Error!T`, and each caller either
   propagates it or flattens it. Where a caller cannot pass the error union on it
   flattens the raise into a report, and a report nobody consumes ends the
   process at the next protected scope, naming neither the cause nor the caller.
@@ -228,7 +228,7 @@ old imported layout and produce a silent offset mismatch.
 
 ## Raising
 
-`raise.Raising(T)` is `error{JanetSignal}!T`. A caller that can propagate it
+`raise.Error!T` is `error{JanetSignal}!T`. A caller that can propagate it
 writes `try`; a caller that cannot flattens it, and there are four spellings:
 
 | form | what it does |

@@ -24,7 +24,7 @@
 //!
 //! ## What raises, and what a raise costs
 //!
-//! A getter returns `raise.Raising(T)` and the `opt` layer above it calls that
+//! A getter returns `raise.Error!T` and the `opt` layer above it calls that
 //! form, so a default-taking wrapper propagates an error rather than losing
 //! one. Nothing here catches its own error.
 //!
@@ -53,7 +53,7 @@
 //! ## The Zig side of the layer
 //!
 //! Everything above has two faces: an implementation returning
-//! `raise.Raising(T)`, and a wrapper published under the C name. A Zig caller
+//! `raise.Error!T`, and a wrapper published under the C name. A Zig caller
 //! takes the first, and the `get*` and `opt*` constants are the names it is
 //! reachable by. Nothing here is exported: they are aliases for an importer,
 //! and the exported set is unchanged. The names are upstream's with the prefix
@@ -245,7 +245,7 @@ pub const Range = abi.Range;
 fn ArgGetter(comptime T: type, comptime kernel: anytype) type {
     return struct {
         pub const Value = T;
-        pub fn get(argv: []const repr.Value, n: usize) raise.Raising(T) {
+        pub fn get(argv: []const repr.Value, n: usize) raise.Error!T {
             var fault: Fault = undefined;
             return kernel(argv, n, &fault) orelse raiseFault(argv, fault);
         }
@@ -412,7 +412,7 @@ pub fn Opt(comptime G: type) type {
     else
         G.Value;
     return struct {
-        pub fn get(argv: []const repr.Value, n: usize, dflt: D) raise.Raising(D) {
+        pub fn get(argv: []const repr.Value, n: usize, dflt: D) raise.Error!D {
             if (argIsdefault(argv, n)) return dflt;
             return @as(D, try G.get(argv, n));
         }
@@ -423,7 +423,7 @@ pub fn Opt(comptime G: type) type {
 /// capacity, built by `construct`, rather than a value the caller supplies.
 pub fn OptLen(comptime G: type, comptime construct: anytype) type {
     return struct {
-        pub fn get(argv: []const repr.Value, n: usize, dflt_len: usize) raise.Raising(G.Value) {
+        pub fn get(argv: []const repr.Value, n: usize, dflt_len: usize) raise.Error!G.Value {
             if (argIsdefault(argv, n)) return construct(dflt_len);
             return G.get(argv, n);
         }
@@ -439,7 +439,7 @@ pub fn OptLen(comptime G: type, comptime construct: anytype) type {
 fn TypeGetter(comptime unwrap: anytype, comptime janet_type: repr.Tag, comptime typeflags: repr.TagSet) type {
     return struct {
         pub const Value = @typeInfo(@TypeOf(unwrap)).@"fn".return_type.?;
-        pub fn get(argv: []const repr.Value, n: usize) raise.Raising(Value) {
+        pub fn get(argv: []const repr.Value, n: usize) raise.Error!Value {
             var fault: Fault = undefined;
             if (!argChecktype(argv, n, janet_type, typeflags, &fault)) {
                 return raiseFault(argv, fault);
@@ -455,7 +455,7 @@ fn TypeGetter(comptime unwrap: anytype, comptime janet_type: repr.Tag, comptime 
 fn Wide(comptime T: type, comptime unwrap: anytype, comptime kernel: anytype) type {
     return struct {
         pub const Value = T;
-        pub fn get(argv: []const repr.Value, n: usize) raise.Raising(T) {
+        pub fn get(argv: []const repr.Value, n: usize) raise.Error!T {
             if (int_types_enabled) return unwrap(argv[n]);
             var fault: Fault = undefined;
             return kernel(argv, n, &fault) orelse raiseFault(argv, fault);
@@ -660,7 +660,7 @@ pub fn argHalfrange(
 }
 
 /// `argArgindex`, raising rather than filling in a fault.
-pub fn argIndex(argv: []const repr.Value, n: usize, length: i32, which: [*:0]const u8) raise.Raising(i32) {
+pub fn argIndex(argv: []const repr.Value, n: usize, length: i32, which: [*:0]const u8) raise.Error!i32 {
     var fault: Fault = undefined;
     return argArgindex(argv, n, length, which, &fault) orelse raiseFault(argv, fault);
 }
@@ -771,7 +771,7 @@ pub fn argZeros(bytes: []const u8, fault: *Fault) bool {
 }
 
 /// Raises unless `argv`'s length is within `min` and `max`.
-pub fn arity(argv: []const repr.Value, min: i32, max: i32) raise.Raising(void) {
+pub fn arity(argv: []const repr.Value, min: i32, max: i32) raise.Error!void {
     return checkArity(@intCast(argv.len), min, max);
 }
 
@@ -811,7 +811,7 @@ pub fn bytesViewAbi(x: repr.Value, out: *abi.ByteView) callconv(.c) bool {
 }
 
 /// Raises unless `count` is within `min` and `max`.
-pub fn checkArity(count: i32, min: i32, max: i32) raise.Raising(void) {
+pub fn checkArity(count: i32, min: i32, max: i32) raise.Error!void {
     var fault: Fault = undefined;
     if (!argArity(count, min, max, &fault)) return raiseFault(null, fault);
 }
@@ -948,7 +948,7 @@ pub fn dictionaryViewAbi(x: repr.Value, out: *abi.DictView) callconv(.c) bool {
 
 /// The end of a slice argument at `n`, folded against `length`. An absent or
 /// nil slot takes `length`.
-pub fn endRange(argv: []const repr.Value, n: usize, length: i32) raise.Raising(i32) {
+pub fn endRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!i32 {
     if (argIsdefault(argv, n)) return length;
     return halfRange(argv, n, length, "end");
 }
@@ -965,7 +965,7 @@ pub fn findMethod(key: repr.Value, methods: [*]const method_type.CMethod) ?repr.
 }
 
 /// Raises unless `count` is exactly `fix`.
-pub fn fixArity(count: i32, fix: i32) raise.Raising(void) {
+pub fn fixArity(count: i32, fix: i32) raise.Error!void {
     var fault: Fault = undefined;
     if (!argFixarity(count, fix, &fault)) return raiseFault(null, fault);
 }
@@ -983,7 +983,7 @@ pub fn fixArityAbi(argc: i32, fix: i32) callconv(.c) void {
 /// at all: there is nothing for a slice to be made of. Two names for one
 /// implementation; Zig has no overloading and this is the shape that would
 /// need it.
-pub fn fixarity(argv: []const repr.Value, fix: i32) raise.Raising(void) {
+pub fn fixarity(argv: []const repr.Value, fix: i32) raise.Error!void {
     return fixArity(@intCast(argv.len), fix);
 }
 
@@ -997,7 +997,7 @@ pub inline fn getAbstract(
     argv: []const repr.Value,
     n: usize,
     at: *const abi.AbstractType,
-) raise.Raising(*T) {
+) raise.Error!*T {
     return @ptrCast(@alignCast((try getAbstractPtr(argv, n, at)).?));
 }
 
@@ -1007,7 +1007,7 @@ pub inline fn getAbstract(
 /// A payload address is never null, being a fixed offset into a block the
 /// allocator just returned, but the published signature gives back a nullable
 /// pointer and the boundary is where that stays.
-pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.AbstractType) raise.Raising(?*anyopaque) {
+pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.AbstractType) raise.Error!?*anyopaque {
     var fault: Fault = undefined;
     return argAbstract(argv, n, at, &fault) orelse raiseFault(argv, fault);
 }
@@ -1017,7 +1017,7 @@ pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.Abstrac
 /// The abstract branch runs the type's `bytes` callback, which is a function
 /// pointer from a native module. It runs here rather than inside `argBytes`
 /// for the reason `Bytes` gives, which no longer determines anything.
-pub fn getBytes(argv: []const repr.Value, n: usize) raise.Raising(abi.ByteView) {
+pub fn getBytes(argv: []const repr.Value, n: usize) raise.Error!abi.ByteView {
     var fault: Fault = undefined;
     const bytes = argBytes(argv[n], n, &fault) orelse return raiseFault(argv, fault);
     return switch (bytes) {
@@ -1030,7 +1030,7 @@ pub fn getBytes(argv: []const repr.Value, n: usize) raise.Raising(abi.ByteView) 
 ///
 /// The two buffer shapes are performed here rather than in the kernel: one
 /// pushes a byte and one calls `gc.smalloc`, and both can raise.
-pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8) {
+pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
     var fault: Fault = undefined;
     var cstr: [*c]const u8 = undefined;
     var len: usize = undefined;
@@ -1077,7 +1077,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8)
 }
 
 /// `getCBytes`, refusing anything that is not a string.
-pub fn getCString(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8) {
+pub fn getCString(argv: []const repr.Value, n: usize) raise.Error![*c]const u8 {
     var fault: Fault = undefined;
     if (!argChecktype(argv, n, repr.Tag.string, repr.TagSet.one(.string), &fault)) {
         return raiseFault(argv, fault);
@@ -1086,13 +1086,13 @@ pub fn getCString(argv: []const repr.Value, n: usize) raise.Raising([*c]const u8
 }
 
 /// The entries of the table or struct at `n`.
-pub fn getDictionary(argv: []const repr.Value, n: usize) raise.Raising(DictView) {
+pub fn getDictionary(argv: []const repr.Value, n: usize) raise.Error!DictView {
     var fault: Fault = undefined;
     return argDictionary(argv, n, &fault) orelse raiseFault(argv, fault);
 }
 
 /// The bits of `flags` that the keyword at `n` names.
-pub fn getFlags(argv: []const repr.Value, n: usize, flags: [*:0]const u8) raise.Raising(u64) {
+pub fn getFlags(argv: []const repr.Value, n: usize, flags: [*:0]const u8) raise.Error!u64 {
     const keyw = try GetKeyword.get(argv, n);
     var fault: Fault = undefined;
     return argFlags(keyw, strings.head(keyw).length, flags, &fault) orelse
@@ -1100,7 +1100,7 @@ pub fn getFlags(argv: []const repr.Value, n: usize, flags: [*:0]const u8) raise.
 }
 
 /// The elements of the array or tuple at `n`.
-pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Raising([]const repr.Value) {
+pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Error![]const repr.Value {
     var fault: Fault = undefined;
     return argIndexed(argv, n, &fault) orelse raiseFault(argv, fault);
 }
@@ -1119,7 +1119,7 @@ pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Raising([]const repr
 /// An absent or nil slot takes the whole range, which is `startRange` and
 /// `endRange`'s rule and not a new one; an end below the start is clamped up
 /// to it, which is `getSlice`'s.
-pub fn getRange(argv: []const repr.Value, n: usize, length: i32) raise.Raising(Range) {
+pub fn getRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!Range {
     var out: Range = undefined;
     out.start = try startRange(argv, n, length);
     out.end = try endRange(argv, n + 1, length);
@@ -1145,7 +1145,7 @@ pub fn getRangeAbi(argv: [*]const repr.Value, argc: i32, n: i32, length: i32) ca
 ///
 /// `access.length` can raise through this frame, which is stranded by nothing
 /// at that point.
-pub fn getSlice(argv: []const repr.Value) raise.Raising(Range) {
+pub fn getSlice(argv: []const repr.Value) raise.Error!Range {
     try checkArity(@intCast(argv.len), 1, 3);
     var range_out: Range = undefined;
     const length = try access.length(argv[0]);
@@ -1168,7 +1168,7 @@ pub fn getmethod(
 }
 
 /// `argHalfrange`, raising rather than filling in a fault.
-pub fn halfRange(argv: []const repr.Value, n: usize, length: i32, which: [*:0]const u8) raise.Raising(i32) {
+pub fn halfRange(argv: []const repr.Value, n: usize, length: i32, which: [*:0]const u8) raise.Error!i32 {
     var fault: Fault = undefined;
     return argHalfrange(argv, n, length, which, &fault) orelse raiseFault(argv, fault);
 }
@@ -1207,19 +1207,19 @@ pub fn optAbstract(
     n: usize,
     at: *const abi.AbstractType,
     dflt: ?*anyopaque,
-) raise.Raising(?*anyopaque) {
+) raise.Error!?*anyopaque {
     if (argIsdefault(argv, n)) return dflt;
     return getAbstractPtr(argv, n, at);
 }
 
 /// `getCBytes` with a default for an absent or nil slot.
-pub fn optCBytes(argv: []const repr.Value, n: usize, dflt: [*c]const u8) raise.Raising([*c]const u8) {
+pub fn optCBytes(argv: []const repr.Value, n: usize, dflt: [*c]const u8) raise.Error![*c]const u8 {
     if (argIsdefault(argv, n)) return dflt;
     return getCBytes(argv, n);
 }
 
 /// `getCString` with a default for an absent or nil slot.
-pub fn optCString(argv: []const repr.Value, n: usize, dflt: [*c]const u8) raise.Raising([*c]const u8) {
+pub fn optCString(argv: []const repr.Value, n: usize, dflt: [*c]const u8) raise.Error![*c]const u8 {
     if (argIsdefault(argv, n)) return dflt;
     return getCString(argv, n);
 }
@@ -1255,7 +1255,7 @@ pub fn panicTypeAbi(x: repr.Value, n: i32, expected: c_int) void {
 
 /// The start of a slice argument at `n`, folded against `length`. An absent or
 /// nil slot takes 0.
-pub fn startRange(argv: []const repr.Value, n: usize, length: i32) raise.Raising(i32) {
+pub fn startRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!i32 {
     if (argIsdefault(argv, n)) return 0;
     return halfRange(argv, n, length, "start");
 }
@@ -1327,7 +1327,7 @@ fn checkRange(comptime T: type, dval: f64) bool {
 /// slice, which has no guaranteed in-memory representation and so cannot
 /// appear in a `callconv(.c)` signature. The pointer and the count cross as
 /// `abi.IndexedView` and `module.getIndexed` rebuilds the slice.
-fn indexedAbi(argv: []const repr.Value, n: usize) raise.Raising(abi.IndexedView) {
+fn indexedAbi(argv: []const repr.Value, n: usize) raise.Error!abi.IndexedView {
     const items = try getIndexed(argv, n);
     return .{ .items = items.ptr, .len = items.len };
 }

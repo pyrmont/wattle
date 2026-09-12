@@ -352,7 +352,7 @@ pub const Type = extern struct {
 // Public functions
 // ==========================================================================
 
-pub fn buildStruct(argv: []const repr.Value) raise.Raising(*Struct) {
+pub fn buildStruct(argv: []const repr.Value) raise.Error!*Struct {
     // `:pack` marks a single packed member and `:pack-all` packs the rest.
     var member_count = argv.len;
     var all_packed = false;
@@ -420,7 +420,7 @@ pub fn ccEnabled(cc: Cc) bool {
 
 /// `decode_ffi_cc`. `:default` never reaches the table: it resolves to
 /// whichever convention the build enables, which is a property of the target.
-pub fn decodeCc(name: [*:0]const u8) raise.Raising(Cc) {
+pub fn decodeCc(name: [*:0]const u8) raise.Error!Cc {
     if (0 == utils.cstrcmp(name, "default")) return default_cc;
     const cc = lookupCc(keywordBytes(name));
     if (cc < 0 or !ccEnabled(@enumFromInt(@as(u32, @intCast(cc))))) {
@@ -430,14 +430,14 @@ pub fn decodeCc(name: [*:0]const u8) raise.Raising(Cc) {
 }
 
 /// `decode_ffi_prim`.
-pub fn decodePrim(name: [*]const u8) raise.Raising(Prim) {
+pub fn decodePrim(name: [*]const u8) raise.Error!Prim {
     const prim = lookupPrim(keywordBytes(name));
     if (prim < 0) return pp_format.panicf("unknown machine type %s", .{name});
     return @enumFromInt(@as(u32, @intCast(prim)));
 }
 
 /// `decode_ffi_type`.
-pub fn decodeType(x: repr.Value) raise.Raising(Type) {
+pub fn decodeType(x: repr.Value) raise.Error!Type {
     if (repr.checkType(x, repr.Tag.keyword)) {
         return Type.of(try decodePrim(wrap.toKeyword(x)));
     }

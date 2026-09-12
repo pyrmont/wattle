@@ -231,7 +231,7 @@ pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
     _ = raise.total(vm_entry.call(fun, (&context)[0..1]), "an ffi callback");
 }
 
-pub fn cfunCall(argv: []const repr.Value) raise.Raising(repr.Value) {
+pub fn cfunCall(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, -1);
     const function_pointer = try callablePointer(argv, 0);
@@ -254,7 +254,7 @@ pub fn cfunCall(argv: []const repr.Value) raise.Raising(repr.Value) {
     };
 }
 
-pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
+pub fn cfunJitfn(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_jit"}));
     try args_core.fixarity(argv, 1);
     const bytes = try args_core.getBytes(argv, 0);
@@ -305,7 +305,7 @@ pub fn cfunJitfn(argv: []const repr.Value) raise.Raising(repr.Value) {
     return wrap.fromAbstract(fun);
 }
 
-pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
+pub fn cfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
     // The upper bound is a deliberate divergence from Janet, which checks
     // only the lower one: without it `arg_count` is whatever the caller passed
     // and the loop below fills `mappings` and `slots` past their ends, into
@@ -417,7 +417,7 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Raising(repr.Value) {
     return wrap.fromAbstract(abst);
 }
 
-pub fn cfunTrampoline(argv: []const repr.Value) raise.Raising(repr.Value) {
+pub fn cfunTrampoline(argv: []const repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     var cc = ffi_types.default_cc;
     if (argv.len >= 1) cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
@@ -440,7 +440,7 @@ pub fn cfunTrampoline(argv: []const repr.Value) raise.Raising(repr.Value) {
 
 /// `cfun_ffi_supported_calling_conventions`. Every architecture supports
 /// `:none`, which is a placeholder that cannot be used at runtime.
-pub fn supportedConventions() raise.Raising(repr.Value) {
+pub fn supportedConventions() raise.Error!repr.Value {
     const array = arrays.new(4);
     if (ffi_types.win64_enabled) try arrays.push(array, value.fromBytes("win64", .keyword));
     if (ffi_types.sysv64_enabled) try arrays.push(array, value.fromBytes("sysv64", .keyword));
@@ -499,7 +499,7 @@ fn bankedRegs(comptime ngen: usize, comptime nfp: usize) []const type {
 
 /// AAPCS64. Eight general registers, eight vector registers, a stack measured
 /// in bytes rather than words, and three return variants.
-fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Raising(repr.Value) {
+fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Error!repr.Value {
     var gen: [8]u64 = @splat(0);
     var fp: [8]u64 = @splat(0);
     var ret_buf: ReturnBuffer align(16) = @splat(0);
@@ -586,7 +586,7 @@ fn callAapcs64(sig: *Signature, function_pointer: *const anyopaque, argv: []cons
 
 /// SysV AMD64. Six general registers, eight vector registers, and four
 /// variants that differ only in how the return value comes back.
-fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Raising(repr.Value) {
+fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Error!repr.Value {
     var gen: [6]u64 = @splat(0);
     var fp: [8]u64 = @splat(0);
     var pair: [2]u64 = @splat(0);
@@ -670,7 +670,7 @@ fn callSysv64(sig: *Signature, function_pointer: *const anyopaque, argv: []const
 /// Win64. Four register slots that are integer or vector according to the
 /// variant, one register for the return, and everything wider than a word
 /// passed by reference.
-fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Raising(repr.Value) {
+fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const repr.Value) raise.Error!repr.Value {
     var regs: [4]u64 = @splat(0);
     var ret_buf: ReturnBuffer align(16) = @splat(0);
 
@@ -731,7 +731,7 @@ fn callWin64(sig: *Signature, function_pointer: *const anyopaque, argv: []const 
     return marshal.readOne(ret_mem, sig.ret.type, ffi_types.max_recur);
 }
 
-fn callablePointer(argv: []const repr.Value, n: usize) raise.Raising(*const anyopaque) {
+fn callablePointer(argv: []const repr.Value, n: usize) raise.Error!*const anyopaque {
     switch (repr.typeOf(argv[n])) {
         repr.Tag.pointer => {
             if (wrap.toPointer(argv[n])) |p| return p;
@@ -894,7 +894,7 @@ fn jitfnGetBytes(fun: *const JittedFn, _: usize) []const u8 {
     return @as([*]const u8, @ptrCast(fun.function_pointer))[0..@intCast(fun.size)];
 }
 
-fn jitfnLength(fun: *JittedFn, _: usize) raise.Raising(usize) {
+fn jitfnLength(fun: *JittedFn, _: usize) raise.Error!usize {
     return fun.size;
 }
 

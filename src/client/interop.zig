@@ -66,7 +66,7 @@ var process_io: std.Io = undefined;
 // ==========================================================================
 
 /// The type of a cfunction in this file. This is `raise.CFunction`, which
-/// returns `raise.Raising(Value)` over Zig's own calling convention, so a
+/// returns `raise.Error!Value` over Zig's own calling convention, so a
 /// raise is a returned error and a caller that forgets the `try` gets a
 /// compile error.
 const CFunction = raise.CFunction;
@@ -134,7 +134,7 @@ pub fn setIo(io: std.Io) void {
 /// Each checks its arity, checks any type the operation needs, and passes its
 /// operation to `dispatchOrPanic`. `zig/call` and `zig/length` are the two
 /// that check a type, because `dispatch` unwraps without checking.
-fn cfunZigCall(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunZigCall(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 2);
     if (!repr.checkType(argv[0], repr.Tag.function)) {
         return args.panicType(argv[0], 0, repr.TagSet.one(.function));
@@ -142,17 +142,17 @@ fn cfunZigCall(argv: []repr.Value) raise.Raising(repr.Value) {
     return dispatchOrPanic(call_operation, argv);
 }
 
-fn cfunZigFail(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunZigFail(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 1);
     return dispatchOrPanic(fail_operation, argv);
 }
 
-fn cfunZigIdentity(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunZigIdentity(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 1);
     return dispatchOrPanic(identity_operation, argv);
 }
 
-fn cfunZigLength(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunZigLength(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 1);
     if (!repr.checkTypes(argv[0], repr.TagSet.lengthable)) {
         return args.panicType(argv[0], 0, repr.TagSet.lengthable);
@@ -160,7 +160,7 @@ fn cfunZigLength(argv: []repr.Value) raise.Raising(repr.Value) {
     return dispatchOrPanic(length_operation, argv);
 }
 
-fn cfunZigRooted(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunZigRooted(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 0);
     return dispatchOrPanic(rooted_operation, argv);
 }
@@ -172,7 +172,7 @@ fn cfunZigRooted(argv: []repr.Value) raise.Raising(repr.Value) {
 /// definition does.
 ///
 /// The local `defs` is the table and this function is what installs it.
-fn define(env: *tables.Table) raise.Raising(void) {
+fn define(env: *tables.Table) raise.Error!void {
     const defs = [_]struct { name: [*:0]const u8, cfun: CFunction, doc: [*:0]const u8 }{
         .{ .name = "zig/identity", .cfun = &cfunZigIdentity, .doc = "Round-trip one Janet value through Zig." },
         .{ .name = "zig/length", .cfun = &cfunZigLength, .doc = "Read the length of a Janet collection in Zig." },
@@ -199,7 +199,7 @@ fn dispatch(
     operation: i32,
     argv: []const repr.Value,
     out: *repr.Value,
-) raise.Raising(c_int) {
+) raise.Error!c_int {
     switch (operation) {
         identity_operation => out.* = argv[0],
         length_operation => out.* = wrapInteger(try access.length(argv[0])),
@@ -227,7 +227,7 @@ fn dispatch(
 /// `operation` is one of the five constants above and `argv` is the
 /// cfunction's arguments. This function raises when `dispatch` returns 0,
 /// with the value `dispatch` wrote to `out`.
-fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Raising(repr.Value) {
+fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Error!repr.Value {
     var result: repr.Value = undefined;
     if (try dispatch(operation, argv, &result) == 0) {
         return raise.panicv(result);
@@ -241,7 +241,7 @@ fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Raising(repr.Value)
 /// here, all optional. The buffer is truncated and then filled with one line
 /// including its newline, or left empty at end of input. This function raises
 /// on a wrong argument type and returns the buffer.
-fn lineGetter(argv: []repr.Value) raise.Raising(repr.Value) {
+fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     try args.checkArity(@intCast(argv.len), 0, 3);
     const prompt: [*:0]const u8 = if (argv.len >= 1) try args.GetString.get(argv, 0) else "";
     const buffer = if (argv.len >= 2) try args.GetBuffer.get(argv, 1) else buffers.new(10);
@@ -319,7 +319,7 @@ fn readline(prompt: [*:0]const u8, out: *JanetZigLine) c_int {
 /// `rooted` takes the value as soon as it is rooted, so `makeRooted`'s `defer`
 /// drops the rooting whether or not the push raises. This function raises what
 /// `arrays.push` raises.
-fn rootedProbe(rooted: *?repr.Value) raise.Raising(void) {
+fn rootedProbe(rooted: *?repr.Value) raise.Error!void {
     const array = arrays.new(1);
     const v = wrap.fromArray(array);
     gc_alloc.gcroot(v);

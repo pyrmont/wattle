@@ -111,7 +111,7 @@ const TraceState = struct {
 /// table.
 ///
 /// Reached by import: nothing exports it and nothing takes its address.
-pub fn debugFrame(frame: *vm_state.StackFrame) raise.Raising(repr.Value) {
+pub fn debugFrame(frame: *vm_state.StackFrame) raise.Error!repr.Value {
     var desc: TraceFrame = undefined;
     try traceFrame(frame, &desc);
 
@@ -265,7 +265,7 @@ pub fn stacktraceExt(
     fiber: ?*fibers.Fiber,
     err: repr.Value,
     prefix: ?[*:0]const u8,
-) raise.Raising(void) {
+) raise.Error!void {
     var state = TraceState{
         .prefix = prefix,
         .error_text = @ptrCast(pp_describe.toString(err)),
@@ -283,7 +283,7 @@ pub fn stacktraceExt(
 ///
 /// Total: every frame produces a descriptor, and a frame that names nothing
 /// produces no name and no location, which renders as a bare `  in` line.
-pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Raising(void) {
+pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Error!void {
     out.* = .{
         .name = null,
         .name_prefix = null,
@@ -359,7 +359,7 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Raising(v
 // ==========================================================================
 
 /// `debug/arg-stack`: the values on the fiber's argument stack, as an array.
-fn cfunDebugArgstack(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugArgstack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(@intCast(fiber.stacktop - fiber.stackstart));
@@ -377,21 +377,21 @@ fn cfunDebugArgstack(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `debug/break`: a breakpoint set at a source position.
-fn cfunDebugBreak(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugBreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findBySource(argv);
     try debugBreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/fbreak`: a breakpoint set at a bytecode offset into a function.
-fn cfunDebugFbreak(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugFbreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findByFunction(argv);
     try debugBreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/lineage`: a fiber and every child under it, as an array.
-fn cfunDebugLineage(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugLineage(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     var fiber: ?*fibers.Fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(0);
@@ -402,7 +402,7 @@ fn cfunDebugLineage(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `debug/stack`: one table per stack frame, innermost first.
-fn cfunDebugStack(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugStack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(0);
@@ -416,7 +416,7 @@ fn cfunDebugStack(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `debug/stacktrace`: the fiber's stack trace printed to `(dyn :err)`.
-fn cfunDebugStacktrace(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugStacktrace(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fiber = try args_core.getFiber(argv, 0);
     const err = if (argv.len == 1) wrap.fromNil() else argv[1];
@@ -427,7 +427,7 @@ fn cfunDebugStacktrace(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `debug/step`: one virtual instruction of the fiber, and the signal it ended
 /// on.
-fn cfunDebugStep(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugStep(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const fiber = try args_core.getFiber(argv, 0);
     var out = wrap.fromNil();
@@ -436,14 +436,14 @@ fn cfunDebugStep(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `debug/unbreak`: the breakpoint at a source position removed.
-fn cfunDebugUnbreak(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugUnbreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findBySource(argv);
     try debugUnbreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/unfbreak`: the breakpoint at a bytecode offset removed.
-fn cfunDebugUnfbreak(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDebugUnfbreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findByFunction(argv);
     try debugUnbreak(found.definition, found.pc);
     return wrap.fromNil();
@@ -451,7 +451,7 @@ fn cfunDebugUnfbreak(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// Sets the breakpoint bit on one instruction of `definition`, raising where
 /// `pc` is out of range.
-fn debugBreak(definition: *functions.FuncDef, pc: i32) raise.Raising(void) {
+fn debugBreak(definition: *functions.FuncDef, pc: i32) raise.Error!void {
     if (pc >= definition.bytecode_length or pc < 0) return raise.panic("invalid bytecode offset");
     definition.instructions()[@intCast(pc)] |= 0x80;
 }
@@ -469,7 +469,7 @@ fn debugFindImpl(
     source: [*:0]const u8,
     source_line: i32,
     source_column: i32,
-) raise.Raising(Breakpoint) {
+) raise.Error!Breakpoint {
     var best_index: i32 = -1;
     var best_line: i32 = -1;
     var best_column: i32 = -1;
@@ -502,7 +502,7 @@ fn debugFindImpl(
 
 /// Clears the breakpoint bit on one instruction of `definition`, raising where
 /// `pc` is out of range.
-fn debugUnbreak(definition: *functions.FuncDef, pc: i32) raise.Raising(void) {
+fn debugUnbreak(definition: *functions.FuncDef, pc: i32) raise.Error!void {
     if (pc >= definition.bytecode_length or pc < 0) return raise.panic("invalid bytecode offset");
     definition.instructions()[@intCast(pc)] &= ~@as(u32, 0x80);
 }
@@ -512,7 +512,7 @@ fn debugUnbreak(definition: *functions.FuncDef, pc: i32) raise.Raising(void) {
 /// The dynamic binding redirects the whole trace, and that is what makes this
 /// different from writing to the handle directly. `stdio.err()` is a function
 /// rather than a variable for the reason `stdio.zig` gives.
-inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Error!void {
     // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function,
     // and calling it can. Every caller here is raising, so the raise is
     // returned.
@@ -521,7 +521,7 @@ inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(vo
 
 /// `(debug/fbreak fun &opt pc)`'s arguments, resolved to a location. The
 /// offset is not range-checked here; `debugBreak` does it.
-fn findByFunction(argv: []repr.Value) raise.Raising(Breakpoint) {
+fn findByFunction(argv: []repr.Value) raise.Error!Breakpoint {
     try args_core.arity(argv, 1, 2);
     const function = try args_core.getFunction(argv, 0);
     const pc = if (argv.len == 2) try args_core.getInteger(argv, 1) else 0;
@@ -529,7 +529,7 @@ fn findByFunction(argv: []repr.Value) raise.Raising(Breakpoint) {
 }
 
 /// `(debug/break source line col)`'s three arguments, resolved to a location.
-fn findBySource(argv: []repr.Value) raise.Raising(Breakpoint) {
+fn findBySource(argv: []repr.Value) raise.Error!Breakpoint {
     try args_core.fixarity(argv, 3);
     const source = try args_core.getString(argv, 0);
     const line = try args_core.getInteger(argv, 1);
@@ -561,7 +561,7 @@ inline fn put(t: *tables.Table, name: [*:0]const u8, val: repr.Value) void {
 /// gives the order, with no allocation to release. That matters beyond
 /// tidiness: `eprintf` renders a value through an abstract type's `tostring`,
 /// and a raise there returns through these frames with nothing outstanding.
-fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Raising(void) {
+fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
     if (fiber.child) |child| try traceChain(child, state);
 
     var index = fiber.frame;

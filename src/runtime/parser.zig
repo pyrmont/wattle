@@ -180,7 +180,7 @@ pub const ParserStatus = enum(u32) {
 /// One `(parser/state p key)` key, and the function behind it.
 const StateGetter = struct {
     name: [:0]const u8,
-    get: *const fn (*Parser) raise.Raising(repr.Value),
+    get: *const fn (*Parser) raise.Error!repr.Value,
 };
 
 // ==========================================================================
@@ -189,13 +189,13 @@ const StateGetter = struct {
 
 /// `parserConsume` behind `checkDead`, which is what every caller from Janet
 /// reaches.
-pub fn consumeChecked(parser: *Parser, character: u8) raise.Raising(void) {
+pub fn consumeChecked(parser: *Parser, character: u8) raise.Error!void {
     try checkDead(parser);
     try parserConsume(parser, character);
 }
 
 /// `parserEof` behind `checkDead`.
-pub fn eofChecked(parser: *Parser) raise.Raising(void) {
+pub fn eofChecked(parser: *Parser) raise.Error!void {
     try checkDead(parser);
     try parserEof(parser);
 }
@@ -255,7 +255,7 @@ pub fn parserAtsign(
     parser: *Parser,
     _: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     _ = parser.states.pop();
     switch (character) {
         '{' => parserPushState(parser, parserRoot, .{ .container = true, .curly_brackets = true, .at_symbol = true }),
@@ -367,7 +367,7 @@ pub fn parserComment(
     parser: *Parser,
     _: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     if (character == '\n') {
         _ = parser.states.pop();
         parser.buf.clearRetainingCapacity();
@@ -383,7 +383,7 @@ pub fn parserComment(
 /// Line and column are advanced here, with a `\r\n` counted as one break. The
 /// dead and unread-error checks are `consumeChecked`'s rather than this
 /// function's.
-pub fn parserConsume(parser: *Parser, character: u8) raise.Raising(void) {
+pub fn parserConsume(parser: *Parser, character: u8) raise.Error!void {
     if (character == '\r') {
         parser.line += 1;
         parser.column = 0;
@@ -551,7 +551,7 @@ pub fn parserRoot(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     switch (character) {
         '\'', ',', ';', '~', '|' => {
             parserPushState(parser, parserRoot, .{ .reader_macro = true, .macro_char = character });
@@ -622,7 +622,7 @@ pub fn parserTokenchar(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     if (numscan.isSymbolChar(character)) {
         parserPushBuf(parser, character);
         if (character > 127) state.argn = 1;
@@ -688,7 +688,7 @@ pub fn parserTokenchar(
 // ==========================================================================
 
 /// `(parser/byte parser b)`. The low eight bits of `b` are the byte fed.
-fn cfunParserByte(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserByte(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     const val = try args_core.getInteger(argv, 1);
@@ -697,7 +697,7 @@ fn cfunParserByte(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(parser/clone p)`.
-fn cfunParserClone(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserClone(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const source = try getParser(argv, 0);
     const destination: *Parser = abstracts.newFor(Parser, &parserType);
@@ -708,7 +708,7 @@ fn cfunParserClone(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `(parser/consume parser bytes &opt index)`, returning how many bytes were
 /// read. A byte that puts the parser in the error or dead state stops the
 /// loop and is counted.
-fn cfunParserConsume(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserConsume(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const parser = try getParser(argv, 0);
     var view = try args_core.getBytes(argv, 1);
@@ -736,7 +736,7 @@ fn cfunParserConsume(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(parser/eof parser)`.
-fn cfunParserEof(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserEof(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     try eofChecked(try getParser(argv, 0));
     return argv[0];
@@ -744,7 +744,7 @@ fn cfunParserEof(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(parser/error parser)`. Reading the message clears it and flushes the
 /// parser.
-fn cfunParserError(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserError(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const parser = try getParser(argv, 0);
     const message = parserError(parser) orelse return wrap.fromNil();
@@ -756,14 +756,14 @@ fn cfunParserError(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(parser/flush parser)`.
-fn cfunParserFlush(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserFlush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     parserFlush(try getParser(argv, 0));
     return argv[0];
 }
 
 /// `(parser/has-more parser)`.
-fn cfunParserHasMore(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserHasMore(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(parserHasMore(try getParser(argv, 0)));
 }
@@ -771,7 +771,7 @@ fn cfunParserHasMore(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `(parser/insert parser value)`. A value inserted into a container is
 /// queued as an element of it; inserted into a string or a long string, the
 /// value's printed form is appended to the text being read.
-fn cfunParserInsert(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserInsert(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     var state = &parser.states.items[parser.states.items.len - 1];
@@ -803,7 +803,7 @@ fn cfunParserInsert(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(parser/new)`.
-fn cfunParserNew(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     const parser: *Parser = abstracts.newFor(Parser, &parserType);
     parserInit(parser);
@@ -811,7 +811,7 @@ fn cfunParserNew(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(parser/produce parser &opt wrap)`.
-fn cfunParserProduce(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserProduce(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (argv.len == 2 and repr.truthy(argv[1])) {
@@ -822,7 +822,7 @@ fn cfunParserProduce(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(parser/state parser &opt key)`, with the key looked up in
 /// `state_getters` and every getter run when there is none.
-fn cfunParserState(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserState(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (argv.len == 2) {
@@ -840,7 +840,7 @@ fn cfunParserState(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(parser/status parser)`, as the keyword rather than the number.
-fn cfunParserStatus(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserStatus(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const name: [*:0]const u8 = switch (parserStatus(try getParser(argv, 0))) {
         .pending => "pending",
@@ -853,7 +853,7 @@ fn cfunParserStatus(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(parser/where parser &opt line col)`, setting the position first where
 /// either is given.
-fn cfunParserWhere(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunParserWhere(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const parser = try getParser(argv, 0);
     if (argv.len > 1) {
@@ -874,7 +874,7 @@ fn cfunParserWhere(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// A parser that has hit EOF, or that is sitting on an unread error, cannot be
 /// fed.
-fn checkDead(parser: *Parser) raise.Raising(void) {
+fn checkDead(parser: *Parser) raise.Error!void {
     if (parser.dead or parser.generated_error) return raise.panic("parser is dead, cannot consume");
     if (parser.@"error" != null) return raise.panic("parser has unchecked error, cannot consume");
 }
@@ -903,7 +903,7 @@ fn checkEscape(character: u8) i32 {
 
 /// Closes the top container on a `)`, `]` or `}`, or reports the delimiter as
 /// unexpected or mismatched.
-fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Raising(bool) {
+fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Error!bool {
     if (parser.states.items.len == 1) {
         try delimError(parser, 0, character, "unexpected closing delimiter ");
         return true;
@@ -950,7 +950,7 @@ fn delimError(
     stack_index: usize,
     character: u8,
     message: ?[*:0]const u8,
-) raise.Raising(void) {
+) raise.Error!void {
     const state = &parser.states.items[stack_index];
     const text = buffers.new(40);
     if (message) |m| try buffers.pushCString(text, m);
@@ -981,7 +981,7 @@ fn delimError(
 /// string opened at is dropped from each line, along with a leading and a
 /// trailing newline. A line indented less than that stops the reindentation
 /// altogether, so a string whose lines do not line up is left as written.
-fn finishString(parser: *Parser, state: *ParseState) raise.Raising(bool) {
+fn finishString(parser: *Parser, state: *ParseState) raise.Error!bool {
     var start: usize = 0;
     var length = parser.buf.items.len;
 
@@ -1060,7 +1060,7 @@ fn finishString(parser: *Parser, state: *ParseState) raise.Raising(bool) {
 }
 
 /// The parser at `argv[n]`, or a raise where that argument is not a parser.
-fn getParser(argv: []repr.Value, n: usize) raise.Raising(*Parser) {
+fn getParser(argv: []repr.Value, n: usize) raise.Error!*Parser {
     return try args_core.getAbstract(Parser, argv, n, &parserType);
 }
 
@@ -1083,7 +1083,7 @@ fn isWhitespace(character: u8) bool {
 /// Ends the source: a newline is fed, an unclosed form becomes a delimiter
 /// error, and the parser is left dead. The line and column are put back, so
 /// `parser/where` still reports where the source ended.
-fn parserEof(parser: *Parser) raise.Raising(void) {
+fn parserEof(parser: *Parser) raise.Error!void {
     const previous_column = parser.column;
     const previous_line = parser.line;
     try parserConsume(parser, '\n');
@@ -1100,7 +1100,7 @@ fn parserEscape1(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     const escaped = checkEscape(character);
     if (escaped < 0) {
         parser.@"error" = "invalid string escape sequence";
@@ -1124,7 +1124,7 @@ fn parserEscapeHex(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     const digit = hexDigit(character);
     if (digit < 0) {
         parser.@"error" = "invalid hex digit in hex escape";
@@ -1146,7 +1146,7 @@ fn parserEscapeUnicode(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     const digit = hexDigit(character);
     if (digit < 0) {
         parser.@"error" = "invalid hex digit in unicode escape";
@@ -1172,7 +1172,7 @@ fn parserGC(parser: *Parser, _: usize) void {
 }
 
 /// The method lookup behind `(p :consume)` and its siblings.
-fn parserGet(_: *Parser, key: repr.Value) raise.Raising(?repr.Value) {
+fn parserGet(_: *Parser, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&methods));
 }
 
@@ -1183,7 +1183,7 @@ fn parserLongstring(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     if (state.flags.in_string) {
         if (character == '`') {
             state.flags.end_candidate = true;
@@ -1231,7 +1231,7 @@ fn parserMark(parser: *Parser, _: usize) void {
 }
 
 /// The iteration order behind `next` and `(keys p)`.
-fn parserNext(_: *Parser, key: repr.Value) raise.Raising(repr.Value) {
+fn parserNext(_: *Parser, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&methods), key);
 }
 
@@ -1245,7 +1245,7 @@ fn parserNext(_: *Parser, key: repr.Value) raise.Raising(repr.Value) {
 /// It declares an error it never returns, so that it and `parserStateFrames`,
 /// which does raise, share a signature and sit in one array. A tagged union
 /// over two function types is more machinery than the fact deserves.
-fn parserStateDelimiters(parser: *Parser) raise.Raising(repr.Value) {
+fn parserStateDelimiters(parser: *Parser) raise.Error!repr.Value {
     const old_count = parser.buf.items.len;
     for (0..parser.states.items.len) |index| {
         const state = &parser.states.items[index];
@@ -1272,7 +1272,7 @@ fn parserStateDelimiters(parser: *Parser) raise.Raising(repr.Value) {
 /// The walk runs backwards because a container frame's arguments sit at the
 /// end of one shared array and their extent follows only from subtracting
 /// each frame's count in turn.
-fn parserStateFrames(parser: *Parser) raise.Raising(repr.Value) {
+fn parserStateFrames(parser: *Parser) raise.Error!repr.Value {
     const count: i32 = @intCast(parser.states.items.len);
     const states = arrays.new(@intCast(count));
     states.count = @intCast(count);
@@ -1295,7 +1295,7 @@ fn parserStringchar(
     parser: *Parser,
     state: *ParseState,
     character: u8,
-) raise.Raising(bool) {
+) raise.Error!bool {
     if (character == '\\') {
         state.consumer = parserEscape1;
     } else if (character == '"') {
@@ -1338,7 +1338,7 @@ fn wrapParseState(
     args: ?[*]repr.Value,
     buf: ?[*]u8,
     bufcount: u32,
-) raise.Raising(repr.Value) {
+) raise.Error!repr.Value {
     const table = tables.new(0);
     var add_buffer = false;
 

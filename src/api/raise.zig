@@ -102,18 +102,9 @@ const in_module = config.native_module;
 pub const CFunction = module.CFunction;
 
 /// The one error a raise-capable function returns. This is `module.Error`,
-/// under the name the runtime uses.
+/// under the name the runtime uses. A raise-capable function returning `T` is
+/// spelled `raise.Error!T`.
 pub const Error = module.Error;
-
-// ==========================================================================
-// Types
-// ==========================================================================
-
-/// A raise-capable result over `T`. `Raising(T)` and `Error!T` are the same
-/// type.
-pub fn Raising(comptime T: type) type {
-    return Error!T;
-}
 
 // ==========================================================================
 // Public functions

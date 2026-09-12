@@ -153,12 +153,12 @@ pub const Field = enum(i32) {
 // ==========================================================================
 
 /// `(os/lstat path &opt tab-or-key)`.
-pub fn cfunLstat(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunLstat(argv: []repr.Value) raise.Error!repr.Value {
     return statOrLstat(true, argv);
 }
 
 /// `(os/stat path &opt tab-or-key)`.
-pub fn cfunStat(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunStat(argv: []repr.Value) raise.Error!repr.Value {
     return statOrLstat(false, argv);
 }
 
@@ -186,7 +186,7 @@ pub fn fieldName(index: i32) ?[*:0]const u8 {
 }
 
 /// A permission argument as what the host's `chmod` takes.
-pub fn getMode(argv: []const repr.Value, n: usize) raise.Raising(jmode_t) {
+pub fn getMode(argv: []const repr.Value, n: usize) raise.Error!jmode_t {
     return @intCast(hostPermFromUnix(try getUnixMode(argv, n)));
 }
 
@@ -197,7 +197,7 @@ pub fn getMode(argv: []const repr.Value, n: usize) raise.Raising(jmode_t) {
 /// directly, `os/chmod` and `os/umask` through `getMode`, and `os/open`
 /// through `optMode`. The head of this file says why that is an ordinary Zig
 /// call rather than a seam.
-pub fn getUnixMode(argv: []const repr.Value, n: usize) raise.Raising(i32) {
+pub fn getUnixMode(argv: []const repr.Value, n: usize) raise.Error!i32 {
     if (args_core.checkint(argv[n])) {
         const x = wrap.toInteger(argv[n]);
         if (x < 0 or x > 0o777) {
@@ -304,7 +304,7 @@ pub fn makePermstring(permissions: i32) repr.Value {
 }
 
 /// `getMode` with a default for an absent argument.
-pub fn optMode(argv: []const repr.Value, n: usize, dflt: i32) raise.Raising(jmode_t) {
+pub fn optMode(argv: []const repr.Value, n: usize, dflt: i32) raise.Error!jmode_t {
     if (argv.len > n) return getMode(argv, n);
     return @intCast(hostPermFromUnix(dflt));
 }
@@ -328,7 +328,7 @@ pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) repr
 /// The body of `os/stat` and `os/lstat`, which differ only in whether a
 /// symlink is followed. A keyword second argument asks for one field, a table
 /// is filled with all fifteen, and a path that cannot be stat'ed is nil.
-pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
     const path = try args_core.getCString(argv, 0);

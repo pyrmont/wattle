@@ -99,7 +99,7 @@ pub fn mutexSize() usize {
 /// critical-section release no failure to observe, where
 /// `pthread_mutex_unlock` reports an `errno`. The asymmetry is the platform's,
 /// and the raising return type is what the POSIX arm needs.
-pub fn mutexUnlock(mutex: *anyopaque) raise.Raising(void) {
+pub fn mutexUnlock(mutex: *anyopaque) raise.Error!void {
     if (windows) {
         c.LeaveCriticalSection(@ptrCast(@alignCast(mutex)));
     } else {

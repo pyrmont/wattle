@@ -138,7 +138,7 @@ fn expectRaise(comptime message: []const u8, comptime body: anytype, args: anyty
     raises_fired += 1;
 }
 
-fn formatted(format: [*]const u8, argv: []repr.Value) raise.Raising(strings.String) {
+fn formatted(format: [*]const u8, argv: []repr.Value) raise.Error!strings.String {
     const b = buffers.new(32);
     fmt.bufferFormatPanicking(b, format, 0, @intCast(argv.len), argv.ptr);
     _ = try raise.fromAbi({});
@@ -563,7 +563,7 @@ fn dynprintfReachesItsFourDestinations() void {
 /// `panicf` returns the bare error set rather than an error union, every call
 /// to it raising, so the thunk gives `expectRaise` the shape it
 /// tests, which is the same shape every other subject here has.
-fn panicfThunk(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
+fn panicfThunk(comptime format: [:0]const u8, args: anytype) raise.Error!void {
     return fmt.panicf(format, args);
 }
 

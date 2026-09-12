@@ -105,7 +105,7 @@ pub fn libFfi(env: *tables.Table) void {
 // ==========================================================================
 
 /// `(ffi/buffer-read type buffer &opt offset)`.
-fn cfunBufferRead(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferRead(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 3);
     const ty = try ffi_types.decodeType(argv[0]);
@@ -121,7 +121,7 @@ fn cfunBufferRead(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ffi/buffer-write type value &opt buffer offset)`.
-fn cfunBufferWrite(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferWrite(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
     const ty = try ffi_types.decodeType(argv[0]);
@@ -144,20 +144,20 @@ fn cfunBufferWrite(argv: []const repr.Value) raise.Raising(repr.Value) {
 
 /// `(ffi/calling-conventions)`, which lists the conventions this build can
 /// call.
-fn cfunCallingConventions(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunCallingConventions(argv: []const repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return ffi_call.supportedConventions();
 }
 
 /// `(ffi/align type)`.
-fn cfunFfiAlign(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunFfiAlign(argv: []const repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const alignment = ffi_types.typeAlign(try ffi_types.decodeType(argv[0]));
     return wrap.fromNumber(@floatFromInt(alignment));
 }
 
 /// `(ffi/free pointer)`.
-fn cfunFfiFree(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunFfiFree(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], repr.Tag.nil)) return wrap.fromNil();
@@ -166,7 +166,7 @@ fn cfunFfiFree(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ffi/malloc size)`.
-fn cfunFfiMalloc(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunFfiMalloc(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.fixarity(argv, 1);
     const size = try args_core.getSize(argv, 0);
@@ -175,20 +175,20 @@ fn cfunFfiMalloc(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ffi/size type)`.
-fn cfunFfiSize(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunFfiSize(argv: []const repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const size = ffi_types.typeSize(try ffi_types.decodeType(argv[0]));
     return wrap.fromNumber(@floatFromInt(size));
 }
 
 /// `(ffi/struct & types)`.
-fn cfunFfiStruct(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunFfiStruct(argv: []const repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     return wrap.fromAbstract(try ffi_types.buildStruct(argv));
 }
 
 /// `(ffi/close native)`.
-fn cfunNativeClose(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunNativeClose(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.fixarity(argv, 1);
     const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
@@ -200,7 +200,7 @@ fn cfunNativeClose(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ffi/lookup native name)`.
-fn cfunNativeLookup(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunNativeLookup(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.fixarity(argv, 2);
     const anative: *AbstractNative = try args_core.getAbstract(AbstractNative, argv, 0, &native_at);
@@ -211,7 +211,7 @@ fn cfunNativeLookup(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ffi/pointer-buffer pointer capacity &opt count offset)`.
-fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunPointerBuffer(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
     const pointer: [*]u8 = @ptrCast(try args_core.getPointer(argv, 0));
@@ -241,7 +241,7 @@ fn cfunPointerBuffer(argv: []const repr.Value) raise.Raising(repr.Value) {
 ///
 /// `ffi/lookup` and `ffi/signature` are how a C function is called, and they
 /// describe the convention rather than assuming one.
-fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunPointerCfunction(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 1, 4);
     _ = try args_core.getPointer(argv, 0);
@@ -251,7 +251,7 @@ fn cfunPointerCfunction(argv: []const repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ffi/native &opt path)`.
-fn cfunRawNative(argv: []const repr.Value) raise.Raising(repr.Value) {
+fn cfunRawNative(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.arity(argv, 0, 1);
     const path = try args_core.optCString(argv, 0, null);

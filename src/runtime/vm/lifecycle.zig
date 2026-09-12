@@ -161,7 +161,7 @@ pub fn deinitAbi() void {
 /// the root set is set up before the first thing that gets rooted, and the
 /// event loop and the network layer come last because both may allocate
 /// through everything above them.
-pub fn init() raise.Raising(c_int) {
+pub fn init() raise.Error!c_int {
 
     // Garbage collection, the root set and the scratch table: three aggregates
     // `gc.zig` owns, initialised by the three calls below.
@@ -215,7 +215,7 @@ pub fn init() raise.Raising(c_int) {
 ///
 /// This is itself guarded by the `sandbox` capability, so a program that has
 /// given that up cannot narrow the sandbox further.
-pub fn sandbox(flags: Sandbox) raise.Raising(void) {
+pub fn sandbox(flags: Sandbox) raise.Error!void {
     try sandboxAssert(Sandbox.of(&.{"sandbox"}));
     const v = vm_state.current();
     v.sandbox_flags = v.sandbox_flags.with(flags);
@@ -225,7 +225,7 @@ pub fn sandbox(flags: Sandbox) raise.Raising(void) {
 ///
 /// This is what a guarded cfunction opens with, and it is the most-called
 /// raise in the runtime after the argument layer's.
-pub fn sandboxAssert(forbidden_flags: Sandbox) raise.Raising(void) {
+pub fn sandboxAssert(forbidden_flags: Sandbox) raise.Error!void {
     if (forbidden_flags.intersects(vm_state.current().sandbox_flags)) {
         return raise.panic("operation forbidden by sandbox");
     }

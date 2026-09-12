@@ -4,7 +4,7 @@
 //! operations, and the registration.
 //!
 //! Every raise here is an error return: a cfunction that decides to raise
-//! returns `raise.Raising(Value)`, and one that makes no such decision is
+//! returns `raise.Error!Value`, and one that makes no such decision is
 //! written as the plain `raise.CFunction` it is. Twenty of the twenty-two
 //! raise; the two that cannot are `flush` and `eflush`, whose three arms are
 //! flush it, flush the default handle, and do nothing.
@@ -186,7 +186,7 @@ pub const File = struct {
 // ==========================================================================
 
 /// Refuses a file that is closed or was not opened for writing.
-pub fn assertWriteable(iof: *File) raise.Raising(void) {
+pub fn assertWriteable(iof: *File) raise.Error!void {
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
     if (iof.flags & (file_write | file_append | file_update) == 0) {
         return raise.panic("file is not writeable");
@@ -242,7 +242,7 @@ pub fn getChar(file: ?*FILE) i32 {
 /// through this accessor has no flag word unless it asks for one, so without
 /// the test a caller that does not ask hands `fileno` a null. The test belongs
 /// here, where every such caller inherits it.
-pub fn getfile(argv: []const repr.Value, n: usize, flags: ?*i32) raise.Raising(?*FILE) {
+pub fn getfile(argv: []const repr.Value, n: usize, flags: ?*i32) raise.Error!?*FILE {
     const iof: *File = try args_core.getAbstract(File, argv, n, &fileType);
     if (flags) |slot| slot.* = iof.flags;
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -251,13 +251,13 @@ pub fn getfile(argv: []const repr.Value, n: usize, flags: ?*i32) raise.Raising(?
 
 /// The `File` payload of a file argument, for a caller that needs the flags
 /// rather than the stream.
-pub fn getjfile(argv: []const repr.Value, n: usize) raise.Raising(*File) {
+pub fn getjfile(argv: []const repr.Value, n: usize) raise.Error!*File {
     return try args_core.getAbstract(File, argv, n, &fileType);
 }
 
 /// Registers the `file/` and `print`/`printf` families, and the three standard
 /// streams.
-pub fn libIo(env: *tables.Table) raise.Raising(void) {
+pub fn libIo(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("print", &Print(true, "out", stdoutFile).cfun, @src(), "(print & xs)", "Print values to the console (standard out). Value are converted " ++
             "to strings if they are not already. After printing all values, a " ++
@@ -537,7 +537,7 @@ pub fn write(file: ?*FILE, src: [*]const u8, count: usize) i32 {
 /// `flush` and `eflush` differ only in the dynamic binding they read.
 fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 0);
 
             flusher(name.ptr, handle());
@@ -550,7 +550,7 @@ fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
 /// they read and whether they end with a newline.
 fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             return print(argv, newline, name.ptr, handle());
         }
     };
@@ -559,7 +559,7 @@ fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: a
 /// `printf`, `prinf`, `eprintf` and `eprinf`, the same four differences.
 fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             return printf(argv, newline, name.ptr, handle());
         }
     };
@@ -569,7 +569,7 @@ fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: 
 /// and have no default handle to fall back on.
 fn XPrint(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.arity(argv, 1, -1);
             return printImplX(argv, newline, null, 1, argv[0]);
         }
@@ -579,7 +579,7 @@ fn XPrint(comptime newline: bool) type {
 /// `xprintf` and `xprinf`, the same again with a format string.
 fn XPrintf(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.arity(argv, 2, -1);
             return printfImplX(argv, newline, null, 1, argv[0]);
         }
@@ -587,7 +587,7 @@ fn XPrintf(comptime newline: bool) type {
 }
 
 /// `(file/close f)`.
-fn cfunFclose(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFclose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return wrap.fromNil();
@@ -601,7 +601,7 @@ fn cfunFclose(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(file/flush f)`.
-fn cfunFflush(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFflush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     try assertWriteable(iof);
@@ -610,7 +610,7 @@ fn cfunFflush(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(file/open path &opt mode buffer-size)`.
-fn cfunFopen(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFopen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fname = try args_core.getString(argv, 0);
     var fmode: strings.String = undefined;
@@ -661,7 +661,7 @@ fn cfunFopen(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `readChunk` would leave `:line` giving back `nil` on a write-only file, and
 /// that `nil` is not an empty line: it is `getc` on a stream opened for
 /// writing, which C99 leaves undefined.
-fn cfunFread(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFread(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -705,7 +705,7 @@ fn cfunFread(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(file/seek f whence &opt n)`.
-fn cfunFseek(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFseek(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -722,7 +722,7 @@ fn cfunFseek(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(file/tell f)`.
-fn cfunFtell(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFtell(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -733,7 +733,7 @@ fn cfunFtell(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(file/write f & xs)`. Every argument is checked before any byte is
 /// written, so a bad argument leaves the file untouched.
-fn cfunFwrite(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFwrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -754,7 +754,7 @@ fn cfunFwrite(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(file/temp)`.
-fn cfunTemp(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTemp(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_temp"}));
 
     try args_core.fixarity(argv, 0);
@@ -770,7 +770,7 @@ fn cfunTemp(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The interleaving is what a caller depends on: the permissions the accepted
 /// prefix implies are asserted before a later bad flag is reported, so a
 /// sandboxed build refuses `:wq` for the sandbox rather than for the `q`.
-fn checkFlags(str: strings.String) raise.Raising(i32) {
+fn checkFlags(str: strings.String) raise.Error!i32 {
     var flags: i32 = 0;
     var sandbox_flags: vm_lifecycle.Sandbox = .{};
     var index: i32 = 0;
@@ -842,7 +842,7 @@ fn fileGC(iof: *File, _: usize) void {
 }
 
 /// The method lookup behind `(:read f ...)` and its siblings.
-fn fileGet(_: *File, key: repr.Value) raise.Raising(?repr.Value) {
+fn fileGet(_: *File, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&file_methods));
 }
 
@@ -850,7 +850,7 @@ fn fileGet(_: *File, key: repr.Value) raise.Raising(?repr.Value) {
 /// do. A closeable file is duplicated so that the marshalled copy owns its own
 /// descriptor; a borrowed file, `stdout` and its kin, is written as it stands.
 /// WASI has no `dup`, so there a closeable file raises.
-fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Raising(void) {
+fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Error!void {
     if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot marshal file in safe mode");
     }
@@ -871,7 +871,7 @@ fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Raising(void) {
 }
 
 /// The iteration order behind `next` and `(keys f)`.
-fn fileNext(_: *File, key: repr.Value) raise.Raising(repr.Value) {
+fn fileNext(_: *File, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&file_methods), key);
 }
 
@@ -880,7 +880,7 @@ fn fileNext(_: *File, key: repr.Value) raise.Raising(repr.Value) {
 /// The mode is rebuilt from the flag word rather than written to the stream,
 /// which is what makes `modeFromFlags` something other than the inverse of
 /// `scanMode`: `c.fdopen` only has to accept it.
-fn fileUnmarshal(u: *abi.Unmarshal) raise.Raising(*File) {
+fn fileUnmarshal(u: *abi.Unmarshal) raise.Error!*File {
     if (marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("cannot unmarshal file in safe mode");
     }
@@ -934,7 +934,7 @@ fn flusher(name: [*:0]const u8, dflt_file: ?*FILE) void {
 
 /// The `File` payload at `argv[n]`, or a raise where that argument is not a
 /// file.
-fn getFile(argv: []repr.Value, n: usize) raise.Raising(*File) {
+fn getFile(argv: []repr.Value, n: usize) raise.Error!*File {
     return try args_core.getAbstract(File, argv, n, &fileType);
 }
 
@@ -961,7 +961,7 @@ fn print(
     newline: bool,
     name: [*:0]const u8,
     dflt_file: ?*FILE,
-) raise.Raising(repr.Value) {
+) raise.Error!repr.Value {
     const x = vm_state.dyn(name);
     return printImplX(argv, newline, dflt_file, 0, x);
 }
@@ -978,7 +978,7 @@ fn printImplX(
     dflt_file: ?*FILE,
     offset: usize,
     x: repr.Value,
-) raise.Raising(repr.Value) {
+) raise.Error!repr.Value {
     var f: ?*FILE = null;
     switch (repr.typeOf(x)) {
         repr.Tag.buffer => {
@@ -1044,7 +1044,7 @@ fn printf(
     newline: bool,
     name: [*:0]const u8,
     dflt_file: ?*FILE,
-) raise.Raising(repr.Value) {
+) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const x = vm_state.dyn(name);
     return printfImplX(argv, newline, dflt_file, 0, x);
@@ -1057,7 +1057,7 @@ fn printfImplX(
     dflt_file: ?*FILE,
     offset: usize,
     x: repr.Value,
-) raise.Raising(repr.Value) {
+) raise.Error!repr.Value {
     var f: ?*FILE = null;
     const fmt = try args_core.getCString(argv, offset);
     switch (repr.typeOf(x)) {
@@ -1123,7 +1123,7 @@ fn printfImplX(
 /// The readability test is kept here as well as at `cfunFread`'s head, because
 /// this is reachable from `io.zig`'s other readers and a check at one caller
 /// is a check one caller can be added beside.
-fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: usize) raise.Raising(void) {
+fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: usize) raise.Error!void {
     if (iof.flags & (file_read | file_update) == 0) {
         return raise.panic("file is not readable");
     }

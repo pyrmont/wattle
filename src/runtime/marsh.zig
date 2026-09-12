@@ -308,7 +308,7 @@ pub fn marshal(
     x: repr.Value,
     rreg: ?*tables.Table,
     flags: c_int,
-) raise.Raising(void) {
+) raise.Error!void {
     var st: MarshalState = .{
         .buf = buf,
         .seen = undefined,
@@ -338,12 +338,12 @@ pub fn marshalAbstract(m: *abi.Marshal, abstract: ?*anyopaque) void {
 }
 
 /// Writes one byte.
-pub fn marshalByte(m: *abi.Marshal, val: u8) raise.Raising(void) {
+pub fn marshalByte(m: *abi.Marshal, val: u8) raise.Error!void {
     try pushByte(marshalState(m), val);
 }
 
 /// Writes `bytes` as they stand, with no length in front of them.
-pub fn marshalBytes(m: *abi.Marshal, bytes: []const u8) raise.Raising(void) {
+pub fn marshalBytes(m: *abi.Marshal, bytes: []const u8) raise.Error!void {
     const st = marshalState(m);
     if (bytes.len > std.math.maxInt(i32)) return raise.panic("size_t too large to fit in buffer");
     try pushBytes(st, bytes);
@@ -356,12 +356,12 @@ pub fn marshalFlags(m: *abi.Marshal) c_int {
 }
 
 /// Writes `val` in `pushInt`'s encoding.
-pub fn marshalInt(m: *abi.Marshal, val: i32) raise.Raising(void) {
+pub fn marshalInt(m: *abi.Marshal, val: i32) raise.Error!void {
     try pushInt(marshalState(m), val);
 }
 
 /// Writes `val` in `push64`'s encoding.
-pub fn marshalInt64(m: *abi.Marshal, val: i64) raise.Raising(void) {
+pub fn marshalInt64(m: *abi.Marshal, val: i64) raise.Error!void {
     try push64(marshalState(m), @bitCast(val));
 }
 
@@ -370,14 +370,14 @@ pub fn marshalInt64(m: *abi.Marshal, val: i64) raise.Raising(void) {
 /// A raise travels back out through the traversal frames the callback was
 /// called from, so the callback's `try` is the whole of what it owes and
 /// nothing has to be freed on the way.
-pub fn marshalJanet(m: *abi.Marshal, x: repr.Value) raise.Raising(void) {
+pub fn marshalJanet(m: *abi.Marshal, x: repr.Value) raise.Error!void {
     const st = marshalState(m);
     return marshalOne(st, x, st.flags + 1);
 }
 
 /// Writes a raw pointer, in unsafe mode only: a pointer means nothing to
 /// another process.
-pub fn marshalPtr(m: *abi.Marshal, ptr: ?*const anyopaque) raise.Raising(void) {
+pub fn marshalPtr(m: *abi.Marshal, ptr: ?*const anyopaque) raise.Error!void {
     const st = marshalState(m);
     if ((st.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
         return raise.panic("can only marshal pointers in unsafe mode");
@@ -391,7 +391,7 @@ pub fn marshalPtr(m: *abi.Marshal, ptr: ?*const anyopaque) raise.Raising(void) {
 /// project's cross-compile targets, so the value widens to `u64` first and is
 /// only then reinterpreted as `i64`. `@bitCast` refuses a width change, which
 /// keeps the widening and the reinterpretation separate steps.
-pub fn marshalSize(m: *abi.Marshal, val: usize) raise.Raising(void) {
+pub fn marshalSize(m: *abi.Marshal, val: usize) raise.Error!void {
     return marshalInt64(m, @bitCast(@as(u64, val)));
 }
 
@@ -405,7 +405,7 @@ pub fn unmarshal(
     flags: c_int,
     reg: ?*tables.Table,
     next: ?*[*]const u8,
-) raise.Raising(repr.Value) {
+) raise.Error!repr.Value {
     var st: UnmarshalState = .{
         .start = bytes.ptr,
         .end = bytes.ptr + bytes.len,
@@ -439,7 +439,7 @@ pub fn unmarshalAbi(
 
 /// Allocates the abstract of the type being read, with `size` bytes of
 /// payload, and enters it in the reference table.
-pub fn unmarshalAbstract(u: *abi.Unmarshal, size: usize) raise.Raising(?*anyopaque) {
+pub fn unmarshalAbstract(u: *abi.Unmarshal, size: usize) raise.Error!?*anyopaque {
     const p = abstracts.newBytes(unmarshalState(u).at.?, size);
     try unmarshalAbstractReuse(u, p);
     return p;
@@ -448,7 +448,7 @@ pub fn unmarshalAbstract(u: *abi.Unmarshal, size: usize) raise.Raising(?*anyopaq
 /// Enters an already-allocated abstract into the reference table, and marks
 /// the context as having done so. `at` is the flag: `unmarshalOneAbstract`
 /// checks that it was cleared, which is how a callback that forgets is caught.
-pub fn unmarshalAbstractReuse(u: *abi.Unmarshal, p: ?*anyopaque) raise.Raising(void) {
+pub fn unmarshalAbstractReuse(u: *abi.Unmarshal, p: ?*anyopaque) raise.Error!void {
     const st = unmarshalState(u);
     if (st.at == null) {
         return raise.panic("janet_unmarshal_abstract called more than once");
@@ -458,7 +458,7 @@ pub fn unmarshalAbstractReuse(u: *abi.Unmarshal, p: ?*anyopaque) raise.Raising(v
 }
 
 /// Reads one byte and advances the cursor.
-pub fn unmarshalByte(u: *abi.Unmarshal) raise.Raising(u8) {
+pub fn unmarshalByte(u: *abi.Unmarshal) raise.Error!u8 {
     const st = unmarshalState(u);
     try eos(st, st.data.?);
     const val = st.data.?[0];
@@ -467,7 +467,7 @@ pub fn unmarshalByte(u: *abi.Unmarshal) raise.Raising(u8) {
 }
 
 /// Copies `len` bytes into `dest` and advances the cursor.
-pub fn unmarshalBytes(u: *abi.Unmarshal, dest: [*]u8, len: usize) raise.Raising(void) {
+pub fn unmarshalBytes(u: *abi.Unmarshal, dest: [*]u8, len: usize) raise.Error!void {
     const st = unmarshalState(u);
     try eosAddr(st, @intFromPtr(st.data) +% len -% 1);
     @memcpy(dest[0..len], st.data.?[0..len]);
@@ -475,7 +475,7 @@ pub fn unmarshalBytes(u: *abi.Unmarshal, dest: [*]u8, len: usize) raise.Raising(
 }
 
 /// Refuses unless `size` more bytes are there to be read.
-pub fn unmarshalEnsure(u: *abi.Unmarshal, size: usize) raise.Raising(void) {
+pub fn unmarshalEnsure(u: *abi.Unmarshal, size: usize) raise.Error!void {
     const st = unmarshalState(u);
     return eosAddr(st, @intFromPtr(st.data) +% size);
 }
@@ -486,7 +486,7 @@ pub fn unmarshalFlags(u: *abi.Unmarshal) c_int {
 }
 
 /// Reads an integer in `pushInt`'s encoding and advances the cursor.
-pub fn unmarshalInt(u: *abi.Unmarshal) raise.Raising(i32) {
+pub fn unmarshalInt(u: *abi.Unmarshal) raise.Error!i32 {
     const st = unmarshalState(u);
     var cursor = st.data.?;
     defer st.data = cursor;
@@ -494,7 +494,7 @@ pub fn unmarshalInt(u: *abi.Unmarshal) raise.Raising(i32) {
 }
 
 /// Reads an integer in `push64`'s encoding and advances the cursor.
-pub fn unmarshalInt64(u: *abi.Unmarshal) raise.Raising(i64) {
+pub fn unmarshalInt64(u: *abi.Unmarshal) raise.Error!i64 {
     const st = unmarshalState(u);
     var cursor = st.data.?;
     defer st.data = cursor;
@@ -502,7 +502,7 @@ pub fn unmarshalInt64(u: *abi.Unmarshal) raise.Raising(i64) {
 }
 
 /// Reads a whole value from inside a callback, re-entering the traversal.
-pub fn unmarshalJanet(u: *abi.Unmarshal) raise.Raising(repr.Value) {
+pub fn unmarshalJanet(u: *abi.Unmarshal) raise.Error!repr.Value {
     const st = unmarshalState(u);
     const decoded = try unmarshalOne(st, st.data.?, st.flags);
     st.data = decoded.next;
@@ -510,7 +510,7 @@ pub fn unmarshalJanet(u: *abi.Unmarshal) raise.Raising(repr.Value) {
 }
 
 /// Reads a raw pointer, in unsafe mode only.
-pub fn unmarshalPtr(u: *abi.Unmarshal) raise.Raising(?*anyopaque) {
+pub fn unmarshalPtr(u: *abi.Unmarshal) raise.Error!?*anyopaque {
     const st = unmarshalState(u);
     if ((st.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
         return raise.panic("can only unmarshal pointers in unsafe mode");
@@ -531,7 +531,7 @@ pub fn unmarshalRemaining(u: *abi.Unmarshal) usize {
 }
 
 /// Reads what `marshalSize` wrote, back to a `usize`.
-pub fn unmarshalSize(u: *abi.Unmarshal) raise.Raising(usize) {
+pub fn unmarshalSize(u: *abi.Unmarshal) raise.Error!usize {
     return @truncate(@as(u64, @bitCast(try unmarshalInt64(u))));
 }
 
@@ -547,21 +547,21 @@ inline fn allocated(pointer: ?*anyopaque) ?*anyopaque {
 }
 
 /// Refuses a decoded value that is not of type `t`.
-fn assertType(x: repr.Value, t: repr.Tag) raise.Raising(void) {
+fn assertType(x: repr.Value, t: repr.Tag) raise.Error!void {
     if (!repr.checkType(x, t)) {
         return pp_format.panicf("expected type %T, got %v", .{ repr.TagSet.one(t), x });
     }
 }
 
 /// `(env-lookup env)`.
-fn cfunEnvLookup(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunEnvLookup(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const env = try args_core.getTable(argv, 0);
     return wrap.fromTable(envLookup(env));
 }
 
 /// `(marshal x &opt reverse-lookup buffer no-cycles)`.
-fn cfunMarshal(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var rreg: ?*tables.Table = null;
     var flags: c_int = 0;
@@ -573,7 +573,7 @@ fn cfunMarshal(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(unmarshal buffer &opt lookup)`, which the sandbox can withhold.
-fn cfunUnmarshal(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunUnmarshal(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"unmarshal"}));
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -603,7 +603,7 @@ fn entryGetval(env_entry: repr.Value) repr.Value {
 }
 
 /// Refuses a read that has reached or passed the end of the stream.
-inline fn eos(st: *UnmarshalState, data: [*]const u8) raise.Raising(void) {
+inline fn eos(st: *UnmarshalState, data: [*]const u8) raise.Error!void {
     return eosAddr(st, @intFromPtr(data));
 }
 
@@ -612,7 +612,7 @@ inline fn eos(st: *UnmarshalState, data: [*]const u8) raise.Raising(void) {
 /// Two call sites below compute `data - 1 + len` with a length that may be
 /// zero; that arithmetic has to wrap rather than trap, and `usize` is where it
 /// can.
-inline fn eosAddr(st: *UnmarshalState, addr: usize) raise.Raising(void) {
+inline fn eosAddr(st: *UnmarshalState, addr: usize) raise.Error!void {
     if (addr >= @intFromPtr(st.end)) return raise.panic("unexpected end of source");
 }
 
@@ -669,7 +669,7 @@ inline fn marshAssert(condition: bool, message: [*:0]const u8) void {
 ///
 /// `flags` is the flag word with this level's depth in its low bits, and every
 /// recursive call below passes `flags + 1`.
-fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void) {
+fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
     try stackCheck(flags);
     const vtype = repr.typeOf(x);
 
@@ -866,7 +866,7 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void
 /// Writes an abstract through its type's `marshal` callback, or as a bare
 /// pointer where it is threaded and the stream is unsafe. An abstract whose
 /// type has no callback cannot be marshalled and raises.
-fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Raising(void) {
+fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
     const abstract = wrap.toAbstract(x);
     if (has_ev) {
         // A threaded abstract crosses a thread boundary as a bare pointer in
@@ -904,7 +904,7 @@ fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Rais
 
 /// Writes a function definition, or a back-reference to one written already.
 /// The flag word comes first and decides which of the optional parts follow.
-fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise.Raising(void) {
+fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise.Error!void {
     try stackCheck(flags);
     for (st.seen_defs.items, 0..) |seen, i| {
         if (seen == def) {
@@ -979,7 +979,7 @@ fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise
 /// An environment still on the stack of a fiber that cannot be marshalled is
 /// written as though it had been detached, with the definition's closure
 /// bitset saying which slots are real and the rest written as nil.
-fn marshalOneEnv(st: *MarshalState, env: *functions.FuncEnv, flags: c_int) raise.Raising(void) {
+fn marshalOneEnv(st: *MarshalState, env: *functions.FuncEnv, flags: c_int) raise.Error!void {
     try stackCheck(flags);
     for (st.seen_envs.items, 0..) |seen, i| {
         if (seen == env) {
@@ -1028,7 +1028,7 @@ fn marshalOneEnv(st: *MarshalState, env: *functions.FuncEnv, flags: c_int) raise
 /// Writes a fiber: its flags and stack bounds, then each frame innermost
 /// first with the slots above it, then the environment, the child and the last
 /// value.
-fn marshalOneFiber(st: *MarshalState, fiber: *fibers.Fiber, flags: c_int) raise.Raising(void) {
+fn marshalOneFiber(st: *MarshalState, fiber: *fibers.Fiber, flags: c_int) raise.Error!void {
     try stackCheck(flags);
     comptime std.debug.assert(@bitSizeOf(fibers.FiberFlags) == 32);
     var fflags: u32 = @bitCast(fiber.flags);
@@ -1090,7 +1090,7 @@ inline fn marshalState(m: *abi.Marshal) *MarshalState {
 }
 
 /// Writes each word little endian, four bytes apiece.
-fn marshalU32s(st: *MarshalState, u32s: []const u32) raise.Raising(void) {
+fn marshalU32s(st: *MarshalState, u32s: []const u32) raise.Error!void {
     for (u32s) |word| {
         try pushByte(st, @truncate(word));
         try pushByte(st, @truncate(word >> 8));
@@ -1106,7 +1106,7 @@ fn noRegistry(x: repr.Value) raise.Error {
 }
 
 /// A 64-bit unsigned integer, little endian, length-prefixed above `0xF0`.
-fn push64(st: *MarshalState, val: u64) raise.Raising(void) {
+fn push64(st: *MarshalState, val: u64) raise.Error!void {
     if (val <= 0xF0) {
         try pushByte(st, @intCast(val));
     } else {
@@ -1124,19 +1124,19 @@ fn push64(st: *MarshalState, val: u64) raise.Raising(void) {
 }
 
 /// Appends one byte.
-inline fn pushByte(st: *MarshalState, b: u8) raise.Raising(void) {
+inline fn pushByte(st: *MarshalState, b: u8) raise.Error!void {
     try buffers.pushU8(st.buf, b);
 }
 
 /// Appends `bytes` as they stand.
-inline fn pushBytes(st: *MarshalState, bytes: []const u8) raise.Raising(void) {
+inline fn pushBytes(st: *MarshalState, bytes: []const u8) raise.Error!void {
     try buffers.pushBytes(st.buf, bytes);
 }
 
 /// A 32-bit integer in one, two or five bytes: a small natural bare, a
 /// fourteen-bit signed range with a `0x80` tag, and everything else behind
 /// `Lead.integer` and four big-endian bytes.
-fn pushInt(st: *MarshalState, x: i32) raise.Raising(void) {
+fn pushInt(st: *MarshalState, x: i32) raise.Error!void {
     if (x >= 0 and x < 128) {
         try pushByte(st, @intCast(x));
     } else if (x <= 8191 and x >= -8192) {
@@ -1160,12 +1160,12 @@ fn pushInt(st: *MarshalState, x: i32) raise.Raising(void) {
 }
 
 /// Appends a pointer as its own bytes, which only an unsafe stream does.
-fn pushPointer(st: *MarshalState, ptr: ?*const anyopaque) raise.Raising(void) {
+fn pushPointer(st: *MarshalState, ptr: ?*const anyopaque) raise.Error!void {
     try pushBytes(st, std.mem.asBytes(&ptr));
 }
 
 /// Reads a 64-bit unsigned integer written by `push64`.
-fn read64(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(u64) {
+fn read64(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!u64 {
     const data = atdata.*;
     try eos(st, data);
     if (data[0] <= 0xF0) {
@@ -1197,12 +1197,12 @@ fn read64(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(u64) {
 /// and the refusal message is `readNat`'s single implementation because the
 /// message text is behaviour a caller can depend on. This only refuses to hand
 /// the result to something signed.
-fn readCount(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(usize) {
+fn readCount(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!usize {
     return @intCast(try readNat(st, atdata));
 }
 
 /// Reads a 32-bit integer written by `pushInt`.
-fn readInt(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(i32) {
+fn readInt(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!i32 {
     var data = atdata.*;
     var ret: i32 = undefined;
     try eos(st, data);
@@ -1242,7 +1242,7 @@ fn readInt(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(i32) {
 /// and `vm_state.StackFrame.prevframe`, plus `functions.FuncEnv.offset`, which
 /// is negated on the untrusted-input path and so is a quantity that really can
 /// be negative. A caller reading a count wants `readCount` below.
-fn readNat(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(i32) {
+fn readNat(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!i32 {
     const ret = try readInt(st, atdata);
     if (ret < 0) return pp_format.panicf("expected integer >= 0, got %d", .{ret});
     return ret;
@@ -1251,7 +1251,7 @@ fn readNat(st: *UnmarshalState, atdata: *[*]const u8) raise.Raising(i32) {
 /// The recursion guard. `flags` doubles as a depth counter in its low sixteen
 /// bits, which is what every recursive call below adds to, and what keeps the
 /// marshalling flags above `0xFFFF`.
-inline fn stackCheck(flags: c_int) raise.Raising(void) {
+inline fn stackCheck(flags: c_int) raise.Error!void {
     if ((flags & 0xFFFF) > config.recursion_guard) return raise.panic("stack overflow");
 }
 
@@ -1269,7 +1269,7 @@ fn unmarshalOne(
     st: *UnmarshalState,
     data_in: [*]const u8,
     flags: c_int,
-) raise.Raising(Decoded(repr.Value)) {
+) raise.Error!Decoded(repr.Value) {
     var data: [*]const u8 = data_in;
     var out: repr.Value = undefined;
     try stackCheck(flags);
@@ -1575,7 +1575,7 @@ fn unmarshalOneAbstract(
     st: *UnmarshalState,
     data_in: [*]const u8,
     flags: c_int,
-) raise.Raising(Decoded(repr.Value)) {
+) raise.Error!Decoded(repr.Value) {
     const key = try unmarshalOne(st, data_in, flags + 1);
     const data = key.next;
     const stored_at = registry.getAbstractType(key.value);
@@ -1614,7 +1614,7 @@ fn unmarshalOneDef(
     st: *UnmarshalState,
     data_in: [*]const u8,
     flags: c_int,
-) raise.Raising(Decoded(*functions.FuncDef)) {
+) raise.Error!Decoded(*functions.FuncDef) {
     var data = data_in;
     try eos(st, data);
     if (data[0] == Lead.funcdef_ref.byte()) {
@@ -1793,7 +1793,7 @@ fn unmarshalOneEnv(
     st: *UnmarshalState,
     data_in: [*]const u8,
     flags: c_int,
-) raise.Raising(Decoded(*functions.FuncEnv)) {
+) raise.Error!Decoded(*functions.FuncEnv) {
     var data = data_in;
     try eos(st, data);
     if (data[0] == Lead.funcenv_ref.byte()) {
@@ -1848,7 +1848,7 @@ fn unmarshalOneFiber(
     st: *UnmarshalState,
     data_in: [*]const u8,
     flags: c_int,
-) raise.Raising(Decoded(*fibers.Fiber)) {
+) raise.Error!Decoded(*fibers.Fiber) {
     var data = data_in;
 
     // A new fiber with collector-friendly defaults: it enters the reference
@@ -2015,7 +2015,7 @@ fn unmarshalU32s(
     data_in: [*]const u8,
     into: [*]u32,
     n: usize,
-) raise.Raising([*]const u8) {
+) raise.Error![*]const u8 {
     var data = data_in;
     for (0..n) |i| {
         try eos(st, data + 3);

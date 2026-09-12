@@ -201,7 +201,7 @@ const ParsedUnsigned = struct {
 /// The reservation is `buffers.extra`, which raises, so this does too and its
 /// one caller in `pp/pretty.zig` `try`s it. `bufferDtostrAbi` beside it is the
 /// reporting form.
-pub fn bufferDtostr(buffer: *buffers.Buffer, val: f64) raise.Raising(void) {
+pub fn bufferDtostr(buffer: *buffers.Buffer, val: f64) raise.Error!void {
     try buffers.extra(buffer, 32);
     fill(buffer, val);
 }

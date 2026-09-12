@@ -87,7 +87,7 @@ fn run(arguments: []const [:0]const u8) c_int {
 /// be built. It returns 1 if the runtime does not start, if a binding fails to
 /// register, or if `cli-main` is unbound; otherwise the result is the event
 /// loop's.
-fn runRaising(arguments: []const [:0]const u8) raise.Raising(c_int) {
+fn runRaising(arguments: []const [:0]const u8) raise.Error!c_int {
     if (try lifecycle.init() != 0) return 1;
     defer lifecycle.deinit();
 

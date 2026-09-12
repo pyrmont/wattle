@@ -201,8 +201,7 @@
       # non-raising and none of its calls could ever be reported. A tool that
       # recognises one spelling of a thing polices the files that use that
       # spelling, which is not the population it claims.
-      (def raising (or (truthy? (string/find "raise.Raising" sig))
-                       (truthy? (string/find "raise.Error!" sig))
+      (def raising (or (truthy? (string/find "raise.Error!" sig))
                        (truthy? (string/find "error{JanetSignal}!" sig))))
       # The body runs to the first line that closes at the same indent.
       (def body @[])

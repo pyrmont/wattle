@@ -121,7 +121,7 @@ pub fn entries() []const corefn.Entry {
 // ==========================================================================
 
 /// `(os/date &opt time local)`.
-fn cfunDate(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDate(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     var t_info: h.struct_tm = undefined;
     try timeToTm(argv, 0, &t_info);
@@ -139,7 +139,7 @@ fn cfunDate(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/mktime date-struct &opt local)`.
-fn cfunMktime(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     // Zeroed whole, so that no field is left as whatever the frame had.
     var t_info: h.struct_tm = std.mem.zeroes(h.struct_tm);
@@ -173,7 +173,7 @@ fn cfunMktime(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/strftime fmt &opt time local)`.
-fn cfunStrftime(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fmt = try args_core.getCString(argv, 0);
     var i: usize = 0;
@@ -213,7 +213,7 @@ fn entryGetDst(entry: repr.Value) c_int {
 }
 
 /// One integer field of a date struct or table, or zero where it is absent.
-fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Raising(timeint_t) {
+fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Error!timeint_t {
     var i: repr.Value = undefined;
     if (repr.checkType(entry, repr.Tag.table)) {
         i = tables.getKeyword(wrap.toTable(entry), field);
@@ -250,7 +250,7 @@ fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Raising(ti
 /// regardless would report whatever the conversion left behind, and on a host
 /// whose `_r` functions return without writing it, the stack. The Windows and
 /// Plan 9 entry points report the same failure as a nonzero return.
-fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Raising(void) {
+fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Error!void {
     var t: h.time_t = undefined;
     if (argv.len > n and !repr.checkType(argv[n], repr.Tag.nil)) {
         t = @intCast(try args_core.getInteger64(argv, n));

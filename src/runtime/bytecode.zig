@@ -452,7 +452,7 @@ pub fn asmFillSourcemap(
 ///
 /// It cannot raise: a failure is `error.Assembly` with the message already in
 /// the assembler, which is the assembler's own channel. `error.JanetSignal`
-/// cannot travel through that error set, so a `raise.Raising` return here
+/// cannot travel through that error set, so a raise-capable return here
 /// would only cost the caller a `catch` it could do nothing with.
 pub fn asmFillSymbolmap(
     a: *Assembler,
@@ -595,7 +595,7 @@ pub fn invalidError(status: verify.Verdict) [*:0]const u8 {
 }
 
 /// Installs `asm` and `disasm` into `env`.
-pub fn libAsm(env: *tables.Table) raise.Raising(void) {
+pub fn libAsm(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("asm", &cfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
             "The syntax for the assembly can be found on the Janet website, and should correspond\n" ++
@@ -987,7 +987,7 @@ fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
 }
 
 /// `asm`: a thunk over the assembled definition.
-fn cfunAsm(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAsm(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.fixarity(argv, 1);
     const res = assembleValue(argv[0], 0);
@@ -1004,7 +1004,7 @@ fn cfunAsm(argv: []repr.Value) raise.Raising(repr.Value) {
 /// `std.StaticStringMap`, because the order decides which of two keys sharing
 /// a prefix wins and because `utils.cstrcmp` compares against the string
 /// head's length rather than scanning for a NUL.
-fn cfunDisasm(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDisasm(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.arity(argv, 1, 2);
     const f = try args_core.getFunction(argv, 0);

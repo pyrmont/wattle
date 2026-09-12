@@ -186,7 +186,7 @@ fn theAbstractTypeIsShapedAsTheRuntimeExpects() void {
 
 /// The five methods, in the order `args.nextmethod` walks them, which is the
 /// order `(keys peg)` reports and therefore the order a Janet program sees.
-fn theMethodTableAndItsOrder() raise.Raising(void) {
+fn theMethodTableAndItsOrder() raise.Error!void {
     const val = wrap.fromAbstract(compiled("\"a\""));
     const names = [_][*:0]const u8{ "match", "find", "find-all", "replace", "replace-all" };
 
@@ -478,7 +478,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
 /// word for word. The bytes below pin the opcode numbers: renumbering the
 /// `constants.PegRule` enum would keep every Janet test passing and invalidate
 /// every stored peg.
-fn theMarshalledFormIsTheBytecode() raise.Raising(void) {
+fn theMarshalledFormIsTheBytecode() raise.Error!void {
     const p = compiled("\"a\"");
     const buffer = buffers.new(32);
     _ = keep(wrap.fromBuffer(buffer));
@@ -544,7 +544,7 @@ fn crafted(comptime tail: []const u8) []const u8 {
     return &(peg_header ++ tail[0..tail.len].*);
 }
 
-fn unmarshalStream(bytes: []const u8) raise.Raising(repr.Value) {
+fn unmarshalStream(bytes: []const u8) raise.Error!repr.Value {
     return marsh.unmarshal(bytes, 0, null, null);
 }
 
@@ -615,7 +615,7 @@ fn anEmptyProgramIsRefused() void {
 /// invalid bytecode; what is asserted is that running it is safe. `peg/match`
 /// here is called with no extra arguments at all, so `extrav` is null: the
 /// index is what decides whether that null is ever reached.
-fn aNegativeArgumentIndexCapturesNil() raise.Raising(void) {
+fn aNegativeArgumentIndexCapturesNil() raise.Error!void {
     // The operand is the one word here that needs the five-byte integer
     // encoding, because 0xFFFFFFFF is not a small natural.
     const p = accepted(&.{ 3, 0, b(constants.PegRule.argument), lb_integer, 255, 255, 255, 255, 0 });
@@ -692,7 +692,7 @@ fn aLiteralLengthCannotWrapItsWordCount() void {
 /// signedness and endianness above them, so the width is what the verifier
 /// compares. All four specials round-trip; the compiler's own output is not
 /// bytecode the verifier gets to refuse.
-fn everyReadintPegSurvivesARoundTrip() raise.Raising(void) {
+fn everyReadintPegSurvivesARoundTrip() raise.Error!void {
     for ([_][]const u8{ "'(uint 4)", "'(int 4)", "'(uint-be 4)", "'(int-be 4)" }) |pattern| {
         const p = compiled(pattern);
         const buffer = buffers.new(32);
@@ -826,7 +826,7 @@ fn everyVerifierArmBoundsItsOperands() void {
 /// A hundred thousand characters is far past the budget, so what the
 /// case distinguishes is reaching the guard from running out of stack on the
 /// way, the guard counting frames without knowing how large one is.
-fn theMatcherReachesItsRecursionGuard() raise.Raising(void) {
+fn theMatcherReachesItsRecursionGuard() raise.Error!void {
     const deep = protectedResult(evaluate(
         \\(protect (peg/match (peg/compile '{:main (+ (* "a" :main) 0)})
         \\                    (string/repeat "a" 100000)))
@@ -847,7 +847,7 @@ fn theMatcherReachesItsRecursionGuard() raise.Raising(void) {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     test_env = harness.coreEnv();
     gc_alloc.gcroot(wrap.fromTable(test_env));
     rooted = arrays.new(0);

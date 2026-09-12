@@ -11,7 +11,7 @@
 //!
 //! ## The two raise-capable entry points are called by import
 //!
-//! `registerAbstractType` and `textSubstitution` are `raise.Raising`
+//! `registerAbstractType` and `textSubstitution` are raise-capable
 //! functions with a `raise.panicking` abi over each. Called directly, each
 //! refusal is a value and one `harness.raised` line.
 //!
@@ -109,7 +109,7 @@ fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
 /// A cfunction that exists only to be a registry key.
 fn Probe(comptime tag: i32) type {
     return struct {
-        fn run(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn run(argv: []repr.Value) raise.Error!repr.Value {
             _ = @as(i32, @intCast(argv.len));
 
             return harness.wrapInteger(tag);
@@ -379,7 +379,7 @@ fn theSliceFormsInstallTheSameRows() void {
 ///
 /// Both abis are reached only through this contract; the raising forms are what
 /// the runtime itself calls.
-fn defAndVarBuildDifferentEntries() raise.Raising(void) {
+fn defAndVarBuildDifferentEntries() raise.Error!void {
     const env = tables.new(4);
 
     registry.def(env, "d", harness.wrapInteger(7), "doc for d");
@@ -508,7 +508,7 @@ fn deprecationReadsAKeywordAndFallsBackToNormal() void {
     expect(bindingOf(entry).deprecation == .normal);
 }
 
-fn resolveDereferencesOnlyTheDynamicBindings() raise.Raising(void) {
+fn resolveDereferencesOnlyTheDynamicBindings() raise.Error!void {
     const env = tables.new(4);
     const ref = arrays.new(1);
 
@@ -563,7 +563,7 @@ fn theCoreFormsReachTheCoreEnvironment() void {
 /// The registry keys on the name, so a second type under a name already taken
 /// is refused. The two probes above have the same name and different
 /// addresses, which is what makes the refusal reachable.
-fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Raising(void) {
+fn theAbstractRegistryRefusesASecondTypeUnderOneName() raise.Error!void {
     // The premise, asserted rather than assumed. Without this the merge above
     // shows up as a null unwrap three assertions later, in a message that
     // names neither the types nor the reason.
@@ -602,7 +602,7 @@ fn bytesAre(view: abi.ByteView, expected: []const u8) bool {
     return std.mem.eql(u8, args_core.viewBytes(view), expected);
 }
 
-fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
+fn substitutionMemoizesAValueAndCallsACallable() raise.Error!void {
     const matched = "ab";
 
     // A value that is already bytes is used as-is, and the caller's slot is
@@ -631,7 +631,7 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
     // the next match.
     expect(harness.isType(subst, repr.Tag.cfunction));
 
-    // A raising cfunction. `textSubstitution` is `raise.Raising` and invokes
+    // A raising cfunction. `textSubstitution` is raise-capable and invokes
     // the cfunction pointer itself, so the refusal arrives as its return
     // value.
     var finder = registry.resolveCore("string/find");
@@ -655,7 +655,7 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Raising(void) {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     theRegistryRecordsWhatItWasGiven();
     theSortIsTotalOverDistinctKeys();
     theRegistryGrowsPastItsFloor();

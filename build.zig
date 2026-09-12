@@ -81,7 +81,7 @@ const BuildOptions = struct {
     install_tests: bool,
     sanitize_thread: bool,
     single_threaded: bool,
-    nanbox: bool,
+    nanbox: ?bool,
     nanbox_pointer_shift: ?i32,
     dynamic_modules: bool,
     docstrings: bool,
@@ -1352,7 +1352,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .install_tests = b.option(bool, "install-tests", "Install the contract, fuzz and runtime test executables so they can be run on another machine") orelse false,
         .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
-        .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation") orelse true,
+        .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),
         .nanbox_pointer_shift = pointer_shift,
         .dynamic_modules = b.option(bool, "dynamic-modules", "Enable dynamic native modules") orelse true,
         .docstrings = b.option(bool, "docstrings", "Include documentation strings") orelse true,
@@ -1401,11 +1401,8 @@ fn readOptions(b: *std.Build) BuildOptions {
 
 /// Which of the three value representations this build compiles.
 ///
-/// All three are chosen by `-Dnanbox` and the target's word size, and there is
-/// no build option that names the representation directly. `DESIGN.md` section
-/// 7 records the decision both to drop `nanbox_32` and to give the choice an
-/// option of its own; neither is done, and this note is where that stays
-/// recorded.
+/// `janetConfig` picks one from `-Dnanbox` and the target; no build option
+/// names a representation directly.
 const ValueRepr = enum { nanbox_64, nanbox_32, tagged };
 
 /// What the build set, as comptime facts for `@import("config")`.
@@ -1568,6 +1565,22 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
     // the JANET_BSD and JANET_APPLE clauses, which define the same macro
     const ev_kqueue = (bsd or apple) and options.kqueue;
 
+    // Which targets NaN-box when `-Dnanbox` is unset, the list `janet.h`
+    // carries: every 32-bit target, and the three 64-bit architectures whose
+    // user-space addresses fit in 47 bits. A NaN-boxed 64-bit value keeps a
+    // pointer in the low 47 bits of a double's payload, and the tag is ORed
+    // over what sits above them by `nanbox64.fromPointer` in
+    // `src/api/repr.zig`, so an architecture that uses those bits loses them
+    // with no diagnostic: nothing checks a pointer's high bits, and
+    // `registry.checkPointerAlign` checks only the low ones. Every other
+    // 64-bit architecture therefore takes the tagged layout, and
+    // `-Dnanbox=true` is what overrides that.
+    const bits64 = target.result.ptrBitWidth() == 64;
+    const nanbox = options.nanbox orelse (!bits64 or switch (target.result.cpu.arch) {
+        .x86_64, .aarch64, .riscv64 => true,
+        else => false,
+    });
+
     // The shift discards the low bits of a wrapped pointer, and a cfunction's
     // address is wrapped, so the shift cannot exceed the alignment every
     // function address has. A64 instructions are 4 bytes, so on aarch64 that
@@ -1616,12 +1629,12 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
         // neither epoll nor kqueue.
         .ev_poll = !windows and !ev_epoll and !ev_kqueue,
         .ipv6 = options.ipv6,
-        .bits64 = target.result.ptrBitWidth() == 64,
-        // `-Dnanbox=false` gives the tagged struct; otherwise the pointer
-        // width picks between the two NaN-boxed unions.
-        .value_repr = if (!options.nanbox)
+        .bits64 = bits64,
+        // A target that does not NaN-box gets the tagged struct; otherwise the
+        // pointer width picks between the two NaN-boxed unions.
+        .value_repr = if (!nanbox)
             .tagged
-        else if (target.result.ptrBitWidth() == 64)
+        else if (bits64)
             .nanbox_64
         else
             .nanbox_32,

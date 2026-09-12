@@ -84,7 +84,7 @@ const WindowsOpen = struct {
 
 /// `(os/open path &opt flags mode)`, which returns a stream rather than a
 /// file.
-pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunOpen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);
     const opt_flags: [*:0]const u8 = @ptrCast(try args_core.optKeyword(argv, 1, "r"));
@@ -121,7 +121,7 @@ pub fn cfunOpen(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// Reads the flag letters into the `open` flag word, asserting the sandbox
 /// permission each letter implies as it is reached.
-fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
+fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!c_int {
     // Closed on exec, as every descriptor the runtime opens is.
     var open_flags: c_int = h.O_NONBLOCK | h.O_CLOEXEC;
     var read_flag = false;
@@ -174,7 +174,7 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(c_int) {
 /// The creation disposition is the one place the two interfaces do not line
 /// up: POSIX combines `O_CREAT`, `O_EXCL` and `O_TRUNC` freely and Windows has
 /// five named dispositions, so a combination outside those five is refused.
-fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Raising(WindowsOpen) {
+fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!WindowsOpen {
     const o_creat: u32 = 1;
     const o_excl: u32 = 2;
     const o_trunc: u32 = 4;

@@ -330,7 +330,7 @@ const Waiter = struct {
         return out;
     }
 
-    fn callback(args: ev_loop.GenericMessage) raise.Raising(void) {
+    fn callback(args: ev_loop.GenericMessage) raise.Error!void {
         const proc: *Proc = @ptrCast(@alignCast(args.argp orelse return));
         const status = args.tag;
         proc.return_code = status;
@@ -652,7 +652,7 @@ pub fn wait(pid: i64, val: *i32) i32 {
 /// The two blocks are built separately rather than unified: the POSIX block
 /// drops a key containing `=` or NUL and the Windows block does not, so
 /// `envKeyOk` is called only where the C original called it.
-fn buildEnv(argv: []repr.Value) raise.Raising(EnvBlock) {
+fn buildEnv(argv: []repr.Value) raise.Error!EnvBlock {
     if (argv.len <= 2) return null;
     const dict = try args_core.getDictionary(argv, 2);
     if (windows) {
@@ -700,12 +700,12 @@ fn buildEnv(argv: []repr.Value) raise.Raising(EnvBlock) {
 }
 
 /// `(os/execute args &opt flags env)`.
-fn cfunExecute(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunExecute(argv: []repr.Value) raise.Error!repr.Value {
     return execute(argv, .execute);
 }
 
 /// `(os/pipe &opt flags)`.
-fn cfunPipe(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPipe(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     var fds: [2]host.Handle = undefined;
     var flags: c_int = 0;
@@ -720,7 +720,7 @@ fn cfunPipe(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/posix-chroot path)`.
-fn cfunPosixChroot(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPosixChroot(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"chroot"}));
     try args_core.fixarity(argv, 1);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
@@ -732,13 +732,13 @@ fn cfunPosixChroot(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/posix-exec args &opt flags env)`.
-fn cfunPosixExec(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPosixExec(argv: []repr.Value) raise.Error!repr.Value {
     if (windows) return raise.panic("not supported on Windows");
     return execute(argv, .exec);
 }
 
 /// `(os/posix-fork)`.
-fn cfunPosixFork(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunPosixFork(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.fixarity(argv, 0);
     if (windows) return raise.panic("not supported on Windows");
@@ -755,7 +755,7 @@ fn cfunPosixFork(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(:close p)`.
-fn cfunProcClose(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunProcClose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     if (proc.flags & proc_owns_stdin != 0) try closeStdio(proc.in.?);
@@ -767,14 +767,14 @@ fn cfunProcClose(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/proc-getpid p)`.
-fn cfunProcGetpid(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunProcGetpid(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(@floatFromInt(processId()));
 }
 
 /// `(os/proc-kill p &opt wait signal)`.
-fn cfunProcKill(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunProcKill(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     if (proc.flags & proc_waited != 0) {
@@ -800,14 +800,14 @@ fn cfunProcKill(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/proc-wait p)`.
-fn cfunProcWait(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunProcWait(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     return procWait(proc);
 }
 
 /// `(os/shell &opt cmd)`.
-fn cfunShell(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunShell(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 0, 1);
     const cmd: ?[*:0]const u8 = if (argv.len != 0) @ptrCast(try args_core.getCString(argv, 0)) else null;
@@ -828,7 +828,7 @@ fn cfunShell(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/sigaction signal &opt handler)`.
-fn cfunSigaction(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"signal"}));
     try args_core.arity(argv, 1, 3);
     if (windows) return raise.panic("unsupported on this platform");
@@ -886,7 +886,7 @@ fn cfunSigaction(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(os/spawn args &opt flags env)`.
-fn cfunSpawn(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSpawn(argv: []repr.Value) raise.Error!repr.Value {
     return execute(argv, .spawn);
 }
 
@@ -910,7 +910,7 @@ fn closeHandle(handle: host.Handle) void {
 }
 
 /// Closes the three stdio abstracts a `Proc` owns.
-inline fn closeStdio(x: *Stdio) raise.Raising(void) {
+inline fn closeStdio(x: *Stdio) raise.Error!void {
     if (has_ev) try ev_stream.streamClose(x) else _ = io.fileClose(x);
 }
 
@@ -931,7 +931,7 @@ fn cstrequal(key: [*]const u8, len: usize, other: [:0]const u8) bool {
 /// The escaping rule itself is `escapeArgument`'s and is compiled and tested
 /// on every platform; this is the measure-then-fill wrapper, which exists
 /// because growing the buffer can raise and the escaping may not.
-fn execEscape(args: []const repr.Value) raise.Raising(*buffers.Buffer) {
+fn execEscape(args: []const repr.Value) raise.Error!*buffers.Buffer {
     const b = buffers.new(0);
     for (0..args.len) |i| {
         const arg = try args_core.getCString(args, i);
@@ -950,7 +950,7 @@ fn execEscape(args: []const repr.Value) raise.Raising(*buffers.Buffer) {
 
 /// The body of `os/execute`, `os/spawn` and `os/posix-exec`, which differ in
 /// what they do with the child once it is started.
-fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Raising(repr.Value) {
+fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 1, 3);
 
@@ -1068,7 +1068,7 @@ inline fn flagAt(flags: u64, index: u6) bool {
 
 /// The OS handle behind a `core/stream` or a `core/file`, and the abstract it
 /// came from.
-fn getJStream(argv: []repr.Value, n: usize, orig: *?*anyopaque) raise.Raising(host.Handle) {
+fn getJStream(argv: []repr.Value, n: usize, orig: *?*anyopaque) raise.Error!host.Handle {
     if (has_ev) {
         if (args_core.checkabstract(argv[n], &ev_stream.streamType)) |p| {
             const stream: *ev_stream.Stream = @ptrCast(@alignCast(p));
@@ -1090,7 +1090,7 @@ fn getJStream(argv: []repr.Value, n: usize, orig: *?*anyopaque) raise.Raising(ho
 /// The signal a keyword names. A keyword the name list does not have and one
 /// this platform's headers left out are both "undefined signal", which is what
 /// the `#ifdef`-gated C table produced by omitting the entry.
-fn getSignalKw(argv: []const repr.Value, n: usize) raise.Raising(c_int) {
+fn getSignalKw(argv: []const repr.Value, n: usize) raise.Error!c_int {
     const kw = try args_core.getKeyword(argv, n);
     const index = signalIndex(kw, strings.head(kw).length);
     if (index >= 0 and signal_numbers[@intCast(index)] >= 0) {
@@ -1106,7 +1106,7 @@ fn getSignalKw(argv: []const repr.Value, n: usize) raise.Raising(c_int) {
 /// Raising, because registering a new stream with the event-loop backend can,
 /// and the three callers are all inside `os/spawn`, which already has an error
 /// channel.
-fn getStdioForHandle(handle: host.Handle, orig: ?*anyopaque, iswrite: bool) raise.Raising(?*Stdio) {
+fn getStdioForHandle(handle: host.Handle, orig: ?*anyopaque, iswrite: bool) raise.Error!?*Stdio {
     if (has_ev) {
         const p = orig orelse
             return try ev_stream.makeStream(handle, if (iswrite) stream_writable else stream_readable, null);
@@ -1214,7 +1214,7 @@ fn procGc(proc: *Proc, _: usize) void {
 
 /// The method lookup behind `(:wait p)` and its siblings, and the three dud
 /// entries `(keys p)` reports.
-fn procGet(proc: *Proc, key: repr.Value) raise.Raising(?repr.Value) {
+fn procGet(proc: *Proc, key: repr.Value) raise.Error!?repr.Value {
     if (args_core.keyeq(key, "in"))
         return if (proc.in) |x| wrap.fromAbstract(x) else wrap.fromNil();
     if (args_core.keyeq(key, "out"))
@@ -1233,7 +1233,7 @@ fn procGet(proc: *Proc, key: repr.Value) raise.Raising(?repr.Value) {
 /// POSIX shell semantics for a signalled or stopped child. The 128 offset and
 /// the fourth-outcome raise are here rather than beside `wait` because a raise
 /// may not cross that seam.
-fn procGetStatus(proc: *Proc) raise.Raising(c_int) {
+fn procGetStatus(proc: *Proc) raise.Error!c_int {
     var val: i32 = 0;
     const outcome = wait(proc.pid(), &val);
     if (outcome == wait_exited) return val;
@@ -1249,7 +1249,7 @@ fn procMark(proc: *Proc, _: usize) void {
 }
 
 /// The iteration order behind `next` and `(keys p)`.
-fn procNext(_: *Proc, key: repr.Value) raise.Raising(repr.Value) {
+fn procNext(_: *Proc, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&proc_methods), key);
 }
 
@@ -1260,7 +1260,7 @@ fn procNext(_: *Proc, key: repr.Value) raise.Raising(repr.Value) {
 /// the exit code is the result. The C original spells that with two different
 /// return types behind one `#ifdef`; this returns an optional instead, and the
 /// two callers read it the same way.
-fn procWait(proc: *Proc) raise.Raising(repr.Value) {
+fn procWait(proc: *Proc) raise.Error!repr.Value {
     if (proc.flags & (proc_waited | proc_waiting) != 0) {
         return raise.panic("cannot wait twice on a process");
     }
@@ -1404,7 +1404,7 @@ fn spawnPosix(
     use_environ: bool,
     chdir_path: ?[*:0]const u8,
     mode: ExecuteMode,
-) raise.Raising(*Proc) {
+) raise.Error!*Proc {
     const count: usize = exargs.len;
     const child_argv: [*]?[*:0]const u8 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(?*u8) * (count + 1))));
     for (0..count) |i| {
@@ -1507,7 +1507,7 @@ fn spawnWindows(
     envp: EnvBlock,
     use_environ: bool,
     chdir_path: ?[*:0]const u8,
-) raise.Raising(*Proc) {
+) raise.Error!*Proc {
     _ = argv;
     var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
     var process_info: h.PROCESS_INFORMATION = std.mem.zeroes(h.PROCESS_INFORMATION);

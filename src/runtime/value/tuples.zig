@@ -194,13 +194,13 @@ pub inline fn view(t: [*]const repr.Value) []const repr.Value {
 /// what rejects a bad argument and checks the total for overflow, and it has to
 /// finish before anything is allocated, because `begin` would otherwise leave a
 /// half-filled tuple behind when a later argument turned out not to be indexed.
-fn cfunTupleBrackets(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
     const tup = newFrom(argv);
     setBracketed(head(tup));
     return wrap.fromTuple(tup);
 }
 
-fn cfunTupleJoin(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, -1);
     var total_len: i32 = 0;
     for (argv, 0..) |arg, index| {
@@ -220,7 +220,7 @@ fn cfunTupleJoin(argv: []repr.Value) raise.Raising(repr.Value) {
     return wrap.fromTuple(end(tup));
 }
 
-fn cfunTupleSetmap(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTupleSetmap(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const tup = try args_core.getTuple(argv, 0);
     head(tup).sm_line = try args_core.getInteger(argv, 1);
@@ -228,13 +228,13 @@ fn cfunTupleSetmap(argv: []repr.Value) raise.Raising(repr.Value) {
     return argv[0];
 }
 
-fn cfunTupleSlice(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTupleSlice(argv: []repr.Value) raise.Error!repr.Value {
     const indexed = try args_core.getIndexed(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromTuple(newFrom(indexed[@intCast(range.start)..@intCast(range.end)]));
 }
 
-fn cfunTupleSourcemap(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTupleSourcemap(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const tup = try args_core.getTuple(argv, 0);
     var contents: [2]repr.Value = .{
@@ -244,7 +244,7 @@ fn cfunTupleSourcemap(argv: []repr.Value) raise.Raising(repr.Value) {
     return wrap.fromTuple(newFrom(&contents));
 }
 
-fn cfunTupleType(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTupleType(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const tup = try args_core.getTuple(argv, 0);
     if (isBracketed(head(tup))) {

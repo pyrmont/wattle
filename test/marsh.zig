@@ -170,13 +170,13 @@ fn wireIs(b: *buffers.Buffer, expected: []const u8) void {
     @panic("wire format mismatch");
 }
 
-fn marshalled(x: repr.Value, rreg: ?*tables.Table, flags: c_int) raise.Raising(*buffers.Buffer) {
+fn marshalled(x: repr.Value, rreg: ?*tables.Table, flags: c_int) raise.Error!*buffers.Buffer {
     const b = buffers.new(16);
     try marsh.marshal(b, x, rreg, flags);
     return b;
 }
 
-fn unmarshalled(b: *buffers.Buffer, flags: c_int) raise.Raising(repr.Value) {
+fn unmarshalled(b: *buffers.Buffer, flags: c_int) raise.Error!repr.Value {
     return marsh.unmarshal(b.slice(), flags, null, null);
 }
 
@@ -184,7 +184,7 @@ fn unmarshalled(b: *buffers.Buffer, flags: c_int) raise.Raising(repr.Value) {
 /// spelled. Slices rather than pointer-and-length: the length of a Zig string
 /// literal is part of it, and a length taken from the literal's own size at
 /// every site to say the same thing.
-fn unmarshalBytes(bytes: []const u8, flags: c_int) raise.Raising(repr.Value) {
+fn unmarshalBytes(bytes: []const u8, flags: c_int) raise.Error!repr.Value {
     return marsh.unmarshal(bytes, flags, null, null);
 }
 
@@ -197,7 +197,7 @@ fn refusedBy(bytes: []const u8) ?harness.Raise {
 /// the context API, so that a round trip through the probe is a round trip
 /// through all twenty. The pointer fields are written only in unsafe mode,
 /// which is what makes this type a witness for the context's `flags` field.
-fn probeMarshal(probe: *Probe, m: *abi.Marshal) raise.Raising(void) {
+fn probeMarshal(probe: *Probe, m: *abi.Marshal) raise.Error!void {
     marsh.marshalAbstract(m, probe);
     try marsh.marshalInt(m, probe.i32_field);
     try marsh.marshalInt64(m, probe.i64_field);
@@ -212,7 +212,7 @@ fn probeMarshal(probe: *Probe, m: *abi.Marshal) raise.Raising(void) {
 
 /// Every read is a `try`, so a refusal stops the walk where it happens rather
 /// than at the next read that ran past the end.
-fn probeUnmarshal(u: *abi.Unmarshal) raise.Raising(*Probe) {
+fn probeUnmarshal(u: *abi.Unmarshal) raise.Error!*Probe {
     const probe: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Probe))));
     probe.i32_field = try marsh.unmarshalInt(u);
     probe.i64_field = try marsh.unmarshalInt64(u);
@@ -232,19 +232,19 @@ fn probeUnmarshal(u: *abi.Unmarshal) raise.Raising(*Probe) {
 
 /// A type that always reaches for a pointer, so that the safe-mode refusal has
 /// something to refuse.
-fn refuserMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
+fn refuserMarshal(p: *anyopaque, m: *abi.Marshal) raise.Error!void {
     marsh.marshalAbstract(m, p);
     try marsh.marshalPtr(m, p);
 }
 
-fn refuserUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
+fn refuserUnmarshal(u: *abi.Unmarshal) raise.Error!*anyopaque {
     const p = (try marsh.unmarshalAbstract(u, @sizeOf(i32))).?;
     _ = try marsh.unmarshalPtr(u);
     return p;
 }
 
 /// A type that writes more bytes than a Janet buffer can index.
-fn toobigMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
+fn toobigMarshal(p: *anyopaque, m: *abi.Marshal) raise.Error!void {
     marsh.marshalAbstract(m, p);
     const bytes: [*]const u8 = @ptrCast(p);
     try marsh.marshalBytes(m, bytes[0 .. @as(usize, std.math.maxInt(i32)) + 1]);
@@ -252,20 +252,20 @@ fn toobigMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
 
 /// The marshal half of the three types whose *unmarshal* half breaks the
 /// abstract protocol.
-fn protocolMarshal(p: *anyopaque, m: *abi.Marshal) raise.Raising(void) {
+fn protocolMarshal(p: *anyopaque, m: *abi.Marshal) raise.Error!void {
     marsh.marshalAbstract(m, p);
     try marsh.marshalByte(m, @as(*u8, @ptrCast(p)).*);
 }
 
 /// Registers itself twice.
-fn twiceUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
+fn twiceUnmarshal(u: *abi.Unmarshal) raise.Error!*anyopaque {
     const p = (try marsh.unmarshalAbstract(u, 1)).?;
     try marsh.unmarshalAbstractReuse(u, p);
     return p;
 }
 
 /// Never registers at all.
-fn neverUnmarshal(u: *abi.Unmarshal) raise.Raising(*anyopaque) {
+fn neverUnmarshal(u: *abi.Unmarshal) raise.Error!*anyopaque {
     _ = try marsh.unmarshalByte(u);
     return abstracts.newFor(Probe, &probe_at);
 }
@@ -277,7 +277,7 @@ fn stored(at: *const AbstractType) *const abi.AbstractType {
 /// `pushInt` picks one of three encodings by range, and `readInt` picks by
 /// lead byte. Neither boundary is observable from Janet, where a marshalled
 /// integer is just an integer coming back.
-fn theThreeIntegerEncodings() raise.Raising(void) {
+fn theThreeIntegerEncodings() raise.Error!void {
     const w = harness.wrapInteger;
     wireIs(try marshalled(w(0), null, 0), "\x00");
     wireIs(try marshalled(w(127), null, 0), "\x7f");
@@ -309,7 +309,7 @@ fn theThreeIntegerEncodings() raise.Raising(void) {
 
 /// A double that is not an exact int32 takes the eight-byte path and is
 /// recorded as a reference; an integral one never is.
-fn realsAndIntegralDoublesDiffer() raise.Raising(void) {
+fn realsAndIntegralDoublesDiffer() raise.Error!void {
     var b = try marshalled(wrap.fromNumber(0.5), null, 0);
     expect(b.count == 9);
     expect(b.slice()[0] == lb_real);
@@ -325,7 +325,7 @@ fn realsAndIntegralDoublesDiffer() raise.Raising(void) {
 
 /// `push64` is length-prefixed above 0xF0 and bare below it, and only the
 /// context API reaches it.
-fn theSizeEncodingBoundaries() raise.Raising(void) {
+fn theSizeEncodingBoundaries() raise.Error!void {
     const values = [_]u64{
         0,          1,          0xEF,               0xF0, 0xF1, 0xFF, 0x100, 0xFFFFFFFF,
         0x01020304, 0x05060708, 0xFFFFFFFFFFFFFFFF,
@@ -350,7 +350,7 @@ fn theSizeEncodingBoundaries() raise.Raising(void) {
     // value crosses. 0xF0 is the last bare one and 0xF1 the first prefixed.
     {
         const widthOf = struct {
-            fn f(stored_value: u64) raise.Raising(usize) {
+            fn f(stored_value: u64) raise.Error!usize {
                 const p: *Probe = @ptrCast(@alignCast(abstracts.newBytes(stored(&probe_at), @sizeOf(Probe))));
                 p.* = std.mem.zeroes(Probe);
                 p.i64_field = @bitCast(stored_value);
@@ -398,7 +398,7 @@ fn makeProbe() *Probe {
     return probe;
 }
 
-fn theContextApiRoundTrips() raise.Raising(void) {
+fn theContextApiRoundTrips() raise.Error!void {
     const probe = makeProbe();
     var b = try marshalled(wrap.fromAbstract(probe), null, 0);
     const out = keep(try unmarshalled(b, 0));
@@ -432,7 +432,7 @@ fn theContextApiRoundTrips() raise.Raising(void) {
 
 /// The abstract is entered into the reference table before its fields are
 /// read, so a value that contains itself resolves rather than recursing.
-fn anAbstractCanContainItself() raise.Raising(void) {
+fn anAbstractCanContainItself() raise.Error!void {
     const probe = makeProbe();
     const self = wrap.fromAbstract(probe);
     const holder = arrays.new(1);
@@ -447,7 +447,7 @@ fn anAbstractCanContainItself() raise.Raising(void) {
     expect(wrap.toAbstract(back_holder.slice()[0]) == @as(?*anyopaque, back));
 }
 
-fn theAbstractProtocolIsEnforced() raise.Raising(void) {
+fn theAbstractProtocolIsEnforced() raise.Error!void {
     const twice: *u8 = @ptrCast(abstracts.newBytes(stored(&twice_at), 1));
     twice.* = 7;
     var b = try marshalled(keep(wrap.fromAbstract(twice)), null, 0);
@@ -468,7 +468,7 @@ fn theAbstractProtocolIsEnforced() raise.Raising(void) {
     ).?.beginsWith("cannot marshal <test/marsh-inert 0x"));
 }
 
-fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
+fn theUnsafeGateOnTheContextApi() raise.Error!void {
     const refuser = keep(wrap.fromAbstract(abstracts.newBytes(stored(&refuser_at), @sizeOf(i32))));
     expect(harness.raised(
         marshalled,
@@ -491,13 +491,13 @@ fn theUnsafeGateOnTheContextApi() raise.Raising(void) {
 }
 
 /// A cfunction that exists to be a value with an address.
-fn aCfunction(argv: []repr.Value) raise.Raising(repr.Value) {
+fn aCfunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1729);
 }
 
-fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
+fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Error!void {
     const ptr = wrap.fromPointer(@ptrCast(@constCast(stored(&probe_at))));
     const cfun = wrap.fromCfunction(raise.stored(&aCfunction));
 
@@ -522,7 +522,7 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Raising(void) {
         .says("unsafe flag not given, will not unmarshal function pointer at index 1"));
 }
 
-fn theWeakLeadBytesAreTheSameInEveryConfiguration() raise.Raising(void) {
+fn theWeakLeadBytesAreTheSameInEveryConfiguration() raise.Error!void {
     const weakk = tables.weakk(1);
     const weakv = tables.weakv(1);
     const weakkv = tables.weakkv(1);
@@ -553,7 +553,7 @@ fn theWeakLeadBytesAreTheSameInEveryConfiguration() raise.Raising(void) {
 /// A tuple and a struct are marked seen *after* their contents are written and
 /// everything else before, which decides whether a self-reference is
 /// expressible at all.
-fn whenAValueBecomesAReference() raise.Raising(void) {
+fn whenAValueBecomesAReference() raise.Error!void {
     const a = arrays.new(1);
     harness.arrayPush(a, wrap.fromArray(a));
     var b = try marshalled(keep(wrap.fromArray(a)), null, 0);
@@ -627,7 +627,7 @@ fn evaluate(source: [*:0]const u8) repr.Value {
 /// The funcenv and funcdef tables are the two reference tables that have no
 /// Janet-visible effect: sharing is preserved rather than observed, so what
 /// pins them is the wire format and the failure of a corrupted index.
-fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
+fn functionStreamsAndTheirBackReferences() raise.Error!void {
     // Two closures over one variable share a funcenv, so the second is written
     // as a back reference.
     var out = evaluate("(do (var x 41) [(fn [] x) (fn [] (+ x 1))])");
@@ -667,7 +667,7 @@ fn functionStreamsAndTheirBackReferences() raise.Raising(void) {
         .says("funcdef has invalid bytecode"));
 }
 
-fn theReverseRegistryShortCircuits() raise.Raising(void) {
+fn theReverseRegistryShortCircuits() raise.Error!void {
     const rreg = tables.new(1);
     const a = arrays.new(0);
     tables.put(rreg, wrap.fromArray(a), value.fromBytes("an-array", .symbol));
@@ -756,7 +756,7 @@ fn envLookupIntoPrefixesAndRecurses() void {
 /// the stream at every offset drives a raise out of every read in
 /// `probeUnmarshal` in turn, and a callback that continued past one would
 /// read from beyond the end of the source.
-fn aTruncatedStreamIsRefusedAtEveryLength() raise.Raising(void) {
+fn aTruncatedStreamIsRefusedAtEveryLength() raise.Error!void {
     const probe = makeProbe();
     const a = arrays.new(2);
     harness.arrayPush(a, wrap.fromAbstract(probe));
@@ -798,7 +798,7 @@ fn aPrototypeIsTypeChecked() void {
 
 /// A fiber is only ALIVE while it is running, so the refusal can only be
 /// provoked from inside one.
-fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
+fn aLiveFiberCannotBeMarshalled() raise.Error!void {
     var out = evaluate("(fn [] (marshal (fiber/current)))");
     var fiber: ?*fibers.Fiber = null;
     const resumed = vm_entry.pcall(wrap.toFunction(out), &.{}, &fiber);
@@ -822,7 +822,7 @@ fn aLiveFiberCannotBeMarshalled() raise.Raising(void) {
 /// `cfun_unmarshal` drops the out-parameter, so this is the only caller that
 /// can see where a value ended, which is what makes a stream of concatenated
 /// values readable at all.
-fn nextPointsPastTheValue() raise.Raising(void) {
+fn nextPointsPastTheValue() raise.Error!void {
     const b = buffers.new(16);
     try marsh.marshal(b, harness.wrapInteger(1), null, 0);
     const first: usize = @intCast(b.count);
@@ -842,7 +842,7 @@ fn nextPointsPastTheValue() raise.Raising(void) {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     test_env = harness.coreEnv();
     gc_alloc.gcroot(wrap.fromTable(test_env));
     rooted = arrays.new(0);

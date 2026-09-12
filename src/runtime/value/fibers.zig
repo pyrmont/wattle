@@ -346,7 +346,7 @@ pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
 /// Each returns `raise.Error!repr.Value` rather than recording its raise in a
 /// VM field and returning an unspecified value, so a caller that forgets to
 /// `try` is a compile error.
-pub fn lib(env: *tables.Table) raise.Raising(void) {
+pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("fiber/new", &cfunFiberNew, @src(), "(fiber/new func &opt sigmask env)",
             \\Create a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these "blocked" signals will result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
@@ -585,7 +585,7 @@ pub fn status(f: *Fiber) FiberStatus {
 /// way it can and the tag test is on this side. The refusal names the type and
 /// the value and no argument slot, because there is no slot: the fiber came
 /// back from `pcall` rather than out of `argv`.
-pub fn statusChecked(v: repr.Value) raise.Raising(FiberStatus) {
+pub fn statusChecked(v: repr.Value) raise.Error!FiberStatus {
     if (!repr.checkType(v, repr.Tag.fiber)) {
         return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.one(repr.Tag.fiber), v });
     }
@@ -632,20 +632,20 @@ fn alloc(requested: i32) *Fiber {
 }
 
 /// `fiber/can-resume?`: whether a fiber can still be resumed.
-fn cfunFiberCanResume(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberCanResume(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     return wrap.fromBoolean(canResume(fiber));
 }
 
 /// `fiber/current`: the running fiber.
-fn cfunFiberCurrent(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberCurrent(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromFiber(vm_state.current().fiber.?);
 }
 
 /// `fiber/getenv`: a fiber's environment table, or nil.
-fn cfunFiberGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberGetenv(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     return if (fiber.env) |env|
@@ -655,14 +655,14 @@ fn cfunFiberGetenv(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `fiber/last-value`: the last value the fiber returned or signalled.
-fn cfunFiberLastValue(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberLastValue(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     return fiber.last_value;
 }
 
 /// `fiber/maxstack`: a fiber's stack ceiling in slots.
-fn cfunFiberMaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberMaxstack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     return wrap.fromNumber(@floatFromInt(fiber.maxstack));
@@ -674,7 +674,7 @@ fn cfunFiberMaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The mask string is parsed here, a character at a time. `i` and `p` are
 /// environment flags rather than signals, and a later one overrides an earlier
 /// one, which is what the docstring means by mutually exclusive.
-fn cfunFiberNew(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const func = try args_core.getFunction(argv, 0);
     if (func.def.?.min_arity > 1) {
@@ -733,13 +733,13 @@ fn cfunFiberNew(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `fiber/root`: the root fiber of the current chain.
-fn cfunFiberRoot(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberRoot(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromFiber(vm_state.current().root_fiber.?);
 }
 
 /// `fiber/setenv`: a fiber's environment table replaced, or cleared by nil.
-fn cfunFiberSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberSetenv(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const fiber = try args_core.getFiber(argv, 0);
     if (repr.checkType(argv[1], repr.Tag.nil)) {
@@ -751,7 +751,7 @@ fn cfunFiberSetenv(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `fiber/setmaxstack`: a fiber's stack ceiling in slots, set.
-fn cfunFiberSetmaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberSetmaxstack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const fiber = try args_core.getFiber(argv, 0);
     const maxs = try args_core.getInteger(argv, 1);
@@ -761,7 +761,7 @@ fn cfunFiberSetmaxstack(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `fiber/status`: a fiber's status as a keyword.
-fn cfunFiberStatus(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunFiberStatus(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     return value.fromBytes(std.mem.span(utils.statusNames[@intFromEnum(statusOf(fiber))]), .keyword);

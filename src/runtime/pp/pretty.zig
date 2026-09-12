@@ -119,16 +119,16 @@ const Pretty = struct {
     keysort_start: i32,
     seen: tables.Table,
 
-    inline fn pushByte(self: *Pretty, byte: u8) raise.Raising(void) {
+    inline fn pushByte(self: *Pretty, byte: u8) raise.Error!void {
         try buffers.pushU8(self.buffer, byte);
     }
 
-    inline fn pushCstring(self: *Pretty, str: [*:0]const u8) raise.Raising(void) {
+    inline fn pushCstring(self: *Pretty, str: [*:0]const u8) raise.Error!void {
         try buffers.pushCString(self.buffer, str);
     }
 
     /// Emit a colour escape, or nothing when the build is not colouring.
-    inline fn pushColor(self: *Pretty, color: [*:0]const u8) raise.Raising(void) {
+    inline fn pushColor(self: *Pretty, color: [*:0]const u8) raise.Error!void {
         try if (self.flags.color) self.pushCstring(color);
     }
 };
@@ -165,7 +165,7 @@ pub fn jdn(
     x: repr.Value,
     startlen: usize,
     lookback_barrier: usize,
-) raise.Raising(*buffers.Buffer) {
+) raise.Error!*buffers.Buffer {
     var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier);
     const failed = printJdnOne(&S, x, depth);
     tables.deinit(&S.seen);
@@ -192,7 +192,7 @@ pub fn prettyBuffer(
     x: repr.Value,
     startlen: usize,
     lookback_barrier: usize,
-) raise.Raising(*buffers.Buffer) {
+) raise.Error!*buffers.Buffer {
     var S = initState(buffer, depth, width, flags, startlen, lookback_barrier);
     try prettyOne(&S, x);
     backtrackNewlines(&S);
@@ -357,7 +357,7 @@ fn initState(buffer: ?*buffers.Buffer, depth: c_int, width: c_int, flags: Pretty
 /// `countDig10` counts there: negating the most negative `i32` overflows and
 /// negating any other value does not, so the loop stays in the range every
 /// input fits.
-fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Raising(i32) {
+fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
     try buffers.extra(buffer, bufsize);
     var at = buffer.data.? + @as(usize, @intCast(buffer.count));
     var x = val;
@@ -404,7 +404,7 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Raising(i32) {
 /// nothing to truncate to here, so a quadratic sort over every entry would
 /// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
 /// so the order agrees with `%p`'s entry for entry.
-fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Raising(bool) {
+fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Error!bool {
     const ks_start = S.keysort_start;
     defer S.keysort_start = ks_start;
 
@@ -467,7 +467,7 @@ fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Raising(b
 /// form, and the perimeter is what panics. Depth is a parameter here rather
 /// than a field of the record, because JDN counts down a recursion of its own,
 /// separate from the pretty printer's.
-fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
+fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
     if (depth == 0) return true;
     switch (repr.typeOf(x)) {
         repr.Tag.nil, repr.Tag.boolean, repr.Tag.buffer, repr.Tag.string => {
@@ -526,7 +526,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Raising(bool) {
 /// `print_newline`. In one-line mode a separator is a space and nothing else
 /// happens; otherwise this is where the reflow attempt is made. `align_col` is
 /// the column the new line is indented to.
-fn printNewline(S: *Pretty, align_col: c_int) raise.Raising(void) {
+fn printNewline(S: *Pretty, align_col: c_int) raise.Error!void {
     if (S.flags.oneline) {
         try S.pushByte(' ');
         return;
@@ -542,7 +542,7 @@ fn printNewline(S: *Pretty, align_col: c_int) raise.Raising(void) {
 }
 
 /// A struct or a table.
-fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Raising(void) {
+fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Error!void {
     if (repr.checkType(x, repr.Tag.table)) {
         const t = wrap.toTable(x);
         S.align_col += 1;
@@ -575,7 +575,7 @@ fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Raising(void) {
 }
 
 /// The entries of a struct or table, sorted where sorting is affordable.
-fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void) {
+fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Error!void {
     const view = args_core.dictionaryView(x).?;
     var len = view.len;
     const ks_start = S.keysort_start;
@@ -643,7 +643,7 @@ fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Raising(void
 }
 
 /// One key and its value, a space apart.
-fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Raising(void) {
+fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Error!void {
     try prettyOne(S, kv.key);
     try S.pushByte(' ');
     S.align_col += 1;
@@ -651,7 +651,7 @@ fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Raising(void) {
 }
 
 /// An array or a tuple.
-fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Raising(void) {
+fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Error!void {
     const isarray = repr.checkType(x, repr.Tag.array);
     const arr = args_core.indexedView(x).?;
     const bracketed = !isarray and tuples.isBracketed(tuples.head(arr.ptr));
@@ -695,7 +695,7 @@ fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Raising(void) {
 /// Everything with no structure to walk into, which is what `pp.zig` renders.
 /// The alignment is recovered from how much the buffer grew, since that layer
 /// counts no columns.
-fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
+fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Error!void {
     try S.pushColor(type_colors[@intFromEnum(repr.typeOf(x))]);
     if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
         // Printing a buffer into itself. Reserve the worst case first, then
@@ -707,7 +707,7 @@ fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
         // the escape becomes a report nobody consumes: the blank width is used
         // and the outstanding report kills the process at the next scope
         // boundary. Both functions are in this compilation and `prettyLeaf` is
-        // already `raise.Raising`, so an ordinary import is enough.
+        // already raise-capable, so an ordinary import is enough.
         S.align_col += 1 + try describe.escapeString(S.buffer, S.buffer.slice()[0..@intCast(S.bufstartlen)]);
     } else {
         S.align_col -= @as(i32, @intCast(S.buffer.count));
@@ -718,7 +718,7 @@ fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Raising(void) {
 }
 
 /// Renders `x`, recording it as seen and recursing into a container.
-fn prettyOne(S: *Pretty, x: repr.Value) raise.Raising(void) {
+fn prettyOne(S: *Pretty, x: repr.Value) raise.Error!void {
     // Record the value as seen, unless it is one of the four types that
     // cannot participate in a cycle and so never needs a marker.
     switch (repr.typeOf(x)) {
@@ -751,7 +751,7 @@ fn prettyOne(S: *Pretty, x: repr.Value) raise.Raising(void) {
 /// Renders the `_name` a prototype may define, which is what makes an
 /// object-like table print as `@Name{...}` rather than `@{...}`. A `name` that
 /// is no byte sequence prints nothing.
-fn pushClassName(S: *Pretty, name: repr.Value) raise.Raising(void) {
+fn pushClassName(S: *Pretty, name: repr.Value) raise.Error!void {
     const n = args_core.bytesView(name) orelse return;
     try S.pushColor(class_color);
     try buffers.pushBytes(S.buffer, n);
@@ -760,7 +760,7 @@ fn pushClassName(S: *Pretty, name: repr.Value) raise.Raising(void) {
 }
 
 /// The `...` that both truncations and the depth limit write.
-fn pushEllipsis(S: *Pretty) raise.Raising(void) {
+fn pushEllipsis(S: *Pretty) raise.Error!void {
     try S.pushCstring("...");
     S.align_col += 3;
 }

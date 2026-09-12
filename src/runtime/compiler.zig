@@ -305,7 +305,7 @@ pub fn compile(
     source: repr.Value,
     environment: *tables.Table,
     where: ?strings.String,
-) raise.Raising(CompileResult) {
+) raise.Error!CompileResult {
     return compileLintImpl(source, environment, where, null);
 }
 
@@ -316,7 +316,7 @@ pub fn compileLintImpl(
     environment: *tables.Table,
     where: ?strings.String,
     lints: ?*arrays.Array,
-) raise.Raising(CompileResult) {
+) raise.Error!CompileResult {
     var compiler: Compiler = undefined;
     initCompiler(&compiler, environment, where, lints);
 
@@ -466,7 +466,7 @@ pub fn lint(
     compiler: *Compiler,
     level: LintLevel,
     message: [*:0]const u8,
-) raise.Raising(void) {
+) raise.Error!void {
     if (compiler.lints == null) return;
     try record(compiler, level, strings.cstring(message));
 }
@@ -478,7 +478,7 @@ pub fn nameslot(
     symbol: [*:0]const u8,
     slot: Slot,
     flags: u32,
-) raise.Raising(void) {
+) raise.Error!void {
     if (flags & constants.JANET_DEFFLAG_NO_SHADOWCHECK == 0 and symbol[0] != '_') {
         try shadowLint(compiler, symbol, shadowcheck(compiler, symbol));
     }
@@ -497,7 +497,7 @@ pub fn nameslot(
 }
 
 /// Finishes the definition the current function scope built, and pops it.
-pub fn popFuncdef(compiler: *Compiler) raise.Raising(*functions.FuncDef) {
+pub fn popFuncdef(compiler: *Compiler) raise.Error!*functions.FuncDef {
     const scope = currentScope(compiler);
     const definition = functions.defs.new();
     definition.slotcount = @intCast(scope.ra.max + 1);
@@ -593,7 +593,7 @@ pub fn popFuncdef(compiler: *Compiler) raise.Raising(*functions.FuncDef) {
 }
 
 /// Pops the current scope, releasing its registers and vectors.
-pub fn popscope(compiler: *Compiler) raise.Raising(void) {
+pub fn popscope(compiler: *Compiler) raise.Error!void {
     const old_scope = currentScope(compiler);
     const new_scope = old_scope.parent;
     if (!old_scope.flags.function and !old_scope.flags.unused) if (new_scope) |parent| {
@@ -635,7 +635,7 @@ pub fn popscope(compiler: *Compiler) raise.Raising(void) {
 pub fn popscopeKeepslot(
     compiler: *Compiler,
     return_slot: Slot,
-) raise.Raising(void) {
+) raise.Error!void {
     try popscope(compiler);
     if (return_slot.envindex < 0 and return_slot.index >= 0) if (compiler.scope) |current| {
         current.ra.touch(@intCast(return_slot.index));
@@ -728,7 +728,7 @@ pub fn recordError(compiler: *Compiler, message: ?[*:0]const u8) void {
 
 /// Resolves `symbol` to a slot: a local, a captured environment slot, or a
 /// global binding.
-pub fn resolve(compiler: *Compiler, symbol: [*:0]const u8) raise.Raising(Slot) {
+pub fn resolve(compiler: *Compiler, symbol: [*:0]const u8) raise.Error!Slot {
     var scope = compiler.scope;
     var found_pair: ?*SymPair = null;
     var found_local = true;
@@ -813,7 +813,7 @@ pub fn shadowcheck(compiler: *Compiler, symbol: [*:0]const u8) Shadowing {
 }
 
 /// Compiles `val` for its effect and releases whatever slot it produced.
-pub fn throwaway(options: FormOptions, val: repr.Value) raise.Raising(void) {
+pub fn throwaway(options: FormOptions, val: repr.Value) raise.Error!void {
     const compiler: *Compiler = options.compiler;
     const bytecode_start = compiler.buffer.items.len;
     const source_map_start = compiler.mapbuffer.items.len;
@@ -831,7 +831,7 @@ pub fn toslots(
     compiler: *Compiler,
     values: ?[*]const repr.Value,
     length: usize,
-) raise.Raising(scratch_vector.Vector(Slot)) {
+) raise.Error!scratch_vector.Vector(Slot) {
     var result: scratch_vector.Vector(Slot) = .empty;
     var options = foptsDefault(compiler);
     options.flags.accept_splice = true;
@@ -843,7 +843,7 @@ pub fn toslots(
 
 /// Compiles every key and value of a dictionary into one slot vector,
 /// alternating.
-pub fn toslotskv(compiler: *Compiler, dictionary: repr.Value) raise.Raising(scratch_vector.Vector(Slot)) {
+pub fn toslotskv(compiler: *Compiler, dictionary: repr.Value) raise.Error!scratch_vector.Vector(Slot) {
     var result: scratch_vector.Vector(Slot) = .empty;
     var options = foptsDefault(compiler);
     options.flags.accept_splice = true;
@@ -873,7 +873,7 @@ pub fn toslotskv(compiler: *Compiler, dictionary: repr.Value) raise.Raising(scra
 
 /// Compiles one form into a slot, which is what every special form and every
 /// call recurses through.
-pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Raising(Slot) {
+pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     const previous_mapping = compiler.current_mapping;
     compiler.recursion_guard -= 1;
@@ -965,14 +965,14 @@ fn arityError(
     function: repr.Value,
     expected: i32,
     got: i32,
-) raise.Raising(void) {
+) raise.Error!void {
     const plural: [*]const u8 = if (expected == 1) "" else "s";
     recordError(compiler, try pp_format.formatc(format, .{ function, expected, plural, got }));
 }
 
 /// `compile`: the cfunction, which turns the result into the struct a Janet
 /// program reads.
-fn cfunCompile(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCompile(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"compile"}));
     try args_core.arity(argv, 1, 4);
 
@@ -1037,7 +1037,7 @@ fn compileCall(
     slots: scratch_vector.Vector(Slot),
     function: Slot,
     form: [*]const repr.Value,
-) raise.Raising(Slot) {
+) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     var result: Slot = undefined;
     if (!tryCallOptimizer(options, slots.items, function, &result)) {
@@ -1074,7 +1074,7 @@ fn deinitCompiler(compiler: *Compiler) void {
 
 /// Expands one macro form, or reports that the head is a special form or
 /// neither.
-fn expandMacroOnce(compiler: *Compiler, val: repr.Value) raise.Raising(Expansion) {
+fn expandMacroOnce(compiler: *Compiler, val: repr.Value) raise.Error!Expansion {
     if (!repr.checkType(val, repr.Tag.tuple)) return .done;
     const form = wrap.toTuple(val);
     const length = tuples.head(form).length;
@@ -1137,7 +1137,7 @@ fn lintf(
     level: LintLevel,
     comptime format: [:0]const u8,
     args: anytype,
-) raise.Raising(void) {
+) raise.Error!void {
     if (compiler.lints == null) return;
     try record(compiler, level, try pp_format.formatc(format, args));
 }
@@ -1153,7 +1153,7 @@ fn lookupMissing(
     compiler: *Compiler,
     symbol: [*:0]const u8,
     handler: *functions.Function,
-) raise.Raising(?registry.Binding) {
+) raise.Error!?registry.Binding {
     const definition = handler.def.?;
     if (definition.min_arity > 1 or definition.max_arity < 1) {
         recordError(compiler, strings.cstring("missing symbol lookup handler must take 1 argument"));
@@ -1176,14 +1176,14 @@ fn lookupMissing(
 }
 
 /// Emits the array constructor over the slots already gathered.
-fn makeArray(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
+fn makeArray(options: FormOptions, val: repr.Value) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     const array = wrap.toArray(val);
     return makeValue(options, try toslots(compiler, array.data, @intCast(array.count)), constants.Opcode.make_array);
 }
 
 /// Emits the buffer constructor over the slots already gathered.
-fn makeBuffer(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
+fn makeBuffer(options: FormOptions, val: repr.Value) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     const buffer = wrap.toBuffer(val);
     const argument = value.fromBytes(buffer.slice(), .string);
@@ -1191,13 +1191,13 @@ fn makeBuffer(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
 }
 
 /// Emits the table or struct constructor over the slots already gathered.
-fn makeDictionary(options: FormOptions, val: repr.Value, operation: constants.Opcode) raise.Raising(Slot) {
+fn makeDictionary(options: FormOptions, val: repr.Value, operation: constants.Opcode) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     return makeValue(options, try toslotskv(compiler, val), operation);
 }
 
 /// Emits the tuple constructor over the slots already gathered.
-fn makeTuple(options: FormOptions, val: repr.Value) raise.Raising(Slot) {
+fn makeTuple(options: FormOptions, val: repr.Value) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     const tuple = wrap.toTuple(val);
     return makeValue(options, try toslots(compiler, tuple, tuples.head(tuple).length), constants.Opcode.make_tuple);
@@ -1252,7 +1252,7 @@ fn mallocArray(comptime Element: type, count: usize) ?[*]Element {
 ///
 /// A line or column of -1 means the source had no mapping there, and becomes
 /// nil rather than -1 in the tuple.
-fn record(compiler: *Compiler, level: LintLevel, message: [*:0]const u8) raise.Raising(void) {
+fn record(compiler: *Compiler, level: LintLevel, message: [*:0]const u8) raise.Error!void {
     const payload = tuples.begin(4);
     payload[0] = value.fromBytes(std.mem.span(level.keyword()), .keyword);
     payload[1] = if (compiler.current_mapping.line == -1) wrapNil() else wrap.fromInteger(compiler.current_mapping.line);
@@ -1263,7 +1263,7 @@ fn record(compiler: *Compiler, level: LintLevel, message: [*:0]const u8) raise.R
 
 /// Resolves `symbol` against the environment, asking the `:missing-symbol`
 /// handler where the environment has none.
-fn resolveGlobal(compiler: *Compiler, symbol: [*:0]const u8) raise.Raising(Slot) {
+fn resolveGlobal(compiler: *Compiler, symbol: [*:0]const u8) raise.Error!Slot {
     var binding = registry.resolveExt(compiler.env.?, symbol);
     if (binding.type == .none) {
         const handler = tables.getKeyword(compiler.env.?, "missing-symbol");
@@ -1321,7 +1321,7 @@ fn runMacro(
     compiler: *Compiler,
     form_value: repr.Value,
     macro_value: repr.Value,
-) raise.Raising(?repr.Value) {
+) raise.Error!?repr.Value {
     const form = wrap.toTuple(form_value);
     const macro = wrap.toFunction(macro_value);
     const arity = tuples.head(form).length - 1;
@@ -1359,7 +1359,7 @@ fn runMacro(
 }
 
 /// The four shadowing lints, by what is being shadowed.
-fn shadowLint(compiler: *Compiler, symbol: [*:0]const u8, shadowing: Shadowing) raise.Raising(void) {
+fn shadowLint(compiler: *Compiler, symbol: [*:0]const u8, shadowing: Shadowing) raise.Error!void {
     const name = wrap.fromSymbol(symbol);
     switch (shadowing) {
         .macro => try lintf(compiler, .normal, "binding %q is shadowing a macro", .{name}),
@@ -1409,7 +1409,7 @@ fn validateCall(
     function: Slot,
     original_minimum_arity: i32,
     form: [*]const repr.Value,
-) raise.Raising(void) {
+) raise.Error!void {
     if (!function.flags.constant) return;
     var minimum_arity = original_minimum_arity;
 

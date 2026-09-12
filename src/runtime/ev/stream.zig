@@ -220,7 +220,7 @@ pub const Stream = extern struct {
 // ==========================================================================
 
 /// `(ev/chunk s n &opt buf)`.
-pub fn cfunStreamChunk(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunStreamChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -232,14 +232,14 @@ pub fn cfunStreamChunk(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(:close s)`.
-pub fn cfunStreamClose(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunStreamClose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     try streamClose(try getStream(argv, 0));
     return argv[0];
 }
 
 /// `(ev/read s n &opt buf timeout)`.
-pub fn cfunStreamRead(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunStreamRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -255,7 +255,7 @@ pub fn cfunStreamRead(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(ev/write s bytes &opt timeout)`.
-pub fn cfunStreamWrite(argv: []repr.Value) raise.Raising(repr.Value) {
+pub fn cfunStreamWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_writable);
@@ -271,7 +271,7 @@ pub fn cfunStreamWrite(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// Closes a stream marked `constants.JANET_STREAM_TOCLOSE`, once nothing is
 /// listening on it.
-pub fn checkToClose(s: *Stream) raise.Raising(void) {
+pub fn checkToClose(s: *Stream) raise.Error!void {
     if ((s.flags & stream_toclose != 0) and s.read_fiber == null and s.write_fiber == null) {
         try streamClose(s);
     }
@@ -415,7 +415,7 @@ pub fn makeStream(
     handle: host.Handle,
     flags: u32,
     methods: ?[*]const method_type.CMethod,
-) raise.Raising(*Stream) {
+) raise.Error!*Stream {
     return makeStreamExt(handle, flags, methods, @sizeOf(Stream));
 }
 
@@ -430,7 +430,7 @@ pub fn makeStreamExt(
     flags: u32,
     methods: ?[*]const method_type.CMethod,
     size: usize,
-) raise.Raising(*Stream) {
+) raise.Error!*Stream {
     ev.assert(@src(), size >= @sizeOf(Stream), "bad size");
     const s: *Stream = @ptrCast(@alignCast(abstracts.newBytes(&streamType, size)));
     s.handle = handle;
@@ -464,7 +464,7 @@ pub fn readGeneric(
 }
 
 /// Closes a stream from Janet, which is what `(:close s)` reaches.
-pub fn streamClose(s: *Stream) raise.Raising(void) {
+pub fn streamClose(s: *Stream) raise.Error!void {
     const rf = s.read_fiber;
     const wf = s.write_fiber;
     if (rf) |f| {
@@ -483,7 +483,7 @@ pub fn streamClose(s: *Stream) raise.Raising(void) {
 }
 
 /// Checks that a stream is open and has every capability the caller needs.
-pub fn streamFlags(s: *Stream, flags: u32) raise.Raising(void) {
+pub fn streamFlags(s: *Stream, flags: u32) raise.Error!void {
     if (s.flags & stream_closed != 0) return raise.panic("stream is closed");
     if ((s.flags & flags) != flags) {
         const rmsg = if (flags & stream_readable != 0) "readable " else "";
@@ -539,7 +539,7 @@ pub fn writeGeneric(
 // ==========================================================================
 
 /// `(ev/to-file s)`.
-fn cfunToFile(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunToFile(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const s = try getStream(argv, 0);
     const iof = try getFileForStream(s);
@@ -551,7 +551,7 @@ fn cfunToFile(argv: []repr.Value) raise.Raising(repr.Value) {
 /// needs that. The `NODUPS` optimisation is what lets the unregister be
 /// skipped: a stream nothing has duplicated is the last reference to its file
 /// description, and closing it removes it from the poll set for free.
-fn closeImplHandle(s: *Stream) raise.Raising(void) {
+fn closeImplHandle(s: *Stream) raise.Error!void {
     s.flags |= stream_closed;
     const canclose = s.flags & stream_not_closeable == 0;
     if (windows) {
@@ -574,7 +574,7 @@ fn closeImplHandle(s: *Stream) raise.Raising(void) {
 }
 
 /// What the loop calls when a stream a read is waiting on becomes ready.
-fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(void) {
+fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Error!void {
     const s: *Stream = fiber.ev_stream.?;
     const state: *StateRead = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
@@ -594,7 +594,7 @@ fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(vo
 }
 
 /// What the loop calls when a stream a write is waiting on becomes ready.
-fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(void) {
+fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Error!void {
     const s: *Stream = fiber.ev_stream.?;
     const state: *StateWrite = @ptrCast(@alignCast(fiber.ev_state));
     switch (event) {
@@ -623,7 +623,7 @@ fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Raising(v
 
 /// A blocking `core/file` over the same descriptor, for code that cannot wait
 /// on the event loop. The handle is duplicated, so the two are independent.
-fn getFileForStream(s: *Stream) raise.Raising(?*io_core.File) {
+fn getFileForStream(s: *Stream) raise.Error!?*io_core.File {
     var flags: i32 = 0;
     var fmt = [_]u8{ 0, 0, 0, 0 };
     var index: usize = 0;
@@ -674,7 +674,7 @@ fn getFileForStream(s: *Stream) raise.Raising(?*io_core.File) {
 }
 
 /// The stream argument at `argv[n]`, or a raise where it is not a stream.
-fn getStream(argv: []const repr.Value, n: usize) raise.Raising(*Stream) {
+fn getStream(argv: []const repr.Value, n: usize) raise.Error!*Stream {
     return try args_core.getAbstract(Stream, argv, n, &streamType);
 }
 
@@ -692,7 +692,7 @@ inline fn nextPipeSerial() u32 {
 }
 
 /// The POSIX read, straight into the caller's buffer.
-fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Raising(void) {
+fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
     switch (event) {
         constants.AsyncEvent.err => {
             if (state.bytes_read != 0) {
@@ -778,7 +778,7 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
 }
 
 /// The completion-port read, which copies through a fixed buffer.
-fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Raising(void) {
+fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
     var start_transfer = false;
     switch (event) {
         constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
@@ -870,7 +870,7 @@ fn streamGC(stream: *Stream, _: usize) void {
 }
 
 /// The method lookup behind `(:read s ...)` and its siblings.
-fn streamGetter(stream: *Stream, key: repr.Value) raise.Raising(?repr.Value) {
+fn streamGetter(stream: *Stream, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(@alignCast(stream.methods)));
 }
 
@@ -881,7 +881,7 @@ fn streamMark(stream: *Stream, _: usize) void {
 }
 
 /// Writes the descriptor and the flags, which only an unsafe marshal may do.
-fn streamMarshal(s: *Stream, m: *abi.Marshal) raise.Raising(void) {
+fn streamMarshal(s: *Stream, m: *abi.Marshal) raise.Error!void {
     if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
@@ -920,7 +920,7 @@ fn streamMarshal(s: *Stream, m: *abi.Marshal) raise.Raising(void) {
 }
 
 /// The iteration order behind `next` and `(keys s)`.
-fn streamNext(stream: *Stream, key: repr.Value) raise.Raising(repr.Value) {
+fn streamNext(stream: *Stream, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(@alignCast(stream.methods)), key);
 }
 
@@ -929,7 +929,7 @@ fn streamNext(stream: *Stream, key: repr.Value) raise.Raising(repr.Value) {
 /// A `host.Handle` is wider than the `%d` that renders it on Windows, so the
 /// narrowing is written here rather than left to a conversion: away from
 /// Windows the handle is already an `i32` and the truncation is exact.
-fn streamToString(stream: *Stream, render: *abi.Render) raise.Raising(void) {
+fn streamToString(stream: *Stream, render: *abi.Render) raise.Error!void {
     const shown: i32 = if (windows) @truncate(@as(isize, @bitCast(@intFromPtr(stream.handle)))) else stream.handle;
     // The slot takes `abi.Render`, the capability a module author is offered in
     // place of the buffer's layout. This type is the runtime's own and never
@@ -939,7 +939,7 @@ fn streamToString(stream: *Stream, render: *abi.Render) raise.Raising(void) {
 }
 
 /// Reattaches a descriptor read back out of a stream, and registers it.
-fn streamUnmarshal(u: *abi.Unmarshal) raise.Raising(*Stream) {
+fn streamUnmarshal(u: *abi.Unmarshal) raise.Error!*Stream {
     if (marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
@@ -966,7 +966,7 @@ fn streamUnmarshal(u: *abi.Unmarshal) raise.Raising(*Stream) {
 }
 
 /// The POSIX write, straight from the caller's bytes.
-fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Raising(void) {
+fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Error!void {
     switch (event) {
         constants.AsyncEvent.err => {
             try ev.cancel(fiber, value.fromBytes("stream err", .string));
@@ -1032,7 +1032,7 @@ fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.As
 }
 
 /// The completion-port write, which copies through a fixed buffer.
-fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Raising(void) {
+fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Error!void {
     switch (event) {
         constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);

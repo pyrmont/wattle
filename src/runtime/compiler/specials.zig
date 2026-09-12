@@ -124,7 +124,7 @@ fn bindDefinitionLeaf(
     symbol: [*:0]const u8,
     slot: compiler_primitives.Slot,
     attributes: ?*tables.Table,
-) raise.Raising(bool) {
+) raise.Error!bool {
     var entry: ?*tables.Table = null;
     var redef = false;
     if (currentScope(compiler).flags.top) {
@@ -193,7 +193,7 @@ fn bindLeaf(
     slot: compiler_primitives.Slot,
     binding_kind: BindingKind,
     attributes: ?*tables.Table,
-) raise.Raising(bool) {
+) raise.Error!bool {
     return switch (binding_kind) {
         .variable => try bindVariableLeaf(compiler, symbol, slot, attributes),
         .definition => bindDefinitionLeaf(compiler, symbol, slot, attributes),
@@ -207,7 +207,7 @@ fn bindVariableLeaf(
     symbol: [*:0]const u8,
     slot: compiler_primitives.Slot,
     attributes: ?*tables.Table,
-) raise.Raising(bool) {
+) raise.Error!bool {
     if (currentScope(compiler).flags.top) {
         // A top-scope binding is always one `compileBinding` made, and
         // `compileBinding` has already returned on the single path where
@@ -258,7 +258,7 @@ fn buildDestructureHeads(
     options: compiler_primitives.FormOptions,
     lhs: repr.Value,
     rhs: repr.Value,
-) raise.Raising(void) {
+) raise.Error!void {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     const lhs_indexed = repr.checkType(lhs, repr.Tag.tuple) or
         repr.checkType(lhs, repr.Tag.array);
@@ -321,7 +321,7 @@ fn checkJump24(compiler: *compiler_primitives.Compiler, from: i32, to: i32) void
 
 /// Lints a `:macro` tag on a binding in an inner scope, where it has no
 /// effect.
-fn checkMetadataLint(compiler: *compiler_primitives.Compiler, attributes: ?*tables.Table) raise.Raising(void) {
+fn checkMetadataLint(compiler: *compiler_primitives.Compiler, attributes: ?*tables.Table) raise.Error!void {
     if (currentScope(compiler).flags.top) return;
     const table = metadata(attributes) orelse return;
     if (repr.truthy(tableGetKeyword(table, "macro"))) {
@@ -349,7 +349,7 @@ fn cleanupFunctionError(
     destructured_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
     named_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
     message: [*:0]const u8,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     scratch_vector.free(destructured_parameters);
     scratch_vector.free(named_parameters);
     return functionError(compiler, message);
@@ -361,7 +361,7 @@ fn compileBinding(
     original_options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
     binding_kind: BindingKind,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = original_options.compiler;
     const attributes = try handleAttributes(
         compiler,
@@ -420,7 +420,7 @@ fn compileRestDestructure(compiler: *compiler_primitives.Compiler, rhs: compiler
 fn compileSequence(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     var result = nilSlot();
     var suboptions = compiler_primitives.foptsDefault(compiler);
@@ -445,7 +445,7 @@ fn destructure(
     rhs: compiler_primitives.Slot,
     binding_kind: BindingKind,
     attributes: ?*tables.Table,
-) raise.Raising(bool) {
+) raise.Error!bool {
     switch (repr.typeOf(lhs)) {
         repr.Tag.symbol => return try bindLeaf(compiler, wrap.toSymbol(lhs), rhs, binding_kind, attributes),
         repr.Tag.tuple, repr.Tag.array => {
@@ -531,7 +531,7 @@ fn emitInstruction(compiler: *compiler_primitives.Compiler, instruction: u32) vo
 }
 
 /// Records `message`, closes the function scope, and gives back a nil slot.
-fn functionError(compiler: *compiler_primitives.Compiler, message: [*:0]const u8) raise.Raising(compiler_primitives.Slot) {
+fn functionError(compiler: *compiler_primitives.Compiler, message: [*:0]const u8) raise.Error!compiler_primitives.Slot {
     compiler_primitives.cerror(compiler, message);
     try compiler_primitives.popscope(compiler);
     return nilSlot();
@@ -543,7 +543,7 @@ fn handleAttributes(
     compiler: *compiler_primitives.Compiler,
     binding_kind: [*:0]const u8,
     arguments: []const repr.Value,
-) raise.Raising(?*tables.Table) {
+) raise.Error!?*tables.Table {
     if (arguments.len < 2) {
         compiler_primitives.recordError(compiler, try pp_format.formatc("expected at least 2 arguments to %s", .{binding_kind}));
         return null;
@@ -616,7 +616,7 @@ fn nameLocal(
     binding_flags: compiler_primitives.SlotFlags,
     original_slot: compiler_primitives.Slot,
     original_definition_flags: u32,
-) raise.Raising(bool) {
+) raise.Error!bool {
     var slot = original_slot;
     var definition_flags = original_definition_flags;
     var unnamed_register = !slot.flags.named and slot.index > 0 and slot.envindex >= 0;
@@ -642,7 +642,7 @@ fn nameLocal(
 
 /// A fresh one-element array of nil, which is the box a `var` binding at the
 /// top scope is stored in.
-fn newReferenceArray() raise.Raising(*arrays.Array) {
+fn newReferenceArray() raise.Error!*arrays.Array {
     const reference = arrays.new(1);
     try arrays.push(reference, wrap.fromNil());
     return reference;
@@ -663,7 +663,7 @@ fn pushSlot(slots: *scratch_vector.Vector(compiler_primitives.Slot), val: compil
 ///
 /// `depth` is the recursion guard and `original_level` the quasiquote nesting,
 /// which an inner `quasiquote` raises and an `unquote` lowers.
-fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: i32, original_level: i32) raise.Raising(compiler_primitives.Slot) {
+fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: i32, original_level: i32) raise.Error!compiler_primitives.Slot {
     if (depth == 0) {
         compiler_primitives.cerror(options.compiler, "quasiquote too deeply nested");
         return nilSlot();
@@ -744,7 +744,7 @@ fn quoteSlots(options: compiler_primitives.FormOptions, slots: scratch_vector.Ve
 fn specialBreak(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len > 1) {
         compiler_primitives.cerror(compiler, "expected at most 1 argument");
@@ -786,7 +786,7 @@ fn specialBreak(
 fn specialDef(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     return try compileBinding(options, arguments, .definition);
 }
 
@@ -794,7 +794,7 @@ fn specialDef(
 fn specialDo(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     var scope: compiler_primitives.Scope = undefined;
     compiler_primitives.pushScope(&scope, compiler, .{}, "do");
@@ -808,7 +808,7 @@ fn specialDo(
 fn specialFn(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     currentScope(compiler).flags.closure = true;
     var function_scope: compiler_primitives.Scope = undefined;
@@ -1004,7 +1004,7 @@ fn specialFn(
 fn specialIf(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len < 2 or arguments.len > 3) {
         compiler_primitives.cerror(compiler, "expected 2 or 3 arguments to if");
@@ -1091,7 +1091,7 @@ fn specialIf(
 fn specialQuasiquote(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     if (arguments.len != 1) {
         compiler_primitives.cerror(options.compiler, "expected 1 argument to quasiquote");
         return nilSlot();
@@ -1103,7 +1103,7 @@ fn specialQuasiquote(
 fn specialQuote(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     if (arguments.len != 1) {
         compiler_primitives.cerror(options.compiler, "expected 1 argument to quote");
         return nilSlot();
@@ -1115,7 +1115,7 @@ fn specialQuote(
 fn specialSet(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len != 2) {
         compiler_primitives.cerror(compiler, "expected 2 arguments to set");
@@ -1162,7 +1162,7 @@ fn specialSet(
 fn specialSplice(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     if (!options.flags.accept_splice) {
         compiler_primitives.cerror(options.compiler, "splice can only be used in function parameters and data constructors, it has no effect here");
         return nilSlot();
@@ -1181,7 +1181,7 @@ fn specialSplice(
 fn specialUnquote(
     options: compiler_primitives.FormOptions,
     _: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     compiler_primitives.cerror(options.compiler, "cannot use unquote here");
     return nilSlot();
 }
@@ -1190,7 +1190,7 @@ fn specialUnquote(
 fn specialUpscope(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     return compileSequence(options, arguments);
 }
 
@@ -1198,7 +1198,7 @@ fn specialUpscope(
 fn specialVar(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     return try compileBinding(options, arguments, .variable);
 }
 
@@ -1207,7 +1207,7 @@ fn specialVar(
 fn specialWhile(
     options: compiler_primitives.FormOptions,
     arguments: []const repr.Value,
-) raise.Raising(compiler_primitives.Slot) {
+) raise.Error!compiler_primitives.Slot {
     const compiler: *compiler_primitives.Compiler = options.compiler;
     if (arguments.len < 1) {
         compiler_primitives.cerror(compiler, "expected at least 1 argument to while");

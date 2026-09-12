@@ -199,7 +199,7 @@ const windows = builtin.os.tag == .windows;
 /// the concatenation in.
 fn Concat(comptime finish: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             const b = buffers.new(0);
             for (argv) |a| try pp_describe.toStringB(b, a);
             return finish(b);
@@ -230,7 +230,7 @@ const SandboxOption = struct { name: [:0]const u8, flag: vm_lifecycle.Sandbox };
 /// The four type-mask predicates, which differ only in the mask.
 fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Raising(repr.Value) {
+        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 1);
             return wrap.fromBoolean(repr.checkTypes(argv[0], flags));
         }
@@ -243,7 +243,7 @@ fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
 
 /// The core environment, assembled in the bootstrap and unmarshalled in the
 /// runtime. `replacements` is the table to define into.
-pub fn coreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
+pub fn coreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     return if (corefn.bootstrap)
         bootstrapCoreEnv(replacements)
     else
@@ -257,7 +257,7 @@ pub fn coreEnvAbi(replacements: ?*tables.Table) *tables.Table {
 
 /// The forward lookup table an unmarshalled image resolves its symbol
 /// references against.
-pub fn coreLookupTable(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
+pub fn coreLookupTable(replacements: ?*tables.Table) raise.Error!*tables.Table {
     const dict = tables.new(512);
     try loadLibs(dict);
 
@@ -291,7 +291,7 @@ pub fn dobytes(
     len: i32,
     source_path: ?[*:0]const u8,
     out: ?*repr.Value,
-) raise.Raising(c_int) {
+) raise.Error!c_int {
     return dobytesImpl(env, if (bytes) |p| (if (len <= 0) &.{} else p[0..@intCast(len)]) else &.{}, source_path, out);
 }
 
@@ -301,7 +301,7 @@ pub fn dobytesImpl(
     bytes: []const u8,
     source_path: ?[*:0]const u8,
     out: ?*repr.Value,
-) raise.Raising(c_int) {
+) raise.Error!c_int {
     var errflags: c_int = 0;
     var done = false;
     var index: i32 = 0;
@@ -417,7 +417,7 @@ pub fn dostring(
 
 /// Runs a fiber to completion, through the event loop where the build has one,
 /// and reports its final status.
-pub fn loopFiber(fiber: *fibers.Fiber) raise.Raising(c_int) {
+pub fn loopFiber(fiber: *fibers.Fiber) raise.Error!c_int {
     if (has_ev) {
         ev_loop.schedule(fiber, wrap.fromNil());
         try ev_loop.loop();
@@ -464,7 +464,7 @@ fn bitsText(buf: *[16]u8, bits: c_uint) [*:0]const u8 {
 
 /// Assembled from scratch, in the image generator. Everything here ends up in
 /// the image, so this is the only place these thirty-odd bindings exist.
-fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
+fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     const env: *tables.Table = replacements orelse tables.new(0);
 
     quickAsmDef(env, .{ .tag = constants.JANET_FUN_CMP }, "cmp", 2, 2, 2, 2, &opOnly(constants.Opcode.compare.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cmp x y)\n\n" ++
@@ -620,7 +620,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
 }
 
 /// `(array & xs)`.
-fn cfunArray(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunArray(argv: []repr.Value) raise.Error!repr.Value {
     const array = arrays.new(argv.len);
     array.count = argv.len;
     @memcpy(array.reserved()[0..argv.len], argv);
@@ -628,13 +628,13 @@ fn cfunArray(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(int? x)`.
-fn cfunCheckInt(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCheckInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(args_core.checkint(argv[0]));
 }
 
 /// `(nat? x)`.
-fn cfunCheckNat(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunCheckNat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (!args_core.checkint(argv[0])) return wrap.fromFalse();
     return wrap.fromBoolean(wrap.toInteger(argv[0]) >= 0);
@@ -642,14 +642,14 @@ fn cfunCheckNat(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(describe x)`, which cannot fail on its own account and so declares no
 /// raise.
-fn cfunDescribe(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDescribe(argv: []repr.Value) raise.Error!repr.Value {
     const b = buffers.new(0);
     for (argv) |a| try pp_describe.descriptionB(b, a);
     return value.fromBytes(b.slice(), .string);
 }
 
 /// `(dyn key &opt default)`.
-fn cfunDyn(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunDyn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const env = vm_state.current().fiber.?.env;
     const val = if (env) |dyns| tables.get(dyns, argv[0]) else wrap.fromNil();
@@ -658,7 +658,7 @@ fn cfunDyn(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(module/expand-path path template)`.
-fn cfunExpandPath(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const input: [*:0]const u8 = @ptrCast(try args_core.getCString(argv, 0));
     const template: [*:0]const u8 = @ptrCast(try args_core.getCString(argv, 1));
@@ -738,20 +738,20 @@ fn cfunExpandPath(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(gccollect)`.
-fn cfunGccollect(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGccollect(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
     gc_mark.collect();
     return wrap.fromNil();
 }
 
 /// `(gcinterval)`.
-fn cfunGcinterval(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGcinterval(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(@floatFromInt(vm_state.current().gc.interval));
 }
 
 /// `(gcsetinterval interval)`.
-fn cfunGcsetinterval(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGcsetinterval(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const s = try args_core.getSize(argv, 0);
     // Limited to 48 bits, and only where a size is wider than that.
@@ -761,13 +761,13 @@ fn cfunGcsetinterval(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(gensym)`.
-fn cfunGensym(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGensym(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromSymbol(symbols.gen());
 }
 
 /// `(getline &opt prompt buf env)`.
-fn cfunGetline(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGetline(argv: []repr.Value) raise.Error!repr.Value {
     const in = io_core.dynfile("in", stdio.in());
     const out = io_core.dynfile("out", stdio.out());
     try args_core.arity(argv, 0, 3);
@@ -788,7 +788,7 @@ fn cfunGetline(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(getproto x)`.
-fn cfunGetproto(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunGetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], repr.Tag.table)) {
         const t = wrap.toTable(argv[0]);
@@ -803,19 +803,19 @@ fn cfunGetproto(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(hash x)`.
-fn cfunHash(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunHash(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromNumber(@floatFromInt(order.hash(argv[0])));
 }
 
 /// `(abstract? x)`.
-fn cfunIsAbstract(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunIsAbstract(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(repr.checkType(argv[0], repr.Tag.abstract));
 }
 
 /// `(memcmp a b &opt len offset-a offset-b)`.
-fn cfunMemcmp(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
     const a = try args_core.getBytes(argv, 0);
     const b = try args_core.getBytes(argv, 1);
@@ -841,7 +841,7 @@ fn cfunMemcmp(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(native path &opt env)`: loads a `.so` and runs its `_janet_init`.
-fn cfunNative(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNative(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const argv0 = argv[0];
     const path = try args_core.getString(argv, 0);
@@ -860,7 +860,7 @@ fn cfunNative(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(range start &opt end step)`.
-fn cfunRange(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRange(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     var start: f64 = 0;
     var stop: f64 = 0;
@@ -901,7 +901,7 @@ fn cfunRange(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(sandbox & flags)`, with each keyword looked up in `sandbox_options`.
-fn cfunSandbox(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSandbox(argv: []repr.Value) raise.Error!repr.Value {
     var flags: vm_lifecycle.Sandbox = .{};
     for (0..argv.len) |i| {
         const kw = try args_core.getKeyword(argv, i);
@@ -920,7 +920,7 @@ fn cfunSandbox(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(scan-number str &opt base)`.
-fn cfunScanNumber(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunScanNumber(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
     const base = try args_core.optInteger(argv, 1, 0);
@@ -933,7 +933,7 @@ fn cfunScanNumber(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(setdyn key value)`.
-fn cfunSetdyn(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSetdyn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const fiber = vm_state.currentFiber();
     const dyns = fiber.env orelse made: {
@@ -947,7 +947,7 @@ fn cfunSetdyn(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `(signal what &opt payload)`, where `what` is a user signal number or a
 /// keyword from `utils.signalNames`.
-fn cfunSignal(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSignal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const payload = if (argv.len == 2) argv[1] else wrap.fromNil();
     if (args_core.checkint(argv[0])) {
@@ -972,7 +972,7 @@ fn cfunSignal(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(slice x &opt start end)`.
-fn cfunSlice(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
     if (args_core.bytesView(argv[0])) |bytes| {
         const range = try args_core.getSlice(argv);
         return value.fromBytes(bytes[@intCast(range.start)..@intCast(range.end)], .string);
@@ -985,7 +985,7 @@ fn cfunSlice(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(struct & kvs)`.
-fn cfunStruct(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunStruct(argv: []repr.Value) raise.Error!repr.Value {
     if (argv.len & 1 != 0) return raise.panic("expected even number of arguments");
     const st = structs.begin(argv.len >> 1);
     var i: usize = 0;
@@ -996,7 +996,7 @@ fn cfunStruct(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(table & kvs)`.
-fn cfunTable(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTable(argv: []repr.Value) raise.Error!repr.Value {
     if (argv.len & 1 != 0) return raise.panic("expected even number of arguments");
     const table = tables.new(argv.len >> 1);
     var i: usize = 0;
@@ -1007,7 +1007,7 @@ fn cfunTable(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(trace f)`.
-fn cfunTrace(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTrace(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
     functions.setTraced(func, true);
@@ -1015,12 +1015,12 @@ fn cfunTrace(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(tuple & xs)`.
-fn cfunTuple(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTuple(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(tuples.newFrom(argv));
 }
 
 /// `(type x)`.
-fn cfunType(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunType(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const t = repr.typeOf(argv[0]);
     if (t == .abstract) {
@@ -1030,7 +1030,7 @@ fn cfunType(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(untrace f)`.
-fn cfunUntrace(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunUntrace(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
     functions.setTraced(func, false);
@@ -1076,7 +1076,7 @@ fn configMismatch(
 
 /// The string a dynamic binding names, or `dflt` where the binding is absent.
 /// An embedded NUL is a raise, since the result is handed on as a C string.
-fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Raising([*:0]const u8) {
+fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Error![*:0]const u8 {
     const x = vm_state.dyn(name);
     if (repr.checkType(x, repr.Tag.nil)) return dflt;
     if (!repr.checkType(x, repr.Tag.string)) {
@@ -1093,7 +1093,7 @@ fn dynCString(name: [*:0]const u8, dflt: [*:0]const u8) raise.Raising([*:0]const
 /// A variadic `(dyn :err)` write. Zig cannot define a C variadic on every
 /// target this builds for, but calling one is ordinary, so the three lines are
 /// written out here; `ev.zig` and `debug.zig` have them for the same reason.
-inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Raising(void) {
+inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Error!void {
     // `pp/format.dynprintf` can raise: `(dyn :err)` may be a Janet function,
     // and calling it can. Every caller here is raising, so the raise is
     // returned.
@@ -1123,7 +1123,7 @@ fn finishSymbol(b: *buffers.Buffer) repr.Value {
 /// Unmarshalled from the image, in the runtime. Memoized in the VM's
 /// `core_env`, which is what makes the replacements argument meaningful only
 /// on the first call.
-fn imageCoreEnv(replacements: ?*tables.Table) raise.Raising(*tables.Table) {
+fn imageCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     if (vm_state.current().core_env) |memoized| return memoized;
 
     const dict = try coreLookupTable(replacements);
@@ -1175,7 +1175,7 @@ inline fn isPathSep(ch: u8) bool {
 
 /// Registers every subsystem's `lib*` into `env`, skipping the ones this
 /// build has no code for.
-fn loadLibs(env: *tables.Table) raise.Raising(void) {
+fn loadLibs(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("native", &cfunNative, @src(), "(native path &opt env)", "Load a native module from the given path. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
@@ -1395,7 +1395,7 @@ inline fn matches(p: [*]const u8, comptime literal: [:0]const u8) bool {
 /// order, and the first difference is a refusal rather than a load. Janet's
 /// own version is reported in a refusal and is not compared, so a module built
 /// against one release loads into another whose interface is the same.
-fn native(name: [*:0]const u8, err: *?strings.String) raise.Raising(ModuleEntry) {
+fn native(name: [*:0]const u8, err: *?strings.String) raise.Error!ModuleEntry {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"dynamic_modules"}));
     const processed_name = utils.getProcessedName(name);
     const lib = clib.load(@ptrCast(processed_name));

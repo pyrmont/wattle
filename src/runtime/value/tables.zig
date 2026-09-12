@@ -40,7 +40,7 @@
 //!
 //! ## The cfunction surface
 //!
-//! Each `cfunTable*` is a `raise.Raising(repr.Value)` and takes its raise out
+//! Each `cfunTable*` is a `raise.Error!repr.Value` and takes its raise out
 //! with `try`; nothing in them is stranded across a call that can raise.
 
 // ==========================================================================
@@ -436,7 +436,7 @@ pub fn weakv(capacity: usize) *Table {
 // ==========================================================================
 
 /// `table/clear`: every pair removed, the capacity and the prototype kept.
-fn cfunTableClear(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableClear(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const table = try args_core.getTable(argv, 0);
     clear(table);
@@ -444,32 +444,32 @@ fn cfunTableClear(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `table/clone`: a copy, bucket array and all.
-fn cfunTableClone(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableClone(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(clone(try args_core.getTable(argv, 0)));
 }
 
 /// `table/getproto`: the prototype, or nil where there is none.
-fn cfunTableGetproto(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableGetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const t = try args_core.getTable(argv, 0);
     return if (t.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
 }
 
 /// `table/new`: an empty table with capacity reserved.
-fn cfunTableNew(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(new(@intCast(try args_core.getNat(argv, 0))));
 }
 
 /// `table/proto-flatten`: the prototype chain collapsed into one table.
-fn cfunTableProtoFlatten(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableProtoFlatten(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(protoFlatten(try args_core.getTable(argv, 0)));
 }
 
 /// `table/rawget`: a lookup that does not follow the prototype chain.
-fn cfunTableRawget(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableRawget(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return rawget(try args_core.getTable(argv, 0), argv[1]);
 }
@@ -479,7 +479,7 @@ fn cfunTableRawget(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The second argument is tested before it is fetched rather than going
 /// through `args.optTable`, because that would build an empty table for the
 /// default where a nil has to clear the prototype instead.
-fn cfunTableSetproto(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableSetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const table = try args_core.getTable(argv, 0);
     var proto: ?*Table = null;
@@ -490,7 +490,7 @@ fn cfunTableSetproto(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `table/to-struct`: the pairs frozen, with the struct's prototype taken as a
 /// separate argument.
-fn cfunTableTostruct(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableTostruct(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const t = try args_core.getTable(argv, 0);
     const proto = try args_core.optStruct(argv, 1, null);
@@ -500,19 +500,19 @@ fn cfunTableTostruct(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `table/weak`: `table/new` with weak keys and weak values.
-fn cfunTableWeak(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableWeak(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakkv(@intCast(try args_core.getNat(argv, 0))));
 }
 
 /// `table/weak-keys`: `table/new` with weak keys and strong values.
-fn cfunTableWeakKeys(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableWeakKeys(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakk(@intCast(try args_core.getNat(argv, 0))));
 }
 
 /// `table/weak-values`: `table/new` with strong keys and weak values.
-fn cfunTableWeakValues(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunTableWeakValues(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakv(@intCast(try args_core.getNat(argv, 0))));
 }

@@ -387,7 +387,7 @@ pub fn defVarSm(
     doc: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
     source_line: i32,
-) raise.Raising(void) {
+) raise.Error!void {
     const array = arrays.new(1);
     const subt = tables.new(2);
     try arrays.push(array, val);
@@ -430,7 +430,7 @@ pub fn register(name: ?[*:0]const u8, cfun: abi.CFunction) void {
 /// effect. Registering a different type under a name already taken raises,
 /// because the name is what a marshalled abstract includes and one name
 /// resolving to two types would make the stream ambiguous.
-pub fn registerAbstractType(at: *const abi.AbstractType) raise.Raising(void) {
+pub fn registerAbstractType(at: *const abi.AbstractType) raise.Error!void {
     checkPointerAlign(at);
     const sym = value.fromBytes(at.name, .symbol);
     const check = tables.get(vm_state.current().abstract_registry.?, sym);
@@ -535,7 +535,7 @@ pub fn textSubstitution(
     subst: *repr.Value,
     bytes: []const u8,
     extra_argv: ?*arrays.Array,
-) raise.Raising(abi.ByteView) {
+) raise.Error!abi.ByteView {
     const extra: []const repr.Value = if (extra_argv) |array| array.slice() else &.{};
     const extra_argc: i32 = @intCast(extra.len);
     const value_type = repr.typeOf(subst.*);

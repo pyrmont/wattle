@@ -234,11 +234,11 @@ const inotify = struct {
         if (values.len != 16) @compileError("the inotify table is not whole");
     }
 
-    fn decode(options: []const repr.Value) raise.Raising(u32) {
+    fn decode(options: []const repr.Value) raise.Error!u32 {
         return decodeFlags(options, .linux, &values, "linux");
     }
 
-    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Error!void {
         const fd = c.retryIntr(h.inotify_init1, .{h.IN_NONBLOCK | h.IN_CLOEXEC});
         if (fd == -1) return raise.panicv(ev_stream.evLasterr());
         watcher.watch_descriptors = tables.new(0);
@@ -248,7 +248,7 @@ const inotify = struct {
         watcher.stream = try ev_loop.makeStream(fd, stream_readable, null);
     }
 
-    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Error!void {
         const stream = watcher.stream orelse return raise.panic("watcher closed");
         const result = c.retryIntr(h.inotify_add_watch, .{ stream.handle, path, flags });
         if (result == -1) return raise.panicv(ev_stream.evLasterr());
@@ -258,7 +258,7 @@ const inotify = struct {
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
 
-    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Error!void {
         const stream = watcher.stream orelse return raise.panic("watcher closed");
         const pathv = value.fromBytes(std.mem.span(path), .string);
         const check = tables.get(watcher.watch_descriptors.?, pathv);
@@ -276,7 +276,7 @@ const inotify = struct {
     /// here raises: the event loop calls it
     /// with no protected scope of its own, and every failure is reported by
     /// scheduling or cancelling the waiting fiber.
-    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
         const stream = fiber.ev_stream.?;
         const watcher: *Watcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(fiber.ev_state))).*);
         var buf: [1024]u8 = undefined;
@@ -361,7 +361,7 @@ const inotify = struct {
         }
     }
 
-    fn listen(watcher: *Watcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Error!void {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const thunk = functions.thunkDelay(wrap.fromNil());
@@ -376,7 +376,7 @@ const inotify = struct {
         gc_alloc.gcroot(wrap.fromAbstract(watcher));
     }
 
-    fn unlisten(watcher: *Watcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Error!void {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
         try ev_loop.streamClose(watcher.stream.?);
@@ -449,11 +449,11 @@ const kqueue = struct {
         return wrap.fromInteger(@as(i32, @bitCast(@as(u32, @truncate(ident)))));
     }
 
-    fn decode(options: []const repr.Value) raise.Raising(u32) {
+    fn decode(options: []const repr.Value) raise.Error!u32 {
         return decodeFlags(options, .kqueue, &values, "bsd");
     }
 
-    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Error!void {
         // Unchecked: a failed `kqueue()` becomes a stream over descriptor -1
         // rather than a raise, and that is what a program sees.
         const kq = h.kqueue();
@@ -466,7 +466,7 @@ const kqueue = struct {
         try ev_loop.levelTriggeredStream(watcher.stream.?);
     }
 
-    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Error!void {
         const stream = watcher.stream orelse return raise.panic("watcher closed");
         const kq = stream.handle;
         const file_fd = c.retryIntr(h.open, .{ path, h.O_RDONLY });
@@ -488,7 +488,7 @@ const kqueue = struct {
         tables.put(watcher.watch_descriptors.?, wd, name);
     }
 
-    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Error!void {
         if (watcher.stream == null) return raise.panic("watcher closed");
         const pathv = value.fromBytes(std.mem.span(path), .string);
         const check = tables.get(watcher.watch_descriptors.?, pathv);
@@ -504,7 +504,7 @@ const kqueue = struct {
         tables.put(watcher.watch_descriptors.?, wrap.fromInteger(wd), wrap.fromNil());
     }
 
-    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
         const stream = fiber.ev_stream.?;
         const state: *State = @ptrCast(@alignCast(fiber.ev_state));
         const watcher = state.watcher;
@@ -564,7 +564,7 @@ const kqueue = struct {
         }
     }
 
-    fn listen(watcher: *Watcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Error!void {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const thunk = functions.thunkDelay(wrap.fromNil());
@@ -581,7 +581,7 @@ const kqueue = struct {
     /// closing the kqueue leaves the watches registered against nothing, and
     /// the watcher is not usable afterwards, since `listen` refuses it.
     /// Leaving them open would leak one descriptor per `filewatch/add`.
-    fn unlisten(watcher: *Watcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Error!void {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
         closeWatchedFds(watcher);
@@ -623,37 +623,37 @@ const kqueue = struct {
 const unsupported = struct {
     const message = "filewatch not supported on this platform";
 
-    fn decode(options: []const repr.Value) raise.Raising(u32) {
+    fn decode(options: []const repr.Value) raise.Error!u32 {
         _ = options;
         return 0;
     }
 
-    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Error!void {
         _ = watcher;
         _ = channel;
         _ = default_flags;
         return raise.panic(message);
     }
 
-    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Error!void {
         _ = watcher;
         _ = path;
         _ = flags;
         return raise.panic(message);
     }
 
-    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Error!void {
         _ = watcher;
         _ = path;
         return raise.panic(message);
     }
 
-    fn listen(watcher: *Watcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Error!void {
         _ = watcher;
         return raise.panic(message);
     }
 
-    fn unlisten(watcher: *Watcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Error!void {
         _ = watcher;
         return raise.panic(message);
     }
@@ -725,18 +725,18 @@ const win = struct {
         buf: [info_padding / @sizeOf(u64)]u64,
     };
 
-    fn decode(options: []const repr.Value) raise.Raising(u32) {
+    fn decode(options: []const repr.Value) raise.Error!u32 {
         return decodeFlags(options, .windows, &values, "windows filewatch");
     }
 
-    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Raising(void) {
+    fn init(watcher: *Watcher, channel: ?*ev_channel.Channel, default_flags: u32) raise.Error!void {
         watcher.watch_descriptors = tables.new(0);
         watcher.channel = channel;
         watcher.default_flags = default_flags;
         watcher.is_watching = 0;
     }
 
-    fn readDirChanges(ow: *OverlappedWatch) raise.Raising(void) {
+    fn readDirChanges(ow: *OverlappedWatch) raise.Error!void {
         const result = h.ReadDirectoryChangesW(
             ow.stream.?.handle,
             @ptrCast(&ow.buf),
@@ -750,7 +750,7 @@ const win = struct {
         if (result == 0) return raise.panicv(ev_stream.evLasterr());
     }
 
-    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Raising(void) {
+    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
         const ow: *OverlappedWatch = @ptrCast(@alignCast(fiber.ev_state));
         const watcher = ow.watcher;
         switch (event) {
@@ -812,7 +812,7 @@ const win = struct {
         }
     }
 
-    fn startListening(ow: *OverlappedWatch) raise.Raising(void) {
+    fn startListening(ow: *OverlappedWatch) raise.Error!void {
         try readDirChanges(ow);
         const stream = ow.stream;
         const thunk = functions.thunkDelay(wrap.fromNil());
@@ -826,7 +826,7 @@ const win = struct {
         try ev_loop.asyncStartFiber(fiber, stream.?, constants.AsyncMode.reading, &callbackRead, ow);
     }
 
-    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Raising(void) {
+    fn add(watcher: *Watcher, path: [*:0]const u8, flags: u32) raise.Error!void {
         const handle = h.CreateFileA(
             path,
             h.FILE_LIST_DIRECTORY | h.GENERIC_READ,
@@ -855,7 +855,7 @@ const win = struct {
         if (watcher.is_watching != 0) try startListening(ow);
     }
 
-    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Raising(void) {
+    fn remove(watcher: *Watcher, path: [*:0]const u8) raise.Error!void {
         const pathv = value.fromBytes(std.mem.span(path), .string);
         const streamv = tables.get(watcher.watch_descriptors.?, pathv);
         if (repr.checkType(streamv, repr.Tag.nil)) {
@@ -883,7 +883,7 @@ const win = struct {
         }
     }
 
-    fn listen(watcher: *Watcher) raise.Raising(void) {
+    fn listen(watcher: *Watcher) raise.Error!void {
         if (watcher.is_watching != 0) return raise.panic("already watching");
         watcher.is_watching = 1;
         const table = watcher.watch_descriptors.?;
@@ -899,8 +899,8 @@ const win = struct {
     /// may not have.
     fn eachWatchRaising(
         watcher: *Watcher,
-        comptime body: fn (*OverlappedWatch) raise.Raising(void),
-    ) raise.Raising(void) {
+        comptime body: fn (*OverlappedWatch) raise.Error!void,
+    ) raise.Error!void {
         const table = watcher.watch_descriptors.?;
         for (0..table.capacity) |i| {
             const kv = &table.slots()[i];
@@ -909,11 +909,11 @@ const win = struct {
         }
     }
 
-    fn closeStream(ow: *OverlappedWatch) raise.Raising(void) {
+    fn closeStream(ow: *OverlappedWatch) raise.Error!void {
         try ev_loop.streamClose(ow.stream.?);
     }
 
-    fn unlisten(watcher: *Watcher) raise.Raising(void) {
+    fn unlisten(watcher: *Watcher) raise.Error!void {
         if (watcher.is_watching == 0) return;
         watcher.is_watching = 0;
         try eachWatchRaising(watcher, closeStream);
@@ -1096,7 +1096,7 @@ fn assertTableIsWhole() void {
 }
 
 /// `(filewatch/add watcher path & flags)`.
-fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAdd(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     // The same refusal `filewatch/listen` makes, so that the three calls give
@@ -1109,7 +1109,7 @@ fn cfunAdd(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(filewatch/listen watcher)`.
-fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunListen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     // A closed watcher cannot listen. `filewatch/unlisten` closes the
@@ -1124,7 +1124,7 @@ fn cfunListen(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(filewatch/new channel & default-flags)`.
-fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunMake(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, -1);
     const channel = try ev_loop.getChannel(argv, 0);
@@ -1135,7 +1135,7 @@ fn cfunMake(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(filewatch/remove watcher path)`.
-fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunRemove(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
@@ -1146,7 +1146,7 @@ fn cfunRemove(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `(filewatch/unlisten watcher)`.
-fn cfunUnlisten(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunUnlisten(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     try be.unlisten(watcher);
@@ -1164,7 +1164,7 @@ fn decodeFlags(
     platform: Platform,
     values: []const u32,
     comptime what: [*:0]const u8,
-) raise.Raising(u32) {
+) raise.Error!u32 {
     var mask: u32 = 0;
     for (options) |opt| {
         if (!repr.checkType(opt, repr.Tag.keyword)) {

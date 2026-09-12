@@ -40,7 +40,7 @@
 //! ## The cfunction surface
 //!
 //! A published `CFunction` has no error channel in its signature, so the
-//! `cfunBuffer*` functions deliver a raise through `raise.Raising`. Nothing in
+//! `cfunBuffer*` functions deliver a raise through `raise.Error!`. Nothing in
 //! them is stranded across a call that can raise, which for a growable
 //! container means in particular that no local caches `data` across an
 //! `ensure`: a reallocation invalidates it whether or not anything raises.
@@ -142,7 +142,7 @@ pub const Buffer = struct {
 /// Called before every reallocation of a buffer payload and never after one.
 /// The callers are `ensure`, `extra` and `cfunBufferTrim`, plus
 /// `test/buffer_array.zig`, which reaches it by import.
-pub fn canRealloc(buffer: *Buffer) raise.Raising(void) {
+pub fn canRealloc(buffer: *Buffer) raise.Error!void {
     if (isForeign(buffer)) {
         return raise.panic("buffer cannot reallocate foreign memory");
     }
@@ -164,7 +164,7 @@ pub fn deinit(buffer: *Buffer) void {
 /// The product is computed in 64 bits and clamped at `maxInt(i32)`, which is
 /// the width a marshalled buffer records. `growth` is asserted positive rather
 /// than checked, because it is never caller-supplied; the header says why.
-pub fn ensure(buffer: *Buffer, capacity_in: usize, growth: i32) raise.Raising(void) {
+pub fn ensure(buffer: *Buffer, capacity_in: usize, growth: i32) raise.Error!void {
     const old = buffer.data;
     if (capacity_in <= buffer.capacity) return;
     try canRealloc(buffer);
@@ -183,7 +183,7 @@ pub fn ensure(buffer: *Buffer, capacity_in: usize, growth: i32) raise.Raising(vo
 ///
 /// The overflow check is the first statement, before any allocation, which is
 /// what makes the panic safe to raise through this frame.
-pub fn extra(buffer: *Buffer, n: usize) raise.Raising(void) {
+pub fn extra(buffer: *Buffer, n: usize) raise.Error!void {
     const sum = @as(i64, @intCast(n)) + @as(i64, @intCast(buffer.count));
     if (sum > std.math.maxInt(i32)) return raise.panic("buffer overflow");
     const new_size: usize = @intCast(sum);
@@ -289,7 +289,7 @@ pub fn new(capacity: usize) *Buffer {
 /// `arrays.newFrom` is the same constructor for the other mutable sequence,
 /// and this raises where that does not: `pushBytes` grows through `extra`,
 /// which is where a length no allocation could satisfy is refused.
-pub fn newFrom(bytes: []const u8) raise.Raising(*Buffer) {
+pub fn newFrom(bytes: []const u8) raise.Error!*Buffer {
     const buffer = new(bytes.len);
     try pushBytes(buffer, bytes);
     return buffer;
@@ -300,7 +300,7 @@ pub fn newFrom(bytes: []const u8) raise.Raising(*Buffer) {
 /// `memory` is the payload, `capacity` its size and `count` how much of it is
 /// live. The result is collectable but its payload is not: the foreign flag
 /// makes `deinit` and every growth path leave the pointer alone.
-pub fn pointerUnsafe(memory: ?*anyopaque, capacity: usize, count: usize) raise.Raising(*Buffer) {
+pub fn pointerUnsafe(memory: ?*anyopaque, capacity: usize, count: usize) raise.Error!*Buffer {
     if (capacity < count) return raise.panic("capacity < count");
     const buffer = gc_alloc.gcalloc(Buffer, .buffer);
     buffer.gc.flags.own |= own_foreign;
@@ -311,7 +311,7 @@ pub fn pointerUnsafe(memory: ?*anyopaque, capacity: usize, count: usize) raise.R
 }
 
 /// Appends `bytes` to `buffer`.
-pub fn pushBytes(buffer: *Buffer, bytes: []const u8) raise.Raising(void) {
+pub fn pushBytes(buffer: *Buffer, bytes: []const u8) raise.Error!void {
     if (0 == bytes.len) return;
     try extra(buffer, @intCast(bytes.len));
     _ = c.memcpy(buffer.data.? + @as(usize, @intCast(buffer.count)), bytes.ptr, bytes.len);
@@ -324,7 +324,7 @@ pub fn pushBytes(buffer: *Buffer, bytes: []const u8) raise.Raising(void) {
 /// This is the module boundary's form, for the reason `arrays.pushChecked`
 /// gives: a `*Buffer` does not cross to an author, so a module names a buffer
 /// by its `Value` and the tag test is here.
-pub fn pushBytesChecked(v: repr.Value, bytes: []const u8) raise.Raising(void) {
+pub fn pushBytesChecked(v: repr.Value, bytes: []const u8) raise.Error!void {
     if (!repr.checkType(v, repr.Tag.buffer)) {
         return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.one(repr.Tag.buffer), v });
     }
@@ -332,7 +332,7 @@ pub fn pushBytesChecked(v: repr.Value, bytes: []const u8) raise.Raising(void) {
 }
 
 /// Appends a NUL-terminated string to `buffer`, measuring it with `strlen`.
-pub fn pushCString(buffer: *Buffer, cstring: [*:0]const u8) raise.Raising(void) {
+pub fn pushCString(buffer: *Buffer, cstring: [*:0]const u8) raise.Error!void {
     return pushBytes(buffer, cstring[0..c.strlen(cstring)]);
 }
 
@@ -343,13 +343,13 @@ pub fn pushCstringAbi(buffer: *Buffer, cstring: [*:0]const u8) void {
 }
 
 /// Appends a Janet string to `buffer`, taking its length from its head.
-pub fn pushString(buffer: *Buffer, string: [*]const u8) raise.Raising(void) {
+pub fn pushString(buffer: *Buffer, string: [*]const u8) raise.Error!void {
     return pushBytes(buffer, string[0..stringLength(string)]);
 }
 
 /// The three multi-byte pushes write little-endian regardless of host order.
 /// Each shifts rather than copying the host's bytes.
-pub fn pushU16(buffer: *Buffer, x: u16) raise.Raising(void) {
+pub fn pushU16(buffer: *Buffer, x: u16) raise.Error!void {
     try extra(buffer, 2);
     const room = buffer.spare();
     room[0] = @truncate(x);
@@ -357,7 +357,7 @@ pub fn pushU16(buffer: *Buffer, x: u16) raise.Raising(void) {
     buffer.count += 2;
 }
 
-pub fn pushU32(buffer: *Buffer, x: u32) raise.Raising(void) {
+pub fn pushU32(buffer: *Buffer, x: u32) raise.Error!void {
     try extra(buffer, 4);
     const room = buffer.spare();
     inline for (0..4) |i| {
@@ -366,7 +366,7 @@ pub fn pushU32(buffer: *Buffer, x: u32) raise.Raising(void) {
     buffer.count += 4;
 }
 
-pub fn pushU64(buffer: *Buffer, x: u64) raise.Raising(void) {
+pub fn pushU64(buffer: *Buffer, x: u64) raise.Error!void {
     try extra(buffer, 8);
     const room = buffer.spare();
     inline for (0..8) |i| {
@@ -376,14 +376,14 @@ pub fn pushU64(buffer: *Buffer, x: u64) raise.Raising(void) {
 }
 
 /// Appends one byte to `buffer`.
-pub fn pushU8(buffer: *Buffer, byte: u8) raise.Raising(void) {
+pub fn pushU8(buffer: *Buffer, byte: u8) raise.Error!void {
     try extra(buffer, 1);
     buffer.appendAssumingCapacity(byte);
 }
 
 /// Sets `buffer`'s length to `count`, zero-filling any bytes the count newly
 /// covers.
-pub fn setcount(buffer: *Buffer, count: usize) raise.Raising(void) {
+pub fn setcount(buffer: *Buffer, count: usize) raise.Error!void {
     if (count > buffer.count) {
         const oldcount = buffer.count;
         try ensure(buffer, count, 1);
@@ -402,7 +402,7 @@ pub fn setcount(buffer: *Buffer, count: usize) raise.Raising(void) {
 /// 1. The test `bitindex != x` is what rejects a fractional index, a check the
 /// argument layer cannot make because the value is legitimately wider than the
 /// byte index it becomes.
-fn bitloc(argv: []repr.Value) raise.Raising(BitLoc) {
+fn bitloc(argv: []repr.Value) raise.Error!BitLoc {
     try args_core.fixarity(argv, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const x = try args_core.getNumber(argv, 1);
@@ -415,28 +415,28 @@ fn bitloc(argv: []repr.Value) raise.Raising(BitLoc) {
 }
 
 /// `buffer/bit-clear`: the bit at a bit index cleared.
-fn cfunBufferBitclear(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferBitclear(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] &= ~(@as(u8, 1) << loc.bit);
     return argv[0];
 }
 
 /// `buffer/bit`: whether the bit at a bit index is set.
-fn cfunBufferBitget(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferBitget(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     const set = loc.buffer.slice()[@intCast(loc.index)] & (@as(u8, 1) << loc.bit);
     return wrap.fromBoolean(set != 0);
 }
 
 /// `buffer/bit-set`: the bit at a bit index set.
-fn cfunBufferBitset(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferBitset(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] |= @as(u8, 1) << loc.bit;
     return argv[0];
 }
 
 /// `buffer/bit-toggle`: the bit at a bit index flipped.
-fn cfunBufferBittoggle(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferBittoggle(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] ^= @as(u8, 1) << loc.bit;
     return argv[0];
@@ -444,7 +444,7 @@ fn cfunBufferBittoggle(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `buffer/blit`: part of one byte sequence copied into a buffer, growing it
 /// where the copy runs past the end.
-fn cfunBufferBlit(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferBlit(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
     const dest = try args_core.getBuffer(argv, 0);
     var src = try args_core.getBytes(argv, 1);
@@ -493,7 +493,7 @@ fn cfunBufferBlit(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-string`: byte sequences appended.
-fn cfunBufferChars(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferChars(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| try pushBytesAliasSafe(buffer, try args_core.getBytes(argv, i));
@@ -501,14 +501,14 @@ fn cfunBufferChars(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/clear`: the count set to zero, the backing capacity kept.
-fn cfunBufferClear(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferClear(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     (try args_core.getBuffer(argv, 0)).count = 0;
     return argv[0];
 }
 
 /// `buffer/fill`: every live byte replaced, the length unchanged.
-fn cfunBufferFill(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferFill(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const byte: u8 = if (argv.len == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
@@ -517,7 +517,7 @@ fn cfunBufferFill(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/format`: `pp_format.bufferFormat` appended at the end.
-fn cfunBufferFormat(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferFormat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const strfrmt = try args_core.getString(argv, 1);
@@ -527,7 +527,7 @@ fn cfunBufferFormat(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `buffer/format-at`: `buffer/format` written at an index instead of at the
 /// end, with the original length restored where the write was shorter.
-fn cfunBufferFormatAt(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferFormatAt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     var at = try args_core.getInteger(argv, 1);
@@ -544,7 +544,7 @@ fn cfunBufferFormatAt(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/from-bytes`: a buffer of the byte values given as arguments.
-fn cfunBufferFrombytes(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferFrombytes(argv: []repr.Value) raise.Error!repr.Value {
     const buffer = new(argv.len);
     for (0..argv.len) |i| {
         const byte = try args_core.getInteger(argv, i);
@@ -555,7 +555,7 @@ fn cfunBufferFrombytes(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/new`: an empty buffer with capacity reserved.
-fn cfunBufferNew(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const capacity = try args_core.getInteger(argv, 0);
     // A negative request is a zero request, and `initImpl`'s floor of four
@@ -564,7 +564,7 @@ fn cfunBufferNew(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/new-filled`: a buffer of `count` bytes, all set to one value.
-fn cfunBufferNewFilled(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferNewFilled(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const requested = try args_core.getInteger(argv, 0);
     const count: usize = if (requested < 0) 0 else @intCast(requested);
@@ -576,7 +576,7 @@ fn cfunBufferNewFilled(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/popn`: the last `n` bytes dropped, stopping at empty.
-fn cfunBufferPopn(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPopn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const n = try args_core.getInteger(argv, 1);
@@ -587,14 +587,14 @@ fn cfunBufferPopn(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push`: bytes and byte sequences appended, by argument type.
-fn cfunBufferPush(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     try push(try args_core.getBuffer(argv, 0), argv, 1, argv.len);
     return argv[0];
 }
 
 /// `buffer/push-at`: `buffer/push` written at an index instead of at the end.
-fn cfunBufferPushAt(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPushAt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const index = try args_core.getInteger(argv, 1);
@@ -607,7 +607,7 @@ fn cfunBufferPushAt(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-float32`: four bytes of a float, in the caller's byte order.
-fn cfunBufferPushFloat32(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPushFloat32(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -616,7 +616,7 @@ fn cfunBufferPushFloat32(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-float64`: eight bytes of a float, in the caller's byte order.
-fn cfunBufferPushFloat64(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPushFloat64(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -625,7 +625,7 @@ fn cfunBufferPushFloat64(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-uint16`: two bytes of an integer, in the caller's byte order.
-fn cfunBufferPushUint16(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPushUint16(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -634,7 +634,7 @@ fn cfunBufferPushUint16(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-uint32`: four bytes of an integer, in the caller's byte order.
-fn cfunBufferPushUint32(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPushUint32(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -644,7 +644,7 @@ fn cfunBufferPushUint32(argv: []repr.Value) raise.Raising(repr.Value) {
 
 /// `buffer/push-uint64`: eight bytes of an integer, in the caller's byte
 /// order.
-fn cfunBufferPushUint64(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferPushUint64(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -653,7 +653,7 @@ fn cfunBufferPushUint64(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/slice`: a new buffer over a half-open range of a byte sequence.
-fn cfunBufferSlice(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferSlice(argv: []repr.Value) raise.Error!repr.Value {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     const len: usize = @intCast(range.end - range.start);
@@ -667,7 +667,7 @@ fn cfunBufferSlice(argv: []repr.Value) raise.Raising(repr.Value) {
 ///
 /// The floor of four is not `array/trim`'s behaviour: an empty buffer keeps a
 /// four-byte allocation where an empty array releases its payload entirely.
-fn cfunBufferTrim(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferTrim(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const buffer = try args_core.getBuffer(argv, 0);
     try canRealloc(buffer);
@@ -682,7 +682,7 @@ fn cfunBufferTrim(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-byte`: byte values appended.
-fn cfunBufferU8(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferU8(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {
@@ -692,7 +692,7 @@ fn cfunBufferU8(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// `buffer/push-word`: machine words appended, four bytes each, little-endian.
-fn cfunBufferWord(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunBufferWord(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {
@@ -722,7 +722,7 @@ fn initImpl(buffer: *Buffer, capacity_in: usize) *Buffer {
 /// Appends `argv[start..argc]` to `buffer`, a number as a byte and anything
 /// else as a byte sequence, which is what makes `buffer/push` the union of
 /// `buffer/push-byte` and `buffer/push-string`.
-fn push(buffer: *Buffer, argv: []repr.Value, start: usize, argc: usize) raise.Raising(void) {
+fn push(buffer: *Buffer, argv: []repr.Value, start: usize, argc: usize) raise.Error!void {
     for (start..argc) |i| {
         if (repr.checkType(argv[i], repr.Tag.number)) {
             try pushU8(buffer, @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i)))));
@@ -737,7 +737,7 @@ fn push(buffer: *Buffer, argv: []repr.Value, start: usize, argc: usize) raise.Ra
 /// Pushing a buffer onto itself grows it, and the growth may move the payload,
 /// so the room is reserved first and the view then taken again. Both call
 /// sites write it out rather than sharing a helper.
-fn pushBytesAliasSafe(buffer: *Buffer, view_in: abi.ByteView) raise.Raising(void) {
+fn pushBytesAliasSafe(buffer: *Buffer, view_in: abi.ByteView) raise.Error!void {
     var view = view_in;
     if (view.bytes == buffer.data) {
         try ensure(buffer, buffer.count + @as(usize, @intCast(view.len)), 2);
@@ -750,7 +750,7 @@ fn pushBytesAliasSafe(buffer: *Buffer, view_in: abi.ByteView) raise.Raising(void
 ///
 /// The argument getters have already rejected anything that does not fit, so
 /// the byte order is all that is left.
-fn pushScalar(comptime T: type, buffer: *Buffer, data: T, reverse: bool) raise.Raising(void) {
+fn pushScalar(comptime T: type, buffer: *Buffer, data: T, reverse: bool) raise.Error!void {
     var bytes: [@sizeOf(T)]u8 = @bitCast(data);
     if (reverse) std.mem.reverse(u8, &bytes);
     try pushBytes(buffer, &bytes);
@@ -760,7 +760,7 @@ fn pushScalar(comptime T: type, buffer: *Buffer, data: T, reverse: bool) raise.R
 ///
 /// `:native` is always false and the other two are decided at compile time
 /// against `big_endian`.
-fn shouldReverseBytes(argv: []repr.Value, n: usize) raise.Raising(bool) {
+fn shouldReverseBytes(argv: []repr.Value, n: usize) raise.Error!bool {
     const order = try args_core.getKeyword(argv, n);
     if (utils.cstrcmp(order, "le") == 0) return big_endian;
     if (utils.cstrcmp(order, "be") == 0) return !big_endian;

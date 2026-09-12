@@ -230,13 +230,13 @@ fn hugeLength(_: *anyopaque, _: usize) raise.Error!usize {
 /// half of `length`'s abstract arm. The method is found through `access.get`,
 /// one of the functions under test, so this arm re-enters the file it is
 /// testing.
-fn methodSeven(argv: []repr.Value) raise.Raising(repr.Value) {
+fn methodSeven(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(7);
 }
 
-fn methodKeyword(argv: []repr.Value) raise.Raising(repr.Value) {
+fn methodKeyword(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("not-a-number", .keyword);
@@ -254,7 +254,7 @@ fn badMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
 
 /// A `:length` method that answers zero, the smallest length either function
 /// accepts.
-fn methodZero(argv: []repr.Value) raise.Raising(repr.Value) {
+fn methodZero(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(0);
@@ -494,7 +494,7 @@ fn nextOnANonIterablePanics() void {
 // are how: they are called from Janet source, so `vm.fiber` is the fiber
 // running that source. The case with no fiber is separate, below.
 
-fn cfunNext(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNext(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return access.next(argv[0], argv[1]);
 }
@@ -502,7 +502,7 @@ fn cfunNext(argv: []repr.Value) raise.Raising(repr.Value) {
 /// Resume through `next` and report whether the caller's `child` slot was put
 /// back to null afterwards. A slot left set keeps the child fiber reachable and
 /// misreports the fiber chain, and nothing else observes it.
-fn cfunNextChildCleared(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNextChildCleared(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const self = harness.vm().fiber.?;
     _ = try access.next(argv[0], argv[1]);
@@ -512,7 +512,7 @@ fn cfunNextChildCleared(argv: []repr.Value) raise.Raising(repr.Value) {
 /// The same, for the path that leaves through a panic. The runtime clears the
 /// slot before panicking there and deliberately does not on the interpreter's
 /// path, which is the one asymmetry in the function.
-fn cfunNextChildClearedOnPanic(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunNextChildClearedOnPanic(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const self = harness.vm().fiber.?;
     if (harness.raised(access.next, .{ argv[0], argv[1] }) == null) {

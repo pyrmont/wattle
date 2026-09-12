@@ -577,7 +577,7 @@ fn anInjectedSignal() void {
 /// three flags, so that the resume re-runs the instruction with the breakpoint
 /// bit masked off. Bit 7 of the instruction word is how a breakpoint is set,
 /// and `vm_entry.step` sets a temporary one.
-fn aBreakpointReachesTheUnknownOpcodeArm() raise.Raising(void) {
+fn aBreakpointReachesTheUnknownOpcodeArm() raise.Error!void {
     var out = wrap.fromNil();
     const fiberv = eval("(fiber/new (fn [] (+ 1 2) (+ 3 4) :done) :dy)");
     const fiber = wrap.toFiber(fiberv);
@@ -856,14 +856,14 @@ fn theCollectionThresholdIsInclusive() void {
     expect(harness.integerIs(after, 0));
 }
 
-fn cfunArmCollection(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunArmCollection(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
     armed_at = harness.vm().gc.next_collection;
     harness.vm().gc.interval = armed_at;
     return wrap.fromNil();
 }
 
-fn cfunAllocated(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunAllocated(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
     return wrap.fromNumber(@floatFromInt(harness.vm().gc.next_collection));
 }
@@ -877,7 +877,7 @@ const cfuns = [_]abi.Reg{
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     test_env = harness.coreEnv();
     registry.cfuns(test_env, null, &cfuns);
     has_assembler = harness.coreOptional("asm") != null;

@@ -30,7 +30,7 @@
 //!
 //! Four entry points are called by import rather than through their abis.
 //! `coreEnv`, `coreLookupTable`, `dobytes` and `loopFiber` each have a
-//! `raise.toAbi` wrapper over a `raise.Raising` implementation, and every one
+//! `raise.toAbi` wrapper over a raise-capable implementation, and every one
 //! of them can raise. Called directly, a raise is an `error.JanetSignal` the
 //! compiler will not let this file ignore.
 //!
@@ -125,7 +125,7 @@ fn expectString(x: repr.Value, expected: []const u8) void {
 
 /// `dostring`'s shape over `dobytesImpl`: the source is NUL-terminated, so the
 /// length is computed the way `dostring` computes it.
-fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise.Raising(c_int) {
+fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise.Error!c_int {
     return core_env.dobytesImpl(test_env, source, path, out);
 }
 
@@ -134,13 +134,13 @@ fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise
 // calls it while the image is loading, so replacing it cannot affect anything
 // but the one call this file makes.
 
-fn replacedGcinterval(argv: []repr.Value) raise.Raising(repr.Value) {
+fn replacedGcinterval(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return value.fromBytes("replaced", .keyword);
 }
 
-fn aCleanRunReportsNoFlags() raise.Raising(void) {
+fn aCleanRunReportsNoFlags() raise.Error!void {
     var out = wrap.fromTrue();
     errReset();
     expect(try doString("(+ 1 2)", "contract", &out) == 0);
@@ -161,7 +161,7 @@ fn aCleanRunReportsNoFlags() raise.Raising(void) {
     expectErr("");
 }
 
-fn theLengthParameterTruncatesTheSource() raise.Raising(void) {
+fn theLengthParameterTruncatesTheSource() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     // Seven bytes is exactly the first form; the second is never seen.
@@ -190,7 +190,7 @@ fn theLengthParameterTruncatesTheSource() raise.Raising(void) {
 /// Every failure sets `done`, whatever kind it was. The runtime case is below;
 /// these are the other two, and each needs a second form after the failing one
 /// to have anything to observe.
-fn aParseOrCompileFailureStopsTheStream() raise.Raising(void) {
+fn aParseOrCompileFailureStopsTheStream() raise.Error!void {
     var out = wrap.fromNil();
     const env = tables.new(4);
     env.proto = test_env;
@@ -219,7 +219,7 @@ fn aParseOrCompileFailureStopsTheStream() raise.Raising(void) {
 /// A compile error reports the *form's* position when the compiler supplies
 /// one and the parser's otherwise, and the two only differ once the source has
 /// more than one line in it.
-fn aCompileErrorPrefersTheSourceMapping() raise.Raising(void) {
+fn aCompileErrorPrefersTheSourceMapping() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     // The parser has consumed three lines by the time the second form fails,
@@ -240,7 +240,7 @@ fn aCompileErrorPrefersTheSourceMapping() raise.Raising(void) {
     expectErrPrefix("contract:2:21: compile error: ");
 }
 
-fn aParseErrorNamesAPosition() raise.Raising(void) {
+fn aParseErrorNamesAPosition() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString("(+ 1 2))", "contract", &out) == constants.JANET_DO_ERROR_PARSE);
@@ -248,7 +248,7 @@ fn aParseErrorNamesAPosition() raise.Raising(void) {
     expectErr("contract:1:8: parse error: unexpected closing delimiter )\n");
 }
 
-fn aCompileErrorNamesAPosition() raise.Raising(void) {
+fn aCompileErrorNamesAPosition() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString("(def)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
@@ -266,7 +266,7 @@ fn aCompileErrorNamesAPosition() raise.Raising(void) {
 /// The trace renders the same string the line does, so printing the context
 /// here as well would print it twice; printing it with no separator would run
 /// it straight into the trace's own `error: `.
-fn aMacroExpansionErrorPrintsATrace() raise.Raising(void) {
+fn aMacroExpansionErrorPrintsATrace() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString(
@@ -287,7 +287,7 @@ fn aMacroExpansionErrorPrintsATrace() raise.Raising(void) {
     ) != null);
 }
 
-fn aRuntimeErrorReportsTheValue() raise.Raising(void) {
+fn aRuntimeErrorReportsTheValue() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString("(error :thrown)", "contract", &out) == constants.JANET_DO_ERROR_RUNTIME);
@@ -298,7 +298,7 @@ fn aRuntimeErrorReportsTheValue() raise.Raising(void) {
 
 /// Every failure sets `done`, so the flag word only ever has one bit set and
 /// the forms after the failing one never run.
-fn aFailureStopsTheStream() raise.Raising(void) {
+fn aFailureStopsTheStream() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     const env = tables.new(4);
@@ -310,14 +310,14 @@ fn aFailureStopsTheStream() raise.Raising(void) {
     expect(harness.isType(tables.get(env, value.fromBytes("contract-ran", .keyword)), repr.Tag.nil));
 }
 
-fn aNullSourcePathIsNamedUnknown() raise.Raising(void) {
+fn aNullSourcePathIsNamedUnknown() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString("(+ 1 2))", null, &out) == constants.JANET_DO_ERROR_PARSE);
     expectString(out, "<unknown>:1:8: parse error: unexpected closing delimiter )");
 }
 
-fn loopFiberReportsAStatus() raise.Raising(void) {
+fn loopFiberReportsAStatus() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString("(fiber/new (fn [] 42))", "contract", &out) == 0);
@@ -336,7 +336,7 @@ fn loopFiberReportsAStatus() raise.Raising(void) {
 /// terminator byte on the end, or a length taken from an array's size rather
 /// than from the stream, would leave slack that nothing else here would
 /// notice, since nothing reads past the last value.
-fn theImageIsConsumedExactly() raise.Raising(void) {
+fn theImageIsConsumedExactly() raise.Error!void {
     const image = core_env.core_image;
     var next: [*]const u8 = undefined;
     const out = try marsh.unmarshal(image[0..@intCast(image.len)], 0, try core_env.coreLookupTable(null), &next);
@@ -344,7 +344,7 @@ fn theImageIsConsumedExactly() raise.Raising(void) {
     expect(@intFromPtr(next) == @intFromPtr(image) + image.len);
 }
 
-fn theLookupTableIsKeyedBySymbol() raise.Raising(void) {
+fn theLookupTableIsKeyedBySymbol() raise.Error!void {
     const dict = try core_env.coreLookupTable(null);
     expect(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .symbol)), repr.Tag.cfunction));
     // A keyword of the same name is not the key.
@@ -361,7 +361,7 @@ fn theLookupTableIsKeyedBySymbol() raise.Raising(void) {
     }
 }
 
-fn theLookupTableTakesReplacements() raise.Raising(void) {
+fn theLookupTableTakesReplacements() raise.Error!void {
     const replacements = tables.new(2);
     tables.put(
         replacements,
@@ -388,7 +388,7 @@ fn theLookupTableTakesReplacements() raise.Raising(void) {
 // file to bind it to, and cannot assert what was read without controlling what
 // is on the other end, so the whole cfunction is exercised here.
 
-fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
+fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // Two handles, not one. Interleaving reads and writes on a single `FILE *`
     // without a seek between them is undefined, and `(getline)` does exactly
     // that when `:in` and `:out` name the same file.
@@ -523,7 +523,7 @@ fn getlineReadsALineThroughTheDyn() raise.Raising(void) {
 /// NaN-boxed value, 0x2 for a single-threaded build, and `0x4 << shift` for a
 /// 64-bit NaN box whose pointers are shifted. A NaN-boxed value is eight bytes
 /// and the tagged one sixteen, so the layout says which this build has.
-fn theConfigBitsAreJanetHs() raise.Raising(void) {
+fn theConfigBitsAreJanetHs() raise.Error!void {
     const nanboxed = @sizeOf(repr.Value) == 8;
     const shift: u5 = @intCast(config.nanbox_pointer_shift);
     const shifted = nanboxed and @sizeOf(usize) == 8 and shift != 0;
@@ -542,7 +542,7 @@ fn theConfigBitsAreJanetHs() raise.Raising(void) {
 /// The oracle reads the number back out of the digits rather than spelling
 /// the number again, so the two sides of the comparison are the text and the
 /// number and not one function called twice.
-fn theApiVersionIsTheFingerprint() raise.Raising(void) {
+fn theApiVersionIsTheFingerprint() raise.Error!void {
     var out = wrap.fromNil();
     expect(try doString("janet/api", "contract", &out) == 0);
     expect(harness.isType(out, repr.Tag.string));
@@ -566,7 +566,7 @@ fn nativeReportsALoaderError() void {
 /// argument walk visits every argument and accumulates a flag per capability,
 /// which is invisible from Janet, there being no way to read the flag word
 /// back.
-fn sandboxAccumulatesEveryCapability() raise.Raising(void) {
+fn sandboxAccumulatesEveryCapability() raise.Error!void {
     var out = wrap.fromNil();
     expect(!harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"hrtime"})));
     expect(!harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"threads"})));
@@ -605,7 +605,7 @@ fn nativeIsBehindTheSandbox() void {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     // `coreEnv` memoizes into `vm.core_env`, so the replacement table
     // has to arrive on the very first call or it is ignored. That one-shot is
     // itself the contract below.

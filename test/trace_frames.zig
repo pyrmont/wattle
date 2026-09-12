@@ -15,7 +15,7 @@
 //!
 //! ## The entry points are called by import
 //!
-//! `debug.traceFrame` and `debug.stacktraceExt` are `raise.Raising` and this
+//! `debug.traceFrame` and `debug.stacktraceExt` are raise-capable and this
 //! calls them directly, so a raise from a `tostring` callback reached through
 //! `%v`, which is the only raise either can make, arrives as
 //! `error.JanetSignal` rather than as a report nobody consumes.
@@ -102,19 +102,19 @@ fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
 /// planted for `probeNamed`, and `anUnregisteredCfunction` would fail in every
 /// release build while passing in Debug. Distinct returns make the folding
 /// illegal and cost nothing, since nothing calls these.
-fn probeNamed(argv: []repr.Value) raise.Raising(repr.Value) {
+fn probeNamed(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1);
 }
 
-fn probeUnnamed(argv: []repr.Value) raise.Raising(repr.Value) {
+fn probeUnnamed(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(2);
 }
 
-fn probeUnregistered(argv: []repr.Value) raise.Raising(repr.Value) {
+fn probeUnregistered(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(3);
@@ -122,7 +122,7 @@ fn probeUnregistered(argv: []repr.Value) raise.Raising(repr.Value) {
 
 fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
     var out: tf.TraceFrame = undefined;
-    // `debug.traceFrame` is `raise.Raising(void)` and never raises: it reads
+    // `debug.traceFrame` is `raise.Error!void` and never raises: it reads
     // a funcdef and the registry and writes a plain structure. The
     // `catch` is what the type asks for, not a case this contract expects.
     tf.traceFrame(frame, &out) catch unreachable;
@@ -148,7 +148,7 @@ fn traceInto(
     fiber: *fibers.Fiber,
     err: repr.Value,
     prefix: ?[*:0]const u8,
-) raise.Raising(void) {
+) raise.Error!void {
     buffers.setcount(sink, 0) catch @panic("trace_frames: setcount raised");
     vm_state.setdyn("err", wrap.fromBuffer(sink));
     defer vm_state.setdyn("err", wrap.fromNil());
@@ -369,7 +369,7 @@ fn anEmptyFrame() void {
 /// registered cfunction has a *prefix*, and every core registration passes
 /// null for one. A native module registering with a prefix gets one, and so
 /// does the registry entry this file plants by hand.
-fn aPrefixedCfunctionRenders() raise.Raising(void) {
+fn aPrefixedCfunctionRenders() raise.Error!void {
     const sink = buffers.new(256);
     gc_alloc.gcroot(wrap.fromBuffer(sink));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
@@ -410,7 +410,7 @@ fn aPrefixedCfunctionRenders() raise.Raising(void) {
 /// A cfunction the registry cannot name prints as `<cfunction>`, with the
 /// line when the registry has one and nothing more when it has no entry.
 /// The frames are written by hand, as in `aPrefixedCfunctionRenders`.
-fn aBareCfunctionRenders() raise.Raising(void) {
+fn aBareCfunctionRenders() raise.Error!void {
     const sink = buffers.new(256);
     gc_alloc.gcroot(wrap.fromBuffer(sink));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
@@ -444,7 +444,7 @@ fn aBareCfunctionRenders() raise.Raising(void) {
 /// an assertion on the leading bytes then depends on ambient state. It is nil
 /// here because a contract runs no `cli-main`, which is precisely the kind of
 /// thing that is true until it is not.
-fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
+fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Error!void {
     const fiber = fibers.new(failing, 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
@@ -473,7 +473,7 @@ fn aStacktraceOverARealFiber(failing: *functions.Function) raise.Raising(void) {
 // Entry
 // ==========================================================================
 
-fn body() raise.Raising(void) {
+fn body() raise.Error!void {
     test_env = harness.coreEnv();
     gc_alloc.gcroot(wrap.fromTable(test_env));
 

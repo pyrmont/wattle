@@ -126,7 +126,7 @@ fn eval(source: [*:0]const u8) repr.Value {
 /// A fiber with a run of arguments pushed onto it, in the state `run_vm`
 /// leaves before `JOP_CALL`: `stackstart` marks where the arguments begin and
 /// `stacktop` where they end.
-fn fiberWithArgs(argv: []const repr.Value) raise.Raising(*fibers.Fiber) {
+fn fiberWithArgs(argv: []const repr.Value) raise.Error!*fibers.Fiber {
     const fiber = fibers.new(wrap.toFunction(eval("(fn [] nil)")), 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     fiber.stackstart = fiber.stacktop;
@@ -162,7 +162,7 @@ fn makeAbstracts() void {
     gc_alloc.gcroot(loud_string_value);
 }
 
-fn invokeACfunction() raise.Raising(void) {
+fn invokeACfunction() raise.Error!void {
     var argv = [_]repr.Value{ intv(1), intv(2), intv(4) };
     const callee = eval("vmcalls/sum");
     expect(harness.isType(callee, repr.Tag.cfunction));
@@ -172,7 +172,7 @@ fn invokeACfunction() raise.Raising(void) {
     expect(wrap.toNumber(try vm_calls.methodInvoke(callee, &.{})) == 0);
 }
 
-fn cfunSum(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunSum(argv: []repr.Value) raise.Error!repr.Value {
     var total: f64 = 0;
     var i: usize = 0;
     while (i < argv.len) : (i += 1) total += try args_core.getNumber(argv, i);
@@ -180,18 +180,18 @@ fn cfunSum(argv: []repr.Value) raise.Raising(repr.Value) {
 }
 
 /// Returns its arguments as a tuple, so a caller can assert their order.
-fn cfunArgs(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunArgs(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(tuples.newFrom(argv));
 }
 
-fn invokeAFunction() raise.Raising(void) {
+fn invokeAFunction() raise.Error!void {
     var argv = [_]repr.Value{ intv(3), intv(4) };
     const callee = eval("(fn [a b] (* a b))");
     expect(harness.isType(callee, repr.Tag.function));
     expect(wrap.toNumber(try vm_calls.methodInvoke(callee, argv[0..2])) == 12);
 }
 
-fn invokeAnAbstractWithACallCallback() raise.Raising(void) {
+fn invokeAnAbstractWithACallCallback() raise.Error!void {
     var argv = [_]repr.Value{ intv(1), intv(1), intv(1) };
     // The callback returns argc, so this also shows that the arity check
     // below is not reached: three arguments would have failed it.
@@ -203,7 +203,7 @@ fn invokeAnAbstractWithACallCallback() raise.Raising(void) {
     expect(wrap.toNumber(try vm_calls.methodInvoke(callable_value, argv[0..1])) == 1);
 }
 
-fn anAbstractWithoutCallFallsThroughToIndexing() raise.Raising(void) {
+fn anAbstractWithoutCallFallsThroughToIndexing() raise.Error!void {
     var argv = [_]repr.Value{ intv(4), intv(5) };
     expect(wrap.toNumber(try vm_calls.methodInvoke(indexable_value, argv[0..1])) == 40);
     // Having fallen through, it is subject to the arity check the six indexed
@@ -218,7 +218,7 @@ fn anAbstractWithoutCallFallsThroughToIndexing() raise.Raising(void) {
     expect(std.mem.endsWith(u8, message[0..length], " called with 2 arguments, possibly expected 1"));
 }
 
-fn invokeEachIndexedType() raise.Raising(void) {
+fn invokeEachIndexedType() raise.Error!void {
     var key = [_]repr.Value{kw("a")};
     expect(wrap.toNumber(try vm_calls.methodInvoke(eval("@{:a 1}"), key[0..1])) == 1);
     expect(wrap.toNumber(try vm_calls.methodInvoke(eval("{:a 2}"), key[0..1])) == 2);
@@ -237,7 +237,7 @@ fn theIndexedArityCheck() void {
         .says("\"ab\" called with 0 arguments, possibly expected 1"));
 }
 
-fn theDefaultArmReversesTheLookup() raise.Raising(void) {
+fn theDefaultArmReversesTheLookup() raise.Error!void {
     var argv = [_]repr.Value{eval("{:a 11}")};
     // A keyword callee indexes its argument, not the other way round: this is
     // what makes `(:a struct)` work.
@@ -252,10 +252,10 @@ fn theDefaultArmReversesTheLookup() raise.Raising(void) {
 
 /// Raising, and it has to be: a reporting form of `access.get` under
 /// `methodLookup` would turn an abstract's `get` refusing into a report nobody
-/// consumes, and all four of its callers are `raise.Raising`. The three cases
+/// consumes, and all four of its callers are raise-capable. The three cases
 /// here return rather than raise, so each is a `try`, and the refusal is
 /// asserted below.
-fn methodLookup() raise.Raising(void) {
+fn methodLookup() raise.Error!void {
     const found = try vm_calls.methodLookup(eval("@{:m vmcalls/sum}"), "m");
     expect(harness.isType(found, repr.Tag.cfunction));
     expect(isNil(try vm_calls.methodLookup(eval("@{:m 1}"), "other")));
@@ -264,7 +264,7 @@ fn methodLookup() raise.Raising(void) {
     expect(isNil(try vm_calls.methodLookup(intv(5), "m")));
 }
 
-fn mcall() raise.Raising(void) {
+fn mcall() raise.Error!void {
     var argv = [_]repr.Value{ eval("@{:sum (fn [self a b] (+ a b))}"), intv(2), intv(3) };
     // The receiver is passed to the method as its first argument, so
     // the method takes three parameters for a two-argument call.
@@ -276,13 +276,13 @@ fn mcall() raise.Raising(void) {
         .says("method :len expected at least 1 argument"));
 }
 
-fn unaryCall() raise.Raising(void) {
+fn unaryCall() raise.Error!void {
     const receiver = eval("@{:- (fn [self] 42)}");
     expect(wrap.toNumber(try vm_calls.unaryCall("-", receiver)) == 42);
     expect(refusal(vm_calls.unaryCall, .{ "-", intv(5) }).says("could not find method :- for 5"));
 }
 
-fn binopCallPrefersTheLeftOperand() raise.Raising(void) {
+fn binopCallPrefersTheLeftOperand() raise.Error!void {
     const lhs = eval("@{:+ vmcalls/args}");
     const result = try vm_calls.binopCall("+", "r+", lhs, intv(9));
     const tup = wrap.toTuple(result);
@@ -291,7 +291,7 @@ fn binopCallPrefersTheLeftOperand() raise.Raising(void) {
     expect(wrap.toNumber(tup[1]) == 9);
 }
 
-fn binopCallSwapsForTheRightOperand() raise.Raising(void) {
+fn binopCallSwapsForTheRightOperand() raise.Error!void {
     const rhs = eval("@{:r+ vmcalls/args}");
     const result = try vm_calls.binopCall("+", "r+", intv(9), rhs);
     const tup = wrap.toTuple(result);
@@ -308,7 +308,7 @@ fn binopCallWithNeitherMethod() void {
         .says("could not find method :+ for 1 or :r+ for 2"));
 }
 
-fn resolveMethod() raise.Raising(void) {
+fn resolveMethod() raise.Error!void {
     var args = [_]repr.Value{ eval("@{:m vmcalls/sum}"), intv(1) };
     var fiber = try fiberWithArgs(&args);
     const callee = try vm_calls.resolveMethod(kw("m"), fiber);
@@ -332,7 +332,7 @@ fn resolveMethod() raise.Raising(void) {
     _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 }
 
-fn callNonfn() raise.Raising(void) {
+fn callNonfn() raise.Error!void {
     // A table callee with one argument is an indexed lookup.
     var args = [_]repr.Value{ kw("a"), intv(6) };
     var fiber = try fiberWithArgs(args[0..1]);
@@ -390,7 +390,7 @@ fn fillStruct() void {
     expect(harness.isType(harness.field(filled, "c"), repr.Tag.nil));
 }
 
-fn fillString() raise.Raising(void) {
+fn fillString() raise.Error!void {
     const buffer = buffers.new(8);
     const mem = [_]repr.Value{ intv(1), kw("ab"), eval("\"cd\"") };
     gc_alloc.gcroot(wrap.fromBuffer(buffer));
@@ -430,7 +430,7 @@ fn aRaiseFromInsideAFillLoop() void {
     _ = gc_alloc.gcunroot(wrap.fromBuffer(buffer));
 }
 
-fn cfunContract(argv: []repr.Value) raise.Raising(repr.Value) {
+fn cfunContract(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     try invokeACfunction();

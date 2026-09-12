@@ -381,7 +381,7 @@ fn theFlooredDivision() !void {
 /// which `theSignedAgainstDoubles` covers, but that the refusal *arrives*.
 ///
 /// A `Box(T).unwrap` bound to a reporting form of the conversion from inside a
-/// `raise.Raising` method would end the process with `a raise was reported
+/// raise-capable method would end the process with `a raise was reported
 /// across the C ABI and never consumed` instead of raising, and it would be
 /// hidden behind a comptime alias. `tools/check/swallowed.janet` is what looks
 /// for that shape.
