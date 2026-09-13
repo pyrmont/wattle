@@ -62,12 +62,13 @@
 (defn- default-paths
   ``The set covered when no path is given.
 
-  The three source trees, the build script and the three top-level documents.
-  Walking a source tree reaches its own READMEs; `tools/` is reached for its
-  READMEs alone, because its own sources are Janet.``
+  The three source trees, the build script, the two top-level documents and
+  the style guide under `tools/`. Walking a source tree reaches its own
+  READMEs; `tools/` is reached for its READMEs and its style guide alone,
+  because its own sources are Janet.``
   []
   (array/concat @["src" "test" "examples" "build.zig"
-                  "DESIGN.md" "STYLE_GUIDE.md" "AGENTS.md"]
+                  "DESIGN.md" "AGENTS.md" "tools/STYLE_GUIDE.md"]
                 (readmes-under "tools")))
 
 (defn- extractable? [path]
