@@ -7,7 +7,7 @@
 #
 #   tested       0 sites, 0 occurrences
 #   accumulator  0 sites
-#   `.?` in src/  550 occurrences
+#   `.?` in src/  552 occurrences
 #
 # columns: class  site  receiver  occurrences  function
 

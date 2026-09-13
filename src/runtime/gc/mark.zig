@@ -287,12 +287,8 @@ fn markFiber(vm: *vm_state.Vm, fiber_in: *fibers.Fiber) void {
         if (fiber.env) |env| markTable(vm, env);
 
         if (has_ev) {
-            if (fiber.supervisor_channel != null) {
-                markAbstract(vm, fiber.supervisor_channel.?);
-            }
-            if (fiber.ev_stream != null) {
-                markAbstract(vm, fiber.ev_stream.?);
-            }
+            if (fiber.supervisor_channel) |ch| markAbstract(vm, ch);
+            if (fiber.ev_stream) |s| markAbstract(vm, s);
             if (fiber.ev_callback) |callback| {
                 ev_callback.dispatchTotal(ev_callback.of(callback), fiber, constants.AsyncEvent.mark);
             }

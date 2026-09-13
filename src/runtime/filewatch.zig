@@ -1198,9 +1198,9 @@ fn filewatchGc(watcher: *Watcher, _: usize) void {
 
 /// Traces the channel and the watch-descriptor table.
 fn filewatchMark(watcher: *Watcher, _: usize) void {
-    if (watcher.channel == null) return; // Incomplete initialization
+    const channel = watcher.channel orelse return; // Incomplete initialization
     be.mark(watcher);
-    gc_mark.mark(wrap.fromAbstract(watcher.channel.?));
+    gc_mark.mark(wrap.fromAbstract(channel));
     gc_mark.mark(wrap.fromTable(watcher.watch_descriptors.?));
 }
 

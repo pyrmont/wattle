@@ -657,13 +657,6 @@ fn markSeen(st: *MarshalState, x: repr.Value) void {
     }
 }
 
-/// Aborts unless `condition`. Not a raise: a null from an abstract type's
-/// `unmarshal` callback is a defect in that callback rather than a program
-/// error, so it prints and aborts.
-inline fn marshAssert(condition: bool, message: [*:0]const u8) void {
-    if (!condition) fatal.fatal(message);
-}
-
 /// The body of the marshaller, and the entry point of the mutually recursive
 /// group above.
 ///
@@ -1599,9 +1592,11 @@ fn unmarshalOneAbstract(
         st.flags = flags;
         st.data = data;
         st.at = stored_at;
-        const abst = try unmarshal_fn(@ptrCast(st));
-        marshAssert(abst != null, "null pointer abstract");
-        const decoded = wrap.fromAbstract(abst.?);
+        // A null from an abstract type's `unmarshal` callback is a defect in
+        // that callback rather than a program error, so it aborts rather than
+        // raising.
+        const abst = (try unmarshal_fn(@ptrCast(st))) orelse fatal.fatal("null pointer abstract");
+        const decoded = wrap.fromAbstract(abst);
         if (st.at != null) return raise.panic("janet_unmarshal_abstract not called");
         return .{ .value = decoded, .next = st.data.? };
     }

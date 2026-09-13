@@ -542,9 +542,8 @@ pub fn writeGeneric(
 fn cfunToFile(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const s = try getStream(argv, 0);
-    const iof = try getFileForStream(s);
-    if (iof == null) return raise.panic("cannot make file from stream");
-    return wrap.fromAbstract(iof.?);
+    const iof = (try getFileForStream(s)) orelse return raise.panic("cannot make file from stream");
+    return wrap.fromAbstract(iof);
 }
 
 /// Closes the underlying handle, unregistering it first where the backend

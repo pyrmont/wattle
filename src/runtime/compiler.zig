@@ -1059,8 +1059,7 @@ fn compileCall(
 /// Aborts unless `condition`.
 ///
 /// Not a raise: a broken scope chain is a defect in this file rather than a
-/// program error. Same shape as `peg.zig`'s `pegAssert` and `marsh.zig`'s
-/// `marshAssert`.
+/// program error. Same shape as `peg.zig`'s `pegAssert`.
 inline fn compilerAssert(condition: bool, message: [*:0]const u8) void {
     if (!condition) fatal.fatal(message);
 }
