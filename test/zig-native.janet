@@ -216,7 +216,9 @@
 (assert (= "struct" (classify {})))
 (assert (= "table" (classify @{})))
 (assert (= "function" (classify (fn [] nil))) "a function is the thirteenth")
-(assert (= "other" (classify classify)) "a cfunction is none of the thirteen")
+(assert (= "cfunction" (classify classify)) "a cfunction is the fourteenth")
+(assert (= "other" (classify (fiber/new (fn [] nil))))
+        "a fiber is none of the fourteen")
 
 # The tag-specific unwraps, which answer a NUL-terminated slice where the
 # predicates answer a bool. Each takes one tag: the buffer holding the same

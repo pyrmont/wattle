@@ -867,6 +867,11 @@ pub fn isBuffer(v: Value) bool {
     return checkTag(v, .buffer);
 }
 
+/// Returns whether a wrapped value is a cfunction.
+pub fn isCFunction(v: Value) bool {
+    return checkTag(v, .cfunction);
+}
+
 /// Returns whether a wrapped value is a function.
 pub fn isFunction(v: Value) bool {
     return checkTag(v, .function);

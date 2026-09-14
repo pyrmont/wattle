@@ -298,11 +298,12 @@ fn built(argv: []janet.Value) janet.Error!janet.Value {
 
 /// `(classify x)`: the tag of a value, named.
 ///
-/// One cfunction over all thirteen predicates, because what they are for is
+/// One cfunction over all fourteen predicates, because what they are for is
 /// telling apart the types one getter accepts, and a module that has them all
-/// has no reason to reach for anything else. `isFunction` is the odd one out:
-/// what it is for is refusing a callback `pcall` could not run, at the point
-/// the callback is handed over rather than at the call.
+/// has no reason to reach for anything else. `isFunction` and `isCFunction`
+/// are the odd ones out: what the pair is for is refusing a callback `call`
+/// could not run, and `isFunction` alone a callback `pcall` could not run, at
+/// the point the callback is handed over rather than at the call.
 fn classify(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const v = argv[0];
@@ -332,6 +333,8 @@ fn classify(argv: []janet.Value) janet.Error!janet.Value {
         "table"
     else if (janet.isFunction(v))
         "function"
+    else if (janet.isCFunction(v))
+        "cfunction"
     else
         "other";
     return janet.cstring(name);
