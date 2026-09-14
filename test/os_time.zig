@@ -27,6 +27,7 @@
 // Standard library imports
 // ==========================================================================
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 // ==========================================================================
@@ -75,7 +76,14 @@ const Source = enum(c_int) {
 /// pair of `isize`s only where the two widths agree. On wasm32 they do not:
 /// `time_t` is 64 bits and `long` is 32, so a pair of `isize`s is eight bytes
 /// where the host's structure is sixteen, and the entry point writes past it.
-const TimeSpec = extern struct {
+///
+/// `std.c.time_t` is `void` on Windows, which has no `std.c` libc. mingw-w64
+/// declares `{ __int64 tv_sec; long tv_nsec; }`, and the Windows arm restates
+/// that.
+const TimeSpec = if (builtin.os.tag == .windows) extern struct {
+    seconds: i64,
+    nanoseconds: c_long,
+} else extern struct {
     seconds: std.c.time_t,
     nanoseconds: c_long,
 };

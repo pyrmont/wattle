@@ -756,7 +756,7 @@ const win = struct {
         switch (event) {
             constants.AsyncEvent.init => ev_loop.asyncInFlight(fiber),
             constants.AsyncEvent.mark => {
-                gc_mark.mark(wrap.fromAbstract(ow.stream));
+                gc_mark.mark(wrap.fromAbstract(ow.stream.?));
                 if (ow.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
                 gc_mark.mark(wrap.fromAbstract(watcher));
                 gc_mark.mark(wrap.fromString(ow.dir_path));
@@ -923,7 +923,7 @@ const win = struct {
 
     fn markWatch(ow: *OverlappedWatch) void {
         if (ow.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
-        gc_mark.mark(wrap.fromAbstract(ow.stream));
+        gc_mark.mark(wrap.fromAbstract(ow.stream.?));
         gc_mark.mark(wrap.fromString(ow.dir_path));
     }
 
