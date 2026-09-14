@@ -137,6 +137,7 @@ const std = @import("std");
 
 const abi = @import("abi");
 const abstract_type = @import("api/abstract_type.zig");
+const config = @import("config");
 const constants = @import("constants");
 const fingerprint = @import("api/fingerprint.zig");
 const interface = @import("api/interface.zig");
@@ -584,6 +585,11 @@ pub fn dictionaryView(v: Value) ?Pairs {
 /// fingerprint and the compiler's version, and the loader refuses the module
 /// unless all three match the runtime's own. `_janet_init` takes the
 /// environment to define into and the runtime table, and runs `defs`.
+///
+/// A module built for linking into an executable, which `build.zig`'s
+/// `quickbin` configures with `static_name`, exports the same two functions as
+/// `_janet_mod_config_<name>` and `_janet_init_<name>`, so that several can be
+/// linked into one binary.
 pub fn entry(comptime defs: fn (*Env) Error!void) void {
     const Shim = struct {
         /// Writes this module's `abi.BuildConfig` and returns its own width.
@@ -612,8 +618,9 @@ pub fn entry(comptime defs: fn (*Env) Error!void) void {
             return raise.toAbi(defs(env));
         }
     };
-    @export(&Shim.modConfig, .{ .name = "_janet_mod_config" });
-    @export(&Shim.modInit, .{ .name = "_janet_init" });
+    const suffix = if (config.static_name) |name| "_" ++ name else "";
+    @export(&Shim.modConfig, .{ .name = "_janet_mod_config" ++ suffix });
+    @export(&Shim.modInit, .{ .name = "_janet_init" ++ suffix });
 }
 
 /// Returns the status of a wrapped fiber.

@@ -1,4 +1,5 @@
-//! A native Janet module written in Zig: the worked example of the views.
+//! A native Janet module written in Zig: the worked example of the built-in
+//! types.
 //!
 //! `numarray` is the worked example of the abstract type. This module
 //! imports `janet` and `std` and nothing else. `build.zig` builds it and
@@ -6,7 +7,7 @@
 //!
 //! ## A module that owns nothing
 //!
-//! `DESIGN.md` section 14 records the decision that a type crosses to a
+//! `DESIGN.md` section 13 records the decision that a type crosses to a
 //! module author as a read-only view or as a capability, never as a pointer
 //! to the aggregate.
 //! `numarray` is the capability half: it owns a payload and fills in the
@@ -17,11 +18,11 @@
 //!
 //! ## What that shape needs, and what it does not
 //!
-//! Three views cover every Janet aggregate an argument can be: bytes,
-//! indexed and dictionary. Each is the same pair of members: a string or a
-//! buffer, a tuple or an array, a struct or a table. `slug` reads the bytes
-//! and indexed views, `query` reads the dictionary view, and `cut` takes a
-//! range over a length of its own. Between them that is the whole of what
+//! Three getters cover every Janet aggregate an argument can be:
+//! `getBytes`, `getIndexed` and `getDictionary`. Each reads a pair of types
+//! the same way: a string or a buffer, a tuple or an array, a struct or a
+//! table. `slug` calls `getBytes` and `getIndexed`, `query` calls
+//! `getDictionary`, and `cut` takes a range over a length of its own. Between them that is the whole of what
 //! this module asks the runtime for.
 //!
 //! ## The lookup table resolved at compile time
@@ -45,7 +46,7 @@ const janet = @import("janet");
 const limit = 512;
 
 // ==========================================================================
-// The indexed view: a tuple of keyword options
+// `getIndexed`: a tuple of keyword options
 // ==========================================================================
 
 /// What a `:keyword` in the options argument selects.
@@ -129,8 +130,8 @@ fn append(out: []u8, n: *usize, bytes: []const u8) janet.Error!void {
 /// not fit in `limit` bytes.
 fn slug(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 2);
-    // A bytes view: a string, a symbol, a keyword or a buffer, read in place.
-    // A buffer's bytes move on a push, so the view is used inside this call
+    // A string, a symbol, a keyword or a buffer, read in place. A buffer's
+    // bytes move on a push, so the slice is used inside this call
     // and never stored.
     const title = try janet.getBytes(argv, 0);
     const style = try readStyle(argv, 1);
@@ -202,7 +203,7 @@ fn query(argv: []janet.Value) janet.Error!janet.Value {
     // `len` counts the filled slots, so a walk that saw a different number is
     // a defect.
     if (written != params.len) {
-        return janet.panicFormat("walked {d} entries where the view holds {d}", .{ written, params.len });
+        return janet.panicFormat("walked {d} entries where len says {d}", .{ written, params.len });
     }
     out[n] = 0;
     return janet.cstring(out[0..n :0]);
@@ -220,7 +221,7 @@ fn query(argv: []janet.Value) janet.Error!janet.Value {
 fn cut(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 3);
     const text = try janet.getBytes(argv, 0);
-    // The length is this module's own, here the view's; a binding around a C
+    // The length is this module's own, here the slice's; a binding around a C
     // library passes whatever that library reported. `janet.getRange` folds
     // the two slots the way `string/slice` does: a negative index counts from
     // the end, an absent or nil slot takes that whole side, and an end below

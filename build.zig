@@ -229,23 +229,18 @@ const Selection = struct {
 /// is wrong values.
 /// `examples/standalone` is the worked instance and `zig build standalone`
 /// builds it the way an outside author would.
-/// The options `build()` resolved, so `janetModule` can reuse them.
-///
-/// **`b.option` may be declared only once per builder.** A dependent reaches
-/// `janetModule` after `b.dependency` has already run this package's
-/// `build()`, which declared every one of them, so re-reading panics with
-/// "Option ... declared twice". The values are identical either way; this is
-/// only about who asked first. The fallback covers a caller that somehow
-/// arrives before `build()` ran.
-var resolved_options: ?BuildOptions = null;
-
 pub fn janetModule(
     dep: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
     const b = dep.builder;
-    const opts = resolved_options orelse readOptions(b);
+    // **`b.option` may be declared only once per builder.** A dependent
+    // reaches this after `b.dependency` has already run this package's
+    // `build()`, which declared every one of them, so re-reading panics with
+    // "Option ... declared twice". The fallback covers a caller that arrives
+    // before `build()` ran.
+    const opts = if (builtFor(b)) |built| built.options else readOptions(b);
     const cfg = janetConfig(opts, target);
 
     const config_module = makeConfigModule(b, blk: {
@@ -303,11 +298,118 @@ pub fn janetModule(
     return janet_module;
 }
 
+/// A native module linked into a `quickbin` executable.
+pub const QuickbinNative = struct {
+    /// The name `(import <name>)` finds the module under and the prefix its
+    /// bindings carry in the image. Letters, digits, `_` and `-` only: it is
+    /// spliced into two symbol names and a Janet string.
+    name: []const u8,
+    /// The module's Zig root. It imports `janet` and calls `janet.entry`.
+    root: std.Build.LazyPath,
+};
+
+/// What `quickbin` builds.
+pub const QuickbinOptions = struct {
+    /// The executable's name.
+    name: []const u8,
+    /// The program: a Janet file that defines `main`.
+    source: std.Build.LazyPath,
+    /// The native modules the program imports.
+    natives: []const QuickbinNative = &.{},
+    /// The target and mode `dep` was instantiated with.
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+};
+
+/// A Janet program, its native modules and the runtime, as one executable.
+///
+/// `dep` is this package instantiated for the executable's target and mode,
+/// and `host` is this package instantiated for the build machine:
+///
+/// ```zig
+/// const exe = janet.quickbin(
+///     b.dependency("janet", .{ .target = target, .optimize = optimize }),
+///     b.dependency("janet", .{ .target = b.graph.host, .optimize = .Debug }),
+///     .{ .name = "hello", .source = b.path("main.janet"), .target = target, .optimize = optimize,
+///        .natives = &.{.{ .name = "greet", .root = b.path("greet.zig") }} },
+/// );
+/// b.installArtifact(exe);
+/// ```
+///
+/// `host`'s `janet` client makes the image: each native is built for the host
+/// as a shared library, loaded and passed to `module/add-native`, and then
+/// `janet -c` compiles `source`. Each native is also built for the target as
+/// an object whose entry symbols carry its name, and `src/client/quickbin.zig`
+/// adds the same modules under the same names before it loads the image, so
+/// every cfunction and abstract value the image names resolves.
+///
+/// The executable is returned uninstalled.
+pub fn quickbin(
+    dep: *std.Build.Dependency,
+    host: *std.Build.Dependency,
+    opts: QuickbinOptions,
+) *std.Build.Step.Compile {
+    const target_side = builtFor(dep.builder) orelse
+        @panic("quickbin: the target dependency has not run build()");
+    const host_side = builtFor(host.builder) orelse
+        @panic("quickbin: the host dependency has not run build()");
+    if (target_side.graph == null or host_side.graph == null)
+        @panic("quickbin: a configuration that selects no subsystem has no runtime to link");
+    if (opts.optimize != target_side.optimize or
+        !std.mem.eql(u8, triple(dep.builder, opts.target), triple(dep.builder, target_side.target)))
+    {
+        @panic("quickbin: `target` and `optimize` must be the ones `dep` was instantiated with");
+    }
+    return quickbinExecutable(target_side, host_side, opts);
+}
+
+/// What `build()` made for one builder, which `janetModule` and `quickbin`
+/// read back.
+///
+/// Keyed by builder rather than held in one global, because a dependent that
+/// instantiates this package twice -- `quickbin`'s target and host -- runs
+/// `build()` twice in one process, and the two runs resolve different options,
+/// configurations and graphs.
+const Built = struct {
+    b: *std.Build,
+    options: BuildOptions,
+    config: Config,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    graph: ?RuntimeGraph,
+    /// The `janet` client, which makes a `quickbin` image on the host.
+    client: *std.Build.Step.Compile,
+};
+
+/// One entry per builder that has run `build()`. Eight is more instances of
+/// this package than a build graph has had.
+var built_by_builder: [8]?Built = @splat(null);
+
+fn builtFor(b: *std.Build) ?Built {
+    for (built_by_builder) |entry| {
+        if (entry) |e| if (e.b == b) return e;
+    }
+    return null;
+}
+
+fn recordBuilt(built: Built) void {
+    for (&built_by_builder) |*slot| {
+        if (slot.* == null) {
+            slot.* = built;
+            return;
+        }
+    }
+    @panic("build.zig: more than eight instances of the janet package");
+}
+
+fn triple(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+    return target.result.zigTriple(b.allocator) catch @panic("OOM");
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const options = readOptions(b);
-    resolved_options = options;
     const config = janetConfig(options, target);
     // A wasm target has no dynamic loader, so the build makes no shared library
     // and keeps no export table there: `wasm-ld` rejects the shared library
@@ -451,7 +553,7 @@ pub fn build(b: *std.Build) void {
 
     // **The client imports the runtime rather than linking it.** It was an
     // embedder -- it took the object and reached `janet_init` and its
-    // neighbours through the symbol table -- and `DESIGN.md` section 11 is the
+    // neighbours through the symbol table -- and `DESIGN.md` section 10 is the
     // decision that ended that: there is no C API to be an embedder of. The
     // import is what lets `cli.zig` write `try` at a raise and hold a
     // `raise.CFunction` rather than an `.auto`-convention pointer across a
@@ -494,6 +596,17 @@ pub fn build(b: *std.Build) void {
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
 
+    const built: Built = .{
+        .b = b,
+        .options = options,
+        .config = config,
+        .target = target,
+        .optimize = optimize,
+        .graph = runtime_graph,
+        .client = client,
+    };
+    recordBuilt(built);
+
     // The wasm test binaries, which the import check below reads once they all
     // exist. The client is checked on its own, because a plain build makes it
     // and does not make these.
@@ -513,33 +626,7 @@ pub fn build(b: *std.Build) void {
             root: []const u8,
             name: []const u8,
         ) *std.Build.Step.Compile {
-            const janet_module = bb.createModule(.{
-                .root_source_file = bb.path("src/module.zig"),
-                .target = t,
-                .optimize = o,
-            });
-            configureCModule(bb, janet_module, t, opts, cfg);
-            const mod = bb.createModule(.{
-                .root_source_file = bb.path(root),
-                .target = t,
-                .optimize = o,
-            });
-            configureCModule(bb, mod, t, opts, cfg);
-            if (g) |graph| {
-                janet_module.addImport("abi", graph.abi);
-                janet_module.addImport("repr", graph.repr);
-                janet_module.addImport("cabi", graph.cabi);
-                janet_module.addImport("config", graph.module_config);
-                janet_module.addImport("constants", graph.constants);
-                mod.addImport("janet", janet_module);
-            }
-            const lib = bb.addLibrary(.{
-                .name = name,
-                .linkage = .dynamic,
-                .root_module = mod,
-            });
-            lib.linker_allow_shlib_undefined = true;
-            return lib;
+            return nativeCompile(bb, g, t, o, opts, cfg, bb.path(root), name, null);
         }
     }.make;
 
@@ -571,10 +658,9 @@ pub fn build(b: *std.Build) void {
     );
     installTest(b, options, numarray_module);
 
-    // `examples/url`, the worked example of the views: a module that owns
-    // nothing, reads every shape an argument can be -- bytes, elements,
-    // entries and a range -- and answers a string. `DESIGN.md` section 14's
-    // other half.
+    // `examples/url`, the worked example of the built-in types: a module that
+    // owns nothing, reads every shape an argument can be -- bytes, elements,
+    // entries and a range -- and returns a string. `DESIGN.md` section 13.
     const url_module = nativeModule(
         b,
         runtime_graph,
@@ -589,7 +675,7 @@ pub fn build(b: *std.Build) void {
 
     // `examples/digest`, the worked example of scheduling work through the
     // event loop: one cfunction that hashes on a thread of its own, so the
-    // loop is never blocked. `DESIGN.md` section 14's last section.
+    // loop is never blocked. `DESIGN.md` section 15.
     const digest_module = nativeModule(
         b,
         runtime_graph,
@@ -601,6 +687,28 @@ pub fn build(b: *std.Build) void {
         "digest",
     );
     installTest(b, options, digest_module);
+
+    // `examples/quickbin`, the worked example of `quickbin`: `main.janet` with
+    // `examples/digest` linked into one executable. On a native build the
+    // image is made by `client`; on a cross build by a client built for the
+    // host from the target's configuration, so that it loads the target's
+    // core image and makes an image of the same bindings.
+    const quickbin_step = b.step(
+        "quickbin",
+        "Build examples/quickbin, with examples/digest linked in, into <prefix>/bin/quickbin",
+    );
+    const quickbin_exe = if (runtime_graph != null) quickbinExecutable(
+        built,
+        if (target.query.isNative()) built else hostBuilt(b, options, target, boot_host, image_source),
+        .{
+            .name = "quickbin",
+            .source = b.path("examples/quickbin/main.janet"),
+            .natives = &.{.{ .name = "digest", .root = b.path("examples/digest/digest.zig") }},
+            .target = target,
+            .optimize = optimize,
+        },
+    ) else null;
+    if (quickbin_exe) |exe| quickbin_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
 
     // The three load refusals: one shared object per field the loader
     // compares. Each exports `_janet_mod_config` and `_janet_init` by hand,
@@ -877,10 +985,12 @@ pub fn build(b: *std.Build) void {
     //
     // `examples/numarray` is compiled here, with `RuntimeGraph` and the private
     // modules in hand, so it proves the *source* experience and cannot notice
-    // if the published build surface rots. This step runs `zig build` inside
-    // `examples/standalone`, which depends on this package by path and reaches
-    // it only through `janetModule` -- so a change that breaks a real consumer
-    // fails here rather than in somebody else's repository.
+    // if the published build surface rots. This step runs `zig build test`
+    // inside `examples/standalone`, which depends on this package by path and
+    // reaches it only through `janetModule` and `quickbin` -- so a change that
+    // breaks a real consumer fails here rather than in somebody else's
+    // repository. `test` there runs the executable `quickbin` built, so the
+    // step proves the program runs rather than only that it links.
     //
     // It is a step of its own rather than part of `zig build test` because it
     // compiles the runtime's modules a second time in a second cache. The
@@ -889,9 +999,9 @@ pub fn build(b: *std.Build) void {
         "standalone",
         "Build the example that consumes this package from outside",
     );
-    const standalone = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
+    const standalone = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "test" });
     standalone.setCwd(b.path("examples/standalone"));
-    standalone.setName("zig build (examples/standalone)");
+    standalone.setName("zig build test (examples/standalone)");
     // Its output is its own; nothing here reads it, so the step's verdict is
     // the exit status.
     standalone.expectExitCode(0);
@@ -1092,6 +1202,17 @@ pub fn build(b: *std.Build) void {
         for (zig_side) |step| run_refused.step.dependOn(step);
         test_step.dependOn(&run_refused.step);
 
+        // The single-file executable, run with no file beside it. `digest`
+        // needs the event loop, and a cross build only builds it.
+        if (quickbin_exe != null and config.ev and target.query.isNative()) {
+            const run_quickbin = b.addRunArtifact(quickbin_exe.?);
+            run_quickbin.expectStdOutEqual(
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
+            );
+            for (zig_side) |step| run_quickbin.step.dependOn(step);
+            test_step.dependOn(&run_quickbin.step);
+        }
+
         module_side = .{
             &run_native_test.step,
             &run_numarray.step,
@@ -1111,6 +1232,216 @@ pub fn build(b: *std.Build) void {
             test_step.dependOn(&run_suite.step);
         }
     }
+}
+
+/// A native module compiled against `graph`: a shared library the loader
+/// opens when `static_name` is null, and otherwise an object whose entry
+/// symbols carry `static_name`, for linking into a `quickbin` executable.
+fn nativeCompile(
+    b: *std.Build,
+    graph: ?RuntimeGraph,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    options: BuildOptions,
+    cfg: Config,
+    root: std.Build.LazyPath,
+    name: []const u8,
+    static_name: ?[]const u8,
+) *std.Build.Step.Compile {
+    const janet_module = b.createModule(.{
+        .root_source_file = b.path("src/module.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    configureCModule(b, janet_module, target, options, cfg);
+    const mod = b.createModule(.{
+        .root_source_file = root,
+        .target = target,
+        .optimize = optimize,
+    });
+    configureCModule(b, mod, target, options, cfg);
+    if (graph) |g| {
+        janet_module.addImport("abi", g.abi);
+        janet_module.addImport("repr", g.repr);
+        janet_module.addImport("cabi", g.cabi);
+        janet_module.addImport("constants", g.constants);
+        if (static_name) |_| {
+            const config_module = makeConfigModule(b, blk: {
+                var module_cfg = cfg;
+                module_cfg.native_module = true;
+                module_cfg.static_name = static_name;
+                break :blk module_cfg;
+            });
+            applyFramePointer(config_module, options, optimize);
+            janet_module.addImport("config", config_module);
+        } else {
+            janet_module.addImport("config", g.module_config);
+        }
+        mod.addImport("janet", janet_module);
+    }
+    if (static_name) |_| return b.addObject(.{ .name = name, .root_module = mod });
+    const lib = b.addLibrary(.{
+        .name = name,
+        .linkage = .dynamic,
+        .root_module = mod,
+    });
+    lib.linker_allow_shlib_undefined = true;
+    return lib;
+}
+
+/// The host side of an in-repository `quickbin` on a cross build: a runtime
+/// and a `janet` client for `host`, compiled under the target's features.
+///
+/// The configuration is `bootConfig`'s, the one `image_source` was generated
+/// under, with `bootstrap` cleared so that the result is a runtime rather
+/// than a generator, and with dynamic modules on, because the client loads
+/// each native as a shared library to make the image.
+fn hostBuilt(
+    b: *std.Build,
+    options: BuildOptions,
+    target: std.Build.ResolvedTarget,
+    host: std.Build.ResolvedTarget,
+    image_source: std.Build.LazyPath,
+) Built {
+    var cfg = bootConfig(options, target, host);
+    cfg.bootstrap = false;
+    cfg.dynamic_modules = true;
+    const graph = makeRuntimeGraph(b, host, .Debug, options, cfg, image_source) orelse
+        @panic("quickbin: a configuration that selects no subsystem has no runtime to link");
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/client/cli.zig"),
+        .target = host,
+        .optimize = .Debug,
+    });
+    configureCModule(b, module, host, options, cfg);
+    module.addImport("subsystems", graph.subsystems);
+    module.addImport("host", graph.host);
+    module.addImport("abi", graph.abi);
+    module.addImport("repr", graph.repr);
+    module.addImport("constants", graph.constants);
+    module.addImport("config", graph.config);
+    const client = b.addExecutable(.{ .name = "janet-host", .root_module = module });
+    // The two settings `build()` gives the client, for the reason given there:
+    // a native module resolves into the client's symbol table.
+    client.rdynamic = true;
+    client.link_gc_sections = false;
+    return .{
+        .b = b,
+        .options = options,
+        .config = cfg,
+        .target = host,
+        .optimize = .Debug,
+        .graph = graph,
+        .client = client,
+    };
+}
+
+/// `quickbin`, over what `build()` recorded for the target and the host.
+fn quickbinExecutable(
+    target_side: Built,
+    host_side: Built,
+    opts: QuickbinOptions,
+) *std.Build.Step.Compile {
+    const b = target_side.b;
+    const hb = host_side.b;
+
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/client/quickbin.zig"),
+        .target = target_side.target,
+        .optimize = target_side.optimize,
+    });
+    configureCModule(b, module, target_side.target, target_side.options, target_side.config);
+    const graph = target_side.graph.?;
+    module.addImport("subsystems", graph.subsystems);
+    module.addImport("host", graph.host);
+    module.addImport("abi", graph.abi);
+    module.addImport("repr", graph.repr);
+    module.addImport("constants", graph.constants);
+    module.addImport("config", graph.config);
+
+    // `preload.janet` sits beside a copy of each host library, so it finds
+    // them from its own path.
+    const preload_files = hb.addWriteFiles();
+    var preload: std.ArrayList(u8) = .empty;
+    var table: std.ArrayList(u8) = .empty;
+    const gpa = b.allocator;
+    preload.appendSlice(gpa,
+        \\(def dir
+        \\  (let [path (dyn *current-file*)]
+        \\    (string/slice path 0 (- (length path) (length "preload.janet")))))
+        \\
+    ) catch @panic("OOM");
+    table.appendSlice(gpa,
+        \\pub const Native = struct {
+        \\    name: [:0]const u8,
+        \\    init: *const fn (*anyopaque, *const anyopaque) callconv(.c) void,
+        \\    config: *const fn (*anyopaque, usize) callconv(.c) usize,
+        \\};
+        \\
+        \\pub const natives = [_]Native{
+        \\
+    ) catch @panic("OOM");
+    for (opts.natives) |native| {
+        for (native.name) |ch| switch (ch) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_', '-' => {},
+            else => std.debug.panic("quickbin: native name '{s}' may hold only letters, digits, '_' and '-'", .{native.name}),
+        };
+        const library = nativeCompile(
+            hb,
+            host_side.graph,
+            host_side.target,
+            host_side.optimize,
+            host_side.options,
+            host_side.config,
+            native.root,
+            native.name,
+            null,
+        );
+        _ = preload_files.addCopyFile(library.getEmittedBin(), b.fmt("{s}.so", .{native.name}));
+        preload.appendSlice(gpa, b.fmt(
+            "(module/add-native \"{0s}\" (native (string dir \"{0s}.so\")))\n",
+            .{native.name},
+        )) catch @panic("OOM");
+
+        const object = nativeCompile(
+            b,
+            graph,
+            target_side.target,
+            target_side.optimize,
+            target_side.options,
+            target_side.config,
+            native.root,
+            native.name,
+            native.name,
+        );
+        module.addObject(object);
+        table.appendSlice(gpa, b.fmt(
+            \\    .{{
+            \\        .name = "{0s}",
+            \\        .init = @extern(*const fn (*anyopaque, *const anyopaque) callconv(.c) void, .{{ .name = "_janet_init_{0s}" }}),
+            \\        .config = @extern(*const fn (*anyopaque, usize) callconv(.c) usize, .{{ .name = "_janet_mod_config_{0s}" }}),
+            \\    }},
+            \\
+        , .{native.name})) catch @panic("OOM");
+    }
+    table.appendSlice(gpa, "};\n") catch @panic("OOM");
+
+    // `-l` rather than `-e`, because a generated path is a file argument and
+    // cannot be spliced into an expression; flags run in order, so the
+    // natives are added before `-c` compiles the program.
+    const make_image = hb.addRunArtifact(host_side.client);
+    make_image.setName(b.fmt("make image ({s})", .{opts.name}));
+    make_image.addArg("-l");
+    make_image.addFileArg(preload_files.add("preload.janet", preload.items));
+    make_image.addArg("-c");
+    make_image.addFileArg(opts.source);
+    const image = make_image.addOutputFileArg(b.fmt("{s}.jimage", .{opts.name}));
+
+    module.addAnonymousImport("quickbin_image", .{ .root_source_file = image });
+    module.addAnonymousImport("quickbin_natives", .{
+        .root_source_file = b.addWriteFiles().add("natives.zig", table.items),
+    });
+    return b.addExecutable(.{ .name = opts.name, .root_module = module });
 }
 
 /// Every file-scope alias is used by the file that declares it.
@@ -1465,6 +1796,12 @@ const Config = struct {
     /// `interface.rt`, because the runtime is on the other side of a `dlopen`.
     /// `raise.zig` carries both arms and picks on this.
     native_module: bool,
+    /// The name a native module linked into an executable is registered
+    /// under, or null for a module the loader opens.
+    ///
+    /// `module.entry` appends it to the two symbols it exports, so that the
+    /// natives `quickbin` links into one binary do not collide.
+    static_name: ?[]const u8 = null,
     docstrings: bool,
     sourcemaps: bool,
     dynamic_modules: bool,

@@ -1,24 +1,23 @@
-[![Join the chat](https://img.shields.io/badge/zulip-join_chat-brightgreen.svg)](https://janet.zulipchat.com)
-&nbsp;
-[![builds.sr.ht status](https://builds.sr.ht/~bakpakin/janet/commits/master/freebsd.yml.svg)](https://builds.sr.ht/~bakpakin/janet/commits/master/freebsd.yml?)
-[![builds.sr.ht status](https://builds.sr.ht/~bakpakin/janet/commits/master/openbsd.yml.svg)](https://builds.sr.ht/~bakpakin/janet/commits/master/openbsd.yml?)
-[![Actions Status](https://github.com/janet-lang/janet/actions/workflows/test.yml/badge.svg)](https://github.com/janet-lang/janet/actions/workflows/test.yml)
+[![Test Status][icon]][status]
 
-<img src="https://raw.githubusercontent.com/janet-lang/janet/master/assets/janet-w200.png" alt="Janet logo" width=200 align="left">
+[icon]: https://github.com/pyrmont/janet/actions/workflows/test/badge.svg)
+[status]: https://github.com/pyrmont/janet/actions?query=wrokflow%3Atest
 
-**Janet** is a programming language for system scripting, expressive automation, and
-extending programs written in C or C++ with user scripting capabilities.
+[![Janet logo][logo]]
 
-Janet makes a good system scripting language, or a language to embed in other programs.
-It's like Lua and GNU Guile in that regard. It has more built-in functionality and a richer core language than
-Lua, but smaller than GNU Guile or Python. However, it is much easier to embed and port than Python or Guile.
+[logo]: assets/janet-w200.png
 
-There is a REPL for trying out the language, as well as the ability
-to run script files. This client program is separate from the core runtime, so
-Janet can be embedded in other programs. Try Janet in your browser at
-<https://janet-lang.org>.
+**Janet** is a programming language for system scripting and expressive
+automation. It has more built-in functionality and a richer core language than
+Lua, but is smaller than GNU Guile or Python.
 
-<br>
+This repository is an implementation of Janet in [Zig](https://ziglang.org).
+The Zig imlementation aims to run Janet source identically to the [C
+implementation](https://github.com/janet-lang/janet). What differs is the
+runtime underneath, how it is built, and how native modules are written.
+
+There is a REPL for trying out the language, as well as the ability to run
+script files. Try Janet in your browser at <https://janet-lang.org>.
 
 ## Examples
 
@@ -90,103 +89,68 @@ See the examples directory for all provided example programs.
 (net/server "127.0.0.1" "8000" handler)
 ```
 
-### Windows FFI Hello, World!
+### FFI Hello, World!
 
 ```janet
-# Use the FFI to popup a Windows message box - no C required
+# Use the FFI to call into the C library - no C compiler required
 
-(ffi/context "user32.dll")
+(ffi/context)
 
-(ffi/defbind MessageBoxA :int
-  [w :ptr text :string cap :string typ :int])
+(ffi/defbind strlen :size [s :string])
 
-(MessageBoxA nil "Hello, World!" "Test" 0)
+(print (strlen "Hello, World!"))
 ```
 
 ## Language Features
 
 * 600+ functions and macros in the core library
-* Built-in socket networking, threading, subprocesses, and file system functions.
-* Parsing Expression Grammars (PEG) engine as a more robust Regex alternative
+* Built-in socket networking, threading, subprocesses, and file system functions
+* Parsing Expression Grammars (PEG) engine as a more robust regex alternative
 * Macros and compile-time computation
 * Per-thread event loop for efficient IO (epoll/IOCP/kqueue)
 * First-class green threads (continuations) as well as OS threads
 * Erlang-style supervision trees that integrate with the event loop
 * First-class closures
 * Garbage collection
-* Distributed as janet.c and janet.h for embedding into a larger program.
 * Python-style generators (implemented as a plain macro)
 * Mutable and immutable arrays (array/tuple)
 * Mutable and immutable hashtables (table/struct)
 * Mutable and immutable strings (buffer/string)
 * Tail recursion
-* Interface with C functions and dynamically load plugins ("natives").
-* Built-in C FFI for when the native bindings are too much work
+* Native modules written in Zig and loaded dynamically
+* Built-in C FFI for calling shared libraries without writing a native module
 * REPL development with debugger and inspectable runtime
 
 ## Documentation
 
-* For a quick tutorial, see [the introduction](https://janet-lang.org/docs/index.html) for more details.
-* For the full API for all functions in the core library, see [the core API doc](https://janet-lang.org/api/index.html).
+* For a quick tutorial, see the
+  [introduction](https://janet-lang.org/docs/index.html) for more details.
+* For the full API for all functions in the core library, see the [core API
+  doc](https://janet-lang.org/api/index.html).
 
-Documentation is also available locally in the REPL.
-Use the `(doc symbol-name)` macro to get API
-documentation for symbols in the core library. For example,
-```
+Documentation is also available locally in the REPL. Use the `(doc
+symbol-name)` macro to get API documentation for symbols in the core library.
+
+For example:
+
+```janet
 (doc apply)
 ```
+
 shows documentation for the `apply` function.
 
-To get a list of all bindings in the default
-environment, use the `(all-bindings)` function. You
-can also use the `(doc)` macro with no arguments if you are in the REPL
-to show bound symbols.
-
-## Source
-
-You can get the source on [GitHub](https://github.com/janet-lang/janet) or
-[SourceHut](https://git.sr.ht/~bakpakin/janet). While the GitHub repo is the official repo,
-the SourceHut mirror is actively maintained.
-
-## Spork and JPM
-
-Spork and JPM are two companion projects to Janet. They are optional, especially in an embedding use case.
-
-Spork is a collection of common utility modules, and several packaged scripts
-like `janet-format` for code formatting, `janet-netrepl` for a socket-based
-REPL, and `janet-pm` for a comprehensive Janet project manager tool. The
-modules in `spork` are less stable than the interfaces in core Janet, although
-we try to prevent breaking changes to existing modules, with a preference to
-add new modules and functions. Spork requires a C compiler to build and install
-various extenstion components such as miniz and JSON utilities. Many spork
-sub-modules, for example spork/path, are independent and can be manually
-vendored in programmer projects without fully installing spork.
-
-When install Spork, scripts will be installed to $JANET_PATH/bin/ on POSIX systems by default.
-This likely needs to be added to the path to use these scripts.
-
-JPM is the older, more opinionated, project manager tool, which has it's pros
-and cons. It does not require a C compiler to build and install, but is less
-flexible and is not receiving many changes and improvements going forward. It
-may also be harder to configure correctly on new systems. In that sense, it may
-be more stable.
-
-JPM will install to /usr/local/bin/ on posix systems by default, which may or
-may not be on your PATH.
+To get a list of all bindings in the default environment, use the
+`(all-bindings)` function. You can also use the `(doc)` macro with no arguments
+if you are in the REPL to show bound symbols.
 
 ## Building
 
-When building from source, for stability, please use the latest tagged release. For
-example, run `git checkout $(git describe --tags --abbrev=0)` after cloning but
-before building. For the latest development, build directly on the master
-branch. The master branch is not-necessarily stable as most Janet development
-happens directly on the master branch.
-
 Janet is built with [Zig](https://ziglang.org). The version is pinned in
-`.zigversion` and is currently **0.16.0**; that is the only prerequisite.
+`.zigversion` and is currently **0.16.0**.
 
 ```sh
-cd somewhere/my/projects/janet
+git clone https://github.com/pyrmont/janet
+cd janet
 zig build              # the executable and the libraries
 zig build test         # the contracts and the Janet test suites
 zig build run          # a REPL
@@ -194,10 +158,10 @@ zig build run          # a REPL
 
 Artifacts are installed under `zig-out`: the executable in `zig-out/bin` and
 the static and shared libraries in `zig-out/lib`. **No header is installed** —
-see "Embedding" below. Pass `-p <prefix>` to install somewhere else, and
-`zig build --help` to see the feature flags — the runtime can be built without
-the event loop, networking, the PEG engine, the assembler, the FFI, integer
-types, dynamic modules or docstrings.
+see "Native modules" below. Pass `-p <prefix>` to install somewhere else, and `zig
+build --help` to see the feature flags — the runtime can be built without the
+event loop, networking, the PEG engine, the assembler, the FFI, integer types,
+dynamic modules or docstrings.
 
 ```sh
 zig build -Doptimize=ReleaseFast          # an optimized build
@@ -216,11 +180,10 @@ Run it under any WASI host:
 wasmtime run --dir . zig-out/bin/janet.wasm
 ```
 
-A WASI program sees only the directories its host maps in, which is what
-`--dir` does, so a script and everything it reads have to be under one of them.
-The default `syspath` is `/usr/local/lib/janet`, so `import` needs that name
-mapped — `--dir <host-dir>::/usr/local/lib/janet` — or `JANET_PATH` set to a
-directory that is:
+A WASI program sees only the directories which are mapped in, so a script and
+everything it reads have to be in this tree.  The default `syspath` is
+`/usr/local/lib/janet`, so `import` needs that name mapped — `--dir
+<host-dir>::/usr/local/lib/janet` — or `JANET_PATH` set to a directory that is:
 
 ```sh
 wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
@@ -228,141 +191,141 @@ wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
 
 ### Supported platforms
 
-| platform | state |
-| --- | --- |
-| macOS arm64 and x86-64 | built and fully tested |
-| Linux, musl | built and fully tested; a musl target links statically |
-| Linux, glibc | built and tested in a container at each phase gate, not in CI |
-| Windows | cross-compiles; binaries have never been executed |
-| wasm32-wasi | built and fully tested under wasmtime, without the event loop |
-| 32-bit (riscv32) | compiles only; wasm32-wasi is the 32-bit target that runs |
+| platform               | state                                                         |
+| ---------------------- | ------------------------------------------------------------- |
+| macOS arm64 and x86-64 | built and fully tested                                        |
+| Linux, musl            | built and fully tested; a musl target links statically        |
+| Linux, glibc           | built and tested in a container at each phase gate, not in CI |
+| Windows                | cross-compiles; binaries have never been executed             |
+| wasm32-wasi            | built and fully tested under wasmtime, without the event loop |
+| 32-bit (riscv32)       | compiles only; wasm32-wasi is the 32-bit target that runs     |
 
-`.github/workflows/test.yml` is what actually runs, and is the honest statement
-of what is covered.
+## Installing
 
-### Where the old build systems went
+If you just want to try out the language, you don't need to install anything.
+In this case you can also move the `janet` executable wherever you want on your
+system and run it. However, for a fuller setup, please see the
+[Introduction](https://janet-lang.org/docs/index.html) for more details.
 
-`make`, `meson`, `plan9.mk` and `build_win.bat` are gone. All four named the
-fifty C sources this runtime replaced, so none of them could build anything;
-they were removed rather than left as instructions that cannot work.
+## Using
 
+A REPL is launched when the binary is invoked with no arguments. Pass the `-h`
+flag to display the usage information. Individual scripts can be run with
+`./janet myscript.janet`.
 
-## Development
+If you are looking to explore, you can print a list of all available macros,
+functions, and constants by entering the command `(all-bindings)` into the
+REPL.
+
+```
+$ janet
+Janet 1.41.3-dev-zig macos/aarch64/clang - '(doc)' for help
+repl:1:> (+ 1 2 3)
+6
+repl:2:> (print "Hello, World!")
+Hello, World!
+nil
+repl:3:> (os/exit)
+$ janet -h
+usage: janet [options] script args...
+Options are:
+  --help (-h)             : Show this help
+  --version (-v)          : Print the version string
+  --stdin (-s)            : Use raw stdin instead of getline like functionality
+  --eval (-e) code        : Execute a string of janet
+  --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
+  --debug (-d)            : Set the debug flag in the REPL
+  --repl (-r)             : Enter the REPL after running all scripts
+  --noprofile (-R)        : Disables loading profile.janet when JANET_PROFILE is present
+  --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
+  --quiet (-q)            : Hide logo (quiet)
+  --flycheck (-k)         : Compile scripts but do not execute (flycheck)
+  --syspath (-m) syspath  : Set system path for loading global modules
+  --compile (-c) source output : Compile janet source code into an image
+  --image (-i)            : Load the script argument as an image file instead of source code
+  --nocolor (-n)          : Disable ANSI color output in the REPL
+  --color (-N)            : Enable ANSI color output in the REPL
+  --library (-l) lib      : Use a module before processing more arguments
+  --lint-warn (-w) level  : Set the lint warning level - default is "normal"
+  --lint-error (-x) level : Set the lint error level - default is "none"
+  --install (-b) dirpath  : Install a bundle from a directory
+  --reinstall (-B) name   : Reinstall a bundle by bundle name
+  --uninstall (-u) name   : Uninstall a bundle by bundle name
+  --update-all (-U)       : Reinstall all installed bundles
+  --prune (-P)            : Uninstall all bundles that are orphaned
+  --list (-L)             : List all installed bundles
+  --                      : Stop handling options
+```
+
+The manual page `janet.1` is in the repository root. `zig build` does not
+install it; `man ./janet.1` reads it in place.
+
+## Extending
+
+Janet can be extended with _native modules_.  **The native-module interface is
+Zig.** `src/module.zig` is what a module imports. `examples/numarray/` is a
+worked example. A C program cannot define a cfunction for this runtime: a
+cfunction returns an error union over Zig's own calling convention, so no C
+body can have that type and no C caller can invoke one. The same applies to a
+`JanetAbstractType`'s callbacks. Native modules are therefore written in Zig.
+
+A module records the interface it was built against as a fingerprint, and the
+loader refuses to load this unless that fingerprint, the configuration bits and
+the Zig version all match the runtime's own. `janet/api` is the runtime's
+fingerprint. Janet's version is not compared, so a module built against one
+release loads into another whose interface is the same.
+
+A module can also be linked into an executable, together with the runtime and
+an image of a Janet program, so that one file cross-compiles and runs with
+nothing beside it. `zig build quickbin` builds `examples/quickbin/`, which links
+`examples/digest/` in, and `build.zig`'s `quickbin` function builds one from
+outside the tree (`examples/standalone/`).
+
+**No header is installed, and there is no amalgamated `janet.c`.** The client
+does not link against the library either: it imports the runtime as a Zig
+module.
+
+## Contributing
 
 Janet can be hacked on with pretty much any environment you like. VSCode, Vim,
 Emacs and Atom each have syntax packages for the Janet language, and any editor
 with Zig support will do for the runtime itself.
 
-`AGENTS.md` at the repository root describes how to work in this tree, and
-`tools/README.md` the development instruments beside it — the acceptance
-matrix, the leak check and the checked inventories.
-
-## Installation
-
-If you just want to try out the language, you don't need to install anything.
-In this case you can also move the `janet` executable wherever you want on
-your system and run it.  However, for a fuller setup, please see the
-[Introduction](https://janet-lang.org/docs/index.html) for more details.
-
-## Usage
-
-A REPL is launched when the binary is invoked with no arguments. Pass the `-h` flag
-to display the usage information. Individual scripts can be run with `./janet myscript.janet`.
-
-If you are looking to explore, you can print a list of all available macros, functions, and constants
-by entering the command `(all-bindings)` into the REPL.
-
-```
-$ janet
-Janet 1.7.1-dev-951e10f  Copyright (C) 2017-2020 Calvin Rose
-janet:1:> (+ 1 2 3)
-6
-janet:2:> (print "Hello, World!")
-Hello, World!
-nil
-janet:3:> (os/exit)
-$ janet -h
-usage: janet [options] script args...
-Options are:
-  -h : Show this help
-  -v : Print the version string
-  -s : Use raw stdin instead of getline like functionality
-  -e code : Execute a string of janet
-  -E code arguments... : Evaluate an expression as a short-fn with arguments
-  -d : Set the debug flag in the REPL
-  -r : Enter the REPL after running all scripts
-  -R : Disables loading profile.janet when JANET_PROFILE is present
-  -p : Keep on executing if there is a top-level error (persistent)
-  -q : Hide logo (quiet)
-  -k : Compile scripts but do not execute (flycheck)
-  -m syspath : Set system path for loading global modules
-  -c source output : Compile janet source code into an image
-  -i : Load the script argument as an image file instead of source code
-  -n : Disable ANSI color output in the REPL
-  -l lib : Use a module before processing more arguments
-  -w level : Set the lint warning level - default is "normal"
-  -x level : Set the lint error level - default is "none"
-  -- : Stop handling options
-```
-
-If installed, you can also run `man janet` to get usage information.
-
-## Embedding
-
-`zig build` produces `zig-out/lib/libjanet.a` and `zig-out/lib/libjanet.so`
-(or `.dylib`). The library exports 434 C symbols, and `src/runtime/capi.zig` is the
-one file that publishes them: every entry point there states the signature it
-publishes, and the compiler checks it.
-
-**No header is installed, and there is no amalgamated `janet.c`.** Janet's
-`janet.h` declared this surface with nothing comparing a declaration against
-its definition, so shipping it would promise less than the tree keeps. What a C
-caller sees is `capi.zig`; a generated header is not written yet.
-
-**The native-module interface is Zig.** `src/module.zig` is what a module
-imports, and `examples/numarray/` is the worked example. A C program cannot
-define a cfunction for this runtime: a cfunction returns an error union over
-Zig's own calling convention, so no C body can have that type and no C caller
-can invoke one. The same applies to a `JanetAbstractType`'s callbacks.
-
-Native modules are therefore written in Zig. `examples/numarray/numarray.zig`
-imports `janet` and nothing else, which is the whole of the interface.
-
-A module records the interface it was built against as a fingerprint, and the
-loader refuses it unless that fingerprint, the configuration bits and the Zig
-version all match the runtime's own. `janet/api` is the runtime's
-fingerprint. Janet's version is not compared, so a module built against one
-release loads into another whose interface is the same.
-
-## Discussion
-
-Feel free to ask questions and join the discussion on the [Janet Zulip Instance](https://janet.zulipchat.com/)
+`tools/README.md` explains the development instruments used in porting — the
+acceptance matrix, the leak check and the checked inventories.
 
 ## FAQ
 
 ### How fast is it?
 
-It is about the same speed as most interpreted languages without a JIT compiler. Tight, critical
-loops should probably be written in C or C++ . Programs tend to be a bit faster than
-they would be in a language like Python due to the discouragement of slow Object-Oriented abstraction
-with lots of hash-table lookups, and making late-binding explicit. All values are boxed in an 8-byte
-representation by default and allocated on the heap, with the exception of numbers, nils and booleans. The
-PEG engine is a specialized interpreter that can efficiently process string and buffer data.
+It is about the same speed as most interpreted languages without a JIT
+compiler, and this implementation is benchmarked against the C implementation
+to stay close to it. Tight, critical loops should probably be written in a
+native module. Programs tend to be a bit faster than they would be in a
+language like Python due to the discouragement of slow object-oriented
+abstractions with lots of hash-table lookups and by making late-binding
+explicit.
 
-The GC is simple and stop-the-world, but GC knobs are exposed in the core library and separate threads
-have isolated heaps and garbage collectors. Data that is shared between threads is reference counted.
+On x86-64, aarch64 and riscv64, and on 32-bit targets, a value is 8 bytes;
+numbers, nils and booleans are held in the value itself and everything else is
+allocated on the heap. The PEG engine is a specialized interpreter that can
+efficiently process string and buffer data.
 
-YMMV.
+The GC is simple and stop-the-world, but GC knobs are exposed in the core
+library and separate threads have isolated heaps and garbage collectors. Data
+that is shared between threads is reference counted.
 
 ### Where is (favorite feature from other language)?
 
-It may exist, it may not. If you want to propose a major language feature, go ahead and open an issue, but
-it will likely be closed as "will not implement". Often, such features make one usecase simpler at the expense
-of 5 others by making the language more complicated.
+It may exist, it may not. If you want to propose a major language feature, go
+ahead and open an issue, but it will likely be closed as "will not implement".
+Often, such features make one usecase simpler at the expense of 5 others by
+making the language more complicated.
 
 ### Is there a language spec?
 
-There is not currently a spec besides the documentation at <https://janet-lang.org>.
+There is not currently a spec besides the documentation at
+<https://janet-lang.org>.
 
 ### Is this Scheme/Common Lisp? Where are the cons cells?
 
@@ -370,21 +333,24 @@ Nope. There are no cons cells here.
 
 ### Is this a Clojure port?
 
-No. It's similar to Clojure superficially because I like Lisps and I like the aesthetics.
-Internally, Janet is not at all like Clojure, Scheme, or Common Lisp.
+No. It's similar to Clojure superficially because I like Lisps and I like the
+aesthetics.  Internally, Janet is not at all like Clojure, Scheme, or Common
+Lisp.
 
 ### Are the immutable data structures (tuples and structs) implemented as hash tries?
 
-No. They are immutable arrays and hash tables. Don't try and use them like Clojure's vectors
-and maps, instead they work well as table keys or other identifiers.
+No. They are immutable arrays and hash tables. Don't try and use them like
+Clojure's vectors and maps, instead they work well as table keys or other
+identifiers.
 
 ### Can I do object-oriented programming with Janet?
 
-To some extent, yes. However, it is not the recommended method of abstraction, and performance may suffer.
-That said, tables can be used to make mutable objects with inheritance and polymorphism, where object
-methods are implemented with keywords.
+To some extent, yes. However, it is not the recommended method of abstraction,
+and performance may suffer. That said, tables can be used to make mutable
+objects with inheritance and polymorphism, where object methods are implemented
+with keywords.
 
-```clj
+```janet
 (def Car @{:honk (fn [self msg] (print "car " self " goes " msg)) })
 (def my-car (table/setproto @{} Car))
 (:honk my-car "Beep!")
@@ -393,30 +359,35 @@ methods are implemented with keywords.
 ### Why can't we add (feature from Clojure) into the core?
 
 Usually, one of a few reasons:
-- Often, it already exists in a different form and the Clojure port would be redundant.
-- Clojure programs often generate a lot of garbage and rely on the JVM to clean it up.
-  Janet does not run on the JVM and has a more primitive garbage collector.
-- We want to keep the Janet core small. With Lisps, a feature can usually be added as a library
-  without feeling "bolted on", especially when compared to ALGOL-like languages. Adding features
-  to the core also makes it a bit more difficult to keep Janet maximally portable.
+- Often, it already exists in a different form and the Clojure port would be
+  redundant.
+- Clojure programs often generate a lot of garbage and rely on the JVM to clean
+  it up.  Janet does not run on the JVM and has a more primitive garbage
+  collector.
+- We want to keep the Janet core small. With Lisps, a feature can usually be
+  added as a library without feeling "bolted on", especially when compared to
+  ALGOL-like languages. Adding features to the core also makes it a bit more
+  difficult to keep Janet maximally portable.
 
-### Can I bind to Rust/Zig/Go/Java/Nim/C++/D/Pascal/Fortran/Odin/Jai/(Some new "Systems" Programming Language)?
+### Can I bind to Rust/Zig/Go/Java/Nim/C++/D/Pascal/Fortran/Odin/Jai/(Some new
+"Systems" Programming Language)?
 
-Probably, if that language has a good interface with C. But the programmer may need to do
-some extra work to map Janet's internal memory model to that of the bound language. A raise
-here is a Zig error return rather than a `setjmp`/`longjmp` jump, so no non-local jump crosses
-a frame of the bound language: an abi records the raise and returns, and its caller tests for it
-on the next statement. Defining a cfunction is a separate question. A cfunction returns an error
-union over Zig's own calling convention, so a native module is written in Zig.
+Zig, yes: native modules are written in Zig (see "Native modules"). For other
+languages, calling into a C library from Janet is what the FFI is for. Defining
+a cfunction in another language is not possible, because a cfunction returns an
+error union over Zig's own calling convention. A raise is a Zig error return
+rather than a `setjmp`/`longjmp` jump, so no non-local jump crosses a frame of
+foreign code.
 
 ### Why is my terminal spitting out junk when I run the REPL?
 
 Make sure your terminal supports ANSI escape codes. Most modern terminals will
-support these, but some older terminals, Windows consoles, or embedded terminals
-will not. If your terminal does not support ANSI escape codes, run the REPL with
-the `-n` flag, which disables color output. You can also try the `-s` flag if further issues
-ensue.
+support these, but some older terminals, Windows consoles, or embedded
+terminals will not. If your terminal does not support ANSI escape codes, run
+the REPL with the `-n` flag, which disables color output. You can also try the
+`-s` flag if further issues ensue.
 
 ## Why is it called "Janet"?
 
-Janet is named after the almost omniscient and friendly artificial being in [The Good Place](https://en.wikipedia.org/wiki/The_Good_Place).
+Janet is named after the almost omniscient and friendly artificial being in
+[The Good Place](https://en.wikipedia.org/wiki/The_Good_Place).

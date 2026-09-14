@@ -10,7 +10,7 @@
 //! collectable header followed by `count`, `capacity` and `data`, with `data`
 //! in a separate heap block reallocated in place. They are separate files
 //! because Janet's taxonomy separates them: an array is indexed and a buffer
-//! is bytes, the distinction the indexed and bytes views draw. Neither calls
+//! is bytes, the distinction `getIndexed` and `getBytes` draw. Neither calls
 //! into the other, and the shared layout is a fact rather than a dependency.
 //!
 //! An array is not traversed here. `gc/mark.zig` walks its elements, nothing
@@ -258,7 +258,8 @@ pub fn push(array: *Array, x: repr.Value) raise.Error!void {
 /// so a module names an array the only way it can, by the `Value`, and the tag
 /// test is on this side. The refusal names the type and the value and no
 /// argument slot, because there is no slot: the array may have come out of a
-/// view, where a slot number would name nothing the caller can see.
+/// tuple or a dictionary, where a slot number would name nothing the caller can
+/// see.
 pub fn pushChecked(v: repr.Value, x: repr.Value) raise.Error!void {
     if (!repr.checkType(v, repr.Tag.array)) {
         return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.one(repr.Tag.array), v });

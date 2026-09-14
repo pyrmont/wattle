@@ -1,7 +1,7 @@
 # digest
 
 A native Janet module written in Zig, and the worked example of scheduling work
-through the event loop. `DESIGN.md` section 14's last subsection records the
+through the event loop. `DESIGN.md` section 15 records the
 decision behind that shape.
 
 `examples/numarray` is the example of a module that owns something, and
@@ -134,7 +134,7 @@ Nothing a Janet program can see says a module freed its own memory.
 
 The runtime's thread pool, its timers, its streams and async listeners, and its
 channels. A module brings its own thread and posts, as a C library with a loop
-of its own already does. `DESIGN.md` section 14 says why each of them waits.
+of its own already does. `DESIGN.md` section 15 says why each of them waits.
 
 ## Building a module outside this repository
 

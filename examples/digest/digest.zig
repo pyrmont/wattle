@@ -14,7 +14,7 @@
 //!
 //! ## Taking part in the event loop
 //!
-//! `DESIGN.md` section 14 reduces the loop to one sentence: when something
+//! `DESIGN.md` section 15 reduces the loop to one sentence: when something
 //! happens, resume a fiber with a value. It gives a module three operations to
 //! take part in it. `janet.await` suspends, `janet.post` queues a callback for
 //! the loop thread, and `janet.wake` resumes. This module uses all three. It

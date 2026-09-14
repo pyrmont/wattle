@@ -4,7 +4,7 @@
 # `zig build test` runs this with the built module's path as its argument.
 # `examples/numarray` is the worked example an author reads; this file carries
 # the slots a numeric array has no use for, and is what makes "all fourteen are
-# writable" a check rather than a sentence in `DESIGN.md` section 14.
+# writable" a check rather than a sentence in `DESIGN.md` section 13.
 
 (def module-path (get (dyn *args*) 1))
 (def module-env @{})
@@ -101,7 +101,7 @@
 (assert (= "hello from a module" (greeting)) "a module can build a string")
 
 # ==========================================================================
-# The views, the range and the tag tests
+# The getters, the range and the tag tests
 # ==========================================================================
 
 (def markup (from-module 'markup))
@@ -258,7 +258,7 @@
 (assert (= "dictionary 2" (viewed @{:a 1 :b 2})) "and on a table")
 (assert (= "dictionary 0" (viewed @{})) "an empty table has entries, and none of them")
 (assert (= "dictionary 0" (viewed {})) "and so does an empty struct")
-(assert (= "none" (viewed 3)) "a number has no view, and that is not a refusal")
+(assert (= "none" (viewed 3)) "no *View function reads a number, and that is not a refusal")
 (assert (= "none" (viewed nil)) "nor does nil")
 (assert (= "bytes 6" (viewed k)) "a byte-like abstract answers through its bytes callback")
 
@@ -272,8 +272,8 @@
 (def fetch (from-module 'fetch))
 
 # Every composite, round-tripped through Janet's own equality. The module
-# built each from the bytes view it was handed, which is the symmetry the
-# rule predicts: a constructor takes what the getter of the same type answers.
+# built each from the slice `getBytes` returned, which is the symmetry the
+# rule predicts: a constructor takes what the getter of the same type returns.
 (assert (deep= [true false "xy" 'xy :xy [1 2] @[1 2] @"xy" {:a 1 :b 2} @{:a 1 :b 2}]
                (built "xy"))
         "every constructor round-trips")

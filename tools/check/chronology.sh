@@ -69,10 +69,10 @@
 # those, and only those: a bare `io_core.zig` with no `test/` in front of it is
 # still a finding.
 #
-# **A line saying the file is gone is not a reference to it.** `DESIGN.md`
-# section 13 decides that `types.zig` does not exist, and it has to be able to
-# say so. A line containing "does not exist" or "There is no" is dropped, which
-# is decidable by shape rather than by a list of exempt lines.
+# **A line saying the file is gone is not a reference to it.** A document has
+# to be able to record that a file was retired, as `DESIGN.md` and the READMEs
+# do. A line containing "does not exist" or "There is no" is dropped, which is
+# decidable by shape rather than by a list of exempt lines.
 #
 # **`src/core/` and `janet.h` name upstream C.** `DESIGN.md` compares against
 # `janet.h`'s declarations, which is the subject rather than a stale reference.

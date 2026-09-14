@@ -3013,6 +3013,27 @@
   (array/insert mp 0 [":all:" loader (fn :check-ext [x] (string/has-suffix? ext x))])
   mp)
 
+(defn module/add-native
+  ```
+  Add the environment `env` of a native module to `module/cache` under
+  `name`, so that `(import name)` finds it without a file. Each cfunction
+  and abstract value bound in `env` is also added to `make-image-dict` and
+  `load-image-dict` under the symbol `name/sym`, so that an image made with
+  the module imported names those values rather than failing to marshal
+  them, and loads wherever the same module is added under the same name.
+  Returns `env`.
+  ```
+  [name env]
+  (put (dyn *module-cache* module/cache) name env)
+  (eachp [sym entry] env
+    (when (and (symbol? sym) (table? entry))
+      (def v (get entry :value))
+      (when (or (cfunction? v) (abstract? v))
+        (def key (symbol name "/" sym))
+        (put make-image-dict v key)
+        (put load-image-dict key v))))
+  env)
+
 # Don't expose this externally yet - could break if custom module/paths is setup.
 (defn module/add-syspath
   ```
@@ -4747,7 +4768,7 @@
   (if (= x "") nil x)) # empty string is coerced to nil
 
 (defn- run-main
-  [env subargs arg]
+  [env subargs]
   (when-let [main (module/value env 'main true)]
     (def guard (if (get env :debug) :ydt :y))
     (defn wrap-main [&]
@@ -4768,6 +4789,22 @@
 
 (defdyn *profilepath*
   "Path to profile file loaded when starting up the repl.")
+
+(defn run-image
+  ```
+  Load `image`, the bytes of an image made by `make-image`, and call the
+  `main` it defines with the elements of `args`, as `janet -i` does for an
+  image file. `args` is also put in the image's environment as `*args*`.
+  `natives`, when given, maps module names to functions of no arguments that
+  each return a native module's environment. Each is passed to
+  `module/add-native` under its name before the image loads. Returns nil.
+  ```
+  [image args &opt natives]
+  (eachp [name load] (or natives {})
+    (module/add-native name (load)))
+  (def env (load-image image))
+  (put env *args* args)
+  (run-main env args))
 
 (compwhen (not (dyn 'os/isatty))
   (defmacro os/isatty [&] true))
@@ -4965,10 +5002,7 @@
         (def subargs (array/slice args i))
         (set no-file false)
         (if expect-image
-          (do
-            (def env (load-image (slurp arg)))
-            (put env *args* subargs)
-            (run-main env subargs arg))
+          (run-image (slurp arg) subargs)
           (do
             (def env (make-env))
             (put env *args* subargs)
@@ -4976,7 +5010,7 @@
               (flycheck arg :exit exit-on-error :env env)
               (do
                 (dofile arg :exit exit-on-error :env env)
-                (run-main env subargs arg)))))
+                (run-main env subargs)))))
         (set i lenargs))))
 
   (if (or should-repl no-file)

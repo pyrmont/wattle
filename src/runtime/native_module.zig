@@ -263,14 +263,13 @@ fn attempt(argv: []janet.Value) janet.Error!janet.Value {
 /// `(built bytes)`: one of every composite, built from the argument, in a
 /// tuple. Janet's own equality is what checks them.
 ///
-/// Construction is the views run backwards, and this and `mutate` are what say
-/// so: `built` takes a bytes view and hands it straight to `string`, `symbol`
-/// and `keyword`, and hands a `[]const Value` straight to `tuple` and `array`.
-/// Every constructor takes exactly what the getter of the same type gives
-/// back.
+/// Every constructor takes exactly what the getter of the same type returns.
+/// `built` passes the slice `getBytes` returns straight to `string`, `symbol`,
+/// `keyword` and `buffer`, and passes a `[]const Value`, the type `getIndexed`
+/// returns, to `tuple` and `array`.
 fn built(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
-    // The bytes view goes straight into the three interning constructors: no
+    // The slice goes straight into the three interning constructors: no
     // copy, no length recomputed, and a buffer argument works as a string one
     // does.
     const seed = try janet.getBytes(argv, 0);
@@ -300,10 +299,10 @@ fn built(argv: []janet.Value) janet.Error!janet.Value {
 /// `(classify x)`: the tag of a value, named.
 ///
 /// One cfunction over all thirteen predicates, because what they are for is
-/// telling the members of a view apart, and a module that has them all has no
-/// reason to reach for anything else. `isFunction` is the odd one out: what it
-/// is for is refusing a callback `pcall` could not run, at the point the
-/// callback is handed over rather than at the call.
+/// telling apart the types one getter accepts, and a module that has them all
+/// has no reason to reach for anything else. `isFunction` is the odd one out:
+/// what it is for is refusing a callback `pcall` could not run, at the point
+/// the callback is handed over rather than at the call.
 fn classify(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const v = argv[0];
@@ -340,7 +339,7 @@ fn classify(argv: []janet.Value) janet.Error!janet.Value {
 
 /// `(cut bytes &opt start end)`: a slice of a byte argument.
 ///
-/// The length handed to `getRange` is the view's own, so the negative index,
+/// The length handed to `getRange` is the slice's own, so the negative index,
 /// the absent slot and the clamp are the ones every core builtin taking a
 /// slice already has.
 fn cut(argv: []janet.Value) janet.Error!janet.Value {
@@ -388,7 +387,7 @@ fn defs(env: *janet.Env) janet.Error!void {
         janet.reg("classify", &classify, "(classify x)\n\nThe name of a value's type."),
         janet.reg("named", &named, "(named x)\n\nThe name of a string, a symbol or a keyword."),
         janet.reg("peek", &peek, "(peek indexed n)\n\nThe value the keeper at index n holds."),
-        janet.reg("viewed", &viewed, "(viewed x)\n\nWhich of the three views a value has, and its length."),
+        janet.reg("viewed", &viewed, "(viewed x)\n\nWhich *View function reads a value, and its length."),
         janet.reg("built", &built, "(built bytes)\n\nOne of every composite, built from the argument."),
         janet.reg("pointer-value", &pointerValue, "(pointer-value)\n\nA raw pointer as a value."),
         janet.reg("mutate", &mutate, "(mutate array table buffer)\n\nThe three mutations, through the Value."),
@@ -627,7 +626,7 @@ fn markCount(argv: []janet.Value) janet.Error!janet.Value {
 ///
 /// Four steps, and every one of them was unreachable from a module before the
 /// getters this file exercises existed: reading the byte argument, reading the
-/// indexed argument, reading a keyword out of that view, and refusing with a
+/// indexed argument, reading a keyword out of that slice, and refusing with a
 /// message naming what was wrong.
 fn markup(argv: []janet.Value) janet.Error!janet.Value {
     try janet.arity(argv, 1, 3);
@@ -636,7 +635,7 @@ fn markup(argv: []janet.Value) janet.Error!janet.Value {
 
     var flags: u32 = 0;
     if (argv.len >= 2) {
-        // The view's elements are read with the checked unwrap, which is
+        // The slice's elements are read with the checked unwrap, which is
         // what tells the members of a `[]const Value` apart.
         for (try janet.getIndexed(argv, 1), 0..) |option, i| {
             const name = janet.toKeyword(option) orelse
@@ -714,7 +713,7 @@ fn oddValue(argv: []janet.Value) janet.Error!janet.Value {
 /// `(peek indexed n)`: the value the keeper at index `n` kept.
 ///
 /// This is the case `toAbstract` exists for. The keeper is an element of a
-/// view rather than an argument, so it has no slot for `getAbstract` to read.
+/// tuple rather than an argument, so it has no slot for `getAbstract` to read.
 /// The unwrap tests the abstract type's identity, so an `odd` in the same
 /// position is a refusal this module words rather than a read of another
 /// type's payload.
@@ -779,8 +778,8 @@ fn size(argv: []janet.Value) janet.Error!janet.Value {
 /// refers to them and `gc/mark.zig` traverses what it marks.
 ///
 /// The sort itself reads and writes through `get` and `put` rather than
-/// through the indexed view it started from, because a view is `data[0..count]`
-/// and a re-entry may move it.
+/// through the slice `getIndexed` returned, because that slice is
+/// `data[0..count]` and a re-entry may move it.
 fn sorted(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 2);
     const items = try janet.getIndexed(argv, 1);
@@ -885,7 +884,7 @@ fn tally(argv: []janet.Value) janet.Error!janet.Value {
         seen += 1;
         if (janet.toNumber(kv.value)) |x| sum += x;
     }
-    if (seen != entries.len) return janet.panicFormat("walked {d} entries where the view says {d}", .{ seen, entries.len });
+    if (seen != entries.len) return janet.panicFormat("walked {d} entries where len says {d}", .{ seen, entries.len });
     return janet.number(sum);
 }
 
@@ -913,12 +912,13 @@ fn unsafeSeen(argv: []janet.Value) janet.Error!janet.Value {
     return janet.number(@floatFromInt(unsafe_seen));
 }
 
-/// `(viewed x)`: which of the three views a value has, and how long it is.
+/// `(viewed x)`: which of the three `*View` functions reads a value, and how
+/// long the result is.
 ///
-/// This is the `Value` form of the three getters, which is what reads an
-/// element out of a view. A getter takes an argument slot and raises naming
-/// it; these take the `Value` and raise nothing, because a value pulled out of
-/// a tuple or a dictionary is in no slot the caller can be told about.
+/// These are the `Value` form of the three getters. A getter takes an argument
+/// slot and raises naming it; these take the `Value` and raise nothing,
+/// because a value pulled out of a tuple or a dictionary is in no slot the
+/// caller can be told about.
 fn viewed(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const v = argv[0];

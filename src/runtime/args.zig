@@ -1267,11 +1267,11 @@ pub fn symeq(x: repr.Value, cstring: [*:0]const u8) bool {
 
 /// A byte view as the range it describes.
 ///
-/// `ByteView` is `extern` because an abstract type's `bytes` callback gives
-/// one back across the module boundary, so its two fields cannot be a slice,
-/// and its pointer is nullable because a module author may hand back a null
-/// one for an empty view. Slicing a null pointer traps even for an empty
-/// range, so the recovery is here rather than at each call site.
+/// `ByteView` is `extern` because an abstract type's `bytes` callback returns
+/// one across the module boundary, so its two fields cannot be a slice. Its
+/// pointer is optional, and slicing a null pointer traps even for an empty
+/// range, so a null pointer becomes the empty slice here rather than at each
+/// call site.
 pub inline fn viewBytes(view: abi.ByteView) []const u8 {
     if (view.bytes) |p| return p[0..view.len];
     return &.{};

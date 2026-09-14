@@ -387,7 +387,7 @@ that". A configuration, an option, a rule or a constraint "determines",
 it checks, points, resolves at compile time, propagates or flattens. A
 passive ("how nullability is decided") may stand where no actor is named,
 and "wanted" in a passive becomes "needed" or "required". `DESIGN.md`
-section 14: "`DESIGN.md` section 14 records the decision that a type
+section 13: "`DESIGN.md` section 13 records the decision that a type
 crosses to a module author as a view or as a capability";
 `examples/numarray/README.md`: "`config` determines `Value`'s layout".
 

@@ -8,5 +8,5 @@
         // A real consumer writes a URL and a hash here; nothing else changes.
         .janet = .{ .path = "../.." },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "greet.zig" },
+    .paths = .{ "build.zig", "build.zig.zon", "greet.zig", "main.janet" },
 }

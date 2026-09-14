@@ -311,9 +311,9 @@ pub fn hashIndexed(array: []const repr.Value) i32 {
 /// Mixes two hash words.
 ///
 /// `input` and `more` are the two. `hashBytes`, `hashIndexed` and
-/// `hashDictionary` are three and not four: each takes exactly what one of the
-/// three views gives back, bytes, indexed or dictionary, so the taxonomy is
-/// closed at three.
+/// `hashDictionary` are three and not four: each covers one of the three kinds
+/// the getters read, bytes, indexed or dictionary, so the taxonomy is closed at
+/// three.
 pub fn hashMix(input: u32, more: u32) u32 {
     const mix = more +% hash_seed +% (input << 6) +% (input >> 2);
     return input ^ (hash_seed +% (mix << 6) +% (mix >> 2));

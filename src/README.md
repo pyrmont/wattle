@@ -89,7 +89,7 @@ back into it by name; that is an option and it is not what is here.
 | `src/api/` | 6 | a native module's `.so` (`janetModule`) and the runtime |
 | `src/host/` | 3 + 1 header | the runtime; the platform's shapes and what libc is asked for |
 | `src/runtime/` | 77 + 3 headers | the runtime, as one compilation |
-| `src/boot/`, `src/client/` | 4 | the image generator; the executable |
+| `src/boot/`, `src/client/` | 5 | the image generator; the `janet` and `quickbin` executables |
 
 `src/root.zig` is the runtime's module root above the three directories: it
 names every file this configuration compiles and it reaches all three, so it
@@ -178,7 +178,9 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
 The graph is built six times over: once for the runtime, once for the bootstrap
 generator on the host, once each with `test/contracts.zig` and `test/fuzz.zig`
 as the root, once for the module-error fixtures, and once as
-`janet-runtime-test` rooted at `root.zig` itself. Each spells the same types and
+`janet-runtime-test` rooted at `root.zig` itself. A cross build builds it once
+more for `zig build quickbin`, on the host under the target's features, for the
+client that makes the image. Each spells the same types and
 the same constants the runtime does; a module the runtime has and a test root
 does not would be a call-site rewrite that stops at the `src/` boundary.
 
@@ -287,6 +289,7 @@ there for that reason and no other.
 | `zig build fuzz` | each fuzz target once over its corpus. Add `--fuzz` for the campaign |
 | `zig build image` | the core image, written to `<prefix>/janet-image.bin` |
 | `zig build run` | the client |
+| `zig build quickbin` | `examples/quickbin/main.janet` with `examples/digest` linked in, as `<prefix>/bin/quickbin`; `zig build test` runs it on a native build |
 
 No header is installed and no `janet_*` symbol is exported. What a native module
 reaches is `api/interface.zig`'s struct, and nothing else describes it.

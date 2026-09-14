@@ -428,4 +428,34 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
 (assert (= 99 (resume (unmarshal (marshal suspended))))
         "a frame's environment survives the wire")
 
+# `module/add-native` and `run-image`, which a `quickbin` executable is built
+# on. A channel stands in for a native module's abstract value: once added,
+# an image names it rather than copying it, and `main` in the image gives its
+# arguments to the same channel.
+(compwhen (dyn 'ev/chan)
+  (def native-chan (ev/chan 1))
+  (def native-env @{'chan @{:value native-chan} :native "suite-marsh-native"})
+  (assert (= native-env (module/add-native "suite-marsh-native" native-env))
+          "module/add-native returns the environment")
+  (assert (= native-env (require "suite-marsh-native"))
+          "module/add-native puts the environment in module/cache")
+  (assert (= 'suite-marsh-native/chan (in make-image-dict native-chan))
+          "module/add-native names an abstract value in make-image-dict")
+  (assert (= native-chan (in load-image-dict 'suite-marsh-native/chan))
+          "module/add-native names an abstract value in load-image-dict")
+  (def image-env (make-env))
+  (put image-env 'main @{:value (fn [& args] (ev/give native-chan args))})
+  (def image (make-image image-env))
+  (assert (nil? (run-image image @["program" "one"]))
+          "run-image returns nil")
+  (assert (deep= ["program" "one"] (ev/take native-chan))
+          "run-image calls main with the arguments")
+  (def loaded @[])
+  (run-image image @["program"]
+             @{"suite-marsh-native-loaded"
+               (fn [] (array/push loaded true) @{})})
+  (assert (= 1 (length loaded)) "run-image calls each loader once")
+  (assert (deep= ["program"] (ev/take native-chan))
+          "run-image runs main after the loaders"))
+
 (end-suite)

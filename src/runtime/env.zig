@@ -241,6 +241,54 @@ fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
 // Public functions
 // ==========================================================================
 
+/// Compares a module's `_janet_mod_config` report with this build's
+/// configuration bits, compiler version and interface fingerprint, in that
+/// order, and returns the refusal for the first difference, or null.
+///
+/// `mod_config` is the module's `_janet_mod_config`. `native` calls this for a
+/// module it opened and the `quickbin` client for each module linked into it,
+/// so both report a mismatch in the same words.
+pub fn checkModuleConfig(
+    mod_config: *const fn (out: *abi.BuildConfig, size: usize) callconv(.c) usize,
+) ?strings.String {
+    // Zeroed first, so that a module whose `abi.BuildConfig` is shorter than
+    // this one's leaves the fields it does not have at zero rather than at
+    // whatever the stack held. The width the module reports back is what a
+    // later loader reads to tell a short report from a full one; nothing here
+    // needs it, because a zero never matches a field this build compares.
+    var modconf: abi.BuildConfig = .{};
+    _ = mod_config(&modconf, @sizeOf(abi.BuildConfig));
+    const host = fingerprint.build_config;
+    if (host.bits != modconf.bits) {
+        var host_text: [16]u8 = undefined;
+        var module_text: [16]u8 = undefined;
+        return configMismatch(
+            "bits",
+            host,
+            modconf,
+            bitsText(&host_text, host.bits),
+            bitsText(&module_text, modconf.bits),
+        );
+    }
+    if (!std.mem.eql(u8, &host.zig, &modconf.zig)) {
+        var host_text: [33]u8 = undefined;
+        var module_text: [33]u8 = undefined;
+        return configMismatch(
+            "zig version",
+            host,
+            modconf,
+            zigText(&host_text, host.zig),
+            zigText(&module_text, modconf.zig),
+        );
+    }
+    if (host.api != modconf.api) {
+        const host_text = fingerprint.hex(host.api);
+        const module_text = fingerprint.hex(modconf.api);
+        return configMismatch("api version", host, modconf, &host_text, &module_text);
+    }
+    return null;
+}
+
 /// The core environment, assembled in the bootstrap and unmarshalled in the
 /// runtime. `replacements` is the table to define into.
 pub fn coreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
@@ -1410,50 +1458,12 @@ fn native(name: [*:0]const u8, err: *?strings.String) raise.Error!ModuleEntry {
         return null;
     }
     const getter: ModuleConfig = @ptrCast(@alignCast(try clib.symbol(lib, "_janet_mod_config")));
-    // Zeroed first, so that a module whose `abi.BuildConfig` is shorter than
-    // this one's leaves the fields it does not have at zero rather than at
-    // whatever the stack held. The width the module reports back is what a
-    // later loader reads to tell a short report from a full one; nothing here
-    // needs it, because a zero never matches a field this build compares.
-    var modconf: abi.BuildConfig = .{};
-    if (getter) |mod_config| {
-        _ = mod_config(&modconf, @sizeOf(abi.BuildConfig));
-    } else {
+    const mod_config = getter orelse {
         err.* = strings.cstring("could not find the _janet_mod_config symbol");
         return null;
-    }
-    const host = fingerprint.build_config;
-    if (host.bits != modconf.bits) {
-        var host_text: [16]u8 = undefined;
-        var module_text: [16]u8 = undefined;
-        err.* = configMismatch(
-            "bits",
-            host,
-            modconf,
-            bitsText(&host_text, host.bits),
-            bitsText(&module_text, modconf.bits),
-        );
-        return null;
-    }
-    if (!std.mem.eql(u8, &host.zig, &modconf.zig)) {
-        var host_text: [33]u8 = undefined;
-        var module_text: [33]u8 = undefined;
-        err.* = configMismatch(
-            "zig version",
-            host,
-            modconf,
-            zigText(&host_text, host.zig),
-            zigText(&module_text, modconf.zig),
-        );
-        return null;
-    }
-    if (host.api != modconf.api) {
-        const host_text = fingerprint.hex(host.api);
-        const module_text = fingerprint.hex(modconf.api);
-        err.* = configMismatch("api version", host, modconf, &host_text, &module_text);
-        return null;
-    }
-    return init;
+    };
+    err.* = checkModuleConfig(mod_config);
+    return if (err.* == null) init else null;
 }
 
 /// Collapses `.` and `..` segments in place, walking two indices rather than

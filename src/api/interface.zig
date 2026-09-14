@@ -128,8 +128,8 @@ const Value = repr.Value;
 /// as the `extern` structs `abi.zig` declares, and `module.zig` rebuilds a
 /// slice from each. `getrange` takes the argument count as well, because an
 /// absent second slot is what makes the end default. `bytes_view`,
-/// `indexed_view` and `dictionary_view` read an element out of a view rather
-/// than out of an argument slot; each returns `?T` in `module.zig`, and a
+/// `indexed_view` and `dictionary_view` read a `Value` that is not in an
+/// argument slot, such as an element of a tuple; each returns `?T` in `module.zig`, and a
 /// `callconv(.c)` return admits neither an optional nor a slice, so the
 /// optional is the out-parameter. None of the three can raise.
 ///

@@ -1,8 +1,8 @@
 # url
 
-A native Janet module written in Zig, and the worked example of the views.
-`DESIGN.md` section 14 records the decision that a type crosses to a module
-author as a view or as a capability. This module is the view half and
+A native Janet module written in Zig, and the worked example of the built-in
+types. `DESIGN.md` section 13 records the decision that a type crosses to a
+module author as a view or as a capability. This module is the view half and
 `examples/numarray` is the capability half.
 
 `examples/numarray` is the example of a module that owns something: it declares
@@ -32,37 +32,38 @@ would write.
 
 ## What it shows
 
-### The three views
+### The three getters
 
-Three views cover every Janet aggregate an argument can be, and each is a pair
-of types that read identically:
+Three getters cover every Janet aggregate an argument can be, and each reads a
+group of types identically:
 
-| the view | the pair | what the module gets |
+| the getter | the types | what the module gets |
 | --- | --- | --- |
-| bytes | string, symbol, keyword, buffer | `[]const u8` |
-| indexed | tuple, array | `[]const Value` |
-| dictionary | struct, table | `Pairs` |
+| `getBytes` | string, symbol, keyword, buffer | `[]const u8` |
+| `getIndexed` | tuple, array | `[]const Value` |
+| `getDictionary` | struct, table | `Pairs` |
 
 Each has a `Value` form beside it: `janet.bytesView`, `janet.indexedView` and
 `janet.dictionaryView`, which return `null` where the getter would raise.
 
-### Construction as the views run backwards A constructor takes exactly what the
+### Construction as the getters run backwards
 
-getter of the same type returns, so `janet.string(try janet.getBytes(argv, 0))`
-type-checks and so does `janet.tuple(try janet.getIndexed(argv, 0))`.
-`parse-query` is the worked instance. It reads a bytes view and builds a struct
-out of slices of it, with no copy and no length recomputed on the module's side.
+A constructor takes exactly what the getter of the same type returns, so
+`janet.string(try janet.getBytes(argv, 0))` type-checks and so does
+`janet.tuple(try janet.getIndexed(argv, 0))`. `parse-query` is the worked
+instance. It reads the slice `getBytes` returns and builds a struct out of
+slices of it, with no copy and no length recomputed on the module's side.
 The runtime interns its own copy, so the struct outlives the argument. That
-symmetry is what the rule in `DESIGN.md` section 14 implies, and it is the
+symmetry is what the rule in `DESIGN.md` section 13 implies, and it is the
 reason construction needed no new shared type.
 
-`slug` reads the bytes and indexed views, `query` reads the dictionary view,
-`cut` takes a range, and `parse-query` builds a struct. Nothing about a struct
+`slug` calls `getBytes` and `getIndexed`, `query` calls `getDictionary`, `cut`
+takes a range, and `parse-query` builds a struct. Nothing about a struct
 or a table promises an order, so `query` returns in hash order and a caller that
 needs a stable string sorts the result. The test file sorts it rather than
-pinning one arrangement. The test file asserts each cfunction on both members of
-its pair, because that is the property a view has: a module written for a tuple
-works on an array with no change.
+pinning one arrangement. The test file asserts each cfunction on more than one
+of the types its getter reads, because a getter reads them identically: a module
+written for a tuple works on an array with no change.
 
 ### The lifetime of what a getter returns
 
