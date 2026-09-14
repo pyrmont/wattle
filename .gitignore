@@ -155,3 +155,4 @@ zig-out
 
 # Others
 .DS_Store
+/notes
