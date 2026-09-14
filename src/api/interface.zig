@@ -44,7 +44,7 @@
 //! The `new_` and `_value` marks stay. They say that a crossing does not share
 //! the shape of its namesake in the retired header: `new_` where it constructs
 //! and `_value` where it mutates. What a mark records is what crosses rather
-//! than how wide it is, so `wrap_boolean` is unmarked and takes a `bool`
+//! than how wide it is, so `getboolean` is unmarked and returns a `bool`
 //! where the header declared an `int`. Nothing links against these by C
 //! signature, so the Zig type is free to say the true thing.
 //!
@@ -197,7 +197,6 @@ pub const Runtime = extern struct {
     calloc: *const fn (n: usize, size: usize) callconv(.c) ?*anyopaque,
     cfuns_ext: *const fn (env: ?*abi.Env, prefix: ?[*:0]const u8, table: [*]const abi.Reg) callconv(.c) void,
     checkint: *const fn (x: Value) callconv(.c) c_int,
-    checktype: *const fn (x: Value, t: c_uint) callconv(.c) c_int,
     cstring: *const fn (str: [*:0]const u8) callconv(.c) [*:0]const u8,
     /// The loop this cfunction is running on. Raises where the build has none.
     current_loop: *const fn () callconv(.c) *abi.Loop,
@@ -267,7 +266,6 @@ pub const Runtime = extern struct {
     /// none, which is a program not running under the loop at all.
     root_fiber_value: *const fn () callconv(.c) Value,
     signal_record: *const fn (sig: c_uint, message: Value) callconv(.c) void,
-    truthy: *const fn (x: Value) callconv(.c) bool,
     unmarshal_abstract: *const fn (u: *abi.Unmarshal, size: usize) callconv(.c) ?*anyopaque,
     unmarshal_abstract_reuse: *const fn (u: *abi.Unmarshal, p: ?*anyopaque) callconv(.c) void,
     unmarshal_byte: *const fn (u: *abi.Unmarshal) callconv(.c) u8,
@@ -281,15 +279,11 @@ pub const Runtime = extern struct {
     unmarshal_remaining: *const fn (u: *abi.Unmarshal) callconv(.c) usize,
     unmarshal_size: *const fn (u: *abi.Unmarshal) callconv(.c) usize,
     unwrap_integer: *const fn (x: Value) callconv(.c) i32,
-    unwrap_number: *const fn (x: Value) callconv(.c) f64,
     unwrap_pointer: *const fn (x: Value) callconv(.c) ?*anyopaque,
     /// Puts `fiber` back on the run queue with `value`, and returns whether it
     /// took. Cannot raise: the callback it runs inside has no scope above it.
     wake: *const fn (w: *abi.Wake, fiber: Value, value: Value) callconv(.c) bool,
     wrap_abstract: *const fn (p: ?*anyopaque) callconv(.c) Value,
-    wrap_boolean: *const fn (b: bool) callconv(.c) Value,
-    wrap_nil: *const fn () callconv(.c) Value,
-    wrap_number: *const fn (x: f64) callconv(.c) Value,
     wrap_pointer: *const fn (p: ?*anyopaque) callconv(.c) Value,
     wrap_string: *const fn (x: [*:0]const u8) callconv(.c) Value,
 };

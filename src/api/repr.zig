@@ -274,7 +274,7 @@ pub const TaggedPayload = extern union {
 };
 
 /// The fundamental word. It is `extern` because a `Value` crosses the
-/// published C ABI by value, in `janet_wrap_boolean`'s return and in the
+/// published C ABI by value, in `janet_get`'s return and in the
 /// argument of every crossing that takes one, and
 /// `tools/check/layouts.txt` classes it `abi,field,repr`, which is all three
 /// reasons a layout is fixed at once.

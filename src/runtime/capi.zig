@@ -80,7 +80,6 @@ pub const table: interface.Runtime = .{
     .calloc = &janet_calloc,
     .cfuns_ext = &janet_cfuns_ext,
     .checkint = &janet_checkint,
-    .checktype = &janet_checktype,
     .cstring = &janet_cstring,
     .current_loop = &janet_current_loop,
     .def = &janet_def,
@@ -131,7 +130,6 @@ pub const table: interface.Runtime = .{
     .register_abstract_type = &janet_register_abstract_type,
     .root_fiber_value = &janet_root_fiber_value,
     .signal_record = &janet_zig_signal_record,
-    .truthy = &janet_truthy,
     .unmarshal_abstract = &janet_unmarshal_abstract,
     .unmarshal_abstract_reuse = &janet_unmarshal_abstract_reuse,
     .unmarshal_byte = &janet_unmarshal_byte,
@@ -145,13 +143,9 @@ pub const table: interface.Runtime = .{
     .unmarshal_remaining = &janet_unmarshal_remaining,
     .unmarshal_size = &janet_unmarshal_size,
     .unwrap_integer = &janet_unwrap_integer,
-    .unwrap_number = &janet_unwrap_number,
     .unwrap_pointer = &janet_unwrap_pointer,
     .wake = &janet_wake,
     .wrap_abstract = &impl.value_helpers_wrap.abi.fromAbstract,
-    .wrap_boolean = &janet_wrap_boolean,
-    .wrap_nil = &impl.value_helpers_wrap.abi.fromNil,
-    .wrap_number = &impl.value_helpers_wrap.abi.fromNumber,
     .wrap_pointer = &impl.value_helpers_wrap.abi.fromPointer,
     .wrap_string = &impl.value_helpers_wrap.abi.fromString,
 };
@@ -357,14 +351,6 @@ pub fn janet_def(env: *abi.Env, name: [*:0]const u8, val: repr.Value, doc: ?[*:0
 pub fn janet_checkint(x: repr.Value) callconv(.c) c_int {
     requireJanetThread();
     return @intFromBool(impl.args.checkint(x));
-}
-
-/// Whether `x` has tag `t`. A tag outside the vocabulary is reported as no
-/// rather than indexed with.
-pub fn janet_checktype(x: repr.Value, t: c_uint) callconv(.c) c_int {
-    requireJanetThread();
-    if (t >= repr.tag_count) return 0;
-    return @intFromBool(repr.checkType(x, @enumFromInt(t)));
 }
 
 /// Interns a NUL-terminated C string as a Janet string.
@@ -659,23 +645,11 @@ pub fn janet_root_fiber_value() callconv(.c) repr.Value {
     return raise.toAbi(rootFiberValue());
 }
 
-/// Whether `x` is neither nil nor false.
-pub fn janet_truthy(x: repr.Value) callconv(.c) bool {
-    requireJanetThread();
-    return repr.truthy(x);
-}
-
 /// Unwraps a number value as a 32-bit integer, reporting where it is not an
 /// integer.
 pub fn janet_unwrap_integer(x: repr.Value) callconv(.c) i32 {
     requireJanetThread();
     return impl.value_helpers_wrap.toIntegerAbi(x);
-}
-
-/// Unwraps a number value as a double.
-pub fn janet_unwrap_number(x: repr.Value) callconv(.c) f64 {
-    requireJanetThread();
-    return impl.value_helpers_wrap.toNumber(x);
 }
 
 /// Unwraps a pointer value.
@@ -691,12 +665,6 @@ pub fn janet_unwrap_pointer(x: repr.Value) callconv(.c) ?*anyopaque {
 pub fn janet_wake(w: *abi.Wake, fiber: repr.Value, value: repr.Value) callconv(.c) bool {
     requireJanetThread();
     return loop_ops.wake(w, fiber, value);
-}
-
-/// A `bool` as a Janet boolean.
-pub fn janet_wrap_boolean(b: bool) callconv(.c) repr.Value {
-    requireJanetThread();
-    return if (b) impl.value_helpers_wrap.abi.fromTrue() else impl.value_helpers_wrap.abi.fromFalse();
 }
 
 /// `raise.zig`'s flag protocol and its abort, which a module's own compilation

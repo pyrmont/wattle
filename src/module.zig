@@ -17,8 +17,16 @@
 //! A module links against nothing, and resolves no runtime symbols. The
 //! runtime exports no `janet_*` name at all. Instead `api/interface.zig`
 //! declares an `extern struct` of `callconv(.c)` function pointers. The loader
-//! passes a module this struct when it loads. Every function in this file is a
-//! call through one of its fields.
+//! passes a module this struct when it loads. A function in this file that
+//! needs the runtime calls through one of its fields.
+//!
+//! A value's tag and the three immediates, a number, `nil` and a boolean, are
+//! the exception. `api/repr.zig` is compiled into the module too, and the
+//! loader refuses a module whose value representation differs, so `checkTag`,
+//! `truthy`, `nil`, `number`, `boolean` and `toNumber` read and write those
+//! bits directly. They touch no runtime state and are valid from any thread.
+//! A pointer-carrying value, and the integer range test, still go through a
+//! field.
 //!
 //! Each field is a _crossing_: a point where a module's compilation and the
 //! runtime's meet.
@@ -450,7 +458,7 @@ pub fn await() Error {
 
 /// Wraps `true` or `false`.
 pub fn boolean(b: bool) Value {
-    return interface.rt.wrap_boolean(b);
+    return repr.wrapBoolean(b);
 }
 
 /// Wraps a slice of `u8` as a buffer.
@@ -1044,12 +1052,12 @@ pub fn nextMethod(methods: []const Method, key: Value) Error!Value {
 
 /// Returns the wrapped nil value.
 pub inline fn nil() Value {
-    return interface.rt.wrap_nil();
+    return repr.wrapNil();
 }
 
 /// Returns the wrapped number value.
 pub inline fn number(x: f64) Value {
-    return interface.rt.wrap_number(x);
+    return repr.wrapNumber(x);
 }
 
 /// Raises a formatted refusal.
@@ -1406,7 +1414,7 @@ pub fn toKeyword(v: Value) ?[:0]const u8 {
 /// This function returns null if `v` is not a number.
 pub fn toNumber(v: Value) ?f64 {
     if (!checkTag(v, .number)) return null;
-    return interface.rt.unwrap_number(v);
+    return repr.unwrapNumber(v);
 }
 
 /// Returns the unwrapped raw pointer.
@@ -1445,7 +1453,7 @@ pub fn toSymbol(v: Value) ?[:0]const u8 {
 ///
 /// This is the only way to read a boolean out of a `Value`.
 pub fn truthy(v: Value) bool {
-    return interface.rt.truthy(v);
+    return repr.truthy(v);
 }
 
 /// Wraps a slice of `Value` as a tuple.
@@ -1512,8 +1520,12 @@ fn checkCFunction(comptime name: []const u8, comptime Given: type) void {
 }
 
 /// Returns whether a wrapped value has this tag.
+///
+/// The test reads the bits `api/repr.zig` lays out and makes no crossing; the
+/// file header says why both compilations agree on them. It touches no runtime
+/// state, so it is valid from any thread.
 inline fn checkTag(v: Value, comptime t: repr.Tag) bool {
-    return interface.rt.checktype(v, @intFromEnum(t)) != 0;
+    return repr.checkType(v, t);
 }
 
 /// Turns a runtime report back into an error.

@@ -74,10 +74,9 @@ const outer = @This();
 /// nothing else. A Zig caller takes the `inline` spelling instead; nothing but
 /// `capi.zig` should name this struct.
 ///
-/// Five declare `callconv(.c)` and the rest do not, and those five are exactly
-/// the ones `capi.zig` puts in the table: `fromNil`, `fromNumber`,
-/// `fromString`, `fromAbstract` and `fromPointer` fill `wrap_nil`,
-/// `wrap_number`, `wrap_string`, `wrap_abstract` and `wrap_pointer`. A
+/// Three declare `callconv(.c)` and the rest do not, and those three are
+/// exactly the ones `capi.zig` puts in the table: `fromString`, `fromAbstract`
+/// and `fromPointer` fill `wrap_string`, `wrap_abstract` and `wrap_pointer`. A
 /// convention on the others would be an ABI nothing crosses, and
 /// `tools/check/callconv.janet` is the check that says so. They stay `pub`
 /// because `test/value_wrap.zig` asserts each against the inline spelling
@@ -86,7 +85,7 @@ const outer = @This();
 /// The bodies say `outer.` because a struct member does not shadow a container
 /// declaration but does make the unqualified name ambiguous.
 pub const abi = struct {
-    pub fn fromNil() callconv(.c) repr.Value {
+    pub fn fromNil() repr.Value {
         return outer.fromNil();
     }
 
@@ -106,7 +105,7 @@ pub const abi = struct {
         return outer.fromInteger(x);
     }
 
-    pub fn fromNumber(x: f64) callconv(.c) repr.Value {
+    pub fn fromNumber(x: f64) repr.Value {
         return outer.fromNumber(x);
     }
 

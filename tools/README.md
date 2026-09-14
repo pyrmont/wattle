@@ -73,6 +73,13 @@ same reason: a stranded block is identified by where it is.
 minimum per workload; `upstream.sh` does that for this tree against upstream
 Janet's C, same compiler backend and same layout sweep.
 
+The goal is to run within 10% of the C implementation. `upstream.sh` measures
+that goal and `layout.sh` measures a change against the previous binary. A
+change that touches an interpreter or value hot path is measured before it is
+accepted. Read both headers before reading either result: they say which
+workload is the control, how large a difference has to be before it counts, and
+why a session's first round is discarded.
+
 The corpora are beside them: `interpreter/` is the general workload, `value/` is
 the value-access workload, and `hashbench/` is a hash-specific workload from
 upstream.

@@ -512,8 +512,8 @@ pub fn keywordIs(val: repr.Value, expected: [*:0]const u8) bool {
 /// layout, where a value is a union, and `x.as.u64` under the tagged one,
 /// where it is a struct wrapping one.
 ///
-/// It has no function form, so unlike `capi.janet_checktype` a Zig caller
-/// writes it out. It is here rather than in each contract because two call it:
+/// It has no function form, so unlike `repr.checkType` a Zig caller writes it
+/// out. It is here rather than in each contract because two call it:
 /// `value_wrap` for "same value" and for its bit-layout section, and
 /// `value_order` for the pointer hash.
 ///

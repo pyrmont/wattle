@@ -297,10 +297,6 @@ fn numbersRoundTrip() void {
 /// the one case where the tag space and the payload space collide, so
 /// `repr.typeOf` has to report a number for a quiet NaN whose bits look like a
 /// tag.
-///
-/// Checked through both spellings, the published abi and the inline surface,
-/// because the second arm of the NaN test is reachable through only one of
-/// them. `theTwoSpellingsAgree` covers this value among its awkward ones.
 fn nanIsANumber() void {
     const nan = std.math.nan(f64);
     const v = wrap.fromNumber(nan);
@@ -437,34 +433,9 @@ fn checkTypes() void {
     expect(!repr.checkTypes(values[at(.array)], repr.TagSet.bytes));
 }
 
-/// Every predicate with both an internal and an exported form, checked
-/// against each other for the one value `v`. Factored out because the set of
-/// values that matters is larger than one per type; see the call site.
-///
-/// Both sides are spelled out here rather than borrowed. These read the
-/// published form directly instead of `harness.isType`, because a harness
-/// helper pointing at the internal spelling would turn every comparison here
-/// into a function compared against itself.
-///
-/// `capi.janet_checktype` is the only predicate left with two
-/// implementations. It guards the tag against `repr.tag_count` and gives 0 for
-/// a number outside the vocabulary, which `repr.checkType` does not do and
-/// cannot, its argument already being a `Tag`. So the loop below is the range
-/// guard as much as it is the agreement.
-fn agreeOn(v: repr.Value) void {
-    for (0..repr.tag_count) |j| {
-        expect(repr.checkType(v, typeAt(j)) == (subsystems.capi.janet_checktype(v, @intCast(j)) != 0));
-    }
-    expect(subsystems.capi.janet_checktype(v, repr.tag_count) == 0);
-    expect(subsystems.capi.janet_checktype(v, std.math.maxInt(c_uint)) == 0);
-}
-
-/// The inline spelling of each operation against the exported one, for every
-/// value in the sample and for the awkward ones beside it. The header says
-/// what that channel does and does not catch.
+/// The inline spelling of each operation against the exported one. The
+/// header says what that channel does and does not catch.
 fn theTwoSpellingsAgree() void {
-    var values: [repr.tag_count]repr.Value = undefined;
-    buildOneOfEach(&values);
     const p = pointerA();
 
     // The constructors. Each inline declaration is the body of the
@@ -482,29 +453,6 @@ fn theTwoSpellingsAgree() void {
     expect(sameValue(wrap.fromFunction(@ptrCast(@alignCast(p))), wrap.abi.fromFunction(@ptrCast(@alignCast(p)))));
     expect(sameValue(wrap.fromStruct(@ptrCast(@alignCast(p))), wrap.abi.fromStruct(@ptrCast(@alignCast(p)))));
     expect(sameValue(wrap.fromTuple(@ptrCast(@alignCast(p))), wrap.abi.fromTuple(@ptrCast(@alignCast(p)))));
-
-    // The predicates, over one value per type...
-    for (values) |value| agreeOn(value);
-
-    // ...and then over the values that take the *other* arm of each. One
-    // value per type is not enough, because `buildOneOfEach` samples `2.5`
-    // and `true`, which take the ordinary arm of every predicate. A NaN's
-    // type nibble under a NaN-boxed layout reads as the number tag, so it is
-    // recognized by the second half of `isNumber` rather than the first, and
-    // `false` is the only value whose truthiness depends on the payload
-    // rather than on the tag.
-    const awkward = [_]repr.Value{
-        wrap.fromNumber(std.math.nan(f64)),
-        wrap.fromNumber(std.math.inf(f64)),
-        wrap.fromNumber(-std.math.inf(f64)),
-        wrap.fromNumber(0.0),
-        wrap.fromNumber(-0.0),
-        wrap.abi.fromFalse(),
-        wrap.abi.fromBoolean(0),
-        wrap.abi.fromBoolean(3),
-        wrap.abi.fromPointer(null),
-    };
-    for (awkward) |value| agreeOn(value);
 
     // The one accessor with two implementations. `toIntegerAbi` truncates
     // toward zero through a `c_int` where `toInteger` reads the payload. The
