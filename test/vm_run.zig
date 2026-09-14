@@ -142,6 +142,18 @@ fn expectError(source: []const u8, message: [*:0]const u8) void {
     }
 }
 
+/// `expectError` for a message with two correct spellings.
+fn expectErrorEither(source: []const u8, message: [*:0]const u8, other: [*:0]const u8) void {
+    const payload = raised(source);
+    if (!harness.stringValueIs(payload, message) and !harness.stringValueIs(payload, other)) {
+        std.debug.print("source:   {s}\n", .{source});
+        std.debug.print("expected: {s}\n", .{message});
+        std.debug.print("       or {s}\n", .{other});
+        std.debug.print("     got: {s}\n", .{pp_describe.toString(payload)});
+        expect(false);
+    }
+}
+
 /// Compares pretty-printed forms rather than values, because `order.equals` on
 /// a mutable collection compares identity: two separately built `@[1 2 3]`s are
 /// not equal, and most of what the loop constructs is mutable.
@@ -218,8 +230,16 @@ fn aBitwiseOperandOutOfRange() void {
     // dividing at run time, so that the constant folder is out of it and this
     // vector is about the opcode rather than about the emitter; the emitter's
     // own narrowing of a NaN constant is checked, and the literal form below
-    // reaches the same message.
-    expectError("(do (defn f [a b] (band (/ a b) 1)) (f 0 0))", "value nan out of range for 32-bit signed integers");
+    // reaches the same message. The quotient is the FPU's default NaN, which
+    // has the sign bit set on an x86-64 host, wasmtime's included, and clear
+    // on aarch64. The formatter passes it to `snprintf`, which prints the
+    // sign under musl and wasi-libc and omits it under Apple's libc. Either
+    // spelling is correct.
+    expectErrorEither(
+        "(do (defn f [a b] (band (/ a b) 1)) (f 0 0))",
+        "value nan out of range for 32-bit signed integers",
+        "value -nan out of range for 32-bit signed integers",
+    );
     expectError("(band math/nan 1)", "value nan out of range for 32-bit signed integers");
     // The range test at its ends: the largest and smallest values an `int32_t`
     // holds are in range, and so is the largest a `uint32_t` holds.
