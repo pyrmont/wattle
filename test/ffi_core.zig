@@ -92,9 +92,9 @@ const ffi_bindings = [_][*:0]const u8{
     "ffi/calling-conventions",
 };
 
-/// Whether the FFI subsystem was compiled in, which is not the same question
-/// as whether this host can load anything. `dynamicLoadingWorks` is the
-/// second question.
+/// Whether dynamic modules were compiled in. `build.zig` turns them off for
+/// every executable that cannot load a library, static musl and WASI, so for
+/// any executable the build makes this is also whether loading works.
 const has_dynamic_modules = config.dynamic_modules;
 
 /// The `types.PrimType` and `types.Spec` ordinals these cases name, copied
@@ -153,21 +153,6 @@ fn eval(source: [*:0]const u8) repr.Value {
     const env = harness.coreEnv();
     expect(core_env.dostring(env, source, "ffi_core", &out) == 0);
     return out;
-}
-
-/// Whether this host can actually load anything, which is a different
-/// question from whether the subsystem was compiled.
-///
-/// `-Ddynamic-modules` settles the second. `build.zig` turns it off for a
-/// static musl executable, whose `dlopen` is a stub, so for every executable
-/// the build makes the two agree. The probe covers a static link made outside
-/// that rule.
-fn dynamicLoadingWorks() bool {
-    if (!has_dynamic_modules) return false;
-    var out = wrap.fromNil();
-    const env = harness.coreEnv();
-    if (core_env.dostring(env, "(first (protect (ffi/native)))", "ffi_core", &out) != 0) return false;
-    return repr.truthy(out);
 }
 
 /// One allocated argument, as a convention reports it.
@@ -318,7 +303,7 @@ fn expectShape(
 fn abstractTypes() void {
     expectShape("(ffi/struct :int32 :double)", "core/ffi-struct", false, true, false, false);
     expectShape("(ffi/signature :none :void :int32)", "core/ffi-signature", false, true, false, false);
-    if (dynamicLoadingWorks()) {
+    if (has_dynamic_modules) {
         expectShape("(ffi/native)", "core/ffi-native", false, false, false, false);
     }
 }
@@ -528,8 +513,10 @@ fn theRaises() void {
     // Without dynamic modules there is no native object to have: `Clib`
     // reduces to an `int` and `load_clib` to a no-op returning zero, so
     // `ffi/native` always raises. That arm is the whole of this section in
-    // such a build, and it is a real arm.
-    if (dynamicLoadingWorks()) {
+    // such a build, and it is a real arm. A static musl build with dynamic
+    // modules on, whose loader would refuse with its own message, is a build
+    // error rather than a third arm.
+    if (has_dynamic_modules) {
         const self = eval("(ffi/native)");
         gc_alloc.gcroot(self);
         var self_argv = [_]repr.Value{self};
@@ -541,14 +528,8 @@ fn theRaises() void {
             expect(harness.isType(found, repr.Tag.nil));
         }
         _ = gc_alloc.gcunroot(self);
-    } else if (!has_dynamic_modules) {
-        expectRaise(harness.core("ffi/native"), .{&.{}}, "dynamic modules not supported");
     } else {
-        // Compiled, registered, and unable to load: a statically linked musl
-        // build. Asserted rather than skipped, so the arm says what it is:
-        // the message comes from the loader, not from the disabled-feature
-        // stub the branch above pins, and the two are different refusals.
-        expectRaise(harness.core("ffi/native"), .{&.{}}, "Dynamic loading not supported");
+        expectRaise(harness.core("ffi/native"), .{&.{}}, "dynamic modules not supported");
     }
 }
 
