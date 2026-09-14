@@ -48,7 +48,7 @@
 //! where the header declared an `int`. Nothing links against these by C
 //! signature, so the Zig type is free to say the true thing.
 //!
-//! ## The two guards
+//! ## The guard
 //!
 //! `api/fingerprint.zig` hashes this table, and the rest of what the two
 //! compilations share, into one number. Both compute it from this file, the
@@ -59,12 +59,6 @@
 //! and a shorter table is not an older one. A module built against a shorter
 //! table does not load on a longer one, and append-only compatibility is not a
 //! goal.
-//!
-//! `size` is the second guard. It is `@sizeOf(Runtime)` as the runtime that
-//! filled the table understood it, and `module.entry`'s shim compares it
-//! before any author code runs and raises on any difference. The comparison is
-//! inside the module, so it holds where something other than this loader
-//! opened the shared object.
 
 // ==========================================================================
 // Standard library imports
@@ -112,11 +106,8 @@ const Value = repr.Value;
 
 /// The whole of what a module may call.
 ///
-/// `size` is the second of the two guards the file header describes. Every
-/// other field is one crossing. The six raising crossings follow `size` in a
-/// fixed order, because the shim's refusal of a mismatched table is delivered
-/// through them; every other field is in alphabetical order, and nothing reads
-/// it by position.
+/// Every field is one crossing. The fields are in alphabetical order, and
+/// nothing reads any of them by position.
 ///
 /// The six raising crossings are what a module's `raise.zig` reaches: a signal
 /// to record, a message to build, the C-raise flag to take, and an abort.
@@ -189,20 +180,6 @@ const Value = repr.Value;
 /// callback and the
 /// context in, does not cross.
 pub const Runtime = extern struct {
-    /// `@sizeOf(Runtime)` as the runtime that filled this in understood it.
-    size: usize,
-
-    // The six raising crossings, in this order and immediately after
-    // `size`. The shim's refusal of a mismatched table is delivered through
-    // these, so their offsets must agree across every shape the table takes.
-    // Nothing reads any other field by position.
-    cstring: *const fn (str: [*:0]const u8) callconv(.c) [*:0]const u8,
-    wrap_string: *const fn (x: [*:0]const u8) callconv(.c) repr.Value,
-    c_raise_record: *const fn () callconv(.c) void,
-    c_raise_take: *const fn () callconv(.c) c_int,
-    fatal: *const fn (message: [*:0]const u8) callconv(.c) noreturn,
-    signal_record: *const fn (sig: c_uint, message: repr.Value) callconv(.c) void,
-
     abstract: *const fn (at: *const abi.AbstractType, size: usize) callconv(.c) ?*anyopaque,
     arity: *const fn (argc: i32, min: i32, max: i32) callconv(.c) void,
     array_push_value: *const fn (v: Value, x: Value) callconv(.c) void,
@@ -212,15 +189,19 @@ pub const Runtime = extern struct {
     buffer_push_bytes: *const fn (render: *abi.Render, bytes: [*]const u8, len: usize) callconv(.c) void,
     buffer_push_value: *const fn (v: Value, bytes: [*]const u8, len: usize) callconv(.c) void,
     bytes_view: *const fn (x: Value, out: *abi.ByteView) callconv(.c) bool,
+    c_raise_record: *const fn () callconv(.c) void,
+    c_raise_take: *const fn () callconv(.c) c_int,
     call_value: *const fn (f: Value, args: [*]const Value, len: usize) callconv(.c) Value,
     calloc: *const fn (n: usize, size: usize) callconv(.c) ?*anyopaque,
     cfuns_ext: *const fn (env: ?*abi.Env, prefix: ?[*:0]const u8, table: [*]const abi.Reg) callconv(.c) void,
     checkint: *const fn (x: Value) callconv(.c) c_int,
     checktype: *const fn (x: Value, t: c_uint) callconv(.c) c_int,
+    cstring: *const fn (str: [*:0]const u8) callconv(.c) [*:0]const u8,
     /// The loop this cfunction is running on. Raises where the build has none.
     current_loop: *const fn () callconv(.c) *abi.Loop,
     def: *const fn (env: *abi.Env, name: [*:0]const u8, val: Value, doc: ?[*:0]const u8) callconv(.c) void,
     dictionary_view: *const fn (x: Value, out: *abi.DictView) callconv(.c) bool,
+    fatal: *const fn (message: [*:0]const u8) callconv(.c) noreturn,
     fiber_status_value: *const fn (fiber: Value) callconv(.c) abi.FiberStatus,
     fixarity: *const fn (argc: i32, fix: i32) callconv(.c) void,
     free: *const fn (p: ?*anyopaque) callconv(.c) void,
@@ -282,6 +263,7 @@ pub const Runtime = extern struct {
     /// The fiber `await` suspends and `wake` puts back. Raises where there is
     /// none, which is a program not running under the loop at all.
     root_fiber_value: *const fn () callconv(.c) Value,
+    signal_record: *const fn (sig: c_uint, message: Value) callconv(.c) void,
     truthy: *const fn (x: Value) callconv(.c) bool,
     unmarshal_abstract: *const fn (u: *abi.Unmarshal, size: usize) callconv(.c) ?*anyopaque,
     unmarshal_abstract_reuse: *const fn (u: *abi.Unmarshal, p: ?*anyopaque) callconv(.c) void,
@@ -306,6 +288,7 @@ pub const Runtime = extern struct {
     wrap_nil: *const fn () callconv(.c) Value,
     wrap_number: *const fn (x: f64) callconv(.c) Value,
     wrap_pointer: *const fn (p: ?*anyopaque) callconv(.c) Value,
+    wrap_string: *const fn (x: [*:0]const u8) callconv(.c) Value,
 };
 
 // ==========================================================================

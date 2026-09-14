@@ -204,8 +204,7 @@ function pointers, and both compilations import that file. `runtime/capi.zig`'s
 address to `_janet_init`; `module.zig`'s shim stores it in `table.rt` and every
 crossing an author makes is a call through that pointer. There is one
 description of each crossing rather than two, so the compiler checks it at the
-initializer and nothing has to be compared afterwards. A `size` field is
-`@sizeOf(Runtime)` and the shim refuses a mismatch before any author code runs.
+initializer and nothing has to be compared afterwards.
 
 The three definitions that were typed on a runtime aggregate, being `cfuns_ext`,
 `def` and `buffer_push_bytes`, now take `abi.Env` and `abi.Render` and cast on

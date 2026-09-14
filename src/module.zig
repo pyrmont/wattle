@@ -612,9 +612,6 @@ pub fn entry(comptime defs: fn (*Env) Error!void) void {
         /// flattened error is sent.
         fn modInit(env: *Env, rt: *const interface.Runtime) callconv(.c) void {
             interface.rt = rt;
-            if (rt.size != @sizeOf(interface.Runtime)) return raise.report(
-                raise.panic("native module was built against a different runtime table"),
-            );
             return raise.toAbi(defs(env));
         }
     };

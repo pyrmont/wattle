@@ -67,34 +67,25 @@ const tables = @import("value/tables.zig");
 /// `&definition` is type-checked against the field's declared signature. No
 /// second description of a crossing is kept anywhere, so there is none to fall
 /// out of step.
-///
-/// `size` is the layout guard `module.entry`'s shim tests before it runs any
-/// author code.
 pub const table: interface.Runtime = .{
-    .size = @sizeOf(interface.Runtime),
-
-    // The six `raise.zig` reaches from inside a module's compilation.
-    .cstring = &janet_cstring,
-    .wrap_string = &impl.value_helpers_wrap.abi.fromString,
-    .c_raise_record = &janet_zig_c_raise_record,
-    .c_raise_take = &janet_zig_c_raise_take,
-    .fatal = &janet_zig_fatal,
-    .signal_record = &janet_zig_signal_record,
-
     .abstract = &janet_abstract,
     .arity = &impl.args.checkArityAbi,
     .array_push_value = &janet_array_push_value,
     .buffer_push_bytes = &janet_buffer_push_bytes,
     .buffer_push_value = &janet_buffer_push_value,
     .bytes_view = &impl.args.bytesViewAbi,
+    .c_raise_record = &janet_zig_c_raise_record,
+    .c_raise_take = &janet_zig_c_raise_take,
     .call_value = &janet_call_value,
     .calloc = &janet_calloc,
     .cfuns_ext = &janet_cfuns_ext,
     .checkint = &janet_checkint,
     .checktype = &janet_checktype,
+    .cstring = &janet_cstring,
     .current_loop = &janet_current_loop,
     .def = &janet_def,
     .dictionary_view = &impl.args.dictionaryViewAbi,
+    .fatal = &janet_zig_fatal,
     .fiber_status_value = &janet_fiber_status_value,
     .fixarity = &impl.args.fixArityAbi,
     .free = &janet_free,
@@ -138,6 +129,7 @@ pub const table: interface.Runtime = .{
     .put = &janet_put,
     .register_abstract_type = &janet_register_abstract_type,
     .root_fiber_value = &janet_root_fiber_value,
+    .signal_record = &janet_zig_signal_record,
     .truthy = &janet_truthy,
     .unmarshal_abstract = &janet_unmarshal_abstract,
     .unmarshal_abstract_reuse = &janet_unmarshal_abstract_reuse,
@@ -160,6 +152,7 @@ pub const table: interface.Runtime = .{
     .wrap_nil = &impl.value_helpers_wrap.abi.fromNil,
     .wrap_number = &impl.value_helpers_wrap.abi.fromNumber,
     .wrap_pointer = &impl.value_helpers_wrap.abi.fromPointer,
+    .wrap_string = &impl.value_helpers_wrap.abi.fromString,
 };
 
 // ==========================================================================
