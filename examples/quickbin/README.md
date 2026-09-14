@@ -13,9 +13,9 @@ string and prints the result:
   (print (digest/sha256 "abc")))
 ```
 
-    zig build quickbin                               # zig-out/bin/quickbin
-    zig build quickbin -Dtarget=aarch64-linux-musl   # a static Linux binary
-    zig build quickbin -Dtarget=x86_64-macos         # runs under Rosetta
+    zig build examples/quickbin                                          # zig-out/bin/quickbin
+    zig build examples/quickbin -Dtarget=aarch64-linux-musl -Dlinkage=static  # a static Linux binary
+    zig build examples/quickbin -Dtarget=x86_64-macos                    # runs under Rosetta
 
 builds it, and `zig build test` runs it on a native build and checks the
 output. The binary needs no `JANET_PATH`, no shared object and no image file
@@ -108,4 +108,4 @@ enabled`, as `examples/digest/test/digest.janet` shows.
 
 `examples/standalone` does it, with its own module rather than `digest`. Its
 `build.zig` calls the one public function this build offers for the purpose,
-and `zig build standalone` at the repository root runs that build.
+and `zig build examples/standalone` at the repository root runs that build.

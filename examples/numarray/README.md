@@ -20,7 +20,7 @@ graph available to it. That proves the source experience: one import, and the
 module never names `types`, `raise` or `constants`. It does not prove that an
 outside package can obtain the `janet` module at all.
 
-`examples/standalone` is that proof, and `zig build standalone` runs it. A
+`examples/standalone` is that proof, and `zig build examples/standalone` runs it. A
 consumer's `build.zig.zon` names this package as a dependency and its
 `build.zig` asks for one module:
 

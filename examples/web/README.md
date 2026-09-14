@@ -12,7 +12,7 @@ calls into it, and the JavaScript that supplies WASI in its place.
 - `test.js` runs the binary under Node with the same `wasi.js`.
 
 ```sh
-zig build web                         # zig-out/web, ReleaseSmall
+zig build examples/web                # zig-out/web, ReleaseSmall
 node examples/web/test.js             # from the repository root
 cd zig-out/web && python3 -m http.server
 ```
@@ -22,9 +22,11 @@ then open `http://localhost:8000/`. The installed directory holds
 browser will not fetch the binary from a `file://` page, which is why a
 server is needed.
 
-**The page has not been opened in a browser in this repository's
-verification.** What is checked is `test.js`, which runs the `wasi.js` the page
-loads, under Node. Open the page to see it work.
+The page was opened in Safari on iOS and worked. The one defect
+found there was Clear leaving earlier output visible after the pane was
+emptied; `index.html` now replaces the pane with an empty clone instead. What
+is checked mechanically is `test.js`, which runs the `wasi.js` the page loads,
+under Node.
 
 ## What it shows
 
@@ -125,4 +127,4 @@ not end freezes the tab.
 
 It exits 1 on the first mismatch. It needs Node 22.7 or later, which runs a
 `.js` file written as an ES module without a `package.json`. The `wasi` CI
-jobs run it after `zig build web` in both of their optimize modes.
+jobs run it after `zig build examples/web` in both of their optimize modes.

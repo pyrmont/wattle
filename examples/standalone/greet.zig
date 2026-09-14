@@ -4,7 +4,7 @@
 //! that the module would fail to compile if `janet` stopped offering
 //! registration, the raising cfunction shape, or `janet.define`.
 //!
-//! `build.zig` in this directory builds it, and `zig build standalone` at
+//! `build.zig` in this directory builds it, and `zig build examples/standalone` at
 //! the repository root runs that build.
 
 const janet = @import("janet");

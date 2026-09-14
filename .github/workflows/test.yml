@@ -40,7 +40,7 @@ jobs:
       # and cannot notice if `janetModule` rots. `examples/standalone` depends
       # on this package by path and reaches it only through that helper.
       - name: Standalone consumer
-        run: zig build standalone
+        run: zig build examples/standalone
 
   # Linux against **musl**. It is static (`-Dlinkage=static`) because the
   # runner image has no musl loader, so it runs natively with no container.
@@ -112,7 +112,7 @@ jobs:
       - name: Test
         run: zig build test
       - name: Standalone consumer
-        run: zig build standalone
+        run: zig build examples/standalone
 
   # Debug does not fold identical functions and does not elide safety checks,
   # and defects have been found that only a release mode exposed, so these are
@@ -195,6 +195,6 @@ jobs:
       # `package.json`; the Ubuntu 24.04 image ships 22.23.
       - name: Test examples/web
         run: |
-          zig build web -Doptimize=${{ matrix.mode }}
+          zig build examples/web -Doptimize=${{ matrix.mode }}
           node --version
           node examples/web/test.js

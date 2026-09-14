@@ -15,7 +15,7 @@ it depends on `janet` by path, and it reaches the runtime only through the two
 public functions `janet.janetModule` and `janet.quickbin`. Nothing private is
 available to it.
 
-    zig build standalone      # from the repository root
+    zig build examples/standalone      # from the repository root
     zig build test            # from this directory
 
 `greet.zig` is deliberately small: one cfunction, one abstract type, one

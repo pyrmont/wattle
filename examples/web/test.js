@@ -3,7 +3,7 @@
 //
 // Usage: node examples/web/test.js [path/to/janet-web.wasm]
 //
-// The path defaults to `zig-out/web/janet-web.wasm`, where `zig build web`
+// The path defaults to `zig-out/web/janet-web.wasm`, where `zig build examples/web`
 // installs it, relative to the working directory. Exits 1 on the first
 // mismatch.
 

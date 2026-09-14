@@ -199,7 +199,7 @@ everything it reads have to be in this tree.  The default `syspath` is
 wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
 ```
 
-`zig build web` builds `examples/web/`, Janet in a web page: the runtime as a
+`zig build examples/web` builds `examples/web/`, Janet in a web page: the runtime as a
 WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 
 ### Supported platforms
@@ -290,7 +290,7 @@ release loads into another whose interface is the same.
 
 A module can also be linked into an executable, together with the runtime and
 an image of a Janet program, so that one file cross-compiles and runs with
-nothing beside it. `zig build quickbin` builds `examples/quickbin/`, which links
+nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`, which links
 `examples/digest/` in, and `build.zig`'s `quickbin` function builds one from
 outside the tree (`examples/standalone/`).
 

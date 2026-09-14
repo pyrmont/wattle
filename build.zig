@@ -231,7 +231,7 @@ const Selection = struct {
 /// that runtime, because `config` determines `Value`'s layout. Loading a
 /// `-Dnanbox=false` module into a NaN-boxed runtime is not a link error; it
 /// is wrong values.
-/// `examples/standalone` is the worked instance and `zig build standalone`
+/// `examples/standalone` is the worked instance and `zig build examples/standalone`
 /// builds it the way an outside author would.
 pub fn janetModule(
     dep: *std.Build.Dependency,
@@ -659,7 +659,7 @@ pub fn build(b: *std.Build) void {
     // `client` on a native build with dynamic modules, and otherwise by a host
     // client built from the target's configuration with dynamic modules on.
     const quickbin_step = b.step(
-        "quickbin",
+        "examples/quickbin",
         "Build examples/quickbin, with examples/digest linked in, into <prefix>/bin/quickbin",
     );
     const quickbin_exe = if (runtime_graph != null) quickbinExecutable(
@@ -754,8 +754,8 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_client.addArgs(args);
     run_step.dependOn(&run_client.step);
 
-    // An alias of `zig-contract-test`, kept because documents cite the name.
-    const subsystem_step = b.step("subsystem-test", "Run the contracts (alias of zig-contract-test)");
+    // An alias of `test/contracts`, kept because documents cite the name.
+    const subsystem_step = b.step("test/subsystems", "Run the contracts (alias of test/contracts)");
 
     // The Zig contracts, in the runtime's own compilation.
     //
@@ -774,7 +774,7 @@ pub fn build(b: *std.Build) void {
     checkContractsListed(b);
     checkAliasesUsed(b);
     const zig_contracts_step = b.step(
-        "zig-contract-test",
+        "test/contracts",
         "Run the contracts that live in the runtime's compilation",
     );
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
@@ -962,7 +962,7 @@ pub fn build(b: *std.Build) void {
     // compiles the runtime's modules a second time in a second cache. The
     // acceptance matrix carries it, which is where a per-phase cost belongs.
     const standalone_step = b.step(
-        "standalone",
+        "examples/standalone",
         "Build the example that consumes this package from outside",
     );
     const standalone = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "test" });
@@ -1043,7 +1043,7 @@ pub fn build(b: *std.Build) void {
     // and tears down; a `test` block here asserts something interior --
     // classification tables, flag decoding, a parser for a host string -- and
     // has no runtime under it.
-    const runtime_tests_step = b.step("runtime-test", "Run the in-file `test` blocks in the runtime");
+    const runtime_tests_step = b.step("test/runtime", "Run the in-file `test` blocks in the runtime");
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
         const exe = selectBackend(b.addTest(.{ .name = "janet-runtime-test", .root_module = graph.subsystems }));
         applyLinkage(exe, options, target);
@@ -1124,7 +1124,13 @@ pub fn build(b: *std.Build) void {
     // its state. `-Dstack-max` overrides it. The NaN-box pointer shift is
     // cleared because its range depends on the target, and wasm32 allows only
     // 0.
-    const web_step = b.step("web", "Build examples/web, Janet as a wasm32-wasi reactor, with its page into <prefix>/web");
+    const web_step = b.step("examples/web", "Build examples/web, Janet as a wasm32-wasi reactor, with its page into <prefix>/web");
+    // The three example steps under one name. `zig build examples` builds
+    // every example the build knows how to; each is also its own step.
+    const examples_step = b.step("examples", "Build examples/quickbin, examples/standalone and examples/web");
+    examples_step.dependOn(quickbin_step);
+    examples_step.dependOn(standalone_step);
+    examples_step.dependOn(web_step);
     {
         const web_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
         const web_optimize: std.builtin.OptimizeMode =

@@ -155,7 +155,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
 generator on the host, with `test/contracts.zig` as the root, with
 `test/fuzz.zig` as the root, for the module-error fixtures, and as
 `janet-runtime-test` rooted at `root.zig`. A cross build builds it a seventh
-time for `zig build quickbin`: on the host, under the target's features, for the
+time for `zig build examples/quickbin`: on the host, under the target's features, for the
 client that makes the image. Every build has the same modules, so a test root
 spells the same types and constants as the runtime.
 
@@ -275,14 +275,28 @@ comptime block for that reason only.
 | step                | what it runs                                        |
 | ------------------- | --------------------------------------------------- |
 | `install`           | libraries, client, contract driver, fuzz artifact   |
-| `test`              | the full test run, described below                  |
-| `zig-contract-test` | the 65 contracts, in a second runtime compilation   |
-| `subsystem-test`    | an alias of `zig-contract-test`                     |
-| `runtime-test`      | the in-file `test` blocks, rooted at `root.zig`     |
 | `fuzz`              | each fuzz target once over its corpus               |
 | `image`             | the core image, as `<prefix>/janet-image.bin`       |
 | `run`               | the client                                          |
-| `quickbin`          | `examples/quickbin` as `<prefix>/bin/quickbin`      |
+| `module-errors`     | each wrong native module fails at its definition    |
+
+The tests are steps under `test/`, with `test` running them all:
+
+| step                | what it runs                                        |
+| ------------------- | --------------------------------------------------- |
+| `test`              | the full test run, described below                  |
+| `test/contracts`    | the 65 contracts, in a second runtime compilation   |
+| `test/subsystems`   | an alias of `test/contracts`                        |
+| `test/runtime`      | the in-file `test` blocks, rooted at `root.zig`     |
+
+The examples have steps of their own, named under `examples/`:
+
+| step                  | what it builds                                      |
+| --------------------- | --------------------------------------------------- |
+| `examples`            | the three below                                     |
+| `examples/quickbin`   | `examples/quickbin` as `<prefix>/bin/quickbin`      |
+| `examples/standalone` | `examples/standalone`, a consumer outside the tree  |
+| `examples/web`        | `examples/web`, a WASI reactor, as `<prefix>/web/`  |
 
 A step is run as `zig build <step>`, and `install` is the default, so
 `zig build` alone runs it. `install` builds the static and shared libraries.
@@ -291,7 +305,7 @@ A step is run as `zig build <step>`, and `install` is the default, so
 targets over their corpora, the module-error fixtures, the CLI checks and the
 34 Janet suites. On a native build it also runs `quickbin`.
 
-`runtime-test` prints `All N tests passed.` Add `--fuzz` to `zig build fuzz`
+`test/runtime` prints `All N tests passed.` Add `--fuzz` to `zig build fuzz`
 for a campaign. `quickbin` builds `examples/quickbin/main.janet` with
 `examples/digest` linked in.
 
