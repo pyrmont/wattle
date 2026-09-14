@@ -2227,9 +2227,10 @@ fn applyFramePointer(
 /// reads the second stack-passed `f64` parameter of a `callconv(.c)` function
 /// from `xmm0` rather than from its stack slot. A Zig built with assertions
 /// aborts compiling the same function instead. `sevenThenPairOnTheStack` in
-/// `test/ffi_core.zig`, compiled on its own, reproduces it. Zig issue
-/// #TODO. Every other target and optimize mode already uses LLVM, so the
-/// setting changes nothing there.
+/// `test/ffi_core.zig`, compiled on its own, reproduces it. Reported as Zig
+/// issue #36038 on Codeberg and fixed on master by #36136, after 0.16.0.
+/// Every other target and optimize mode already uses LLVM, so the setting
+/// changes nothing there.
 ///
 /// Remove this once the Zig version the build requires carries the fix.
 fn selectBackend(compile: *std.Build.Step.Compile) *std.Build.Step.Compile {
