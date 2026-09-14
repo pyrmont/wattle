@@ -84,7 +84,11 @@ const BuildOptions = struct {
     omit_frame_pointer: ?bool,
     nanbox: ?bool,
     nanbox_pointer_shift: ?i32,
-    dynamic_modules: bool,
+    /// Null takes `staticExecutable`'s answer: off for a static executable,
+    /// on otherwise.
+    dynamic_modules: ?bool,
+    /// Null is dynamic. `executableLinkage` resolves it per target.
+    linkage: ?std.builtin.LinkMode,
     docstrings: bool,
     sourcemaps: bool,
     reduced_os: bool,
@@ -355,6 +359,8 @@ pub fn quickbin(
         @panic("quickbin: the host dependency has not run build()");
     if (target_side.graph == null or host_side.graph == null)
         @panic("quickbin: a configuration that selects no subsystem has no runtime to link");
+    if (!host_side.config.dynamic_modules)
+        @panic("quickbin: the host dependency has dynamic modules off, and its client opens each native to make the image");
     if (opts.optimize != target_side.optimize or
         !std.mem.eql(u8, triple(dep.builder, opts.target), triple(dep.builder, target_side.target)))
     {
@@ -410,6 +416,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const options = readOptions(b);
+    if (options.dynamic_modules == true and staticExecutable(options, target)) std.debug.panic(
+        "-Ddynamic-modules=true: the {t}-{t}-{t} executables are static under -Dlinkage=static, " ++
+            "and a static musl executable cannot load a native module. Drop " ++
+            "-Dlinkage=static to link dynamically, or drop -Ddynamic-modules=true and " ++
+            "link natives in at build time with quickbin.",
+        .{ target.result.cpu.arch, target.result.os.tag, target.result.abi },
+    );
     const config = janetConfig(options, target);
     // A wasm target has no dynamic loader, so the build makes no shared library
     // and keeps no export table there: `wasm-ld` rejects the shared library
@@ -573,6 +586,7 @@ pub fn build(b: *std.Build) void {
         client_module.addImport("config", g.config);
     }
     const client = selectBackend(b.addExecutable(.{ .name = "janet", .root_module = client_module }));
+    applyLinkage(client, options, target);
     if (target.result.os.tag != .windows and !wasm) client.rdynamic = true;
     // **A native module resolves into the client, and the client must keep the
     // symbols it publishes.**
@@ -689,17 +703,16 @@ pub fn build(b: *std.Build) void {
     installTest(b, options, digest_module);
 
     // `examples/quickbin`, the worked example of `quickbin`: `main.janet` with
-    // `examples/digest` linked into one executable. On a native build the
-    // image is made by `client`; on a cross build by a client built for the
-    // host from the target's configuration, so that it loads the target's
-    // core image and makes an image of the same bindings.
+    // `examples/digest` linked into one executable. The image is made by
+    // `client` on a native build with dynamic modules, and otherwise by a host
+    // client built from the target's configuration with dynamic modules on.
     const quickbin_step = b.step(
         "quickbin",
         "Build examples/quickbin, with examples/digest linked in, into <prefix>/bin/quickbin",
     );
     const quickbin_exe = if (runtime_graph != null) quickbinExecutable(
         built,
-        if (target.query.isNative()) built else hostBuilt(b, options, target, boot_host, image_source),
+        if (target.query.isNative() and config.dynamic_modules) built else hostBuilt(b, options, target, boot_host, image_source),
         .{
             .name = "quickbin",
             .source = b.path("examples/quickbin/main.janet"),
@@ -828,6 +841,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
         const exe = selectBackend(b.addExecutable(.{ .name = "janet-zig-contract-test", .root_module = module }));
+        applyLinkage(exe, options, target);
         // A contract may load the native-module fixture, and a contract that
         // registers a cfunction the runtime later names needs its own symbols
         // visible for the same reason the client does.
@@ -1047,6 +1061,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
         const exe = selectBackend(b.addTest(.{ .name = "janet-fuzz-test", .root_module = module }));
+        applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
         // Beside the contract driver, in the same directory and not through
@@ -1079,6 +1094,7 @@ pub fn build(b: *std.Build) void {
     const runtime_tests_step = b.step("runtime-test", "Run the in-file `test` blocks in the runtime");
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
         const exe = selectBackend(b.addTest(.{ .name = "janet-runtime-test", .root_module = graph.subsystems }));
+        applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         installTest(b, options, exe);
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
@@ -1325,6 +1341,8 @@ fn hostBuilt(
     // a native module resolves into the client's symbol table.
     client.rdynamic = true;
     client.link_gc_sections = false;
+    // This client must `dlopen`, whatever `-Dlinkage` says of the target.
+    if (host.result.isMuslLibC()) client.linkage = .dynamic;
     return .{
         .b = b,
         .options = options,
@@ -1441,7 +1459,9 @@ fn quickbinExecutable(
     module.addAnonymousImport("quickbin_natives", .{
         .root_source_file = b.addWriteFiles().add("natives.zig", table.items),
     });
-    return selectBackend(b.addExecutable(.{ .name = opts.name, .root_module = module }));
+    const exe = selectBackend(b.addExecutable(.{ .name = opts.name, .root_module = module }));
+    applyLinkage(exe, target_side.options, target_side.target);
+    return exe;
 }
 
 /// Every file-scope alias is used by the file that declares it.
@@ -1711,7 +1731,8 @@ fn readOptions(b: *std.Build) BuildOptions {
         .omit_frame_pointer = b.option(bool, "omit-frame-pointer", "Omit the frame pointer: unset omits it in ReleaseFast and keeps it in Debug, ReleaseSafe and ReleaseSmall, true omits it in every mode, false keeps it in every mode"),
         .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),
         .nanbox_pointer_shift = pointer_shift,
-        .dynamic_modules = b.option(bool, "dynamic-modules", "Enable dynamic native modules") orelse true,
+        .dynamic_modules = b.option(bool, "dynamic-modules", "Enable dynamic native modules: unset enables them except on WASI and under -Dlinkage=static on a musl target"),
+        .linkage = b.option(std.builtin.LinkMode, "linkage", "Link the executables dynamically (the default) or statically. A dynamic musl executable needs /lib/ld-musl-<arch>.so.1 at run time; a static one loads no native module"),
         .docstrings = b.option(bool, "docstrings", "Include documentation strings") orelse true,
         .sourcemaps = b.option(bool, "sourcemaps", "Include source maps") orelse true,
         .reduced_os = b.option(bool, "reduced-os", "Build the reduced OS library") orelse false,
@@ -1967,7 +1988,7 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
         .debug = options.fiber_stack_shuffle,
         .docstrings = options.docstrings,
         .sourcemaps = options.sourcemaps,
-        .dynamic_modules = options.dynamic_modules and !wasi,
+        .dynamic_modules = !wasi and (options.dynamic_modules orelse !staticExecutable(options, target)),
         .assembler = options.assembler,
         .peg = options.peg,
         .int_types = options.int_types,
@@ -2041,6 +2062,26 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
         .max_macro_expand = options.max_macro_expand,
         .stack_max = options.stack_max,
     };
+}
+
+/// The link mode for the executables on `target`, or null for Zig's default.
+/// Zig links musl statically unless told otherwise, so musl gets `.dynamic`.
+fn executableLinkage(options: BuildOptions, target: std.Build.ResolvedTarget) ?std.builtin.LinkMode {
+    if (target.result.cpu.arch.isWasm()) return null;
+    if (options.linkage) |mode| return mode;
+    return if (target.result.isMuslLibC()) .dynamic else null;
+}
+
+/// Whether the executables for `target` have no working `dlopen`: a musl
+/// target under `-Dlinkage=static`, where `dlopen` is a stub.
+fn staticExecutable(options: BuildOptions, target: std.Build.ResolvedTarget) bool {
+    return target.result.isMuslLibC() and executableLinkage(options, target) == .static;
+}
+
+/// Applied to every executable built under the target's `config`, so each
+/// has the link mode `config.dynamic_modules` was derived from.
+fn applyLinkage(exe: *std.Build.Step.Compile, options: BuildOptions, target: std.Build.ResolvedTarget) void {
+    if (executableLinkage(options, target)) |mode| exe.linkage = mode;
 }
 
 /// The image generator's configuration: the target's features, on the host.

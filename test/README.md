@@ -160,8 +160,8 @@ pointer-width branch. `riscv32-linux-musl`, `x86-linux-musl` and
 analyses only the branches it selects, so those four are what type-check that
 code.
 
-The binaries can be run: Alpine ships `qemu-riscv32`, and the contracts passed
-under it on 2026-08-20, which is how the 32-bit NaN-boxing arm of
+The binaries can be run: Alpine ships `qemu-riscv32`, and the contracts have
+passed under it, which is how the 32-bit NaN-boxing arm of
 `test/value_wrap.zig` was validated. Running them is deliberately not part of
 the per-increment set. It costs a container and an emulator, and `wasm32-wasi`
 runs the suites and the contracts on the same 32-bit layout without either. The
@@ -190,8 +190,8 @@ Debug and in ReleaseSmall, in CI. `riscv32-linux-musl`, `x86-linux-musl` and
 
 - Code that no configuration analyses is unchecked rather than untested. Zig
   analyses only the comptime branches it selects, so a typo in such a path
-  builds clean forever. Three were first type-checked on 2026-08-20 by the first
-  riscv32 build ever run against this tree: the 32-bit NaN-boxing branch in the
+  builds clean forever. Three were first type-checked by the first riscv32
+  build ever run against this tree: the 32-bit NaN-boxing branch in the
   representation, the 32-bit arm of `lengthv` in the access layer, and the
   pointer-hash else-branch in the comparison layer. All three were correct, and
   nobody knew.
@@ -222,14 +222,13 @@ so the `Janet`-by-value return was never isolated.
 
 Delete the prefix when the run is done, and keep it inside the repository. An
 `-Dinstall-tests=true` prefix holds the runtime-test executable, the seven
-fixture libraries and the contract and fuzz drivers, all unstripped. Measured on
-2026-09-12 in Debug, it is 40MB, of which `test/` is 29MB and `bin/` and `lib/`
-about 5MB each. Earlier revisions of this recipe put it at
-`../xbuild-arm`, outside the checkout, where `.gitignore` could not see it and
-no cleanup step ever ran; several sessions' worth accumulated in the parent
-directory and filled the disk. `/xbuild` is now gitignored, and the `tar` above
-excludes it so an in-tree prefix is not copied into the container's size-capped
-`/work`.
+fixture libraries and the contract and fuzz drivers, all unstripped. In Debug it
+measured 40MB, of which `test/` is 29MB and `bin/` and `lib/` about 5MB each.
+Earlier revisions of this recipe put it at `../xbuild-arm`, outside the
+checkout, where `.gitignore` could not see it and no cleanup step ever ran;
+several sessions' worth accumulated in the parent directory and filled the disk.
+`/xbuild` is now gitignored, and the `tar` above excludes it so an in-tree
+prefix is not copied into the container's size-capped `/work`.
 
 ### Copying the tree into the container
 
@@ -283,17 +282,20 @@ differently, which is a change to a test's subject rather than to the runtime.
 
 Five limitations constrain this, none of which are Janet defects:
 
-1. Zig links musl targets statically by default, and musl's static `dlopen` is a
-   stub that always fails. The native-module test therefore cannot run this way;
-   dynamic loading needs a dynamically linked build or a real target machine.
+1. A static musl build cannot load a native module, because musl's static
+   `dlopen` is a stub that always fails, so `-Dlinkage=static` turns dynamic
+   modules off. CI's Linux jobs build static, since the runner image has no
+   musl loader, so CI does not run the native-module test on musl. The
+   container recipe above builds dynamic, and `alpine:latest` has the loader,
+   so the native-module test runs there.
 2. Emulated x86-64 cannot run a NaN-boxed build. Janet packs pointers into
    doubles, which assumes the OS maps user memory inside the low 47 bits; QEMU
    user-mode on an ARM64 host does not honour that, and the runtime segfaults
    while hashing its first symbol. A tagged build (`-Dnanbox=false`) runs
    normally. NaN-boxed x86-64 needs real hardware.
 
-   Measured on 2026-08-20, after the note above proved too vague to recognise
-   from a stack trace. QEMU gives the x86-64 guest the ARM64 host's address
+   This was measured after the note above proved too vague to recognise from a
+   stack trace. QEMU gives the x86-64 guest the ARM64 host's address
    space: the static image loads low, every allocation lands at `0xffff8…` with
    bit 47 set, and the payload mask is `0x00007FFFFFFFFFFF`, so every unwrap
    discards that bit. The tag survives, so the type test still reports "symbol",

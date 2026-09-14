@@ -35,11 +35,6 @@ jobs:
         run: zig build
       - name: Test
         run: zig build test
-        # TEMPORARY: remove after the next run. `VERBOSE` makes
-        # `assert-no-error` print the error it caught, to show the errno the
-        # IPv6 join in `test/suite-net.janet` fails with on these runners.
-        env:
-          VERBOSE: 1
       # The published build surface, exercised from outside the package.
       # `examples/numarray` is compiled by this repository's own `build()` with
       # the private module graph in hand, so it proves the source experience
@@ -48,8 +43,9 @@ jobs:
       - name: Standalone consumer
         run: zig build standalone
 
-  # Linux builds against **musl**, not the runner's glibc. A musl target links
-  # statically, so the artifacts run natively on the runner with no container.
+  # Linux builds against **musl**, not the runner's glibc. It is static
+  # (`-Dlinkage=static`) because the runner image has no musl loader, so it
+  # runs natively with no container. Tests that load a library skip there.
   # glibc is built below and run in a container at each phase gate. The two
   # libcs are not interchangeable: glibc's allocator checks what musl's does
   # not, so both are run (`test/README.md`).
@@ -68,7 +64,7 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Dcpu=baseline
+        run: zig build -Dtarget=${{ matrix.target }} -Dcpu=baseline -Dlinkage=static
       - name: Contracts
         run: |
           set -eu

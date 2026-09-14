@@ -174,6 +174,14 @@ zig build -Dtarget=wasm32-wasi            # a WASI command-line build
 Cross-compilation needs no extra toolchain: Zig ships the C headers and linkers
 for every supported target.
 
+A musl build is dynamically linked and loads native modules, and needs the musl
+loader (`/lib/ld-musl-<arch>.so.1`, standard on Alpine and installed on Debian
+and Ubuntu by the `musl` package) on the machine that runs it.
+`-Dlinkage=static` builds a self-contained executable instead. A static musl
+executable loads no native module at run time, so that build turns dynamic
+modules off, and `-Ddynamic-modules=true` with it is a build error. A native is
+then linked in at build time with `quickbin`; see "Extending" below.
+
 The WASI build needs no other flag: the target turns off the event loop, the
 FFI, networking, processes and dynamic modules, and builds single-threaded.
 Run it under any WASI host:
@@ -196,7 +204,7 @@ wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
 | platform               | state                                                         |
 | ---------------------- | ------------------------------------------------------------- |
 | macOS arm64 and x86-64 | built and fully tested                                        |
-| Linux, musl            | built and fully tested; a musl target links statically        |
+| Linux, musl            | built and fully tested; dynamic by default, needs musl loader |
 | Linux, glibc           | built and tested in a container at each phase gate, not in CI |
 | Windows                | cross-compiles; binaries have never been executed             |
 | wasm32-wasi            | built and fully tested under wasmtime, without the event loop |

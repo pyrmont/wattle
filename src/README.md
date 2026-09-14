@@ -396,9 +396,10 @@ These constraints are invisible when building only for the development host.
   tested this way, because `zig build test` runs what it builds and cannot run a
   binary for another target.
 
-Two limitations qualify any result. Zig links musl targets statically, and
-musl's static `dlopen` is a stub that always fails, so the native-module test
-cannot run on those targets. Emulated x86-64 cannot run a NaN-boxed build,
+Two limitations qualify any result. A musl build links dynamically by default
+and loads native modules on a machine with the musl loader, but CI's Linux jobs
+build with `-Dlinkage=static`, and musl's static `dlopen` is a stub that always
+fails, so CI does not run the native-module test on musl. Emulated x86-64 cannot run a NaN-boxed build,
 because Janet packs pointers into doubles and QEMU does not honour the
 address-space assumption that relies on. Use `-Dnanbox=false` there, and treat
 NaN-boxed x86-64 as untested until it runs on real hardware.

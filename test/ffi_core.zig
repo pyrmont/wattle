@@ -158,12 +158,10 @@ fn eval(source: [*:0]const u8) repr.Value {
 /// Whether this host can actually load anything, which is a different
 /// question from whether the subsystem was compiled.
 ///
-/// `-Ddynamic-modules` settles the second. Zig links musl targets statically
-/// and musl's static `dlopen` is a stub that always fails, which
-/// `test/README.md` records as the first of its limitations, so on
-/// `aarch64-linux-musl` the subsystem is present, every binding is
-/// registered, and every `ffi/native` raises "Dynamic loading not supported".
-/// A build option cannot settle that; asking the environment can.
+/// `-Ddynamic-modules` settles the second. `build.zig` turns it off for a
+/// static musl executable, whose `dlopen` is a stub, so for every executable
+/// the build makes the two agree. The probe covers a static link made outside
+/// that rule.
 fn dynamicLoadingWorks() bool {
     if (!has_dynamic_modules) return false;
     var out = wrap.fromNil();
