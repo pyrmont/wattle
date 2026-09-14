@@ -141,16 +141,31 @@
   (f)
   (- (os/clock :monotonic) start))
 
-# The reference: one hash, best of three, so a scheduling hiccup does not
-# become the baseline.
-(def one (min ;(map (fn [_] (timed (fn [] (ev/gather (digest/sha256 big))))) (range 3))))
+# The reference: four hashes one after another, each through its own
+# `ev/gather`, best of three so a scheduling hiccup does not become the
+# baseline. Each hash pays the same spawn and gather cost as in the concurrent
+# run below, so the two differ only in whether the hashes overlap.
+#
+# The reference was one hash, with four concurrent hashes bound under 2.5
+# times it. In ReleaseFast on a three-core `macos-latest` runner that measured
+# one 0.004 s and four 0.011 s: with a 4 ms hash, the per-task overhead is a
+# large share of `four`, and a bound relative to one hash does not allow for
+# it.
+(def serial
+  (min ;(map (fn [_] (timed (fn [] (repeat 4 (ev/gather (digest/sha256 big))))))
+             (range 3))))
 
-# Four at once. Serialised they would cost four of the above; overlapped they
-# cost about one. The bound is deliberately loose -- two cores would give two
-# -- because what is being asserted is that they overlap at all, not by how
-# much, and a busy machine must not turn that into a failure.
-(def four (timed (fn [] (ev/gather (digest/sha256 big) (digest/sha256 big)
-                                   (digest/sha256 big) (digest/sha256 big)))))
+# Four at once. Serialised they cost what `serial` does; overlapped on two
+# cores or more they cost about half of it or less. The bound is 0.9 of
+# `serial` rather than a half, because what is being asserted is that they
+# overlap at all, not by how much, and a busy machine must not turn that into
+# a failure. On the three-core runner above, four was 0.011 s against four
+# times a 0.004 s hash, about 0.7. Best of three, as `serial` is, so that noise
+# on either side does not decide the comparison.
+(def four
+  (min ;(map (fn [_] (timed (fn [] (ev/gather (digest/sha256 big) (digest/sha256 big)
+                                              (digest/sha256 big) (digest/sha256 big)))))
+             (range 3))))
 #
 # **The default of 2 is doing work.** `os/cpu-count` answers its default rather
 # than a number wherever the platform has no arm in it -- macOS is one, as it
@@ -159,8 +174,8 @@
 # unknown; a machine that *reports* one core skips this, which is the only case
 # where four hashes really do cost four.
 (when (>= (os/cpu-count 2) 2)
-  (assert (< four (* 2.5 one))
-          (string/format "four hashes overlap rather than serialise (one %.3fs, four %.3fs)"
-                         one four)))
+  (assert (< four (* 0.9 serial))
+          (string/format "four hashes overlap rather than serialise (serial %.3fs, four %.3fs)"
+                         serial four)))
 
 (print "digest example ok")
