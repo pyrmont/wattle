@@ -205,7 +205,7 @@ wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
 | ---------------------- | ------------------------------------------------------------- |
 | macOS arm64 and x86-64 | built and fully tested                                        |
 | Linux, musl            | built and fully tested; dynamic by default, needs musl loader |
-| Linux, glibc           | built and tested in a container at each phase gate, not in CI |
+| Linux, glibc           | built and fully tested                                        |
 | Windows                | cross-compiles; binaries have never been executed             |
 | wasm32-wasi            | built and fully tested under wasmtime, without the event loop |
 | 32-bit (riscv32)       | compiles only; wasm32-wasi is the 32-bit target that runs     |

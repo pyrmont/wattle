@@ -238,12 +238,12 @@
   (assert-error-value "a mode is scanned beside a buffer size"
                       "invalid flag z, expected w, a, or r"
                       (file/open buffered :zzz 8192))
-  # A size the allocator refuses, which needs a `setvbuf` that allocates. The
-  # musl stdio wasi-libc is built from records the size and allocates nothing,
-  # so no size is refused there and this has no instrument on `:wasm`. The
-  # size is also the pointer width, and 2^53-1 is not a size on a 32-bit
-  # build at all.
-  (when (not= :wasm (os/arch))
+  # A size the C library cannot allocate. Darwin's `setvbuf` refuses it. On
+  # Linux no size is refused: handed no buffer, glibc allocates its default
+  # one and musl keeps its own, both ignoring the size, so the assertion has
+  # no instrument there. wasi-libc's stdio is musl's, so the same holds on
+  # `:wasm`, where 2^53-1 is also not a size at a 32-bit pointer width.
+  (when (not (or (= :wasm (os/arch)) (= :linux (os/which))))
     (assert-error-value "unallocatable buffer size" "failed to set buffer size for file"
                         (file/open buffered :r (- (math/pow 2 53) 1)))))
 

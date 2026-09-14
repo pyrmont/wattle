@@ -397,7 +397,7 @@ These constraints are invisible when building only for the development host.
   binary for another target.
 
 Two limitations qualify any result. A musl build links dynamically by default
-and loads native modules on a machine with the musl loader, but CI's Linux jobs
+and loads native modules on a machine with the musl loader, but CI's musl jobs
 build with `-Dlinkage=static`, and musl's static `dlopen` is a stub that always
 fails, so CI does not run the native-module test on musl. Emulated x86-64 cannot run a NaN-boxed build,
 because Janet packs pointers into doubles and QEMU does not honour the

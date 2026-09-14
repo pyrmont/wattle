@@ -17,8 +17,7 @@ env:
 
 jobs:
 
-  # macOS is the only platform where the whole graph is green, so it is the
-  # only one that runs `zig build test` outright.
+  # The whole graph: `zig build test` outright, as the `glibc` job runs it.
   macos:
     name: macOS (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -43,12 +42,12 @@ jobs:
       - name: Standalone consumer
         run: zig build standalone
 
-  # Linux builds against **musl**, not the runner's glibc. It is static
-  # (`-Dlinkage=static`) because the runner image has no musl loader, so it
-  # runs natively with no container. Tests that load a library skip there.
-  # glibc is built below and run in a container at each phase gate. The two
-  # libcs are not interchangeable: glibc's allocator checks what musl's does
-  # not, so both are run (`test/README.md`).
+  # Linux against **musl**. It is static (`-Dlinkage=static`) because the
+  # runner image has no musl loader, so it runs natively with no container.
+  # Tests that load a library skip there, and `zig build test` cannot run, so
+  # the contracts and suites are run by hand. The `glibc` job below runs the
+  # rest. The two libcs are not interchangeable: glibc's allocator checks what
+  # musl's does not, so both are run (`test/README.md`).
   linux:
     name: Linux ${{ matrix.arch }} (musl)
     runs-on: ${{ matrix.os }}
@@ -92,23 +91,16 @@ jobs:
           set -eu
           fail=0
           for s in test/suite-*.janet; do
-            case "$s" in
-              # One known divergence, deliberately unfixed: the suite asserts
-              # that `file/open` refuses a buffer size of 2^53 - 1, which
-              # musl's `setvbuf` accepts where Darwin's refuses it. Delete
-              # these lines when it is resolved.
-              test/suite-io.janet) continue ;;
-            esac
             if ! ./zig-out/bin/janet "$s"; then echo "SUITE FAILED: $s"; fail=1; fi
           done
           exit $fail
 
-  # glibc builds here and is *run* at each phase gate in a container rather
-  # than in CI; see the `linux` job's comment. This job exists so the glibc
-  # build cannot rot again -- it was broken for the whole rewrite and nobody
-  # knew, because nothing here had ever built against glibc.
-  glibc-build:
-    name: Linux glibc (build only)
+  # glibc is the runner's own libc, so this build is native and dynamically
+  # linked and runs `zig build test` outright, as the macOS job does. That
+  # covers what the static musl jobs cannot: module loading, the examples and
+  # the runtime unit tests. glibc's allocator also checks what musl's does not.
+  glibc:
+    name: Linux x86_64 (glibc)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +109,10 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Build
         run: zig build
+      - name: Test
+        run: zig build test
+      - name: Standalone consumer
+        run: zig build standalone
 
   # Debug does not fold identical functions and does not elide safety checks,
   # and defects have been found that only a release mode exposed, so these are

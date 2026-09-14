@@ -90,8 +90,9 @@ rm -rf xbuild/gnu /tmp/janet-xc-gnu
 Run both libcs rather than only one. They are not interchangeable, and each has
 exposed a defect the other cannot. glibc's allocator checks fastbin chunk
 alignment and musl's does not, which is the reason a heap corruption surfaced
-there first. musl is what CI tests, because that corruption made the glibc
-driver run abort. Run the contract driver with no argument on either libc. It is
+there first. CI runs both: static musl on x86-64 and aarch64, and glibc on
+x86-64, native and dynamic under `zig build test`. Run the contract driver with
+no argument on either libc. It is
 the only thing in the tree that initialises and tears the runtime down
 sixty-five times in one process, and that is a workload nothing else here has.
 
@@ -250,28 +251,31 @@ identical to a test that passed.
 | Platform             | Method                            | Coverage                                                                                                                                                |
 |----------------------|-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
 | macOS ARM64          | native                            | Full: four optimize modes, every feature flag, both value layouts                                                                                       |
-| Linux aarch64 musl   | cross-compile, native container   | All 65 contracts, all 42 in-file tests, and 33 of 34 suites, NaN-boxed default. The 34th is named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
+| Linux aarch64 musl   | cross-compile, native container   | All 65 contracts, all 42 in-file tests, and 34 of 34 suites with one assertion skipped, NaN-boxed default. The skip is named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
 | Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only, and each contract is run by name, because `peg` ends the process under emulation. `peg`, `vm_run` and `ffi_core` fail there, and `suite-peg` with them. An `x86_64-macos` build with the same representation passes all four under Rosetta. The cause is not established without x86-64 hardware |
 | Windows x86-64 MinGW | cross-compile                     | Builds, and is a matrix entry. Binaries have never been executed                                                                                    |
 | Linux riscv32 musl   | cross-compile                     | Builds only, with `x86-linux-musl` and `arm-linux-musleabihf`. Those three compile the 32-bit NaN-boxing and pointer-width branches against musl's 32-bit headers, and the Linux host layer at a four-byte pointer. `wasm32-wasi` is the 32-bit target that runs |
 | wasm32-wasi          | cross-compile, wasmtime           | `zig build test` runs every suite and the 56 contracts this configuration registers, in Debug and in ReleaseSmall, in CI. 32-bit NaN-boxed layout, single-threaded, no event loop; networking, the FFI, the file watcher and processes are off with it, which is what leaves nine contracts unregistered. The fork cases in `value_alloc` and `os_surface` are skipped by their own guards |
-| Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 65 of 65 by name, all 42 in-file tests, 33 of 34 suites, the same one as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. Run at a phase gate rather than in CI, which tests Linux against musl |
+| Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 65 of 65 by name, all 42 in-file tests, 34 of 34 suites with the same assertion skipped as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. CI runs `zig build test` on x86-64 glibc natively |
 
-### The suite that does not pass on Linux
+### The assertion skipped on Linux
 
-It is not a gap. It fails the same way under musl and under glibc, so it is not
-a libc difference:
+No suite fails on Linux. One assertion is skipped there, on both libcs:
 
-- `suite-io.janet:241`, one assertion of 88. It asserts that `file/open` with a
-  buffer size of `2^53 - 1` raises `failed to set buffer size for file`. Linux's
-  `setvbuf` accepts the size where macOS refuses it, so the suite is asserting a
-  refusal only one platform makes. The suite skips the same assertion on `wasm`:
-  wasi-libc's stdio, which comes from musl, records the size and allocates
-  nothing, so no size is refused there, and `2^53 - 1` is not a size at a
-  four-byte pointer width.
+- `suite-io.janet:246`, one assertion of 88. It asserts that `file/open` with a
+  buffer size of `2^53 - 1` raises `failed to set buffer size for file`. The
+  runtime passes `setvbuf` the size and no buffer. Darwin's `setvbuf` refuses a
+  size it cannot allocate. glibc's and musl's ignore the size when handed no
+  buffer: glibc allocates its default buffer and musl keeps its own. No size is
+  refused, so the assertion has no instrument on Linux. It is skipped on `wasm`
+  for the same reason, since wasi-libc's stdio is musl's, and `2^53 - 1` is not
+  a size at a four-byte pointer width either.
 
-Fixing it means deciding what the suite should assert on a host that behaves
-differently, which is a change to a test's subject rather than to the runtime.
+The skip is keyed on `(os/which)` rather than on the libc because both Linux
+libcs behave alike. In `debian:trixie`, glibc 2.41 and a static musl build both
+returned 0 from `setvbuf(f, NULL, _IOFBF, size)` for every size up to
+`SIZE_MAX`, and the buffer in place stayed at 4,096 and 1,024 bytes. musl's
+`setvbuf.c` uses a buffer only when one is passed.
 
 `suite-filewatch.janet` was listed here too, failing six assertions of 79 on
 Linux. Those failures were the suite's, not inotify's or the container's. The
@@ -289,8 +293,8 @@ Five limitations constrain this, none of which are Janet defects:
 
 1. A static musl build cannot load a native module, because musl's static
    `dlopen` is a stub that always fails, so `-Dlinkage=static` turns dynamic
-   modules off. CI's Linux jobs build static, since the runner image has no
-   musl loader, so CI does not run the native-module test on musl. The
+   modules off. CI's musl jobs build static, since the runner image has no
+   musl loader, so CI runs the native-module test on glibc only. The
    container recipe above builds dynamic, and `alpine:latest` has the loader,
    so the native-module test runs there.
 2. Emulated x86-64 cannot run a NaN-boxed build. Janet packs pointers into
