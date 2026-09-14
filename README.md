@@ -221,7 +221,7 @@ REPL.
 
 ```
 $ janet
-Janet 1.41.3-dev-zig macos/aarch64/clang - '(doc)' for help
+Janet 1.41.3-dev-zig macos/aarch64/zig - '(doc)' for help
 repl:1:> (+ 1 2 3)
 6
 repl:2:> (print "Hello, World!")

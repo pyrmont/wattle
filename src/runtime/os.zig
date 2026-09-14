@@ -91,8 +91,9 @@ const clock_sources = [_]struct { name: [:0]const u8, value: i32 }{
     .{ .name = "cputime", .value = 2 },
 };
 
-/// The compiler name `os/compiler` reports.
-const compiler_name = if (builtin.abi == .msvc) "msvc" else "clang";
+/// The compiler name `os/compiler` reports. Every target, the MSVC ABI
+/// included, is compiled by Zig.
+const compiler_name = "zig";
 
 /// Whether this build has the event loop, which decides whether `os/open` is
 /// registered.
@@ -730,8 +731,7 @@ fn selfEntries() []const corefn.Entry {
             corefn.reg("os/arch", &cfunArch, @src(), "(os/arch)", "Check the ISA that janet was compiled for. Returns one of:\n\n" ++
                 "* :x86\n\n* :x64\n\n* :arm\n\n* :aarch64\n\n* :riscv32\n\n* :riscv64\n\n" ++
                 "* :sparc\n\n* :wasm\n\n* :s390\n\n* :s390x\n\n* :unknown\n"),
-            corefn.reg("os/compiler", &cfunCompiler, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns one of:\n\n" ++
-                "* :gcc\n\n* :clang\n\n* :msvc\n\n* :kencc\n\n* :unknown\n\n"),
+            corefn.reg("os/compiler", &cfunCompiler, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns :zig."),
         };
         if (!reduced_os) {
             acc = acc ++ [_]corefn.Entry{

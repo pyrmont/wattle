@@ -145,20 +145,8 @@ fn theClassificationAgreesWithTheMachine() void {
         }
     }
 
-    // Nothing outside the build can say which compiler built it, so this is
-    // the one classification with no independent oracle. What is left is that
-    // it is one of the names the subsystem can produce, which would
-    // catch an uninitialised or truncated string, and nothing subtler.
-    const compiler = cstr(os.osCompiler());
-    expect(std.mem.eql(u8, compiler, "clang") or
-        std.mem.eql(u8, compiler, "msvc") or
-        std.mem.eql(u8, compiler, "gcc") or
-        std.mem.eql(u8, compiler, "kencc") or
-        std.mem.eql(u8, compiler, "unknown"));
-
-    // One thing the machine can say: a binary that `uname` answers for is
-    // running on a POSIX kernel, and no MSVC build runs there.
-    if (unameSysname(&buffer) != null) expect(!std.mem.eql(u8, compiler, "msvc"));
+    // Every build is compiled by Zig, whatever the target.
+    expect(std.mem.eql(u8, cstr(os.osCompiler()), "zig"));
 }
 
 /// The Janet-visible functions give the keyword form of the kernels'
