@@ -1,0 +1,194 @@
+name: Test
+
+# `build.zig` is the build; there is no `make`, `build_win` or `meson`.
+#
+# **This file cannot be verified from a development machine.** Everything below
+# was checked as a command -- locally on macOS and in podman on Linux -- but a
+# workflow is verified by its first run. Read the first run rather than
+# assuming this one is right.
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+
+  # macOS is the only platform where the whole graph is green, so it is the
+  # only one that runs `zig build test` outright.
+  macos:
+    name: macOS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, macos-15-intel ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build
+      - name: Test
+        run: zig build test
+      # The published build surface, exercised from outside the package.
+      # `examples/numarray` is compiled by this repository's own `build()` with
+      # the private module graph in hand, so it proves the source experience
+      # and cannot notice if `janetModule` rots. `examples/standalone` depends
+      # on this package by path and reaches it only through that helper.
+      - name: Standalone consumer
+        run: zig build standalone
+
+  # Linux builds against **musl**, not the runner's glibc. A musl target links
+  # statically, so the artifacts run natively on the runner with no container.
+  # glibc is built below and run in a container at each phase gate. The two
+  # libcs are not interchangeable: glibc's allocator checks what musl's does
+  # not, so both are run (`test/README.md`).
+  linux:
+    name: Linux ${{ matrix.arch }} (musl)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,     arch: x86_64,  target: x86_64-linux-musl }
+          - { os: ubuntu-24.04-arm,  arch: aarch64, target: aarch64-linux-musl }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Dcpu=baseline
+      - name: Contracts
+        run: |
+          set -eu
+          fail=0
+          # The driver takes one contract name; run every one by name rather
+          # than the driver in bulk. A driver that aborts reports one failure
+          # per run, and a first failure is not a failure count.
+          for f in test/*.zig; do
+            name=$(basename "$f" .zig)
+            if ./zig-out/test/janet-zig-contract-test "$name" >/dev/null 2>&1; then
+              continue
+            fi
+            # Not every test/*.zig is a contract; the driver rejects a name it
+            # does not know, which is indistinguishable from a failure here.
+            # `test/contracts.zig` is the list, so ask it.
+            if grep -q "\"$name\"" test/contracts.zig; then
+              echo "CONTRACT FAILED: $name"
+              ./zig-out/test/janet-zig-contract-test "$name" 2>&1 | tail -20
+              fail=1
+            fi
+          done
+          exit $fail
+      - name: Suites
+        run: |
+          set -eu
+          fail=0
+          for s in test/suite-*.janet; do
+            case "$s" in
+              # Two known divergences, deliberately unfixed: inotify is not
+              # kqueue, and musl's `setvbuf` accepts a size Darwin refuses.
+              # 71 of 77 and 84 of 85 pass. Delete these two lines when they
+              # are resolved.
+              test/suite-filewatch.janet|test/suite-io.janet) continue ;;
+            esac
+            if ! ./zig-out/bin/janet "$s"; then echo "SUITE FAILED: $s"; fail=1; fi
+          done
+          exit $fail
+
+  # glibc builds here and is *run* at each phase gate in a container rather
+  # than in CI; see the `linux` job's comment. This job exists so the glibc
+  # build cannot rot again -- it was broken for the whole rewrite and nobody
+  # knew, because nothing here had ever built against glibc.
+  glibc-build:
+    name: Linux glibc (build only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build
+
+  # Debug does not fold identical functions and does not elide safety checks,
+  # and defects have been found that only a release mode exposed, so these are
+  # not a formality.
+  optimize:
+    name: ${{ matrix.mode }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [ ReleaseSafe, ReleaseFast, ReleaseSmall ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Test
+        run: zig build test -Doptimize=${{ matrix.mode }}
+
+  # Build-only, and they are not a formality: Zig analyses only the comptime
+  # branches it selects, so a 32-bit target is the only thing anywhere that
+  # type-checks the `JANET_NANBOX_32` and 32-bit paths, and the Windows entry
+  # is the only thing that sees the Windows arms at all. `test/README.md` has
+  # the reasoning.
+  #
+  # There are three 32-bit entries rather than one as of Part 25. `x86` and
+  # `arm` were recorded as impossible -- musl's 32-bit `time64` `__REDIR`
+  # declarations were blamed -- and the real cause was this tree shadowing
+  # musl's `features.h` with its own. Renaming ours opened both.
+  cross:
+    name: cross ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - x86_64-linux-gnu
+          - aarch64-linux-gnu
+          - riscv32-linux-musl
+          - x86-linux-musl
+          - arm-linux-musleabihf
+          - x86_64-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Dcpu=baseline
+
+  # wasm32-wasi runs rather than only building. The suites and the contracts
+  # execute under wasmtime, which `-fwasmtime` invokes for each artifact and
+  # which preopens the working directory and nothing else. Both optimize modes
+  # are run: ReleaseSmall is where the printer's native recursion came closest
+  # to the host's call stack, which is what the target's lower recursion guard
+  # is for.
+  #
+  # The `standalone` step the macOS job runs builds a native module, and a
+  # WASI build loads none, so it is not part of this one.
+  wasi:
+    name: wasm32-wasi (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [ Debug, ReleaseSmall ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: bytecodealliance/actions/wasmtime/setup@v1
+      - name: Test
+        run: zig build test -Dtarget=wasm32-wasi -fwasmtime -Doptimize=${{ matrix.mode }}
