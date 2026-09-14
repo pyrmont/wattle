@@ -199,6 +199,9 @@ everything it reads have to be in this tree.  The default `syspath` is
 wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
 ```
 
+`zig build web` builds `examples/web/`, Janet in a web page: the runtime as a
+WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
+
 ### Supported platforms
 
 | platform               | state                                                         |

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Janet in a web page</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem auto; max-width: 50rem; padding: 0 1rem; }
+  textarea, pre { font-family: ui-monospace, monospace; font-size: 0.9rem; }
+  textarea { box-sizing: border-box; width: 100%; height: 10rem; }
+  #output { border: 1px solid #ccc; max-height: 30rem; min-height: 10rem; overflow: auto; padding: 0.5rem; white-space: pre-wrap; }
+  .source { color: #666; }
+  .stderr { color: #b00; }
+  .note { color: #666; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>Janet in a web page</h1>
+<p>
+  The Janet runtime compiled to WebAssembly, running in this page. Each run
+  evaluates the text as one line of the <code>janet</code> REPL, in an
+  environment kept between runs. There is no file system, standard input is
+  empty, and <code>os/sleep</code> returns at once.
+</p>
+<p>
+  A browser will not load the WebAssembly from a <code>file://</code> page.
+  Serve this directory instead, for example with
+  <code>python3 -m http.server</code> run inside it, and open
+  <code>http://localhost:8000/</code>.
+</p>
+<textarea id="source" spellcheck="false" disabled>(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(fib 20)</textarea>
+<p>
+  <button id="run" disabled>Run</button>
+  <button id="clear">Clear output</button>
+  <span class="note">Ctrl+Enter or Cmd+Enter also runs.</span>
+</p>
+<pre id="output"><span class="note">Loading janet-web.wasm...</span></pre>
+<script type="module">
+import { start } from "./wasi.js";
+
+// The most lines of one stream shown per run. A stack trace from a stack
+// overflow runs to about a hundred thousand lines.
+const MAX_LINES = 200;
+
+const source = document.getElementById("source");
+const run = document.getElementById("run");
+let output = document.getElementById("output");
+
+function append(text, className) {
+  const span = document.createElement("span");
+  span.className = className;
+  span.textContent = text.endsWith("\n") ? text : text + "\n";
+  output.append(span);
+}
+
+// Shows at most MAX_LINES lines of `text`, followed by a line saying how
+// many were left out.
+function appendCapped(text, className) {
+  if (text === "") return;
+  const lines = text.split("\n");
+  if (text.endsWith("\n")) lines.pop();
+  if (lines.length <= MAX_LINES) {
+    append(text, className);
+    return;
+  }
+  append(lines.slice(0, MAX_LINES).join("\n"), className);
+  append(`[${lines.length - MAX_LINES} more lines not shown]`, "note");
+}
+
+let module;
+let janet;
+
+async function load() {
+  try {
+    const response = await fetch("janet-web.wasm");
+    if (!response.ok) throw new Error(`fetching janet-web.wasm: ${response.status}`);
+    module = await WebAssembly.compile(await response.arrayBuffer());
+    janet = await start(module);
+    output.textContent = "";
+    source.disabled = false;
+    run.disabled = false;
+    source.focus();
+  } catch (error) {
+    output.textContent = "";
+    append(`Could not start Janet: ${error}`, "stderr");
+  }
+}
+
+async function evaluate() {
+  if (!janet) return;
+  run.disabled = true;
+  append(source.value, "source");
+  const result = janet.eval(source.value);
+  appendCapped(result.stdout, "stdout");
+  appendCapped(result.stderr, "stderr");
+  if (result.error) {
+    // A trap or `os/exit` leaves the instance unusable. A new one starts
+    // with a new environment.
+    append(`The runtime stopped (${result.error}). Starting a new one; earlier definitions are gone.`, "note");
+    janet = null;
+    try {
+      janet = await start(module);
+    } catch (error) {
+      append(`Could not restart Janet: ${error}`, "stderr");
+      return;
+    }
+  }
+  output.scrollTop = output.scrollHeight;
+  run.disabled = false;
+}
+
+run.addEventListener("click", evaluate);
+source.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    evaluate();
+  }
+});
+// Replaces the pane with an empty copy rather than emptying it. Mobile Safari
+// can keep showing text removed from a scrolled pane until something forces a
+// repaint, and a new element has no earlier paint to show.
+document.getElementById("clear").addEventListener("click", () => {
+  const empty = output.cloneNode(false);
+  output.replaceWith(empty);
+  output = empty;
+});
+
+load();
+</script>
+</body>
+</html>

@@ -467,55 +467,7 @@ pub fn build(b: *std.Build) void {
         query.cpu_model = .baseline;
         break :blk b.resolveTargetQuery(query);
     };
-    const boot_config = bootConfig(options, target, boot_host);
-    const boot_module = b.createModule(.{
-        .root_source_file = b.path("src/boot/boot.zig"),
-        .target = boot_host,
-        .optimize = .Debug,
-    });
-    configureCModule(b, boot_module, boot_host, options, boot_config);
-    // The bootstrap compiler is a build-time tool that runs on the host, not a
-    // thing under test, and it is built for the host even when -Dtarget names
-    // something else. ThreadSanitizer is dropped from it for that reason and
-    // for a practical one: Zig's bundled libtsan needs macOS SDK headers it
-    // cannot see, so leaving it on makes -Dsanitize-thread fail on this
-    // development machine no matter which target was asked for.
-    boot_module.sanitize_thread = null;
-    // The generator gets the same subsystems as the runtime, built a second
-    // time because they must run on the host -- see `boot_host` above -- and
-    // with `bootstrap` set. `src/runtime/corefn.zig` is what reads it: a core
-    // cfunction carries its docstring in the generator and not in the runtime,
-    // and defines a binding where the runtime only puts a value. `bootConfig`
-    // says which fields come from the target and which from the host.
-    //
-    // The generator could not be anything but Zig: it registers the whole core
-    // environment, so it needs every cfunction there is, and a cfunction is a
-    // Zig function.
-    //
-    // It gets its own instance of the graph, built for `boot_host` and carrying
-    // `bootstrap = true`, because `corefn.zig` reads that to select which
-    // registration shape to emit and the two halves of one build must not
-    // disagree about it.
-    const boot_graph = makeRuntimeGraph(b, boot_host, .Debug, options, boot_config, null);
-    if (boot_graph) |g| {
-        boot_module.addImport("subsystems", g.subsystems);
-        boot_module.addImport("config", g.config);
-        boot_module.addImport("host", g.host);
-        boot_module.addImport("repr", g.repr);
-        boot_module.addImport("constants", g.constants);
-    }
-    const boot = selectBackend(b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module }));
-
-    // The generator writes the image to a path it is handed rather than to
-    // stdout. The output is a marshalled byte stream, and a byte stream through
-    // a captured stdout is one text-mode host away from a translated 0x0A.
-    const generate_image = b.addRunArtifact(boot);
-    generate_image.setCwd(b.path("."));
-    generate_image.addArg(".");
-    generate_image.addArgs(&.{ "JANET_PATH", "/usr/local/lib/janet" });
-    generate_image.addArg("image-out");
-    const image_source = generate_image.addOutputFileArg("janet-image.bin");
-    generate_image.addFileInput(b.path("src/boot/boot.janet"));
+    const image_source = coreImage(b, options, target, boot_host);
 
     // The image on its own, so that a build can be asked for the generator's
     // output rather than for something linked against it. It is what a
@@ -1132,27 +1084,85 @@ pub fn build(b: *std.Build) void {
     // The client is checked by the install step, which is what a plain build
     // runs, and the test binaries by the test step alone: checking those from
     // the install step would make a plain build compile three test
-    // executables to read their imports.
+    // executables to read their imports. The `web` step below checks its own
+    // binary on any `-Dtarget`, so the checker is described outside the `if`.
+    const checker_module = b.createModule(.{
+        .root_source_file = b.path("tools/check/wasm_imports.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    applyFramePointer(checker_module, options, .Debug);
+    const checker = selectBackend(b.addExecutable(.{ .name = "wasm-imports", .root_module = checker_module }));
+    const checkImports = struct {
+        fn add(bb: *std.Build, tool: *std.Build.Step.Compile, binary: *std.Build.Step.Compile) *std.Build.Step {
+            const run_checker = bb.addRunArtifact(tool);
+            run_checker.addFileArg(binary.getEmittedBin());
+            return &run_checker.step;
+        }
+    }.add;
     if (wasm) {
-        const checker_module = b.createModule(.{
-            .root_source_file = b.path("tools/check/wasm_imports.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        });
-        applyFramePointer(checker_module, options, .Debug);
-        const checker = selectBackend(b.addExecutable(.{ .name = "wasm-imports", .root_module = checker_module }));
-        const checkImports = struct {
-            fn add(bb: *std.Build, tool: *std.Build.Step.Compile, binary: *std.Build.Step.Compile) *std.Build.Step {
-                const run_checker = bb.addRunArtifact(tool);
-                run_checker.addFileArg(binary.getEmittedBin());
-                return &run_checker.step;
-            }
-        }.add;
-
         const client_check = checkImports(b, checker, client);
         b.getInstallStep().dependOn(client_check);
         test_step.dependOn(client_check);
         for (wasm_binaries.items) |binary| test_step.dependOn(checkImports(b, checker, binary));
+    }
+
+    // `examples/web`, Janet in a web page: `examples/web/main.zig` built as a
+    // wasm32-wasi reactor. A reactor has `_initialize` and exported functions
+    // and no `_start`, so the page calls into the runtime once per submission
+    // rather than the runtime reading a terminal, which a page cannot supply.
+    // The step builds for wasm32-wasi whatever `-Dtarget` names, ReleaseSmall
+    // unless `-Doptimize` or `--release` is given, and generates its own image
+    // and runtime graph for that configuration.
+    //
+    // **The stack ceiling is 1000000 slots rather than the command's
+    // 0x7fffffff.** At the default, unbounded Janet recursion exhausts
+    // wasm32's heap before the ceiling is reached, and the out-of-memory path
+    // ends in a trap. A trap leaves the instance unusable, so the page loses
+    // every definition made in it. At 1000000 slots the same recursion raises
+    // `stack overflow`, an ordinary Janet error after which the instance keeps
+    // its state. `-Dstack-max` overrides it. The NaN-box pointer shift is
+    // cleared because its range depends on the target, and wasm32 allows only
+    // 0.
+    const web_step = b.step("web", "Build examples/web, Janet as a wasm32-wasi reactor, with its page into <prefix>/web");
+    {
+        const web_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+        const web_optimize: std.builtin.OptimizeMode =
+            if (b.user_input_options.contains("optimize") or b.release_mode != .off) optimize else .ReleaseSmall;
+        var web_options = options;
+        if (!b.user_input_options.contains("stack-max")) web_options.stack_max = 1000000;
+        web_options.nanbox_pointer_shift = null;
+        const web_config = janetConfig(web_options, web_target);
+        const web_image = coreImage(b, web_options, web_target, boot_host);
+        if (makeRuntimeGraph(b, web_target, web_optimize, web_options, web_config, web_image)) |g| {
+            const web_module = b.createModule(.{
+                .root_source_file = b.path("examples/web/main.zig"),
+                .target = web_target,
+                .optimize = web_optimize,
+            });
+            configureCModule(b, web_module, web_target, web_options, web_config);
+            web_module.addImport("subsystems", g.subsystems);
+            web_module.addImport("abi", g.abi);
+            web_module.addImport("repr", g.repr);
+            const web = selectBackend(b.addExecutable(.{ .name = "janet-web", .root_module = web_module }));
+            web.wasi_exec_model = .reactor;
+            // `_initialize` is wasi-libc's `crt1-reactor.o`, and the root has
+            // no `main` for the standard library to wrap in an entry point.
+            web.entry = .disabled;
+            // Exports the root's four `export fn` declarations. The runtime
+            // declares no other.
+            web.rdynamic = true;
+
+            const web_dir: std.Build.InstallDir = .{ .custom = "web" };
+            const install_web = b.addInstallArtifact(web, .{ .dest_dir = .{ .override = web_dir } });
+            install_web.step.dependOn(checkImports(b, checker, web));
+            web_step.dependOn(&install_web.step);
+            // Copied beside the binary, so that the installed directory is
+            // servable on its own.
+            for ([_][]const u8{ "index.html", "wasi.js" }) |file| {
+                web_step.dependOn(&b.addInstallFileWithDir(b.path(b.fmt("examples/web/{s}", .{file})), web_dir, file).step);
+            }
+        }
     }
 
     // The runs that print are ordered in three phases: the two Zig-side runs
@@ -1303,6 +1313,66 @@ fn nativeCompile(
     }));
     lib.linker_allow_shlib_undefined = true;
     return lib;
+}
+
+/// The core image for `target`, made by running a generator built for
+/// `boot_host` under `bootConfig`.
+fn coreImage(
+    b: *std.Build,
+    options: BuildOptions,
+    target: std.Build.ResolvedTarget,
+    boot_host: std.Build.ResolvedTarget,
+) std.Build.LazyPath {
+    const boot_config = bootConfig(options, target, boot_host);
+    const boot_module = b.createModule(.{
+        .root_source_file = b.path("src/boot/boot.zig"),
+        .target = boot_host,
+        .optimize = .Debug,
+    });
+    configureCModule(b, boot_module, boot_host, options, boot_config);
+    // The bootstrap compiler is a build-time tool that runs on the host, not a
+    // thing under test, and it is built for the host even when -Dtarget names
+    // something else. ThreadSanitizer is dropped from it for that reason and
+    // for a practical one: Zig's bundled libtsan needs macOS SDK headers it
+    // cannot see, so leaving it on makes -Dsanitize-thread fail on this
+    // development machine no matter which target was asked for.
+    boot_module.sanitize_thread = null;
+    // The generator gets the same subsystems as the runtime, built a second
+    // time because they must run on the host -- see `boot_host` in `build` -- and
+    // with `bootstrap` set. `src/runtime/corefn.zig` is what reads it: a core
+    // cfunction carries its docstring in the generator and not in the runtime,
+    // and defines a binding where the runtime only puts a value. `bootConfig`
+    // says which fields come from the target and which from the host.
+    //
+    // The generator could not be anything but Zig: it registers the whole core
+    // environment, so it needs every cfunction there is, and a cfunction is a
+    // Zig function.
+    //
+    // It gets its own instance of the graph, built for `boot_host` and carrying
+    // `bootstrap = true`, because `corefn.zig` reads that to select which
+    // registration shape to emit and the two halves of one build must not
+    // disagree about it.
+    const boot_graph = makeRuntimeGraph(b, boot_host, .Debug, options, boot_config, null);
+    if (boot_graph) |g| {
+        boot_module.addImport("subsystems", g.subsystems);
+        boot_module.addImport("config", g.config);
+        boot_module.addImport("host", g.host);
+        boot_module.addImport("repr", g.repr);
+        boot_module.addImport("constants", g.constants);
+    }
+    const boot = selectBackend(b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module }));
+
+    // The generator writes the image to a path it is handed rather than to
+    // stdout. The output is a marshalled byte stream, and a byte stream through
+    // a captured stdout is one text-mode host away from a translated 0x0A.
+    const generate_image = b.addRunArtifact(boot);
+    generate_image.setCwd(b.path("."));
+    generate_image.addArg(".");
+    generate_image.addArgs(&.{ "JANET_PATH", "/usr/local/lib/janet" });
+    generate_image.addArg("image-out");
+    const image = generate_image.addOutputFileArg("janet-image.bin");
+    generate_image.addFileInput(b.path("src/boot/boot.janet"));
+    return image;
 }
 
 /// The host side of an in-repository `quickbin` on a cross build: a runtime
