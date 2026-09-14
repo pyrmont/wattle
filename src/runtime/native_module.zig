@@ -395,6 +395,7 @@ fn defs(env: *janet.Env) janet.Error!void {
         janet.reg("size", &size, "(size x)\n\nThe generic length."),
         janet.reg("odd", &oddValue, "(odd)\n\nAn abstract whose :length method returns -1."),
         janet.reg("apply", &apply, "(apply f & args)\n\nCall f on the current fiber, raising on anything but a return."),
+        janet.reg("invoke", &invoke, "(invoke name & args)\n\nCall the method name on the first of args."),
         janet.reg("attempt", &attempt, "(attempt f & args)\n\nCall f on a fresh fiber, returning [signal value fiber]."),
         janet.reg("status-of", &statusOf, "(status-of x)\n\nThe status of a fiber, refusing anything else."),
         janet.reg("sorted", &sorted, "(sorted cmp indexed)\n\nAn insertion sort whose comparator is a Janet function."),
@@ -433,6 +434,13 @@ fn greeting(argv: []janet.Value) janet.Error!janet.Value {
 fn identity(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     return argv[0];
+}
+
+/// `(invoke name & args)`: `mcall`, with the method named by a keyword.
+fn invoke(argv: []janet.Value) janet.Error!janet.Value {
+    try janet.arity(argv, 1, -1);
+    const name = janet.toKeyword(argv[0]) orelse return janet.panic("expected keyword");
+    return janet.mcall(name, argv[1..]);
 }
 
 /// `(keep x &opt rank)`: a new keeper.

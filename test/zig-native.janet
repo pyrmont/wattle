@@ -400,16 +400,40 @@
 (assert (deep= [:ok 7 :dead] (attempted (fn [a b] (+ a b)) 3 4))
         "pcall reports the return, and the fiber it ran on is spent")
 
-# `f` is whatever Janet calls, not only a function: a cfunction, and the
-# indexable types, which index their one argument rather than call it.
-(assert (= true (apply-fn < 1 2)) "call runs a cfunction")
-(assert (= 1 (apply-fn {:a 1} :a)) "a struct called is a lookup, as in Janet")
-(assert (= 1 (apply-fn :a {:a 1})) "and a keyword reverses the operands")
+# `call` takes a function or a cfunction and refuses the other types Janet code
+# can call.
+(assert (= :number (apply-fn type 1)) "call runs a cfunction")
+(assert (= "expected function or cfunction, got :a" (refusal apply-fn :a {:a 1}))
+        "call refuses a keyword, which is mcall's job")
+(assert (string/has-prefix? "expected function or cfunction, got <table 0x"
+                            (refusal apply-fn @{:a 1} :a))
+        "and a table")
+(assert (string/has-prefix? "expected function or cfunction, got <struct 0x"
+                            (refusal apply-fn {:a 1} :a))
+        "and a struct")
 
 # `pcall` is narrower, and by the callee's nature rather than by a decision
 # here: a fiber runs a function and nothing else.
+(assert (deep= [:error "expected function, got cfunction" nil] (attempted type 1))
+        "pcall reports a cfunction and makes no fiber")
+(assert (deep= [:error "expected function, got keyword" nil] (attempted :a {:a 1}))
+        "and a keyword")
 (assert (deep= [:error "expected function, got table" nil] (attempted @{:a 1} :a))
-        "pcall reports a non-function and makes no fiber")
+        "and a table")
+(assert (deep= [:error "expected function, got struct" nil] (attempted {:a 1} :a))
+        "and a struct")
+
+# `mcall` is `(:name ;args)`: the method is looked up in the receiver and
+# called with the receiver first.
+(def invoke (from-module 'invoke))
+(def receiver @{:pair (fn [self x] [self x])})
+(assert (deep= [receiver 2] (invoke :pair receiver 2))
+        "mcall calls the method found, with the receiver as its first argument")
+(assert (string/has-prefix? "could not find method :zz for <table 0x"
+                            (refusal invoke :zz @{:b 1}))
+        "mcall refuses a method that is not there")
+(assert (= "method :pair expected at least 1 argument" (refusal invoke :pair))
+        "and a call with no receiver")
 
 # An error. `call` raises it and `pcall` reports it, with one payload.
 (assert (= "boom" (refusal apply-fn (fn [] (error "boom"))))

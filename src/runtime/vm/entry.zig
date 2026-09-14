@@ -1,8 +1,8 @@
 //! The entry points: everything that stands above `vm.zig`'s `runVm` and
 //! decides whether, and in what state, the loop is entered at all.
 //!
-//! `call` and `callValue` enter the loop from a host frame, `pcall` runs a
-//! function on a fresh or recycled fiber, `continueFiber` and
+//! `call`, `callValue` and `mcallValue` enter the loop from a host frame,
+//! `pcall` runs a function on a fresh or recycled fiber, `continueFiber` and
 //! `continueSignal` resume an existing one, `step` runs a single instruction
 //! for the debugger, and `checkCanResume` is the refusal all of the resumes
 //! share. `continueNoCheck` is the protected scope every resume opens.
@@ -17,12 +17,13 @@
 //!
 //! ## Raising
 //!
-//! Three raise and five return a `Resumed`. The three are `step`, for a fiber
+//! Four raise and five return a `Resumed`. The four are `step`, for a fiber
 //! whose status forbids stepping; `call`, which raises on three arity
 //! mismatches, two entry conditions, and any signal the loop hands back, that
-//! last being the coercion `signal.signalPlan` is written to match; and
+//! last being the coercion `signal.signalPlan` is written to match;
 //! `callValue`, which reaches `call` for the function case and `runVm`'s
-//! method dispatch otherwise.
+//! method dispatch otherwise; and `mcallValue`, which raises on no receiver
+//! and on a method not found, then as `callValue` does.
 //!
 //! ## One trace line
 //!
@@ -196,8 +197,10 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 /// themselves and handing everything else to `callNonfn`, which is
 /// `methodInvoke`: an abstract with a `call` slot, and the six indexable
 /// types, which index their one argument rather than call it. This is that
-/// whole vocabulary reached from a host frame, so that a module author's
-/// `call` is Janet's call. `capi.zig` is its only caller.
+/// whole vocabulary reached from a host frame. `mcallValue` below needs all of
+/// it, because a looked-up method may be any of them; `capi.zig`'s
+/// `janet_call_value` refuses everything but a function and a cfunction
+/// before calling this.
 ///
 /// The arguments are copied onto the current fiber's stack, under a `cframe`
 /// of their own, which is the technique `vm.zig`'s own arms use and not a
@@ -265,6 +268,24 @@ pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.
     // arm leaves too.
     fibers.popframe(fiber);
     return answer;
+}
+
+/// `callValue` over the method `name` on `argv[0]`, which stays the first
+/// argument.
+///
+/// This raises on no receiver and on a method not found. `vm.zig`'s `mcall`
+/// has the same shape but invokes the method directly on a mutable `argv`;
+/// this goes through `callValue`, which copies `argv` onto the fiber and
+/// frames it.
+pub fn mcallValue(name: [*:0]const u8, argv: []const repr.Value) raise.Error!repr.Value {
+    if (argv.len < 1) {
+        return pp_format.panicf("method :%s expected at least 1 argument", .{name});
+    }
+    const method = try vm_run.methodLookup(argv[0], name);
+    if (repr.checkType(method, repr.Tag.nil)) {
+        return pp_format.panicf("could not find method :%s for %v", .{ name, argv[0] });
+    }
+    return callValue(method, argv);
 }
 
 /// Whether `fiber` may be resumed, and the message if not.

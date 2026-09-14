@@ -40,7 +40,7 @@ owes before it is believed.
   returns `error{JanetSignal}!Value` over Zig's own calling convention, so
   `argv[n]` is bounds-checked where in C it read whatever was there.
 
-- Nothing in `src/` exports a `janet_*` symbol. `runtime/capi.zig` has the 85
+- Nothing in `src/` exports a `janet_*` symbol. `runtime/capi.zig` has the 86
   definitions a native module can reach and `api/interface.zig` declares the
   `extern struct` of function pointers that reaches them. `runtime/capi.zig`'s
   one initializer fills it, and the compiler type-checks every field against the
@@ -133,7 +133,7 @@ Nine files outside the subsystems are named here:
 | file | what it is |
 | --- | --- |
 | `root.zig` | the module root: a comptime block naming every file this configuration compiles |
-| `runtime/capi.zig` | the 85 definitions a native module can call, and the one initializer that fills the table with them |
+| `runtime/capi.zig` | the 86 definitions a native module can call, and the one initializer that fills the table with them |
 | `host/cabi.zig` | every `extern` declaration the runtime makes, all of them libc's |
 | `api/interface.zig` | the `extern struct` of function pointers a module reaches the runtime through, and the `rt` it is stored in |
 | `host/host.zig`, `api/constants.zig`, `api/repr.zig` | the host's own shapes, the constants, and the value representation, each its own build module |
@@ -198,7 +198,7 @@ Three things do, and they are checked differently.
 
 ### The module table
 
-`api/interface.zig`'s `Runtime` is one `extern struct` of 85 `callconv(.c)`
+`api/interface.zig`'s `Runtime` is one `extern struct` of 86 `callconv(.c)`
 function pointers, and both compilations import that file. `runtime/capi.zig`'s
 `table` fills it from the runtime's definitions and `runtime/env.zig` passes its
 address to `_janet_init`; `module.zig`'s shim stores it in `table.rt` and every

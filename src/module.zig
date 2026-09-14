@@ -100,11 +100,11 @@
 //! collection so a value a cfunction builds is safe for as long as that
 //! cfunction's frame is live.
 //!
-//! Re-entering Janet code stops this being true. Three functions callable by a
-//! module author may re-enter: `call`, `pcall` and (in certain situations)
-//! `length`. (The `length` call is on an abstract type with no `length` slot,
-//! which falls through to a Janet-level `:length` method.) Four rules apply
-//! across such a re-entry:
+//! Re-entering Janet code stops this being true. Four functions callable by a
+//! module author may re-enter: `call`, `mcall`, `pcall` and (in certain
+//! situations) `length`. (The `length` call is on an abstract type with no
+//! `length` slot, which falls through to a Janet-level `:length` method.) Four
+//! rules apply across such a re-entry:
 //!
 //! - A `Value` reachable from nothing but the module's own stack can be freed.
 //!   `gcroot` before and `gcunroot` after is the protection, one pair per
@@ -474,8 +474,8 @@ pub fn bytesView(v: Value) ?[]const u8 {
 
 /// Calls `f` with `args` on the Janet VM.
 ///
-/// `f` is a callable value: a function, a cfunction, an abstract type with a
-/// `call` slot or one of the six indexable types.
+/// `f` is a function or a cfunction. Any other value raises "expected
+/// function or cfunction, got x". A method call on a keyword is `mcall`.
 ///
 /// This function raises on anything but a return. An error from Janet code
 /// arrives as `Error.JanetSignal` with the error's payload. A yield or a
@@ -485,7 +485,8 @@ pub fn bytesView(v: Value) ?[]const u8 {
 /// this file apply (including those regarding the lifetime of `argv`). The
 /// recursion guard is the runtime's.
 ///
-/// This is the equivalent of `(f ;args)` in Janet code. See also `pcall`.
+/// This is the equivalent of `(f ;args)` in Janet code. See also `mcall` and
+/// `pcall`.
 pub fn call(f: Value, args: []const Value) Error!Value {
     return fromAbi(interface.rt.call_value(f, args.ptr, args.len));
 }
@@ -995,6 +996,23 @@ pub fn mark(v: Value) void {
     interface.rt.mark(v);
 }
 
+/// Calls the method `name` on the first of `args`.
+///
+/// The method is looked up in `args[0]` under the keyword `name` and called
+/// with all of `args`, so the receiver is its first argument.
+///
+/// This function raises "method :name expected at least 1 argument" when
+/// `args` is empty and "could not find method :name for x" when the lookup
+/// is nil. Otherwise it raises as `call` does.
+///
+/// This function re-enters Janet code, so the re-entry rules at the top of
+/// this file apply.
+///
+/// This is the equivalent of `(:name ;args)` in Janet code. See also `call`.
+pub fn mcall(name: [:0]const u8, args: []const Value) Error!Value {
+    return fromAbi(interface.rt.mcall(name.ptr, args.ptr, args.len));
+}
+
 /// Allocates an abstract of this type, as a `*T`.
 ///
 /// `size` is the total number of bytes to allocate and defaults to
@@ -1058,13 +1076,21 @@ pub fn panicFormat(comptime fmt: []const u8, args: anytype) Error {
 /// and it is by construction always fresh.
 ///
 /// The fiber can be resumed from Janet only after `.yield`, when its status is
-/// `:pending`; after `.ok` it is `:dead` and after `.error` it is `:error`. It
-/// is nil if `f` was not a function, which is itself reported as `.error`.
+/// `:pending`; after `.ok` it is `:dead` and after `.error` it is `:error`.
+///
+/// The fresh fiber starts with no dynamic bindings. `(dyn ...)` inside `f` is
+/// nil unless `f` sets the binding itself, and a `setdyn` inside `f` is not
+/// seen by the caller. `call` runs on the caller's fiber and shares its
+/// bindings.
+///
+/// `f` is a function, because a fiber runs nothing else. A cfunction, a
+/// keyword or any other value is reported as `.error` with the message
+/// "expected function, got <type>" and a nil `.fiber`.
 ///
 /// This function re-enters Janet code, so the re-entry rules at the top of
 /// this file apply.
 ///
-/// See also `call`.
+/// See also `call` and `mcall`.
 pub fn pcall(f: Value, args: []const Value) Called {
     var out_value: Value = nil();
     var out_fiber: Value = nil();

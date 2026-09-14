@@ -156,7 +156,9 @@ const Value = repr.Value;
 /// `runtime/vm/entry.zig`'s `call` runs a callee on the current fiber and
 /// raises on anything but a return; its `pcall` runs a callee on a fresh fiber
 /// and reports the signal, the value and the fiber. `call_value` flattens a
-/// raise into a report like every other raising crossing. `pcall_value`
+/// raise into a report like every other raising crossing, and takes a
+/// function or a cfunction; `pcall_value` takes a function. `mcall` looks a
+/// method up by name in the first argument and calls it with every argument. `pcall_value`
 /// reports by its own nature and needs no report of its own: the signal is its
 /// result, and its two out-parameters are there because a `callconv(.c)`
 /// return cannot take a struct of a `Value` and an enum without an `extern`
@@ -235,6 +237,7 @@ pub const Runtime = extern struct {
     marshal_janet: *const fn (m: *abi.Marshal, x: Value) callconv(.c) void,
     marshal_ptr: *const fn (m: *abi.Marshal, p: ?*const anyopaque) callconv(.c) void,
     marshal_size: *const fn (m: *abi.Marshal, n: usize) callconv(.c) void,
+    mcall: *const fn (name: [*:0]const u8, args: [*]const Value, len: usize) callconv(.c) Value,
     new_array: *const fn (items: [*]const Value, len: usize) callconv(.c) Value,
     new_buffer: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,
     new_keyword: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,

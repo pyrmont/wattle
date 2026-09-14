@@ -115,6 +115,7 @@ pub const table: interface.Runtime = .{
     .marshal_janet = &janet_marshal_janet,
     .marshal_ptr = &janet_marshal_ptr,
     .marshal_size = &janet_marshal_size,
+    .mcall = &janet_mcall,
     .new_array = &janet_new_array,
     .new_buffer = &janet_new_buffer,
     .new_keyword = &janet_new_keyword,
@@ -308,15 +309,25 @@ pub fn janet_buffer_push_bytes(render: *abi.Render, bytes: [*]const u8, len: usi
     return raise.toAbi(impl.value_buffers.pushBytes(buffer, bytes[0..len]));
 }
 
-/// `(f ...)`, from a module's frame, raising on anything but a return.
+/// `(f ...)` for a function or a cfunction `f`, from a module's frame, raising
+/// on anything but a return.
 ///
-/// `vm/entry.zig`'s `call` and `pcall` are published as they stand;
-/// `callValue` beside them is what widens `call`'s callee from a
-/// `*functions.Function` to any value `(f ...)` calls, and this file is its
-/// only caller.
+/// Any other callee is refused. `vm/entry.zig`'s `callValue` is reached for
+/// both accepted types because it copies the arguments onto the fiber under a
+/// frame, which a cfunction needs.
 pub fn janet_call_value(f: repr.Value, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
     requireJanetThread();
-    return raise.toAbi(impl.vm_entry.callValue(f, args[0..len]));
+    const result: raise.Error!repr.Value = if (repr.checkType(f, repr.Tag.function) or repr.checkType(f, repr.Tag.cfunction))
+        impl.vm_entry.callValue(f, args[0..len])
+    else
+        impl.pp_format.panicf("expected function or cfunction, got %v", .{f});
+    return raise.toAbi(result);
+}
+
+/// `(:name ...)`, from a module's frame, raising on anything but a return.
+pub fn janet_mcall(name: [*:0]const u8, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
+    requireJanetThread();
+    return raise.toAbi(impl.vm_entry.mcallValue(name, args[0..len]));
 }
 
 /// The allocator for memory the runtime may later free.
