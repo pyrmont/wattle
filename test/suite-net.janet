@@ -295,14 +295,36 @@
 # group is a global one: a link-local group is joined on the interface the
 # kernel picks for interface 0, and the same interface 0 does not name it to
 # leave.
+#
+# A join on interface 0 fails with EADDRNOTAVAIL where no multicast-capable
+# interface has a route for the group, which is the case on GitHub's macOS
+# runners, and `net/setsockopt` names no other interface. That error skips both
+# assertions and any other fails the join. The raised error is the `strerror`
+# text alone: macOS and glibc spell EADDRNOTAVAIL "Can't assign requested address"
+# and "Cannot assign requested address", musl and wasi-libc "Address not
+# available".
+(defn- no-multicast-route? [err]
+  (def message (string err))
+  (truthy? (or (string/find "assign requested address" message)
+               (string/find "Address not available" message))))
+
 (def lo6 (protect (net/listen "::1" 0 :datagram)))
 (if (first lo6)
   (with [member (lo6 1)]
-    (assert-no-error "ipv6-join-group" (net/setsockopt member :ipv6-join-group "ff0e::1"))
+    (def [joined err] (protect (net/setsockopt member :ipv6-join-group "ff0e::1")))
+    (when (and (not joined) (no-multicast-route? err))
+      (eprint "skipped IPv6 membership: " err)
+      (skip-asserts 2))
+    (assert joined (if joined "ipv6-join-group" (string "ipv6-join-group: " err)))
     (assert-no-error "ipv6-leave-group" (net/setsockopt member :ipv6-leave-group "ff0e::1")))
+  # `skip-asserts` marks the next two assertions to run as skipped rather
+  # than counting two, so the two run here to be marked. Without them the
+  # skip would fall on the next two assertions in the file.
   (do
     (eprint "skipped IPv6 membership: there is no IPv6 loopback address to bind")
-    (skip-asserts 2)))
+    (skip-asserts 2)
+    (assert false "ipv6-join-group")
+    (assert false "ipv6-leave-group")))
 
 # Two listeners may share a port, because a listener asks for SO_REUSEPORT
 # where the platform has it.

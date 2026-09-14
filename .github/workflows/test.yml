@@ -35,6 +35,11 @@ jobs:
         run: zig build
       - name: Test
         run: zig build test
+        # TEMPORARY: remove after the next run. `VERBOSE` makes
+        # `assert-no-error` print the error it caught, to show the errno the
+        # IPv6 join in `test/suite-net.janet` fails with on these runners.
+        env:
+          VERBOSE: 1
       # The published build surface, exercised from outside the package.
       # `examples/numarray` is compiled by this repository's own `build()` with
       # the private module graph in hand, so it proves the source experience
