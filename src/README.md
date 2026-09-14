@@ -1,305 +1,309 @@
 # The Zig runtime
 
-Janet's runtime, written in Zig. This file is for someone reading or changing
-it: what holds, where things are, and which mistakes the tree is shaped to
-prevent.
+Janet's runtime, written in Zig. This file is for a reader who is reading or
+changing the runtime: where things are, the rules the tree follows, and how to
+add to it.
 
-Two other documents have the rest. [`../DESIGN.md`](../DESIGN.md) has the
-decisions about what the language is: the value representation, the module
-interface, and the pointer conventions.
-[`../test/README.md`](../test/README.md) has the test strategy and what a change
-owes before it is believed.
+Two other documents cover the rest. [`../DESIGN.md`](../DESIGN.md) records the
+decisions about what the runtime is: the value representation, the module
+interface and the pointer conventions. [`../test/README.md`](../test/README.md)
+has the test strategy and what a change must pass before it is accepted.
 
-## The rules that hold
+## Overview
 
-- There is no C implementation to select, and no Janet C left to call. `src/` is
-  88 `.zig` files and four hand-written headers: `host/janet_features.h` and the
-  host translations `runtime/os/abi.h`, `runtime/net/abi.h` and
-  `runtime/filewatch/abi.h`. Any C a Zig file reaches is libc's, through one of
-  seven `@cImport` blocks. "No C in the tree" and "no libc" are different
-  claims, and only "no C in the tree" is a goal. Comparison against Janet's C
-  runtime is `tools/bench/upstream.sh`, which builds upstream `master` in a
-  worktree with a matching toolchain.
+`src/` is 93 `.zig` files and four hand-written headers. There is no C
+implementation to select and no Janet C to call. Any C that a Zig file reaches
+is libc's, through one of seven `@cImport` blocks. "No C in the tree" and "no
+libc" are different claims, and only the first is a goal.
+`tools/bench/upstream.sh` builds upstream `master` in a worktree with a matching
+toolchain, for comparison against Janet's C runtime.
 
-- Nothing jumps. No configuration compiles a `setjmp`, `longjmp` or `jmp_buf`,
-  and the tree contains none of the three. A raise records its signal in `Vm`'s
-  `pending_signal` and returns `error.JanetSignal`. A protected scope is
-  `signal.tryInit` and `signal.restore` with the call between them.
-  `signal.tryInit` is what points `return_reg` at the scope's payload and
-  therefore what makes a raise catchable. The `setjmp` was never the scope, only
-  the transfer. `defer` and `errdefer` are legal everywhere.
+The rules that apply across the tree, each covered in its own section below:
 
-- A raising function returns `raise.Error!T`, and each caller either
-  propagates it or flattens it. Where a caller cannot pass the error union on it
-  flattens the raise into a report, and a report nobody consumes ends the
-  process at the next protected scope, naming neither the cause nor the caller.
-  `tools/check/swallowed.janet` checks that, takes four seconds, and is silent
-  on a clean tree.
+- Nothing jumps. A raise returns an error union, and `defer` and `errdefer` are
+  legal everywhere. See [Raising](#raising).
 
-- A cfunction is Zig's rather than C's. `raise.CFunction` takes `[]Value` and
-  returns `error{JanetSignal}!Value` over Zig's own calling convention, so
-  `argv[n]` is bounds-checked where in C it read whatever was there.
+- The runtime exports no `janet_*` symbol. A native module reaches the runtime
+  through a table of function pointers, and a file reaches its neighbours by
+  `@import`. See [Boundaries](#boundaries).
 
-- Nothing in `src/` exports a `janet_*` symbol. `runtime/capi.zig` has the 80
-  definitions a native module can reach and `api/interface.zig` declares the
-  `extern struct` of function pointers that reaches them. `runtime/capi.zig`'s
-  one initializer fills it, and the compiler type-checks every field against the
-  definition it names. The only exports left in `src/` are `module.zig`'s pair
-  of loader shims, which belong to a dynamically loaded module rather than to
-  the runtime. Everything else a file needs from a neighbour it reaches by
-  `@import`, which keeps the error union, allows inlining, and is checked.
+- Pointers state what is true. `DESIGN.md` section 7 has the conventions and
+  the exceptions: no `[*c]` outside the boundary, a counted byte range is a
+  slice, a pointer to a single object is `*T`, or `?*T` where absence is a state
+  the code tests, and a C string is `[*:0]const u8` only where the NUL is
+  demonstrably read.
 
-- `host/cabi.zig` is what is external: libc and the host, in 161 declarations,
-  with no Janet name among them. A module that reached the runtime by symbol
-  needed a second declaration of every crossing and a check to compare the two.
-  A table needs one declaration, and the check is the compiler's.
+- Configuration comes from the build. A file reads `options.<name>` or
+  `config`, and never reads its compilation settings out of a C translation.
+  See [Configuration](#configuration).
 
-- Pointers say what is true. `DESIGN.md` section 7 has the conventions and the
-  exceptions: no `[*c]` outside the boundary, a counted byte range is a slice, a
-  pointer to one object is `*T` or `?*T` where absence is a state the code
-  tests, and a C string is `[*:0]const u8` only where the NUL is demonstrably
-  read.
+## Source tree
 
-- Configuration comes from the build. `build.zig`'s `janetConfig()` is the one
-  derivation. A file reads `options.<name>` or `config`, and never reads what it
-  was compiled with out of a translation.
+A directory states which compilation includes its files. This matters most to a
+module author: an author's `.so` compiles `src/api/` and the two root files, and
+must never reach `src/host/` or `src/runtime/`.
 
-- `root.zig` states which files a configuration compiles, and an instrument has
-  to be gated the way its subject is. A comptime-false branch is never analysed,
-  so an arm a native build does not select is not analysed at all.
+| directory      | files | compiled by                             |
+| -------------- | ----- | --------------------------------------- |
+| `src/api/`     | 7     | a native module's `.so` and the runtime |
+| `src/host/`    | 2     | the runtime                             |
+| `src/runtime/` | 77    | the runtime, as a single compilation    |
+| `src/boot/`    | 2     | the image generator                     |
+| `src/client/`  | 3     | the `janet` and `quickbin` executables  |
 
-## The source tree
+The counts are of `.zig` files. `src/host/` also has one header and
+`src/runtime/` has three.
 
-A directory says which compilation includes its files, the one structural fact a
-directory states here, and it is the question a module author has to be able to
-answer: an author's `.so` compiles `api/` and the two roots, and must never
-reach the eighty files beside them.
+Two files sit at `src/` itself. `src/root.zig` is the runtime's module root. It
+names every file the configuration compiles and reaches all three directories.
+`src/module.zig` is the root of the author package, and is the only name an
+author writes: a module imports `janet` and nothing else. Zig limits a module's
+relative imports to the directory of its root file, so both roots sit above the
+directories they reach.
 
-The directory states the boundary; it does not enforce it. Both package roots
-sit at `src/`, so a relative import can cross between the directories and
-several do by design: `api/raise.zig` names four runtime files for the arm a
-module does not take. What enforces the boundary is `tools/check/exports.janet`,
-which builds the author package the way an outside author does, and
-`examples/standalone`, which consumes this package by path. Making the split
-compiler-enforced would mean `api` as a build module with the runtime imported
-back into it by name; that is an option and it is not what is here.
+`src/api/` is what a module author reads: `abstract_type.zig`, `abi.zig`,
+`constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and `repr.zig`.
+`src/host/` is `host.zig`, `cabi.zig` and `janet_features.h`, which each of the
+three host-header translations includes first.
 
-| directory | files | compiled by |
-| --- | --- | --- |
-| `src/api/` | 6 | a native module's `.so` (`janetModule`) and the runtime |
-| `src/host/` | 3 + 1 header | the runtime; the platform's shapes and what libc is asked for |
-| `src/runtime/` | 77 + 3 headers | the runtime, as one compilation |
-| `src/boot/`, `src/client/` | 5 | the image generator; the `janet` and `quickbin` executables |
-
-`src/root.zig` is the runtime's module root above the three directories: it
-names every file this configuration compiles and it reaches all three, so it
-belongs to none of them. `src/module.zig` is the author package's root and sits
-beside it for the same reason. Zig bounds a module's relative imports by its
-root file's directory, so both sit at `src/` rather than inside a tier.
-
-`src/api/` is what a module author reads: `abstract_type.zig`, `raise.zig`,
-`interface.zig`, `abi.zig`, `repr.zig` and `constants.zig`, with
-`src/module.zig` above them as the package root. That root is the only name an
-author writes, because a module imports `janet` and nothing else. `src/host/` is
-`host.zig`, `cabi.zig` and the `janet_features.h` the three translations open
-with.
+The directories state the boundary but do not enforce it. Both package roots sit
+at `src/`, so a relative import can cross between directories, and several do
+by design: `api/raise.zig` names four runtime files for the branch that a module
+build does not take. Two things enforce the boundary instead.
+`tools/check/exports.janet` builds the author package the way an outside author
+does, and `examples/standalone` consumes the package by path. A
+compiler-enforced split would make `api` a build module with the runtime
+imported back into it by name. That is possible, and not what the tree does.
 
 ### Inside `src/runtime/`
 
-The split rule: a file exists when it has a name Janet publishes, meaning a
-type, a cfunction family or a module, or because the platform differs.
-Everything else goes in the bucket its callers already name. There is one
-spelling per function. There is no facade layer, and the file tree and the
-namespace are the same thing, so `value/tables.zig`'s `get` is `tables.get` and
-is not re-exported anywhere.
+A file exists when it has a name Janet publishes (a type, a cfunction family or
+a module), or because the platform differs. Everything else goes in the file
+its callers already name. Each function has one spelling. There is no facade
+layer: the file tree and the namespace are the same, so `value/tables.zig`'s
+`get` is `tables.get` and is not re-exported anywhere.
 
-| directory | files | what is in it |
-| --- | --- | --- |
-| `runtime/` | 33 | the subsystems that have no interior: the parser, the PEG engine, the marshaller, the argument layer, the environment, the pretty printer's entry, `io`, `math`, `scan`, `signal` |
-| `runtime/value/` | 11 | one file per Janet value type: arrays, buffers, strings, symbols, tuples, tables, structs, fibers, functions, abstracts, integer types |
-| `runtime/value/helpers/` | 3 | the operations that are about values in general rather than one type: `wrap`, `access`, `order` |
-| `runtime/vm/` | 3 | `entry.zig` (the interpreter's entry points), `lifecycle.zig` (init and teardown) and `state.zig` (the `Vm` type, its storage and the one accessor) |
-| `runtime/gc/` | 2 | `mark.zig` and `sweep.zig`; the allocator itself is `gc.zig` |
-| `runtime/compiler/` | 4 | `specials`, `emit`, `optimize`, `regalloc` |
-| `runtime/bytecode/` | 2 | `verify.zig` and `disasm.zig` |
-| `runtime/os/`, `os/fs/` | 7 | the host interface, split where the platform differs; `os/abi.zig` is the header translation |
-| `runtime/ev/` | 4 | `backend`, `stream`, `channel`, `locks` |
-| `runtime/net/`, `filewatch/` | 2 | the two host-header translations, `abi.zig` each |
-| `runtime/ffi/` | 4 | `types`, `classify`, `marshal`, `call` |
-| `runtime/pp/` | 2 | `format.zig` and `pretty.zig` |
+| directory        | files | contents                                   |
+| ---------------- | ----- | ------------------------------------------ |
+| `runtime/`       | 33    | subsystems with no subdirectory            |
+| `value/`         | 11    | a file per Janet value type                |
+| `value/helpers/` | 3     | operations on any value                    |
+| `vm/`            | 3     | `entry`, `lifecycle`, `state`              |
+| `gc/`            | 2     | `mark`, `sweep`                            |
+| `compiler/`      | 4     | `specials`, `emit`, `optimize`, `regalloc` |
+| `bytecode/`      | 2     | `verify`, `disasm`                         |
+| `os/`            | 4     | the host interface                         |
+| `os/fs/`         | 3     | the file-system interface                  |
+| `ev/`            | 4     | `backend`, `stream`, `channel`, `locks`    |
+| `net/`           | 1     | the host-header translation                |
+| `filewatch/`     | 1     | the host-header translation                |
+| `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`     |
+| `pp/`            | 2     | `format`, `pretty`                         |
 
-Nine files outside the subsystems are named here:
+Every directory below `runtime/` is relative to it.
 
-| file | what it is |
-| --- | --- |
-| `root.zig` | the module root: a comptime block naming every file this configuration compiles |
-| `runtime/capi.zig` | the 80 definitions a native module can call, and the one initializer that fills the table with them |
-| `host/cabi.zig` | every `extern` declaration the runtime makes, all of them libc's |
-| `api/interface.zig` | the `extern struct` of function pointers a module reaches the runtime through, and the `rt` it is stored in |
-| `host/host.zig`, `api/constants.zig`, `api/repr.zig` | the host's own shapes, the constants, and the value representation, each its own build module |
-| `api/abi.zig` | the declarations a separately compiled module and the runtime must agree on, and nothing else |
-| `api/raise.zig` | the error union, the flattening forms, and the cfunction type |
+The files directly in `runtime/` are the parser, the PEG engine, the
+marshaller, the argument layer, the environment, the pretty printer's entry
+point, the allocator (`gc.zig`), `capi.zig`, `io`, `math`, `scan` and `signal`.
+`value/` has arrays, buffers, strings, symbols, tuples, tables, structs,
+fibers, functions, abstracts and integer types. `value/helpers/` is `wrap`,
+`access` and `order`.
 
-## The module graph
+In `vm/`, `entry.zig` is the interpreter's entry points, `lifecycle.zig` is
+init and teardown, and `state.zig` is the `Vm` type, its storage and its
+accessor. `os/` and `os/fs/` are split where the platform differs.
+`os/abi.zig`, `net/abi.zig` and `filewatch/abi.zig` are the three host-header
+translations.
 
-`build.zig` builds eight modules and the compiler enforces the direction. The
-import list of a module is the whole of what it may reach:
+## Module graph
+
+`build.zig` builds each of the following as a separate module. A module's
+import list is everything it can reach, so the compiler enforces the direction:
 
 ```
 config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
 ```
 
-- `config` is what the build set, as comptime values.
-- `repr` imports `config` and nothing else. That import list is what makes "the
-  representation module does not reach allocation, tables, the `Vm` or the
-  collector" a build error rather than a review comment.
+- `config` is the build's settings, as comptime values. A module build gets a
+  second copy with `native_module` set.
+- `repr` is the value representation. It imports `config` and nothing else, so
+  a representation that reached allocation, tables, the `Vm` or the collector
+  would be a build error.
 - `abi` is what a separately compiled module and the runtime must agree on, and
   nothing else: the abstract-type vtable, the registration and method rows, the
-  abstract head and the subtraction that recovers it, the signal numbering, the
-  build config, and the six capabilities. Its import list is `repr` alone. It is
-  the module an author's package gets, and `build.zig`'s `janetModule` returns
-  it, so the runtime and an author's `.so` agree by construction rather than by
-  review.
-- `constants` reaches up to `repr` for the tag, and imports nothing else.
+  abstract head and the offset to recover it, the signal numbering, the build
+  config and the six capabilities. It imports only `repr`. `build.zig`'s
+  `janetModule` gives an author's package this module, so the runtime and an
+  author's `.so` use the same types.
+- `constants` imports `config`, and `repr` for the tag.
 - `host` is the six shapes the host determines: `FILE`, the descriptor, the
-  three pthread types and Windows' critical section. It takes the pthread types
-  from libc, because `std.c` declares glibc's `pthread_attr_t` and musl's is a
-  different size, which `Vm` embeds. It is a module rather than a file of `root`
-  because `cabi` names the same six and a file of `root` cannot be imported by
-  `cabi`. Every Janet aggregate lives with the operations over it instead,
-  giving `tables.Table`, `fibers.Fiber`, `functions.FuncDef` and
-  `ev_stream.Stream`, which is `DESIGN.md` section 11.
-- `cabi` is the external declarations.
+  three pthread types and Windows' critical section. The pthread types come
+  from libc, because `std.c` declares glibc's `pthread_attr_t`, musl's is a
+  different size, and `Vm` embeds it. `host` is a module rather than a file of
+  `root` because `cabi` names the same six shapes, and `cabi` cannot import a
+  file of `root`. Every Janet aggregate is declared with the operations on it
+  instead (`tables.Table`, `fibers.Fiber`, `functions.FuncDef`,
+  `ev_stream.Stream`), as `DESIGN.md` section 11 describes.
+- `cabi` is the external declarations. It imports `config`, `host`, `repr` and
+  `constants`.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only
   reader.
-- `root` is the runtime, and everything else is a file of it: `api/raise.zig`,
-  `runtime/corefn.zig` and the three host-header translations.
+- `root` is the runtime. Everything else is a file of it, including
+  `api/raise.zig`, `runtime/corefn.zig` and the three host-header translations.
 
-The graph is built six times over: once for the runtime, once for the bootstrap
-generator on the host, once each with `test/contracts.zig` and `test/fuzz.zig`
-as the root, once for the module-error fixtures, and once as
-`janet-runtime-test` rooted at `root.zig` itself. A cross build builds it once
-more for `zig build quickbin`, on the host under the target's features, for the
-client that makes the image. Each spells the same types and
-the same constants the runtime does; a module the runtime has and a test root
-does not would be a call-site rewrite that stops at the `src/` boundary.
+`build.zig` builds this graph six times: for the runtime, for the bootstrap
+generator on the host, with `test/contracts.zig` as the root, with
+`test/fuzz.zig` as the root, for the module-error fixtures, and as
+`janet-runtime-test` rooted at `root.zig`. A cross build builds it a seventh
+time for `zig build quickbin`: on the host, under the target's features, for the
+client that makes the image. Every build has the same modules, so a test root
+spells the same types and constants as the runtime.
 
-A module boundary is not a compile barrier. `raise.Error` is declared in the
-`raise` module and a subsystem writes `raise.Error!Value` across the import; the
-compiler sees through a module the way it sees through a file. What it cannot
-see through is a compilation boundary, where the only thing joining two objects
-is a symbol in a symbol table. That means a calling convention, which means C's,
-and Zig will not put an error union on a C calling convention. The runtime is
-one compilation for that reason.
-
-## What crosses a boundary
-
-Three things do, and they are checked differently.
-
-### The module table
-
-`api/interface.zig`'s `Runtime` is one `extern struct` of 80 `callconv(.c)`
-function pointers, and both compilations import that file. `runtime/capi.zig`'s
-`table` fills it from the runtime's definitions and `runtime/env.zig` passes its
-address to `_janet_init`; `module.zig`'s shim stores it in `table.rt` and every
-crossing an author makes is a call through that pointer. There is one
-description of each crossing rather than two, so the compiler checks it at the
-initializer and nothing has to be compared afterwards.
-
-The three definitions that were typed on a runtime aggregate, being `cfuns_ext`,
-`def` and `buffer_push_bytes`, now take `abi.Env` and `abi.Render` and cast on
-their own first line, the way `runtime/marsh.zig`'s entry points already took
-`abi.Marshal`. So every field's type and its definition's type are the same
-type, and no substitution table stands between them.
-
-### Declarations of things outside
-
-`host/cabi.zig`'s 161 `extern fn`, all libc's. `tools/check/seam.janet --check`
-fails if an `extern fn janet*` appears anywhere in `src/` at all: the runtime
-publishes no such name for a declaration to resolve to.
-
-### Host structures
-
-`os/abi.h`, `net/abi.h` and `filewatch/abi.h`, each opening with
-`janet_features.h`, each keeping what it declares inside one subsystem. They
-exist because what they declare depends on the host's headers and cannot be
-written in Zig without guessing. After changing a header, clear `.zig-cache`
-before trusting the result. Zig may otherwise reuse an object built against the
-old imported layout and produce a silent offset mismatch.
+A module boundary is not a compilation boundary. `raise.Error` is declared in
+the `raise` module, and a subsystem writes `raise.Error!Value` across the
+import; a declaration imported from another module is analysed the same as one
+imported from a file. Across a compilation boundary, the only link between two
+objects is a symbol. A call through a symbol needs a calling convention, which
+means C's, and Zig does not allow an error union in the C calling convention.
+For that reason the runtime is a single compilation.
 
 ## Raising
 
-`raise.Error!T` is `error{JanetSignal}!T`. A caller that can propagate it
-writes `try`; a caller that cannot flattens it, and there are four spellings:
+No configuration compiles a `setjmp`, `longjmp` or `jmp_buf`. A raise records
+its signal in `Vm`'s `pending_signal` and returns `error.JanetSignal`. A
+protected scope is `signal.tryInit` and `signal.restore` with the call between
+them. `signal.tryInit` points `return_reg` at the scope's payload, which is what
+makes a raise catchable.
 
-| form | what it does |
-| --- | --- |
-| `raise.toAbi(result)` | the value the call produced, or a determinate zero if it raised |
-| `raise.report(Error)` | report without a result |
-| `reportToAbi` | the same, at a `callconv(.c)` boundary |
-| `raise.panicking(f).abi` | wrap a raising function as a C-ABI function |
+A raising function returns `raise.Error!T`, which is `error{JanetSignal}!T`.
+A cfunction is a Zig function: `raise.CFunction` takes `[]Value` and returns
+`raise.Error!Value` in Zig's calling convention, so `argv[n]` is bounds-checked.
 
-`raise.total(result, site)` is not among those four spellings. It is a fatal
-abort, `janet_zig_fatal`, for a raise that cannot happen and would leave the
+A caller that can propagate the error writes `try`. A caller that cannot
+flattens it into a report, in one of four forms:
+
+| form                     | what it does                                   |
+| ------------------------ | ---------------------------------------------- |
+| `raise.toAbi(result)`    | the result, or a determinate zero if it raised |
+| `raise.report(Error)`    | report without a result                        |
+| `raise.reportToAbi`      | the same, at a `callconv(.c)` boundary         |
+| `raise.panicking(f).abi` | wrap a raising function as a C-ABI function    |
+
+`raise.total(result, site)` is not a flattening form. It aborts through
+`janet_zig_fatal`, and is for a raise that cannot happen and would leave the
 runtime inconsistent if it did.
 
-A report that nobody consumes is the failure this design has: the process dies
-at the next protected scope naming neither cause nor caller. Every raising
-function that reaches a raise through an abi is therefore listed by
-`tools/check/swallowed.janet`, which is silent on a clean tree and takes four
-seconds. Run it per increment.
+A report that nothing consumes aborts the process at the next protected scope,
+and the message names neither the cause nor the caller.
+`tools/check/swallowed.janet` lists every raising function that reaches a
+report through a C-ABI function, and prints "no raising caller reaches a report"
+on a clean tree. Run it for every change that touches a raise.
 
-## Configuration, and what "unchecked" means
+## Boundaries
 
-`build.zig` derives two things from the `-D` options: `Config`, the comptime
-facts a file reads as `config.<name>`, and `Selection`, the per-file booleans
-`root.zig` gates on as `options.<name>`. Both come from one expression per fact,
-so a file cannot be compiled under `Config` and left out of `Selection`.
+Three things cross a boundary, and each is checked differently.
 
-A comptime-false branch is never analysed, so `if (has_ev) ev.x()` is safe in a
-build with no event loop and an arm the host does not select receives no type
-checking at all. A change to a platform arm is unchecked until something builds
-it:
+### The module table
+
+Nothing in `src/` exports a `janet_*` symbol. `api/interface.zig`'s `Runtime` is
+an `extern struct` of 80 `callconv(.c)` function pointers, and both the runtime
+and a module compile that file. `runtime/capi.zig` has the 80 definitions, and
+its `table` fills the struct with them. `runtime/env.zig` passes the table's
+address to `_janet_init`; `module.zig`'s shim stores it in `interface.rt`, and
+every call an author makes goes through that pointer. Each crossing is
+described once, and the compiler checks every field against the definition it
+names in the initializer.
+
+Every field has the same type as its definition. `cfuns_ext`, `def` and
+`buffer_push_bytes` take `abi.Env` or `abi.Render` and cast on their first line,
+as `runtime/marsh.zig`'s entry points take `abi.Marshal`.
+
+`api/fingerprint.zig` hashes a description of every declaration the two
+compilations must agree on. `runtime/env.zig`'s `native` refuses a module whose
+fingerprint differs from the runtime's.
+
+The only exports in `src/` are `module.zig`'s pair of loader shims, which are
+part of a dynamically loaded module rather than of the runtime.
+
+### External declarations
+
+`host/cabi.zig` has the runtime's `extern` declarations, for libc and the host,
+with no Janet name among them. `tools/check/seam.janet --check` fails if an
+`extern fn janet*` appears anywhere in `src/`.
+
+### Host structures
+
+`os/abi.h`, `net/abi.h` and `filewatch/abi.h` each include `janet_features.h`
+first, and each is used by a single subsystem. They exist because what they
+declare depends on the host's headers and cannot be written in Zig without
+guessing. After changing a header, clear `.zig-cache` before trusting the
+result. Zig may otherwise reuse an object built against the old layout and
+produce a silent offset mismatch.
+
+## Configuration
+
+`build.zig` derives two things from the `-D` options. `janetConfig()` returns
+`Config`, the comptime facts a file reads as `config.<name>`, and
+`zigSelection()` derives `Selection` from it: the per-file booleans `root.zig`
+gates on as `options.<name>`. Both come from a single expression per fact, so a
+file cannot be compiled under `Config` and left out of `Selection`.
+
+A comptime-false branch is never analysed. `if (has_ev) ev.x()` is therefore
+safe in a build with no event loop, and a branch the host does not select gets
+no type checking at all. A change to a platform branch is unchecked until
+something builds it:
 
 ```sh
 zig build -Dtarget=x86_64-linux-musl --cache-dir /tmp/xc -p /tmp/out
 ```
 
+An instrument must be gated the same way as its subject.
 `tools/check/gates.janet --check` builds thirteen configurations and compares
-their symbol tables against `tools/check/gated.txt`. It exists because the
-question cannot be settled by reading: `root.zig`'s comptime block does not name
-every file it compiles, and its `pub const` block is lazy and compiles nothing.
+their symbol tables against `tools/check/gated.txt`. The check exists because
+reading `root.zig` cannot settle which files a configuration compiles: its
+comptime block does not name every file, and its `pub const` block is lazy and
+compiles nothing by itself.
 
-That laziness is also what controls whether a `test` block runs. A `test` in a
-file the comptime block names is compiled into `janet-runtime-test`; a `test` in
-a file reached only through the `pub const` block, or only through another
-file's container-level `const`, is not collected. `os/fs/stat.zig` is named
-there for that reason and no other.
+The same laziness determines which `test` blocks run. A `test` in a file that
+the comptime block names is compiled into `janet-runtime-test`. A `test` in a
+file reached only through the `pub const` block, or only through another file's
+container-level `const`, is not collected. `os/fs/stat.zig` is named in the
+comptime block for that reason only.
 
 ## Build steps
 
-| step | what it runs |
-| --- | --- |
-| `zig build` | the static and shared libraries, the client, the contract driver, the fuzz artifact |
-| `zig build test` | the contracts, the in-file `test` blocks, the fuzz targets over their corpora, the module-error fixtures, the CLI checks and the 34 Janet suites |
-| `zig build zig-contract-test` | the 65 contracts, which live in a second compilation of the runtime |
-| `zig build subsystem-test` | the same thing under an older name |
-| `zig build runtime-test` | the in-file `test` blocks, rooted at `root.zig`; it prints `All N tests passed.` |
-| `zig build fuzz` | each fuzz target once over its corpus. Add `--fuzz` for the campaign |
-| `zig build image` | the core image, written to `<prefix>/janet-image.bin` |
-| `zig build run` | the client |
-| `zig build quickbin` | `examples/quickbin/main.janet` with `examples/digest` linked in, as `<prefix>/bin/quickbin`; `zig build test` runs it on a native build |
+| step                | what it runs                                        |
+| ------------------- | --------------------------------------------------- |
+| `install`           | libraries, client, contract driver, fuzz artifact   |
+| `test`              | the full test run, described below                  |
+| `zig-contract-test` | the 65 contracts, in a second runtime compilation   |
+| `subsystem-test`    | an alias of `zig-contract-test`                     |
+| `runtime-test`      | the in-file `test` blocks, rooted at `root.zig`     |
+| `fuzz`              | each fuzz target once over its corpus               |
+| `image`             | the core image, as `<prefix>/janet-image.bin`       |
+| `run`               | the client                                          |
+| `quickbin`          | `examples/quickbin` as `<prefix>/bin/quickbin`      |
 
-No header is installed and no `janet_*` symbol is exported. What a native module
-reaches is `api/interface.zig`'s struct, and nothing else describes it.
+A step is run as `zig build <step>`, and `install` is the default, so
+`zig build` alone runs it. `install` builds the static and shared libraries.
 
-The contract driver is installed unconditionally and takes one contract name, or
-no name for all 65 in a single process. Running it with no name is the only
-thing in the tree that initialises and tears the runtime down 65 times in a row,
-and the only instrument that catches an edit through a contract the author was
-not thinking about. Run it with no argument before believing an increment.
+`zig build test` runs the contracts, the in-file `test` blocks, the fuzz
+targets over their corpora, the module-error fixtures, the CLI checks and the
+34 Janet suites. On a native build it also runs `quickbin`.
 
-`build.zig` also refuses to build on two hygiene failures: a `test/*.zig` that
+`runtime-test` prints `All N tests passed.` Add `--fuzz` to `zig build fuzz`
+for a campaign. `quickbin` builds `examples/quickbin/main.janet` with
+`examples/digest` linked in.
+
+No header is installed.
+
+The contract driver is always installed. It takes a contract name, or no name to
+run all 65 in a single process. Running it with no name is the only thing in
+the tree that initialises and tears down the runtime 65 times in a row, and the
+only instrument that catches an edit breaking a contract the author was not
+thinking about. Run it with no argument before accepting a change.
+
+`build.zig` refuses to build on two hygiene failures: a `test/*.zig` that
 `test/contracts.zig` does not list and `checkContractsListed`'s `exempt` does
 not name, and a file-scope `const` that its own file never uses.
 
@@ -308,107 +312,93 @@ not name, and a file-scope `const` that its own file never uses.
 ### A subsystem
 
 Write `src/runtime/<name>.zig`, or a file under the directory its family already
-has. Add a `Selection` field, set it in `zigSelection` gated on whatever feature
-flags it depends on, and name it in `root.zig`'s comptime block under that
+has. Add a `Selection` field, set it in `zigSelection` gated on the feature
+flags it depends on, and name the file in `root.zig`'s comptime block under that
 field. A subsystem reached only through another subsystem is imported by that
-file instead and does not appear in the root, but if it has `test` blocks it has
-to be named there anyway, for the reason above. If it publishes a crossing a
-native module can make, that goes in `runtime/capi.zig` and `api/interface.zig`
-and nowhere else.
+file instead and does not appear in the root. If it has `test` blocks, name it
+in the root anyway, for the reason given in [Configuration](#configuration). A
+crossing that a native module can make goes in `runtime/capi.zig` and
+`api/interface.zig` and nowhere else.
 
 ### A contract
 
-`test/<name>.zig` with `pub fn run() void`, listed in `test/contracts.zig` under
-the same `options` condition `build.zig` applies to its subject, so a contract
-exists exactly when its subject does, and the two cannot drift. The build fails
-until it is listed.
+Write `test/<name>.zig` with `pub fn run() void`, and list it in
+`test/contracts.zig` under the same `options` condition that `build.zig` applies
+to its subject. A contract then exists exactly when its subject does. The build
+fails until the contract is listed.
 
-### A contract's oracle
-
-A contract's oracle must be independently derived. A test written against the
-new code and only ever run against it proves the code matches itself. For
+A contract's oracle must be derived independently. A test written against new
+code and only ever run against it proves only that the code matches itself. For
 anything numeric or with a large input space, add a differential corpus.
 
 ### A crossing
 
-Add the field to `api/interface.zig`'s `Runtime` with the exact signature,
-append it rather than inserting it, and fill it in `runtime/capi.zig`'s `table`,
-either with an entry point declared in that file or with a subsystem's own C-ABI
-shim. The compiler checks the two agree, so there is nothing else to state. Then
-give `module.zig` the author-side wrapper.
+Append the field to `api/interface.zig`'s `Runtime` with the exact signature;
+do not insert it. Fill it in `runtime/capi.zig`'s `table`, either with an entry
+point declared in that file or with a subsystem's own C-ABI shim. The compiler
+checks that the two match. Then add the author-side wrapper to `module.zig`.
 
 ## Reduced builds
 
-`zig build test` passes with each feature flag turned off individually:
+`zig build test` passes with each of these feature flags turned off on its own:
 `-Dint-types=false`, `-Dassembler=false`, `-Dpeg=false`, `-Dnet=false`,
 `-Dev=false`, `-Dprocesses=false`, `-Dfilewatch=false`, `-Dffi=false`,
 `-Ddocstrings=false`, `-Dsourcemaps=false`, `-Dumask=false`, `-Drealpath=false`,
 `-Dcryptorand=false` and `-Ddynamic-modules=false`.
 
-Two different mechanisms guard a suite, and choosing the wrong mechanism fails
-quietly.
+A suite guards a missing feature in one of two ways, and the wrong choice fails
+without an error.
 
 A binding the build omits entirely is a compile error at its use site rather
 than a nil value at run time, so `(when-let [x maybe/missing] ...)` cannot guard
-it. Those need `compwhen`, which resolves at compile time.
+it. It needs `compwhen`, which resolves at compile time.
 
-A binding that still exists but raises when called needs an ordinary runtime
-`when` instead. `os/realpath`, `os/cryptorand` and `ffi/native` are registered
-whatever the build options say, and only their bodies fail, so `compwhen (dyn
-'os/realpath)` sees a live binding and compiles the code anyway.
+A binding that exists but raises when called needs an ordinary runtime `when`.
+`os/realpath`, `os/cryptorand` and `ffi/native` are registered whatever the
+build options are, and only their bodies fail, so `compwhen (dyn 'os/realpath)`
+sees a live binding and compiles the guarded code anyway.
 
-Prefer guarding regions to skipping a suite. An unrun suite reports `0 of 0` and
-is indistinguishable from a passing suite. `suite-ev.janet` guards its network
+Guard regions rather than skipping a suite. A suite that does not run reports
+`0 of 0`, which looks the same as a pass. `suite-ev.janet` guards its network
 and subprocess regions separately, so its channel, fiber and deadline tests
-still run in both reduced configurations. Where a whole suite does depend on the
-feature it leaves early, immediately after `start-suite`, with `(compwhen (not
-(dyn 'some/binding)) (end-suite) (os/exit 0))`. That works because Janet
-compiles and runs a file one top-level form at a time.
+still run in both reduced configurations. Where a whole suite depends on the
+feature, it exits immediately after `start-suite` with `(compwhen (not (dyn
+'some/binding)) (end-suite) (os/exit 0))`. This works because Janet compiles and
+runs a file one top-level form at a time.
 
 `-Dreduced-os=true` is a known gap and is deliberately not guarded. It leaves
 only `os/exit`, `os/which`, `os/arch` and `os/compiler`, which breaks
 `test/helper.janet` itself, so every suite fails before reaching its own code.
-Guarding it would mean skipping `suite-os` wholesale along with much of
-`suite-ev` and `suite-bundle`, giving a run that passes while testing
-substantially less than it appears to. Revisit only with a plan for what the
-suites should still assert.
+Guarding it would mean skipping `suite-os` entirely along with much of
+`suite-ev` and `suite-bundle`, and the run would pass while testing much less
+than it appears to. Revisit it only with a plan for what the suites should
+still assert.
 
 ## Cross-platform constraints
 
-Invisible when building only for the development host:
+These constraints are invisible when building only for the development host.
 
 - The runtime object is position independent. It is linked into the shared
-  library as well as into the static library, and ELF shared objects require
-  PIC. `makeRuntimeGraph` sets `.pic = true`. Mach-O is always position
-  independent, so omitting it fails only on Linux, with tens of thousands of
+  library as well as the static library, and ELF shared objects require PIC.
+  `makeRuntimeGraph` sets `.pic = true`. Mach-O is always position independent,
+  so omitting the setting fails only on Linux, with tens of thousands of
   relocation errors that do not name the cause.
 
 - The bootstrap pins a baseline CPU. `boot_host` keeps the host's architecture,
   OS and ABI but sets `cpu_model = .baseline`. Native detection would make image
   generation depend on the build machine, and an emulated or unusual host can
-  report a model the code generator rejects. It is also why cross-compiling
-  works at all: the generator has to run here.
+  report a model the code generator rejects. The generator must run on the build
+  machine, so this is also what makes cross-compiling work.
 
 - `-Dinstall-tests=true` adds the runtime-test executable and the native-module
   and module-load fixtures to `<prefix>/test`, beside the contract and fuzz
-  drivers every non-wasm build installs there. That is how a cross-compiled
-  build gets tested: `zig build test` runs what it builds, and cannot when the
-  target is not the host.
+  drivers that every non-wasm build installs there. A cross-compiled build is
+  tested this way, because `zig build test` runs what it builds and cannot run a
+  binary for another target.
 
 Two limitations qualify any result. Zig links musl targets statically, and
 musl's static `dlopen` is a stub that always fails, so the native-module test
-cannot run that way. And emulated x86-64 cannot run a NaN-boxed build, because
-Janet packs pointers into doubles and QEMU does not honour the address-space
-assumption that relies on. Use `-Dnanbox=false` there, and treat NaN-boxed
-x86-64 as untested until it runs on real hardware.
-
-## Where the history went
-
-This file was 17,772 lines until 2026-08-31: a record of the migration, written
-increment by increment, over 101 sections of which its own preamble said 97
-cited a working document that does not survive it. It described build options no
-build offers, directories that contain nothing, and a public header that was
-deleted.
-
-The reasoning kept is above, re-derived from the tree rather than copied
-forward. The narrative is in Git.
+cannot run on those targets. Emulated x86-64 cannot run a NaN-boxed build,
+because Janet packs pointers into doubles and QEMU does not honour the
+address-space assumption that relies on. Use `-Dnanbox=false` there, and treat
+NaN-boxed x86-64 as untested until it runs on real hardware.
