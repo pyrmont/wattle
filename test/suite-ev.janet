@@ -635,11 +635,14 @@
                        (ev/sleep 0.01)
                        :done)) "deadline with interrupt exits normally"))
 
+  # The arming is inside the assertion: a stall of more than ten milliseconds
+  # between arming and resume would otherwise let the cancel land outside it.
   (for i 0 10
     # (print "deadline 2 iteration " i)
     (let [f (coro (forever :foo))]
-      (ev/deadline 0.01 nil f true)
-      (assert-error "deadline expired" (resume f)))))
+      (assert-error "deadline expired"
+                    (ev/deadline 0.01 nil f true)
+                    (resume f)))))
 
 # os/spawn and os/execute are absent from a build without JANET_PROCESSES,
 # and an absent binding is a compile error rather than a runtime one.
