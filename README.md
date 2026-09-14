@@ -1,11 +1,13 @@
+# Janet
+
 [![Test Status][icon]][status]
 
-[icon]: https://github.com/pyrmont/janet/actions/workflows/test/badge.svg)
-[status]: https://github.com/pyrmont/janet/actions?query=wrokflow%3Atest
+[icon]: https://github.com/pyrmont/janet/actions/workflows/test.yml/badge.svg
+[status]: https://github.com/pyrmont/janet/actions?query=workflow%3ATest
 
-[![Janet logo][logo]]
-
-[logo]: assets/janet-w200.png
+> [!WARNING]
+> This is an experimental attempt to implement the Janet programming language in Zig.
+> It was written primarily using LLM-based coding agents.
 
 **Janet** is a programming language for system scripting and expressive
 automation. It has more built-in functionality and a richer core language than
