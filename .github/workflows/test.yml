@@ -93,11 +93,11 @@ jobs:
           fail=0
           for s in test/suite-*.janet; do
             case "$s" in
-              # Two known divergences, deliberately unfixed: inotify is not
-              # kqueue, and musl's `setvbuf` accepts a size Darwin refuses.
-              # 71 of 77 and 84 of 85 pass. Delete these two lines when they
-              # are resolved.
-              test/suite-filewatch.janet|test/suite-io.janet) continue ;;
+              # One known divergence, deliberately unfixed: the suite asserts
+              # that `file/open` refuses a buffer size of 2^53 - 1, which
+              # musl's `setvbuf` accepts where Darwin's refuses it. Delete
+              # these lines when it is resolved.
+              test/suite-io.janet) continue ;;
             esac
             if ! ./zig-out/bin/janet "$s"; then echo "SUITE FAILED: $s"; fail=1; fi
           done

@@ -111,7 +111,11 @@
 
 # The abstract type is opaque: it has a name and a mark callback and nothing
 # else, so it answers to `type` and to nothing that indexes or compares.
-(def probe-watcher (filewatch/new chan))
+#
+# On Linux, removing a watch queues an :ignored event that the next listen
+# posts to the watcher's channel, so the probe has a channel of its own rather
+# than the one the subtests below read.
+(def probe-watcher (filewatch/new (ev/chan 10)))
 (assert (= :filewatch/watcher (type probe-watcher)) "watcher type name")
 (assert (nil? (get probe-watcher :stream)) "a watcher has no fields to index")
 (assert (nil? (next probe-watcher)) "a watcher has no keys to walk")

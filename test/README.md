@@ -250,17 +250,17 @@ identical to a test that passed.
 | Platform             | Method                            | Coverage                                                                                                                                                |
 |----------------------|-----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
 | macOS ARM64          | native                            | Full: four optimize modes, every feature flag, both value layouts                                                                                       |
-| Linux aarch64 musl   | cross-compile, native container   | All 65 contracts, all 42 in-file tests, and 32 of 34 suites, NaN-boxed default. The two are named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
+| Linux aarch64 musl   | cross-compile, native container   | All 65 contracts, all 42 in-file tests, and 33 of 34 suites, NaN-boxed default. The 34th is named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
 | Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only, and each contract is run by name, because `peg` ends the process under emulation. `peg`, `vm_run` and `ffi_core` fail there, and `suite-peg` with them. An `x86_64-macos` build with the same representation passes all four under Rosetta. The cause is not established without x86-64 hardware |
 | Windows x86-64 MinGW | cross-compile                     | Builds, and is a matrix entry. Binaries have never been executed                                                                                    |
 | Linux riscv32 musl   | cross-compile                     | Builds only, with `x86-linux-musl` and `arm-linux-musleabihf`. Those three compile the 32-bit NaN-boxing and pointer-width branches against musl's 32-bit headers, and the Linux host layer at a four-byte pointer. `wasm32-wasi` is the 32-bit target that runs |
 | wasm32-wasi          | cross-compile, wasmtime           | `zig build test` runs every suite and the 56 contracts this configuration registers, in Debug and in ReleaseSmall, in CI. 32-bit NaN-boxed layout, single-threaded, no event loop; networking, the FFI, the file watcher and processes are off with it, which is what leaves nine contracts unregistered. The fork cases in `value_alloc` and `os_surface` are skipped by their own guards |
-| Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 65 of 65 by name, all 42 in-file tests, 32 of 34 suites, the same two as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. Run at a phase gate rather than in CI, which tests Linux against musl |
+| Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 65 of 65 by name, all 42 in-file tests, 33 of 34 suites, the same one as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. Run at a phase gate rather than in CI, which tests Linux against musl |
 
-### The two suites that do not pass on Linux
+### The suite that does not pass on Linux
 
-Neither is a gap. They are the same two under musl and under glibc, so neither
-is a libc difference:
+It is not a gap. It fails the same way under musl and under glibc, so it is not
+a libc difference:
 
 - `suite-io.janet:241`, one assertion of 88. It asserts that `file/open` with a
   buffer size of `2^53 - 1` raises `failed to set buffer size for file`. Linux's
@@ -269,14 +269,19 @@ is a libc difference:
   wasi-libc's stdio, which comes from musl, records the size and allocates
   nothing, so no size is refused there, and `2^53 - 1` is not a size at a
   four-byte pointer width.
-- `suite-filewatch.janet`, six assertions of 79, all of them inotify event
-  ordering: the suite asserts `:create` and `:close-write` as separate events in
-  order, and under the container's filesystem they coalesce and the previous
-  subtest's events are still queued when the next reads them. The 73 covering
-  argument handling, flag decoding and the watcher's life cycle pass.
 
-Fixing either means deciding what the suite should assert on a host that behaves
+Fixing it means deciding what the suite should assert on a host that behaves
 differently, which is a change to a test's subject rather than to the runtime.
+
+`suite-filewatch.janet` was listed here too, failing six assertions of 79 on
+Linux. Those failures were the suite's, not inotify's or the container's. The
+probe watcher shared its channel with the event subtests. Removing its watch
+queued an `:ignored` event, the next `filewatch/listen` posted it to the
+channel, and the first Linux subtest read it in place of `:create`, leaving
+every later read one event behind. The probe watcher has its own channel since
+the fix at `:118`, and the suite passes 79 of 79. In the container, the runtime
+matched C Janet event for event, C Janet failed the same six assertions, and
+inotify never merges `:create` and `:close-write`, which differ in mask.
 
 ## Five limitations
 
