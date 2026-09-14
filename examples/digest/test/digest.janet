@@ -71,9 +71,10 @@
 #
 # `ev/cancel` between the `await` and the wake. The fiber answers the
 # cancellation; the wake that arrives afterwards finds a fiber it cannot resume
-# and answers false, which is the branch the module frees its context on.
-# Nothing here can observe that free -- `test/zig-native.janet` is where it is
-# counted -- and this is the same code path in a module someone would write.
+# and answers false, which is the branch the module unroots its job on.
+# Nothing here can observe that unroot -- `test/zig-native.janet` is where the
+# false branch is counted -- and this is the same code path in a module someone
+# would write.
 #
 # The ordering is the hash's own length rather than a sleep's: `ev/sleep 0`
 # gives the loop one turn, which is enough to start the thread and suspend, and
@@ -91,6 +92,36 @@
 (assert (= "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
            (first (ev/gather (digest/sha256 "abc"))))
         "and the next hash still works")
+
+# ------------------------------------------------------- exit mid-hash
+#
+# `os/exit` tears the runtime down while a hash is in flight. Teardown runs
+# the `digest/hash` finalizer, which joins the thread, before it releases the
+# loop, so the thread's `janet.post` lands in a loop that is still there. The
+# run is a child process because the exit is the thing under test.
+#
+# The hash is 64 MiB so that it is still running when `os/exit` is reached:
+# `ev/sleep 0` gives the loop one turn, which starts the thread and suspends.
+#
+# **What this pins is that the join finishes**: teardown with a hash in flight
+# neither hangs nor crashes. An exit code cannot show that the join happened.
+# A detached thread also exits 0 here, because `exit` ends the process before
+# the thread posts; the join shows only as the exit waiting for the hash.
+#
+# **A reduced-OS build has no `os/execute`**, and this is looked up rather
+# than named for the reason the `os/clock` guard below gives.
+
+(def execute (get-in root-env ['os/execute :value]))
+(when execute
+  (def child
+    (string/format
+      ``(import* %j :prefix "digest/")
+        (ev/go (fn [] (digest/sha256 (string/repeat "0123456789abcdef" 4194304))))
+        (ev/sleep 0)
+        (os/exit 0)``
+      module-path))
+  (assert (= 0 (execute [(dyn *executable*) "-e" child] :p))
+          "exiting while a hash is in flight exits cleanly"))
 
 # ------------------------------------------------- the hashes overlap
 #

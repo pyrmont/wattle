@@ -24,8 +24,17 @@
 //! The shape is five steps and the order is required. `sha256` reads the
 //! loop and the fiber, roots what has to survive the wait, starts the thread
 //! and suspends with `janet.await`. The thread computes and posts.
-//! `hashDone`, back on the loop thread, builds the result, wakes the fiber,
-//! unroots and frees.
+//! `hashDone`, back on the loop thread, joins the thread, builds the result,
+//! wakes the fiber and unroots.
+//!
+//! ## Owning the thread
+//!
+//! A `*Loop` is valid until the runtime shuts down, and nothing tells the
+//! worker thread about the shutdown. The thread is therefore owned by an
+//! abstract value, `Hash`, whose `gc` callback joins it. Teardown runs every
+//! finalizer before it releases the loop, so a hash in flight at exit posts
+//! into a loop that is still valid, and the join delays exit until the hash
+//! is done.
 //!
 //! ## What the worker thread may call
 //!
@@ -39,14 +48,21 @@ const std = @import("std");
 const janet = @import("janet");
 
 /// One hash in flight: what the cfunction fills in, the thread computes
-/// into, and the callback reads and frees.
+/// into, and the callback reads.
 ///
-/// `sha256` allocates a `Hash`, `hashOnThread` takes a `*Hash` and
-/// `hashDone` frees the allocation.
+/// `sha256` allocates a `Hash` with `janet.new`, `hashOnThread` takes a
+/// `*Hash` and `hashDone` reads it.
 ///
-/// A `Hash` is the module's own allocation: `janet.post` passes it to the
-/// callback as an opaque pointer, and `hashDone` frees it.
+/// A `Hash` is the payload of a `digest/hash` abstract value, and the
+/// collector frees it. `janet.post` passes it to the callback as an opaque
+/// pointer. `sha256` roots the abstract value and `hashDone` unroots it, so a
+/// collection during the wait does not finalize it. At teardown every
+/// finalizer runs regardless of roots, and `hashGc` joins a thread still
+/// running.
 const Hash = struct {
+    /// The worker thread, or null once `hashDone` has joined it or if it was
+    /// never started. `hashGc` joins it when it is not null.
+    thread: ?std.Thread,
     /// The loop, read on the loop thread and used on the worker thread.
     loop: *janet.Loop,
     /// The fiber to wake, rooted for the whole wait.
@@ -58,6 +74,27 @@ const Hash = struct {
     /// The result, written on the worker thread and read on the loop thread.
     digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
 };
+
+/// Joins the worker thread if `hashDone` has not. Implements the `gc`
+/// callback.
+///
+/// The join returns at once in the common case, because the collector
+/// finalizes a `Hash` only after `hashDone` has unrooted it. At teardown it
+/// waits for a hash still in flight, whose `janet.post` reaches a loop that
+/// teardown has not yet released.
+///
+/// This function cannot raise. `DESIGN.md` section 5 gives the reason.
+fn hashGc(self: *Hash, _: usize) void {
+    if (self.thread) |thread| thread.join();
+}
+
+/// The `digest/hash` abstract type, which `sha256` passes to `janet.new`. It
+/// is declared at container level because the runtime keeps this address and
+/// reads it again at teardown.
+const hash_type = janet.define(Hash, .{
+    .name = "digest/hash",
+    .gc = hashGc,
+});
 
 /// Hashes `job.bytes` into `job.digest` and posts `hashDone`.
 ///
@@ -73,7 +110,8 @@ fn hashOnThread(job: *Hash) void {
     janet.post(job.loop, &hashDone, job);
 }
 
-/// Renders the digest as hex, wakes the fiber and frees the job.
+/// Joins the worker thread, renders the digest as hex, wakes the fiber and
+/// unroots the job.
 ///
 /// `w` is the capability to put the fiber back on the run queue, and `raw`
 /// is the `*Hash` that `hashOnThread` passed to `janet.post`. This function
@@ -82,6 +120,10 @@ fn hashOnThread(job: *Hash) void {
 /// This function cannot raise, and its signature cannot express a raise.
 fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     const job: *Hash = @ptrCast(@alignCast(raw));
+    // The thread posted this callback as its last call, so the join waits only
+    // for it to return from `janet.post`.
+    job.thread.?.join();
+    job.thread = null;
     const digits = "0123456789abcdef";
     var hex: [2 * @typeInfo(@FieldType(Hash, "digest")).array.len]u8 = undefined;
     for (job.digest, 0..) |byte, i| {
@@ -93,11 +135,10 @@ fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     // fibers on the loop thread.
     _ = janet.wake(w, job.fiber, janet.string(&hex));
     // On both branches of `janet.wake`: a `false` means `ev/cancel` moved the
-    // fiber on or it finished, and the root and the allocation are still this
-    // module's.
+    // fiber on or it finished, and the roots are still this module's.
     _ = janet.gcunroot(job.source);
     _ = janet.gcunroot(job.fiber);
-    janet.free(job);
+    _ = janet.gcunroot(janet.abstract(job));
 }
 
 /// Returns the SHA-256 of `bytes` as lowercase hex, hashed on a thread of
@@ -107,8 +148,8 @@ fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
 /// fiber, and the result reaches that fiber when `hashDone` wakes it.
 ///
 /// This function raises if the arity is wrong, if slot 0 is not a string,
-/// symbol, keyword or buffer, if the build has no event loop, if the
-/// allocation fails, or if the thread cannot be started.
+/// symbol, keyword or buffer, if the build has no event loop, or if the
+/// thread cannot be started.
 fn sha256(argv: []janet.Value) janet.Error!janet.Value {
     try janet.fixarity(argv, 1);
     const bytes = try janet.getBytes(argv, 0);
@@ -116,9 +157,12 @@ fn sha256(argv: []janet.Value) janet.Error!janet.Value {
     const l = try janet.loop();
     const fiber = try janet.rootFiber();
 
-    const cells = janet.alloc(Hash, 1) orelse return janet.panic("out of memory");
-    const job = &cells[0];
+    // `janet.new` returns a block already on the collector's heap list, and
+    // nothing between it and this assignment reaches a safe point, so
+    // `hashGc` never reads `thread` before it is set.
+    const job = janet.new(Hash, &hash_type, null);
     job.* = .{
+        .thread = null,
         .loop = l,
         .fiber = fiber,
         .source = argv[0],
@@ -131,18 +175,21 @@ fn sha256(argv: []janet.Value) janet.Error!janet.Value {
     // this module cannot prevent.
     janet.gcroot(job.fiber);
     janet.gcroot(job.source);
+    // Nothing else references the abstract value during the wait, and the
+    // collector must not finalize it while the thread holds `job`.
+    janet.gcroot(janet.abstract(job));
 
     // Started before the suspend, which is not a race: the loop is
     // single-threaded, so an event posted before this cfunction returns is
     // not processed until the fiber has suspended.
-    const thread = std.Thread.spawn(.{}, hashOnThread, .{job}) catch {
+    job.thread = std.Thread.spawn(.{}, hashOnThread, .{job}) catch {
         // Nothing has been posted, so this frame does the callback's cleanup.
+        // `thread` stays null, so `hashGc` has nothing to join.
         _ = janet.gcunroot(job.source);
         _ = janet.gcunroot(job.fiber);
-        janet.free(job);
+        _ = janet.gcunroot(janet.abstract(job));
         return janet.panic("could not start a thread to hash on");
     };
-    thread.detach();
 
     return janet.await();
 }
