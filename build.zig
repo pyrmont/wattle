@@ -491,7 +491,7 @@ pub fn build(b: *std.Build) void {
         boot_module.addImport("repr", g.repr);
         boot_module.addImport("constants", g.constants);
     }
-    const boot = b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module });
+    const boot = selectBackend(b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module }));
 
     // The generator writes the image to a path it is handed rather than to
     // stdout. The output is a marshalled byte stream, and a byte stream through
@@ -514,17 +514,17 @@ pub fn build(b: *std.Build) void {
     // Now the runtime object, which embeds what the generator just produced.
     const runtime_graph = makeRuntimeGraph(b, target, optimize, options, config, image_source);
     const zig_runtime = if (runtime_graph) |g|
-        b.addObject(.{ .name = "janet-zig", .root_module = g.subsystems })
+        selectBackend(b.addObject(.{ .name = "janet-zig", .root_module = g.subsystems }))
     else
         null;
 
     const static_module = makeRuntimeModule(b, target, optimize, options, config, zig_runtime);
-    const static_library = b.addLibrary(.{
+    const static_library = selectBackend(b.addLibrary(.{
         .name = "janet",
         .linkage = .static,
         .version = version,
         .root_module = static_module,
-    });
+    }));
     // **No header is installed, and the gap is deliberate.** What a native
     // module reaches is `api/interface.zig`'s `Runtime`, whose field types are
     // the signatures and which the compiler checks `capi.zig`'s initializer
@@ -535,12 +535,12 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(static_library);
 
     const shared_module = makeRuntimeModule(b, target, optimize, options, config, zig_runtime);
-    const shared_library = b.addLibrary(.{
+    const shared_library = selectBackend(b.addLibrary(.{
         .name = "janet",
         .linkage = .dynamic,
         .version = version,
         .root_module = shared_module,
-    });
+    }));
     // A ThreadSanitizer build produces test binaries, not distributable
     // artifacts, and it cannot produce this one: TSan gives its thread-locals
     // the initial-exec model, and `ld.lld` rejects the resulting
@@ -572,7 +572,7 @@ pub fn build(b: *std.Build) void {
         client_module.addImport("constants", g.constants);
         client_module.addImport("config", g.config);
     }
-    const client = b.addExecutable(.{ .name = "janet", .root_module = client_module });
+    const client = selectBackend(b.addExecutable(.{ .name = "janet", .root_module = client_module }));
     if (target.result.os.tag != .windows and !wasm) client.rdynamic = true;
     // **A native module resolves into the client, and the client must keep the
     // symbols it publishes.**
@@ -737,11 +737,11 @@ pub fn build(b: *std.Build) void {
                 mod.addImport("config", graph.config);
                 mod.addImport("constants", graph.constants);
             }
-            const lib = bb.addLibrary(.{
+            const lib = selectBackend(bb.addLibrary(.{
                 .name = name,
                 .linkage = .dynamic,
                 .root_module = mod,
-            });
+            }));
             lib.linker_allow_shlib_undefined = true;
             return lib;
         }
@@ -827,7 +827,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
-        const exe = b.addExecutable(.{ .name = "janet-zig-contract-test", .root_module = module });
+        const exe = selectBackend(b.addExecutable(.{ .name = "janet-zig-contract-test", .root_module = module }));
         // A contract may load the native-module fixture, and a contract that
         // registers a cfunction the runtime later names needs its own symbols
         // visible for the same reason the client does.
@@ -975,7 +975,7 @@ pub fn build(b: *std.Build) void {
             module.addImport("janet", janet_module);
             module.addImport("host", graph.host);
             module.addImport("repr", graph.repr);
-            const obj = b.addObject(.{ .name = "module-errors", .root_module = module });
+            const obj = selectBackend(b.addObject(.{ .name = "module-errors", .root_module = module }));
             obj.expect_errors = .{ .contains = case.phrase };
             module_errors_step.dependOn(&obj.step);
         }
@@ -1046,7 +1046,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
-        const exe = b.addTest(.{ .name = "janet-fuzz-test", .root_module = module });
+        const exe = selectBackend(b.addTest(.{ .name = "janet-fuzz-test", .root_module = module }));
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
         // Beside the contract driver, in the same directory and not through
@@ -1078,7 +1078,7 @@ pub fn build(b: *std.Build) void {
     // has no runtime under it.
     const runtime_tests_step = b.step("runtime-test", "Run the in-file `test` blocks in the runtime");
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
-        const exe = b.addTest(.{ .name = "janet-runtime-test", .root_module = graph.subsystems });
+        const exe = selectBackend(b.addTest(.{ .name = "janet-runtime-test", .root_module = graph.subsystems }));
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         installTest(b, options, exe);
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
@@ -1124,7 +1124,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .Debug,
         });
         applyFramePointer(checker_module, options, .Debug);
-        const checker = b.addExecutable(.{ .name = "wasm-imports", .root_module = checker_module });
+        const checker = selectBackend(b.addExecutable(.{ .name = "wasm-imports", .root_module = checker_module }));
         const checkImports = struct {
             fn add(bb: *std.Build, tool: *std.Build.Step.Compile, binary: *std.Build.Step.Compile) *std.Build.Step {
                 const run_checker = bb.addRunArtifact(tool);
@@ -1279,12 +1279,12 @@ fn nativeCompile(
         }
         mod.addImport("janet", janet_module);
     }
-    if (static_name) |_| return b.addObject(.{ .name = name, .root_module = mod });
-    const lib = b.addLibrary(.{
+    if (static_name) |_| return selectBackend(b.addObject(.{ .name = name, .root_module = mod }));
+    const lib = selectBackend(b.addLibrary(.{
         .name = name,
         .linkage = .dynamic,
         .root_module = mod,
-    });
+    }));
     lib.linker_allow_shlib_undefined = true;
     return lib;
 }
@@ -1320,7 +1320,7 @@ fn hostBuilt(
     module.addImport("repr", graph.repr);
     module.addImport("constants", graph.constants);
     module.addImport("config", graph.config);
-    const client = b.addExecutable(.{ .name = "janet-host", .root_module = module });
+    const client = selectBackend(b.addExecutable(.{ .name = "janet-host", .root_module = module }));
     // The two settings `build()` gives the client, for the reason given there:
     // a native module resolves into the client's symbol table.
     client.rdynamic = true;
@@ -1441,7 +1441,7 @@ fn quickbinExecutable(
     module.addAnonymousImport("quickbin_natives", .{
         .root_source_file = b.addWriteFiles().add("natives.zig", table.items),
     });
-    return b.addExecutable(.{ .name = opts.name, .root_module = module });
+    return selectBackend(b.addExecutable(.{ .name = opts.name, .root_module = module }));
 }
 
 /// Every file-scope alias is used by the file that declares it.
@@ -2177,6 +2177,27 @@ fn applyFramePointer(
     optimize: std.builtin.OptimizeMode,
 ) void {
     module.omit_frame_pointer = options.omit_frame_pointer orelse (optimize == .ReleaseFast);
+}
+
+/// Returns `compile` after selecting the LLVM backend for it where its root
+/// module targets x86-64 in Debug.
+///
+/// Debug on x86-64 defaults to Zig's self-hosted backend, and Zig 0.16.0's
+/// reads the second stack-passed `f64` parameter of a `callconv(.c)` function
+/// from `xmm0` rather than from its stack slot. A Zig built with assertions
+/// aborts compiling the same function instead. `sevenThenPairOnTheStack` in
+/// `test/ffi_core.zig`, compiled on its own, reproduces it. Zig issue
+/// #TODO. Every other target and optimize mode already uses LLVM, so the
+/// setting changes nothing there.
+///
+/// Remove this once the Zig version the build requires carries the fix.
+fn selectBackend(compile: *std.Build.Step.Compile) *std.Build.Step.Compile {
+    const module = compile.root_module;
+    const target = module.resolved_target orelse return compile;
+    if (target.result.cpu.arch == .x86_64 and (module.optimize orelse .Debug) == .Debug) {
+        compile.use_llvm = true;
+    }
+    return compile;
 }
 
 fn makeRuntimeModule(
