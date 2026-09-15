@@ -1,5 +1,5 @@
 //! A dynamically loaded Janet module written in Zig: the proof that a `.so`
-//! outside the runtime can define a builtin, and that all fourteen
+//! outside the runtime can define a builtin, and that all fifteen
 //! abstract-type slots are writable from one.
 //!
 //! It is written against the published interface: `wattle` and `std` are its
@@ -8,7 +8,7 @@
 //! declarations would prove something else, and the comptime `StaticStringMap`
 //! below is the point of saying so.
 //!
-//! A sentence claiming all fourteen slots are writable is not a proof, so
+//! A sentence claiming all fifteen slots are writable is not a proof, so
 //! `Keeper` below sets every one of them and the claim is compiled.
 //! `examples/numarray/numarray.zig` is the worked example an author reads; it
 //! sets the seven a numeric array has a use for, and the rest are here.
@@ -44,7 +44,7 @@ var abandon_gate: std.atomic.Value(bool) = .init(false);
 /// How many payloads the collector has finalized.
 var finalized: u32 = 0;
 
-/// All fourteen slots. Adding a slot to `abstract_type.Spec` and not to an
+/// All fifteen slots. Adding a slot to `abstract_type.Spec` and not to an
 /// author's reach breaks this declaration.
 const keeper_type = wattle.define(Keeper, .{
     .name = "zig-native/keeper",
@@ -62,6 +62,7 @@ const keeper_type = wattle.define(Keeper, .{
     .length = keeperLength,
     .bytes = keeperBytes,
     .gcperthread = keeperPerThread,
+    .chunk = keeperChunk,
 });
 
 /// How many times the collector has reached `gcmark`.
@@ -140,12 +141,14 @@ var wake_refused: u32 = 0;
 ///
 /// `kept` is what `gcmark` marks and `call` returns; `rank` is what `compare`
 /// and `hash` are computed from; `text` is what `bytes`, `tostring` and
-/// `length` report.
+/// `length` report. `codes` is `text` converted to numbers, which is what
+/// `chunk` hands out, since a run is made of `Value`s and `text` is bytes.
 const Keeper = struct {
     kept: wattle.Value,
     rank: i32,
     serial: i64,
     text: [6]u8,
+    codes: [6]wattle.Value,
 };
 
 /// `mode` selects what the `:length` method returns, so that both kinds of
@@ -420,6 +423,11 @@ fn fetch(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.get(argv[0], argv[1]);
 }
 
+/// Converts a keeper's text into the numbers `chunk` hands out.
+fn fillCodes(k: *Keeper) void {
+    for (k.text, &k.codes) |byte, *code| code.* = wattle.number(@floatFromInt(byte));
+}
+
 /// `(finalized-count)`.
 fn finalizedCount(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 0);
@@ -451,7 +459,8 @@ fn keep(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.arity(argv, 1, 2);
     const given = if (argv.len == 2) try wattle.getInteger(argv, 1) else 0;
     const k = wattle.new(Keeper, &keeper_type, null);
-    k.* = .{ .kept = argv[0], .rank = given, .serial = next_serial, .text = "keeper".* };
+    k.* = .{ .kept = argv[0], .rank = given, .serial = next_serial, .text = "keeper".*, .codes = undefined };
+    fillCodes(k);
     next_serial += 1;
     return wattle.abstract(k);
 }
@@ -466,6 +475,14 @@ fn keeperBytes(self: *const Keeper, _: usize) []const u8 {
 fn keeperCall(self: *Keeper, argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 0);
     return self.kept;
+}
+
+/// The codes of the text, in runs of four, so that a reader crosses a run
+/// boundary. The runs are `codes[0..4]` and `codes[4..6]`.
+fn keeperChunk(self: *Keeper, index: usize) wattle.Chunk {
+    const start = index - index % 4;
+    const end = @min(start + 4, self.codes.len);
+    return .{ .items = self.codes[start..end], .start = start };
 }
 
 /// Both payloads really are this type: the runtime reaches this slot only for
@@ -527,7 +544,7 @@ fn keeperNext(self: *Keeper, key: wattle.Value) wattle.Error!wattle.Value {
 }
 
 /// Runs only for a threaded abstract, and this module makes none. It is here
-/// because the fourteenth slot has to be spellable to be counted.
+/// because every slot has to be spellable to be counted.
 fn keeperPerThread(_: *Keeper, _: usize) void {}
 
 /// A keyword key sets the rank, and anything else is refused.
@@ -550,7 +567,7 @@ fn keeperUnmarshal(u: *wattle.Unmarshal) wattle.Error!*Keeper {
     // Every field written before anything else can raise: the block is on the
     // collector's heap list from the line above, so a raise in the middle
     // would hand `gc` and `gcmark` a payload that was never written.
-    keeper.* = .{ .kept = wattle.nil(), .rank = 0, .serial = 0, .text = @splat(0) };
+    keeper.* = .{ .kept = wattle.nil(), .rank = 0, .serial = 0, .text = @splat(0), .codes = @splat(wattle.number(0)) };
     keeper.rank = try wattle.pullInteger(u);
     keeper.serial = try wattle.pullInt64(u);
     const len = try wattle.pullByte(u);
@@ -561,6 +578,7 @@ fn keeperUnmarshal(u: *wattle.Unmarshal) wattle.Error!*Keeper {
     // first.
     try wattle.pullEnsure(u, len);
     try wattle.pullBytes(u, &keeper.text);
+    fillCodes(keeper);
     keeper.kept = try wattle.pullValue(u);
     return keeper;
 }

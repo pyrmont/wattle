@@ -862,13 +862,20 @@ pub fn build(b: *std.Build) void {
             .phrase = "abstract type 'module-errors/raising-gc', callback 'gc': this callback " ++
                 "cannot raise. `gc` and `gcmark` run inside a collection. `compare`, `hash`, " ++
                 "`bytes` and `gcperthread` run inside an operation that must produce a " ++
-                "result. None of the six has a return type to report a raise through.",
+                "result. `chunk` hands out storage a reader holds while it reads. None of " ++
+                "the seven has a return type to report a raise through.",
         },
         .{
             .file = "test/module-errors/unknown_slot.zig",
             .phrase = "abstract type 'module-errors/unknown-slot' has no callback named " ++
                 "'finalizer'. The callbacks are: gc, gcmark, gcperthread, get, put, next, " ++
-                "length, call, compare, hash, tostring, bytes, marshal, unmarshal",
+                "length, call, compare, hash, tostring, bytes, marshal, unmarshal, chunk",
+        },
+        .{
+            .file = "test/module-errors/chunk_without_length.zig",
+            .phrase = "abstract type 'module-errors/chunk-without-length', callback 'chunk': " ++
+                "a type with `chunk` must also have `length`. The length bounds the index " ++
+                "`chunk` is called with.",
         },
         .{
             .file = "test/module-errors/wrong_cfunction.zig",

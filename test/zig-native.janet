@@ -1,9 +1,9 @@
-# The native module that sets all fourteen abstract-type slots, loaded and
+# The native module that sets all fifteen abstract-type slots, loaded and
 # exercised.
 #
 # `zig build test` runs this with the built module's path as its argument.
 # `examples/numarray` is the worked example an author reads; this file carries
-# the slots a numeric array has no use for, and is what makes "all fourteen are
+# the slots a numeric array has no use for, and is what makes "all fifteen are
 # writable" a check rather than a sentence in `DESIGN.md` section 13.
 
 (def module-path (get (dyn *args*) 1))

@@ -128,13 +128,14 @@ pub const AbstractHead = extern struct {
 /// ends the process with "null pointer abstract" where a module returned
 /// null.
 ///
-/// Six of the callbacks cannot raise: `gc`, `gcmark`, `gcperthread`,
-/// `compare`, `hash` and `bytes`. Their types have no error union, so a module
-/// author cannot report a failure from inside these callbacks and must handle
-/// it on the spot. The runtime calls them where nothing could act on a report
-/// anyway: `gc` runs mid-sweep on an object that is already unreachable,
-/// `gcmark` mid-traversal, and `compare` and `hash` from inside a comparison
-/// that cannot raise. The other eight run inside an interpreter frame, where a
+/// Seven of the callbacks cannot raise: `gc`, `gcmark`, `gcperthread`,
+/// `compare`, `hash`, `bytes` and `chunk`. Their types have no error union, so
+/// a module author cannot report a failure from inside these callbacks and
+/// must handle it on the spot. The runtime calls them where nothing could act
+/// on a report anyway: `gc` runs mid-sweep on an object that is already
+/// unreachable, `gcmark` mid-traversal, and `compare` and `hash` from inside a
+/// comparison that cannot raise. `chunk` hands out storage that a reader holds
+/// while it reads. The other eight run inside an interpreter frame, where a
 /// raise reaches the fiber that called it.
 pub const AbstractType = struct {
     name: []const u8,
@@ -162,6 +163,9 @@ pub const AbstractType = struct {
     // Marshalling.
     marshal: ?*const fn (p: *anyopaque, m: *Marshal) error{JanetSignal}!void = null,
     unmarshal: ?*const fn (u: *Unmarshal) error{JanetSignal}!?*anyopaque = null,
+
+    // Indexing.
+    chunk: ?*const fn (p: *anyopaque, index: usize) callconv(.c) Chunk = null,
 };
 
 /// What a module was built against: a Janet version, the configuration bits,
@@ -210,6 +214,20 @@ pub const BuildConfig = extern struct {
 pub const ByteView = extern struct {
     bytes: ?[*]const u8,
     len: usize = 0,
+};
+
+/// A run of an indexed abstract's elements, and the index of its first.
+///
+/// The erased `chunk` callback of `AbstractType` returns a `Chunk`. A module
+/// author writes the callback to return a `module.Chunk`, which holds a slice,
+/// and `module.define` generates the shim that converts it.
+///
+/// `items` points at `len` elements, the first of which is at index `start`.
+/// `items` is null only when `len` is zero.
+pub const Chunk = extern struct {
+    items: ?[*]const repr.Value = null,
+    len: usize = 0,
+    start: usize = 0,
 };
 
 /// The type of the slot a cfunction pointer is stored in.

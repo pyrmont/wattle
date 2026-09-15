@@ -122,6 +122,7 @@ const covered = [_]struct { name: []const u8, type: type }{
     .{ .name = "AbstractType", .type = abi.AbstractType },
     .{ .name = "BuildConfig", .type = abi.BuildConfig },
     .{ .name = "ByteView", .type = abi.ByteView },
+    .{ .name = "Chunk", .type = abi.Chunk },
     .{ .name = "DictView", .type = abi.DictView },
     .{ .name = "IndexedView", .type = abi.IndexedView },
     .{ .name = "KV", .type = abi.KV },

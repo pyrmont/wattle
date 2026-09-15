@@ -73,9 +73,9 @@
 //! happens when it is not.
 //!
 //! Every callback is written over `*T`, and every field defaults to null, so a
-//! type declares only the callbacks it needs. Six of the fourteen return no
+//! type declares only the callbacks it needs. Seven of the fifteen return no
 //! error union and so cannot raise. The groups below are the collector's three,
-//! access, identity, rendering and marshalling.
+//! access, identity, rendering, marshalling and indexing.
 //!
 //! | callback      | signature                          | may raise |
 //! | ------------- | ---------------------------------- | --------- |
@@ -97,6 +97,8 @@
 //! |               |                                    |           |
 //! | `marshal`     | `fn (*T, *Marshal) Error!void`     | yes       |
 //! | `unmarshal`   | `fn (*Unmarshal) Error!*T`         | yes       |
+//! |               |                                    |           |
+//! | `chunk`       | `fn (*T, usize) Chunk`             | no        |
 //!
 //! The restrictions on the collector's callbacks are in `Spec`, and
 //! `examples/numarray` is the worked example.
@@ -253,6 +255,24 @@ pub const Called = struct { signal: Signal, value: Value, fiber: Value };
 /// is a compile error.
 pub const CFunction = *const fn ([]Value) Error!Value;
 
+/// The return type of an abstract type's `chunk` callback.
+///
+/// `items` is a run of the type's elements and `start` is the index of the
+/// first of them. The run must hold the index `chunk` was called with, and must
+/// not reach past the type's length.
+///
+/// `items` may point into the payload's own storage, or into a buffer the
+/// payload keeps. A `Value` that only that buffer refers to must be marked by
+/// the type's `gcmark`.
+///
+/// ```zig
+/// fn vecChunk(self: *Vec, index: usize) wattle.Chunk {
+///     const start = index - index % 32;
+///     return .{ .items = self.leafFor(index), .start = start };
+/// }
+/// ```
+pub const Chunk = struct { items: []const Value, start: usize };
+
 /// The error a raise returns.
 ///
 /// It has one member. A Zig error has no payload, and the two things a raise
@@ -393,6 +413,15 @@ pub fn Spec(comptime T: type) type {
 
         marshal: ?*const fn (*T, *Marshal) Error!void = null,
         unmarshal: ?*const fn (*Unmarshal) Error!*T = null,
+
+        // Indexing.
+
+        /// Returns the run of elements that holds `index`, which is below
+        /// the type's length. A type with `chunk` must also have `length`. It
+        /// may not allocate or call into Janet code. The run stays valid until
+        /// the next call that can do either, or until the next `chunk` call on
+        /// the same payload.
+        chunk: ?*const fn (*T, usize) Chunk = null,
     };
 }
 
@@ -568,6 +597,7 @@ pub fn define(comptime T: type, comptime spec: anytype) AbstractType {
         .bytes = if (cb.bytes != null) &E.bytes else null,
         .marshal = if (cb.marshal != null) &E.marshal else null,
         .unmarshal = if (cb.unmarshal != null) &E.unmarshal else null,
+        .chunk = if (cb.chunk != null) &E.chunk else null,
     };
 }
 

@@ -2,7 +2,7 @@
 //! vtable the runtime dispatches through.
 //!
 //! A module author reads `module.zig`, which declares `Spec` and `define` and
-//! documents the fourteen callbacks. This file is what those two are built
+//! documents the fifteen callbacks. This file is what those two are built
 //! from, and it re-exports both under the names the runtime's own code uses,
 //! so `module.define` and the files under `src/runtime/` declare an abstract
 //! type through the same code.
@@ -10,7 +10,7 @@
 //! ## From a declaration to a vtable
 //!
 //! A _slot_ is one callback of an abstract type, named by the field an author
-//! writes in the `define` literal. `slots` lists the fourteen in the order the
+//! writes in the `define` literal. `slots` lists the fifteen in the order the
 //! vtable stores them. `define` runs three steps over the literal: `check`
 //! rejects a field that names no slot and a callback of the wrong shape,
 //! `collect` moves the fields into a `Spec(T)`, and `Erased` generates the
@@ -61,7 +61,7 @@ const repr = @import("repr");
 /// where the result is declared are documented there.
 pub const define = module.define;
 
-/// The fourteen callback names, in the order the erased vtable stores them.
+/// The fifteen callback names, in the order the erased vtable stores them.
 /// `collect` walks this list, and `check` names it when a field matches no
 /// slot.
 pub const slots = [_][:0]const u8{
@@ -79,6 +79,7 @@ pub const slots = [_][:0]const u8{
     "bytes",
     "marshal",
     "unmarshal",
+    "chunk",
 };
 
 // ==========================================================================
@@ -89,6 +90,10 @@ pub const slots = [_][:0]const u8{
 /// returns an `AbstractType` and `ofAbstract` returns a pointer to the
 /// `AbstractType` with which a live abstract was made.
 pub const AbstractType = abi.AbstractType;
+
+/// What a `chunk` callback returns: a run of elements and the index of its
+/// first. This is `module.Chunk`, under the name the runtime's own code uses.
+pub const Chunk = module.Chunk;
 
 /// The callbacks an abstract type is declared with, over `*T`. This is
 /// `module.Spec`, under the name the runtime's own code uses, and the shapes
@@ -170,6 +175,10 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         pub fn unmarshal(u: *abi.Unmarshal) raise.Error!?*anyopaque {
             return try spec.unmarshal.?(u);
         }
+        pub fn chunk(p: *anyopaque, index: usize) callconv(.c) abi.Chunk {
+            const c = spec.chunk.?(mut(p), index);
+            return .{ .items = c.items.ptr, .len = c.items.len, .start = c.start };
+        }
     };
 }
 
@@ -183,8 +192,9 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
 ///
 /// It is a compile error if `spec` is not a struct, if a field names no slot,
 /// if a callback returns an error union where its slot cannot raise or omits
-/// one where its slot may, or if a callback's first parameter is not `*T` or
-/// `*const T`. The parameter check skips `unmarshal`, which takes no payload.
+/// one where its slot may, if a callback's first parameter is not `*T` or
+/// `*const T`, or if `chunk` is given without `length`. The parameter check
+/// skips `unmarshal`, which takes no payload.
 ///
 /// A shape this does not recognise is left alone and reaches the coercion in
 /// `define`, so `check` can improve a message but cannot suppress an error.
@@ -206,6 +216,11 @@ pub fn check(comptime T: type, comptime spec: anytype) void {
                 f.name ++ "'. The callbacks are: " ++ slotList());
         }
         checkSlot(T, spec.name, f.name, @TypeOf(@field(spec, f.name)));
+    }
+    if (sets(spec, "chunk") and !sets(spec, "length")) {
+        @compileError("abstract type '" ++ spec.name ++ "', callback 'chunk': a type with " ++
+            "`chunk` must also have `length`. The length bounds the index `chunk` is " ++
+            "called with.");
     }
 }
 
@@ -279,8 +294,9 @@ fn checkSlot(comptime T: type, comptime name: []const u8, comptime slot: []const
     if (returns_error and !comptime raises(slot)) {
         @compileError(where ++ "this callback cannot raise. `gc` and `gcmark` run inside " ++
             "a collection. `compare`, `hash`, `bytes` and `gcperthread` run inside an " ++
-            "operation that must produce a result. None of the six has a return type to " ++
-            "report a raise through.");
+            "operation that must produce a result. `chunk` hands out storage a reader " ++
+            "holds while it reads. None of the seven has a return type to report a " ++
+            "raise through.");
     }
     if (!returns_error and comptime raises(slot)) {
         @compileError(where ++ "this callback may raise, so write `raise.Error!" ++
@@ -323,7 +339,7 @@ fn payloadName(comptime T: type, comptime slot: []const u8) []const u8 {
 ///
 /// `slot` is the field an author wrote. The eight that may raise are `get`,
 /// `put`, `next`, `length`, `call`, `tostring`, `marshal` and `unmarshal`. The
-/// other six return no error union. `checkSlot` compares this against the
+/// other seven return no error union. `checkSlot` compares this against the
 /// callback an author gave.
 fn raises(comptime slot: []const u8) bool {
     const yes = [_][]const u8{ "get", "put", "marshal", "unmarshal", "tostring", "next", "call", "length" };
@@ -331,6 +347,15 @@ fn raises(comptime slot: []const u8) bool {
         if (std.mem.eql(u8, slot, y)) return true;
     }
     return false;
+}
+
+/// Returns whether a `define` literal sets a slot to something other than null.
+///
+/// `spec` is the literal an author wrote and `slot` is the field to look for.
+/// A field written `null` counts as not given, as `collect` treats it.
+fn sets(comptime spec: anytype, comptime slot: []const u8) bool {
+    if (!@hasField(@TypeOf(spec), slot)) return false;
+    return @TypeOf(@field(spec, slot)) != @TypeOf(null);
 }
 
 /// Returns the slot names as one comma-separated string.

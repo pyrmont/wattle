@@ -695,6 +695,88 @@ fn cbytesTerminatesAnAbstractsView() raise.Error!void {
     refuses(args.getCBytes, .{ a, 0 }, "bytes contain embedded 0s");
 }
 
+/// Ten numbers handed out in runs of three, so that a reader crosses three run
+/// boundaries and ends on a short run. `lie` makes `chunk` answer wrongly in
+/// one of two ways.
+const Runs = struct {
+    items: [10]repr.Value,
+    lie: enum { none, wrong_index, past_end } = .none,
+};
+
+const runs_at = abstract_type.define(Runs, .{
+    .name = "args-core/runs",
+    .length = runsLength,
+    .chunk = runsChunk,
+});
+
+/// The runs are `items[0..3]`, `[3..6]`, `[6..9]` and `[9..10]`. A
+/// `wrong_index` run starts after the index asked for. A `past_end` last run
+/// holds index 9 but is three long, so it reaches two past the length.
+fn runsChunk(self: *Runs, index: usize) abstract_type.Chunk {
+    const start = index - index % 3;
+    const end = @min(start + 3, self.items.len);
+    return switch (self.lie) {
+        .none => .{ .items = self.items[start..end], .start = start },
+        .wrong_index => .{ .items = self.items[start..end], .start = index + 1 },
+        .past_end => if (start == 9)
+            .{ .items = self.items[7..10], .start = 9 }
+        else
+            .{ .items = self.items[start..end], .start = start },
+    };
+}
+
+fn runsLength(self: *Runs, _: usize) raise.Error!usize {
+    return self.items.len;
+}
+
+/// `chunks` reads an abstract in its runs and a tuple in one, and both give the
+/// same elements in the same order. A run that does not hold the index asked
+/// for, or that reaches past the length, is refused rather than read.
+fn chunksReadsAnAbstractRunByRun() raise.Error!void {
+    const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .items = undefined };
+    for (&runs.items, 0..) |*item, i| item.* = harness.wrapInteger(@intCast(i * 10));
+    const abstract = wrap.fromAbstract(raw);
+    const tuple = wrap.fromTuple(tuples.newFrom(&runs.items));
+
+    var from_abstract: [10]repr.Value = undefined;
+    var read: usize = 0;
+    var run_count: usize = 0;
+    var it = (try args.chunks(abstract)).?;
+    while (try it.next()) |items| {
+        expect(items.len == @min(3, runs.items.len - read));
+        @memcpy(from_abstract[read..][0..items.len], items);
+        read += items.len;
+        run_count += 1;
+    }
+    expect(read == 10 and run_count == 4);
+    expect(try it.next() == null);
+
+    var from_tuple = (try args.chunks(tuple)).?;
+    const whole = (try from_tuple.next()).?;
+    expect(whole.len == 10);
+    expect(try from_tuple.next() == null);
+    for (from_abstract, whole) |a, b| expect(wrap.toInteger(a) == wrap.toInteger(b));
+
+    // An empty tuple has no runs, not one empty run.
+    var empty = (try args.chunks(wrap.fromTuple(tuples.newFrom(&.{})))).?;
+    expect(try empty.next() == null);
+
+    // Neither nil nor an abstract without `chunk` is indexed.
+    expect(try args.chunks(wrap.fromNil()) == null);
+    expect(try args.chunks(wrap.fromAbstract(abstracts.newBytes(&probe_at, 4))) == null);
+
+    runs.lie = .wrong_index;
+    var wrong = (try args.chunks(abstract)).?;
+    refuses(args.Chunks.next, .{&wrong}, "chunk of args-core/runs does not hold index 0");
+
+    runs.lie = .past_end;
+    var past = (try args.chunks(abstract)).?;
+    for (0..3) |_| _ = (try past.next()).?;
+    refuses(args.Chunks.next, .{&past}, "chunk of args-core/runs does not hold index 9");
+}
+
 fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Error!void {
     var argv = [_]repr.Value{
         harness.wrapInteger(5),
@@ -885,6 +967,7 @@ fn body() raise.Error!void {
     try cbytesCopiesAFullNoReallocBuffer();
     try theAbstractGettersAndTheBytesCallback();
     try cbytesTerminatesAnAbstractsView();
+    try chunksReadsAnAbstractRunByRun();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();
     nextmethodIsAnIterator();

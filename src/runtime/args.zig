@@ -280,6 +280,61 @@ pub const Bytes = union(enum) {
 /// cannot fault, so it takes no fault.
 pub const CBytes = enum { copy_buffer, copy_view, terminate, view };
 
+/// The elements of an indexed value, read one run at a time. `chunks` returns
+/// a `Chunks`.
+///
+/// An array or a tuple is one run. An abstract is as many runs as its `chunk`
+/// callback gives, and `next` asks the callback for the run that holds the
+/// first element not yet returned.
+///
+/// A run stays valid until the next call that can allocate or run Janet code,
+/// or until the next `next` on the same value.
+///
+/// ```zig
+/// var it = (try args.chunks(x)) orelse return fault;
+/// while (try it.next()) |run| {
+///     // run is a []const repr.Value
+/// }
+/// ```
+pub const Chunks = struct {
+    source: Source,
+    len: usize,
+    index: usize = 0,
+
+    /// Where the elements come from.
+    pub const Source = union(enum) {
+        contiguous: []const repr.Value,
+        abstract: struct { payload: *anyopaque, at: *const abi.AbstractType },
+    };
+
+    /// Returns the next run, or null when every element has been returned.
+    ///
+    /// This function raises if a `chunk` callback returns a run that does not
+    /// hold the index it was asked for, or that reaches past the length.
+    pub fn next(self: *Chunks) raise.Error!?[]const repr.Value {
+        if (self.index >= self.len) return null;
+        switch (self.source) {
+            .contiguous => |items| {
+                self.index = self.len;
+                return items;
+            },
+            .abstract => |a| {
+                const run = a.at.chunk.?(a.payload, self.index);
+                const end = run.start +| run.len;
+                if (run.start > self.index or end <= self.index or end > self.len) {
+                    return pp_format.panicf("chunk of %t does not hold index %u", .{
+                        wrap.fromAbstract(a.payload),
+                        @as(u64, self.index),
+                    });
+                }
+                const items = run.items.?[self.index - run.start .. run.len];
+                self.index = end;
+                return items;
+            },
+        }
+    }
+};
+
 /// What a numeric kernel expected, and the only place the nouns are written.
 ///
 /// A kernel reports `.s16` and `Expect.name` spells it "16 bit
@@ -925,6 +980,23 @@ pub fn checkuint64(x: repr.Value) bool {
 /// Whether `x` is a double exactly representable as a `u8`.
 pub fn checkuint8(x: repr.Value) bool {
     return checkNumber(u8, x);
+}
+
+/// Returns the elements of an array, a tuple or an abstract with a `chunk`
+/// callback, read one run at a time.
+///
+/// `x` is the value. This function returns null if `x` is none of the three.
+/// It raises if an abstract's `length` callback raises.
+///
+/// See `Chunks` for how long a run stays valid.
+pub fn chunks(x: repr.Value) raise.Error!?Chunks {
+    if (indexedView(x)) |items| return .{ .source = .{ .contiguous = items }, .len = items.len };
+    if (!repr.checkType(x, repr.Tag.abstract)) return null;
+    const abst = wrap.toAbstract(x);
+    const at = abi.abstractHead(abst).type;
+    if (at.chunk == null) return null;
+    const len = try access.length(x);
+    return .{ .source = .{ .abstract = .{ .payload = abst, .at = at } }, .len = @intCast(len) };
 }
 
 /// The entries of a table or a struct, or nothing.

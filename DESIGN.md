@@ -1040,7 +1040,7 @@ changes the offset in one place.
 ## 12. Modules: abstract types
 
 An abstract type is where a native module's own data enters the runtime.
-`AbstractType` is a name and fourteen callback slots. The slots it stores take
+`AbstractType` is a name and fifteen callback slots. The slots it stores take
 the payload as `*anyopaque`; the callbacks an author writes in the `define`
 literal take it as `*T` (the C implementation has `void *` throughout). A
 module author supplies the callbacks to a typed constructor, while the runtime
@@ -1104,13 +1104,13 @@ written over `*T` and the cast lives in one place. `compare` takes two
 `*const T`, a strengthening C could not express: the runtime reaches that
 callback only when both abstracts have this type.
 
-### The six callbacks that cannot raise
+### The seven callbacks that cannot raise
 
-Six callbacks cannot raise:
+Seven callbacks cannot raise:
 
 |             | callbacks                                                                  |
 | ----------- | -------------------------------------------------------------------------- |
-| non-raising | `gc`, `gcmark`, `gcperthread`, `compare`, `hash`, `bytes`                  |
+| non-raising | `gc`, `gcmark`, `gcperthread`, `compare`, `hash`, `bytes`, `chunk`         |
 | raising     | `get`, `put`, `next`, `length`, `call`, `tostring`, `marshal`, `unmarshal` |
 
 `compare` and `hash` are called from inside comparisons that must return a
@@ -1118,7 +1118,9 @@ result. `gc` and `gcmark` are non-raising by contract: a finalizer runs
 mid-sweep on an object that is already unreachable and `gcmark` runs
 mid-traversal, so there is no scope above either, no caller that could act on
 an error, and nothing to retry. A raise from one of them has nowhere to go for
-anybody, a native module included.
+anybody, a native module included. `chunk` hands out a run of a payload's
+elements that the reader holds while it reads, so it may neither raise,
+allocate nor run Janet code, and the run cannot change under the reader.
 
 What allowing it costs is measurable in C, where a panicking finalizer poisons
 the heap: the block is finalized but neither freed nor unlinked, every later
@@ -1137,17 +1139,18 @@ so `AbstractType` is not `extern`. What `extern` bought in C was a layout a
 separately compiled consumer could reconstruct from `janet.h`; here both
 compilations read the declaration in `abi.zig`.
 
-The erased vtable keeps the field order `janet.h` used. Reordering gains
-nothing that would justify changing every stored table. That said, the order is
+The erased vtable keeps the field order `janet.h` used, with `chunk`, which
+`janet.h` does not have, after the last of them. Reordering gains nothing that
+would justify changing every stored table. That said, the order is
 an internal erased-layout decision rather than source API for a module author
 (who uses the typed constructor).
 
 ### The compile errors a module gets
 
-The wrong payload, a raising `gc`, a non-raising `get`, an unknown slot and a
-wrongly shaped cfunction are each a compile error naming the contract rather
-than diffing two function types. `zig build module-errors` can be used to check
-those messages.
+The wrong payload, a raising `gc`, a non-raising `get`, an unknown slot, a
+`chunk` without a `length` and a wrongly shaped cfunction are each a compile
+error naming the contract rather than diffing two function types.
+`zig build module-errors` can be used to check those messages.
 
 ### The C macros retired
 

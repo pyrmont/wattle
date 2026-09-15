@@ -7,19 +7,20 @@
 #
 #   export    2
 #   slot      85
-#   callback  22
+#   callback  23
 #   residue   0
 #
-#   not definitions: 124 `extern fn` declarations, 108 function-pointer types
+#   not definitions: 124 `extern fn` declarations, 109 function-pointer types
 #
 # columns: class  site  function
 
-callback  api/abstract_type.zig:124                    gc
-callback  api/abstract_type.zig:127                    gcmark
-callback  api/abstract_type.zig:130                    gcperthread
-slot      api/abstract_type.zig:154                    compare
-slot      api/abstract_type.zig:157                    hash
-slot      api/abstract_type.zig:163                    bytes
+callback  api/abstract_type.zig:129                    gc
+callback  api/abstract_type.zig:132                    gcmark
+callback  api/abstract_type.zig:135                    gcperthread
+slot      api/abstract_type.zig:159                    compare
+slot      api/abstract_type.zig:162                    hash
+slot      api/abstract_type.zig:168                    bytes
+callback  api/abstract_type.zig:178                    chunk
 slot      api/raise.zig:175                            abi
 slot      api/raise.zig:180                            abi
 slot      api/raise.zig:185                            abi
@@ -29,16 +30,16 @@ slot      api/raise.zig:200                            abi
 slot      api/raise.zig:225                            abi
 slot      api/raise.zig:230                            abi
 slot      api/raise.zig:235                            abi
-export    module.zig:610                               modConfig
-export    module.zig:622                               modInit
-slot      runtime/args.zig:1133                        getRangeAbi
-slot      runtime/args.zig:1179                        indexedViewAbi
-slot      runtime/args.zig:387                         abi
-slot      runtime/args.zig:393                         abi
-slot      runtime/args.zig:801                         bytesViewAbi
-slot      runtime/args.zig:818                         checkArityAbi
-slot      runtime/args.zig:938                         dictionaryViewAbi
-slot      runtime/args.zig:969                         fixArityAbi
+export    module.zig:640                               modConfig
+export    module.zig:652                               modInit
+slot      runtime/args.zig:1010                        dictionaryViewAbi
+slot      runtime/args.zig:1041                        fixArityAbi
+slot      runtime/args.zig:1205                        getRangeAbi
+slot      runtime/args.zig:1251                        indexedViewAbi
+slot      runtime/args.zig:442                         abi
+slot      runtime/args.zig:448                         abi
+slot      runtime/args.zig:856                         bytesViewAbi
+slot      runtime/args.zig:873                         checkArityAbi
 callback  runtime/capi.zig:209                         trampoline
 slot      runtime/capi.zig:259                         janet_abstract
 slot      runtime/capi.zig:267                         janet_array_push_value
@@ -111,9 +112,9 @@ callback  runtime/ev/channel.zig:771                   threadChanCallback
 callback  runtime/ffi/call.zig:467                     aapcs64Callback
 callback  runtime/ffi/call.zig:970                     sysv64Callback
 callback  runtime/ffi/call.zig:974                     win64Callback
-callback  runtime/native_module.zig:198                abandonDone
-callback  runtime/native_module.zig:855                stampedeDone
-callback  runtime/native_module.zig:960                workDone
+callback  runtime/native_module.zig:201                abandonDone
+callback  runtime/native_module.zig:873                stampedeDone
+callback  runtime/native_module.zig:978                workDone
 callback  runtime/os/process.zig:1360                  shellSubroutine
 callback  runtime/os/process.zig:1372                  signalCallback
 callback  runtime/os/process.zig:296                   plain

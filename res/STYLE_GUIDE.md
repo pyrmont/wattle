@@ -232,7 +232,7 @@ hand gets the full block, with a ```zig block for the shape.
 `AtomicInt`: "The width of a refcount."
 
 **A count is a word; a literal is spelled as the code spells it.**
-`module.zig` header: "Six of the fourteen return no error union", "Three
+`module.zig` header: "Seven of the fifteen return no error union", "Three
 functions callable by a module author may re-enter"; `getRange`: "defaults
 to 0", "`-1`". `abi.zig` header: "There are five kinds"; `FiberStatus`: "The
 first fourteen values".
