@@ -245,15 +245,14 @@
 # anything else is cleared too.
 # Re-derived by grepping every suite for the paths it creates, because every
 # suite now runs for every mutant rather than three of them. `tmp_dir_*` is
-# `helper.janet`'s `randdir`, which `suite-bundle` and `suite-filewatch` build
-# their trees under, so the `file1.txt` kind of leaf goes with its directory.
-# `wattle-suite-*` covers `suite-io`, `suite-filewatch` and `suite-net`. `tmp`
-# is a directory `suite-ev2` makes and fills.
+# `helper.janet`'s `randdir`, which `suite-bundle`, `suite-ev2` and
+# `suite-filewatch` build their trees under, so the `file1.txt` kind of leaf
+# goes with its directory. `wattle-suite-*` covers `suite-io`,
+# `suite-filewatch` and `suite-net`.
 (def debris
   ["unique.txt"
    "unix-domain-socket"
    "tempdir123"
-   "tmp"
    "tmp_dir_*"
    "wattle-suite-*"])
 
