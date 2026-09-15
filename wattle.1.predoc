@@ -1,0 +1,227 @@
+---
+Title: WATTLE(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-09-15
+Project: Wattle
+Version: 0.1.0-dev
+---
+
+NAME
+====
+
+**wattle** - run Janet programs and a Janet REPL
+
+SYNOPSIS
+========
+
+**wattle** [_options_] [_script_ [_args_ ...]]
+**wattle** [_options_] **-i** _image_ [_args_ ...]
+**wattle** [_options_] **-c** _source_ [_output_]
+**wattle** [**-h** | **-v**]
+
+DESCRIPTION
+===========
+
+**wattle** runs programs written in the Janet programming language. It is a
+Janet runtime written in Zig. With no _script_, and no option that does work of
+its own, it starts a REPL (read-eval-print loop).
+
+Options are processed in order, so an option applies to the options and the
+_script_ that follow it. The first argument that does not begin with ``-`` is
+the _script_, and every argument after it is passed to the script. Once the
+script has run, **wattle** calls the ``main`` function it defines, if any, with
+the script's path followed by _args_. The same list is bound to ``*args*``.
+
+**wattle** exits when the script and any tasks it scheduled on the event loop
+have finished.
+
+Options
+-------
+
+- **-h**, **--help**:
+  Print a usage summary and exit.
+
+- **-v**, **--version**:
+  Print the version of Wattle and exit.
+
+- **-e**, **--eval** _code_:
+  Evaluate _code_ as Janet source. The REPL is not started afterwards unless
+  **-r** is also given.
+
+- **-E**, **--expression** _code_ [_arguments_ ...]:
+  Evaluate _code_ as the body of a ``short-fn`` and call it with every
+  remaining argument as a string. No option after _code_ is processed. For
+  example, ``wattle -E '(print $0)' 12`` prints ``12``.
+
+- **-l**, **--library** _module_:
+  Import _module_ into the environment before continuing, without a prefix, so
+  its bindings are available to later options, the _script_ and the REPL.
+
+- **-m**, **--syspath** _path_:
+  Set ``*syspath*``, the directory system modules are loaded from, to _path_.
+  This replaces the value taken from `WATTLE_PATH`.
+
+- **-i**, **--image**:
+  Treat _script_ as an image made by **-c** rather than as source, load it and
+  call its ``main`` function.
+
+- **-c**, **--compile** _source_ [_output_]:
+  Load the module at _source_ and write an image of its environment to
+  _output_. If _output_ is omitted, it is _source_ with ``.janet`` replaced by
+  ``.jimage``.
+
+- **-k**, **--flycheck**:
+  Compile _script_ without running it and report any errors. With no _script_,
+  check standard input instead. Errors do not change the exit status.
+
+- **-p**, **--persistent**:
+  Do not exit from inside the loader when a script or a module loaded with
+  **-l** raises a top-level error. The error propagates instead, and the
+  process still exits with status 1.
+
+- **-r**, **--repl**:
+  Start the REPL after the _script_ or the other options have run.
+
+- **-s**, **--stdin**:
+  Read REPL input as raw lines from standard input and write prompts to
+  standard output. Implies **-r**.
+
+- **-q**, **--quiet**:
+  Do not print the banner when the REPL starts.
+
+- **-R**, **--noprofile**:
+  Do not load the profile named by `WATTLE_PROFILE`.
+
+- **-d**, **--debug**:
+  Set ``*debug*`` and ``*redef*``. An error in the REPL enters the debugger,
+  and a top-level definition can be rebound.
+
+- **-n**, **--nocolor**:
+  Print values, errors and documentation without ANSI colour.
+
+- **-N**, **--color**:
+  Print values, errors and documentation with ANSI colour.
+
+- **-w**, **--lint-warn** _level_:
+  Set the lint level at which a message is printed as a warning. _level_ is
+  one of ``none``, ``relaxed``, ``normal``, ``strict`` or ``all``, written
+  without a leading colon, or a number. The default is ``normal``.
+
+- **-x**, **--lint-error** _level_:
+  Set the lint level at which a message stops compilation with an error.
+  _level_ takes the same values as for **-w**. The default is ``none``.
+
+- **-b**, **--install** _directory_:
+  Install the bundle in _directory_.
+
+- **-B**, **--reinstall** _name_:
+  Reinstall the installed bundle _name_.
+
+- **-u**, **--uninstall** _name_:
+  Uninstall the bundle _name_.
+
+- **-U**, **--update-all**:
+  Reinstall every installed bundle.
+
+- **-P**, **--prune**:
+  Uninstall every orphaned bundle: one marked for automatic removal that no
+  other bundle depends on.
+
+- **-L**, **--list**:
+  List the installed bundles.
+
+- **--**:
+  Stop processing options. The next argument is the _script_ even if it begins
+  with ``-``.
+
+An unrecognised option prints the usage summary and exits with status 0.
+
+REPL
+====
+
+The REPL reads a line at a time and evaluates each form once it is complete.
+The prompt shows the line number and any open delimiters. Documentation for a
+binding is shown with ``(doc symbol)``, and ``(doc)`` lists the bindings in
+scope.
+
+Prompts are written to standard error, or to standard output with **-s**.
+
+Before the first prompt, the REPL loads the file named by `WATTLE_PROFILE`
+into its environment, unless **-R** was given.
+
+ENVIRONMENT
+===========
+
+- `WATTLE_PATH`:
+  A list of directories to load system modules from, separated by ``:``, or by
+  ``;`` on Windows. The last directory becomes ``*syspath*`` and is searched
+  first. If unset, ``*syspath*`` is `/usr/local/lib/wattle`.
+
+- `WATTLE_PROFILE`:
+  A Janet file to load before the REPL starts. It is not loaded when a
+  _script_ runs without **-r**.
+
+- `NO_COLOR`:
+  If set to a non-empty value, disable colour. Colour is otherwise used when
+  both standard output and standard error are terminals.
+
+An environment variable set to the empty string is treated as unset.
+
+EXIT STATUS
+===========
+
+**wattle** exits `0` on success and `1` if a script or an option raises an
+error that is not handled. An error in the REPL is printed and does not end the
+session. A program can choose its own status with ``(os/exit status)``.
+
+EXAMPLES
+========
+
+Start the REPL:
+
+````
+$ wattle
+````
+
+Run a script with two arguments:
+
+````
+$ wattle hello.janet Alice Bob
+````
+
+Evaluate an expression and print its result:
+
+````
+$ wattle -e '(print (+ 1 2 3))'
+````
+
+Compile a program into an image and run the image:
+
+````
+$ wattle -c hello.janet hello.jimage
+$ wattle -i hello.jimage Alice
+````
+
+Check a script for compile errors without running it:
+
+````
+$ wattle -k hello.janet
+````
+
+SEE ALSO
+========
+
+The Janet language is documented at <https://janet-lang.org>.
+
+HISTORY
+=======
+
+Wattle is a fork of Janet, the language created by Calvin Rose. Its runtime is
+rewritten in Zig, and it has its own version numbering: the binding
+``janet/version`` reports the version of Janet it matches.
+
+COPYRIGHT
+=========
+
+Wattle is copyright Michael Camilleri. Janet is copyright Calvin Rose and
+contributors. Both are distributed under the MIT licence.
