@@ -59,7 +59,7 @@ const tables = @import("value/tables.zig");
 ///
 /// `env.zig` hands `&table` to `_wattle_init` and the module keeps it. It is
 /// `const` and lives in the runtime's own image, so a module refers into
-/// `libjanet` for as long as it is loaded and there is nothing to free.
+/// `libwattle` for as long as it is loaded and there is nothing to free.
 ///
 /// The order is `interface.Runtime`'s and the compiler enforces it: a field
 /// initializer names its field, so a row here that drifted from the struct is

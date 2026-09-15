@@ -632,7 +632,7 @@ pub fn evPostEvent(
 /// exit hook is a preprocessor facility with nothing behind it here.
 pub fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []const u8) noreturn {
     const line = std.fmt.comptimePrint(
-        "janet abort at {s}:{d}: {s}\n",
+        "wattle abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
@@ -858,7 +858,7 @@ pub const makeStreamExt = stream.makeStreamExt;
 /// `@src()` is what names the site.
 pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
     const line = std.fmt.comptimePrint(
-        "{s}:{d} - janet out of memory\n",
+        "{s}:{d} - wattle out of memory\n",
         .{ where.file, where.line },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());

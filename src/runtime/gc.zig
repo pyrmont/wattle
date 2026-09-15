@@ -271,7 +271,7 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
     // question of a *thread* and says so differently; the predicate is
     // declared once so the two messages cannot come to disagree about what
     // they are testing.
-    if (!vm_state.isInitialised(v)) fatal.fatal("please initialize janet before use");
+    if (!vm_state.isInitialised(v)) fatal.fatal("please initialize wattle before use");
 
     const mem: *abi.GCObject = @ptrCast(@alignCast(utils.rawAlloc(size)));
 

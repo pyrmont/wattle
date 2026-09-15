@@ -41,8 +41,8 @@
 (import ../common :as tools)
 
 (def list-path "res/check/gated.txt")
-(def cache "/tmp/janet-gates-cache")
-(def prefix "/tmp/janet-gates-out")
+(def cache "/tmp/wattle-gates-cache")
+(def prefix "/tmp/wattle-gates-out")
 
 # The sweep. Each entry is [tag, flags]. The set is `res/testing/matrix.janet`'s
 # reduced configurations plus the two the *target* decides -- a 32-bit build
@@ -72,7 +72,7 @@
   (unless (zero? (or (built :code) 1))
     (tools/die tag ": build failed -- " cmd "\n" (string (built :err))))
   (def lib (find |(os/stat $ :mode)
-                 [(string out "/lib/libjanet.dylib") (string out "/lib/libjanet.so")]))
+                 [(string out "/lib/libwattle.dylib") (string out "/lib/libwattle.so")]))
   (unless lib (tools/die tag ": built no shared library under " out "/lib"))
   (def nm (string "nm -g " lib " | awk '$2 ~ /^[TDBSR]$/ {print $3}' | sed 's/^_//' | sort -u"))
   (def res (tools/sh nm :timeout 120))

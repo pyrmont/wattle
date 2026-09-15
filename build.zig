@@ -346,7 +346,7 @@ pub const QuickbinOptions = struct {
 ///
 /// `host`'s `wattle` client makes the image: each native is built for the host
 /// as a shared library, loaded and passed to `module/add-native`, and then
-/// `janet -c` compiles `source`. Each native is also built for the target as
+/// `wattle -c` compiles `source`. Each native is also built for the target as
 /// an object whose entry symbols carry its name, and `src/client/quickbin.zig`
 /// adds the same modules under the same names before it loads the image, so
 /// every cfunction and abstract value the image names resolves.
@@ -763,7 +763,7 @@ pub fn build(b: *std.Build) void {
 
     // The Zig contracts, in the runtime's own compilation.
     //
-    // A contract that linked `libjanet.a` would cross the C ABI on every call,
+    // A contract that linked `libwattle.a` would cross the C ABI on every call,
     // and a raise would reach it only as an out-of-band report -- because a
     // symbol table is what joins two compilations, a symbol has a calling
     // convention, and Zig will not put an error union on a C-ABI function. This
@@ -2456,7 +2456,7 @@ fn hasFilewatch(cfg: Config) bool {
 /// That is the whole answer to "how does a contract reach a raise-capable
 /// function": the only thing joining two separately compiled objects is a
 /// symbol, a symbol has a calling convention, and Zig will not put an error
-/// union on a C-ABI function. A contract that linked `libjanet.a` could not
+/// union on a C-ABI function. A contract that linked `libwattle.a` could not
 /// see a raise except as an out-of-band report. A contract *in* the
 /// compilation calls its subject by import and writes `try`.
 /// second translation's `Janet` could not pass it to the subsystem at all.

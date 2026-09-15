@@ -79,7 +79,7 @@ pub fn libFfi(env: *tables.Table) void {
             "be further inspected with `ffi/read`."),
         corefn.reg("ffi/jitfn", &ffi_call.cfunJitfn, @src(), "(ffi/jitfn bytes)", "Create an abstract type that can be used as the pointer argument to `ffi/call`. The content " ++
             "of `bytes` is architecture specific machine code that will be copied into executable memory."),
-        corefn.reg("ffi/malloc", &cfunFfiMalloc, @src(), "(ffi/malloc size)", "Allocates memory directly using the janet memory allocator. Memory allocated in this way must be freed manually! Returns a raw pointer, or nil if size = 0."),
+        corefn.reg("ffi/malloc", &cfunFfiMalloc, @src(), "(ffi/malloc size)", "Allocates memory directly using Wattle's memory allocator. Memory allocated in this way must be freed manually! Returns a raw pointer, or nil if size = 0."),
         corefn.reg("ffi/free", &cfunFfiFree, @src(), "(ffi/free pointer)", "Free memory allocated with `ffi/malloc`. Returns nil."),
         corefn.reg("ffi/pointer-buffer", &cfunPointerBuffer, @src(), "(ffi/pointer-buffer pointer capacity &opt count offset)", "Create a buffer from a pointer. The underlying memory of the buffer will not be " ++
             "reallocated or freed by the garbage collector, allowing unmanaged, mutable memory " ++

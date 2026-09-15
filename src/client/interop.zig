@@ -80,7 +80,7 @@ const CFunction = raise.CFunction;
 /// `lineGetter` declares a line, passes it to `readline`, and frees `bytes`
 /// with `std.c.free` once the buffer has taken a copy. `length` is `i32`
 /// because it becomes a Janet index.
-pub const JanetZigLine = struct {
+pub const WattleLine = struct {
     bytes: ?[*]u8 = null,
     length: i32 = 0,
 };
@@ -245,7 +245,7 @@ fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     try args.checkArity(@intCast(argv.len), 0, 3);
     const prompt: [*:0]const u8 = if (argv.len >= 1) try args.GetString.get(argv, 0) else "";
     const buffer = if (argv.len >= 2) try args.GetBuffer.get(argv, 1) else buffers.new(10);
-    var line: JanetZigLine = .{ .bytes = null, .length = 0 };
+    var line: WattleLine = .{ .bytes = null, .length = 0 };
 
     buffer.*.count = 0;
     if (readline(prompt, &line) != 0 and line.length > 0) {
@@ -289,7 +289,7 @@ fn makeRooted(out: *repr.Value) bool {
 /// bytes are `std.heap.c_allocator`'s for the caller to free. The result is 1
 /// when a line was read and 0 at end of input, on a write or read failure, on
 /// an empty line, and when the length does not fit an `i32`.
-fn readline(prompt: [*:0]const u8, out: *JanetZigLine) c_int {
+fn readline(prompt: [*:0]const u8, out: *WattleLine) c_int {
     std.Io.File.stderr().writeStreamingAll(process_io, std.mem.span(prompt)) catch return 0;
 
     var line: std.ArrayList(u8) = .empty;

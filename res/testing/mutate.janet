@@ -10,7 +10,7 @@
 #     unsetopt BG_NICE; nohup ./res/testing/mutate.janet --src A --src B \
 #       --no-strings --log /tmp/2a.log &
 #     ./res/testing/mutate.janet --src A --src B --log /tmp/2a.log --resume /tmp/2a.log
-#     ./res/testing/mutate.janet --all --log /tmp/janet-mutate.log
+#     ./res/testing/mutate.janet --all --log /tmp/wattle-mutate.log
 #     ./res/testing/mutate.janet --src src/runtime/ev.zig --stage full
 #
 # One of `--src` and `--all` is required; a bare invocation prints this usage
@@ -225,8 +225,8 @@
 
 ### discipline
 
-(def cache "/tmp/janet-mutate-cache")
-(def prefix "/tmp/janet-mutate-out")
+(def cache "/tmp/wattle-mutate-cache")
+(def prefix "/tmp/wattle-mutate-out")
 
 # Files the Janet suites create in the working tree and delete again when they
 # pass. A mutant that makes one of them *fail* leaves the file behind, and the
@@ -247,7 +247,7 @@
 # suite now runs for every mutant rather than three of them. `tmp_dir_*` is
 # `helper.janet`'s `randdir`, which `suite-bundle` and `suite-filewatch` build
 # their trees under, so the `file1.txt` kind of leaf goes with its directory.
-# `janet-suite-*` covers `suite-io`, `suite-filewatch` and `suite-net`. `tmp`
+# `wattle-suite-*` covers `suite-io`, `suite-filewatch` and `suite-net`. `tmp`
 # is a directory `suite-ev2` makes and fills.
 (def debris
   ["unique.txt"
@@ -255,7 +255,7 @@
    "tempdir123"
    "tmp"
    "tmp_dir_*"
-   "janet-suite-*"])
+   "wattle-suite-*"])
 
 # Seconds for the default stage's build. A plain `zig build` runs the image
 # generator and nothing else that can loop: the warm-up build is 14 seconds and
@@ -426,7 +426,7 @@
 (def- build-flags "-Dinstall-tests=true")
 
 # 64-bit Mach-O, little-endian, which is what this host links. The check also
-# excludes `libjanet.a`: an archive begins `!<arch>` and carries the DWARF the
+# excludes `libwattle.a`: an archive begins `!<arch>` and carries the DWARF the
 # executables leave behind, so comparing it would report a difference for every
 # mutant and defeat the comparison it is part of.
 (def- macho-magic "\xcf\xfa\xed\xfe")
@@ -503,7 +503,7 @@
 # pipe and outlives the `wait` keeps it open, the read never finishes, and the
 # whole digest costs its bound; `mutation.md` records the same hazard for a
 # contract that lets a child inherit its stdio, and this shell had it too.
-(def- scratch "/tmp/janet-mutate-digest")
+(def- scratch "/tmp/wattle-mutate-digest")
 
 # The digest is 0.44 seconds over 139 sections, so this is a backstop rather
 # than a budget. It was 300, which is what a single stall cost the 2a batch,
@@ -805,7 +805,7 @@
 
     # The contract runs from the driver `zig build` just installed. It was a
     # shallow `zig cc` of `test/contracts.c` plus the contract against
-    # `libjanet.a` until Phase 11 Part 22 deleted the C driver, and that line
+    # `libwattle.a` until Phase 11 Part 22 deleted the C driver, and that line
     # would have failed for *every* mutant afterwards -- which this scores as
     # "caught", so the sweep would have reported a perfect score and measured
     # nothing. Rule 47's trap, in the same file it was found in last time, and

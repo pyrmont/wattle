@@ -165,7 +165,7 @@
 (assert-error-value "marshal a file" "cannot marshal file in safe mode" (marshal stdout))
 
 # A read-only file is not writeable and a write-only file is not readable
-(def path "janet-suite-io-11")
+(def path "wattle-suite-io-11")
 (defer (os/rm path)
   (spit path "seed")
   (with [f (file/open path :r)]
@@ -174,8 +174,8 @@
   (with [f (file/open path :w)]
     (assert-error-value "write mode read" "file is not readable" (file/read f :all)))
   (assert-error-value "open a directory" "cannot open directory: ." (file/open "." :r))
-  (assert (nil? (file/open "janet-suite-io-11-absent" :r)) "a missing file is nil")
-  (assert-error "missing file with :n" (file/open "janet-suite-io-11-absent" :rn)))
+  (assert (nil? (file/open "wattle-suite-io-11-absent" :r)) "a missing file is nil")
+  (assert-error "missing file with :n" (file/open "wattle-suite-io-11-absent" :rn)))
 
 # Printing to a file takes the other branch of the same conversion: a buffer
 # argument is written raw and everything else goes through `describe`
@@ -215,7 +215,7 @@
 (file/close tmp4)
 
 # `(flush)` really flushes the file its binding names
-(def flushed "janet-suite-io-11-flush")
+(def flushed "wattle-suite-io-11-flush")
 (defer (os/rm flushed)
   (with [f (file/open flushed :w)]
     (file/write f "buffered")
@@ -226,7 +226,7 @@
 # An explicit buffer size is applied, and a size the C library cannot allocate
 # is reported rather than ignored. The mode beside it is honoured: a buffer
 # size is a third argument, not a replacement for the second.
-(def buffered "janet-suite-io-11-buffered")
+(def buffered "wattle-suite-io-11-buffered")
 (defer (os/rm buffered)
   (spit buffered "sized")
   (each n [0 1 8192]
@@ -249,9 +249,9 @@
 
 # The whole length message, not a prefix of it
 (assert-error-value "empty mode" "file mode must have a length between 1 and 10"
-                    (file/open "janet-suite-io-11-absent" (keyword "")))
+                    (file/open "wattle-suite-io-11-absent" (keyword "")))
 (assert-error-value "eleven-byte mode" "file mode must have a length between 1 and 10"
-                    (file/open "janet-suite-io-11-absent" :rbnbnbnbnbn))
+                    (file/open "wattle-suite-io-11-absent" :rbnbnbnbnbn))
 
 # A file this runtime will close does not survive an exec.
 #
@@ -268,7 +268,7 @@
     (def n (scan-number (string/trim (string (:read (p :out) :all)))))
     (os/proc-wait p)
     n)
-  (def held "janet-suite-io-11-cloexec")
+  (def held "wattle-suite-io-11-cloexec")
   (defer (os/rm held)
     (spit held "x")
     (def before (open-fds))
@@ -281,8 +281,8 @@
 # each file it was given, and those are closed before the next count.
 (compwhen (and (dyn 'os/spawn) (dyn 'os/open))
  (when (os/stat "/dev/fd")
-  (def count-path "/tmp/janet-suite-io-fds")
-  (def held-path "/tmp/janet-suite-io-held")
+  (def count-path "/tmp/wattle-suite-io-fds")
+  (def held-path "/tmp/wattle-suite-io-held")
   (defn fds-in-child []
     (with [out (file/open count-path :w)]
       (with [null (file/open "/dev/null" :w)]

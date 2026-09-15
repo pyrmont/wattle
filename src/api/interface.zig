@@ -90,7 +90,7 @@ const repr = @import("repr");
 /// both, and its `config.native_module` arm is the only code here that names
 /// `rt`. Inside the runtime the other arm calls `runtime/signal.zig` and
 /// `runtime/fatal.zig` by import, so this variable exists once per loaded
-/// module and not at all in `libjanet`.
+/// module and not at all in `libwattle`.
 pub var rt: *const Runtime = undefined;
 
 // ==========================================================================

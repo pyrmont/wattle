@@ -3,7 +3,7 @@
 //!
 //! ## Why it has this shape
 //!
-//! A contract that linked `libjanet.a` would have every call resolved by the
+//! A contract that linked `libwattle.a` would have every call resolved by the
 //! linker, which is to say across the C ABI, and Zig will not put an error
 //! union on a C-ABI function. A raise could not reach it as a value at all: it
 //! would arrive as an out-of-band report.
@@ -17,7 +17,7 @@
 //! does not compile.
 //!
 //! The cost is one more compilation of the runtime. The alternative, a
-//! contract module compiled beside `libjanet.a`, gives a *local copy* of the
+//! contract module compiled beside `libwattle.a`, gives a *local copy* of the
 //! subject rather than the one the rest of the binary runs, which a
 //! `comptime`-generic subject can take and a collector or an interpreter
 //! cannot.
@@ -247,7 +247,7 @@ fn report(contract: Contract) void {
     std.debug.print("{s} contract ok\n", .{contract.name});
 }
 
-/// Stop this process at the end of `main` when `JANET_CONTRACT_PAUSE` is set,
+/// Stop this process at the end of `main` when `WATTLE_CONTRACT_PAUSE` is set,
 /// so that `leaks <pid>` can scan a heap that is finished with.
 ///
 /// It is here because `leaks --atExit` cannot measure a contract that forks,
@@ -271,7 +271,7 @@ fn pauseForLeakCheck() void {
     // `leaks` is a macOS tool, and WASI has neither `kill` nor a signal to
     // send.
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
-    if (std.c.getenv("JANET_CONTRACT_PAUSE") == null) return;
+    if (std.c.getenv("WATTLE_CONTRACT_PAUSE") == null) return;
     _ = std.c.kill(std.c.getpid(), std.c.SIG.STOP);
 }
 

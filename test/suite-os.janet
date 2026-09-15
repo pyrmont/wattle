@@ -238,8 +238,8 @@
     (assert (= [0 "false"]
                (child `(prin (= (os/stat "/dev/fd/1" :inode) (os/stat "/dev/fd/2" :inode)))`))
             "a child given a pipe for stdout keeps its own stderr")
-    (def path "/tmp/janet-suite-os-redirect")
-    (def err-path "/tmp/janet-suite-os-redirect-err")
+    (def path "/tmp/wattle-suite-os-redirect")
+    (def err-path "/tmp/wattle-suite-os-redirect-err")
     (spit path "abc")
     (defer (do (os/rm path) (protect (os/rm err-path)))
       (with [f (file/open path :r)]
@@ -290,7 +290,7 @@
   # A refused chroot raises: as a user for the privilege, and as root for the
   # path, which does not exist.
   (assert-error "os/posix-chroot is refused"
-                (os/posix-chroot "/janet-suite-os-absent"))
+                (os/posix-chroot "/wattle-suite-os-absent"))
 
   # A failed exec names the reason the host gave for it.
   (assert (= "/: Permission denied" (in (protect (os/posix-exec ["/"])) 1))
@@ -300,7 +300,7 @@
   # left behind.
   (protect (os/rmdir "/"))
   (assert (string/has-suffix? "No such file or directory"
-                              (in (protect (os/spawn ["/janet-suite-os-absent"])) 1))
+                              (in (protect (os/spawn ["/wattle-suite-os-absent"])) 1))
           "a failed os/spawn names why it failed")
 
   # The client starts under whatever environment it is handed. os/spawn gives

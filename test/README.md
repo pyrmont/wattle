@@ -53,7 +53,7 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
                 --exclude=.git -cf - . |
       tar -C /work -xf -
     cd /work
-    ...then run every /xb/test/janet-*-test and every test/suite-*.janet
+    ...then run every /xb/test/wattle-*-test and every test/suite-*.janet
        with /xb/bin/wattle...'
 
 rm -rf xbuild/arm
@@ -68,7 +68,7 @@ with two substitutions: `-gnu` for `-musl`, and `debian:trixie` for
 
 ```sh
 zig build -Dtarget=aarch64-linux-gnu -Dcpu=baseline \
-          -Dinstall-tests=true -p xbuild/gnu --cache-dir /tmp/janet-xc-gnu
+          -Dinstall-tests=true -p xbuild/gnu --cache-dir /tmp/wattle-xc-gnu
 
 podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
   -v "$PWD":/src:ro -v "$PWD/xbuild/gnu":/xb:ro debian:trixie sh -c '
@@ -82,7 +82,7 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
     done
     for s in test/suite-*.janet; do /xb/bin/wattle $s || echo "FAIL $s"; done'
 
-rm -rf xbuild/gnu /tmp/janet-xc-gnu
+rm -rf xbuild/gnu /tmp/wattle-xc-gnu
 ```
 
 ### Both libcs
@@ -151,8 +151,8 @@ to be:
 
 ```sh
 zig build -Dtarget=riscv32-linux-musl -Dcpu=baseline \
-          --cache-dir /tmp/janet-xc-rv -p /tmp/janet-out-rv
-rm -rf /tmp/janet-xc-rv /tmp/janet-out-rv
+          --cache-dir /tmp/wattle-xc-rv -p /tmp/wattle-out-rv
+rm -rf /tmp/wattle-xc-rv /tmp/wattle-out-rv
 ```
 
 Four targets select the 32-bit NaN-boxed layout and the 32-bit arm of every
@@ -377,7 +377,7 @@ the hazard and a raw `fork` is.
 
 `res/testing/leaks.sh` reaches the same heap by a route with no interposer in
 it: the contract driver stops itself at the end of `main` when
-`JANET_CONTRACT_PAUSE` is set, and the script scans the stopped process with
+`WATTLE_CONTRACT_PAUSE` is set, and the script scans the stopped process with
 `leaks <pid>` and then resumes it. It expects zero everywhere, with no
 exclusions and no exceptions: `gc_sweep`'s eight, `net_sockets`' three and
 `gc_stress`'s deliberate orphan were each a defect and each is fixed, so a

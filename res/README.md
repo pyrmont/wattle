@@ -83,13 +83,12 @@ registration line changes the bytes and not this comparison. `zig build` runs
 
 ## testing
 
-| script         | what it runs                                           |
-| -------------- | ------------------------------------------------------ |
-| `contract.sh`  | one or more contracts, one process each                |
-| `leaks.sh`     | the leak check over every contract, or the named ones  |
-| `matrix.janet` | the acceptance matrix                                  |
-| `mutate.janet` | the mutation sweep                                     |
-| `afl/`         | the AFL fuzzing harness, inherited from upstream Janet |
+| script         | what it runs                                          |
+| -------------- | ----------------------------------------------------- |
+| `contract.sh`  | one or more contracts, one process each               |
+| `leaks.sh`     | the leak check over every contract, or the named ones |
+| `matrix.janet` | the acceptance matrix                                 |
+| `mutate.janet` | the mutation sweep                                    |
 
 `contract.sh` and `leaks.sh` run the driver in `zig-out` and do not build it.
 `leaks.sh` is macOS only; its expectations are in the script, so a difference
@@ -106,20 +105,17 @@ about thirty hours. A bare invocation prints its usage. An interrupted sweep
 leaves its current mutant in the working tree. Read
 [`mutation.md`](testing/mutation.md) first.
 
-The AFL harness is separate from `zig build fuzz`.
-
 ## bench
 
 `layout.sh` runs one binary over a corpus across N stack layouts and reports the
-minimum per workload. `upstream.sh` runs this tree and upstream Janet's C
-through the same layout sweep, both built with Zig's LLVM backend.
+minimum per workload.
 
-The goal is to run within 10% of the C implementation. `upstream.sh` measures
-that goal and `layout.sh` measures a change against the previous binary. A
-change that touches an interpreter or value hot path is measured before it is
-accepted. Read both headers before reading either result: they name the control
-workload, the size a difference needs before it counts, and why the first round
-of a session is discarded.
+The goal is to run within 10% of the C implementation. Running `layout.sh` over
+this tree's binary and over a C Janet binary measures that goal, and running it
+over two builds of this tree measures a change. A change that touches an
+interpreter or value hot path is measured before it is accepted. Read the header
+before reading a result: it names the control workload, the size a difference
+needs before it counts, and why the first round of a session is discarded.
 
 Rewriting a loop on a hot path counts as such a change, even when the rewrite is
 a compile-time no-op. A Zig `for` over a sub-slice with a pointer capture keeps
@@ -135,6 +131,5 @@ upstream.
 
 ## repo
 
-Chores, run occasionally and by hand: `gendoc.janet` builds the HTML
-documentation, `tm_lang_gen.janet` emits the TextMate grammar, `removecr.janet`
-strips carriage returns, and `update_copyright.janet` bumps the years.
+Chores, run occasionally and by hand: `tm_lang_gen.janet` emits the TextMate
+grammar, and `removecr.janet` strips carriage returns.

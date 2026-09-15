@@ -648,9 +648,9 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "Check if any values in xs are not equal. Returns a boolean.");
 
     // Platform detection
-    registry.def(env, "wattle/version", value.fromBytes(version_z, .string), "The version number of the running wattle program.");
-    registry.def(env, "janet/version", value.fromBytes(janet_version_z, .string), "The version number of the running janet program.");
-    registry.def(env, "janet/build", value.fromBytes(build_z, .string), "The build identifier of the running janet program.");
+    registry.def(env, "wattle/version", value.fromBytes(version_z, .string), "The version number of the running Wattle program.");
+    registry.def(env, "janet/version", value.fromBytes(janet_version_z, .string), "The version of Janet the running program implements.");
+    registry.def(env, "janet/build", value.fromBytes(build_z, .string), "The build identifier of the running Wattle program.");
     registry.def(env, "janet/api", value.fromBytes(&api_z, .string), "The fingerprint of the native module interface this program was built " ++
         "with, as sixteen hexadecimal digits. A native module loads only into a " ++
         "program whose janet/api and janet/config-bits are the same as the " ++

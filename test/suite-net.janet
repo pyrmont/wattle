@@ -95,10 +95,10 @@
 
 # A failed connect closes the socket through the stream that owns it, so the
 # descriptor number is not left dead for the next thing that opens one.
-(def probe-path "janet-suite-net-probe")
+(def probe-path "wattle-suite-net-probe")
 (defer (os/rm probe-path)
   (assert-error "connect to a socket that is not there"
-                (net/connect :unix "/tmp/janet-suite-net-no-such-socket"))
+                (net/connect :unix "/tmp/wattle-suite-net-no-such-socket"))
   (with [f (file/open probe-path :w)]
     (file/write f "hello")
     (gccollect)
@@ -164,7 +164,7 @@
   # A fixed name rather than one with the pid in it: `os/getpid` does not
   # exist in a `-Dprocesses=false` build, and a binding that is absent is a
   # compile error rather than a runtime one.
-  (def uds "/tmp/janet-suite-net.sock")
+  (def uds "/tmp/wattle-suite-net.sock")
   (protect (os/rm uds))
   (def uds-server (net/listen :unix uds))
   (assert (= [uds] (net/localname uds-server)) "a unix listener names its path")
@@ -201,7 +201,7 @@
 # Only Linux reads a leading @ as an abstract address. Elsewhere it is a path
 # like any other, and the listener makes a socket file there.
 (compwhen (and (not= :windows (os/which)) (not= :linux (os/which)))
-  (def at-path "@janet-suite-net-at")
+  (def at-path "@wattle-suite-net-at")
   (protect (os/rm at-path))
   (def at-server (protect (net/listen :unix at-path)))
   (assert (first at-server) "a leading @ is bound as a path")
@@ -342,7 +342,7 @@
 # next count.
 (compwhen (and (dyn 'os/spawn) (not= :windows (os/which)))
   (when (os/stat "/dev/fd")
-    (def count-path "/tmp/janet-suite-net-fds")
+    (def count-path "/tmp/wattle-suite-net-fds")
     (defn fds-in-child []
       (with [out (file/open count-path :w)]
         (with [null (file/open "/dev/null" :w)]

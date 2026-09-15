@@ -163,7 +163,7 @@
 # has them.
 (when (and (not is-win) (= :macos (os/which)))
   (defn- nfds [] (length (os/dir "/dev/fd")))
-  (def fd-dir "janet-suite-filewatch-fds")
+  (def fd-dir "wattle-suite-filewatch-fds")
   (os/mkdir fd-dir)
   (defer (rmrf fd-dir)
     (gccollect)
@@ -394,7 +394,7 @@
   (def split-chan (ev/chan 100))
   (def split-watcher (filewatch/new split-chan))
   (def split-path (string td3 "/file-4.txt"))
-  (def bare-path "janet-suite-filewatch-file")
+  (def bare-path "wattle-suite-filewatch-file")
   (defn- event-for [path]
     (ev/with-deadline 1
       (var found nil)

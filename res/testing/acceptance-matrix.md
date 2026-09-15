@@ -76,7 +76,7 @@ to compile on `test/helper.janet`'s first line.
     `/tmp` — Phase 10 Part 12 moved it there — and still cannot be named,
     because two `contracts` entries run concurrently on the same *host* as well
     as in the same directory, and both would build
-    `/tmp/janet-os-surface-contract`. The rule below is about a shared fixture;
+    `/tmp/wattle-os-surface-contract`. The rule below is about a shared fixture;
     the working directory is only where one usually is.
 
 **Since the hinge, `matrix.janet` refuses to start rather than letting you find
@@ -202,7 +202,7 @@ the code.
 So: **read the per-entry times even when every verdict is PASS.** A run whose
 wall time has moved by an order of magnitude has not measured what it usually
 measures, and the next thing to check is the disk -- `df -h`, then
-`du -sh /tmp/janet-*`, then `tmutil listlocalsnapshots /` -- exactly as for a
+`du -sh /tmp/wattle-*`, then `tmutil listlocalsnapshots /` -- exactly as for a
 FLAKY.
 
 **A zero-FLAKY run is not a quiet run, and Part 17f found the gap.** A FLAKY is
@@ -270,7 +270,7 @@ It was not the increment. The volume was at **94% capacity**, with 5.6 GB of
 that day's own throwaway caches still in `/tmp`, and a matrix at `-j2` deposits
 about 100 MB per entry on top.
 
-So when an entry hangs, in order: `df -h`, then `du -sh /tmp/janet-*`, then
+So when an entry hangs, in order: `df -h`, then `du -sh /tmp/wattle-*`, then
 `tmutil listlocalsnapshots /`, and only then the code. The reason this ordering
 is worth writing down is that the code hypothesis is the interesting one and
 therefore the tempting one -- 17e had *already* found a real hang that morning,
@@ -294,7 +294,7 @@ matrix that is working.**
 **Only one entry runs the Janet suites at a time, and that is not an
 optimisation.** The suites share three fixtures with every other concurrent
 run: `suite-ev.janet` binds a fixed port 8761, `suite-net.janet` binds a fixed
-`/tmp/janet-suite-net.sock`, and `suite-ev.janet` and `suite-bundle.janet`
+`/tmp/wattle-suite-net.sock`, and `suite-ev.janet` and `suite-bundle.janet`
 create `unique.txt` and `tempdir123` **in the repository working directory**.
 Two overlapping `full` entries therefore cross-connect. Usually one fails in
 `net/read`; occasionally one parks in `kevent` and never returns, which is the
@@ -340,7 +340,7 @@ harness against itself.** A control workload measures a different code path and
 tells you the floor only by inference; passing the *same binary* as both
 arguments measures the harness, and the answer is the floor directly:
 
-    ./res/bench/value/run.sh ./janet ./janet 5     # should be zeros
+    ./res/bench/value/run.sh ./zig-out/bin/wattle ./zig-out/bin/wattle 5     # should be zeros
 
 On a corpus of 30-60ms workloads that run reported **-5.2% on one workload and
 +3.7% on another, comparing a binary with itself.** Every reading 17b had taken
@@ -416,7 +416,7 @@ deletion that ended it took 44 files and 38,558 lines out of `src/`; the last
 `.c` under `test/` went with the suites a phase later.
 
 The first habit is a *measurement*: when asking what C is left, ask the
-archive rather than the files. `ar x zig-out/lib/libjanet.a` then `nm -gU` on
+archive rather than the files. `ar x zig-out/lib/libwattle.a` then `nm -gU` on
 each member says what actually defines a symbol; a live-line count over the
 sources says something much larger and much less useful, because most of what
 survives a spent guard is *declarations* of Zig-defined symbols. Part 18 opened

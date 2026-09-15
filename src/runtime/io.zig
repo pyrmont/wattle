@@ -495,7 +495,7 @@ pub fn tell(file: ?*FILE) i64 {
 pub fn temp() ?*FILE {
     if (builtin.os.tag == .wasi) {
         const digits = "0123456789abcdefghijklmnopqrstuvwxyz";
-        var name = "janet-tmp-XXXXXXXX".*;
+        var name = "wattle-tmp-XXXXXXXX".*;
         const suffix = name.len - 8;
         var attempt: usize = 0;
         while (attempt < 8) : (attempt += 1) {
@@ -829,7 +829,7 @@ fn cstrequal(key: [*]const u8, len: usize, other: [:0]const u8) bool {
 /// deliberately does not name that type.
 fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []const u8) noreturn {
     const line = std.fmt.comptimePrint(
-        "janet abort at {s}:{d}: {s}\n",
+        "wattle abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
     _ = write(stderrFile(), line.ptr, line.len);

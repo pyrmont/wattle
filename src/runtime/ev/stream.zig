@@ -356,7 +356,7 @@ pub fn makePipe(handles: *[2]host.Handle, mode: c_int) c_int {
             return 0;
         }
         var name_buf: [MAX_PATH]u8 = undefined;
-        const name = std.fmt.bufPrintZ(&name_buf, "\\\\.\\Pipe\\JanetPipeFile.{x:0>8}.{x:0>8}", .{
+        const name = std.fmt.bufPrintZ(&name_buf, "\\\\.\\Pipe\\WattlePipeFile.{x:0>8}.{x:0>8}", .{
             c.GetCurrentProcessId(),
             nextPipeSerial(),
         }) catch return -1;

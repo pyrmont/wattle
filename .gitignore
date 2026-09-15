@@ -1,154 +1,31 @@
-# Target
-dst
-!*/**/dst
-janet
-!*/**/janet
-/build
-/builddir
-/Build
-/Release
-/Debug
-/Emscripten
-/xbuild
-/src/include/generated/*.h
-janet-*.tar.gz
-dist
-/tmp
-
-# jpm lockfile
-lockfile.janet
-
-# Coverage files
-*.cov
-
-# Editors: Eclipse
-.project
-.cproject
-
-# Editors: Gnome Builder
-.buildconfig
-
-# Editors: Kakoune (fzf via fd)
-.fdignore
-
-# Editors: VSCode
-.vs
-.vscode
-.clangd
-.cache
-
-# Emscripten
-*.bc
-janet.js
-janet.wasm
-
-# Generated files
-*.gen.h
-*.gen.c
-*.out
-*.orig
-*.tmp
-temp.*
-
-# Swap files
-*.swp
-
-# Tags
-tags
-
-# Testing files
-local
-scratch.janet
-scratch.c
-temp.janet
-temp.c
-temp*janet
-temp*.c
-
-# Tools
-xxd
-xxd.exe
-
-# Valgrind files
-vgcore.*
-*.out.*
-
-# Bootstrap image (emitted by `zig build image` into the install prefix)
-wattle-image.bin
-
-### C ###
-# Prerequisites
-*.d
-
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
-
-# Linker output
-*.ilk
-*.map
-*.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-### CMake ###
-CMakeCache.txt
-CMakeFiles
-CMakeScripts
-# Anchored: CTest creates `Testing/` at the build root, and an unanchored
-# pattern matches at any depth -- case-insensitively on macOS and Windows,
-# where it silently swallowed every file under `res/testing/`.
-/Testing
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# GGov
-*.gcov
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
 # Zig
 .zig-cache
 zig-out
 
-# Others
+# The cross-build prefix the Linux recipe in test/README.md installs into
+/xbuild
+
+# Bootstrap image (emitted by `zig build image` into the install prefix)
+wattle-image.bin
+
+# Objects, libraries and executables built outside zig-out
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.dSYM/
+
+# Editors and operating systems
+.vscode
+*.swp
 .DS_Store
+
+# Local working directories
+/tmp
 /notes

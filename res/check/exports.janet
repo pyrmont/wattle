@@ -46,8 +46,8 @@
 (import ../common :as tools)
 
 (def list-path "res/check/exports.txt")
-(def cache "/tmp/janet-exports-cache")
-(def prefix "/tmp/janet-exports-out")
+(def cache "/tmp/wattle-exports-cache")
+(def prefix "/tmp/wattle-exports-out")
 
 # The commit `janet.h` and the internal headers are read from.  Phase 12
 # increment 5f deleted them in `d0c1b0e1`; this is its parent.
@@ -111,8 +111,8 @@
   []
   (run (string "zig build -Dinstall-tests=true --cache-dir " cache " -p " prefix))
   (def lib (find |(os/stat $ :mode)
-                 [(string prefix "/lib/libjanet.dylib")
-                  (string prefix "/lib/libjanet.so")]))
+                 [(string prefix "/lib/libwattle.dylib")
+                  (string prefix "/lib/libwattle.so")]))
   (unless lib (tools/die "built no shared library under " prefix "/lib"))
   (def text (run (string "nm -gU " lib
                          " | awk '$2 ~ /^[TDSBR]$/ {print $3}' | sed 's/^_//' | sort -u")

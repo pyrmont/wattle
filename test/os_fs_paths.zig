@@ -61,7 +61,7 @@ const harness = @import("harness.zig");
 /// compilation for something other than a raise. `sys/stat.h` is deliberately
 /// outside the host translations, for which `os/abi.h` records the reason, so
 /// a contract
-/// linking `libjanet.a` would have to translate `struct stat` a second time
+/// linking `libwattle.a` would have to translate `struct stat` a second time
 /// and read `st_ino`, `st_nlink` and `st_mtimespec` out of its own copy.
 /// Inside the
 /// compilation there is no second copy: `host_stat.statRead` is the same

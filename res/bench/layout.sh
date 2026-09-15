@@ -1,10 +1,10 @@
 #!/bin/sh
-# Measure one janet binary over a benchmark corpus across several distinct
+# Measure one binary over a benchmark corpus across several distinct
 # initial stack layouts, reporting the minimum per workload.
 #
 # Development instrument in `res/`.
 #
-#     ./res/bench/layout.sh ./janet res/bench/interpreter/bench.janet 12
+#     ./res/bench/layout.sh ./zig-out/bin/wattle res/bench/interpreter/bench.janet 12
 #
 # ## Why this exists
 #
@@ -25,11 +25,11 @@
 #
 # The cheapest demonstration, if you ever need to convince yourself again:
 #
-#     $ ./janet res/bench/interpreter/bench.janet | grep pegmatch    # zsh
+#     $ ./zig-out/bin/wattle res/bench/interpreter/bench.janet | grep pegmatch    # zsh
 #     pegmatch 0.038912
-#     $ bash -c './janet res/bench/interpreter/bench.janet' | grep pegmatch
+#     $ bash -c './zig-out/bin/wattle res/bench/interpreter/bench.janet' | grep pegmatch
 #     pegmatch 0.057662
-#     $ PAD= bash -c './janet res/bench/interpreter/bench.janet' | grep pegmatch
+#     $ PAD= bash -c './zig-out/bin/wattle res/bench/interpreter/bench.janet' | grep pegmatch
 #     pegmatch 0.039423
 #
 # One empty environment variable, 48%. Nothing about the code changed.
@@ -71,7 +71,7 @@ script=$2
 runs=${3:-12}
 
 if [ -z "$bin" ] || [ -z "$script" ]; then
-    echo "usage: res/bench/layout.sh <janet> <bench.janet> [layouts]" >&2
+    echo "usage: res/bench/layout.sh <binary> <bench.janet> [layouts]" >&2
     exit 2
 fi
 

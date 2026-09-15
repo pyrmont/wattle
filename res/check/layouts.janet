@@ -368,7 +368,7 @@
 # One directory per invocation, so two runs cannot share a scratch tree and a
 # crashed run cannot poison the next one. The live tree is never written.
 (def workdir
-  (string "/tmp/janet-layouts-" (os/getpid) "-" (math/floor (os/clock :monotonic))))
+  (string "/tmp/wattle-layouts-" (os/getpid) "-" (math/floor (os/clock :monotonic))))
 
 (defn verify
   ``Strip `extern` from every layout this file does *not* list as

@@ -9,7 +9,7 @@
 //! target that opened a protected scope, called a published entry point and
 //! closed the scope again would therefore die with
 //!
-//!     janet abort: a raise was reported across the C ABI and never consumed
+//!     wattle abort: a raise was reported across the C ABI and never consumed
 //!
 //! on roughly its first interesting input, naming neither the target nor the
 //! byte string that got there. A fuzzer's inputs are mostly malformed, so that

@@ -1067,7 +1067,7 @@ pub fn libFilewatch(env: *tables.Table) void {
 fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
     if (cond) return;
     const line = std.fmt.comptimePrint(
-        "janet abort at {s}:{d}: {s}\n",
+        "wattle abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());

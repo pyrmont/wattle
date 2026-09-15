@@ -88,7 +88,7 @@ The `web` step builds with a Janet stack ceiling of 1000000 slots, where
 `wattle.wasm` has the default 0x7fffffff. `-Dstack-max` overrides it.
 
 At the default, `(defn f [n] (+ 1 (f (inc n)))) (f 0)` exhausts wasm32's heap
-before reaching the ceiling, prints `janet out of memory` and traps.
+before reaching the ceiling, prints `wattle out of memory` and traps.
 `wattle.wasm` under wasmtime does the same. A trap leaves the instance
 unusable, so every definition made in the page would be lost. At 1000000
 slots the same call raises `error: stack overflow`, and the instance keeps its

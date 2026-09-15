@@ -299,7 +299,7 @@ pub fn signalRecord(sig: abi.Signal, message: repr.Value) void {
     // would overwrite the `pending_signal` and the return register the first
     // one is in the middle of committing. So a raise here aborts at the site.
     if (plan == .top_level) {
-        const str = raise.total(pp_format.formatc("janet top level signal - %v\n", .{message}), "a top-level signal's message");
+        const str = raise.total(pp_format.formatc("wattle top level signal - %v\n", .{message}), "a top-level signal's message");
         topLevelSignal(@ptrCast(str));
     }
     var payload = message;

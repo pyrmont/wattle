@@ -718,7 +718,7 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/exit", &cfunExit, @src(), "(os/exit &opt x force)", "Exit from janet with an exit code equal to x. If x is not an integer, " ++
+            corefn.reg("os/exit", &cfunExit, @src(), "(os/exit &opt x force)", "Exit from Wattle with an exit code equal to x. If x is not an integer, " ++
                 "exits with status 1. If `force` is truthy will exit immediately and " ++
                 "skip cleanup code."),
             corefn.reg("os/which", &cfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
@@ -728,7 +728,7 @@ fn selfEntries() []const corefn.Entry {
                 "* :dragonfly\n\n* :bsd\n\n" ++
                 "* :posix - A POSIX compatible system (default)\n\n" ++
                 "May also return a custom keyword specified at build time. Is `test` is truthy, will check if the current operating system equals `test` and return true if they are the same, false otherwise."),
-            corefn.reg("os/arch", &cfunArch, @src(), "(os/arch)", "Check the ISA that janet was compiled for. Returns one of:\n\n" ++
+            corefn.reg("os/arch", &cfunArch, @src(), "(os/arch)", "Check the ISA that Wattle was compiled for. Returns one of:\n\n" ++
                 "* :x86\n\n* :x64\n\n* :arm\n\n* :aarch64\n\n* :riscv32\n\n* :riscv64\n\n" ++
                 "* :sparc\n\n* :wasm\n\n* :s390\n\n* :s390x\n\n* :unknown\n"),
             corefn.reg("os/compiler", &cfunCompiler, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns :zig."),

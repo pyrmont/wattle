@@ -10,7 +10,7 @@ set of totals, which is the batch Phase 20 Part 2 runs:
 
 ```sh
 unsetopt BG_NICE
-nohup ./res/testing/mutate.janet --src A --src B --no-strings --log /tmp/janet-mutate-2a.log &
+nohup ./res/testing/mutate.janet --src A --src B --no-strings --log /tmp/wattle-mutate-2a.log &
 ```
 
 **`unsetopt BG_NICE` is not optional under zsh.** The option is on by default
@@ -152,9 +152,9 @@ minutes:
 
 ```sh
 for t in x86_64-linux-musl aarch64-linux-musl riscv32-linux-musl x86_64-windows-gnu; do
-    zig build -Dtarget=$t --cache-dir /tmp/janet-xc -p /tmp/janet-out || echo "FAILED $t"
+    zig build -Dtarget=$t --cache-dir /tmp/wattle-xc -p /tmp/wattle-out || echo "FAILED $t"
 done
-rm -rf /tmp/janet-xc /tmp/janet-out
+rm -rf /tmp/wattle-xc /tmp/wattle-out
 ```
 
 A portability fault does not fail a mutant, it fails *every* build the sweep

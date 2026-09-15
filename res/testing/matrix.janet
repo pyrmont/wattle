@@ -222,7 +222,7 @@
 #
 # Phase 10 Part 16 traced a wedged matrix to this and found three shared
 # fixtures, not one: `suite-ev.janet` binds a fixed port 8761,
-# `suite-net.janet` binds a fixed `/tmp/janet-suite-net.sock`, and
+# `suite-net.janet` binds a fixed `/tmp/wattle-suite-net.sock`, and
 # `suite-ev.janet` and `suite-bundle.janet` create `unique.txt` and
 # `tempdir123` **in the repository working directory**, which every concurrent
 # entry shares. Two overlapping `full` entries therefore cross-connect: usually
@@ -355,8 +355,8 @@
   (if (> (length joined) 1500) (string/slice joined 0 1500) joined))
 
 (defn- run-job [j slot contracts]
-  (def cache (string "/tmp/janet-mx-" slot))
-  (def prefix (string "/tmp/janet-mx-out-" slot))
+  (def cache (string "/tmp/wattle-mx-" slot))
+  (def prefix (string "/tmp/wattle-mx-out-" slot))
   (each p [cache prefix] (tools/rm-rf p))
   (def started (os/clock))
   (defn secs [] (- (os/clock) started))
@@ -605,7 +605,7 @@
 (defn main [& argv]
   (os/cd tools/root)
   (def workers (math/trunc (or (scan-number (or (option argv "-j") "2")) 2)))
-  (def log-path (or (option argv "--log") "/tmp/janet-matrix.log"))
+  (def log-path (or (option argv "--log") "/tmp/wattle-matrix.log"))
   (def only (option argv "--only"))
   (def contracts (filter |(not (empty? $))
                          (string/split "," (or (option argv "--contracts")

@@ -161,9 +161,9 @@ const reduced_os = config.reduced_os;
 /// a mode-0000 file needs an `os/chmod` that does something, and on WASI it
 /// does not.
 const scratch = if (builtin.os.tag == .wasi)
-    "janet-os-surface-contract"
+    "wattle-os-surface-contract"
 else
-    "/tmp/janet-os-surface-contract";
+    "/tmp/wattle-os-surface-contract";
 
 const windows = builtin.os.tag == .windows;
 
@@ -459,19 +459,19 @@ fn theClock() void {
 fn theEnvironment() void {
     const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
-        \\(os/setenv "JANET_OS_SURFACE_A" "x=y=z")
-        \\(assert (= "x=y=z" (os/getenv "JANET_OS_SURFACE_A")))
-        \\(assert (= "x=y=z" (get (os/environ) "JANET_OS_SURFACE_A")))
-        \\(os/setenv "JANET_OS_SURFACE_A" "")
-        \\(assert (= "" (os/getenv "JANET_OS_SURFACE_A")))
-        \\(assert (= "" (get (os/environ) "JANET_OS_SURFACE_A")))
-        \\(os/setenv "JANET_OS_SURFACE_A")
-        \\(assert (nil? (os/getenv "JANET_OS_SURFACE_A")))
-        \\(assert (nil? (get (os/environ) "JANET_OS_SURFACE_A")))
-        \\(assert (= :d (os/getenv "JANET_OS_SURFACE_A" :d)))
-        \\(os/setenv "JANET_OS_SURFACE_A" "")
-        \\(assert (= "" (os/getenv "JANET_OS_SURFACE_A" :d)))
-        \\(os/setenv "JANET_OS_SURFACE_A")
+        \\(os/setenv "WATTLE_OS_SURFACE_A" "x=y=z")
+        \\(assert (= "x=y=z" (os/getenv "WATTLE_OS_SURFACE_A")))
+        \\(assert (= "x=y=z" (get (os/environ) "WATTLE_OS_SURFACE_A")))
+        \\(os/setenv "WATTLE_OS_SURFACE_A" "")
+        \\(assert (= "" (os/getenv "WATTLE_OS_SURFACE_A")))
+        \\(assert (= "" (get (os/environ) "WATTLE_OS_SURFACE_A")))
+        \\(os/setenv "WATTLE_OS_SURFACE_A")
+        \\(assert (nil? (os/getenv "WATTLE_OS_SURFACE_A")))
+        \\(assert (nil? (get (os/environ) "WATTLE_OS_SURFACE_A")))
+        \\(assert (= :d (os/getenv "WATTLE_OS_SURFACE_A" :d)))
+        \\(os/setenv "WATTLE_OS_SURFACE_A" "")
+        \\(assert (= "" (os/getenv "WATTLE_OS_SURFACE_A" :d)))
+        \\(os/setenv "WATTLE_OS_SURFACE_A")
     );
 }
 
@@ -765,7 +765,7 @@ fn thePipe() void {
 // only be asked of a child process running a Janet snippet, and this contract
 // has no interpreter to spawn: `(dyn :executable)` is the CLI's binding and
 // `core_env.coreEnv` does not set it, so a contract inside the runtime cannot
-// name a janet binary.
+// name a `wattle` binary.
 
 /// Which callbacks the type supplies is a fact about the type. A process is
 /// not marshallable, has no string rendering, and does not compare or hash,

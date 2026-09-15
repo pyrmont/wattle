@@ -9,7 +9,7 @@
 //!
 //! `runRaising` builds the environment as `cli.zig` does and calls
 //! `run-image` on a fiber with the image, the argument vector and one loader
-//! cfunction per native. The program runs as `janet -i` runs an image file,
+//! cfunction per native. The program runs as `wattle -i` runs an image file,
 //! with the program name in place of the image path, and the exit status is
 //! the event loop's.
 //!
@@ -50,7 +50,7 @@ const wrap = subsystems.value.wrap;
 // Constants
 // ==========================================================================
 
-/// The image of the program, as `janet -c` wrote it.
+/// The image of the program, as `wattle -c` wrote it.
 const image = @embedFile("quickbin_image");
 
 // ==========================================================================

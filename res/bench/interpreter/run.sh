@@ -1,10 +1,10 @@
 #!/bin/sh
-# Interleave two janet binaries over the benchmark corpus and report the
+# Interleave two binaries over the benchmark corpus and report the
 # minimum each reaches per workload, with the second as a percentage of the
 # first. Interleaved so thermal drift lands on both; minimum because the noise
 # is one-sided.
 #
-#   probe-9/bench/run.sh <baseline-janet> <candidate-janet> [rounds]
+#   res/bench/interpreter/run.sh <baseline> <candidate> [rounds]
 set -e
 base=$1
 cand=$2

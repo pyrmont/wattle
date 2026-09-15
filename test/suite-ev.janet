@@ -1072,7 +1072,7 @@
 # permissions it asserts and the descriptor it duplicates are reached through
 # this binding and through nothing else.
 (do
-  (def path "janet-suite-tofile.txt")
+  (def path "wattle-suite-tofile.txt")
   (spit path "hello\n")
 
   (def rs (os/open path :r))
@@ -1213,8 +1213,8 @@
 # ev/thread's value is the second argument, and only a call with exactly two
 # arguments puts it there.
 (do
-  (def path "janet-suite-thread-arg.txt")
-  (ev/thread (fn [x] (spit "janet-suite-thread-arg.txt" (string/format "%j" x)))
+  (def path "wattle-suite-thread-arg.txt")
+  (ev/thread (fn [x] (spit "wattle-suite-thread-arg.txt" (string/format "%j" x)))
              :the-value)
   (assert (= ":the-value" (string (slurp path))) "ev/thread passes its second argument")
   (os/rm path))

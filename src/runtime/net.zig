@@ -265,7 +265,7 @@ pub fn addressFamily(x: repr.Value) c_int {
 pub fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
     if (cond) return;
     const line = std.fmt.comptimePrint(
-        "janet abort at {s}:{d}: {s}\n",
+        "wattle abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
@@ -479,7 +479,7 @@ pub fn netInit() void {
 /// caller's `@src()`.
 pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
     const line = std.fmt.comptimePrint(
-        "{s}:{d} - janet out of memory\n",
+        "{s}:{d} - wattle out of memory\n",
         .{ where.file, where.line },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());

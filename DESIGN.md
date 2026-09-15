@@ -49,14 +49,17 @@ so the two names mark different things:
   `libwattle`, the module an author imports (`@import("wattle")`), the
   loader's `_wattle_init` and `_wattle_mod_config` symbols, the `WATTLE_PATH`
   and `WATTLE_PROFILE` environment variables, the `/usr/local/lib/wattle`
-  syspath, the REPL banner, the `wattle/version` binding, and internal names
-  that identify this implementation (`wattle_fatal`, `WATTLE_*` host macros,
-  build artifacts).
+  syspath, the REPL banner, the `wattle/version` binding, docstrings and
+  messages that name the running program (`wattle out of memory`,
+  `wattle abort: …`, `os/exit`'s "Exit from Wattle"), and internal names that
+  identify this implementation (`wattle_fatal`, `WATTLE_*` host macros, build
+  artifacts, Windows' `WattlePipeFile` pipes).
 - **Janet** names the language: `.janet` files, the `janet/` bindings
   (`janet/version`, `janet/build`, `janet/api`, `janet/config-bits`),
-  docstrings and messages kept from the C implementation, and internal names
-  about Janet values or mirroring `janet.h` (`JanetSignal`,
-  `JANET_STREAM_*`).
+  docstrings and messages kept from the C implementation that are about the
+  language or code written in it ("janet values", "a thread that is not
+  running Janet"), and internal names about Janet values or mirroring
+  `janet.h` (`JanetSignal`, `JANET_STREAM_*`).
 
 Wattle has its own version, starting at 0.1.0. It is the package's and the
 libraries' version, the version a module reports to the loader, and what
@@ -64,9 +67,10 @@ libraries' version, the version a module reports to the loader, and what
 version of Janet this runtime matches, currently 1.41.3, and `janet/build` is
 `zig`. Both numbers are declared once, at the top of `build.zig`.
 
-The environment variables, syspath, banner and versions are the places where a
-Janet program can observe the difference: the strings are part of the core
-image, so the image differs from the C implementation's in those bytes.
+The environment variables, syspath, banner, versions, and those docstrings and
+messages are the places where a Janet program can observe the difference. The
+bindings, the docstrings and the command-line client's strings are part of the
+core image, so the image differs from the C implementation's in those bytes.
 
 The numbered sections fall into three groups. Sections 1 to 6 are about the
 implementation of Janet 'values'. Sections 7 to 9 are about types and errors.

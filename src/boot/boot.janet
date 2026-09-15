@@ -4793,7 +4793,7 @@
 (defn run-image
   ```
   Load `image`, the bytes of an image made by `make-image`, and call the
-  `main` it defines with the elements of `args`, as `janet -i` does for an
+  `main` it defines with the elements of `args`, as `wattle -i` does for an
   image file. `args` is also put in the image's environment as `*args*`.
   `natives`, when given, maps module names to functions of no arguments that
   each return a native module's environment. Each is passed to
@@ -4849,7 +4849,7 @@
   (file/read stdin :line buf))
 
 (defn cli-main
-  `Entrance for the Janet CLI tool. Call this function with the command line
+  `Entrance for the Wattle CLI tool. Call this function with the command line
   arguments as an array or tuple of strings to invoke the CLI interface.`
   [args]
 

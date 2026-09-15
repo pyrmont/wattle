@@ -5,7 +5,7 @@
 # caller gets a determinate blank value, and whoever opens the next protected
 # scope aborts with
 #
-#     janet abort: a raise was reported across the C ABI and never consumed
+#     wattle abort: a raise was reported across the C ABI and never consumed
 #
 # That is correct when the caller really is C, and a defect when the caller is a
 # Zig function that could have propagated the error itself.  The message names

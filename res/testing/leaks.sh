@@ -31,7 +31,7 @@
 # contracts are not the hazard and a raw `fork` is.
 #
 # So this reaches the same heap by a route with no interposer in it. The driver
-# stops *itself* at the end of `main` when `JANET_CONTRACT_PAUSE` is set, this
+# stops *itself* at the end of `main` when `WATTLE_CONTRACT_PAUSE` is set, this
 # script scans the stopped process with `leaks <pid>`, and then resumes it.
 # A forked child exits normally, because nothing has been inserted into it.
 #
@@ -86,8 +86,8 @@ for name in $names; do
         exit 2
     fi
 
-    log=$(mktemp -t janet-leaks)
-    JANET_CONTRACT_PAUSE=1 MallocStackLogging=lite "$driver" "$name" >"$log" 2>&1 &
+    log=$(mktemp -t wattle-leaks)
+    WATTLE_CONTRACT_PAUSE=1 MallocStackLogging=lite "$driver" "$name" >"$log" 2>&1 &
     pid=$!
 
     # Wait for the driver to stop itself. `ps -o stat=` reports `T` for a

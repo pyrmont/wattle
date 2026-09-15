@@ -25,9 +25,9 @@ const stdio = @import("stdio.zig");
 /// Reports an invariant this runtime has no way to continue past, and
 /// aborts.
 ///
-/// `message` is written after `janet abort: `. This function does not return.
+/// `message` is written after `wattle abort: `. This function does not return.
 pub fn fatal(message: [*:0]const u8) noreturn {
-    write("janet abort: ");
+    write("wattle abort: ");
     write(std.mem.span(message));
     write("\n");
     c.abort();
@@ -39,7 +39,7 @@ pub fn fatal(message: [*:0]const u8) noreturn {
 /// return, and does not get a chance to unwind either. This function does not
 /// return.
 pub fn outOfMemory() noreturn {
-    write("janet out of memory\n");
+    write("wattle out of memory\n");
     c.abort();
 }
 

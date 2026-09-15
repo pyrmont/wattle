@@ -15,8 +15,6 @@ has the test strategy and what a change must pass before it is accepted.
 implementation to select and no Janet C to call. Any C that a Zig file reaches
 is libc's, through one of seven `@cImport` blocks. "No C in the tree" and "no
 libc" are different claims, and only the first is a goal.
-`res/bench/upstream.sh` builds upstream `master` in a worktree with a matching
-toolchain, for comparison against Janet's C runtime.
 
 The rules that apply across the tree, each covered in its own section below:
 

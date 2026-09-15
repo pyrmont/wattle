@@ -107,7 +107,7 @@ const filewatch_bindings = [_][*:0]const u8{
     "filewatch/listen", "filewatch/unlisten",
 };
 
-const probe_dir = "/tmp/janet-filewatch-contract";
+const probe_dir = "/tmp/wattle-filewatch-contract";
 var raises_seen: u32 = 0;
 const windows = builtin.os.tag == .windows;
 
@@ -466,7 +466,7 @@ fn theLifecycle(chan: repr.Value) void {
 /// separator. See the header on why this runs the loop.
 fn theEventNamesAWatchedDirectory() void {
     harness.inFiber(harness.coreEnv(),
-        \\(def dir "/tmp/janet-filewatch-contract-events")
+        \\(def dir "/tmp/wattle-filewatch-contract-events")
         \\(def file (string dir "/f"))
         \\(def other (string dir "/g"))
         \\(os/mkdir dir)
