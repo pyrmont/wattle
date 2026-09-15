@@ -1,4 +1,4 @@
-// The WASI imports `janet-web.wasm` needs, and the calls a host makes to run
+// The WASI imports `wattle-web.wasm` needs, and the calls a host makes to run
 // Janet source in it.
 //
 // A browser has no WASI, so the page supplies `wasi_snapshot_preview1` as a
@@ -244,7 +244,7 @@ export function createWasi() {
   };
 }
 
-// Instantiates `module`, a compiled `janet-web.wasm`, and starts the runtime.
+// Instantiates `module`, a compiled `wattle-web.wasm`, and starts the runtime.
 //
 // Returns an object whose `eval(source)` runs one submission and returns
 // `{ status, stdout, stderr, error }`: `status` is 0, or 1 when the

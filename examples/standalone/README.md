@@ -11,8 +11,8 @@ available. So they prove the source experience and do not fail when the
 published build surface stops working.
 
 This package does fail. It is a package of its own with its own `build.zig.zon`,
-it depends on `janet` by path, and it reaches the runtime only through the two
-public functions `janet.janetModule` and `janet.quickbin`. Nothing private is
+it depends on `wattle` by path, and it reaches the runtime only through the two
+public functions `wattle.wattleModule` and `wattle.quickbin`. Nothing private is
 available to it.
 
     zig build examples/standalone      # from the repository root
@@ -36,7 +36,7 @@ requirement, because the module and the runtime inside it are one build.
 
 ## The executable's two dependencies
 
-`build.zig` instantiates the `janet` dependency twice. The first is built for
+`build.zig` instantiates the `wattle` dependency twice. The first is built for
 the target and is what `hello` links. The second is built for the machine
 running the build, and its client is what makes the image of `main.janet`. An
 image is architecture-neutral, so it is made once on the build machine and

@@ -78,9 +78,9 @@ const expected_fields = [_][]const u8{
     "changed",
 };
 
-const work_dir = "janet-zig-os-stat-4d71";
-const work_file = "janet-zig-os-stat-4d71/file";
-const work_link = "janet-zig-os-stat-4d71/link";
+const work_dir = "wattle-os-stat-4d71";
+const work_file = "wattle-os-stat-4d71/file";
+const work_link = "wattle-os-stat-4d71/link";
 
 // ==========================================================================
 // Cases
@@ -188,16 +188,16 @@ fn theFieldRegistry() void {
 /// table*, which Janet states in a line and Zig states in five unwraps.
 fn theCoreFunctions() void {
     eval(
-        \\(os/mkdir "janet-zig-os-stat-4d71")
-        \\(spit "janet-zig-os-stat-4d71/file" "0123456789")
-        \\(os/chmod "janet-zig-os-stat-4d71/file" 8r640)
+        \\(os/mkdir "wattle-os-stat-4d71")
+        \\(spit "wattle-os-stat-4d71/file" "0123456789")
+        \\(os/chmod "wattle-os-stat-4d71/file" 8r640)
     );
 
     // A whole-table result has every registry field in it, under the
     // registry's own names, which is the Janet-visible half of
     // `theFieldRegistry`.
     eval(
-        \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
+        \\(def st (os/stat "wattle-os-stat-4d71/file"))
         \\(assert (table? st))
         \\(assert (= 15 (length st)))
         \\(each key [:dev :inode :mode :int-permissions :permissions :uid :gid
@@ -206,15 +206,15 @@ fn theCoreFunctions() void {
     );
 
     eval(
-        \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
+        \\(def st (os/stat "wattle-os-stat-4d71/file"))
         \\(assert (= :file (st :mode)))
         \\(assert (= 10 (st :size)))
-        \\(assert (= :directory (get (os/stat "janet-zig-os-stat-4d71") :mode)))
+        \\(assert (= :directory (get (os/stat "wattle-os-stat-4d71") :mode)))
     );
 
     // Unix only: the CRT has three permission bits rather than nine.
     if (builtin.os.tag != .windows and builtin.os.tag != .wasi) eval(
-        \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
+        \\(def st (os/stat "wattle-os-stat-4d71/file"))
         \\(assert (= 8r640 (st :int-permissions)))
         \\(assert (= "rw-r-----" (st :permissions)))
     );
@@ -223,7 +223,7 @@ fn theCoreFunctions() void {
     // file description `wasi_snapshot_preview1` reports carries none, so every
     // bit reads as clear.
     if (builtin.os.tag == .wasi) eval(
-        \\(def st (os/stat "janet-zig-os-stat-4d71/file"))
+        \\(def st (os/stat "wattle-os-stat-4d71/file"))
         \\(assert (= 0 (st :int-permissions)))
         \\(assert (= "---------" (st :permissions)))
     );
@@ -231,33 +231,33 @@ fn theCoreFunctions() void {
     // A keyword selects one field rather than building the table, the first
     // field in the registry among them.
     eval(
-        \\(assert (= ((os/stat "janet-zig-os-stat-4d71/file") :dev)
-        \\           (os/stat "janet-zig-os-stat-4d71/file" :dev)))
-        \\(assert (= :file (os/stat "janet-zig-os-stat-4d71/file" :mode)))
-        \\(assert (= 10 (os/stat "janet-zig-os-stat-4d71/file" :size)))
-        \\(assert (= :directory (os/stat "janet-zig-os-stat-4d71" :mode)))
+        \\(assert (= ((os/stat "wattle-os-stat-4d71/file") :dev)
+        \\           (os/stat "wattle-os-stat-4d71/file" :dev)))
+        \\(assert (= :file (os/stat "wattle-os-stat-4d71/file" :mode)))
+        \\(assert (= 10 (os/stat "wattle-os-stat-4d71/file" :size)))
+        \\(assert (= :directory (os/stat "wattle-os-stat-4d71" :mode)))
     );
 
     // A supplied table is filled and returned: the same table, with its
     // existing entry intact, so the length is sixteen.
     eval(
         \\(def tab @{:seed true})
-        \\(assert (= tab (os/stat "janet-zig-os-stat-4d71/file" tab)))
+        \\(assert (= tab (os/stat "wattle-os-stat-4d71/file" tab)))
         \\(assert (= 16 (length tab)))
         \\(assert (= :file (tab :mode)))
     );
 
     // A missing path is nil rather than an error, which distinguishes "no such
     // file" from "the call failed".
-    eval("(assert (nil? (os/stat \"janet-zig-os-stat-4d71/missing\")))");
+    eval("(assert (nil? (os/stat \"wattle-os-stat-4d71/missing\")))");
 
     if (config.symlinks) {
         // `os/lstat` reports the link, `os/stat` its target.
         eval(
-            \\(os/symlink "file" "janet-zig-os-stat-4d71/link")
-            \\(assert (= :link (os/lstat "janet-zig-os-stat-4d71/link" :mode)))
-            \\(assert (= :file (os/stat "janet-zig-os-stat-4d71/link" :mode)))
-            \\(assert (= 10 (os/stat "janet-zig-os-stat-4d71/link" :size)))
+            \\(os/symlink "file" "wattle-os-stat-4d71/link")
+            \\(assert (= :link (os/lstat "wattle-os-stat-4d71/link" :mode)))
+            \\(assert (= :file (os/stat "wattle-os-stat-4d71/link" :mode)))
+            \\(assert (= 10 (os/stat "wattle-os-stat-4d71/link" :size)))
         );
     }
 }

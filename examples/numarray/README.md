@@ -3,7 +3,7 @@
 A native Janet module written in Zig, and the worked example of `DESIGN.md`
 sections 5 and 6.
 
-`numarray.zig` is the whole module. It imports `janet` and nothing else, and its
+`numarray.zig` is the whole module. It imports `wattle` and nothing else, and its
 header comment says what the interface takes away from the C original it
 replaces: the unchecked `(num_array *)p` cast at the top of every callback, and
 the `JANET_ATEND_*` macro chain.
@@ -18,22 +18,22 @@ what makes "a sample module compiles and loads" a check rather than a claim.
 This module is compiled by the runtime's own `build()`, with the private module
 graph available to it. That proves the source experience: one import, and the
 module never names `types`, `raise` or `constants`. It does not prove that an
-outside package can obtain the `janet` module at all.
+outside package can obtain the `wattle` module at all.
 
 `examples/standalone` is that proof, and `zig build examples/standalone` runs it. A
 consumer's `build.zig.zon` names this package as a dependency and its
 `build.zig` asks for one module:
 
 ```zig
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 const mod = b.createModule(.{
     .root_source_file = b.path("mymodule.zig"),
     .target = target,
     .optimize = optimize,
 });
-mod.addImport("janet", janet.janetModule(
-    b.dependency("janet", .{ .target = target, .optimize = optimize }),
+mod.addImport("wattle", wattle.wattleModule(
+    b.dependency("wattle", .{ .target = target, .optimize = optimize }),
     target,
     optimize,
 ));
@@ -57,7 +57,7 @@ Three things must match, and the loader checks all three.
     wrong values rather than a link error. Pass the same feature options to
     the dependency that the runtime was built with.
     `janet/config-bits` is the runtime's own set.
-  - The Zig version. `janet` is a source dependency rather than an ABI. Zig
+  - The Zig version. `wattle` is a source dependency rather than an ABI. Zig
     makes no promise across versions, so a module and the runtime it loads
     into are built with the same Zig version. `build.zig.zon` records the
     minimum. The whole version string is compared, so a release and a
@@ -67,9 +67,9 @@ Three things must match, and the loader checks all three.
     by pointer, the two enums and the callback signatures.
     `janet/api` is the runtime's own.
 
-The `_janet_mod_config` symbol the module exports reports all three, and the
+The `_wattle_mod_config` symbol the module exports reports all three, and the
 loader compares them in the order above. The first difference is a refusal
-naming the field, and the module does not load. Janet's version is reported in
+naming the field, and the module does not load. Wattle's version is reported in
 that message and is not compared, so a module built against one release loads
 into another whose interface is the same.
 

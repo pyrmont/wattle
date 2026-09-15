@@ -16,7 +16,7 @@
 //! is most of them.
 //!
 //! So each target reaches the *raising* function by import and reads the
-//! refusal as a value, which is the rule `tools/check/swallowed.janet`
+//! refusal as a value, which is the rule `res/check/swallowed.janet`
 //! applies to every caller under `src/`:
 //!
 //! | target | what this calls |

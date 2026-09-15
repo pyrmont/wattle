@@ -39,6 +39,35 @@ interface: `janet.h`. It is a non-goal to support code that relies on the C
 ABI, including native modules written in C. The Zig implementation supports
 native modules written in Zig.
 
+### Naming
+
+The implementation is called Wattle, and Janet is the name of a language it
+runs. `.wattle` source is to be a second language on the same virtual machine,
+so the two names mark different things:
+
+- **Wattle** names the product: the package, the `wattle` executable,
+  `libwattle`, the module an author imports (`@import("wattle")`), the
+  loader's `_wattle_init` and `_wattle_mod_config` symbols, the `WATTLE_PATH`
+  and `WATTLE_PROFILE` environment variables, the `/usr/local/lib/wattle`
+  syspath, the REPL banner, the `wattle/version` binding, and internal names
+  that identify this implementation (`wattle_fatal`, `WATTLE_*` host macros,
+  build artifacts).
+- **Janet** names the language: `.janet` files, the `janet/` bindings
+  (`janet/version`, `janet/build`, `janet/api`, `janet/config-bits`),
+  docstrings and messages kept from the C implementation, and internal names
+  about Janet values or mirroring `janet.h` (`JanetSignal`,
+  `JANET_STREAM_*`).
+
+Wattle has its own version, starting at 0.1.0. It is the package's and the
+libraries' version, the version a module reports to the loader, and what
+`wattle/version`, `wattle -v` and the REPL banner show. `janet/version` is the
+version of Janet this runtime matches, currently 1.41.3, and `janet/build` is
+`zig`. Both numbers are declared once, at the top of `build.zig`.
+
+The environment variables, syspath, banner and versions are the places where a
+Janet program can observe the difference: the strings are part of the core
+image, so the image differs from the C implementation's in those bytes.
+
 The numbered sections fall into three groups. Sections 1 to 6 are about the
 implementation of Janet 'values'. Sections 7 to 9 are about types and errors.
 Sections 10 to 15 are about what a native module sees.
@@ -53,7 +82,7 @@ than as the default representation.
 
 The representation is called `Value`. The C runtime's convention names the type
 after the language, `Janet`. This reads acceptably in C but poorly in Zig, where
-the type is reached through its module (conventionally called `janet`).
+the type is reached through its module (conventionally called `wattle`).
 
 The representation is in a module named `repr`, so the type is `repr.Value`.
 
@@ -125,7 +154,7 @@ pointer; under nanbox-32 it is an `extern union` of `Nanbox32Tagged`, `f64` and
 value inside other `extern` layouts, `KV` and `Fiber` among them. In a third
 place the layout matters and the compiler does not check it: code reads the
 eight bytes directly, through `@sizeOf` and `std.mem.zeroes`. The inventory of
-the layouts fixed this way is `tools/check/layouts.txt`, and it records all
+the layouts fixed this way is `res/check/layouts.txt`, and it records all
 three against `Value` as `abi,field,repr`.
 
 The alternative worth naming is a `packed struct`. Section 1's bit budget reads
@@ -314,13 +343,13 @@ start a dispatch.
 The string, tuple and struct heads of section 3 are internal: nothing outside
 the runtime depends on their layout, and neither do the `Table`, `Array` and
 `Buffer` structs. A native module reads these values through three functions in
-`module.zig`. `janet.bytesView` returns a slice of a string's, symbol's,
-keyword's, buffer's or byte-like abstract's bytes, `janet.indexedView` a slice
-of an array's or tuple's elements, and `janet.dictionaryView` an iterator over a
+`module.zig`. `wattle.bytesView` returns a slice of a string's, symbol's,
+keyword's, buffer's or byte-like abstract's bytes, `wattle.indexedView` a slice
+of an array's or tuple's elements, and `wattle.dictionaryView` an iterator over a
 table's or struct's buckets. Each is one call through the module table and each
 uses the value's own storage rather than a copy.
 
-The abstract head is the exception. `janet.toAbstract` is compiled into a
+The abstract head is the exception. `wattle.toAbstract` is compiled into a
 module that defines an abstract type, and the function must read the head's
 `type` field to check that a particular value is an abstract of that type. So
 `AbstractHead` is declared in `abi.zig`, which the runtime and every module
@@ -361,7 +390,7 @@ target in scope needs that fallback: x86-64 and arm64 macOS keep user-space
 addresses within 47 bits, arm64 Linux gains two bits from a default pointer
 shift of 2, and a 32-bit target uses nanbox-32.
 
-It is kept for testing. `tools/testing/matrix.janet` runs the contracts under it
+It is kept for testing. `res/testing/matrix.janet` runs the contracts under it
 as well as under nanbox-64. The two layouts store a value differently but must
 behave the same, so a contract that passes under nanbox-64 and fails under
 tagged points at code that reads a value's bits directly instead of going
@@ -371,7 +400,7 @@ through the accessors.
 
 The nanbox-32 layout is what a 32-bit target gets: `build.zig` selects it
 whenever `-Dnanbox` is on and the target's pointers are 32 bits wide.
-`wasm32-wasi` is such a target: `tools/testing/matrix.janet` runs the suites
+`wasm32-wasi` is such a target: `res/testing/matrix.janet` runs the suites
 and contracts on it under wasmtime. The other supported platforms are macOS and
 Linux on 64-bit, with Windows build-only. Keeping that arm has a cost: it is a
 third comptime arm that every change to the value representation must be
@@ -704,7 +733,7 @@ wrapped in `raise.total`, which aborts if the call raised.
 
 A native module calls the runtime through the module table, a table of function
 pointers (`api/interface.zig`'s `Runtime`) that the runtime passes to the
-module's `_janet_init`. Each field of that table is a _crossing_: one runtime
+module's `_wattle_init`. Each field of that table is a _crossing_: one runtime
 function a module may call. Because a module and the runtime are compiled
 separately, every crossing uses the C calling convention (which is documented
 rather than tied to a Zig version, see section 10). Zig gives an error union no
@@ -777,7 +806,7 @@ if (s < 0) s = 0;
 there is no negative case. A raw number enters in two places, and both convert
 it with `fromWire` before it becomes an `abi.Signal`: `runVm`'s arm for the
 signal instruction, which first maps a negative field to 0, and `capi.zig`'s
-`janet_zig_signal_record`, which implements a module's `signal_record`
+`wattle_signal_record`, which implements a module's `signal_record`
 crossing. `signalInject` takes an `abi.Signal`, so the read-back
 in `vm.zig` is in range because only a member can reach those bits.
 
@@ -805,13 +834,13 @@ written in Janet should work the same way with the same error messages, signal
 kinds, traces, marshalled bytes, bytecode and the core image. It does not
 preserve an identical C symbol table.
 
-The runtime exports no symbols. A module exports two (`_janet_mod_config` and
-`_janet_init`) but the author is not expected to write either directly. Rather,
-the module author uses `janet.entry`, a comptime function that generates and
+The runtime exports no symbols. A module exports two (`_wattle_mod_config` and
+`_wattle_init`) but the author is not expected to write either directly. Rather,
+the module author uses `wattle.entry`, a comptime function that generates and
 exports the symbols. The runtime's loader looks both up by name when it opens
-the shared object: `_janet_mod_config` reports what the module was built
-against (Janet's version, the configuration bits, the Zig version and the
-interface fingerprint), and `_janet_init` receives the module table (every call
+the shared object: `_wattle_mod_config` reports what the module was built
+against (Wattle's version, the configuration bits, the Zig version and the
+interface fingerprint), and `_wattle_init` receives the module table (every call
 a module makes into the runtime goes through one of the table's 80 crossings).
 
 With nothing exported, every program built using this implementation reaches
@@ -827,9 +856,9 @@ which is deterministic for a Zig version and target but not documented. A
 module must therefore be built with the same Zig version, for the same target,
 and with the same configuration as the runtime into which it loads
 (`examples/numarray/README.md`). The loader checks the configuration bits, the
-Zig version and the interface fingerprint that `_janet_mod_config` reports, and
-refuses the module on the first difference. `build.zig`'s `janetModule` helper
-builds a module with the options given to its `janet` dependency, and
+Zig version and the interface fingerprint that `_wattle_mod_config` reports, and
+refuses the module on the first difference. `build.zig`'s `wattleModule` helper
+builds a module with the options given to its `wattle` dependency, and
 `examples/standalone` shows that build working from outside the tree.
 
 ### Linking a module in
@@ -840,9 +869,9 @@ it. `build.zig`'s `quickbin` builds such an executable, `examples/quickbin` is
 the worked example and `examples/standalone` builds one from outside the tree.
 The decision has three parts, and each keeps something above unchanged.
 
-The module's source is unchanged. `janet.entry` still generates the two
+The module's source is unchanged. `wattle.entry` still generates the two
 symbols; under a build setting that names the module it exports them as
-`_janet_init_<name>` and `_janet_mod_config_<name>` instead, because two modules
+`_wattle_init_<name>` and `_wattle_mod_config_<name>` instead, because two modules
 in one binary cannot both export the plain pair. Each module is compiled as an
 object of its own rather than into the executable's compilation, so
 `interface.rt` stays one variable per module, as it is for a loaded one. The
@@ -860,7 +889,7 @@ and abstract to `make-image-dict` and `load-image-dict`. The client that makes
 the image registers the module loaded as a shared object; the executable
 registers the module linked in; the name is the contract between them.
 `run-image` is the other half: given the image, the arguments and a loader per
-module, it registers each module, loads the image and runs `main`. `janet -i`
+module, it registers each module, loads the image and runs `main`. `wattle -i`
 calls it too, so an image file and an executable are one path. This is what
 `jpm quickbin` does with a generated C file, and the reason the executable is
 not an embedding: the program inside it is data the runtime reads, and a `main`
@@ -869,7 +898,7 @@ the runtime runs.
 The runtime stays private. The public build surface grows by one function and
 not by the runtime module, because the executable is the unit an outside author
 asks for. A public runtime module would be an embedding interface and it is not
-needed for this: `quickbin` takes two instances of the `janet` dependency, one
+needed for this: `quickbin` takes two instances of the `wattle` dependency, one
 for the target and one for the build machine, because the image is made by
 running a client and an image is architecture-neutral.
 
@@ -911,8 +940,8 @@ of an abstract's payload, includes it.
    is a build error, so a module that compiles `repr.zig` compiles none of the
    runtime with it.
 
-   A module compiles `repr.zig` against its own `config`, which `janetModule`
-   generates from the options given to the `janet` dependency. A module built
+   A module compiles `repr.zig` against its own `config`, which `wattleModule`
+   generates from the options given to the `wattle` dependency. A module built
    with the runtime's options selects the same layout, and the loader checks the
    configuration the module reports (section 10). A module uses `Value`, `Tag`
    and the operations that read only the bits: it reads a value's tag, and
@@ -982,17 +1011,17 @@ and none is emitted.
 
 ### Checking the boundary
 
-No tool checks what `abi.zig` contains. `tools/check/orphans.janet` does not
+No tool checks what `abi.zig` contains. `res/check/orphans.janet` does not
 report a declaration there that nothing in the tree references, because a
 separately compiled module may be what uses it. The file's header lists the five
 kinds of declaration it holds, and a reader checks the file against that list.
 
 `examples/numarray` and `examples/standalone` prove the boundary set is
 sufficient, because they are built the way an outside author builds.
-`tools/check/layouts.txt` lists every `extern` layout in the tree with the
+`res/check/layouts.txt` lists every `extern` layout in the tree with the
 evidence that fixes it, the layouts in `abi.zig` among them, and
-`tools/check/layouts.janet --check` fails when the tree no longer matches the
-list. The cross-builds in `tools/testing/matrix.janet` cover the platform
+`res/check/layouts.janet --check` fails when the tree no longer matches the
+list. The cross-builds in `res/testing/matrix.janet` cover the platform
 declarations, which are the ones a native build cannot check.
 
 `theHeadOffsets` in `test/gc_mark.zig` checks the offset a module depends on,
@@ -1033,11 +1062,11 @@ fn numArrayGc(p: ?*anyopaque, len: usize) callconv(.c) c_int {
     const self: *NumArray = @ptrCast(@alignCast(p));   // nothing checks this
 ```
 
-The Zig implementation instead provides `janet.define`, a comptime constructor
+The Zig implementation instead provides `wattle.define`, a comptime constructor
 that takes the payload type and generates the erased vtable:
 
 ```zig
-const num_array_type = janet.define(NumArray, .{
+const num_array_type = wattle.define(NumArray, .{
     .name = "numarray",
     .gc  = numArrayGc,      // fn (*NumArray, usize) void
     .get = numArrayGet,     // fn (*NumArray, Value) Error!?Value
@@ -1505,7 +1534,7 @@ matching. What crosses is the layout the two share, not the type.
 ### How a module reaches the runtime
 
 A module reaches the runtime through a table rather than by symbol. The loader
-gives `_janet_init` one `extern struct` of `callconv(.c)` function pointers, and
+gives `_wattle_init` one `extern struct` of `callconv(.c)` function pointers, and
 a module calls through its fields rather than resolving a `janet_*` name.
 
 There is only one copy of the shapes. `api/interface.zig` declares `Runtime`
@@ -1516,14 +1545,14 @@ compile against the field it fills. There is no declaration file on the
 author's side, because there is only one description of a crossing to keep in
 step.
 
-The runtime exports no symbols, and a module exports only `_janet_init` and
-`_janet_mod_config` (section 10). A module cannot bind to the wrong copy of the
+The runtime exports no symbols, and a module exports only `_wattle_init` and
+`_wattle_mod_config` (section 10). A module cannot bind to the wrong copy of the
 runtime, and a second copy cannot capture the first's crossings.
 
 The interface fingerprint decides whether a module and the runtime agree on the
 table. `api/fingerprint.zig` hashes `Runtime`, together with the other
 declarations the two compilations share, into one number. The module reports
-its number through `_janet_mod_config`, and the loader compares it with its own
+its number through `_wattle_mod_config`, and the loader compares it with its own
 before calling into the module (section 10). The comparison is an exact match,
 so the table can change in any way: a field with no caller is removed, and a
 module built against a shorter table does not load on a longer one.

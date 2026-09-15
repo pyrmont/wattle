@@ -70,7 +70,7 @@ const wrap = @import("subsystems").value.wrap;
 const expected_raises = 18;
 
 var raises_fired: usize = 0;
-const scratch = "janet-zig-pp-format-9d24";
+const scratch = "wattle-pp-format-9d24";
 var test_env: *tables.Table = undefined;
 
 /// The integer wrap, which no Zig contract may spell directly under

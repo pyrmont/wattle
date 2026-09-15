@@ -1,5 +1,5 @@
-#ifndef JANET_ZIG_NET_ABI_H
-#define JANET_ZIG_NET_ABI_H
+#ifndef WATTLE_NET_ABI_H
+#define WATTLE_NET_ABI_H
 
 /* The host socket headers `net.c` works through, prepared for Zig's
  * translate-c.
@@ -73,9 +73,9 @@
  * BSD including macOS. Restated with a value so that translate-c surfaces it
  * and a Zig caller does not have to repeat the condition. */
 #ifndef MSG_NOSIGNAL
-#define JANET_ZIG_MSG_NOSIGNAL 0
+#define WATTLE_MSG_NOSIGNAL 0
 #else
-#define JANET_ZIG_MSG_NOSIGNAL MSG_NOSIGNAL
+#define WATTLE_MSG_NOSIGNAL MSG_NOSIGNAL
 #endif
 
 /* Whether `serverify_socket` may ask for `SO_REUSEPORT`. `net.c` spells this
@@ -87,9 +87,9 @@
  * used it. With no such header here the predefine is tested directly, which
  * is what that definition did. */
 #if defined(SO_REUSEPORT) && !defined(__gnu_hurd__)
-#define JANET_ZIG_REUSEPORT 1
+#define WATTLE_REUSEPORT 1
 #else
-#define JANET_ZIG_REUSEPORT 0
+#define WATTLE_REUSEPORT 0
 #endif
 
 /* Whether an `IP_MULTICAST_TTL` value is passed as `unsigned char` rather than
@@ -98,9 +98,9 @@
  * it is its own predefine and this clause does not test it. */
 #if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__) \
     || defined(__OpenBSD__) || defined(__illumos__)
-#define JANET_ZIG_MULTICAST_TTL_CHAR 1
+#define WATTLE_MULTICAST_TTL_CHAR 1
 #else
-#define JANET_ZIG_MULTICAST_TTL_CHAR 0
+#define WATTLE_MULTICAST_TTL_CHAR 0
 #endif
 
-#endif /* JANET_ZIG_NET_ABI_H */
+#endif /* WATTLE_NET_ABI_H */

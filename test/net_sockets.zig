@@ -263,7 +263,7 @@ fn theIpv6Decoding() void {
 }
 
 fn theUnixDecoding() void {
-    const path = "/tmp/janet-contract.sock";
+    const path = "/tmp/wattle-contract.sock";
     {
         var sun = std.mem.zeroes(posix.sockaddr.un);
         sun.family = posix.AF.UNIX;
@@ -341,9 +341,9 @@ fn theAddressLookup() void {
 
 /// Three calls and no leaks. `net/address`'s unix-domain branch returns
 /// through a `defer`, so the address it builds is released on every path out
-/// of it; `tools/testing/leaks.sh` expects zero here, which is what says so.
+/// of it; `res/testing/leaks.sh` expects zero here, which is what says so.
 fn theUnixAddressLookup() void {
-    const path = "/tmp/janet-contract.sock";
+    const path = "/tmp/wattle-contract.sock";
     var argv = [_]repr.Value{
         value.fromBytes("unix", .keyword),
         value.fromBytes(path, .string),

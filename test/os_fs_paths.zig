@@ -81,15 +81,15 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 // Constants
 // ==========================================================================
 
-const dir = "janet-zig-os-paths-direct-6b1d";
+const dir = "wattle-os-paths-direct-6b1d";
 var environment: *tables.Table = undefined;
-const file = "janet-zig-os-paths-direct-6b1d/first";
-const hard = "janet-zig-os-paths-direct-6b1d/hard";
-const missing = "janet-zig-os-paths-absent-6b1d";
-const other = "janet-zig-os-paths-direct-6b1d/second";
-const public_dir = "janet-zig-os-paths-public-4f70";
-const soft = "janet-zig-os-paths-direct-6b1d/soft";
-const sub = "janet-zig-os-paths-direct-6b1d/inner";
+const file = "wattle-os-paths-direct-6b1d/first";
+const hard = "wattle-os-paths-direct-6b1d/hard";
+const missing = "wattle-os-paths-absent-6b1d";
+const other = "wattle-os-paths-direct-6b1d/second";
+const public_dir = "wattle-os-paths-public-4f70";
+const soft = "wattle-os-paths-direct-6b1d/soft";
+const sub = "wattle-os-paths-direct-6b1d/inner";
 const unix = builtin.os.tag != .windows;
 
 // ==========================================================================
@@ -343,19 +343,19 @@ fn theRealpath() void {
 
 fn theCoreFunctions() void {
     eval(
-        \\(os/mkdir "janet-zig-os-paths-public-4f70")
-        \\(spit "janet-zig-os-paths-public-4f70/file" "path-contract")
+        \\(os/mkdir "wattle-os-paths-public-4f70")
+        \\(spit "wattle-os-paths-public-4f70/file" "path-contract")
     );
 
     // `os/dir` gives entry names, and *appends* to a supplied array rather
     // than replacing its contents, so the length is two.
     eval(
-        \\(def entries (os/dir "janet-zig-os-paths-public-4f70"))
+        \\(def entries (os/dir "wattle-os-paths-public-4f70"))
         \\(assert (array? entries))
         \\(assert (= 1 (length entries)))
         \\(assert (= "file" (first entries)))
         \\(def supplied @[:kept])
-        \\(def same (os/dir "janet-zig-os-paths-public-4f70" supplied))
+        \\(def same (os/dir "wattle-os-paths-public-4f70" supplied))
         \\(assert (= same supplied))
         \\(assert (= 2 (length supplied)))
         \\(assert (= :kept (first supplied)))
@@ -365,45 +365,45 @@ fn theCoreFunctions() void {
         // `os/link` is hard by default and symbolic when asked; `os/symlink`
         // is the same as passing true.
         eval(
-            \\(os/link "janet-zig-os-paths-public-4f70/file" "janet-zig-os-paths-public-4f70/link")
-            \\(assert (= 2 ((os/stat "janet-zig-os-paths-public-4f70/link") :nlink)))
-            \\(os/symlink "file" "janet-zig-os-paths-public-4f70/soft")
-            \\(assert (= :link ((os/lstat "janet-zig-os-paths-public-4f70/soft") :mode)))
-            \\(assert (= :file ((os/stat "janet-zig-os-paths-public-4f70/soft") :mode)))
-            \\(assert (= "file" (os/readlink "janet-zig-os-paths-public-4f70/soft")))
-            \\(os/rm "janet-zig-os-paths-public-4f70/soft")
-            \\(os/rm "janet-zig-os-paths-public-4f70/link")
+            \\(os/link "wattle-os-paths-public-4f70/file" "wattle-os-paths-public-4f70/link")
+            \\(assert (= 2 ((os/stat "wattle-os-paths-public-4f70/link") :nlink)))
+            \\(os/symlink "file" "wattle-os-paths-public-4f70/soft")
+            \\(assert (= :link ((os/lstat "wattle-os-paths-public-4f70/soft") :mode)))
+            \\(assert (= :file ((os/stat "wattle-os-paths-public-4f70/soft") :mode)))
+            \\(assert (= "file" (os/readlink "wattle-os-paths-public-4f70/soft")))
+            \\(os/rm "wattle-os-paths-public-4f70/soft")
+            \\(os/rm "wattle-os-paths-public-4f70/link")
         );
 
         // macOS stores an empty target, where Linux refuses one, and it reads
         // back as the empty string: a length of zero is not a failure.
         if (builtin.os.tag == .macos) eval(
-            \\(os/symlink "" "janet-zig-os-paths-public-4f70/empty")
-            \\(assert (= "" (os/readlink "janet-zig-os-paths-public-4f70/empty")))
-            \\(os/rm "janet-zig-os-paths-public-4f70/empty")
+            \\(os/symlink "" "wattle-os-paths-public-4f70/empty")
+            \\(assert (= "" (os/readlink "wattle-os-paths-public-4f70/empty")))
+            \\(os/rm "wattle-os-paths-public-4f70/empty")
         );
     }
 
     // `os/touch` sets both times, defaults the modification time to the access
     // time, and defaults both to now.
     eval(
-        \\(os/touch "janet-zig-os-paths-public-4f70/file" 1000000000 1000000123)
-        \\(def stats (os/stat "janet-zig-os-paths-public-4f70/file"))
+        \\(os/touch "wattle-os-paths-public-4f70/file" 1000000000 1000000123)
+        \\(def stats (os/stat "wattle-os-paths-public-4f70/file"))
         \\(assert (= 1000000000 (stats :accessed)))
         \\(assert (= 1000000123 (stats :modified)))
-        \\(os/touch "janet-zig-os-paths-public-4f70/file" 1000000200)
-        \\(def stats (os/stat "janet-zig-os-paths-public-4f70/file"))
+        \\(os/touch "wattle-os-paths-public-4f70/file" 1000000200)
+        \\(def stats (os/stat "wattle-os-paths-public-4f70/file"))
         \\(assert (= 1000000200 (stats :accessed)))
         \\(assert (= 1000000200 (stats :modified)))
-        \\(os/touch "janet-zig-os-paths-public-4f70/file")
-        \\(assert (> ((os/stat "janet-zig-os-paths-public-4f70/file") :modified) 1672531200))
+        \\(os/touch "wattle-os-paths-public-4f70/file")
+        \\(assert (> ((os/stat "wattle-os-paths-public-4f70/file") :modified) 1672531200))
     );
 
     // A time outside `time_t` is refused, at either bound and in either
     // argument. 2^63 and its negation are the bounds as doubles.
     eval(
         \\(defn refused [& args] (in (protect (os/touch ;args)) 1))
-        \\(def f "janet-zig-os-paths-public-4f70/file")
+        \\(def f "wattle-os-paths-public-4f70/file")
         \\(def edge (math/pow 2 63))
         \\(assert (= "invalid argument to touch" (refused f edge)))
         \\(assert (= "invalid argument to touch" (refused f (- edge))))
@@ -414,9 +414,9 @@ fn theCoreFunctions() void {
     if (config.realpath) {
         eval(
             \\(assert (= (os/realpath ".") (os/cwd)))
-            \\(def resolved (os/realpath "janet-zig-os-paths-public-4f70"))
+            \\(def resolved (os/realpath "wattle-os-paths-public-4f70"))
             \\(assert (string? resolved))
-            \\(assert (= resolved (os/realpath "./janet-zig-os-paths-public-4f70/.")))
+            \\(assert (= resolved (os/realpath "./wattle-os-paths-public-4f70/.")))
         );
     }
 }
@@ -445,8 +445,8 @@ fn theRefusals() void {
 
 fn tearDown() void {
     eval(
-        \\(os/rm "janet-zig-os-paths-public-4f70/file")
-        \\(os/rmdir "janet-zig-os-paths-public-4f70")
+        \\(os/rm "wattle-os-paths-public-4f70/file")
+        \\(os/rmdir "wattle-os-paths-public-4f70")
     );
 }
 

@@ -46,11 +46,11 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-const missing_name = "JANET_ZIG_OS_ENVIRON_MISSING_7A21C9";
+const missing_name = "WATTLE_OS_ENVIRON_MISSING_7A21C9";
 
 /// Unlikely to collide with a real variable, which matters because this
 /// contract writes to the process's own environment and does not restore it.
-const test_name = "JANET_ZIG_OS_ENVIRON_CONTRACT_6F6B4D";
+const test_name = "WATTLE_OS_ENVIRON_CONTRACT_6F6B4D";
 
 // ==========================================================================
 // Types

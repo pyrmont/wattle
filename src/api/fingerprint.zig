@@ -2,7 +2,7 @@
 //!
 //! `api` is that number. Both compilations compile this file, so both compute
 //! it from the same source: the runtime puts its own in `build_config`, a
-//! module reports the same field through `_janet_mod_config`, and
+//! module reports the same field through `_wattle_mod_config`, and
 //! `runtime/env.zig`'s `native` refuses the module unless the two are equal.
 //! A module and a runtime with the same `api` were built against the same
 //! interface, whatever Janet release either of them came from.
@@ -79,7 +79,7 @@ pub const api: u64 = digest(description);
 /// What this build reports to a loader, and what the loader compares a
 /// module's report against.
 ///
-/// `module.entry`'s `_janet_mod_config` writes this, and `runtime/env.zig`'s
+/// `module.entry`'s `_wattle_mod_config` writes this, and `runtime/env.zig`'s
 /// `native` reads both this and the module's copy. `major`, `minor` and
 /// `patch` are reported in a refusal and are not compared.
 pub const build_config: abi.BuildConfig = .{

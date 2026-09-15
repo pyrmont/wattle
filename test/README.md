@@ -2,7 +2,7 @@
 
 The layers, what each is for, and what a change owes before it is believed.
 [../src/README.md](../src/README.md) has the rules the runtime keeps, and
-[../tools/README.md](../tools/README.md) has the instruments named below.
+[../res/README.md](../res/README.md) has the instruments named below.
 
 ## The six layers
 
@@ -16,12 +16,12 @@ Six layers, and a change is believed when the layers it touches pass:
   copy of the runtime, so it calls its subject by import and a raise arrives as
   a value.
 - The in-file `test` blocks under `src/`, run by `zig build test` as
-  `janet-runtime-test`. Interior facts with no runtime under them: a
+  `wattle-runtime-test`. Interior facts with no runtime under them: a
   classification table, a mode-string parser.
 - The fuzz targets, `test/fuzz.zig`: parser, compiler, marshalling and bytecode,
   run once over their corpora by `zig build test` and as a campaign by
   `zig build fuzz --fuzz`.
-- Debug, optimized and sanitizer builds, through `tools/testing/matrix.janet`.
+- Debug, optimized and sanitizer builds, through `res/testing/matrix.janet`.
   Optimized builds must keep the contracts' assertions live, and
   `test/expect.zig` is what keeps them: `std.debug.assert` is `unreachable`, and
   in `ReleaseFast` and `ReleaseSmall` that is undefined behaviour the optimizer
@@ -54,7 +54,7 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
       tar -C /work -xf -
     cd /work
     ...then run every /xb/test/janet-*-test and every test/suite-*.janet
-       with /xb/bin/janet...'
+       with /xb/bin/wattle...'
 
 rm -rf xbuild/arm
 ```
@@ -75,12 +75,12 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
     tar -C /src --exclude=.zig-cache --exclude=zig-out --exclude=xbuild \
                 --exclude=.git -cf - . | tar -C /work -xf -
     cd /work
-    /xb/test/janet-zig-contract-test         # the driver, all 65 in one process
+    /xb/test/wattle-contract-test         # the driver, all 65 in one process
     for c in $(grep -o "with(list, \"[a-z_0-9]*\"" test/contracts.zig |
                sed "s/.*\"\(.*\)\"/\1/"); do
-      /xb/test/janet-zig-contract-test $c || echo "FAIL $c"
+      /xb/test/wattle-contract-test $c || echo "FAIL $c"
     done
-    for s in test/suite-*.janet; do /xb/bin/janet $s || echo "FAIL $s"; done'
+    for s in test/suite-*.janet; do /xb/bin/wattle $s || echo "FAIL $s"; done'
 
 rm -rf xbuild/gnu /tmp/janet-xc-gnu
 ```
@@ -240,7 +240,7 @@ it needs to delete anything, so it can neither remove the half-written container
 nor start its own API service until space is freed by hand. A size-capped
 `--tmpfs` destination makes the copy fail immediately and harmlessly instead.
 
-Cross-compiling works because `build.zig` already builds `janet-boot` for the
+Cross-compiling works because `build.zig` already builds `wattle-boot` for the
 build host and runs it there; the image it emits is architecture-neutral. Any
 driver script should assert the number of binaries and suites it ran, rather
 than its exit status, because a test that never executes otherwise looks
@@ -344,7 +344,7 @@ Five limitations constrain this, none of which are Janet defects:
    failed to compile.
 
 5. No Windows binary has ever been executed, here or anywhere.
-   `x86_64-windows-gnu` is a `build` entry of `tools/testing/matrix.janet` and
+   `x86_64-windows-gnu` is a `build` entry of `res/testing/matrix.janet` and
    it passes, so the target compiles and links an `.exe`; nothing has run one.
    Treat Windows as compile-checked and untested.
 
@@ -362,7 +362,7 @@ rests on them.
 
 ## The leak check
 
-The leak check is `tools/testing/leaks.sh`, and it deliberately does not use
+The leak check is `res/testing/leaks.sh`, and it deliberately does not use
 `leaks --atExit`. That mode cannot report on a contract that forks, and three of
 the sixty-five do: `os_process`, `os_surface` and `value_alloc` hang under it,
 where each completes in under 0.2s unmeasured. `--atExit` inserts
@@ -375,7 +375,7 @@ nothing resumes it, because `leaks` is watching the parent; the parent's
 initializer strips itself out of `DYLD_INSERT_LIBRARIES`, so `os/spawn` is not
 the hazard and a raw `fork` is.
 
-`tools/testing/leaks.sh` reaches the same heap by a route with no interposer in
+`res/testing/leaks.sh` reaches the same heap by a route with no interposer in
 it: the contract driver stops itself at the end of `main` when
 `JANET_CONTRACT_PAUSE` is set, and the script scans the stopped process with
 `leaks <pid>` and then resumes it. It expects zero everywhere, with no
@@ -384,8 +384,8 @@ exclusions and no exceptions: `gc_sweep`'s eight, `net_sockets`' three and
 non-zero count anywhere is a non-zero exit rather than a number for a person to
 compare.
 
-    ./tools/testing/leaks.sh                  # all 65, about 42 seconds
-    ./tools/testing/leaks.sh args_core marsh  # just these
+    ./res/testing/leaks.sh                  # all 65, about 42 seconds
+    ./res/testing/leaks.sh args_core marsh  # just these
 
 All 65 are measured. macOS only: `leaks` is Apple's, and the container runs
 above are what the second platform gets instead.

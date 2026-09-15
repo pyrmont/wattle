@@ -7,7 +7,7 @@
 //! nothing.
 //!
 //! That is a hazard here rather than in general because
-//! `tools/testing/matrix.janet` runs the whole test step in those two modes,
+//! `res/testing/matrix.janet` runs the whole test step in those two modes,
 //! as its `ReleaseFast` and `ReleaseSmall` jobs.
 //!
 //! `@panic` is a call in every optimize mode and the panic handler aborts,

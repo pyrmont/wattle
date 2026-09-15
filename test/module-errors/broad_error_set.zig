@@ -9,19 +9,19 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 /// The right shape, with an error set that is not the runtime's.
-fn widened(argv: []janet.Value) anyerror!janet.Value {
+fn widened(argv: []wattle.Value) anyerror!wattle.Value {
     return argv[0];
 }
 
-fn defs(env: *janet.Env) janet.Error!void {
-    janet.cfuns(env, "broad", &.{
-        janet.reg("widened", &widened, null),
+fn defs(env: *wattle.Env) wattle.Error!void {
+    wattle.cfuns(env, "broad", &.{
+        wattle.reg("widened", &widened, null),
     });
 }
 
 comptime {
-    janet.entry(defs);
+    wattle.entry(defs);
 }

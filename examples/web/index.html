@@ -35,7 +35,7 @@
   <button id="clear">Clear output</button>
   <span class="note">Ctrl+Enter or Cmd+Enter also runs.</span>
 </p>
-<pre id="output"><span class="note">Loading janet-web.wasm...</span></pre>
+<pre id="output"><span class="note">Loading wattle-web.wasm...</span></pre>
 <script type="module">
 import { start } from "./wasi.js";
 
@@ -73,8 +73,8 @@ let janet;
 
 async function load() {
   try {
-    const response = await fetch("janet-web.wasm");
-    if (!response.ok) throw new Error(`fetching janet-web.wasm: ${response.status}`);
+    const response = await fetch("wattle-web.wasm");
+    if (!response.ok) throw new Error(`fetching wattle-web.wasm: ${response.status}`);
     module = await WebAssembly.compile(await response.arrayBuffer());
     janet = await start(module);
     output.textContent = "";

@@ -2,7 +2,7 @@
 //! types.
 //!
 //! `numarray` is the worked example of the abstract type. This module
-//! imports `janet` and `std` and nothing else. `build.zig` builds it and
+//! imports `wattle` and `std` and nothing else. `build.zig` builds it and
 //! `examples/url/test/url.janet` loads it, which `zig build test` runs.
 //!
 //! ## A module that owns nothing
@@ -35,12 +35,12 @@
 //! of it is asked for and there is nothing for the collector to see.
 
 const std = @import("std");
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 /// The most bytes any result in this file may be, including a terminator. A
 /// fixed buffer rather than an allocation, because every function here
 /// writes once and returns immediately: there is no ownership to pass
-/// anywhere, and `janet.alloc` exists for the case where there is.
+/// anywhere, and `wattle.alloc` exists for the case where there is.
 /// Overflowing it is a refusal rather than a truncation, because a silently
 /// shortened URL is a wrong result from a working program.
 const limit = 512;
@@ -82,19 +82,19 @@ const Style = struct {
 ///
 /// This function raises if slot `n` is not an indexed value, if an element
 /// of it is not a keyword, or if a keyword names no option.
-fn readStyle(argv: []janet.Value, n: i32) janet.Error!Style {
+fn readStyle(argv: []wattle.Value, n: i32) wattle.Error!Style {
     var style: Style = .{};
     if (argv.len <= @as(usize, @intCast(n))) return style;
-    // `janet.getIndexed` returns a `[]const Value`, so this is an ordinary
+    // `wattle.getIndexed` returns a `[]const Value`, so this is an ordinary
     // loop.
-    for (try janet.getIndexed(argv, n), 0..) |option, i| {
-        // `janet.toKeyword` returns null rather than raising, so both refusals
+    for (try wattle.getIndexed(argv, n), 0..) |option, i| {
+        // `wattle.toKeyword` returns null rather than raising, so both refusals
         // below are this module's: an unknown option is not a type error, and
         // the runtime does not check it.
-        const name = janet.toKeyword(option) orelse
-            return janet.panicFormat("option {d} is not a keyword", .{i});
+        const name = wattle.toKeyword(option) orelse
+            return wattle.panicFormat("option {d} is not a keyword", .{i});
         switch (option_names.get(name) orelse
-            return janet.panicFormat("unknown option :{s}", .{name})) {
+            return wattle.panicFormat("unknown option :{s}", .{name})) {
             .lower => style.case = .lower,
             .upper => style.case = .upper,
             .underscore => style.separator = '_',
@@ -113,8 +113,8 @@ fn readStyle(argv: []janet.Value, n: i32) janet.Error!Style {
 /// `bytes` is what to add. One byte is left free for the terminator.
 ///
 /// This function raises if the result would not fit in `out`.
-fn append(out: []u8, n: *usize, bytes: []const u8) janet.Error!void {
-    if (n.* + bytes.len + 1 > out.len) return janet.panic("the result does not fit");
+fn append(out: []u8, n: *usize, bytes: []const u8) wattle.Error!void {
+    if (n.* + bytes.len + 1 > out.len) return wattle.panic("the result does not fit");
     @memcpy(out[n.*..][0..bytes.len], bytes);
     n.* += bytes.len;
 }
@@ -128,12 +128,12 @@ fn append(out: []u8, n: *usize, bytes: []const u8) janet.Error!void {
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if an option is unknown, or if the result does
 /// not fit in `limit` bytes.
-fn slug(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, 2);
+fn slug(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, 2);
     // A string, a symbol, a keyword or a buffer, read in place. A buffer's
     // bytes move on a push, so the slice is used inside this call
     // and never stored.
-    const title = try janet.getBytes(argv, 0);
+    const title = try wattle.getBytes(argv, 0);
     const style = try readStyle(argv, 1);
 
     var out: [limit]u8 = undefined;
@@ -155,7 +155,7 @@ fn slug(argv: []janet.Value) janet.Error!janet.Value {
         }});
     }
     out[n] = 0;
-    return janet.cstring(out[0..n :0]);
+    return wattle.cstring(out[0..n :0]);
 }
 
 /// Returns `params` as a query string. Implements `(url/query params)`.
@@ -169,29 +169,29 @@ fn slug(argv: []janet.Value) janet.Error!janet.Value {
 /// dictionary, if a key is not a keyword, if a value is neither a number nor
 /// text, if the result does not fit in `limit` bytes, or if the walk finds a
 /// different number of entries from `len`.
-fn query(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    var params = try janet.getDictionary(argv, 0);
+fn query(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    var params = try wattle.getDictionary(argv, 0);
 
     var out: [limit]u8 = undefined;
     var n: usize = 0;
     var written: usize = 0;
-    // `janet.getDictionary` returns an iterator over the filled slots of the
+    // `wattle.getDictionary` returns an iterator over the filled slots of the
     // hash array; `len` is how many there are.
     while (params.next()) |kv| {
-        const name = janet.toKeyword(kv.key) orelse
-            return janet.panic("every query key must be a keyword");
+        const name = wattle.toKeyword(kv.key) orelse
+            return wattle.panic("every query key must be a keyword");
 
         // An entry's value is in no argument slot, so it is read with the
-        // `Value` forms, `janet.toNumber` and `janet.bytesView`, which return
+        // `Value` forms, `wattle.toNumber` and `wattle.bytesView`, which return
         // null rather than raising; the refusals name the key, not a slot.
         var scratch: [32]u8 = undefined;
-        const text: []const u8 = if (janet.toNumber(kv.value)) |x|
+        const text: []const u8 = if (wattle.toNumber(kv.value)) |x|
             std.fmt.bufPrint(&scratch, "{d}", .{x}) catch
-                return janet.panicFormat("the value of :{s} does not render", .{name})
+                return wattle.panicFormat("the value of :{s} does not render", .{name})
         else
-            janet.bytesView(kv.value) orelse
-                return janet.panicFormat("the value of :{s} is neither a number nor text", .{name});
+            wattle.bytesView(kv.value) orelse
+                return wattle.panicFormat("the value of :{s} is neither a number nor text", .{name});
 
         if (written != 0) try append(&out, &n, "&");
         try append(&out, &n, name);
@@ -203,10 +203,10 @@ fn query(argv: []janet.Value) janet.Error!janet.Value {
     // `len` counts the filled slots, so a walk that saw a different number is
     // a defect.
     if (written != params.len) {
-        return janet.panicFormat("walked {d} entries where len says {d}", .{ written, params.len });
+        return wattle.panicFormat("walked {d} entries where len says {d}", .{ written, params.len });
     }
     out[n] = 0;
-    return janet.cstring(out[0..n :0]);
+    return wattle.cstring(out[0..n :0]);
 }
 
 /// Returns a slice of `text`. Implements
@@ -218,15 +218,15 @@ fn query(argv: []janet.Value) janet.Error!janet.Value {
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if an index is present and is not a valid
 /// index, or if the result does not fit in `limit` bytes.
-fn cut(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, 3);
-    const text = try janet.getBytes(argv, 0);
+fn cut(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, 3);
+    const text = try wattle.getBytes(argv, 0);
     // The length is this module's own, here the slice's; a binding around a C
-    // library passes whatever that library reported. `janet.getRange` folds
+    // library passes whatever that library reported. `wattle.getRange` folds
     // the two slots the way `string/slice` does: a negative index counts from
     // the end, an absent or nil slot takes that whole side, and an end below
     // the start is clamped up to it.
-    const range: janet.Range = try janet.getRange(argv, 1, text.len);
+    const range: wattle.Range = try wattle.getRange(argv, 1, text.len);
     // The range is already inside the length that was handed in, so the two
     // casts narrow a value that is already checked rather than asserting a
     // new bound.
@@ -237,40 +237,40 @@ fn cut(argv: []janet.Value) janet.Error!janet.Value {
     var n: usize = 0;
     try append(&out, &n, text[from..to]);
     out[n] = 0;
-    return janet.cstring(out[0..n :0]);
+    return wattle.cstring(out[0..n :0]);
 }
 
 /// Returns a query string parsed back into a struct. Implements
 /// `(url/parse-query query)`.
 ///
 /// `argv` slot 0 is the query string. A repeated key keeps the last, which
-/// is what a struct literal does and what `janet.structOf` documents.
+/// is what a struct literal does and what `wattle.structOf` documents.
 ///
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if there are more than thirty-two fields, or
 /// if a field has no `'='`.
-fn parseQuery(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const text = try janet.getBytes(argv, 0);
-    if (text.len == 0) return janet.structOf(&.{});
+fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const text = try wattle.getBytes(argv, 0);
+    if (text.len == 0) return wattle.structOf(&.{});
 
-    var pairs: [32]janet.Pair = undefined;
+    var pairs: [32]wattle.Pair = undefined;
     var n: usize = 0;
     var fields = std.mem.splitScalar(u8, text, '&');
     while (fields.next()) |field| {
-        if (n == pairs.len) return janet.panicFormat("more than {d} fields", .{pairs.len});
+        if (n == pairs.len) return wattle.panicFormat("more than {d} fields", .{pairs.len});
         const eq = std.mem.indexOfScalar(u8, field, '=') orelse
-            return janet.panicFormat("field {d} has no '='", .{n});
-        // `janet.keyword` and `janet.string` take the `[]const u8` that
-        // `janet.getBytes` returned, so nothing is copied here; the runtime
+            return wattle.panicFormat("field {d} has no '='", .{n});
+        // `wattle.keyword` and `wattle.string` take the `[]const u8` that
+        // `wattle.getBytes` returned, so nothing is copied here; the runtime
         // interns its own copy, which is what lets the struct outlive `text`.
         pairs[n] = .{
-            .key = janet.keyword(field[0..eq]),
-            .value = janet.string(field[eq + 1 ..]),
+            .key = wattle.keyword(field[0..eq]),
+            .value = wattle.string(field[eq + 1 ..]),
         };
         n += 1;
     }
-    return janet.structOf(pairs[0..n]);
+    return wattle.structOf(pairs[0..n]);
 }
 
 // ==========================================================================
@@ -280,21 +280,21 @@ fn parseQuery(argv: []janet.Value) janet.Error!janet.Value {
 /// Defines the module's four cfunctions.
 ///
 /// `env` is the capability to define a binding in the environment the module
-/// is loading into. `janet.entry` below passes `defs` to the loader.
+/// is loading into. `wattle.entry` below passes `defs` to the loader.
 ///
 /// This function cannot raise. Nothing is registered but the four
 /// cfunctions: this module declares no abstract type, so it has no
-/// `janet.registerAbstract` to call and nothing fallible in it. It is still
-/// typed as raising, because that is the one shape `janet.entry` takes.
-fn defs(env: *janet.Env) janet.Error!void {
-    janet.cfuns(env, "url", &.{
-        janet.reg("slug", &slug, "(url/slug title &opt opts)\n\nA title as a URL path segment."),
-        janet.reg("query", &query, "(url/query params)\n\nA struct or table as a query string."),
-        janet.reg("cut", &cut, "(url/cut text &opt start end)\n\nA slice of a byte argument."),
-        janet.reg("parse-query", &parseQuery, "(url/parse-query query)\n\nA query string back into a struct."),
+/// `wattle.registerAbstract` to call and nothing fallible in it. It is still
+/// typed as raising, because that is the one shape `wattle.entry` takes.
+fn defs(env: *wattle.Env) wattle.Error!void {
+    wattle.cfuns(env, "url", &.{
+        wattle.reg("slug", &slug, "(url/slug title &opt opts)\n\nA title as a URL path segment."),
+        wattle.reg("query", &query, "(url/query params)\n\nA struct or table as a query string."),
+        wattle.reg("cut", &cut, "(url/cut text &opt start end)\n\nA slice of a byte argument."),
+        wattle.reg("parse-query", &parseQuery, "(url/parse-query query)\n\nA query string back into a struct."),
     });
 }
 
 comptime {
-    janet.entry(defs);
+    wattle.entry(defs);
 }

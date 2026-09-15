@@ -82,9 +82,9 @@ const wrap = @import("subsystems").value.wrap;
 /// Six, not seven: `dynprintf`'s "file is not writeable" case is in
 /// `test/pp_format.zig`, with its subject.
 const expected_raises = 6;
-const public = "janet-zig-io-core-public-9d24";
+const public = "wattle-io-core-public-9d24";
 var raises_seen: u32 = 0;
-const scratch = "janet-zig-io-core-9d24";
+const scratch = "wattle-io-core-9d24";
 
 // ==========================================================================
 // Types
@@ -316,7 +316,7 @@ fn theStreamOperations() void {
     var buffer: [32]u8 = undefined;
 
     // A missing file is reported by a null stream, not a raise.
-    expect(io_core.open("janet-zig-io-core-absent-9d24", "rb") == null);
+    expect(io_core.open("wattle-io-core-absent-9d24", "rb") == null);
 
     var file = io_core.open(scratch, "wb").?;
 
@@ -678,12 +678,12 @@ fn theCoreFunctions() void {
 
     // A file opens, round-trips its contents, and reports positions.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :wb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :wb))
         \\(file/write f "first line\n" "second")
         \\(assert (= 17 (file/tell f)))
         \\(file/flush f)
         \\(file/close f)
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :rb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :rb))
         \\(assert (= "first line\n" (string (file/read f :line))))
         \\(assert (= "second" (string (file/read f :all))))
         \\(assert (nil? (file/read f :line)))
@@ -692,7 +692,7 @@ fn theCoreFunctions() void {
 
     // Seeking accepts each origin keyword and rejects anything else.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :rb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :rb))
         \\(file/seek f :set 11)
         \\(assert (= 11 (file/tell f)))
         \\(assert (= "sec" (string (file/read f 3))))
@@ -706,7 +706,7 @@ fn theCoreFunctions() void {
 
     // Reading a byte count stops at the end of the file and then reports nil.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :rb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :rb))
         \\(assert (= "first line\nsecond" (string (file/read f 100))))
         \\(assert (nil? (file/read f 4)))
         \\(assert (= "" (string (file/read f :all))))
@@ -715,18 +715,18 @@ fn theCoreFunctions() void {
 
     // Appending preserves the existing contents; writing truncates.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :ab))
+        \\(def f (file/open "wattle-io-core-public-9d24" :ab))
         \\(file/write f "!")
         \\(file/close f)
-        \\(assert (= "first line\nsecond!" (string (slurp "janet-zig-io-core-public-9d24"))))
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :wb))
+        \\(assert (= "first line\nsecond!" (string (slurp "wattle-io-core-public-9d24"))))
+        \\(def f (file/open "wattle-io-core-public-9d24" :wb))
         \\(file/close f)
-        \\(assert (= "" (string (slurp "janet-zig-io-core-public-9d24"))))
+        \\(assert (= "" (string (slurp "wattle-io-core-public-9d24"))))
     );
 
     // A closed file rejects every operation, and closing twice is harmless.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :rb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :rb))
         \\(file/close f)
         \\(assert (nil? (file/close f)))
         \\(assert (not (first (protect (file/read f :all)))))
@@ -737,14 +737,14 @@ fn theCoreFunctions() void {
     // A file opened for reading is not writeable, and one opened for writing
     // is not readable, unless the update flag is present.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :rb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :rb))
         \\(assert (not (first (protect (file/write f "x")))))
         \\(assert (not (first (protect (file/flush f)))))
         \\(file/close f)
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :wb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :wb))
         \\(assert (not (first (protect (file/read f :all)))))
         \\(file/close f)
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :w+b))
+        \\(def f (file/open "wattle-io-core-public-9d24" :w+b))
         \\(file/write f "update")
         \\(file/seek f :set 0)
         \\(assert (= "update" (string (file/read f :all))))
@@ -753,14 +753,14 @@ fn theCoreFunctions() void {
 
     // A missing file is nil, or an error when the mode asks for one.
     doString(env,
-        \\(assert (nil? (file/open "janet-zig-io-core-absent-9d24" :r)))
-        \\(assert (not (first (protect (file/open "janet-zig-io-core-absent-9d24" :rn)))))
+        \\(assert (nil? (file/open "wattle-io-core-absent-9d24" :r)))
+        \\(assert (not (first (protect (file/open "wattle-io-core-absent-9d24" :rn)))))
     );
 
     // Malformed modes are rejected by position, and each names the byte that
     // stopped the scan.
     doString(env,
-        \\(defn why [mode] (last (protect (file/open "janet-zig-io-core-public-9d24" mode))))
+        \\(defn why [mode] (last (protect (file/open "wattle-io-core-public-9d24" mode))))
         \\(assert (= "file mode must have a length between 1 and 10" (why (keyword ""))))
         \\(assert (= "file mode must have a length between 1 and 10" (why :rbnbnbnbnbn)))
         \\(assert (= "invalid flag q, expected w, a, or r" (why :q)))
@@ -791,7 +791,7 @@ fn theCoreFunctions() void {
         doString(env,
             \\(defn nfds [] (length (os/dir "/dev/fd")))
             \\(def before (nfds))
-            \\(repeat 50 (protect (file/open "janet-zig-io-core-public-9d24" :r++)))
+            \\(repeat 50 (protect (file/open "wattle-io-core-public-9d24" :r++)))
             \\(gccollect)
             \\(assert (= before (nfds)))
         );
@@ -802,16 +802,16 @@ fn theCoreFunctions() void {
     // read-only, so `:wb 8192` would neither truncate nor write and `:zzz`
     // would be accepted where the two-argument form refuses it.
     doString(env,
-        \\(spit "janet-zig-io-core-public-9d24" "buffered")
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :wb 8192))
+        \\(spit "wattle-io-core-public-9d24" "buffered")
+        \\(def f (file/open "wattle-io-core-public-9d24" :wb 8192))
         \\(assert (= :core/file (type f)))
         \\(file/write f "x")
         \\(file/close f)
-        \\(assert (= "x" (string (slurp "janet-zig-io-core-public-9d24"))))
+        \\(assert (= "x" (string (slurp "wattle-io-core-public-9d24"))))
         \\(assert (= "invalid flag z, expected w, a, or r"
-        \\           (last (protect (file/open "janet-zig-io-core-public-9d24" :zzz 0)))))
+        \\           (last (protect (file/open "wattle-io-core-public-9d24" :zzz 0)))))
         \\# The read mode is still the default when no mode is given at all.
-        \\(def f (file/open "janet-zig-io-core-public-9d24"))
+        \\(def f (file/open "wattle-io-core-public-9d24"))
         \\(assert (= "x" (string (file/read f :all))))
         \\(file/close f)
     );
@@ -822,7 +822,7 @@ fn theCoreFunctions() void {
     // `getc` on a stream opened for writing, which is undefined rather than an
     // empty line.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :w))
+        \\(def f (file/open "wattle-io-core-public-9d24" :w))
         \\(each form [:all :line 3]
         \\  (assert (= "file is not readable" (last (protect (file/read f form))))))
         \\(file/close f)
@@ -862,13 +862,13 @@ fn theCoreFunctions() void {
 
     // Printing to a file goes through the same write path, newline included.
     doString(env,
-        \\(def f (file/open "janet-zig-io-core-public-9d24" :wb))
+        \\(def f (file/open "wattle-io-core-public-9d24" :wb))
         \\(xprint f "printed")
         \\(xprin f "tail")
         \\(xprinf f "%d" 42)
         \\(xprintf f "%d" 7)
         \\(file/close f)
-        \\(assert (= "printed\ntail427\n" (string (slurp "janet-zig-io-core-public-9d24"))))
+        \\(assert (= "printed\ntail427\n" (string (slurp "wattle-io-core-public-9d24"))))
     );
 
     // The scratch file is removed by `cleanPaths` rather than by `os/rm`, so

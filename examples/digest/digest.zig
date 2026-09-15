@@ -2,7 +2,7 @@
 //! work through the event loop.
 //!
 //! `url` is the worked example of the views and `numarray` is the worked
-//! example of the abstract type. This module imports `janet` and `std` and
+//! example of the abstract type. This module imports `wattle` and `std` and
 //! nothing else. `build.zig` builds it and `examples/digest/test/digest.janet`
 //! loads it, which `zig build test` runs.
 //!
@@ -16,14 +16,14 @@
 //!
 //! `DESIGN.md` section 15 reduces the loop to one sentence: when something
 //! happens, resume a fiber with a value. It gives a module three operations to
-//! take part in it. `janet.await` suspends, `janet.post` queues a callback for
-//! the loop thread, and `janet.wake` resumes. This module uses all three. It
+//! take part in it. `wattle.await` suspends, `wattle.post` queues a callback for
+//! the loop thread, and `wattle.wake` resumes. This module uses all three. It
 //! hashes bytes, which is work with no I/O in it, on a thread of its own, so
 //! the calling fiber waits and every other fiber in the program keeps running.
 //!
 //! The shape is five steps and the order is required. `sha256` reads the
 //! loop and the fiber, roots what has to survive the wait, starts the thread
-//! and suspends with `janet.await`. The thread computes and posts.
+//! and suspends with `wattle.await`. The thread computes and posts.
 //! `hashDone`, back on the loop thread, joins the thread, builds the result,
 //! wakes the fiber and unroots.
 //!
@@ -38,23 +38,23 @@
 //!
 //! ## What the worker thread may call
 //!
-//! The worker thread touches nothing in `janet.*` but `janet.post`, which
+//! The worker thread touches nothing in `janet.*` but `wattle.post`, which
 //! is the one function on the surface a thread that is not running Janet may
 //! call. Every other function finds the runtime through a thread-local that
 //! thread does not have. Calling any of them aborts with `called from a
 //! thread that is not running Janet` rather than reading null state.
 
 const std = @import("std");
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 /// One hash in flight: what the cfunction fills in, the thread computes
 /// into, and the callback reads.
 ///
-/// `sha256` allocates a `Hash` with `janet.new`, `hashOnThread` takes a
+/// `sha256` allocates a `Hash` with `wattle.new`, `hashOnThread` takes a
 /// `*Hash` and `hashDone` reads it.
 ///
 /// A `Hash` is the payload of a `digest/hash` abstract value, and the
-/// collector frees it. `janet.post` passes it to the callback as an opaque
+/// collector frees it. `wattle.post` passes it to the callback as an opaque
 /// pointer. `sha256` roots the abstract value and `hashDone` unroots it, so a
 /// collection during the wait does not finalize it. At teardown every
 /// finalizer runs regardless of roots, and `hashGc` joins a thread still
@@ -64,11 +64,11 @@ const Hash = struct {
     /// never started. `hashGc` joins it when it is not null.
     thread: ?std.Thread,
     /// The loop, read on the loop thread and used on the worker thread.
-    loop: *janet.Loop,
+    loop: *wattle.Loop,
     /// The fiber to wake, rooted for the whole wait.
-    fiber: janet.Value,
+    fiber: wattle.Value,
     /// The argument, rooted for the whole wait so that `bytes` stays valid.
-    source: janet.Value,
+    source: wattle.Value,
     /// The bytes to hash, read on the worker thread.
     bytes: []const u8,
     /// The result, written on the worker thread and read on the loop thread.
@@ -80,7 +80,7 @@ const Hash = struct {
 ///
 /// The join returns at once in the common case, because the collector
 /// finalizes a `Hash` only after `hashDone` has unrooted it. At teardown it
-/// waits for a hash still in flight, whose `janet.post` reaches a loop that
+/// waits for a hash still in flight, whose `wattle.post` reaches a loop that
 /// teardown has not yet released.
 ///
 /// This function cannot raise. `DESIGN.md` section 5 gives the reason.
@@ -88,10 +88,10 @@ fn hashGc(self: *Hash, _: usize) void {
     if (self.thread) |thread| thread.join();
 }
 
-/// The `digest/hash` abstract type, which `sha256` passes to `janet.new`. It
+/// The `digest/hash` abstract type, which `sha256` passes to `wattle.new`. It
 /// is declared at container level because the runtime keeps this address and
 /// reads it again at teardown.
-const hash_type = janet.define(Hash, .{
+const hash_type = wattle.define(Hash, .{
     .name = "digest/hash",
     .gc = hashGc,
 });
@@ -107,21 +107,21 @@ const hash_type = janet.define(Hash, .{
 fn hashOnThread(job: *Hash) void {
     std.crypto.hash.sha2.Sha256.hash(job.bytes, &job.digest, .{});
     // The one crossing a thread that is not running Janet may call.
-    janet.post(job.loop, &hashDone, job);
+    wattle.post(job.loop, &hashDone, job);
 }
 
 /// Joins the worker thread, renders the digest as hex, wakes the fiber and
 /// unroots the job.
 ///
 /// `w` is the capability to put the fiber back on the run queue, and `raw`
-/// is the `*Hash` that `hashOnThread` passed to `janet.post`. This function
+/// is the `*Hash` that `hashOnThread` passed to `wattle.post`. This function
 /// runs on the loop thread, between two fibers.
 ///
 /// This function cannot raise, and its signature cannot express a raise.
-fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
+fn hashDone(w: *wattle.Wake, raw: *anyopaque) callconv(.c) void {
     const job: *Hash = @ptrCast(@alignCast(raw));
     // The thread posted this callback as its last call, so the join waits only
-    // for it to return from `janet.post`.
+    // for it to return from `wattle.post`.
     job.thread.?.join();
     job.thread = null;
     const digits = "0123456789abcdef";
@@ -133,12 +133,12 @@ fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
     // Building a `Value` here is allowed: allocation through the collector is
     // fatal on failure rather than a raise, and no safe point runs between
     // fibers on the loop thread.
-    _ = janet.wake(w, job.fiber, janet.string(&hex));
-    // On both branches of `janet.wake`: a `false` means `ev/cancel` moved the
+    _ = wattle.wake(w, job.fiber, wattle.string(&hex));
+    // On both branches of `wattle.wake`: a `false` means `ev/cancel` moved the
     // fiber on or it finished, and the roots are still this module's.
-    _ = janet.gcunroot(job.source);
-    _ = janet.gcunroot(job.fiber);
-    _ = janet.gcunroot(janet.abstract(job));
+    _ = wattle.gcunroot(job.source);
+    _ = wattle.gcunroot(job.fiber);
+    _ = wattle.gcunroot(wattle.abstract(job));
 }
 
 /// Returns the SHA-256 of `bytes` as lowercase hex, hashed on a thread of
@@ -150,17 +150,17 @@ fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if the build has no event loop, or if the
 /// thread cannot be started.
-fn sha256(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const bytes = try janet.getBytes(argv, 0);
+fn sha256(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const bytes = try wattle.getBytes(argv, 0);
     // Raises `event loop not enabled` in a build without the loop.
-    const l = try janet.loop();
-    const fiber = try janet.rootFiber();
+    const l = try wattle.loop();
+    const fiber = try wattle.rootFiber();
 
-    // `janet.new` returns a block already on the collector's heap list, and
+    // `wattle.new` returns a block already on the collector's heap list, and
     // nothing between it and this assignment reaches a safe point, so
     // `hashGc` never reads `thread` before it is set.
-    const job = janet.new(Hash, &hash_type, null);
+    const job = wattle.new(Hash, &hash_type, null);
     job.* = .{
         .thread = null,
         .loop = l,
@@ -173,11 +173,11 @@ fn sha256(argv: []janet.Value) janet.Error!janet.Value {
     // The root keeps a string's, a symbol's or a keyword's bytes stable for
     // the wait; a buffer's bytes move on a push from another fiber, which
     // this module cannot prevent.
-    janet.gcroot(job.fiber);
-    janet.gcroot(job.source);
+    wattle.gcroot(job.fiber);
+    wattle.gcroot(job.source);
     // Nothing else references the abstract value during the wait, and the
     // collector must not finalize it while the thread holds `job`.
-    janet.gcroot(janet.abstract(job));
+    wattle.gcroot(wattle.abstract(job));
 
     // Started before the suspend, which is not a race: the loop is
     // single-threaded, so an event posted before this cfunction returns is
@@ -185,13 +185,13 @@ fn sha256(argv: []janet.Value) janet.Error!janet.Value {
     job.thread = std.Thread.spawn(.{}, hashOnThread, .{job}) catch {
         // Nothing has been posted, so this frame does the callback's cleanup.
         // `thread` stays null, so `hashGc` has nothing to join.
-        _ = janet.gcunroot(job.source);
-        _ = janet.gcunroot(job.fiber);
-        _ = janet.gcunroot(janet.abstract(job));
-        return janet.panic("could not start a thread to hash on");
+        _ = wattle.gcunroot(job.source);
+        _ = wattle.gcunroot(job.fiber);
+        _ = wattle.gcunroot(wattle.abstract(job));
+        return wattle.panic("could not start a thread to hash on");
     };
 
-    return janet.await();
+    return wattle.await();
 }
 
 // ==========================================================================
@@ -201,12 +201,12 @@ fn sha256(argv: []janet.Value) janet.Error!janet.Value {
 /// Defines the module's one cfunction.
 ///
 /// `env` is the capability to define a binding in the environment the module
-/// is loading into. `janet.entry` below passes `defs` to the loader.
+/// is loading into. `wattle.entry` below passes `defs` to the loader.
 ///
 /// This function cannot raise.
-fn defs(env: *janet.Env) janet.Error!void {
-    janet.cfuns(env, "digest", &.{
-        janet.reg(
+fn defs(env: *wattle.Env) wattle.Error!void {
+    wattle.cfuns(env, "digest", &.{
+        wattle.reg(
             "sha256",
             &sha256,
             "(digest/sha256 bytes)\n\nThe SHA-256 of bytes, as lowercase hex, hashed on a thread of its own.",
@@ -215,5 +215,5 @@ fn defs(env: *janet.Env) janet.Error!void {
 }
 
 comptime {
-    janet.entry(defs);
+    wattle.entry(defs);
 }

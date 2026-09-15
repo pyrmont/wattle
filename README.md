@@ -1,22 +1,25 @@
-# Janet
+# Wattle
 
 [![Test Status][icon]][status]
 
-[icon]: https://github.com/pyrmont/janet/actions/workflows/test.yml/badge.svg
-[status]: https://github.com/pyrmont/janet/actions?query=workflow%3ATest
+[icon]: https://github.com/pyrmont/wattle/actions/workflows/test.yml/badge.svg
+[status]: https://github.com/pyrmont/wattle/actions?query=workflow%3ATest
 
 > [!WARNING]
-> This is an experimental attempt to implement the Janet programming language in Zig.
-> It was written primarily using LLM-based coding agents.
+> Wattle is experimental. It was written primarily using LLM-based coding
+> agents.
 
-**Janet** is a programming language for system scripting and expressive
-automation. It has more built-in functionality and a richer core language than
-Lua, but is smaller than GNU Guile or Python.
+**Wattle** is a runtime for the [Janet](https://janet-lang.org) programming
+language, written in [Zig](https://ziglang.org). Janet is a language for system
+scripting and expressive automation. It has more built-in functionality and a
+richer core language than Lua, but is smaller than GNU Guile or Python.
 
-This repository is an implementation of Janet in [Zig](https://ziglang.org).
-The Zig imlementation aims to run Janet source identically to the [C
+Wattle runs Janet source identically to the [C
 implementation](https://github.com/janet-lang/janet). What differs is the
-runtime underneath, how it is built, and how native modules are written.
+runtime underneath, how it is built, and how native modules are written. Wattle
+is also the base for a dialect of its own: `.wattle` source, with the syntax of
+[Claret](https://github.com/pyrmont/claret), is planned to run beside `.janet`
+source on the same virtual machine.
 
 There is a REPL for trying out the language, as well as the ability to run
 script files. Try Janet in your browser at <https://janet-lang.org>.
@@ -32,8 +35,8 @@ See the examples directory for all provided example programs.
 
 (def- window
   (seq [x :range [-1 2]
-         y :range [-1 2]
-         :when (not (and (zero? x) (zero? y)))]
+        y :range [-1 2]
+        :when (not (and (zero? x) (zero? y)))]
        [x y]))
 
 (defn- neighbors
@@ -147,12 +150,12 @@ if you are in the REPL to show bound symbols.
 
 ## Building
 
-Janet is built with [Zig](https://ziglang.org). The version is pinned in
+Wattle is built with [Zig](https://ziglang.org). The version is pinned in
 `.zigversion` and is currently **0.16.0**.
 
 ```sh
-git clone https://github.com/pyrmont/janet
-cd janet
+git clone https://github.com/pyrmont/wattle
+cd wattle
 zig build              # the executable and the libraries
 zig build test         # the contracts and the Janet test suites
 zig build run          # a REPL
@@ -187,19 +190,19 @@ FFI, networking, processes and dynamic modules, and builds single-threaded.
 Run it under any WASI host:
 
 ```sh
-wasmtime run --dir . zig-out/bin/janet.wasm
+wasmtime run --dir . zig-out/bin/wattle.wasm
 ```
 
 A WASI program sees only the directories which are mapped in, so a script and
 everything it reads have to be in this tree.  The default `syspath` is
-`/usr/local/lib/janet`, so `import` needs that name mapped — `--dir
-<host-dir>::/usr/local/lib/janet` — or `JANET_PATH` set to a directory that is:
+`/usr/local/lib/wattle`, so `import` needs that name mapped — `--dir
+<host-dir>::/usr/local/lib/wattle` — or `WATTLE_PATH` set to a directory that is:
 
 ```sh
-wasmtime run --dir . --env JANET_PATH=./lib zig-out/bin/janet.wasm script.janet
+wasmtime run --dir . --env WATTLE_PATH=./lib zig-out/bin/wattle.wasm script.janet
 ```
 
-`zig build examples/web` builds `examples/web/`, Janet in a web page: the runtime as a
+`zig build examples/web` builds `examples/web/`, Wattle in a web page: the runtime as a
 WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 
 ### Supported platforms
@@ -216,7 +219,7 @@ WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 ## Installing
 
 If you just want to try out the language, you don't need to install anything.
-In this case you can also move the `janet` executable wherever you want on your
+In this case you can also move the `wattle` executable wherever you want on your
 system and run it. However, for a fuller setup, please see the
 [Introduction](https://janet-lang.org/docs/index.html) for more details.
 
@@ -224,23 +227,23 @@ system and run it. However, for a fuller setup, please see the
 
 A REPL is launched when the binary is invoked with no arguments. Pass the `-h`
 flag to display the usage information. Individual scripts can be run with
-`./janet myscript.janet`.
+`./wattle myscript.janet`.
 
 If you are looking to explore, you can print a list of all available macros,
 functions, and constants by entering the command `(all-bindings)` into the
 REPL.
 
 ```
-$ janet
-Janet 1.41.3-dev-zig macos/aarch64/zig - '(doc)' for help
+$ wattle
+Wattle 0.1.0-dev macos/aarch64/zig - '(doc)' for help
 repl:1:> (+ 1 2 3)
 6
 repl:2:> (print "Hello, World!")
 Hello, World!
 nil
 repl:3:> (os/exit)
-$ janet -h
-usage: janet [options] script args...
+$ wattle -h
+usage: wattle [options] script args...
 Options are:
   --help (-h)             : Show this help
   --version (-v)          : Print the version string
@@ -249,7 +252,7 @@ Options are:
   --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
   --debug (-d)            : Set the debug flag in the REPL
   --repl (-r)             : Enter the REPL after running all scripts
-  --noprofile (-R)        : Disables loading profile.janet when JANET_PROFILE is present
+  --noprofile (-R)        : Disables loading profile.janet when WATTLE_PROFILE is present
   --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
   --quiet (-q)            : Hide logo (quiet)
   --flycheck (-k)         : Compile scripts but do not execute (flycheck)
@@ -270,12 +273,14 @@ Options are:
   --                      : Stop handling options
 ```
 
-The manual page `janet.1` is in the repository root. `zig build` does not
-install it; `man ./janet.1` reads it in place.
+The manual page `wattle.1` is in the repository root. It is generated from
+`wattle.1.predoc` by [Predoc](https://github.com/pyrmont/predoc): edit the
+source and run `predoc wattle.1.predoc`. `zig build` does not install it;
+`man ./wattle.1` reads it in place.
 
 ## Extending
 
-Janet can be extended with _native modules_.  **The native-module interface is
+Wattle can be extended with _native modules_.  **The native-module interface is
 Zig.** `src/module.zig` is what a module imports. `examples/numarray/` is a
 worked example. A C program cannot define a cfunction for this runtime: a
 cfunction returns an error union over Zig's own calling convention, so no C
@@ -285,7 +290,7 @@ body can have that type and no C caller can invoke one. The same applies to a
 A module records the interface it was built against as a fingerprint, and the
 loader refuses to load this unless that fingerprint, the configuration bits and
 the Zig version all match the runtime's own. `janet/api` is the runtime's
-fingerprint. Janet's version is not compared, so a module built against one
+fingerprint. Wattle's version is not compared, so a module built against one
 release loads into another whose interface is the same.
 
 A module can also be linked into an executable, together with the runtime and
@@ -300,107 +305,14 @@ module.
 
 ## Contributing
 
-Janet can be hacked on with pretty much any environment you like. VSCode, Vim,
+Wattle can be hacked on with pretty much any environment you like. VSCode, Vim,
 Emacs and Atom each have syntax packages for the Janet language, and any editor
 with Zig support will do for the runtime itself.
 
-`tools/README.md` explains the development instruments used in porting — the
+`res/README.md` explains the development instruments used in porting — the
 acceptance matrix, the leak check and the checked inventories.
 
-## FAQ
+## License
 
-### How fast is it?
-
-It is about the same speed as most interpreted languages without a JIT
-compiler, and this implementation is benchmarked against the C implementation
-to stay close to it. Tight, critical loops should probably be written in a
-native module. Programs tend to be a bit faster than they would be in a
-language like Python due to the discouragement of slow object-oriented
-abstractions with lots of hash-table lookups and by making late-binding
-explicit.
-
-On x86-64, aarch64 and riscv64, and on 32-bit targets, a value is 8 bytes;
-numbers, nils and booleans are held in the value itself and everything else is
-allocated on the heap. The PEG engine is a specialized interpreter that can
-efficiently process string and buffer data.
-
-The GC is simple and stop-the-world, but GC knobs are exposed in the core
-library and separate threads have isolated heaps and garbage collectors. Data
-that is shared between threads is reference counted.
-
-### Where is (favorite feature from other language)?
-
-It may exist, it may not. If you want to propose a major language feature, go
-ahead and open an issue, but it will likely be closed as "will not implement".
-Often, such features make one usecase simpler at the expense of 5 others by
-making the language more complicated.
-
-### Is there a language spec?
-
-There is not currently a spec besides the documentation at
-<https://janet-lang.org>.
-
-### Is this Scheme/Common Lisp? Where are the cons cells?
-
-Nope. There are no cons cells here.
-
-### Is this a Clojure port?
-
-No. It's similar to Clojure superficially because I like Lisps and I like the
-aesthetics.  Internally, Janet is not at all like Clojure, Scheme, or Common
-Lisp.
-
-### Are the immutable data structures (tuples and structs) implemented as hash tries?
-
-No. They are immutable arrays and hash tables. Don't try and use them like
-Clojure's vectors and maps, instead they work well as table keys or other
-identifiers.
-
-### Can I do object-oriented programming with Janet?
-
-To some extent, yes. However, it is not the recommended method of abstraction,
-and performance may suffer. That said, tables can be used to make mutable
-objects with inheritance and polymorphism, where object methods are implemented
-with keywords.
-
-```janet
-(def Car @{:honk (fn [self msg] (print "car " self " goes " msg)) })
-(def my-car (table/setproto @{} Car))
-(:honk my-car "Beep!")
-```
-
-### Why can't we add (feature from Clojure) into the core?
-
-Usually, one of a few reasons:
-- Often, it already exists in a different form and the Clojure port would be
-  redundant.
-- Clojure programs often generate a lot of garbage and rely on the JVM to clean
-  it up.  Janet does not run on the JVM and has a more primitive garbage
-  collector.
-- We want to keep the Janet core small. With Lisps, a feature can usually be
-  added as a library without feeling "bolted on", especially when compared to
-  ALGOL-like languages. Adding features to the core also makes it a bit more
-  difficult to keep Janet maximally portable.
-
-### Can I bind to Rust/Zig/Go/Java/Nim/C++/D/Pascal/Fortran/Odin/Jai/(Some new
-"Systems" Programming Language)?
-
-Zig, yes: native modules are written in Zig (see "Native modules"). For other
-languages, calling into a C library from Janet is what the FFI is for. Defining
-a cfunction in another language is not possible, because a cfunction returns an
-error union over Zig's own calling convention. A raise is a Zig error return
-rather than a `setjmp`/`longjmp` jump, so no non-local jump crosses a frame of
-foreign code.
-
-### Why is my terminal spitting out junk when I run the REPL?
-
-Make sure your terminal supports ANSI escape codes. Most modern terminals will
-support these, but some older terminals, Windows consoles, or embedded
-terminals will not. If your terminal does not support ANSI escape codes, run
-the REPL with the `-n` flag, which disables color output. You can also try the
-`-s` flag if further issues ensue.
-
-## Why is it called "Janet"?
-
-Janet is named after the almost omniscient and friendly artificial being in
-[The Good Place](https://en.wikipedia.org/wiki/The_Good_Place).
+Wattle is licensed under the MIT License. See [LICENSE](LICENSE) for more
+details.

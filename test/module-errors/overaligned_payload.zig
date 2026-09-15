@@ -8,7 +8,7 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 /// Over-aligned on purpose. A cache-line-aligned lane is the plausible way an
 /// author arrives here: a reasonable thing to ask for, and still more than the
@@ -17,19 +17,19 @@ const Wide = struct {
     lane: f64 align(128),
 };
 
-fn make(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    const lanes = janet.alloc(Wide, 4) orelse return janet.panic("out of memory");
-    janet.free(lanes);
-    return janet.nil();
+fn make(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    const lanes = wattle.alloc(Wide, 4) orelse return wattle.panic("out of memory");
+    wattle.free(lanes);
+    return wattle.nil();
 }
 
-fn defs(env: *janet.Env) janet.Error!void {
-    janet.cfuns(env, "overaligned", &.{
-        janet.reg("make", &make, null),
+fn defs(env: *wattle.Env) wattle.Error!void {
+    wattle.cfuns(env, "overaligned", &.{
+        wattle.reg("make", &make, null),
     });
 }
 
 comptime {
-    janet.entry(defs);
+    wattle.entry(defs);
 }

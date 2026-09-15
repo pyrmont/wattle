@@ -6,7 +6,7 @@
     .dependencies = .{
         // By path, because the package under test is the tree this lives in.
         // A real consumer writes a URL and a hash here; nothing else changes.
-        .janet = .{ .path = "../.." },
+        .wattle = .{ .path = "../.." },
     },
     .paths = .{ "build.zig", "build.zig.zon", "greet.zig", "main.janet" },
 }

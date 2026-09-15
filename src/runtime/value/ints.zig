@@ -170,7 +170,7 @@ fn Box(comptime T: type) type {
         ///
         /// A comptime alias is why neither the compiler nor a grep for the
         /// abi's name finds it: the call sites read `Box(T).unwrap(...)`.
-        /// `tools/check/swallowed.janet` follows an alias.
+        /// `res/check/swallowed.janet` follows an alias.
         const unwrap = if (T == i64) unwrapS64 else unwrapU64;
         /// Boxes `val` in this type's abstract.
         inline fn make(val: T) repr.Value {

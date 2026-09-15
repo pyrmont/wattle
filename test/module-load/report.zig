@@ -15,10 +15,10 @@ const std = @import("std");
 
 const abi = @import("abi");
 
-/// Exports `_janet_mod_config` and `_janet_init`, reporting `reported`.
+/// Exports `_wattle_mod_config` and `_wattle_init`, reporting `reported`.
 ///
 /// A fixture calls this in a `comptime` block at container level, as a module
-/// calls `module.entry`. `_janet_init` does nothing, because the loader
+/// calls `module.entry`. `_wattle_init` does nothing, because the loader
 /// refuses this module before it looks the symbol up.
 pub fn entry(comptime reported: abi.BuildConfig) void {
     const Shim = struct {
@@ -37,8 +37,8 @@ pub fn entry(comptime reported: abi.BuildConfig) void {
             _ = rt;
         }
     };
-    @export(&Shim.modConfig, .{ .name = "_janet_mod_config" });
-    @export(&Shim.modInit, .{ .name = "_janet_init" });
+    @export(&Shim.modConfig, .{ .name = "_wattle_mod_config" });
+    @export(&Shim.modInit, .{ .name = "_wattle_init" });
 }
 
 /// A version string in the fixed-width, NUL-padded field

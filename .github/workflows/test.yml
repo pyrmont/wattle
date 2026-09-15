@@ -37,7 +37,7 @@ jobs:
       # The published build surface, exercised from outside the package.
       # `examples/numarray` is compiled by this repository's own `build()` with
       # the private module graph in hand, so it proves the source experience
-      # and cannot notice if `janetModule` rots. `examples/standalone` depends
+      # and cannot notice if `wattleModule` rots. `examples/standalone` depends
       # on this package by path and reaches it only through that helper.
       - name: Standalone consumer
         run: zig build examples/standalone
@@ -73,7 +73,7 @@ jobs:
           # per run, and a first failure is not a failure count.
           for f in test/*.zig; do
             name=$(basename "$f" .zig)
-            if ./zig-out/test/janet-zig-contract-test "$name" >/dev/null 2>&1; then
+            if ./zig-out/test/wattle-contract-test "$name" >/dev/null 2>&1; then
               continue
             fi
             # Not every test/*.zig is a contract; the driver rejects a name it
@@ -81,7 +81,7 @@ jobs:
             # `test/contracts.zig` is the list, so ask it.
             if grep -q "\"$name\"" test/contracts.zig; then
               echo "CONTRACT FAILED: $name"
-              ./zig-out/test/janet-zig-contract-test "$name" 2>&1 | tail -20
+              ./zig-out/test/wattle-contract-test "$name" 2>&1 | tail -20
               fail=1
             fi
           done
@@ -91,7 +91,7 @@ jobs:
           set -eu
           fail=0
           for s in test/suite-*.janet; do
-            if ! ./zig-out/bin/janet "$s"; then echo "SUITE FAILED: $s"; fail=1; fi
+            if ! ./zig-out/bin/wattle "$s"; then echo "SUITE FAILED: $s"; fail=1; fi
           done
           exit $fail
 

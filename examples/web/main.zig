@@ -6,7 +6,7 @@
 //! and evaluates `eval_line_source` once, and `janet_web_eval` calls the
 //! function that evaluation returned with each submission.
 //!
-//! A submission runs as a line of the `janet` REPL runs: through
+//! A submission runs as a line of the `wattle` REPL runs: through
 //! `run-context` in one environment kept across calls, with the REPL's
 //! `debugger-on-status`, so a value is printed with `*pretty-format*` and
 //! bound to `_`, and an error is printed with its stack trace. Output goes

@@ -1,6 +1,6 @@
-//! The `janet` client: the environment the command line runs in.
+//! The `wattle` client: the environment the command line runs in.
 //!
-//! `build.zig` roots an executable named `janet` at this file. `main` gives
+//! `build.zig` roots an executable named `wattle` at this file. `main` gives
 //! `interop.zig` the process's `Io`, and `runRaising` builds the environment,
 //! resolves `cli-main` and runs it on a fiber under the event loop.
 //!

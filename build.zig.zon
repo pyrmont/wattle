@@ -1,7 +1,7 @@
 .{
-    .name = .janet,
-    .version = "1.41.3",
-    .fingerprint = 0x9b91c47a931ff7ed,
+    .name = .wattle,
+    .version = "0.1.0",
+    .fingerprint = 0x4082841cbfa0dabd,
     .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",

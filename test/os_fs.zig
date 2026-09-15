@@ -13,7 +13,7 @@
 //! Once before the run and once after. Before, because a previous run that
 //! aborted mid-way leaves the tree behind and every assertion after that fails
 //! for the wrong reason, so one suite's leftover file cannot make fifty-seven
-//! mutants look caught. After, because `tools/testing/matrix.janet` runs
+//! mutants look caught. After, because `res/testing/matrix.janet` runs
 //! entries concurrently in the repository working directory.
 //!
 //! The names have a random-looking suffix for the same reason: two matrix
@@ -43,13 +43,13 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-const direct_dest = "janet-zig-os-fs-direct-83c2/dest";
-const direct_dir = "janet-zig-os-fs-direct-83c2";
-const direct_source = "janet-zig-os-fs-direct-83c2/source";
+const direct_dest = "wattle-os-fs-direct-83c2/dest";
+const direct_dir = "wattle-os-fs-direct-83c2";
+const direct_source = "wattle-os-fs-direct-83c2/source";
 const path_max = 4096;
-const public_dest = "janet-zig-os-fs-public-91af/dest";
-const public_dir = "janet-zig-os-fs-public-91af";
-const public_source = "janet-zig-os-fs-public-91af/source";
+const public_dest = "wattle-os-fs-public-91af/dest";
+const public_dir = "wattle-os-fs-public-91af";
+const public_source = "wattle-os-fs-public-91af/source";
 
 // ==========================================================================
 // Cases
@@ -156,7 +156,7 @@ fn theRefusals() void {
     const remove = harness.core("os/rm");
     var args: [1]repr.Value = undefined;
 
-    args[0] = value.fromBytes("janet-zig-os-fs-absent-0000", .string);
+    args[0] = value.fromBytes("wattle-os-fs-absent-0000", .string);
     expect(harness.raised(cd, .{args[0..1]}) != null);
     expect(harness.raised(rmdir, .{args[0..1]}) != null);
     expect(harness.raised(remove, .{args[0..1]}) != null);

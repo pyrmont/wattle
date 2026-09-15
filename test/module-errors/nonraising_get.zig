@@ -6,7 +6,7 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 const repr = @import("repr");
 
 const Payload = struct { n: i32 };
@@ -15,7 +15,7 @@ fn plainGet(_: *Payload, _: repr.Value) ?repr.Value {
     return null;
 }
 
-pub const at = janet.define(Payload, .{
+pub const at = wattle.define(Payload, .{
     .name = "module-errors/nonraising-get",
     .get = plainGet,
 });

@@ -49,7 +49,7 @@
 //! native module does not compile the runtime files named here.
 //!
 //! `interface.rt` is assigned before any of this runs. The only way into a
-//! module is `module.entry`'s `_janet_init` shim, which stores the table the
+//! module is `module.entry`'s `_wattle_init` shim, which stores the table the
 //! loader passed before it calls the author's `defs`.
 //!
 //! `panicf` is not here. A raise whose message Janet's own formatter builds
@@ -134,7 +134,7 @@ pub inline fn cfunction(slot: abi.CFunction) CFunction {
 /// ```
 ///
 /// `module.zig` wraps every call it makes through the table in this, and
-/// `runtime/env.zig` wraps the `_janet_init` it reached by name.
+/// `runtime/env.zig` wraps the `_wattle_init` it reached by name.
 pub inline fn fromAbi(value: anytype) Error!@TypeOf(value) {
     if (tookCRaise()) return error.JanetSignal;
     return value;

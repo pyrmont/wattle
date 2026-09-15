@@ -178,7 +178,7 @@ pub const getUInteger8 = GetUInteger8.get;
 /// report kills the process at the next scope boundary with a message naming
 /// neither the slot nor the builtin. `(string/format "%d" "x")` is the
 /// reproduction, because `pp/format.zig` is one of the callers. It is the
-/// defect `tools/check/swallowed.janet` exists to find.
+/// defect `res/check/swallowed.janet` exists to find.
 const int_types_enabled = options.int_types_core;
 
 /// The 64-bit range is 2^53, the largest integer a double represents exactly,

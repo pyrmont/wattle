@@ -97,7 +97,7 @@
 # instantiates for a *Marshal and for an *Unmarshal alike.
 (assert (= 0 (unsafe-seen)) "no reachable marshal runs in unsafe mode")
 
-# A cfunction returning a string, which is `janet.cstring`.
+# A cfunction returning a string, which is `wattle.cstring`.
 (assert (= "hello from a module" (greeting)) "a module can build a string")
 
 # ==========================================================================
@@ -202,7 +202,7 @@
 # lookup, and a build without FFI has none -- so this arm is reached only where
 # there is something to reach it with. The symbol is libc's, because the
 # runtime publishes none: a native module reaches it through the table
-# `_janet_init` is handed, so `nm` on the process finds no `janet_*` at all.
+# `_wattle_init` is handed, so `nm` on the process finds no `janet_*` at all.
 (def ffi-lookup (get-in (curenv) ['ffi/lookup :value]))
 (def ffi-native (get-in (curenv) ['ffi/native :value]))
 (when (and ffi-lookup ffi-native)

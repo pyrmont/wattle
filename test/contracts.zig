@@ -28,7 +28,7 @@
 //! pair so that none inherits another's heap, and they run in the order this
 //! file declares them. With no argument every compiled-in contract runs; with
 //! one argument only the contract named does, which is the form
-//! `tools/testing/contract.sh` drives.
+//! `res/testing/contract.sh` drives.
 //!
 //! ## Adding one
 //!
@@ -266,7 +266,7 @@ fn report(contract: Contract) void {
 ///
 /// Stopping here reaches the same heap by a route with no interposer in it, so
 /// a child exits normally and the leak check covers all three.
-/// `tools/testing/leaks.sh` drives it.
+/// `res/testing/leaks.sh` drives it.
 fn pauseForLeakCheck() void {
     // `leaks` is a macOS tool, and WASI has neither `kill` nor a signal to
     // send.

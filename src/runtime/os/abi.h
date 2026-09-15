@@ -1,5 +1,5 @@
-#ifndef JANET_ZIG_OS_ABI_H
-#define JANET_ZIG_OS_ABI_H
+#ifndef WATTLE_OS_ABI_H
+#define WATTLE_OS_ABI_H
 
  /* The host structures the `os/` surface works through, prepared for Zig's
   * `translate-c`.
@@ -77,7 +77,7 @@
 #if defined(__wasi__)
 #include <dirent.h>
 
-static inline const char *janet_zig_dirent_name(const struct dirent *entry) {
+static inline const char *wattle_dirent_name(const struct dirent *entry) {
     return entry->d_name;
 }
 #endif
@@ -108,9 +108,9 @@ static inline const char *janet_zig_dirent_name(const struct dirent *entry) {
  * platform in this project's reach that omits it. Restated here so that a Zig
  * `@hasDecl` does not have to repeat the condition. */
 #ifndef PATH_MAX
-#define JANET_ZIG_PATH_MAX 8192
+#define WATTLE_PATH_MAX 8192
 #else
-#define JANET_ZIG_PATH_MAX PATH_MAX
+#define WATTLE_PATH_MAX PATH_MAX
 #endif
 
 /* Whether `posix_spawn_file_actions_addchdir_np` is available. `os.c` works
@@ -118,29 +118,29 @@ static inline const char *janet_zig_dirent_name(const struct dirent *entry) {
  * the enumeration is C's and stays C's, and Zig reads the answer. The two
  * spellings differ only in the `_np` suffix. */
 #if defined(_WIN32)
-#define JANET_ZIG_SPAWN_CHDIR 0
-#define JANET_ZIG_SPAWN_CHDIR_NP 0
+#define WATTLE_SPAWN_CHDIR 0
+#define WATTLE_SPAWN_CHDIR_NP 0
 #elif defined(JANET_SPAWN_NO_CHDIR)
-#define JANET_ZIG_SPAWN_CHDIR 0
-#define JANET_ZIG_SPAWN_CHDIR_NP 0
+#define WATTLE_SPAWN_CHDIR 0
+#define WATTLE_SPAWN_CHDIR_NP 0
 #elif defined(__GLIBC__)
-#define JANET_ZIG_SPAWN_CHDIR 1
-#define JANET_ZIG_SPAWN_CHDIR_NP 1
+#define WATTLE_SPAWN_CHDIR 1
+#define WATTLE_SPAWN_CHDIR_NP 1
 #elif defined(__APPLE__)
 #include <AvailabilityMacros.h>
 #if defined(MAC_OS_X_VERSION_10_15) && (MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_15)
-#define JANET_ZIG_SPAWN_CHDIR 1
-#define JANET_ZIG_SPAWN_CHDIR_NP 1
+#define WATTLE_SPAWN_CHDIR 1
+#define WATTLE_SPAWN_CHDIR_NP 1
 #else
-#define JANET_ZIG_SPAWN_CHDIR 0
-#define JANET_ZIG_SPAWN_CHDIR_NP 0
+#define WATTLE_SPAWN_CHDIR 0
+#define WATTLE_SPAWN_CHDIR_NP 0
 #endif
 #elif defined(__FreeBSD__)
-#define JANET_ZIG_SPAWN_CHDIR 1
-#define JANET_ZIG_SPAWN_CHDIR_NP 1
+#define WATTLE_SPAWN_CHDIR 1
+#define WATTLE_SPAWN_CHDIR_NP 1
 #else
-#define JANET_ZIG_SPAWN_CHDIR 0
-#define JANET_ZIG_SPAWN_CHDIR_NP 0
+#define WATTLE_SPAWN_CHDIR 0
+#define WATTLE_SPAWN_CHDIR_NP 0
 #endif
 
-#endif /* JANET_ZIG_OS_ABI_H */
+#endif /* WATTLE_OS_ABI_H */

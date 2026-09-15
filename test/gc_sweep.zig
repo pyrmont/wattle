@@ -495,7 +495,7 @@ fn aThreadedAbstractLosesItsReference() void {
 /// that walked `vm.gc.blocks` and not `vm.gc.weak_blocks` would leak the block
 /// and the data array of every weak table and weak array alive at deinit, and
 /// a list head still pointing at them afterwards is that leak seen from
-/// inside. `tools/testing/leaks.sh` sees the same thing from outside and
+/// inside. `res/testing/leaks.sh` sees the same thing from outside and
 /// expects zero here, as it does everywhere.
 fn clearMemoryFinalizesEverything() void {
     const abstract = abstracts.newBytes(final(), 8);

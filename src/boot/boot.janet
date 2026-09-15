@@ -2597,7 +2597,7 @@
 # Initialize syspath
 (each [k v] (partition 2 (tuple/slice boot/args 2))
   (case k
-    "JANET_PATH" (setdyn *syspath* v)))
+    "WATTLE_PATH" (setdyn *syspath* v)))
 
 (defn make-env
   `Create a new environment table. The new environment
@@ -4864,13 +4864,13 @@
   (var compile-only false)
   (var expect-image false)
 
-  (when-let [jp (getenv-alias "JANET_PATH")]
+  (when-let [jp (getenv-alias "WATTLE_PATH")]
     (def path-sep (if (index-of (os/which) [:windows :mingw]) ";" ":"))
     (def paths (reverse! (string/split path-sep jp)))
     (for i 1 (length paths)
       (module/add-syspath (get paths i)))
     (setdyn *syspath* (first paths)))
-  (if-let [jprofile (getenv-alias "JANET_PROFILE")] (setdyn *profilepath* jprofile))
+  (if-let [jprofile (getenv-alias "WATTLE_PROFILE")] (setdyn *profilepath* jprofile))
   (apply-color
     (and
       (not (getenv-alias "NO_COLOR"))
@@ -4885,7 +4885,7 @@
   # Flag handlers
   (def handlers
     {"h" (fn [&]
-           (print "usage: " (dyn *executable* "janet") " [options] script args...")
+           (print "usage: " (dyn *executable* "wattle") " [options] script args...")
            (print
              ```
              Options are:
@@ -4896,7 +4896,7 @@
                --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
                --debug (-d)            : Set the debug flag in the REPL
                --repl (-r)             : Enter the REPL after running all scripts
-               --noprofile (-R)        : Disables loading profile.janet when JANET_PROFILE is present
+               --noprofile (-R)        : Disables loading profile.janet when WATTLE_PROFILE is present
                --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
                --quiet (-q)            : Hide logo (quiet)
                --flycheck (-k)         : Compile scripts but do not execute (flycheck)
@@ -4918,7 +4918,7 @@
              ```)
            (os/exit 0)
            1)
-     "v" (fn [&] (print janet/version "-" janet/build) (os/exit 0) 1)
+     "v" (fn [&] (print wattle/version) (os/exit 0) 1)
      "s" (fn [&] (set raw-stdin true) (set should-repl true) 1)
      "r" (fn [&] (set should-repl true) 1)
      "p" (fn [&] (set exit-on-error false) 1)
@@ -5018,7 +5018,7 @@
       compile-only (flycheck stdin :source :stdin :exit exit-on-error)
       (do
         (if-not quiet
-          (print "Janet " janet/version "-" janet/build " " (os/which) "/" (os/arch) "/" (os/compiler) " - '(doc)' for help"))
+          (print "Wattle " wattle/version " " (os/which) "/" (os/arch) "/" (os/compiler) " - '(doc)' for help"))
         (flush)
         (def env (make-env))
         (defn getprompt [p]

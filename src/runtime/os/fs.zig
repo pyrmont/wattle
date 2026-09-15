@@ -582,7 +582,7 @@ inline fn readEntryName(handle: *anyopaque) ?[*:0]const u8 {
     if (builtin.os.tag == .wasi) {
         const entry = h.readdir(@ptrCast(handle));
         if (entry == null) return null;
-        return @ptrCast(h.janet_zig_dirent_name(entry));
+        return @ptrCast(h.wattle_dirent_name(entry));
     } else {
         const entry = std.c.readdir(@ptrCast(handle)) orelse return null;
         return @ptrCast(&entry.name);

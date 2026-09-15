@@ -8,7 +8,7 @@
 
 # **An ordinary import, which is how a user reaches a native module.** The path
 # is an argument only because `zig build` puts the shared object in its cache
-# rather than on `JANET_PATH`; everything after this line is what someone who
+# rather than on `WATTLE_PATH`; everything after this line is what someone who
 # had installed the module would write.
 #
 # `cfuns` passes its prefix to the *registry*, for stack traces, and leaves the

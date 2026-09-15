@@ -1,5 +1,5 @@
-#ifndef JANET_ZIG_FILEWATCH_ABI_H
-#define JANET_ZIG_FILEWATCH_ABI_H
+#ifndef WATTLE_FILEWATCH_ABI_H
+#define WATTLE_FILEWATCH_ABI_H
 
 /* The host headers `filewatch.c`'s three backends work through, prepared for
  * Zig's translate-c.
@@ -71,21 +71,21 @@
  * translation as on a mingw compilation, and Aro predefines the Unix names
  * there too. The three arms are mutually exclusive on every real target, so
  * the reordering changes nothing else. */
-#define JANET_ZIG_WATCH_NONE 0
-#define JANET_ZIG_WATCH_INOTIFY 1
-#define JANET_ZIG_WATCH_WINDOWS 2
-#define JANET_ZIG_WATCH_KQUEUE 3
+#define WATTLE_WATCH_NONE 0
+#define WATTLE_WATCH_INOTIFY 1
+#define WATTLE_WATCH_WINDOWS 2
+#define WATTLE_WATCH_KQUEUE 3
 
 #if defined(_WIN32) || defined(WIN32)
-#define JANET_ZIG_WATCH_BACKEND JANET_ZIG_WATCH_WINDOWS
+#define WATTLE_WATCH_BACKEND WATTLE_WATCH_WINDOWS
 #elif defined(__linux__)
-#define JANET_ZIG_WATCH_BACKEND JANET_ZIG_WATCH_INOTIFY
+#define WATTLE_WATCH_BACKEND WATTLE_WATCH_INOTIFY
 #elif (defined(__APPLE__) && defined(__MACH__)) \
     || defined(__FreeBSD__) || defined(__DragonFly__) \
     || defined(__NetBSD__) || defined(__OpenBSD__)
-#define JANET_ZIG_WATCH_BACKEND JANET_ZIG_WATCH_KQUEUE
+#define WATTLE_WATCH_BACKEND WATTLE_WATCH_KQUEUE
 #else
-#define JANET_ZIG_WATCH_BACKEND JANET_ZIG_WATCH_NONE
+#define WATTLE_WATCH_BACKEND WATTLE_WATCH_NONE
 #endif
 
-#endif /* JANET_ZIG_FILEWATCH_ABI_H */
+#endif /* WATTLE_FILEWATCH_ABI_H */

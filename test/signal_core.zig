@@ -338,7 +338,7 @@ fn theCommitPublishesAndMarks(nothing: *functions.Function) void {
     expect(fiber.flags.did_raise);
 
     // With no current fiber the register is still written and nothing is
-    // dereferenced. `janet_zig_signal_record` reaches this whenever a panic is
+    // dereferenced. `wattle_signal_record` reaches this whenever a panic is
     // raised outside any fiber at all.
     reg = wrap.fromNil();
     harness.vm().fiber = null;

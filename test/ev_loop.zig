@@ -656,7 +656,7 @@ fn theNullCallback() void {
 /// Freeing for every tag is what makes `(os/shell "cmd")` abort the process
 /// and `ev/thread`'s start failure free `"failed to start thread"`. The two
 /// halves are asserted here by construction: every payload below is a separate
-/// heap block, so `tools/testing/leaks.sh` counts a payload the callback
+/// heap block, so `res/testing/leaks.sh` counts a payload the callback
 /// should have freed and did not, and the sanitizer catches one it freed twice.
 fn theThreadedReplyTags() void {
     const Case = struct { tag: c_int, callback_frees: bool };

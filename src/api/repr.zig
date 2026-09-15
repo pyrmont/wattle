@@ -276,7 +276,7 @@ pub const TaggedPayload = extern union {
 /// The fundamental word. It is `extern` because a `Value` crosses the
 /// published C ABI by value, in `janet_get`'s return and in the
 /// argument of every crossing that takes one, and
-/// `tools/check/layouts.txt` classes it `abi,field,repr`, which is all three
+/// `res/check/layouts.txt` classes it `abi,field,repr`, which is all three
 /// reasons a layout is fixed at once.
 pub const Value = switch (config.value_repr) {
     .nanbox_64 => extern union {
@@ -304,7 +304,7 @@ pub const Value = switch (config.value_repr) {
 ///
 /// `build.zig` selects this arm wherever the pointer is four bytes wide and
 /// `-Dnanbox` is not false, which is the default on such a target.
-/// `tools/testing/matrix.janet` runs the suites on it under wasmtime through
+/// `res/testing/matrix.janet` runs the suites on it under wasmtime through
 /// the `wasm32-wasi` entry, and builds it for `riscv32-linux-musl`,
 /// `x86-linux-musl` and `arm-linux-musleabihf`.
 pub const nanbox32 = struct {

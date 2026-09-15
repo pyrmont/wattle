@@ -18,7 +18,7 @@ cd zig-out/web && python3 -m http.server
 ```
 
 then open `http://localhost:8000/`. The installed directory holds
-`janet-web.wasm`, `index.html` and `wasi.js`, and is servable on its own. A
+`wattle-web.wasm`, `index.html` and `wasi.js`, and is servable on its own. A
 browser will not fetch the binary from a `file://` page, which is why a
 server is needed.
 
@@ -32,7 +32,7 @@ under Node.
 
 ### A reactor rather than a command
 
-The `janet` client reads standard input one line at a time and blocks between
+The `wattle` client reads standard input one line at a time and blocks between
 lines. A page cannot block: waiting for input would need a Web Worker,
 `SharedArrayBuffer` and `Atomics.wait`, and those need cross-origin isolation
 headers a static host does not always set. So the page drives the runtime
@@ -43,7 +43,7 @@ A WASI *command* has `_start`, which runs `main` and exits. A *reactor* has
 whatever functions the module exports. `build.zig`'s `web` step sets
 `wasi_exec_model = .reactor` on the executable. The page calls `_initialize`
 and `janet_web_init` once, and `janet_web_eval` for each submission. The
-runtime is the same `subsystems` module the `janet` client imports, unchanged.
+runtime is the same `subsystems` module the `wattle` client imports, unchanged.
 
 ### A submission runs as a REPL line
 
@@ -62,7 +62,7 @@ rather than a prompt for more.
 ### The imports
 
 The binary imports only from `wasi_snapshot_preview1`, which the build checks
-with the same `tools/check/wasm_imports.zig` that checks `janet.wasm`. A
+with the same `res/check/wasm_imports.zig` that checks `wattle.wasm`. A
 ReleaseSmall or ReleaseFast build imports 26 functions, and a Debug or
 ReleaseSafe build 32. `wasi.js` provides the 32, and `test.js` fails if the
 binary imports one it does not.
@@ -85,11 +85,11 @@ so `os/exit` ends the instance.
 ### Unbounded recursion
 
 The `web` step builds with a Janet stack ceiling of 1000000 slots, where
-`janet.wasm` has the default 0x7fffffff. `-Dstack-max` overrides it.
+`wattle.wasm` has the default 0x7fffffff. `-Dstack-max` overrides it.
 
 At the default, `(defn f [n] (+ 1 (f (inc n)))) (f 0)` exhausts wasm32's heap
 before reaching the ceiling, prints `janet out of memory` and traps.
-`janet.wasm` under wasmtime does the same. A trap leaves the instance
+`wattle.wasm` under wasmtime does the same. A trap leaves the instance
 unusable, so every definition made in the page would be lost. At 1000000
 slots the same call raises `error: stack overflow`, and the instance keeps its
 state.
@@ -105,13 +105,13 @@ new one, with a new environment.
 ### What is not there
 
 The WASI target has no event loop, threads, FFI, networking, processes or
-dynamic modules, as `janet.wasm` has none. A submission runs on the page's
+dynamic modules, as `wattle.wasm` has none. A submission runs on the page's
 main thread until it returns, and nothing interrupts it, so a loop that does
 not end freezes the tab.
 
 ## What the test asserts
 
-`node examples/web/test.js [path]` loads `zig-out/web/janet-web.wasm`, or
+`node examples/web/test.js [path]` loads `zig-out/web/wattle-web.wasm`, or
 `path`, and checks:
 
 - that every import is from `wasi_snapshot_preview1` and provided by

@@ -8,21 +8,21 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 /// The C shape: a count and a pointer, returning a value with no way to
 /// refuse. It is what a module author coming from a C API writes first.
-fn oldShape(argc: i32, argv: [*]janet.Value) janet.Value {
+fn oldShape(argc: i32, argv: [*]wattle.Value) wattle.Value {
     _ = argc;
     return argv[0];
 }
 
-fn defs(env: *janet.Env) janet.Error!void {
-    janet.cfuns(env, "wrong", &.{
-        janet.reg("identity", &oldShape, null),
+fn defs(env: *wattle.Env) wattle.Error!void {
+    wattle.cfuns(env, "wrong", &.{
+        wattle.reg("identity", &oldShape, null),
     });
 }
 
 comptime {
-    janet.entry(defs);
+    wattle.entry(defs);
 }

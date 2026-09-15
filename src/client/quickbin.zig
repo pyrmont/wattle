@@ -4,7 +4,7 @@
 //! it generates: `quickbin_image`, the image of the program, and
 //! `quickbin_natives`, the native modules linked into the executable. Each
 //! native is a separate object whose `module.entry` exports
-//! `_janet_init_<name>` and `_janet_mod_config_<name>`, and
+//! `_wattle_init_<name>` and `_wattle_mod_config_<name>`, and
 //! `quickbin_natives` names those symbols with `@extern`.
 //!
 //! `runRaising` builds the environment as `cli.zig` does and calls
@@ -60,8 +60,8 @@ const image = @embedFile("quickbin_image");
 /// The loader cfunction for `natives[index]`.
 ///
 /// The cfunction takes no arguments. It refuses the module if its
-/// `_janet_mod_config` report differs from this build's, runs its
-/// `_janet_init` into a new table, sets `:native` to the module's name and
+/// `_wattle_mod_config` report differs from this build's, runs its
+/// `_wattle_init` into a new table, sets `:native` to the module's name and
 /// returns the table, as `native` does for a module it opens.
 fn Loader(comptime index: usize) type {
     return struct {

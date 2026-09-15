@@ -8,7 +8,7 @@
 
 # **An ordinary import, which is how a user reaches a native module.** The path
 # is an argument only because `zig build` puts the shared object in its cache
-# rather than on `JANET_PATH`; everything after this line is what someone who
+# rather than on `WATTLE_PATH`; everything after this line is what someone who
 # had installed the module would write.
 (import* module-path :prefix "digest/")
 
@@ -97,7 +97,7 @@
 #
 # `os/exit` tears the runtime down while a hash is in flight. Teardown runs
 # the `digest/hash` finalizer, which joins the thread, before it releases the
-# loop, so the thread's `janet.post` lands in a loop that is still there. The
+# loop, so the thread's `wattle.post` lands in a loop that is still there. The
 # run is a child process because the exit is the thing under test.
 #
 # The hash is 64 MiB so that it is still running when `os/exit` is reached:

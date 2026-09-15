@@ -78,7 +78,7 @@ const outer = @This();
 /// exactly the ones `capi.zig` puts in the table: `fromString`, `fromAbstract`
 /// and `fromPointer` fill `wrap_string`, `wrap_abstract` and `wrap_pointer`. A
 /// convention on the others would be an ABI nothing crosses, and
-/// `tools/check/callconv.janet` is the check that says so. They stay `pub`
+/// `res/check/callconv.janet` is the check that says so. They stay `pub`
 /// because `test/value_wrap.zig` asserts each against the inline spelling
 /// beside it.
 ///

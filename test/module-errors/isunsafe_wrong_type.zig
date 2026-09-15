@@ -7,18 +7,18 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 const Payload = struct { n: i32 };
 
-fn confusedMarshal(self: *Payload, m: *janet.Marshal) janet.Error!void {
+fn confusedMarshal(self: *Payload, m: *wattle.Marshal) wattle.Error!void {
     // The render, not the marshal: a plausible slip, and the sort of thing
     // `anytype` would otherwise leave to a much later error.
-    if (janet.isUnsafe(self)) return janet.panic("unreachable");
-    janet.pushAbstract(m, self);
+    if (wattle.isUnsafe(self)) return wattle.panic("unreachable");
+    wattle.pushAbstract(m, self);
 }
 
-pub const at = janet.define(Payload, .{
+pub const at = wattle.define(Payload, .{
     .name = "module-errors/isunsafe-wrong-type",
     .marshal = confusedMarshal,
 });

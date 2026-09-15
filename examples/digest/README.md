@@ -24,7 +24,7 @@ this shape.
 
 builds it and runs `examples/digest/test/digest.janet` against it. That file is
 an ordinary `import*` of the built shared object. The path is an argument only
-because `zig build` leaves the object in its cache rather than on `JANET_PATH`,
+because `zig build` leaves the object in its cache rather than on `WATTLE_PATH`,
 and everything after the import is what someone who had installed the module
 would write.
 
@@ -38,18 +38,18 @@ three operations to take part.
 
 | operation | what it does | where it may be called |
 | --- | --- | --- |
-| `janet.await()` | suspends the fiber this cfunction is running on | a cfunction |
-| `janet.post(loop, cb, ctx)` | asks the loop thread to run `cb(wake, ctx)` | any thread, including a thread that is not running Janet |
-| `janet.wake(w, fiber, value)` | puts the fiber back on the run queue | inside a posted callback |
+| `wattle.await()` | suspends the fiber this cfunction is running on | a cfunction |
+| `wattle.post(loop, cb, ctx)` | asks the loop thread to run `cb(wake, ctx)` | any thread, including a thread that is not running Janet |
+| `wattle.wake(w, fiber, value)` | puts the fiber back on the run queue | inside a posted callback |
 
-`janet.loop()` and `janet.rootFiber()` are what a cfunction reads before it
+`wattle.loop()` and `wattle.rootFiber()` are what a cfunction reads before it
 suspends.
 
 ### The thread discipline in the types
 
 `Loop` and `Wake` are both `opaque {}` and both are the same pointer underneath.
 They are two types on purpose: a worker thread is given a `Loop` and
-`janet.post` is the only function that takes a `Loop`, so resuming a fiber from
+`wattle.post` is the only function that takes a `Loop`, so resuming a fiber from
 a thread that is not running Janet is unspellable rather than discouraged.
 `Wake` arrives as the posted callback's first parameter and is good for that
 call.
@@ -59,15 +59,15 @@ call.
 The order in the cfunction is required.
 
 ```zig
-const bytes = try janet.getBytes(argv, 0); // read
-const l = try janet.loop();                // the loop, passed to the thread
-const fiber = try janet.rootFiber();       // the fiber, passed to the callback
-const job = janet.new(Hash, &hash_type, null); // the job, owning the thread
-janet.gcroot(fiber);                       // protect all three across the wait
-janet.gcroot(argv[0]);
-janet.gcroot(janet.abstract(job));
+const bytes = try wattle.getBytes(argv, 0); // read
+const l = try wattle.loop();                // the loop, passed to the thread
+const fiber = try wattle.rootFiber();       // the fiber, passed to the callback
+const job = wattle.new(Hash, &hash_type, null); // the job, owning the thread
+wattle.gcroot(fiber);                       // protect all three across the wait
+wattle.gcroot(argv[0]);
+wattle.gcroot(wattle.abstract(job));
 job.thread = try std.Thread.spawn(...);    // start the work
-return janet.await();                      // then suspend
+return wattle.await();                      // then suspend
 ```
 
 ### Starting the thread before the suspend
@@ -79,11 +79,11 @@ to synchronise.
 
 ### What the worker thread may call
 
-The worker thread touches nothing in `janet.*` but `janet.post`. Every other
+The worker thread touches nothing in `janet.*` but `wattle.post`. Every other
 function on the surface finds the runtime through a thread-local a worker thread
 does not have, and calling any of them from such a thread aborts with `called
 from a thread that is not running Janet` rather than reading null state.
-`janet.post` is safe because it takes the loop as an argument: it reads no
+`wattle.post` is safe because it takes the loop as an argument: it reads no
 thread-local, allocates nothing, and writes one fixed-size event into the loop's
 self-pipe.
 
@@ -91,15 +91,15 @@ self-pipe.
 
 Rooting is the module's, and the wait is a re-entry like any other. The fiber,
 the argument and the job's abstract value are all `Value`s the module keeps
-across a span in which Janet code runs, so all three are `janet.gcroot`ed before
-`janet.await` and `janet.gcunroot`ed in the callback. The slice the thread
+across a span in which Janet code runs, so all three are `wattle.gcroot`ed before
+`wattle.await` and `wattle.gcunroot`ed in the callback. The slice the thread
 hashes points at the string's own storage, and the root is what keeps that
 storage there. The root on the job is what keeps the collector from finalizing
 it while the thread still writes into it.
 
-### A `false` from `janet.wake`
+### A `false` from `wattle.wake`
 
-A `false` from `janet.wake` is a state to clean up after rather than a failure
+A `false` from `wattle.wake` is a state to clean up after rather than a failure
 to report. `ev/cancel` may have moved the fiber on, or the fiber may have
 finished, and the runtime would have dropped the resume. The roots are the
 module's either way, so the callback unroots on both branches. A module that
@@ -108,7 +108,7 @@ cleaned up only under the `true` branch would leak the cancelled case.
 
 ### Joining the thread
 
-A `*Loop` is valid until the runtime shuts down, and a `janet.post` after that
+A `*Loop` is valid until the runtime shuts down, and a `wattle.post` after that
 reads released state. Nothing signals the shutdown to a thread that is not
 running Janet, so the thread cannot wait for it and stop. The join goes in a
 finalizer instead. The job is a `digest/hash` abstract value, and its `gc`
@@ -116,7 +116,7 @@ callback joins the thread if the callback has not already. Teardown runs every
 finalizer before it releases the loop, so the join finishes while the `*Loop`
 is still valid. In normal operation the callback joins the thread that has just
 posted it, which takes as long as that thread takes to return from
-`janet.post`, and the finalizer finds nothing to join. The cost is at exit: a
+`wattle.post`, and the finalizer finds nothing to join. The cost is at exit: a
 hash in flight delays it until the hash is done.
 
 ### The callback
@@ -145,7 +145,7 @@ the same rule, met here at the point where the wait makes it apply.
   loop is healthy afterwards;
 - that `os/exit` with a hash in flight exits 0, run in a child process.
 
-`test/zig-native.janet` is where `janet.wake`'s `false` branch is counted.
+`test/zig-native.janet` is where `wattle.wake`'s `false` branch is counted.
 
 ## What is deliberately not offered
 

@@ -484,7 +484,7 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
         // has no device files, so there this contract writes its own and
         // unlinks it, the file staying open behind the name for as long as the
         // handle does.
-        const write_only_path = "janet-zig-core-env-write-only";
+        const write_only_path = "wattle-core-env-write-only";
         const write_only = if (builtin.os.tag == .wasi)
             c.fopen(write_only_path, "w")
         else

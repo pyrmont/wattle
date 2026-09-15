@@ -1,15 +1,19 @@
 const std = @import("std");
 
-/// Janet's version, in one place.
+/// Wattle's version, in one place.
 ///
-/// `Config` carries these four values into the runtime, `boot_tests.zig`
-/// compares the quintet and `env.zig` publishes `janet/build`, so every reader
-/// resolves back to this declaration rather than to a spelling of its own.
-const version = std.SemanticVersion{ .major = 1, .minor = 41, .patch = 3 };
+/// `Config` carries these four values into the runtime: `env.zig` publishes
+/// `wattle/version`, `fingerprint.zig` reports the three numbers to a module
+/// loader, and the libraries take the same number, so every reader resolves
+/// back to this declaration rather than to a spelling of its own.
+const version = std.SemanticVersion{ .major = 0, .minor = 1, .patch = 0 };
 const version_extra = "-dev";
 const version_string = std.fmt.comptimePrint("{d}.{d}.{d}{s}", .{
     version.major, version.minor, version.patch, version_extra,
 });
+/// The version of Janet this runtime matches, which `env.zig` publishes as
+/// `janet/version`.
+const janet_version = "1.41.3";
 const build_name = "zig";
 
 /// The Janet suites, and the configuration each one needs.
@@ -186,7 +190,7 @@ const Selection = struct {
     /// over the fields rather than from a list.
     ///
     /// `src/runtime/fatal.zig` provides `outOfMemory` and `fatal`, which
-    /// subsystems throughout the tree reach by import; the `janet_zig_*` names
+    /// subsystems throughout the tree reach by import; the `wattle_*` names
     /// the module table points at are `capi.zig`'s. This condition used to name
     /// the subsystems that called one of the two, and such a list goes stale
     /// the moment something adds another: ten of them were missing once,
@@ -202,7 +206,7 @@ const Selection = struct {
     }
 };
 
-/// The `janet` module, for a build that is not this one.
+/// The `wattle` module, for a build that is not this one.
 ///
 /// **This is the whole public build surface, and it exists because the example
 /// did not prove what it looked like it proved.** `examples/numarray` imports
@@ -210,15 +214,15 @@ const Selection = struct {
 /// imports is constructed inside `build()` from `RuntimeGraph`, the generated
 /// configuration and the private `abi`, `raise`, `constants` and
 /// `abstract_type` modules. None of that is reachable from another package, so
-/// "an author writes `@import("janet")`" was demonstrated only for authors
+/// "an author writes `@import("wattle")`" was demonstrated only for authors
 /// building inside this repository.
 ///
 /// A dependent's `build.zig` calls this instead:
 ///
 /// ```zig
-/// const janet = @import("janet");
+/// const wattle = @import("wattle");
 /// const mod = b.createModule(.{ .root_source_file = b.path("mymodule.zig"), ... });
-/// mod.addImport("janet", janet.janetModule(b.dependency("janet", .{
+/// mod.addImport("wattle", wattle.wattleModule(b.dependency("wattle", .{
 ///     .target = target,
 ///     .optimize = optimize,
 /// }), target, optimize));
@@ -233,7 +237,7 @@ const Selection = struct {
 /// is wrong values.
 /// `examples/standalone` is the worked instance and `zig build examples/standalone`
 /// builds it the way an outside author would.
-pub fn janetModule(
+pub fn wattleModule(
     dep: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -289,17 +293,17 @@ pub fn janetModule(
     // is the runtime's business. Offering it here would put 163 declarations
     // a module's source cannot resolve into the author's `.so`, which is a
     // trap rather than a service.
-    const janet_module = b.createModule(.{
+    const wattle_module = b.createModule(.{
         .root_source_file = b.path("src/module.zig"),
         .target = target,
         .optimize = optimize,
     });
-    configureCModule(b, janet_module, target, opts, cfg);
-    janet_module.addImport("abi", abi_module);
-    janet_module.addImport("repr", repr_module);
-    janet_module.addImport("constants", constants_module);
-    janet_module.addImport("config", config_module);
-    return janet_module;
+    configureCModule(b, wattle_module, target, opts, cfg);
+    wattle_module.addImport("abi", abi_module);
+    wattle_module.addImport("repr", repr_module);
+    wattle_module.addImport("constants", constants_module);
+    wattle_module.addImport("config", config_module);
+    return wattle_module;
 }
 
 /// A native module linked into a `quickbin` executable.
@@ -308,7 +312,7 @@ pub const QuickbinNative = struct {
     /// bindings carry in the image. Letters, digits, `_` and `-` only: it is
     /// spliced into two symbol names and a Janet string.
     name: []const u8,
-    /// The module's Zig root. It imports `janet` and calls `janet.entry`.
+    /// The module's Zig root. It imports `wattle` and calls `wattle.entry`.
     root: std.Build.LazyPath,
 };
 
@@ -331,16 +335,16 @@ pub const QuickbinOptions = struct {
 /// and `host` is this package instantiated for the build machine:
 ///
 /// ```zig
-/// const exe = janet.quickbin(
-///     b.dependency("janet", .{ .target = target, .optimize = optimize }),
-///     b.dependency("janet", .{ .target = b.graph.host, .optimize = .Debug }),
+/// const exe = wattle.quickbin(
+///     b.dependency("wattle", .{ .target = target, .optimize = optimize }),
+///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug }),
 ///     .{ .name = "hello", .source = b.path("main.janet"), .target = target, .optimize = optimize,
 ///        .natives = &.{.{ .name = "greet", .root = b.path("greet.zig") }} },
 /// );
 /// b.installArtifact(exe);
 /// ```
 ///
-/// `host`'s `janet` client makes the image: each native is built for the host
+/// `host`'s `wattle` client makes the image: each native is built for the host
 /// as a shared library, loaded and passed to `module/add-native`, and then
 /// `janet -c` compiles `source`. Each native is also built for the target as
 /// an object whose entry symbols carry its name, and `src/client/quickbin.zig`
@@ -369,7 +373,7 @@ pub fn quickbin(
     return quickbinExecutable(target_side, host_side, opts);
 }
 
-/// What `build()` made for one builder, which `janetModule` and `quickbin`
+/// What `build()` made for one builder, which `wattleModule` and `quickbin`
 /// read back.
 ///
 /// Keyed by builder rather than held in one global, because a dependent that
@@ -383,7 +387,7 @@ const Built = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     graph: ?RuntimeGraph,
-    /// The `janet` client, which makes a `quickbin` image on the host.
+    /// The `wattle` client, which makes a `quickbin` image on the host.
     client: *std.Build.Step.Compile,
 };
 
@@ -405,7 +409,7 @@ fn recordBuilt(built: Built) void {
             return;
         }
     }
-    @panic("build.zig: more than eight instances of the janet package");
+    @panic("build.zig: more than eight instances of the wattle package");
 }
 
 fn triple(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
@@ -473,19 +477,19 @@ pub fn build(b: *std.Build) void {
     // output rather than for something linked against it. It is what a
     // reproducibility claim compares: the bytes, rather than the C an earlier
     // emitter wrapped around them.
-    const image_step = b.step("image", "Generate the core image and write it to <prefix>/janet-image.bin");
-    image_step.dependOn(&b.addInstallFile(image_source, "janet-image.bin").step);
+    const image_step = b.step("image", "Generate the core image and write it to <prefix>/wattle-image.bin");
+    image_step.dependOn(&b.addInstallFile(image_source, "wattle-image.bin").step);
 
     // Now the runtime object, which embeds what the generator just produced.
     const runtime_graph = makeRuntimeGraph(b, target, optimize, options, config, image_source);
     const zig_runtime = if (runtime_graph) |g|
-        selectBackend(b.addObject(.{ .name = "janet-zig", .root_module = g.subsystems }))
+        selectBackend(b.addObject(.{ .name = "wattle-runtime", .root_module = g.subsystems }))
     else
         null;
 
     const static_module = makeRuntimeModule(b, target, optimize, options, config, zig_runtime);
     const static_library = selectBackend(b.addLibrary(.{
-        .name = "janet",
+        .name = "wattle",
         .linkage = .static,
         .version = version,
         .root_module = static_module,
@@ -501,7 +505,7 @@ pub fn build(b: *std.Build) void {
 
     const shared_module = makeRuntimeModule(b, target, optimize, options, config, zig_runtime);
     const shared_library = selectBackend(b.addLibrary(.{
-        .name = "janet",
+        .name = "wattle",
         .linkage = .dynamic,
         .version = version,
         .root_module = shared_module,
@@ -537,7 +541,7 @@ pub fn build(b: *std.Build) void {
         client_module.addImport("constants", g.constants);
         client_module.addImport("config", g.config);
     }
-    const client = selectBackend(b.addExecutable(.{ .name = "janet", .root_module = client_module }));
+    const client = selectBackend(b.addExecutable(.{ .name = "wattle", .root_module = client_module }));
     applyLinkage(client, options, target);
     if (target.result.os.tag != .windows and !wasm) client.rdynamic = true;
     // **A native module resolves into the client, and the client must keep the
@@ -578,7 +582,7 @@ pub fn build(b: *std.Build) void {
     // and does not make these.
     var wasm_binaries: std.ArrayList(*std.Build.Step.Compile) = .empty;
 
-    // `janet`, the module a native module imports -- and the *only* one it
+    // `wattle`, the module a native module imports -- and the *only* one it
     // imports. `src/module.zig` has the argument; what it costs the build
     // is this function, which any module in the tree asks for by name.
     const nativeModule = struct {
@@ -604,7 +608,7 @@ pub fn build(b: *std.Build) void {
         options,
         config,
         "src/runtime/native_module.zig",
-        "janet-zig-native",
+        "wattle-native",
     );
     // Dynamic module loading is platform-specific, so ship this alongside the
     // test executables for cross-platform runs.
@@ -676,7 +680,7 @@ pub fn build(b: *std.Build) void {
     if (quickbin_exe) |exe| quickbin_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
 
     // The three load refusals: one shared object per field the loader
-    // compares. Each exports `_janet_mod_config` and `_janet_init` by hand,
+    // compares. Each exports `_wattle_mod_config` and `_wattle_init` by hand,
     // so that it reports a configuration it was not built with, which is what
     // a module built through `module.entry` cannot do. Its import list is the
     // boundary's layouts, the version and the configuration bits and nothing
@@ -748,7 +752,7 @@ pub fn build(b: *std.Build) void {
     // subsystem, and every name it publishes has a Zig caller that fails to
     // compile when the translation stops providing it.
 
-    const run_step = b.step("run", "Run Janet");
+    const run_step = b.step("run", "Run Wattle");
     const run_client = b.addRunArtifact(client);
     run_client.setCwd(b.path("."));
     if (b.args) |args| run_client.addArgs(args);
@@ -792,7 +796,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
-        const exe = selectBackend(b.addExecutable(.{ .name = "janet-zig-contract-test", .root_module = module }));
+        const exe = selectBackend(b.addExecutable(.{ .name = "wattle-contract-test", .root_module = module }));
         applyLinkage(exe, options, target);
         // A contract may load the native-module fixture, and a contract that
         // registers a cfunction the runtime later names needs its own symbols
@@ -800,21 +804,21 @@ pub fn build(b: *std.Build) void {
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
         // Installed unconditionally, for the same reason
-        // `janet-contract-support.o` is: the narrow loop is a first-class
-        // instrument here. `tools/testing/contract.sh` runs one contract by name, and
+        // `wattle-contract-support.o` is: the narrow loop is a first-class
+        // instrument here. `res/testing/contract.sh` runs one contract by name, and
         // for a Zig contract that is this binary with an argument rather than
         // a `zig cc` of its own -- there is no source for a shallow link to
         // compile, and no link either, because the runtime it tests is inside.
         //
         // Into `test` rather than `bin`, which is `installTest`'s directory, so
-        // that an install for use carries `janet` and nothing else. This is the
+        // that an install for use carries `wattle` and nothing else. This is the
         // unconditional install and `installTest` is the flagged one, so the
         // driver is not passed to it: that would install it twice.
         //
         // Not on wasm, where none of the four readers of it --
         // `contract.sh`, `leaks.sh`, `mutate.janet` and `matrix.janet` --
         // can run the file they would find: it needs a wasm host, and each of
-        // them executes `<prefix>/test/janet-zig-contract-test` directly.
+        // them executes `<prefix>/test/wattle-contract-test` directly.
         if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
             .dest_dir = .{ .override = .{ .custom = "test" } },
         }).step);
@@ -920,17 +924,17 @@ pub fn build(b: *std.Build) void {
     // is exactly the wrong diagnosis. A fixture compiles the author package
     // and its leaves and nothing else.
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
-        const janet_module = b.createModule(.{
+        const wattle_module = b.createModule(.{
             .root_source_file = b.path("src/module.zig"),
             .target = target,
             .optimize = optimize,
         });
-        configureCModule(b, janet_module, target, options, config);
-        janet_module.addImport("abi", graph.abi);
-        janet_module.addImport("repr", graph.repr);
-        janet_module.addImport("cabi", graph.cabi);
-        janet_module.addImport("config", graph.module_config);
-        janet_module.addImport("constants", graph.constants);
+        configureCModule(b, wattle_module, target, options, config);
+        wattle_module.addImport("abi", graph.abi);
+        wattle_module.addImport("repr", graph.repr);
+        wattle_module.addImport("cabi", graph.cabi);
+        wattle_module.addImport("config", graph.module_config);
+        wattle_module.addImport("constants", graph.constants);
         for (module_error_cases) |case| {
             const module = b.createModule(.{
                 .root_source_file = b.path(case.file),
@@ -938,7 +942,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
             applyFramePointer(module, options, optimize);
-            module.addImport("janet", janet_module);
+            module.addImport("wattle", wattle_module);
             module.addImport("host", graph.host);
             module.addImport("repr", graph.repr);
             const obj = selectBackend(b.addObject(.{ .name = "module-errors", .root_module = module }));
@@ -953,7 +957,7 @@ pub fn build(b: *std.Build) void {
     // modules in hand, so it proves the *source* experience and cannot notice
     // if the published build surface rots. This step runs `zig build test`
     // inside `examples/standalone`, which depends on this package by path and
-    // reaches it only through `janetModule` and `quickbin` -- so a change that
+    // reaches it only through `wattleModule` and `quickbin` -- so a change that
     // breaks a real consumer fails here rather than in somebody else's
     // repository. `test` there runs the executable `quickbin` built, so the
     // step proves the program runs rather than only that it links.
@@ -974,7 +978,7 @@ pub fn build(b: *std.Build) void {
     // **It must actually run.** Without this the build graph has no idea what
     // this command reads -- the sub-package's sources and this file's public
     // helper are not declared inputs -- so it is hashed on its argv alone,
-    // reports `cached`, and passes forever. Breaking `janetModule` on purpose
+    // reports `cached`, and passes forever. Breaking `wattleModule` on purpose
     // is what showed it: the sub-build failed when run by hand and the step
     // stayed green. An instrument that cannot fail is the thing this whole
     // package of checks exists to avoid. The inner `zig build` does its own
@@ -1012,7 +1016,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
-        const exe = selectBackend(b.addTest(.{ .name = "janet-fuzz-test", .root_module = module }));
+        const exe = selectBackend(b.addTest(.{ .name = "wattle-fuzz-test", .root_module = module }));
         applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
@@ -1045,7 +1049,7 @@ pub fn build(b: *std.Build) void {
     // has no runtime under it.
     const runtime_tests_step = b.step("test/runtime", "Run the in-file `test` blocks in the runtime");
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
-        const exe = selectBackend(b.addTest(.{ .name = "janet-runtime-test", .root_module = graph.subsystems }));
+        const exe = selectBackend(b.addTest(.{ .name = "wattle-runtime-test", .root_module = graph.subsystems }));
         applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         installTest(b, options, exe);
@@ -1057,13 +1061,13 @@ pub fn build(b: *std.Build) void {
         // exactly like one that passed -- the failure `test/README.md` names
         // for a suite reporting `0 of 0`. Run bare, the default test runner
         // prints "All N tests passed." on every `zig build test`.
-        const run = std.Build.Step.Run.create(b, "run janet-runtime-test");
+        const run = std.Build.Step.Run.create(b, "run wattle-runtime-test");
         run.addArtifactArg(exe);
         run.setCwd(b.path("."));
         runtime_tests_step.dependOn(&run.step);
     }
 
-    const test_step = b.step("test", "Run Janet's contracts and test suites");
+    const test_step = b.step("test", "Run Wattle's contracts and test suites");
     test_step.dependOn(subsystem_step);
     test_step.dependOn(fuzz_step);
     test_step.dependOn(runtime_tests_step);
@@ -1087,7 +1091,7 @@ pub fn build(b: *std.Build) void {
     // executables to read their imports. The `web` step below checks its own
     // binary on any `-Dtarget`, so the checker is described outside the `if`.
     const checker_module = b.createModule(.{
-        .root_source_file = b.path("tools/check/wasm_imports.zig"),
+        .root_source_file = b.path("res/check/wasm_imports.zig"),
         .target = b.graph.host,
         .optimize = .Debug,
     });
@@ -1150,7 +1154,7 @@ pub fn build(b: *std.Build) void {
             web_module.addImport("subsystems", g.subsystems);
             web_module.addImport("abi", g.abi);
             web_module.addImport("repr", g.repr);
-            const web = selectBackend(b.addExecutable(.{ .name = "janet-web", .root_module = web_module }));
+            const web = selectBackend(b.addExecutable(.{ .name = "wattle-web", .root_module = web_module }));
             web.wasi_exec_model = .reactor;
             // `_initialize` is wasi-libc's `crt1-reactor.o`, and the root has
             // no `main` for the standard library to wrap in an entry point.
@@ -1280,12 +1284,12 @@ fn nativeCompile(
     name: []const u8,
     static_name: ?[]const u8,
 ) *std.Build.Step.Compile {
-    const janet_module = b.createModule(.{
+    const wattle_module = b.createModule(.{
         .root_source_file = b.path("src/module.zig"),
         .target = target,
         .optimize = optimize,
     });
-    configureCModule(b, janet_module, target, options, cfg);
+    configureCModule(b, wattle_module, target, options, cfg);
     const mod = b.createModule(.{
         .root_source_file = root,
         .target = target,
@@ -1293,10 +1297,10 @@ fn nativeCompile(
     });
     configureCModule(b, mod, target, options, cfg);
     if (graph) |g| {
-        janet_module.addImport("abi", g.abi);
-        janet_module.addImport("repr", g.repr);
-        janet_module.addImport("cabi", g.cabi);
-        janet_module.addImport("constants", g.constants);
+        wattle_module.addImport("abi", g.abi);
+        wattle_module.addImport("repr", g.repr);
+        wattle_module.addImport("cabi", g.cabi);
+        wattle_module.addImport("constants", g.constants);
         if (static_name) |_| {
             const config_module = makeConfigModule(b, blk: {
                 var module_cfg = cfg;
@@ -1305,11 +1309,11 @@ fn nativeCompile(
                 break :blk module_cfg;
             });
             applyFramePointer(config_module, options, optimize);
-            janet_module.addImport("config", config_module);
+            wattle_module.addImport("config", config_module);
         } else {
-            janet_module.addImport("config", g.module_config);
+            wattle_module.addImport("config", g.module_config);
         }
-        mod.addImport("janet", janet_module);
+        mod.addImport("wattle", wattle_module);
     }
     if (static_name) |_| return selectBackend(b.addObject(.{ .name = name, .root_module = mod }));
     const lib = selectBackend(b.addLibrary(.{
@@ -1366,7 +1370,7 @@ fn coreImage(
         boot_module.addImport("repr", g.repr);
         boot_module.addImport("constants", g.constants);
     }
-    const boot = selectBackend(b.addExecutable(.{ .name = "janet-boot", .root_module = boot_module }));
+    const boot = selectBackend(b.addExecutable(.{ .name = "wattle-boot", .root_module = boot_module }));
 
     // The generator writes the image to a path it is handed rather than to
     // stdout. The output is a marshalled byte stream, and a byte stream through
@@ -1374,15 +1378,15 @@ fn coreImage(
     const generate_image = b.addRunArtifact(boot);
     generate_image.setCwd(b.path("."));
     generate_image.addArg(".");
-    generate_image.addArgs(&.{ "JANET_PATH", "/usr/local/lib/janet" });
+    generate_image.addArgs(&.{ "WATTLE_PATH", "/usr/local/lib/wattle" });
     generate_image.addArg("image-out");
-    const image = generate_image.addOutputFileArg("janet-image.bin");
+    const image = generate_image.addOutputFileArg("wattle-image.bin");
     generate_image.addFileInput(b.path("src/boot/boot.janet"));
     return image;
 }
 
 /// The host side of an in-repository `quickbin` on a cross build: a runtime
-/// and a `janet` client for `host`, compiled under the target's features.
+/// and a `wattle` client for `host`, compiled under the target's features.
 ///
 /// The configuration is `bootConfig`'s, the one `image_source` was generated
 /// under, with `bootstrap` cleared so that the result is a runtime rather
@@ -1412,7 +1416,7 @@ fn hostBuilt(
     module.addImport("repr", graph.repr);
     module.addImport("constants", graph.constants);
     module.addImport("config", graph.config);
-    const client = selectBackend(b.addExecutable(.{ .name = "janet-host", .root_module = module }));
+    const client = selectBackend(b.addExecutable(.{ .name = "wattle-host", .root_module = module }));
     // The two settings `build()` gives the client, for the reason given there:
     // a native module resolves into the client's symbol table.
     client.rdynamic = true;
@@ -1512,8 +1516,8 @@ fn quickbinExecutable(
         table.appendSlice(gpa, b.fmt(
             \\    .{{
             \\        .name = "{0s}",
-            \\        .init = @extern(*const fn (*anyopaque, *const anyopaque) callconv(.c) void, .{{ .name = "_janet_init_{0s}" }}),
-            \\        .config = @extern(*const fn (*anyopaque, usize) callconv(.c) usize, .{{ .name = "_janet_mod_config_{0s}" }}),
+            \\        .init = @extern(*const fn (*anyopaque, *const anyopaque) callconv(.c) void, .{{ .name = "_wattle_init_{0s}" }}),
+            \\        .config = @extern(*const fn (*anyopaque, usize) callconv(.c) usize, .{{ .name = "_wattle_mod_config_{0s}" }}),
             \\    }},
             \\
         , .{native.name})) catch @panic("OOM");
@@ -1791,7 +1795,7 @@ fn addCliChecks(
     const repl = b.addRunArtifact(zig_client);
     repl.setStdIn(.{ .bytes = "(+ 1 2)\n" });
     repl.expectStdOutMatch("3");
-    repl.expectStdOutMatch("Janet 1.41.3-dev-zig");
+    repl.expectStdOutMatch("Wattle " ++ version_string ++ " ");
     repl.expectStdErrMatch("repl:1:>");
     test_step.dependOn(&repl.step);
 }
@@ -1928,15 +1932,16 @@ const Config = struct {
     single_threaded: bool,
     interpreter_interrupt: bool,
 
-    /// The version quintet and the four limits, which the runtime reads as
-    /// `config` fields: `boot_tests.zig` compares the quintet, `env.zig`
-    /// publishes `janet/build`, and the limits are read at nineteen, eleven,
-    /// one and two sites.
+    /// Wattle's version quintet, the Janet version, and the four limits, which
+    /// the runtime reads as `config` fields: `env.zig` publishes
+    /// `wattle/version`, `janet/version` and `janet/build`, and the limits are
+    /// read at nineteen, eleven, one and two sites.
     version_major: i32,
     version_minor: i32,
     version_patch: i32,
     version_extra: []const u8,
     version: []const u8,
+    janet_version: []const u8,
     build_name: []const u8,
     recursion_guard: i32,
     max_proto_depth: i32,
@@ -2120,6 +2125,7 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
         .version_patch = version.patch,
         .version_extra = version_extra,
         .version = version_string,
+        .janet_version = janet_version,
         .build_name = build_name,
         // The budget the native recursions spend, one unit per level: the
         // printer, the marshaller, the compiler and the PEG engine all start
@@ -2438,7 +2444,7 @@ fn hasFilewatch(cfg: Config) bool {
 /// the only thing that joins those and a symbol has a calling convention.
 ///
 /// It is a graph rather than an object because it is built more than once: for
-/// `-Dtarget`, and for the *host*, so `janet-boot` -- a build-time tool that
+/// `-Dtarget`, and for the *host*, so `wattle-boot` -- a build-time tool that
 /// runs on the build machine -- has one of its own.
 ///
 /// Four things are made of it: the runtime wraps it in one `addObject` and
@@ -2464,11 +2470,11 @@ const RuntimeGraph = struct {
     /// well as into the runtime, and inside a module the calls `raise.zig`
     /// makes go through `interface.rt` rather than an import. Every
     /// module-shaped graph below
-    /// -- `janetModule`, `nativeModule`, the `module-errors` fixtures -- hands
+    /// -- `wattleModule`, `nativeModule`, the `module-errors` fixtures -- hands
     /// the author package this one; the runtime's own graph never does.
     module_config: *std.Build.Module,
     /// What a separately compiled module and the runtime must agree on, and
-    /// nothing else -- `src/api/abi.zig`. `janetModule` hands an author's
+    /// nothing else -- `src/api/abi.zig`. `wattleModule` hands an author's
     /// package this one; the runtime has it too, so that its `AbstractType`
     /// and an author's are one type.
     abi: *std.Build.Module,
@@ -2620,7 +2626,7 @@ fn makeRuntimeGraph(
     // guarded for that: `corefn.bootstrap` is comptime, the branch naming the
     // image is not analysed there, and a container-level declaration nothing
     // references is never resolved.
-    if (image_source) |image| module.addAnonymousImport("janet_image", .{ .root_source_file = image });
+    if (image_source) |image| module.addAnonymousImport("wattle_image", .{ .root_source_file = image });
 
     // **`raise.zig` and `corefn.zig` are ordinary files of `root`.** A Zig
     // module reaches only its declared imports, so as modules `raise.signal`
@@ -2628,7 +2634,7 @@ fn makeRuntimeGraph(
     // files they name both by `@import`, which keeps the error union and
     // allows inlining.
     //
-    // `raise.zig` is also a file of the native-module package (`janetModule`
+    // `raise.zig` is also a file of the native-module package (`wattleModule`
     // above), where `signal.zig` sits on the far side of a `dlopen` and the
     // calls it cannot make by import go through `interface.rt` instead. It
     // carries both arms and picks at comptime on `config.native_module`.

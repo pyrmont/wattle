@@ -2,7 +2,7 @@
 //! outside the runtime can define a builtin, and that all fourteen
 //! abstract-type slots are writable from one.
 //!
-//! It is written against the published interface: `janet` and `std` are its
+//! It is written against the published interface: `wattle` and `std` are its
 //! whole import list, which is what makes it a proof of the thing a module
 //! author actually uses. Reaching past that interface for the runtime's own
 //! declarations would prove something else, and the comptime `StaticStringMap`
@@ -25,7 +25,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 // ==========================================================================
 // Constants
@@ -46,7 +46,7 @@ var finalized: u32 = 0;
 
 /// All fourteen slots. Adding a slot to `abstract_type.Spec` and not to an
 /// author's reach breaks this declaration.
-const keeper_type = janet.define(Keeper, .{
+const keeper_type = wattle.define(Keeper, .{
     .name = "zig-native/keeper",
     .gc = keeperGc,
     .gcmark = keeperMark,
@@ -74,7 +74,7 @@ const keeper_type = janet.define(Keeper, .{
 var marks: u32 = 0;
 
 /// What `get`'s keyword arm and `next` both walk.
-const methods = [_]janet.Method{
+const methods = [_]wattle.Method{
     .{ .name = "kept", .cfun = &kept },
     .{ .name = "rank", .cfun = &rank },
 };
@@ -85,10 +85,10 @@ var next_serial: i64 = 1;
 
 /// A method table whose `:length` lies, in one of two ways. `mcall` finds it
 /// through `get`.
-const odd_methods = [_]janet.Method{.{ .name = "length", .cfun = &oddLength }};
+const odd_methods = [_]wattle.Method{.{ .name = "length", .cfun = &oddLength }};
 
 /// No `length` slot, on purpose: that is what sends `length` to the method.
-const odd_type = janet.define(Odd, .{ .name = "zig-native/odd", .get = oddGet });
+const odd_type = wattle.define(Odd, .{ .name = "zig-native/odd", .get = oddGet });
 
 /// What `pointerValue` hands out the address of. A file-scope variable rather
 /// than a stack local, because the `Value` outlives the call.
@@ -142,7 +142,7 @@ var wake_refused: u32 = 0;
 /// and `hash` are computed from; `text` is what `bytes`, `tostring` and
 /// `length` report.
 const Keeper = struct {
-    kept: janet.Value,
+    kept: wattle.Value,
     rank: i32,
     serial: i64,
     text: [6]u8,
@@ -168,8 +168,8 @@ const Odd = struct { mode: u8 = 0 };
 /// single-threaded one however many threads posted; nothing here depends on
 /// the order they arrive in, which is the one thing the loop does not promise.
 const Stampede = struct {
-    loop: *janet.Loop,
-    fiber: janet.Value,
+    loop: *wattle.Loop,
+    fiber: wattle.Value,
     expected: u32,
     arrived: u32,
 };
@@ -180,8 +180,8 @@ const Stampede = struct {
 /// `answer` is written by the worker and read by the callback, which are two
 /// different threads with the post between them.
 const Work = struct {
-    loop: *janet.Loop,
-    fiber: janet.Value,
+    loop: *wattle.Loop,
+    fiber: wattle.Value,
     answer: f64,
 };
 
@@ -195,46 +195,46 @@ const Work = struct {
 /// the context is still this module's to free, and so is the root on the
 /// fiber. Doing both here rather than under the `true` branch is the whole
 /// difference between this callback and `workDone` above.
-fn abandonDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
+fn abandonDone(w: *wattle.Wake, raw: *anyopaque) callconv(.c) void {
     const work: *Work = @ptrCast(@alignCast(raw));
-    if (!janet.wake(w, work.fiber, janet.number(work.answer))) {
+    if (!wattle.wake(w, work.fiber, wattle.number(work.answer))) {
         wake_refused += 1;
         refused_freed += 1;
     }
-    _ = janet.gcunroot(work.fiber);
-    janet.free(work);
+    _ = wattle.gcunroot(work.fiber);
+    wattle.free(work);
 }
 
 /// Waits at the gate, then posts.
 fn abandonThread(work: *Work) void {
     while (!abandon_gate.load(.acquire)) std.Thread.yield() catch {};
     work.answer = 0;
-    janet.post(work.loop, &abandonDone, work);
+    wattle.post(work.loop, &abandonDone, work);
 }
 
 /// `(abandoned)`: a fiber whose thread posts only once released, so that the
 /// test can cancel it in between and reach `wake`'s `false`.
-fn abandoned(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    const l = try janet.loop();
-    const fiber = try janet.rootFiber();
-    const cells = janet.alloc(Work, 1) orelse return janet.panic("out of memory");
+fn abandoned(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    const l = try wattle.loop();
+    const fiber = try wattle.rootFiber();
+    const cells = wattle.alloc(Work, 1) orelse return wattle.panic("out of memory");
     const work = &cells[0];
     work.* = .{ .loop = l, .fiber = fiber, .answer = 0 };
-    janet.gcroot(work.fiber);
+    wattle.gcroot(work.fiber);
     const thread = std.Thread.spawn(.{}, abandonThread, .{work}) catch {
-        _ = janet.gcunroot(work.fiber);
-        janet.free(work);
-        return janet.panic("could not start a thread");
+        _ = wattle.gcunroot(work.fiber);
+        wattle.free(work);
+        return wattle.panic("could not start a thread");
     };
     thread.detach();
-    return janet.await();
+    return wattle.await();
 }
 
 /// `(apply f & args)`: `call`, which raises on anything but a return.
-fn apply(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, -1);
-    return janet.call(argv[0], argv[1..]);
+fn apply(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, -1);
+    return wattle.call(argv[0], argv[1..]);
 }
 
 /// `(attempt f & args)`: `pcall`, as `[signal value fiber]`.
@@ -249,15 +249,15 @@ fn apply(argv: []janet.Value) janet.Error!janet.Value {
 /// function before it makes one, and the fiber slot is then nil, which is the
 /// one thing about the result a caller has to test before asking
 /// `fiberStatus` about it.
-fn attempt(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, -1);
-    const called = janet.pcall(argv[0], argv[1..]);
-    const row = [_]janet.Value{
-        janet.keyword(@tagName(called.signal)),
+fn attempt(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, -1);
+    const called = wattle.pcall(argv[0], argv[1..]);
+    const row = [_]wattle.Value{
+        wattle.keyword(@tagName(called.signal)),
         called.value,
         called.fiber,
     };
-    return janet.tuple(&row);
+    return wattle.tuple(&row);
 }
 
 /// `(built bytes)`: one of every composite, built from the argument, in a
@@ -267,33 +267,33 @@ fn attempt(argv: []janet.Value) janet.Error!janet.Value {
 /// `built` passes the slice `getBytes` returns straight to `string`, `symbol`,
 /// `keyword` and `buffer`, and passes a `[]const Value`, the type `getIndexed`
 /// returns, to `tuple` and `array`.
-fn built(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
+fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
     // The slice goes straight into the three interning constructors: no
     // copy, no length recomputed, and a buffer argument works as a string one
     // does.
-    const seed = try janet.getBytes(argv, 0);
-    const items = [_]janet.Value{ janet.number(1), janet.number(2) };
+    const seed = try wattle.getBytes(argv, 0);
+    const items = [_]wattle.Value{ wattle.number(1), wattle.number(2) };
     // Pairs, not a hash array. `structOf` and `tableOf` take what the caller
     // wrote; a dictionary's own storage is `cap` slots with empties among
     // them, and `Pairs` is what reads that.
-    const pairs = [_]janet.Pair{
-        .{ .key = janet.keyword("a"), .value = janet.number(1) },
-        .{ .key = janet.keyword("b"), .value = janet.number(2) },
+    const pairs = [_]wattle.Pair{
+        .{ .key = wattle.keyword("a"), .value = wattle.number(1) },
+        .{ .key = wattle.keyword("b"), .value = wattle.number(2) },
     };
-    const composites = [_]janet.Value{
-        janet.boolean(true),
-        janet.boolean(false),
-        janet.string(seed),
-        janet.symbol(seed),
-        janet.keyword(seed),
-        janet.tuple(&items),
-        janet.array(&items),
-        janet.buffer(seed),
-        janet.structOf(&pairs),
-        janet.tableOf(&pairs),
+    const composites = [_]wattle.Value{
+        wattle.boolean(true),
+        wattle.boolean(false),
+        wattle.string(seed),
+        wattle.symbol(seed),
+        wattle.keyword(seed),
+        wattle.tuple(&items),
+        wattle.array(&items),
+        wattle.buffer(seed),
+        wattle.structOf(&pairs),
+        wattle.tableOf(&pairs),
     };
-    return janet.tuple(&composites);
+    return wattle.tuple(&composites);
 }
 
 /// `(classify x)`: the tag of a value, named.
@@ -304,40 +304,40 @@ fn built(argv: []janet.Value) janet.Error!janet.Value {
 /// are the odd ones out: what the pair is for is refusing a callback `call`
 /// could not run, and `isFunction` alone a callback `pcall` could not run, at
 /// the point the callback is handed over rather than at the call.
-fn classify(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
+fn classify(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
     const v = argv[0];
-    const name: [:0]const u8 = if (janet.isNil(v))
+    const name: [:0]const u8 = if (wattle.isNil(v))
         "nil"
-    else if (janet.isBoolean(v))
+    else if (wattle.isBoolean(v))
         "boolean"
-    else if (janet.isNumber(v))
+    else if (wattle.isNumber(v))
         "number"
-    else if (janet.isPointer(v))
+    else if (wattle.isPointer(v))
         "pointer"
-    else if (janet.isString(v))
+    else if (wattle.isString(v))
         "string"
-    else if (janet.isSymbol(v))
+    else if (wattle.isSymbol(v))
         "symbol"
-    else if (janet.isKeyword(v))
+    else if (wattle.isKeyword(v))
         "keyword"
-    else if (janet.isBuffer(v))
+    else if (wattle.isBuffer(v))
         "buffer"
-    else if (janet.isTuple(v))
+    else if (wattle.isTuple(v))
         "tuple"
-    else if (janet.isArray(v))
+    else if (wattle.isArray(v))
         "array"
-    else if (janet.isStruct(v))
+    else if (wattle.isStruct(v))
         "struct"
-    else if (janet.isTable(v))
+    else if (wattle.isTable(v))
         "table"
-    else if (janet.isFunction(v))
+    else if (wattle.isFunction(v))
         "function"
-    else if (janet.isCFunction(v))
+    else if (wattle.isCFunction(v))
         "cfunction"
     else
         "other";
-    return janet.cstring(name);
+    return wattle.cstring(name);
 }
 
 /// `(cut bytes &opt start end)`: a slice of a byte argument.
@@ -345,17 +345,17 @@ fn classify(argv: []janet.Value) janet.Error!janet.Value {
 /// The length handed to `getRange` is the slice's own, so the negative index,
 /// the absent slot and the clamp are the ones every core builtin taking a
 /// slice already has.
-fn cut(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, 3);
-    const bytes = try janet.getBytes(argv, 0);
-    const range: janet.Range = try janet.getRange(argv, 1, bytes.len);
+fn cut(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, 3);
+    const bytes = try wattle.getBytes(argv, 0);
+    const range: wattle.Range = try wattle.getRange(argv, 1, bytes.len);
     const from: usize = @intCast(range.start);
     const to: usize = @intCast(range.end);
     var out: [256]u8 = undefined;
-    if (to - from >= out.len) return janet.panic("slice does not fit");
+    if (to - from >= out.len) return wattle.panic("slice does not fit");
     @memcpy(out[0 .. to - from], bytes[from..to]);
     out[to - from] = 0;
-    return janet.cstring(out[0 .. to - from :0]);
+    return wattle.cstring(out[0 .. to - from :0]);
 }
 
 /// The module's entry point: registers the abstract type and the cfunctions.
@@ -364,96 +364,96 @@ fn cut(argv: []janet.Value) janet.Error!janet.Value {
 /// unmarshaller never finds it: an abstract names its type on the wire and
 /// resolves it through the runtime's registry. That registration is what this
 /// may raise for.
-fn defs(env: *janet.Env) janet.Error!void {
+fn defs(env: *wattle.Env) wattle.Error!void {
     // A type with an `unmarshal` callback has to be registered, or the
     // unmarshaller never finds it: an abstract names its type on the wire and
     // resolves it through the runtime's registry. This is what `defs` may
     // raise for.
-    try janet.registerAbstract(&keeper_type);
-    janet.cfuns(env, "zig-native", &.{
-        janet.reg(
+    try wattle.registerAbstract(&keeper_type);
+    wattle.cfuns(env, "zig-native", &.{
+        wattle.reg(
             "identity",
             &identity,
             "(identity x)\n\nRound-trip a Janet value through a dynamically loaded Zig module.",
         ),
-        janet.reg("keep", &keep, "(keep x &opt rank)\n\nAn abstract holding x, with every callback set."),
-        janet.reg("kept", &kept, "(kept keeper)\n\nThe value a keeper holds."),
-        janet.reg("rank", &rank, "(rank keeper)\n\nThe rank compare and hash are computed from."),
-        janet.reg("mark-count", &markCount, "(mark-count)\n\nHow many times gcmark has been reached."),
-        janet.reg("finalized-count", &finalizedCount, "(finalized-count)\n\nHow many keepers have been finalized."),
-        janet.reg("unsafe-seen", &unsafeSeen, "(unsafe-seen)\n\nHow many marshal callbacks saw the unsafe flag."),
-        janet.reg("greeting", &greeting, "(greeting)\n\nA string built by the module."),
-        janet.reg("markup", &markup, "(markup bytes &opt opts strict)\n\nA byte argument and a tuple of keyword options."),
-        janet.reg("tally", &tally, "(tally dict)\n\nThe sum of a struct's or a table's numeric values."),
-        janet.reg("cut", &cut, "(cut bytes &opt start end)\n\nA slice of a byte argument."),
-        janet.reg("wrap", &wrap, "(wrap bytes width)\n\nThe first width bytes."),
-        janet.reg("classify", &classify, "(classify x)\n\nThe name of a value's type."),
-        janet.reg("named", &named, "(named x)\n\nThe name of a string, a symbol or a keyword."),
-        janet.reg("peek", &peek, "(peek indexed n)\n\nThe value the keeper at index n holds."),
-        janet.reg("viewed", &viewed, "(viewed x)\n\nWhich *View function reads a value, and its length."),
-        janet.reg("built", &built, "(built bytes)\n\nOne of every composite, built from the argument."),
-        janet.reg("pointer-value", &pointerValue, "(pointer-value)\n\nA raw pointer as a value."),
-        janet.reg("mutate", &mutate, "(mutate array table buffer)\n\nThe three mutations, through the Value."),
-        janet.reg("fetch", &fetch, "(fetch ds key)\n\nJanet's own get, over anything."),
-        janet.reg("size", &size, "(size x)\n\nThe generic length."),
-        janet.reg("odd", &oddValue, "(odd)\n\nAn abstract whose :length method returns -1."),
-        janet.reg("apply", &apply, "(apply f & args)\n\nCall f on the current fiber, raising on anything but a return."),
-        janet.reg("invoke", &invoke, "(invoke name & args)\n\nCall the method name on the first of args."),
-        janet.reg("attempt", &attempt, "(attempt f & args)\n\nCall f on a fresh fiber, returning [signal value fiber]."),
-        janet.reg("status-of", &statusOf, "(status-of x)\n\nThe status of a fiber, refusing anything else."),
-        janet.reg("sorted", &sorted, "(sorted cmp indexed)\n\nAn insertion sort whose comparator is a Janet function."),
-        janet.reg("kept-across", &keptAcross, "(kept-across f)\n\nA rooted value carried across a call into f."),
-        janet.reg("unkept-across", &unkeptAcross, "(unkept-across f)\n\nThe same with no root: the case the root exists for."),
-        janet.reg("later", &later, "(later x)\n\nA value computed on this module's own thread, awaited and woken."),
-        janet.reg("stampede", &stampede, "(stampede n)\n\nn threads posting at once; returns how many arrived."),
-        janet.reg("abandoned", &abandoned, "(abandoned)\n\nA wait whose thread posts only once released."),
-        janet.reg("release-abandoned", &releaseAbandoned, "(release-abandoned)\n\nLet the abandoned wait's thread post."),
-        janet.reg("wake-refused", &wakeRefused, "(wake-refused)\n\nHow many times wake has returned false."),
-        janet.reg("refused-freed", &refusedFreed, "(refused-freed)\n\nHow many contexts the false branch has freed."),
-        janet.reg("loop-available", &loopAvailable, "(loop-available)\n\nWhether the loop capability is available."),
+        wattle.reg("keep", &keep, "(keep x &opt rank)\n\nAn abstract holding x, with every callback set."),
+        wattle.reg("kept", &kept, "(kept keeper)\n\nThe value a keeper holds."),
+        wattle.reg("rank", &rank, "(rank keeper)\n\nThe rank compare and hash are computed from."),
+        wattle.reg("mark-count", &markCount, "(mark-count)\n\nHow many times gcmark has been reached."),
+        wattle.reg("finalized-count", &finalizedCount, "(finalized-count)\n\nHow many keepers have been finalized."),
+        wattle.reg("unsafe-seen", &unsafeSeen, "(unsafe-seen)\n\nHow many marshal callbacks saw the unsafe flag."),
+        wattle.reg("greeting", &greeting, "(greeting)\n\nA string built by the module."),
+        wattle.reg("markup", &markup, "(markup bytes &opt opts strict)\n\nA byte argument and a tuple of keyword options."),
+        wattle.reg("tally", &tally, "(tally dict)\n\nThe sum of a struct's or a table's numeric values."),
+        wattle.reg("cut", &cut, "(cut bytes &opt start end)\n\nA slice of a byte argument."),
+        wattle.reg("wrap", &wrap, "(wrap bytes width)\n\nThe first width bytes."),
+        wattle.reg("classify", &classify, "(classify x)\n\nThe name of a value's type."),
+        wattle.reg("named", &named, "(named x)\n\nThe name of a string, a symbol or a keyword."),
+        wattle.reg("peek", &peek, "(peek indexed n)\n\nThe value the keeper at index n holds."),
+        wattle.reg("viewed", &viewed, "(viewed x)\n\nWhich *View function reads a value, and its length."),
+        wattle.reg("built", &built, "(built bytes)\n\nOne of every composite, built from the argument."),
+        wattle.reg("pointer-value", &pointerValue, "(pointer-value)\n\nA raw pointer as a value."),
+        wattle.reg("mutate", &mutate, "(mutate array table buffer)\n\nThe three mutations, through the Value."),
+        wattle.reg("fetch", &fetch, "(fetch ds key)\n\nJanet's own get, over anything."),
+        wattle.reg("size", &size, "(size x)\n\nThe generic length."),
+        wattle.reg("odd", &oddValue, "(odd)\n\nAn abstract whose :length method returns -1."),
+        wattle.reg("apply", &apply, "(apply f & args)\n\nCall f on the current fiber, raising on anything but a return."),
+        wattle.reg("invoke", &invoke, "(invoke name & args)\n\nCall the method name on the first of args."),
+        wattle.reg("attempt", &attempt, "(attempt f & args)\n\nCall f on a fresh fiber, returning [signal value fiber]."),
+        wattle.reg("status-of", &statusOf, "(status-of x)\n\nThe status of a fiber, refusing anything else."),
+        wattle.reg("sorted", &sorted, "(sorted cmp indexed)\n\nAn insertion sort whose comparator is a Janet function."),
+        wattle.reg("kept-across", &keptAcross, "(kept-across f)\n\nA rooted value carried across a call into f."),
+        wattle.reg("unkept-across", &unkeptAcross, "(unkept-across f)\n\nThe same with no root: the case the root exists for."),
+        wattle.reg("later", &later, "(later x)\n\nA value computed on this module's own thread, awaited and woken."),
+        wattle.reg("stampede", &stampede, "(stampede n)\n\nn threads posting at once; returns how many arrived."),
+        wattle.reg("abandoned", &abandoned, "(abandoned)\n\nA wait whose thread posts only once released."),
+        wattle.reg("release-abandoned", &releaseAbandoned, "(release-abandoned)\n\nLet the abandoned wait's thread post."),
+        wattle.reg("wake-refused", &wakeRefused, "(wake-refused)\n\nHow many times wake has returned false."),
+        wattle.reg("refused-freed", &refusedFreed, "(refused-freed)\n\nHow many contexts the false branch has freed."),
+        wattle.reg("loop-available", &loopAvailable, "(loop-available)\n\nWhether the loop capability is available."),
     });
 }
 
 /// `(fetch ds key)`: Janet's own `get`, over anything.
-fn fetch(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 2);
-    return janet.get(argv[0], argv[1]);
+fn fetch(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 2);
+    return wattle.get(argv[0], argv[1]);
 }
 
 /// `(finalized-count)`.
-fn finalizedCount(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    return janet.number(@floatFromInt(finalized));
+fn finalizedCount(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    return wattle.number(@floatFromInt(finalized));
 }
 
-/// `(greeting)`: a cfunction returning a string, which `janet.cstring` is the
+/// `(greeting)`: a cfunction returning a string, which `wattle.cstring` is the
 /// whole of.
-fn greeting(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    return janet.cstring("hello from a module");
+fn greeting(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    return wattle.cstring("hello from a module");
 }
 
 /// `(identity x)`: a value round-tripped through a loaded module.
-fn identity(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
+fn identity(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
     return argv[0];
 }
 
 /// `(invoke name & args)`: `mcall`, with the method named by a keyword.
-fn invoke(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, -1);
-    const name = janet.toKeyword(argv[0]) orelse return janet.panic("expected keyword");
-    return janet.mcall(name, argv[1..]);
+fn invoke(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, -1);
+    const name = wattle.toKeyword(argv[0]) orelse return wattle.panic("expected keyword");
+    return wattle.mcall(name, argv[1..]);
 }
 
 /// `(keep x &opt rank)`: a new keeper.
-fn keep(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, 2);
-    const given = if (argv.len == 2) try janet.getInteger(argv, 1) else 0;
-    const k = janet.new(Keeper, &keeper_type, null);
+fn keep(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, 2);
+    const given = if (argv.len == 2) try wattle.getInteger(argv, 1) else 0;
+    const k = wattle.new(Keeper, &keeper_type, null);
     k.* = .{ .kept = argv[0], .rank = given, .serial = next_serial, .text = "keeper".* };
     next_serial += 1;
-    return janet.abstract(k);
+    return wattle.abstract(k);
 }
 
 /// The runtime reads the bytes where they are returned, so the slice may point
@@ -463,8 +463,8 @@ fn keeperBytes(self: *const Keeper, _: usize) []const u8 {
 }
 
 /// Calling the abstract gives back what it kept.
-fn keeperCall(self: *Keeper, argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
+fn keeperCall(self: *Keeper, argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
     return self.kept;
 }
 
@@ -483,11 +483,11 @@ fn keeperGc(_: *Keeper, _: usize) void {
 }
 
 /// A keyword key is a method and an integer key indexes the text.
-fn keeperGet(self: *Keeper, key: janet.Value) janet.Error!?janet.Value {
-    if (janet.isKeyword(key)) return janet.getMethod(key, &methods);
-    const i = janet.toInteger(key) orelse return janet.panic("expected integer key");
+fn keeperGet(self: *Keeper, key: wattle.Value) wattle.Error!?wattle.Value {
+    if (wattle.isKeyword(key)) return wattle.getMethod(key, &methods);
+    const i = wattle.toInteger(key) orelse return wattle.panic("expected integer key");
     if (i < 0 or i >= self.text.len) return null;
-    return janet.number(@floatFromInt(self.text[@intCast(i)]));
+    return wattle.number(@floatFromInt(self.text[@intCast(i)]));
 }
 
 /// The rank, spread over the word.
@@ -496,7 +496,7 @@ fn keeperHash(self: *const Keeper, _: usize) i32 {
 }
 
 /// The length of the text, which is what `length` reports for this type.
-fn keeperLength(self: *Keeper, _: usize) janet.Error!usize {
+fn keeperLength(self: *Keeper, _: usize) wattle.Error!usize {
     return self.text.len;
 }
 
@@ -505,25 +505,25 @@ fn keeperLength(self: *Keeper, _: usize) janet.Error!usize {
 /// cannot import.
 fn keeperMark(self: *Keeper, _: usize) void {
     marks += 1;
-    janet.mark(self.kept);
+    wattle.mark(self.kept);
 }
 
 /// Every `push*` an author has except `pushPointer`, which is meaningful only
 /// in unsafe mode, and `pushNumber`, which `examples/numarray` uses.
-fn keeperMarshal(self: *Keeper, m: *janet.Marshal) janet.Error!void {
-    if (janet.isUnsafe(m)) unsafe_seen += 1;
-    janet.pushAbstract(m, self);
-    try janet.pushInteger(m, self.rank);
-    try janet.pushInt64(m, self.serial);
-    try janet.pushByte(m, @intCast(self.text.len));
-    try janet.pushBytes(m, &self.text);
-    try janet.pushValue(m, self.kept);
+fn keeperMarshal(self: *Keeper, m: *wattle.Marshal) wattle.Error!void {
+    if (wattle.isUnsafe(m)) unsafe_seen += 1;
+    wattle.pushAbstract(m, self);
+    try wattle.pushInteger(m, self.rank);
+    try wattle.pushInt64(m, self.serial);
+    try wattle.pushByte(m, @intCast(self.text.len));
+    try wattle.pushBytes(m, &self.text);
+    try wattle.pushValue(m, self.kept);
 }
 
 /// The iteration order behind `next` and `(keys k)`.
-fn keeperNext(self: *Keeper, key: janet.Value) janet.Error!janet.Value {
+fn keeperNext(self: *Keeper, key: wattle.Value) wattle.Error!wattle.Value {
     _ = self;
-    return janet.nextMethod(&methods, key);
+    return wattle.nextMethod(&methods, key);
 }
 
 /// Runs only for a threaded abstract, and this module makes none. It is here
@@ -531,44 +531,44 @@ fn keeperNext(self: *Keeper, key: janet.Value) janet.Error!janet.Value {
 fn keeperPerThread(_: *Keeper, _: usize) void {}
 
 /// A keyword key sets the rank, and anything else is refused.
-fn keeperPut(self: *Keeper, key: janet.Value, value: janet.Value) janet.Error!void {
-    if (!janet.isKeyword(key)) return janet.panic("expected a keyword key");
-    self.rank = janet.toInteger(value) orelse return janet.panic("expected an integer value");
+fn keeperPut(self: *Keeper, key: wattle.Value, value: wattle.Value) wattle.Error!void {
+    if (!wattle.isKeyword(key)) return wattle.panic("expected a keyword key");
+    self.rank = wattle.toInteger(value) orelse return wattle.panic("expected an integer value");
 }
 
 /// The text, then the rank and the serial number.
-fn keeperTostring(self: *Keeper, render: *janet.Render) janet.Error!void {
-    try janet.push(render, &self.text);
-    try janet.format(render, "#{d}@{d}", .{ self.rank, self.serial });
+fn keeperTostring(self: *Keeper, render: *wattle.Render) wattle.Error!void {
+    try wattle.push(render, &self.text);
+    try wattle.format(render, "#{d}@{d}", .{ self.rank, self.serial });
 }
 
 /// And every `pull*` except the two that mirror the omissions in
 /// `keeperMarshal`.
-fn keeperUnmarshal(u: *janet.Unmarshal) janet.Error!*Keeper {
-    if (janet.isUnsafe(u)) unsafe_seen += 1;
-    const keeper = try janet.pullAbstract(u, Keeper, null);
+fn keeperUnmarshal(u: *wattle.Unmarshal) wattle.Error!*Keeper {
+    if (wattle.isUnsafe(u)) unsafe_seen += 1;
+    const keeper = try wattle.pullAbstract(u, Keeper, null);
     // Every field written before anything else can raise: the block is on the
     // collector's heap list from the line above, so a raise in the middle
     // would hand `gc` and `gcmark` a payload that was never written.
-    keeper.* = .{ .kept = janet.nil(), .rank = 0, .serial = 0, .text = @splat(0) };
-    keeper.rank = try janet.pullInteger(u);
-    keeper.serial = try janet.pullInt64(u);
-    const len = try janet.pullByte(u);
-    if (len != keeper.text.len) return janet.panic("wrong keeper text length");
+    keeper.* = .{ .kept = wattle.nil(), .rank = 0, .serial = 0, .text = @splat(0) };
+    keeper.rank = try wattle.pullInteger(u);
+    keeper.serial = try wattle.pullInt64(u);
+    const len = try wattle.pullByte(u);
+    if (len != keeper.text.len) return wattle.panic("wrong keeper text length");
     // The stream is asked for the bytes before they are read, which is what
     // `pullEnsure` is for: `pullBytes` would refuse at the same point, and a
     // callback with more to allocate than this one has is better off knowing
     // first.
-    try janet.pullEnsure(u, len);
-    try janet.pullBytes(u, &keeper.text);
-    keeper.kept = try janet.pullValue(u);
+    try wattle.pullEnsure(u, len);
+    try wattle.pullBytes(u, &keeper.text);
+    keeper.kept = try wattle.pullValue(u);
     return keeper;
 }
 
 /// `(kept keeper)`.
-fn kept(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const k = try janet.getAbstract(Keeper, argv, 0, &keeper_type);
+fn kept(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const k = try wattle.getAbstract(Keeper, argv, 0, &keeper_type);
     return k.kept;
 }
 
@@ -579,15 +579,15 @@ fn kept(argv: []janet.Value) janet.Error!janet.Value {
 /// `gc/mark.zig`'s `collect` and therefore one of the two places a collection
 /// happens at all. Without the root, what is built below is reachable from
 /// nothing the collector scans while `f` runs.
-fn keptAcross(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const pairs = [_]janet.Pair{
-        .{ .key = janet.keyword("kept"), .value = janet.string("across a collection") },
+fn keptAcross(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const pairs = [_]wattle.Pair{
+        .{ .key = wattle.keyword("kept"), .value = wattle.string("across a collection") },
     };
-    const held = janet.tableOf(&pairs);
-    janet.gcroot(held);
-    defer _ = janet.gcunroot(held);
-    _ = try janet.call(argv[0], &.{});
+    const held = wattle.tableOf(&pairs);
+    wattle.gcroot(held);
+    defer _ = wattle.gcunroot(held);
+    _ = try wattle.call(argv[0], &.{});
     return held;
 }
 
@@ -598,21 +598,21 @@ fn keptAcross(argv: []janet.Value) janet.Error!janet.Value {
 /// before the suspend is not a race, because the loop is single-threaded, so
 /// an event posted before this cfunction has returned is not processed until
 /// the fiber has suspended.
-fn later(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const l = try janet.loop();
-    const fiber = try janet.rootFiber();
-    const cells = janet.alloc(Work, 1) orelse return janet.panic("out of memory");
+fn later(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const l = try wattle.loop();
+    const fiber = try wattle.rootFiber();
+    const cells = wattle.alloc(Work, 1) orelse return wattle.panic("out of memory");
     const work = &cells[0];
-    work.* = .{ .loop = l, .fiber = fiber, .answer = try janet.getNumber(argv, 0) };
-    janet.gcroot(work.fiber);
+    work.* = .{ .loop = l, .fiber = fiber, .answer = try wattle.getNumber(argv, 0) };
+    wattle.gcroot(work.fiber);
     const thread = std.Thread.spawn(.{}, workThread, .{work}) catch {
-        _ = janet.gcunroot(work.fiber);
-        janet.free(work);
-        return janet.panic("could not start a thread");
+        _ = wattle.gcunroot(work.fiber);
+        wattle.free(work);
+        return wattle.panic("could not start a thread");
     };
     thread.detach();
-    return janet.await();
+    return wattle.await();
 }
 
 /// `(loop-available)`: whether the loop capability can be obtained.
@@ -621,16 +621,16 @@ fn later(argv: []janet.Value) janet.Error!janet.Value {
 /// loop fields are filled in every build and `loop` is the one that refuses,
 /// so a module asking for the capability is exactly where the refusal shows
 /// up. Every other shape here calls `loop` first for the same reason.
-fn loopAvailable(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    _ = janet.loop() catch return janet.boolean(false);
-    return janet.boolean(true);
+fn loopAvailable(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    _ = wattle.loop() catch return wattle.boolean(false);
+    return wattle.boolean(true);
 }
 
 /// `(mark-count)`.
-fn markCount(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    return janet.number(@floatFromInt(marks));
+fn markCount(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    return wattle.number(@floatFromInt(marks));
 }
 
 /// `(markup bytes &opt opts strict)`: markable's shape.
@@ -639,30 +639,30 @@ fn markCount(argv: []janet.Value) janet.Error!janet.Value {
 /// getters this file exercises existed: reading the byte argument, reading the
 /// indexed argument, reading a keyword out of that slice, and refusing with a
 /// message naming what was wrong.
-fn markup(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 1, 3);
-    const input = try janet.getBytes(argv, 0);
-    const strict = if (argv.len == 3) try janet.getBoolean(argv, 2) else true;
+fn markup(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 1, 3);
+    const input = try wattle.getBytes(argv, 0);
+    const strict = if (argv.len == 3) try wattle.getBoolean(argv, 2) else true;
 
     var flags: u32 = 0;
     if (argv.len >= 2) {
         // The slice's elements are read with the checked unwrap, which is
         // what tells the members of a `[]const Value` apart.
-        for (try janet.getIndexed(argv, 1), 0..) |option, i| {
-            const name = janet.toKeyword(option) orelse
-                return janet.panicFormat("option {d} is not a keyword", .{i});
+        for (try wattle.getIndexed(argv, 1), 0..) |option, i| {
+            const name = wattle.toKeyword(option) orelse
+                return wattle.panicFormat("option {d} is not a keyword", .{i});
             if (render_options.get(name)) |bit| {
                 flags |= bit;
             } else if (strict) {
-                return janet.panicFormat("invalid option :{s}", .{name});
+                return wattle.panicFormat("invalid option :{s}", .{name});
             }
         }
     }
 
     var out: [256]u8 = undefined;
     const text = std.fmt.bufPrintZ(&out, "<{d}>{s}</{d}>", .{ flags, input, flags }) catch
-        return janet.panic("rendered output does not fit");
-    return janet.cstring(text);
+        return wattle.panic("rendered output does not fit");
+    return wattle.cstring(text);
 }
 
 /// `(mutate array table buffer)`: the three mutations, on values handed in.
@@ -672,12 +672,12 @@ fn markup(argv: []janet.Value) janet.Error!janet.Value {
 /// own message, which is what keeps `*Array` and `*Table` off the author
 /// surface. What comes back is the array's new length, through the generic
 /// `length`.
-fn mutate(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 3);
-    try janet.arrayPush(argv[0], janet.number(99));
-    try janet.put(argv[1], janet.keyword("added"), janet.boolean(true));
-    try janet.bufferPush(argv[2], "!");
-    return janet.number(@floatFromInt(try janet.length(argv[0])));
+fn mutate(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 3);
+    try wattle.arrayPush(argv[0], wattle.number(99));
+    try wattle.put(argv[1], wattle.keyword("added"), wattle.boolean(true));
+    try wattle.bufferPush(argv[2], "!");
+    return wattle.number(@floatFromInt(try wattle.length(argv[0])));
 }
 
 /// `(named x)`: the name of a string, a symbol or a keyword, as a string.
@@ -687,38 +687,38 @@ fn mutate(argv: []janet.Value) janet.Error!janet.Value {
 /// already has crosses rather than being looked for again. A buffer is the
 /// same bytes without a terminator, so it is nil here and `bytesView` is what
 /// reads one.
-fn named(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
+fn named(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
     const v = argv[0];
-    const name = janet.toString(v) orelse
-        janet.toSymbol(v) orelse
-        janet.toKeyword(v) orelse
-        return janet.nil();
-    return janet.cstring(name);
+    const name = wattle.toString(v) orelse
+        wattle.toSymbol(v) orelse
+        wattle.toKeyword(v) orelse
+        return wattle.nil();
+    return wattle.cstring(name);
 }
 
 /// The method lookup, which is the only slot this type sets.
-fn oddGet(_: *Odd, key: janet.Value) janet.Error!?janet.Value {
-    return janet.getMethod(key, &odd_methods);
+fn oddGet(_: *Odd, key: wattle.Value) wattle.Error!?wattle.Value {
+    return wattle.getMethod(key, &odd_methods);
 }
 
 /// `(:length o)`: a length that is negative in mode 0 and not a number
 /// otherwise.
-fn oddLength(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const self = try janet.getAbstract(Odd, argv, 0, &odd_type);
+fn oddLength(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const self = try wattle.getAbstract(Odd, argv, 0, &odd_type);
     return switch (self.mode) {
-        0 => janet.number(-1),
-        else => janet.cstring("not a number at all"),
+        0 => wattle.number(-1),
+        else => wattle.cstring("not a number at all"),
     };
 }
 
 /// `(odd &opt mode)`.
-fn oddValue(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.arity(argv, 0, 1);
-    const o = janet.new(Odd, &odd_type, null);
-    o.mode = if (argv.len == 1) @truncate(try janet.getUInteger(argv, 0)) else 0;
-    return janet.abstract(o);
+fn oddValue(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.arity(argv, 0, 1);
+    const o = wattle.new(Odd, &odd_type, null);
+    o.mode = if (argv.len == 1) @truncate(try wattle.getUInteger(argv, 0)) else 0;
+    return wattle.abstract(o);
 }
 
 /// `(peek indexed n)`: the value the keeper at index `n` kept.
@@ -728,13 +728,13 @@ fn oddValue(argv: []janet.Value) janet.Error!janet.Value {
 /// The unwrap tests the abstract type's identity, so an `odd` in the same
 /// position is a refusal this module words rather than a read of another
 /// type's payload.
-fn peek(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 2);
-    const items = try janet.getIndexed(argv, 0);
-    const n = try janet.getSize(argv, 1);
-    if (n >= items.len) return janet.panicFormat("index {d} is past the end", .{n});
-    const self = janet.toAbstract(Keeper, items[n], &keeper_type) orelse
-        return janet.panicFormat("element {d} is not a keeper", .{n});
+fn peek(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 2);
+    const items = try wattle.getIndexed(argv, 0);
+    const n = try wattle.getSize(argv, 1);
+    if (n >= items.len) return wattle.panicFormat("index {d} is past the end", .{n});
+    const self = wattle.toAbstract(Keeper, items[n], &keeper_type) orelse
+        return wattle.panicFormat("element {d} is not a keeper", .{n});
     return self.kept;
 }
 
@@ -742,40 +742,40 @@ fn peek(argv: []janet.Value) janet.Error!janet.Value {
 ///
 /// The check is here rather than in Janet because a Janet program cannot read
 /// a pointer back: `toPointer` is the only way, and it is on this side.
-fn pointerValue(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
+fn pointerValue(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
     const p: *anyopaque = @ptrCast(&pointer_target);
-    const v = janet.pointer(p);
-    if (!janet.isPointer(v)) return janet.panic("pointer() did not answer a pointer");
-    const back = janet.toPointer(v) orelse return janet.panic("toPointer did not answer a pointer");
-    if (back != p) return janet.panic("toPointer did not answer what pointer took");
+    const v = wattle.pointer(p);
+    if (!wattle.isPointer(v)) return wattle.panic("pointer() did not answer a pointer");
+    const back = wattle.toPointer(v) orelse return wattle.panic("toPointer did not answer a pointer");
+    if (back != p) return wattle.panic("toPointer did not answer what pointer took");
     return v;
 }
 
 /// `(rank keeper)`.
-fn rank(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const k = try janet.getAbstract(Keeper, argv, 0, &keeper_type);
-    return janet.number(@floatFromInt(k.rank));
+fn rank(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const k = try wattle.getAbstract(Keeper, argv, 0, &keeper_type);
+    return wattle.number(@floatFromInt(k.rank));
 }
 
 /// `(refused-freed)`.
-fn refusedFreed(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    return janet.number(@floatFromInt(refused_freed));
+fn refusedFreed(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    return wattle.number(@floatFromInt(refused_freed));
 }
 
 /// `(release-abandoned)`: lets the waiting thread post.
-fn releaseAbandoned(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
+fn releaseAbandoned(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
     abandon_gate.store(true, .release);
-    return janet.nil();
+    return wattle.nil();
 }
 
 /// `(size x)`: the generic `length`, so that its refusals are reachable.
-fn size(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    return janet.number(@floatFromInt(try janet.length(argv[0])));
+fn size(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    return wattle.number(@floatFromInt(try wattle.length(argv[0])));
 }
 
 /// `(sorted cmp indexed)`: an insertion sort whose comparator is Janet's.
@@ -791,9 +791,9 @@ fn size(argv: []janet.Value) janet.Error!janet.Value {
 /// The sort itself reads and writes through `get` and `put` rather than
 /// through the slice `getIndexed` returned, because that slice is
 /// `data[0..count]` and a re-entry may move it.
-fn sorted(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 2);
-    const items = try janet.getIndexed(argv, 1);
+fn sorted(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 2);
+    const items = try wattle.getIndexed(argv, 1);
     const count = items.len;
     // Copied out of `argv` before the first call, which is not optional. A
     // cfunction's arguments live on the fiber's stack and a call into Janet may
@@ -803,35 +803,35 @@ fn sorted(argv: []janet.Value) janet.Error!janet.Value {
     // comparator is safe as a local because the Janet frame that passed it is
     // still live.
     const cmp = argv[0];
-    const out = janet.array(items);
-    janet.gcroot(out);
-    defer _ = janet.gcunroot(out);
+    const out = wattle.array(items);
+    wattle.gcroot(out);
+    defer _ = wattle.gcunroot(out);
     var i: usize = 1;
     while (i < count) : (i += 1) {
         var j = i;
         while (j > 0) : (j -= 1) {
-            const left = try janet.get(out, janet.number(@floatFromInt(j - 1)));
-            const right = try janet.get(out, janet.number(@floatFromInt(j)));
-            const verdict = try janet.call(cmp, &.{ right, left });
-            if (!janet.truthy(verdict)) break;
-            try janet.put(out, janet.number(@floatFromInt(j - 1)), right);
-            try janet.put(out, janet.number(@floatFromInt(j)), left);
+            const left = try wattle.get(out, wattle.number(@floatFromInt(j - 1)));
+            const right = try wattle.get(out, wattle.number(@floatFromInt(j)));
+            const verdict = try wattle.call(cmp, &.{ right, left });
+            if (!wattle.truthy(verdict)) break;
+            try wattle.put(out, wattle.number(@floatFromInt(j - 1)), right);
+            try wattle.put(out, wattle.number(@floatFromInt(j)), left);
         }
     }
     return out;
 }
 
 /// `(stampede n)`: n threads posting at once, giving back how many arrived.
-fn stampede(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const count = try janet.getUInteger(argv, 0);
-    if (count == 0 or count > 32) return janet.panic("stampede wants 1 to 32 threads");
-    const l = try janet.loop();
-    const fiber = try janet.rootFiber();
-    const cells = janet.alloc(Stampede, 1) orelse return janet.panic("out of memory");
+fn stampede(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const count = try wattle.getUInteger(argv, 0);
+    if (count == 0 or count > 32) return wattle.panic("stampede wants 1 to 32 threads");
+    const l = try wattle.loop();
+    const fiber = try wattle.rootFiber();
+    const cells = wattle.alloc(Stampede, 1) orelse return wattle.panic("out of memory");
     const run = &cells[0];
     run.* = .{ .loop = l, .fiber = fiber, .expected = count, .arrived = 0 };
-    janet.gcroot(run.fiber);
+    wattle.gcroot(run.fiber);
     var started: u32 = 0;
     while (started < count) : (started += 1) {
         const thread = std.Thread.spawn(.{}, stampedeThread, .{run}) catch break;
@@ -843,22 +843,22 @@ fn stampede(argv: []janet.Value) janet.Error!janet.Value {
     if (started != count) {
         run.expected = started;
         if (started == 0) {
-            _ = janet.gcunroot(run.fiber);
-            janet.free(run);
-            return janet.panic("could not start a thread");
+            _ = wattle.gcunroot(run.fiber);
+            wattle.free(run);
+            return wattle.panic("could not start a thread");
         }
     }
-    return janet.await();
+    return wattle.await();
 }
 
 /// The last arrival wakes the fiber and frees the shared context.
-fn stampedeDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
+fn stampedeDone(w: *wattle.Wake, raw: *anyopaque) callconv(.c) void {
     const run: *Stampede = @ptrCast(@alignCast(raw));
     run.arrived += 1;
     if (run.arrived < run.expected) return;
-    _ = janet.wake(w, run.fiber, janet.number(@floatFromInt(run.arrived)));
-    _ = janet.gcunroot(run.fiber);
-    janet.free(run);
+    _ = wattle.wake(w, run.fiber, wattle.number(@floatFromInt(run.arrived)));
+    _ = wattle.gcunroot(run.fiber);
+    wattle.free(run);
 }
 
 /// The last post a thread makes is its last touch of the context, which is
@@ -866,15 +866,15 @@ fn stampedeDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
 /// call and the runtime never reads the context at all, so a thread that has
 /// returned from `post` has nothing left to lose.
 fn stampedeThread(run: *Stampede) void {
-    janet.post(run.loop, &stampedeDone, run);
+    wattle.post(run.loop, &stampedeDone, run);
 }
 
 /// `(status-of x)`: `fiberStatus` over anything, so that its refusal is
 /// reachable from Janet and so that every status a fixture can put a fiber in
 /// can be asked for, `:new` and `:alive` included.
-fn statusOf(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    return janet.keyword(@tagName(try janet.fiberStatus(argv[0])));
+fn statusOf(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    return wattle.keyword(@tagName(try wattle.fiberStatus(argv[0])));
 }
 
 /// `(tally dict)`: the sum of a struct's or a table's numeric values.
@@ -886,17 +886,17 @@ fn statusOf(argv: []janet.Value) janet.Error!janet.Value {
 /// The walk is `Pairs` and the count is checked against it. An author never
 /// sees the hash array, so what a module can still get wrong is trusting `len`
 /// without walking, and this compares the two.
-fn tally(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    var entries = try janet.getDictionary(argv, 0);
+fn tally(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    var entries = try wattle.getDictionary(argv, 0);
     var sum: f64 = 0;
     var seen: usize = 0;
     while (entries.next()) |kv| {
         seen += 1;
-        if (janet.toNumber(kv.value)) |x| sum += x;
+        if (wattle.toNumber(kv.value)) |x| sum += x;
     }
-    if (seen != entries.len) return janet.panicFormat("walked {d} entries where len says {d}", .{ seen, entries.len });
-    return janet.number(sum);
+    if (seen != entries.len) return wattle.panicFormat("walked {d} entries where len says {d}", .{ seen, entries.len });
+    return wattle.number(sum);
 }
 
 /// `(unkept-across f)`: the same sequence with no root, which is the case the
@@ -907,20 +907,20 @@ fn tally(argv: []janet.Value) janet.Error!janet.Value {
 /// is here so that the two read side by side and the one line of difference is
 /// visible. `test/zig-native.janet` calls it and looks at nothing it gives
 /// back.
-fn unkeptAcross(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
-    const pairs = [_]janet.Pair{
-        .{ .key = janet.keyword("kept"), .value = janet.string("across a collection") },
+fn unkeptAcross(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    const pairs = [_]wattle.Pair{
+        .{ .key = wattle.keyword("kept"), .value = wattle.string("across a collection") },
     };
-    const held = janet.tableOf(&pairs);
-    _ = try janet.call(argv[0], &.{});
+    const held = wattle.tableOf(&pairs);
+    _ = try wattle.call(argv[0], &.{});
     return held;
 }
 
 /// `(unsafe-seen)`.
-fn unsafeSeen(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    return janet.number(@floatFromInt(unsafe_seen));
+fn unsafeSeen(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    return wattle.number(@floatFromInt(unsafe_seen));
 }
 
 /// `(viewed x)`: which of the three `*View` functions reads a value, and how
@@ -930,60 +930,60 @@ fn unsafeSeen(argv: []janet.Value) janet.Error!janet.Value {
 /// slot and raises naming it; these take the `Value` and raise nothing,
 /// because a value pulled out of a tuple or a dictionary is in no slot the
 /// caller can be told about.
-fn viewed(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 1);
+fn viewed(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
     const v = argv[0];
     var out: [64]u8 = undefined;
     const text = blk: {
-        if (janet.bytesView(v)) |bytes| {
+        if (wattle.bytesView(v)) |bytes| {
             break :blk std.fmt.bufPrintZ(&out, "bytes {d}", .{bytes.len});
         }
-        if (janet.indexedView(v)) |items| {
+        if (wattle.indexedView(v)) |items| {
             break :blk std.fmt.bufPrintZ(&out, "indexed {d}", .{items.len});
         }
-        if (janet.dictionaryView(v)) |dict| {
+        if (wattle.dictionaryView(v)) |dict| {
             break :blk std.fmt.bufPrintZ(&out, "dictionary {d}", .{dict.len});
         }
         break :blk std.fmt.bufPrintZ(&out, "none", .{});
-    } catch return janet.panic("the description does not fit");
-    return janet.cstring(text);
+    } catch return wattle.panic("the description does not fit");
+    return wattle.cstring(text);
 }
 
 /// `(wake-refused)`.
-fn wakeRefused(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 0);
-    return janet.number(@floatFromInt(wake_refused));
+fn wakeRefused(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 0);
+    return wattle.number(@floatFromInt(wake_refused));
 }
 
 /// The callback the worker posts: wakes the fiber, then frees the root and the
 /// context.
-fn workDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void {
+fn workDone(w: *wattle.Wake, raw: *anyopaque) callconv(.c) void {
     const work: *Work = @ptrCast(@alignCast(raw));
     // Building a `Value` inside a posted callback is allowed. Allocating
     // through the collector is fatal on failure rather than a raise, and no
     // safe point runs between fibers on the loop thread.
-    if (!janet.wake(w, work.fiber, janet.number(work.answer))) wake_refused += 1;
-    _ = janet.gcunroot(work.fiber);
-    janet.free(work);
+    if (!wattle.wake(w, work.fiber, wattle.number(work.answer))) wake_refused += 1;
+    _ = wattle.gcunroot(work.fiber);
+    wattle.free(work);
 }
 
 /// Computes the result, then posts.
 fn workThread(work: *Work) void {
     work.answer = work.answer * 2 + 1;
-    janet.post(work.loop, &workDone, work);
+    wattle.post(work.loop, &workDone, work);
 }
 
 /// `(wrap bytes width)`: markable's unsigned-integer argument, which is a wrap
 /// column rather than a size.
-fn wrap(argv: []janet.Value) janet.Error!janet.Value {
-    try janet.fixarity(argv, 2);
-    const bytes = try janet.getBytes(argv, 0);
-    const width = try janet.getUInteger(argv, 1);
+fn wrap(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 2);
+    const bytes = try wattle.getBytes(argv, 0);
+    const width = try wattle.getUInteger(argv, 1);
     var out: [256]u8 = undefined;
     const n = @min(bytes.len, @min(@as(usize, width), out.len - 1));
     @memcpy(out[0..n], bytes[0..n]);
     out[n] = 0;
-    return janet.cstring(out[0..n :0]);
+    return wattle.cstring(out[0..n :0]);
 }
 
 // ==========================================================================
@@ -991,5 +991,5 @@ fn wrap(argv: []janet.Value) janet.Error!janet.Value {
 // ==========================================================================
 
 comptime {
-    janet.entry(defs);
+    wattle.entry(defs);
 }

@@ -3,7 +3,7 @@
 //! Native modules are a design goal. A module is compiled separately from the
 //! runtime, as a shared object that the loader opens at run time. This
 //! interface is what makes it possible for a module to call back into the
-//! runtime. A module author writes `@import("janet")` to import this
+//! runtime. A module author writes `@import("wattle")` to import this
 //! interface.
 //!
 //! A module must be built with the same Zig version as the runtime that loads
@@ -61,7 +61,7 @@
 //! `define` declares an abstract type from a name and a set of callbacks:
 //!
 //! ```zig
-//! const num_array_type = janet.define(NumArray, .{
+//! const num_array_type = wattle.define(NumArray, .{
 //!     .name = "numarray",
 //!     .gc = numArrayGc,
 //!     .get = numArrayGet,
@@ -314,7 +314,7 @@ pub const Pairs = struct {
 /// An author writes:
 ///
 /// ```zig
-/// fn hashDone(w: *janet.Wake, raw: *anyopaque) callconv(.c) void
+/// fn hashDone(w: *wattle.Wake, raw: *anyopaque) callconv(.c) void
 /// ```
 ///
 /// The callback cannot raise. The second parameter is the `ctx` that was
@@ -343,7 +343,7 @@ pub const PostCallback = *const fn (wake: *Wake, ctx: *anyopaque) callconv(.c) v
 /// an operation that has to produce a result.
 ///
 /// ```zig
-/// const num_array_type = janet.define(NumArray, .{
+/// const num_array_type = wattle.define(NumArray, .{
 ///     .name = "numarray",
 ///     .gc = numArrayGc,
 ///     .get = numArrayGet,
@@ -448,7 +448,7 @@ pub fn arrayPush(v: Value, x: Value) Error!void {
 /// Suspends the fiber running this function.
 ///
 /// The suspension is a raise with the event signal, so a cfunction ends
-/// with `return janet.await()`. Whatever will wake the fiber, usually a worker
+/// with `return wattle.await()`. Whatever will wake the fiber, usually a worker
 /// thread, should be started first. This does not cause a race: the loop is
 /// single-threaded, so a `post` made before the cfunction returns is not
 /// processed until the fiber has suspended.
@@ -503,7 +503,7 @@ pub fn call(f: Value, args: []const Value) Error!Value {
 ///
 /// `env` is the environment passed to the module's `defs` function. The
 /// `native` cfunction either creates it or takes it from the second argument
-/// of `(native path env)`, then passes it to `_janet_init`.
+/// of `(native path env)`, then passes it to `_wattle_init`.
 pub fn cfuns(env: *Env, prefix: ?[*:0]const u8, regs: []const Reg) void {
     const terminated = terminate(Reg, regs);
     interface.rt.cfuns_ext(env, prefix, @ptrCast(&terminated));
@@ -526,7 +526,7 @@ pub fn def(env: *Env, comptime name: [:0]const u8, val: Value, comptime doc: ?[:
 /// been.
 ///
 /// ```zig
-/// const num_array_type = janet.define(NumArray, .{
+/// const num_array_type = wattle.define(NumArray, .{
 ///     .name = "numarray",
 ///     .gc = numArrayGc,   // fn (*NumArray, usize) void
 ///     .get = numArrayGet, // fn (*NumArray, Value) Error!?Value
@@ -540,8 +540,8 @@ pub fn def(env: *Env, comptime name: [:0]const u8, val: Value, comptime doc: ?[:
 /// gone by then:
 ///
 /// ```zig
-/// fn defs(env: *janet.Env) janet.Error!void {
-///     const t = janet.define(NumArray, .{ ... }); // WRONG
+/// fn defs(env: *wattle.Env) wattle.Error!void {
+///     const t = wattle.define(NumArray, .{ ... }); // WRONG
 /// }
 /// ```
 ///
@@ -590,14 +590,14 @@ pub fn dictionaryView(v: Value) ?Pairs {
 ///
 /// where `defs` is of type `fn (*module.Env) Error!void`.
 ///
-/// `_janet_mod_config` reports the configuration bits, the interface
+/// `_wattle_mod_config` reports the configuration bits, the interface
 /// fingerprint and the compiler's version, and the loader refuses the module
-/// unless all three match the runtime's own. `_janet_init` takes the
+/// unless all three match the runtime's own. `_wattle_init` takes the
 /// environment to define into and the runtime table, and runs `defs`.
 ///
 /// A module built for linking into an executable, which `build.zig`'s
 /// `quickbin` configures with `static_name`, exports the same two functions as
-/// `_janet_mod_config_<name>` and `_janet_init_<name>`, so that several can be
+/// `_wattle_mod_config_<name>` and `_wattle_init_<name>`, so that several can be
 /// linked into one binary.
 pub fn entry(comptime defs: fn (*Env) Error!void) void {
     const Shim = struct {
@@ -625,8 +625,8 @@ pub fn entry(comptime defs: fn (*Env) Error!void) void {
         }
     };
     const suffix = if (config.static_name) |name| "_" ++ name else "";
-    @export(&Shim.modConfig, .{ .name = "_janet_mod_config" ++ suffix });
-    @export(&Shim.modInit, .{ .name = "_janet_init" ++ suffix });
+    @export(&Shim.modConfig, .{ .name = "_wattle_mod_config" ++ suffix });
+    @export(&Shim.modInit, .{ .name = "_wattle_init" ++ suffix });
 }
 
 /// Returns the status of a wrapped fiber.

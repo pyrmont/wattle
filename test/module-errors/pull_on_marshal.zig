@@ -8,16 +8,16 @@
 //!
 //! `build.zig`'s `module-errors` step compiles this and requires the failure.
 
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 const Payload = struct { n: i32 };
 
-fn backwardsMarshal(self: *Payload, m: *janet.Marshal) janet.Error!void {
-    janet.pushAbstract(m, self);
-    self.n = try janet.pullInteger(m);
+fn backwardsMarshal(self: *Payload, m: *wattle.Marshal) wattle.Error!void {
+    wattle.pushAbstract(m, self);
+    self.n = try wattle.pullInteger(m);
 }
 
-pub const at = janet.define(Payload, .{
+pub const at = wattle.define(Payload, .{
     .name = "module-errors/pull-on-marshal",
     .marshal = backwardsMarshal,
 });

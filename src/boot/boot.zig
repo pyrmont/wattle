@@ -1,6 +1,6 @@
 //! The image generator's entry point.
 //!
-//! `build.zig` roots an executable named `janet-boot` at this file and runs it
+//! `build.zig` roots an executable named `wattle-boot` at this file and runs it
 //! to produce the core image. `main` initialises a runtime, runs the five
 //! smoke tests in `boot_tests.zig`, builds the environment
 //! `src/boot/boot.janet` compiles against, and runs that script. The script
@@ -82,7 +82,7 @@ pub fn main(init: std.process.Init) !u8 {
     const boot_filename: ?[*:0]const u8 =
         if (!config.sourcemaps) null else "boot.janet";
 
-    if (arguments.len < 2) fail("Usage: janet-boot <directory> [...]\n", .{});
+    if (arguments.len < 2) fail("Usage: wattle-boot <directory> [...]\n", .{});
     if (changeDirectory(arguments[1].ptr) != 0)
         fail("Could not change to directory {s}\n", .{arguments[1]});
 

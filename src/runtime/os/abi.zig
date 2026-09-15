@@ -41,12 +41,12 @@ pub const h = @cImport({
 extern var environ: EnvironVector;
 
 /// `PATH_MAX`, or `os.c`'s substitute where the platform omits it.
-pub const path_max: usize = h.JANET_ZIG_PATH_MAX;
+pub const path_max: usize = h.WATTLE_PATH_MAX;
 
 /// Whether `posix_spawn_file_actions_addchdir` is available, and under which
 /// of its two spellings. `os/abi.h` is where the platforms are enumerated.
-pub const spawn_chdir = h.JANET_ZIG_SPAWN_CHDIR != 0;
-pub const spawn_chdir_np = h.JANET_ZIG_SPAWN_CHDIR_NP != 0;
+pub const spawn_chdir = h.WATTLE_SPAWN_CHDIR != 0;
+pub const spawn_chdir_np = h.WATTLE_SPAWN_CHDIR_NP != 0;
 
 // ==========================================================================
 // Aliased types

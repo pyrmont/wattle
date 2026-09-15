@@ -18,7 +18,7 @@ string and prints the result:
     zig build examples/quickbin -Dtarget=x86_64-macos                    # runs under Rosetta
 
 builds it, and `zig build test` runs it on a native build and checks the
-output. The binary needs no `JANET_PATH`, no shared object and no image file
+output. The binary needs no `WATTLE_PATH`, no shared object and no image file
 beside it.
 
 ## What it shows
@@ -26,7 +26,7 @@ beside it.
 ### What the executable contains
 
 Three things, and nothing is read at run time. The runtime is the same
-`subsystems` module the `janet` client imports. The program is a marshalled
+`subsystems` module the `wattle` client imports. The program is a marshalled
 image of `main.janet`'s environment, embedded the way the core image is. The
 module is `digest.zig` compiled into the same binary, so its cfunctions are
 addresses the linker resolved rather than symbols a loader looks up.
@@ -55,17 +55,17 @@ does with it too.
 
 An image is architecture-neutral, so it is made once by a client that runs on
 the build machine and embedded into a binary for the target. On a native build
-that client is the `janet` this tree builds. On a cross build the build makes a
+that client is the `wattle` this tree builds. On a cross build the build makes a
 second, host-targeted client for the purpose. Either way the module is loaded
 into that client as a shared object, registered under its name, and `-c` writes
 the image.
 
 ### One entry point per module
 
-A module built to be loaded exports `_janet_init` and `_janet_mod_config`, and
+A module built to be loaded exports `_wattle_init` and `_wattle_mod_config`, and
 the loader finds them by name. Two modules linked into one binary cannot both
 export those, so a module built to be linked exports the same two under its
-registered name instead. `janet.entry` does this on a build setting, and the
+registered name instead. `wattle.entry` does this on a build setting, and the
 module's source is unchanged: `digest.zig` is the file `zig build test` loads
 dynamically, compiled a second time as an object of its own and linked in.
 
@@ -76,13 +76,13 @@ link they cannot differ, and the check costs nothing.
 
 ### What happens at start-up
 
-The executable builds the core environment as the `janet` client does, then
+The executable builds the core environment as the `wattle` client does, then
 calls `run-image` with the image, the argument vector and one loader per
 module. `run-image` registers each module under its name, loads the image, puts
-the arguments in its environment and calls `main`, which is what `janet -i`
+the arguments in its environment and calls `main`, which is what `wattle -i`
 does with an image file. The program name stands where the image path would,
 and the exit status is the event loop's. What the executable does not do is
-read `JANET_PATH` or `JANET_PROFILE`: there is nothing on the path it needs.
+read `WATTLE_PATH` or `WATTLE_PROFILE`: there is nothing on the path it needs.
 
 ### What differs from `jpm quickbin`
 

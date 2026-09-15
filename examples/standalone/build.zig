@@ -2,8 +2,8 @@
 //! writes, and the executable that links the module in.
 //!
 //! Nothing here reaches into the runtime's build. This file depends on the
-//! `janet` package and reaches it through its two public functions:
-//! `janetModule` for the module a shared object imports, and `quickbin` for
+//! `wattle` package and reaches it through its two public functions:
+//! `wattleModule` for the module a shared object imports, and `quickbin` for
 //! an executable that carries the runtime, an image of `main.janet` and the
 //! module linked statically. There is no `RuntimeGraph`, no generated
 //! configuration, and no `types`, `raise`, `constants` or `abstract_type`.
@@ -17,22 +17,22 @@
 //! This build fails to configure if it has.
 
 const std = @import("std");
-const janet = @import("janet");
+const wattle = @import("wattle");
 
 /// Builds `greet.zig` as a shared library, and `hello` as an executable with
 /// `greet.zig` linked in.
 ///
 /// `b` is the build graph. `standardTargetOptions` and
 /// `standardOptimizeOption` take the target and the optimize mode from the
-/// command line, and `janet.janetModule` builds the `janet` import from the
+/// command line, and `wattle.wattleModule` builds the `wattle` import from the
 /// package dependency.
 ///
 /// One build setting matters to a module author:
 /// `linker_allow_shlib_undefined`. The module resolves no runtime symbol at
 /// load time. The runtime exports no `janet_*` name, and the module reaches
-/// it through the table `_janet_init` is given. The setting lets the library
+/// it through the table `_wattle_init` is given. The setting lets the library
 /// link with the symbols the loading process supplies left undefined, and
-/// `tools/check/exports.janet` measures that set.
+/// `res/check/exports.janet` measures that set.
 ///
 /// The executable takes two instances of the dependency. `dep` is built for
 /// the target and is what the executable links. `host` is built for the
@@ -42,14 +42,14 @@ const janet = @import("janet");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const dep = b.dependency("janet", .{ .target = target, .optimize = optimize });
+    const dep = b.dependency("wattle", .{ .target = target, .optimize = optimize });
 
     const mod = b.createModule(.{
         .root_source_file = b.path("greet.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("janet", janet.janetModule(dep, target, optimize));
+    mod.addImport("wattle", wattle.wattleModule(dep, target, optimize));
 
     const lib = b.addLibrary(.{
         .name = "greet",
@@ -60,8 +60,8 @@ pub fn build(b: *std.Build) void {
     lib.linker_allow_shlib_undefined = true;
     b.installArtifact(lib);
 
-    const host = b.dependency("janet", .{ .target = b.graph.host, .optimize = .Debug });
-    const exe = janet.quickbin(dep, host, .{
+    const host = b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug });
+    const exe = wattle.quickbin(dep, host, .{
         .name = "hello",
         .source = b.path("main.janet"),
         .natives = &.{

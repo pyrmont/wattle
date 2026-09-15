@@ -1,7 +1,7 @@
 //! The runtime a separately compiled module calls, as one table of pointers.
 //!
 //! `Runtime` is that table, and `rt` is the module's pointer to it.
-//! `runtime/env.zig` passes `&capi.table` to `_janet_init` at load,
+//! `runtime/env.zig` passes `&capi.table` to `_wattle_init` at load,
 //! `module.entry`'s shim stores it in `rt`, and every call an author makes
 //! goes through it. The runtime exports no `janet_*` name and a module
 //! declares none, so there is no name for a linker to resolve and none for a
@@ -52,7 +52,7 @@
 //!
 //! `api/fingerprint.zig` hashes this table, and the rest of what the two
 //! compilations share, into one number. Both compute it from this file, the
-//! module reports its own through `_janet_mod_config`, and the loader compares
+//! module reports its own through `_wattle_mod_config`, and the loader compares
 //! the two before it calls into the module at all. That comparison is what
 //! decides compatibility. It is an exact match by design, so the table is free
 //! to change in any way: a field nothing crosses is removed rather than kept,
@@ -81,7 +81,7 @@ const repr = @import("repr");
 
 /// The table the module was loaded with.
 ///
-/// `module.entry`'s `_janet_init` shim writes this once, before any author
+/// `module.entry`'s `_wattle_init` shim writes this once, before any author
 /// code runs, and everything on the author's side reads it after that. It is
 /// `undefined` until then, which is not a hazard a module can meet: the shim
 /// is the only way into a module, and it assigns before it calls `defs`.

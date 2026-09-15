@@ -7,7 +7,7 @@
 //! when it is compiled into a module rather than into the runtime.
 //!
 //! Nothing here is exported. `table` at the foot of the file is one `extern
-//! struct` of function pointers; `env.zig` hands its address to `_janet_init`
+//! struct` of function pointers; `env.zig` hands its address to `_wattle_init`
 //! and the module calls through it. No `janet_*` name reaches the symbol
 //! table, so a module cannot bind to the wrong copy of the runtime and a
 //! second copy cannot capture the first's crossings.
@@ -57,7 +57,7 @@ const tables = @import("value/tables.zig");
 
 /// Every crossing, as one struct of pointers.
 ///
-/// `env.zig` hands `&table` to `_janet_init` and the module keeps it. It is
+/// `env.zig` hands `&table` to `_wattle_init` and the module keeps it. It is
 /// `const` and lives in the runtime's own image, so a module refers into
 /// `libjanet` for as long as it is loaded and there is nothing to free.
 ///
@@ -74,8 +74,8 @@ pub const table: interface.Runtime = .{
     .buffer_push_bytes = &janet_buffer_push_bytes,
     .buffer_push_value = &janet_buffer_push_value,
     .bytes_view = &impl.args.bytesViewAbi,
-    .c_raise_record = &janet_zig_c_raise_record,
-    .c_raise_take = &janet_zig_c_raise_take,
+    .c_raise_record = &wattle_c_raise_record,
+    .c_raise_take = &wattle_c_raise_take,
     .call_value = &janet_call_value,
     .calloc = &janet_calloc,
     .cfuns_ext = &janet_cfuns_ext,
@@ -84,7 +84,7 @@ pub const table: interface.Runtime = .{
     .current_loop = &janet_current_loop,
     .def = &janet_def,
     .dictionary_view = &impl.args.dictionaryViewAbi,
-    .fatal = &janet_zig_fatal,
+    .fatal = &wattle_fatal,
     .fiber_status_value = &janet_fiber_status_value,
     .fixarity = &impl.args.fixArityAbi,
     .free = &janet_free,
@@ -129,7 +129,7 @@ pub const table: interface.Runtime = .{
     .put = &janet_put,
     .register_abstract_type = &janet_register_abstract_type,
     .root_fiber_value = &janet_root_fiber_value,
-    .signal_record = &janet_zig_signal_record,
+    .signal_record = &wattle_signal_record,
     .unmarshal_abstract = &janet_unmarshal_abstract,
     .unmarshal_abstract_reuse = &janet_unmarshal_abstract_reuse,
     .unmarshal_byte = &janet_unmarshal_byte,
@@ -675,37 +675,37 @@ pub fn janet_wake(w: *abi.Wake, fiber: repr.Value, value: repr.Value) callconv(.
 /// first crossing on a thread guards nothing, because whichever crossing came
 /// before it on that thread has already aborted.
 ///
-/// `janet_zig_c_raise_take` and `janet_zig_c_raise_record` are not on the
+/// `wattle_c_raise_take` and `wattle_c_raise_record` are not on the
 /// author surface at all, since `module.zig` re-exports no `raise`, so the
 /// only way to reach either is `raise.fromAbi`, which reads the flag back on
 /// the statement after a crossing that set it. Charging them turned every
 /// raising crossing into two checks: `module.getAbstract` is
 /// `fromAbi(interface.rt.getabstract(...))`, the getter and the flag read.
 ///
-/// `janet_zig_fatal` is `raise.total`'s abort, reached only where a raise
+/// `wattle_fatal` is `raise.total`'s abort, reached only where a raise
 /// already happened, and `fatal.fatal` reads no VM state at all, so a check
 /// there cannot prevent a null read and can only replace the module author's
 /// abort message with a different one.
 ///
-/// `janet_zig_signal_record` keeps its check, and that is what makes the rule
+/// `wattle_signal_record` keeps its check, and that is what makes the rule
 /// more than a saving. `module.await` is `raise.signal(.event, nil())`, and
 /// `nil` is a published wrap that reads nothing, so `await` from a worker
 /// thread would reach this as the first crossing of its life and record a
 /// signal into a zeroed VM. It is the one member of this family that can be
 /// first.
-pub fn janet_zig_c_raise_record() callconv(.c) void {
+pub fn wattle_c_raise_record() callconv(.c) void {
     return impl.signal.cRaiseRecord();
 }
 
-pub fn janet_zig_c_raise_take() callconv(.c) c_int {
+pub fn wattle_c_raise_take() callconv(.c) c_int {
     return @intFromBool(impl.signal.cRaiseTake());
 }
 
-pub fn janet_zig_fatal(message: [*:0]const u8) callconv(.c) noreturn {
+pub fn wattle_fatal(message: [*:0]const u8) callconv(.c) noreturn {
     return impl.fatal.fatal(message);
 }
 
-pub fn janet_zig_signal_record(sig: c_uint, message: repr.Value) callconv(.c) void {
+pub fn wattle_signal_record(sig: c_uint, message: repr.Value) callconv(.c) void {
     requireJanetThread();
     return impl.signal.signalRecord(abi.Signal.fromWire(sig), message);
 }

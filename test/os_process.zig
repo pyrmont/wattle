@@ -267,7 +267,7 @@ fn theHostOperations() void {
     pid = os_process.forkProcess();
     expect(pid >= 0);
     if (pid == 0) {
-        const absent = "/janet-zig-os-process-absent-4f81";
+        const absent = "/wattle-os-process-absent-4f81";
         const args = [_:null]?[*:0]const u8{absent};
         posix._exit(if (os_process.exec(absent, &args, 0) == -1) 71 else 72);
     }

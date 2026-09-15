@@ -1,6 +1,6 @@
 # The Zig runtime
 
-Janet's runtime, written in Zig. This file is for a reader who is reading or
+Wattle's runtime, written in Zig. This file is for a reader who is reading or
 changing the runtime: where things are, the rules the tree follows, and how to
 add to it.
 
@@ -15,7 +15,7 @@ has the test strategy and what a change must pass before it is accepted.
 implementation to select and no Janet C to call. Any C that a Zig file reaches
 is libc's, through one of seven `@cImport` blocks. "No C in the tree" and "no
 libc" are different claims, and only the first is a goal.
-`tools/bench/upstream.sh` builds upstream `master` in a worktree with a matching
+`res/bench/upstream.sh` builds upstream `master` in a worktree with a matching
 toolchain, for comparison against Janet's C runtime.
 
 The rules that apply across the tree, each covered in its own section below:
@@ -49,7 +49,7 @@ must never reach `src/host/` or `src/runtime/`.
 | `src/host/`    | 2     | the runtime                             |
 | `src/runtime/` | 77    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 3     | the `janet` and `quickbin` executables  |
+| `src/client/`  | 3     | the `wattle` and `quickbin` executables  |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
@@ -57,7 +57,7 @@ The counts are of `.zig` files. `src/host/` also has one header and
 Two files sit at `src/` itself. `src/root.zig` is the runtime's module root. It
 names every file the configuration compiles and reaches all three directories.
 `src/module.zig` is the root of the author package, and is the only name an
-author writes: a module imports `janet` and nothing else. Zig limits a module's
+author writes: a module imports `wattle` and nothing else. Zig limits a module's
 relative imports to the directory of its root file, so both roots sit above the
 directories they reach.
 
@@ -70,7 +70,7 @@ The directories state the boundary but do not enforce it. Both package roots sit
 at `src/`, so a relative import can cross between directories, and several do
 by design: `api/raise.zig` names four runtime files for the branch that a module
 build does not take. Two things enforce the boundary instead.
-`tools/check/exports.janet` builds the author package the way an outside author
+`res/check/exports.janet` builds the author package the way an outside author
 does, and `examples/standalone` consumes the package by path. A
 compiler-enforced split would make `api` a build module with the runtime
 imported back into it by name. That is possible, and not what the tree does.
@@ -133,7 +133,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
   nothing else: the abstract-type vtable, the registration and method rows, the
   abstract head and the offset to recover it, the signal numbering, the build
   config and the six capabilities. It imports only `repr`. `build.zig`'s
-  `janetModule` gives an author's package this module, so the runtime and an
+  `wattleModule` gives an author's package this module, so the runtime and an
   author's `.so` use the same types.
 - `constants` imports `config`, and `repr` for the tag.
 - `host` is the six shapes the host determines: `FILE`, the descriptor, the
@@ -154,7 +154,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
 `build.zig` builds this graph six times: for the runtime, for the bootstrap
 generator on the host, with `test/contracts.zig` as the root, with
 `test/fuzz.zig` as the root, for the module-error fixtures, and as
-`janet-runtime-test` rooted at `root.zig`. A cross build builds it a seventh
+`wattle-runtime-test` rooted at `root.zig`. A cross build builds it a seventh
 time for `zig build examples/quickbin`: on the host, under the target's features, for the
 client that makes the image. Every build has the same modules, so a test root
 spells the same types and constants as the runtime.
@@ -190,12 +190,12 @@ flattens it into a report, in one of four forms:
 | `raise.panicking(f).abi` | wrap a raising function as a C-ABI function    |
 
 `raise.total(result, site)` is not a flattening form. It aborts through
-`janet_zig_fatal`, and is for a raise that cannot happen and would leave the
+`wattle_fatal`, and is for a raise that cannot happen and would leave the
 runtime inconsistent if it did.
 
 A report that nothing consumes aborts the process at the next protected scope,
 and the message names neither the cause nor the caller.
-`tools/check/swallowed.janet` lists every raising function that reaches a
+`res/check/swallowed.janet` lists every raising function that reaches a
 report through a C-ABI function, and prints "no raising caller reaches a report"
 on a clean tree. Run it for every change that touches a raise.
 
@@ -209,7 +209,7 @@ Nothing in `src/` exports a `janet_*` symbol. `api/interface.zig`'s `Runtime` is
 an `extern struct` of 80 `callconv(.c)` function pointers, and both the runtime
 and a module compile that file. `runtime/capi.zig` has the 80 definitions, and
 its `table` fills the struct with them. `runtime/env.zig` passes the table's
-address to `_janet_init`; `module.zig`'s shim stores it in `interface.rt`, and
+address to `_wattle_init`; `module.zig`'s shim stores it in `interface.rt`, and
 every call an author makes goes through that pointer. Each crossing is
 described once, and the compiler checks every field against the definition it
 names in the initializer.
@@ -228,7 +228,7 @@ part of a dynamically loaded module rather than of the runtime.
 ### External declarations
 
 `host/cabi.zig` has the runtime's `extern` declarations, for libc and the host,
-with no Janet name among them. `tools/check/seam.janet --check` fails if an
+with no Janet name among them. `res/check/seam.janet --check` fails if an
 `extern fn janet*` appears anywhere in `src/`.
 
 ### Host structures
@@ -258,14 +258,14 @@ zig build -Dtarget=x86_64-linux-musl --cache-dir /tmp/xc -p /tmp/out
 ```
 
 An instrument must be gated the same way as its subject.
-`tools/check/gates.janet --check` builds thirteen configurations and compares
-their symbol tables against `tools/check/gated.txt`. The check exists because
+`res/check/gates.janet --check` builds thirteen configurations and compares
+their symbol tables against `res/check/gated.txt`. The check exists because
 reading `root.zig` cannot settle which files a configuration compiles: its
 comptime block does not name every file, and its `pub const` block is lazy and
 compiles nothing by itself.
 
 The same laziness determines which `test` blocks run. A `test` in a file that
-the comptime block names is compiled into `janet-runtime-test`. A `test` in a
+the comptime block names is compiled into `wattle-runtime-test`. A `test` in a
 file reached only through the `pub const` block, or only through another file's
 container-level `const`, is not collected. `os/fs/stat.zig` is named in the
 comptime block for that reason only.
@@ -276,7 +276,7 @@ comptime block for that reason only.
 | ------------------- | --------------------------------------------------- |
 | `install`           | libraries, client, contract driver, fuzz artifact   |
 | `fuzz`              | each fuzz target once over its corpus               |
-| `image`             | the core image, as `<prefix>/janet-image.bin`       |
+| `image`             | the core image, as `<prefix>/wattle-image.bin`       |
 | `run`               | the client                                          |
 | `module-errors`     | each wrong native module fails at its definition    |
 

@@ -73,12 +73,8 @@ xxd.exe
 vgcore.*
 *.out.*
 
-# WiX artifacts
-*.msi
-*.wixpdb
-
 # Bootstrap image (emitted by `zig build image` into the install prefix)
-janet-image.bin
+wattle-image.bin
 
 ### C ###
 # Prerequisites
@@ -125,7 +121,7 @@ CMakeFiles
 CMakeScripts
 # Anchored: CTest creates `Testing/` at the build root, and an unanchored
 # pattern matches at any depth -- case-insensitively on macOS and Windows,
-# where it silently swallowed every file under `tools/testing/`.
+# where it silently swallowed every file under `res/testing/`.
 /Testing
 cmake_install.cmake
 install_manifest.txt

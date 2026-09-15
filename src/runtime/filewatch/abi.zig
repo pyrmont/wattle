@@ -109,10 +109,10 @@ pub fn evSetVnode(kev: *h.struct_kevent, fd: c_int, flags: u32) void {
 // ==========================================================================
 
 comptime {
-    const from_header: Backend = switch (h.JANET_ZIG_WATCH_BACKEND) {
-        h.JANET_ZIG_WATCH_INOTIFY => .inotify,
-        h.JANET_ZIG_WATCH_WINDOWS => .windows,
-        h.JANET_ZIG_WATCH_KQUEUE => .kqueue,
+    const from_header: Backend = switch (h.WATTLE_WATCH_BACKEND) {
+        h.WATTLE_WATCH_INOTIFY => .inotify,
+        h.WATTLE_WATCH_WINDOWS => .windows,
+        h.WATTLE_WATCH_KQUEUE => .kqueue,
         else => .none,
     };
     if (from_header != backend) @compileError(

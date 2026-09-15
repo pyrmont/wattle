@@ -167,8 +167,8 @@ pub const AbstractType = struct {
 /// What a module was built against: a Janet version, the configuration bits,
 /// the interface fingerprint and the compiler's version.
 ///
-/// `module.entry` exports a function named `_janet_mod_config` that writes a
-/// `BuildConfig`. The loader looks `_janet_mod_config` up in the loaded shared
+/// `module.entry` exports a function named `_wattle_mod_config` that writes a
+/// `BuildConfig`. The loader looks `_wattle_mod_config` up in the loaded shared
 /// object, calls what it finds, and compares three fields in this order:
 /// `bits`, `zig` and `api`. A difference in any of the three is a refusal
 /// naming that field.
@@ -179,8 +179,8 @@ pub const AbstractType = struct {
 /// refusal message and are not compared, so a module built against one release
 /// loads into another whose interface is the same.
 ///
-/// The loader reads this struct field by field, so both `_janet_mod_config`
-/// and this layout are part of the published interface. `_janet_mod_config`
+/// The loader reads this struct field by field, so both `_wattle_mod_config`
+/// and this layout are part of the published interface. `_wattle_mod_config`
 /// takes the width the loader has and returns the width the module has, so a
 /// later loader can read a shorter, older `BuildConfig` than its own.
 pub const BuildConfig = extern struct {

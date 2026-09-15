@@ -85,14 +85,14 @@ pub const has_ipv6 = config.ipv6;
 
 /// Whether `serverify_socket` may ask for `SO_REUSEPORT`; `net/abi.h` says
 /// which platforms have it.
-pub const has_reuseport = h.JANET_ZIG_REUSEPORT != 0;
+pub const has_reuseport = h.WATTLE_REUSEPORT != 0;
 
 /// `MSG_NOSIGNAL`, or the 0 `net.c` supplies where the platform has none.
-pub const msg_nosignal: c_int = h.JANET_ZIG_MSG_NOSIGNAL;
+pub const msg_nosignal: c_int = h.WATTLE_MSG_NOSIGNAL;
 
 /// Whether an `IP_MULTICAST_TTL` value is an `unsigned char`; `net/abi.h` says
 /// which platforms take it that way.
-pub const multicast_ttl_char = h.JANET_ZIG_MULTICAST_TTL_CHAR != 0;
+pub const multicast_ttl_char = h.WATTLE_MULTICAST_TTL_CHAR != 0;
 
 /// `SA_ADDRSTRLEN`: the buffer `net.zig`'s `soGetName` decodes into. It is the
 /// larger of the numeric-address length and the unix path length, and there
