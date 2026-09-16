@@ -296,20 +296,31 @@ pub fn weak(capacity: usize) *Array {
 // Private functions
 // ==========================================================================
 
-/// Appends `vals_in` to `array`, taking the view again where the two alias.
+/// Appends the elements of an indexed value to `array`, one run at a time.
 ///
-/// `x` is the value `vals_in` was viewed from. The aliasing check is not
-/// paranoia: concatenating an array onto itself grows it, and the growth may
-/// move the payload, so the room is reserved first and the view then taken
-/// again. It is done here rather than in the loop because `push` grows one
-/// element at a time.
-fn appendIndexed(array: *Array, x: repr.Value, vals_in: []const repr.Value) raise.Error!void {
-    var vals = vals_in;
-    if (array.data == vals.ptr) {
-        ensure(array, array.count + vals.len, 2);
-        vals = args_core.indexedView(x).?;
+/// `x` is the value and `it` is its iterator, which this reads to the end.
+/// This function raises where `args_core.Chunks.next` does, and where the
+/// result would be longer than an array can be.
+///
+/// The room for every element is reserved before the first run is taken,
+/// because a run stays valid only until the next call that can allocate. That
+/// reservation is also what can move a run: concatenating an array onto
+/// itself makes the array both the source and the destination, and the growth
+/// may move the payload the run points into, so the view is taken again after
+/// it. An abstract's runs come from its own payload, which the growth does
+/// not touch.
+fn appendIndexed(array: *Array, x: repr.Value, it: *args_core.Chunks) raise.Error!void {
+    if (array.count +| it.len > std.math.maxInt(i32)) return raise.panic("array overflow");
+    const aliased = switch (it.source) {
+        .contiguous => |vals| array.data == vals.ptr,
+        .abstract => false,
+    };
+    ensure(array, array.count + it.len, 2);
+    if (aliased) it.source = .{ .contiguous = args_core.indexedView(x).? };
+    while (try it.next()) |run| {
+        @memcpy(array.reserved()[array.count..][0..run.len], run);
+        array.count += run.len;
     }
-    for (vals) |val| try push(array, val);
 }
 
 /// `array/clear`: the count set to zero, the backing capacity kept.
@@ -325,12 +336,11 @@ fn cfunArrayConcat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
     for (argv[1..]) |part| {
-        switch (repr.typeOf(part)) {
-            repr.Tag.array, repr.Tag.tuple => {
-                const vals = args_core.indexedView(part).?;
-                try appendIndexed(array, part, vals);
-            },
-            else => try push(array, part),
+        var source = try args_core.chunks(part);
+        if (source) |*it| {
+            try appendIndexed(array, part, it);
+        } else {
+            try push(array, part);
         }
     }
     return wrap.fromArray(array);
@@ -400,10 +410,12 @@ fn cfunArrayJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
     for (argv[1..], 1..) |part, i| {
-        const vals = args_core.indexedView(part) orelse {
+        var source = try args_core.chunks(part);
+        if (source) |*it| {
+            try appendIndexed(array, part, it);
+        } else {
             return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i64, @intCast(i)), part });
-        };
-        try appendIndexed(array, part, vals);
+        }
     }
     return wrap.fromArray(array);
 }

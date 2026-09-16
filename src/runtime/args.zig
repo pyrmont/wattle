@@ -311,7 +311,11 @@ pub const Chunks = struct {
     ///
     /// This function raises if a `chunk` callback returns a run that does not
     /// hold the index it was asked for, or that reaches past the length.
-    pub fn next(self: *Chunks) raise.Error!?[]const repr.Value {
+    ///
+    /// It is `inline`. The branch on the source then folds into the caller's
+    /// loop, so a site reading an array or a tuple pays no call for the single
+    /// run it gets back.
+    pub inline fn next(self: *Chunks) raise.Error!?[]const repr.Value {
         if (self.index >= self.len) return null;
         switch (self.source) {
             .contiguous => |items| {

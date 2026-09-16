@@ -51,6 +51,10 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
+const abstract_type = @import("subsystems").abstract_type;
+const abstracts = @import("subsystems").value.abstracts;
+const args = @import("subsystems").args;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
 const constants = @import("constants");
@@ -61,6 +65,8 @@ const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const heap = harness.heap;
 
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const tables = @import("subsystems").value.tables;
@@ -785,6 +791,109 @@ fn fromJanet() void {
     expect(harness.integerIs(t[4], 1));
 }
 
+/// Numbers handed out in runs of three from one buffer the callback overwrites
+/// on every call.
+///
+/// The buffer is what this fixture is for. A reader holding two runs of one
+/// value at once reads the poison rather than the elements it asked for, so
+/// `(array/concat @[] v v)` fails here and would pass against a type that
+/// hands out its own storage. The elements are numbers, so nothing in the
+/// buffer has to be marked.
+const Runs = struct {
+    count: usize,
+    buffer: [3]repr.Value,
+
+    /// What a slot holds where the run is shorter than the buffer, and what a
+    /// stale run reads back as. No element takes this value.
+    const poison = -1;
+};
+
+const runs_at = abstract_type.define(Runs, .{
+    .name = "buffer-array/runs",
+    .length = runsLength,
+    .chunk = runsChunk,
+});
+
+/// Element `i` is `i * 10`, and the runs are `[0..3)`, `[3..6)` and so on, the
+/// last of them short where `count` is not a multiple of three.
+fn runsChunk(self: *Runs, index: usize) abstract_type.Chunk {
+    const start = index - index % 3;
+    const end = @min(start + 3, self.count);
+    for (&self.buffer) |*slot| slot.* = wrap.fromInteger(Runs.poison);
+    for (self.buffer[0 .. end - start], start..) |*slot, i| {
+        slot.* = wrap.fromInteger(@intCast(i * 10));
+    }
+    return .{ .items = self.buffer[0 .. end - start], .start = start };
+}
+
+fn runsLength(self: *Runs, _: usize) raise.Error!usize {
+    return self.count;
+}
+
+fn cfunRuns(argv: []repr.Value) raise.Error!repr.Value {
+    try args.fixarity(argv, 1);
+    const count = try args.getInteger(argv, 0);
+    const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .count = @intCast(count), .buffer = undefined };
+    return wrap.fromAbstract(raw);
+}
+
+const cfuns = [_]abi.Reg{
+    .{ .name = "bufarr/runs", .cfun = raise.stored(&cfunRuns), .documentation = null },
+};
+
+/// `array/concat` and `array/join` read an abstract type with a `chunk`
+/// callback one run at a time, and an array or a tuple holding the same
+/// elements is the oracle for every case.
+///
+/// `array/concat` appends an indexed part element by element and anything else
+/// as a single element, and it read that distinction off the type tag, so an
+/// indexed abstract used to go in whole. It goes in element by element now,
+/// which is what the rule says and what `array/join` already did.
+///
+/// The aliasing case is here too. Concatenating an array onto itself makes it
+/// both the source and the destination, and the reservation may move the run
+/// the copy reads.
+fn concatReadsAnIndexedAbstract() void {
+    var out: repr.Value = undefined;
+    const env = harness.coreEnv();
+    registry.cfuns(env, null, &cfuns);
+    const source =
+        \\(def failures @[])
+        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(def v (bufarr/runs 10))
+        \\(def oracle [0 10 20 30 40 50 60 70 80 90])
+        \\(check "concat element by element"
+        \\       (deep= (array/concat @[] v) (array/concat @[] oracle)))
+        \\(check "concat twice from one value"
+        \\       (deep= (array/concat @[] v v) (array/concat @[] oracle oracle)))
+        \\(check "join twice from one value"
+        \\       (deep= (array/join @[] v v) (array/join @[] oracle oracle)))
+        \\(check "a part that is not indexed is one element"
+        \\       (deep= (array/concat @[1] v 2 v) (array/concat @[1] oracle 2 oracle)))
+        \\(check "an empty abstract appends nothing"
+        \\       (deep= (array/concat @[:a] (bufarr/runs 0)) @[:a]))
+        \\(check "a growth mid-copy keeps every element"
+        \\       (= 1000 (length (array/concat @[] (bufarr/runs 1000)))))
+        \\(check "an array concatenated onto itself"
+        \\       (let [a @[1 2 3]] (array/concat a a) (deep= a @[1 2 3 1 2 3])))
+        \\(check "join still refuses what is not indexed"
+        \\       (= "expected indexed type for argument 1, got 5"
+        \\          (let [[ok r] (protect (array/join @[] 5))] r)))
+        \\failures
+    ;
+    expect(core_env.dostring(env, source, "buffer-array-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.array));
+    const failed = wrap.toArray(out);
+    if (failed.count != 0) {
+        for (failed.slice()) |label| {
+            std.debug.print("concat check failed: {s}\n", .{wrap.toString(label)});
+        }
+        expect(false);
+    }
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -812,6 +921,7 @@ fn body() !void {
 
     try theCollectorReclaimsBoth();
     fromJanet();
+    concatReadsAnIndexedAbstract();
 }
 
 pub fn run() void {
