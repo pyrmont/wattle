@@ -545,9 +545,11 @@
     # code, and this is the entry that checks it.
     (job "full" "fiber stack shuffle" ["-Dfiber-stack-shuffle=true"])
 
-    # x86_64 macOS, which runs under Rosetta on Apple silicon and is the
-    # only entry that *executes* a second architecture.
-    (job "full" "x86_64-macos" ["-Dtarget=x86_64-macos"])
+    # x86_64 macOS, build-only. Running it needs Rosetta, which is not
+    # installed on every Apple silicon Mac and stops being general-purpose
+    # after macOS 27, so an entry that ran it would fail on the machine rather
+    # than on the code. What it still checks is that the target compiles.
+    (job "build" "x86_64-macos" ["-Dtarget=x86_64-macos"])
 
     # wasm32-wasi, which *runs* rather than only building: `-fwasmtime` runs
     # each artifact under wasmtime, which preopens the working directory and
