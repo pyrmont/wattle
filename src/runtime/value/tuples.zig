@@ -194,6 +194,8 @@ pub inline fn view(t: [*]const repr.Value) []const repr.Value {
 /// what rejects a bad argument and checks the total for overflow, and it has to
 /// finish before anything is allocated, because `begin` would otherwise leave a
 /// half-filled tuple behind when a later argument turned out not to be indexed.
+/// The second pass can raise all the same, which is why the slots are filled
+/// with nil before it runs.
 fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
     const tup = newFrom(argv);
     setBracketed(head(tup));
@@ -203,20 +205,60 @@ fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, -1);
     var total_len: i32 = 0;
+    var any_abstract = false;
     for (argv, 0..) |arg, index| {
-        const vals = args_core.indexedView(arg) orelse {
-            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i32, @intCast(index)), arg });
-        };
-        if (std.math.maxInt(i32) - total_len < @as(i64, @intCast(vals.len))) return raise.panic("tuple too large");
-        total_len += @intCast(vals.len);
+        var len: usize = undefined;
+        if (args_core.indexedView(arg)) |vals| {
+            len = vals.len;
+        } else {
+            const counted = try args_core.chunks(arg) orelse {
+                return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i32, @intCast(index)), arg });
+            };
+            any_abstract = true;
+            len = counted.len;
+        }
+        if (std.math.maxInt(i32) - total_len < @as(i64, @intCast(len))) return raise.panic("tuple too large");
+        total_len += @intCast(len);
     }
-    const tup = begin(@intCast(total_len));
-    var cursor = tup;
+    const total: usize = @intCast(total_len);
+    const tup = begin(total);
+
+    // With no abstract among the arguments, nothing between the two passes
+    // runs code: `begin` allocates and every count came from a view rather
+    // than a callback. So the counts cannot have changed, nothing below can
+    // raise, and every slot is written. This arm is the one a Janet program
+    // reaches, and it is the copy this function has always done.
+    if (!any_abstract) {
+        var cursor = tup;
+        for (argv) |arg| {
+            const vals = args_core.indexedView(arg).?;
+            @memcpy(cursor[0..vals.len], vals);
+            cursor += vals.len;
+        }
+        return wrap.fromTuple(end(tup));
+    }
+
+    // An abstract is among them, so a `length` callback runs again below and
+    // a `chunk` callback can answer with a run that is refused. The slots are
+    // filled first because `begin` links the block into the collector's list
+    // with them uninitialised, and building a raised value allocates, an
+    // allocation can collect, and a collection walks every slot of this
+    // tuple.
+    @memset(tup[0..total], wrap.fromNil());
+    var written: usize = 0;
     for (argv) |arg| {
-        const vals = args_core.indexedView(arg).?;
-        @memcpy(cursor[0..vals.len], vals);
-        cursor += vals.len;
+        var source = (try args_core.chunks(arg)).?;
+        while (try source.next()) |run| {
+            // The count this pass reads is not the count the first pass read:
+            // both come from a callback that runs code, so the two can
+            // disagree and the copy holds itself to the total the tuple was
+            // made for.
+            if (total - written < run.len) return raise.panic("indexed argument grew while being joined");
+            @memcpy(tup[written..][0..run.len], run);
+            written += run.len;
+        }
     }
+    if (written != total) return raise.panic("indexed argument shrank while being joined");
     return wrap.fromTuple(end(tup));
 }
 
