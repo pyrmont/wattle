@@ -81,6 +81,7 @@ const trace_frames = @import("debug.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const vm_entry = @import("vm/entry.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const vm_state = @import("vm/state.zig");
@@ -1383,6 +1384,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     try math.libMath(env);
     arrays.lib(env);
     tuples.lib(env);
+    try vectors.lib(env);
     buffers.lib(env);
     tables.lib(env);
     structs.lib(env);

@@ -29,7 +29,7 @@ const build_name = "zig";
 /// `os` bindings and no more, and these seven suites reach past them:
 /// `suite-os` is *about* the OS library, and the other six use the filesystem,
 /// the environment or a subprocess to build their fixtures. Everything else
-/// runs unchanged, which is 27 of the 34, the population this gate is worth
+/// runs unchanged, which is 28 of the 35, the population this gate is worth
 /// having for.
 const Suite = struct {
     path: []const u8,
@@ -69,6 +69,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-tuple.janet" },
     .{ .path = "test/suite-unknown.janet" },
     .{ .path = "test/suite-value.janet" },
+    .{ .path = "test/suite-vector.janet" },
     .{ .path = "test/suite-vm.janet" },
     .{ .path = "test/suite-zig-interop.janet" },
     .{ .path = "test/regalloc-bytecode.janet" },

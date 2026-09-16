@@ -127,6 +127,7 @@ const contracts: []const Contract = blk: {
     if (options.int_types_core) list = with(list, "inttypes", @import("inttypes.zig"));
     list = with(list, "buffer_array", @import("buffer_array.zig"));
     list = with(list, "indexed_sites", @import("indexed_sites.zig"));
+    list = with(list, "vectors", @import("vectors.zig"));
     list = with(list, "abstract_core", @import("abstract_core.zig"));
     list = with(list, "string_symbol", @import("string_symbol.zig"));
     list = with(list, "struct_table", @import("struct_table.zig"));

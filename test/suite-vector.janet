@@ -1,0 +1,96 @@
+(import ./helper :prefix "")
+
+(start-suite)
+
+# Construction
+
+(def v (vector 1 2 3))
+(assert (= :core/vector (type v)) "a vector is a core/vector")
+(assert (= 3 (length v)) "vector length")
+(assert (= 0 (length (vector))) "empty vector length")
+(assert (= (vector 1 2 3) (vec [1 2 3])) "vec of a tuple")
+(assert (= (vector 1 2 3) (vec @[1 2 3])) "vec of an array")
+(assert (= v (vec v)) "vec of a vector")
+(assert (= 1000 (length (vec (range 1000)))) "vec of a long array")
+(assert-error "vec refuses a string" (vec "abc"))
+(assert-error "vec refuses a table" (vec @{}))
+
+# Reading
+
+(def big (vec (range 1000)))
+(assert (= 1 (get v 0)) "get")
+(assert (= 999 (get big 999)) "get past the first leaf")
+(assert (nil? (get v 3)) "get past the end")
+(assert (nil? (get v -1)) "get a negative index")
+(assert (nil? (get v :a)) "get a keyword")
+(assert (= 2 (in v 1)) "in")
+(assert-error "in past the end" (in v 3))
+(assert (indexed? v) "a vector is indexed")
+(assert (not (bytes? v)) "a vector is not bytes")
+(assert (= [1 2 3] (tuple ;v)) "splice")
+(assert (= 6 (+ ;v)) "splice into a call")
+(assert (deep= @[2 3 4] (map inc v)) "map")
+(assert (= [0 1 2] (take 3 big)) "take")
+(assert (= [998 999] (drop 998 big)) "drop")
+(assert (= [997 998 999] (tuple/slice big 997)) "tuple/slice")
+(assert (deep= @[31 32 33] (array/slice big 31 34)) "array/slice across a leaf")
+(assert (= 499500 (sum big)) "sum")
+(assert (= "1,2,3" (string/join (map string v) ",")) "string/join")
+(let [[a b] v] (assert (= [1 2] [a b]) "destructuring"))
+(assert (= 3 (match v [_ _ c] c)) "match")
+(def seen @[])
+(each x big (array/push seen x))
+(assert (deep= (range 1000) seen) "each")
+(assert (deep= @[0 1 2] (array/concat @[] (vector 0 1 2))) "array/concat")
+
+# Updating
+
+(def w (conj v 4 5))
+(assert (= (vector 1 2 3 4 5) w) "conj several")
+(assert (= (vector 1 2 3) v) "conj leaves the original")
+(assert (= (vector 1 :x 3) (assoc v 1 :x)) "assoc")
+(assert (= (vector 1 2 3 4) (assoc v 3 4)) "assoc at the length appends")
+(assert (= (vector :a :b 3) (assoc v 0 :a 1 :b)) "assoc several")
+(assert (= (vector 1 2 3) v) "assoc leaves the original")
+(def big2 (assoc big 500 :x))
+(assert (= 500 (get big 500)) "assoc in the trie leaves the original")
+(assert (= :x (get big2 500)) "assoc in the trie")
+(assert-error-value "assoc past the length"
+  "index 5 out of range for vector of length 3" (assoc v 5 0))
+(assert-error "assoc a negative index" (assoc v -1 0))
+(assert-error "assoc a keyword" (assoc v :a 0))
+(assert-error "assoc a dangling key" (assoc v 0 1 2))
+(assert-error "conj a tuple" (conj [1] 2))
+(assert-error "conj nil" (conj nil 2))
+
+(var grown (vector))
+(for i 0 5000 (set grown (conj grown i)))
+(gccollect)
+(assert (= (vec (range 5000)) grown) "conj one at a time")
+
+# Equality, order and hash
+
+(assert (= (vector) (vector)) "empty vectors are equal")
+(assert (not= (vector 1 2) (vector 1 3)) "unequal elements")
+(assert (not= (vector 1 2) (vector 1 2 3)) "unequal lengths")
+(assert (not= (vector 1 2) [1 2]) "a vector is not a tuple")
+(def t @{})
+(assert (= (vector [1 2] t) (vector [1 2] t)) "elements compare as values")
+(assert (not= (vector @{}) (vector @{})) "tables compare by identity")
+(assert (= (hash grown) (hash (vec (range 5000)))) "equal vectors hash alike")
+(assert (= :found (get {(vector 1 2) :found} (vector 1 2))) "a vector as a struct key")
+(assert (= :found (get @{(vec (range 40)) :found} (vec (range 40))))
+  "a vector as a table key")
+(assert (= -1 (cmp (vector 1 2) (vector 1 3))) "order by element")
+(assert (= -1 (cmp (vector 1 2) (vector 1 2 0))) "a prefix orders first")
+(assert (deep= @[(vector) (vector 0 9) (vector 1)]
+               (sort @[(vector 1) (vector) (vector 0 9)])) "sort")
+
+# Printing
+
+(assert (= "<core/vector 1 2 3>" (describe v)) "describe")
+(assert (= "<core/vector 1 \"a\" :b <core/vector 2>>"
+           (describe (vector 1 "a" :b (vector 2)))) "describe nested")
+(assert (= "<core/vector 1 2 3>" (string/format "%q" v)) "format")
+
+(end-suite)

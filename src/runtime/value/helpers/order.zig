@@ -47,6 +47,7 @@ const strings = @import("../strings.zig");
 const structs = @import("../structs.zig");
 const tuples = @import("../tuples.zig");
 const utils = @import("../../utils.zig");
+const vectors = @import("../vectors.zig");
 const vm_state = @import("../../vm/state.zig");
 const wrap = @import("wrap.zig");
 
@@ -157,8 +158,16 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
                 if (diff != 0) return diff;
             },
             repr.Tag.abstract => {
-                const diff = compareAbstract(wrap.toAbstract(x), wrap.toAbstract(y));
-                if (diff != 0) return diff;
+                const xx = wrap.toAbstract(x);
+                const yy = wrap.toAbstract(y);
+                // Two vectors are walked element by element, as two tuples
+                // are, and then ordered by length.
+                if (xx != yy and bothVectors(xx, yy)) {
+                    pushTraversalNode(stack, abi.abstractHead(xx), abi.abstractHead(yy), 1);
+                } else {
+                    const diff = compareAbstract(xx, yy);
+                    if (diff != 0) return diff;
+                }
             },
             repr.Tag.tuple => {
                 const lhs = wrap.toTuple(x);
@@ -245,7 +254,18 @@ pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
                 if (!strings.equal(wrap.toString(x), wrap.toString(y))) return false;
             },
             repr.Tag.abstract => {
-                if (compareAbstract(wrap.toAbstract(x), wrap.toAbstract(y)) != 0) return false;
+                const xx = wrap.toAbstract(x);
+                const yy = wrap.toAbstract(y);
+                // Two vectors are walked element by element, as two tuples
+                // are, once their lengths and hashes are equal.
+                if (xx != yy and bothVectors(xx, yy)) {
+                    const hx = abi.abstractHead(xx);
+                    const hy = abi.abstractHead(yy);
+                    if (!vectors.mayEqual(vectors.ofHead(&hx.gc), vectors.ofHead(&hy.gc))) return false;
+                    pushTraversalNode(stack, hx, hy, 0);
+                } else if (compareAbstract(xx, yy) != 0) {
+                    return false;
+                }
             },
             repr.Tag.tuple => {
                 const t1 = wrap.toTuple(x);
@@ -366,6 +386,13 @@ inline fn asU64(x: repr.Value) u64 {
     return if (comptime isBoxedUnion) @field(x, "u64") else @field(x.as, "u64");
 }
 
+/// Whether both abstracts are vectors, which `equals` and `compare` walk
+/// rather than passing to `compareAbstract`.
+inline fn bothVectors(xx: abstracts.Abstract, yy: abstracts.Abstract) bool {
+    return abi.abstractHead(xx).type == &vectors.vector_type and
+        abi.abstractHead(yy).type == &vectors.vector_type;
+}
+
 /// Orders two abstracts: identity first, then their types by name, and only
 /// then the type's own `compare`, with a pointer comparison standing in when it
 /// has none.
@@ -462,7 +489,23 @@ fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
         const other = node[0].other.?;
         const tother: *const tuples.TupleHead = @ptrCast(@alignCast(other));
         const sother: *const structs.StructHead = @ptrCast(@alignCast(other));
-        if (gc_alloc.memoryTypeOf(self) == .tuple) {
+        if (gc_alloc.memoryTypeOf(self) == .abstract) {
+            // A vector node: index is the element to compare next, as for a
+            // tuple.
+            const vself = vectors.ofHead(self);
+            const vother = vectors.ofHead(other);
+            const index = utils.asSize(node[0].index);
+            if (index < vself.count and index < vother.count) {
+                node[0].index += 1;
+                x.* = vectors.at(vself, index);
+                y.* = vectors.at(vother, index);
+                stack.at = node;
+                return 0;
+            }
+            if (node[0].index2 != 0 and vself.count != vother.count) {
+                return if (vself.count > vother.count) 3 else 1;
+            }
+        } else if (gc_alloc.memoryTypeOf(self) == .tuple) {
             // A tuple node: index is the element to compare next.
             if (node[0].index < tself.length and node[0].index < tother.length) {
                 const index = node[0].index;
