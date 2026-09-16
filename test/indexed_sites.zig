@@ -281,10 +281,27 @@ fn sliceReadsAWindowOfAnIndexedAbstract() void {
 /// `string/join` counts its parts across runs to name a bad one by index, and
 /// the collection here is what shows the probe's `gcmark` doing its work: the
 /// strings it holds are reachable from nothing else.
+///
+/// The `ev/select` half is left out of the source where the build has no
+/// event loop. A Janet program resolves every symbol when it compiles, so a
+/// branch that would not run still refuses to compile.
 fn joinAndSelectReadAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
-    const source =
+    const select =
+        \\# `ev/select` takes a write clause as two elements. Given in two runs
+        \\# of one, both have to reach the gather.
+        \\(def ch (ev/chan 1))
+        \\(def result (ev/select (sites/held 1 ch :v)))
+        \\(check "ev/select reads a write clause given in two runs"
+        \\       (= [:give ch] result))
+        \\(check "and the value it wrote is the one read back"
+        \\       (= :v (get (ev/select ch) 2)))
+    ;
+    const has_select = harness.coreOptional("ev/select") != null;
+
+    var buffer: [2048]u8 = undefined;
+    const source = std.fmt.bufPrintZ(&buffer,
         \\(def failures @[])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
         \\(defn- refusal [f & a] (let [r (protect (f ;a))] (get r 1)))
@@ -306,16 +323,9 @@ fn joinAndSelectReadAnIndexedAbstract() void {
         \\(gccollect)
         \\(check "the values an abstract holds survive a collection"
         \\       (= "xyzw" (string/join held)))
-        \\# `ev/select` takes a write clause as two elements. Given in two runs
-        \\# of one, both have to reach the gather.
-        \\(def ch (ev/chan 1))
-        \\(def result (ev/select (sites/held 1 ch :v)))
-        \\(check "ev/select reads a write clause given in two runs"
-        \\       (= [:give ch] result))
-        \\(check "and the value it wrote is the one read back"
-        \\       (= :v (get (ev/select ch) 2)))
+        \\{s}
         \\failures
-    ;
+    , .{if (has_select) select else ""}) catch unreachable;
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
     expect(harness.isType(out, repr.Tag.array));
     const failed = wrap.toArray(out);
@@ -336,11 +346,41 @@ fn joinAndSelectReadAnIndexedAbstract() void {
 /// iterator, so both take a block, borrowed from an array or a tuple and
 /// copied from an abstract.
 ///
-/// Each half is skipped where its subsystem is not in the build, which is what
-/// `coreOptional` answers.
+/// Each half is left out of the source where its subsystem is not in the
+/// build, which is what `coreOptional` answers. A Janet program resolves every
+/// symbol when it compiles, so a branch that would not run still refuses to
+/// compile.
 fn theGatheringSitesReadAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
+    const ffi =
+        \\# A held abstract is neither an array nor a tuple, so it decodes as a
+        \\# struct type, which is the arm a tuple takes.
+        \\(check "a struct type given as an abstract"
+        \\       (= (ffi/size [:u8 :u16]) (ffi/size (sites/held 1 :u8 :u16))))
+        \\(def from-abstract @"")
+        \\(def from-tuple @"")
+        \\(ffi/write [:u8 :u16] (sites/held 1 1 2) from-abstract)
+        \\(ffi/write [:u8 :u16] [1 2] from-tuple)
+        \\(check "a struct written from an abstract"
+        \\       (= (string from-abstract) (string from-tuple)))
+        \\(def arr-abstract @"")
+        \\(def arr-array @"")
+        \\(ffi/write @[:u8 3] (sites/held 2 1 2 3) arr-abstract)
+        \\(ffi/write @[:u8 3] @[1 2 3] arr-array)
+        \\(check "an array written from an abstract in two runs"
+        \\       (= (string arr-abstract) (string arr-array)))
+        \\(check "and a wrong count is still refused"
+        \\       (string/has-prefix? "bad array length"
+        \\                           (let [r (protect (ffi/write @[:u8 3] (sites/held 2 1 2)))] (get r 1))))
+    ;
+    const execute =
+        \\(check "os/execute takes its arguments from an abstract"
+        \\       (= 0 (os/execute (sites/held 1 "true") :p)))
+        \\(check "and an empty one is still refused"
+        \\       (= "expected at least 1 command line argument"
+        \\          (let [r (protect (os/execute (sites/held 1) :p))] (get r 1))))
+    ;
     const has_ffi = harness.coreOptional("ffi/size") != null;
     const has_execute = harness.coreOptional("os/execute") != null;
     if (!has_ffi and !has_execute) return;
@@ -349,34 +389,10 @@ fn theGatheringSitesReadAnIndexedAbstract() void {
     const source = std.fmt.bufPrintZ(&buffer,
         \\(def failures @[])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
-        \\(when {[ffi]s}
-        \\  # A held abstract is neither an array nor a tuple, so it decodes as
-        \\  # a struct type, which is the arm a tuple takes.
-        \\  (check "a struct type given as an abstract"
-        \\         (= (ffi/size [:u8 :u16]) (ffi/size (sites/held 1 :u8 :u16))))
-        \\  (def from-abstract @"")
-        \\  (def from-tuple @"")
-        \\  (ffi/write [:u8 :u16] (sites/held 1 1 2) from-abstract)
-        \\  (ffi/write [:u8 :u16] [1 2] from-tuple)
-        \\  (check "a struct written from an abstract"
-        \\         (= (string from-abstract) (string from-tuple)))
-        \\  (def arr-abstract @"")
-        \\  (def arr-array @"")
-        \\  (ffi/write @[:u8 3] (sites/held 2 1 2 3) arr-abstract)
-        \\  (ffi/write @[:u8 3] @[1 2 3] arr-array)
-        \\  (check "an array written from an abstract in two runs"
-        \\         (= (string arr-abstract) (string arr-array)))
-        \\  (check "and a wrong count is still refused"
-        \\         (string/has-prefix? "bad array length"
-        \\                             (let [r (protect (ffi/write @[:u8 3] (sites/held 2 1 2)))] (get r 1)))))
-        \\(when {[exec]s}
-        \\  (check "os/execute takes its arguments from an abstract"
-        \\         (= 0 (os/execute (sites/held 1 "true") :p)))
-        \\  (check "and an empty one is still refused"
-        \\         (= "expected at least 1 command line argument"
-        \\            (let [r (protect (os/execute (sites/held 1) :p))] (get r 1)))))
+        \\{[ffi]s}
+        \\{[exec]s}
         \\failures
-    , .{ .ffi = if (has_ffi) "true" else "false", .exec = if (has_execute) "true" else "false" }) catch unreachable;
+    , .{ .ffi = if (has_ffi) ffi else "", .exec = if (has_execute) execute else "" }) catch unreachable;
 
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
     expect(harness.isType(out, repr.Tag.array));
