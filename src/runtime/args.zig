@@ -442,6 +442,38 @@ pub const Fault = union(enum) {
 
 /// The fourteen type getters. Each checks the tag and unwraps it, raising
 /// `panicType` otherwise, and publishes its own `abi` shim.
+/// An indexed value's elements in one block. `gather` returns a `Gathered`.
+///
+/// A site that needs every element at once, rather than a run at a time, asks
+/// for this: the elements of an array or a tuple are borrowed where they lie,
+/// and an abstract's runs are copied into one block.
+///
+/// ```zig
+/// var got = (try args.gather(x)) orelse return fault;
+/// // got.items is a []const repr.Value
+/// got.free();
+/// ```
+pub const Gathered = struct {
+    items: []const repr.Value,
+    /// Whether `items` is a copy this made or the value's own storage.
+    copied: bool,
+
+    /// Releases the copy where one was made, and does nothing where the
+    /// elements were borrowed.
+    ///
+    /// This is called on the path that returns rather than through a `defer`.
+    /// A copy is on the scratch heap, so a raise between `gather` and here
+    /// abandons it and the sweep at the end of the next collection reclaims
+    /// it, which is the rule `scratch_vector.zig` states for every user of
+    /// that heap.
+    ///
+    /// The cast is over memory this allocated, which is handed out as `const`
+    /// because a reader has no business writing to it.
+    pub fn free(self: *Gathered) void {
+        if (self.copied) gc_alloc.scratch_heap.free(@constCast(self.items));
+    }
+};
+
 pub const GetArray = TypeGetter(wrap.toArray, repr.Tag.array, repr.TagSet.one(.array));
 pub const GetBoolean = TypeGetter(wrap.toBoolean, repr.Tag.boolean, repr.TagSet.one(.boolean));
 pub const GetBuffer = TypeGetter(wrap.toBuffer, repr.Tag.buffer, repr.TagSet.one(.buffer));
@@ -1130,6 +1162,62 @@ pub inline fn getAbstract(
 pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.AbstractType) raise.Error!?*anyopaque {
     var fault: Fault = undefined;
     return argAbstract(argv, n, at, &fault) orelse raiseFault(argv, fault);
+}
+
+/// `gather` over an argument slot, raising rather than answering null.
+///
+/// `argv` is the frame and `n` the slot. This function raises `wrong_type`
+/// naming `TagSet.indexed` where the slot is not indexed, which is the refusal
+/// `getIndexed` gives for the same slot, and raises where `gather` does.
+///
+/// The contiguous answer is taken from the slot directly rather than through
+/// `gather`, which would have to build a frame of its own to ask the same
+/// question.
+pub fn gatherArg(argv: []const repr.Value, n: usize) raise.Error!Gathered {
+    var fault: Fault = undefined;
+    if (argIndexed(argv, n, &fault)) |items| return .{ .items = items, .copied = false };
+    return (try gather(argSlot(argv, n))) orelse raiseFault(argv, fault);
+}
+
+/// Returns every element of an indexed value in one block.
+///
+/// `x` is the value. This function returns null where `x` is not indexed, and
+/// raises where `chunks` and `Chunks.next` do.
+///
+/// An array or a tuple already holds its elements in one block, so that block
+/// is borrowed and nothing is allocated. An abstract's runs are copied into
+/// one, which the caller releases with `Gathered.free`. See `Gathered` for
+/// what a raise in between leaves behind.
+///
+/// A site reads runs where it can and gathers where it cannot: passing the
+/// elements on as an argument list, or handing them to something outside this
+/// runtime, needs one block and no iterator can give it.
+///
+/// A copy is not a root. It lives on the scratch heap, which the collector
+/// does not walk for values, so what it holds stays alive through the value it
+/// was taken from, which the caller is still holding.
+pub fn gather(x: repr.Value) raise.Error!?Gathered {
+    // Answered without an iterator where the value already holds one block,
+    // which is what an array or a tuple is and what nearly every call is.
+    if (indexedView(x)) |items| return .{ .items = items, .copied = false };
+    var source = (try chunks(x)) orelse return null;
+    switch (source.source) {
+        // Unreachable: `indexedView` above answers for every contiguous
+        // value, so `chunks` reaching here has taken the abstract arm.
+        .contiguous => |items| return .{ .items = items, .copied = false },
+        .abstract => {
+            // Allocated at the length rather than grown into, the count being
+            // known before the first run is taken.
+            const block = gc_alloc.scratch_heap.alloc(repr.Value, source.len) catch
+                fatal.outOfMemory();
+            var at: usize = 0;
+            while (try source.next()) |run| {
+                @memcpy(block[at..][0..run.len], run);
+                at += run.len;
+            }
+            return .{ .items = block, .copied = true };
+        },
+    }
 }
 
 /// The bytes of the argument at `n`, as a view.

@@ -327,6 +327,68 @@ fn joinAndSelectReadAnIndexedAbstract() void {
     }
 }
 
+/// The three sites that cannot read a run at a time gather instead, and give
+/// the same answer for an abstract as for the array or tuple beside it.
+///
+/// `os/execute` hands its arguments to the operating system as one array of C
+/// strings. The FFI writes a value into a native layout, passing the elements
+/// on as an argument list and an index into it. Neither shape can be fed by an
+/// iterator, so both take a block, borrowed from an array or a tuple and
+/// copied from an abstract.
+///
+/// Each half is skipped where its subsystem is not in the build, which is what
+/// `coreOptional` answers.
+fn theGatheringSitesReadAnIndexedAbstract() void {
+    var out: repr.Value = undefined;
+    const env = harness.coreEnv();
+    const has_ffi = harness.coreOptional("ffi/size") != null;
+    const has_execute = harness.coreOptional("os/execute") != null;
+    if (!has_ffi and !has_execute) return;
+
+    var buffer: [2048]u8 = undefined;
+    const source = std.fmt.bufPrintZ(&buffer,
+        \\(def failures @[])
+        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(when {[ffi]s}
+        \\  # A held abstract is neither an array nor a tuple, so it decodes as
+        \\  # a struct type, which is the arm a tuple takes.
+        \\  (check "a struct type given as an abstract"
+        \\         (= (ffi/size [:u8 :u16]) (ffi/size (sites/held 1 :u8 :u16))))
+        \\  (def from-abstract @"")
+        \\  (def from-tuple @"")
+        \\  (ffi/write [:u8 :u16] (sites/held 1 1 2) from-abstract)
+        \\  (ffi/write [:u8 :u16] [1 2] from-tuple)
+        \\  (check "a struct written from an abstract"
+        \\         (= (string from-abstract) (string from-tuple)))
+        \\  (def arr-abstract @"")
+        \\  (def arr-array @"")
+        \\  (ffi/write @[:u8 3] (sites/held 2 1 2 3) arr-abstract)
+        \\  (ffi/write @[:u8 3] @[1 2 3] arr-array)
+        \\  (check "an array written from an abstract in two runs"
+        \\         (= (string arr-abstract) (string arr-array)))
+        \\  (check "and a wrong count is still refused"
+        \\         (string/has-prefix? "bad array length"
+        \\                             (let [r (protect (ffi/write @[:u8 3] (sites/held 2 1 2)))] (get r 1)))))
+        \\(when {[exec]s}
+        \\  (check "os/execute takes its arguments from an abstract"
+        \\         (= 0 (os/execute (sites/held 1 "true") :p)))
+        \\  (check "and an empty one is still refused"
+        \\         (= "expected at least 1 command line argument"
+        \\            (let [r (protect (os/execute (sites/held 1) :p))] (get r 1)))))
+        \\failures
+    , .{ .ffi = if (has_ffi) "true" else "false", .exec = if (has_execute) "true" else "false" }) catch unreachable;
+
+    expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.array));
+    const failed = wrap.toArray(out);
+    if (failed.count != 0) {
+        for (failed.slice()) |label| {
+            std.debug.print("indexed-sites check failed: {s}\n", .{wrap.toString(label)});
+        }
+        expect(false);
+    }
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -336,5 +398,6 @@ pub fn run() void {
     tupleJoinReadsAnIndexedAbstract();
     sliceReadsAWindowOfAnIndexedAbstract();
     joinAndSelectReadAnIndexedAbstract();
+    theGatheringSitesReadAnIndexedAbstract();
     vm_lifecycle.deinit();
 }

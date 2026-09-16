@@ -157,7 +157,11 @@ pub fn writeOne(
     if (ty.array_count >= 0) {
         const el_type = ty.element();
         const el_size = ffi_types.typeSize(el_type);
-        const els = try args_core.getIndexed(argv, n);
+        // Gathered rather than read a run at a time: each element is written
+        // through `writeOne`, which takes the elements as an argument list and
+        // an index into it, so one block is what this needs.
+        var gathered = try args_core.gatherArg(argv, n);
+        const els = gathered.items;
         if (els.len != ty.array_count) {
             return pp_format.panicf("bad array length, expected %d, got %d", .{ ty.array_count, @as(i64, @intCast(els.len)) });
         }
@@ -166,6 +170,7 @@ pub fn writeOne(
             try writeOne(cursor, els, i, el_type, recur - 1);
             cursor += el_size;
         }
+        gathered.free();
         return;
     }
 
@@ -176,7 +181,8 @@ pub fn writeOne(
             }
         },
         .@"struct" => {
-            const els = try args_core.getIndexed(argv, n);
+            var gathered = try args_core.gatherArg(argv, n);
+            const els = gathered.items;
             const st = ty.st.?;
             if (els.len != st.field_count) {
                 return pp_format.panicf(
@@ -189,6 +195,7 @@ pub fn writeOne(
                 const at: [*]u8 = @as([*]u8, @ptrCast(to)) + member.offset;
                 try writeOne(at, els, i, member.type, recur - 1);
             }
+            gathered.free();
         },
         .double => put(f64, to, try args_core.getNumber(argv, n)),
         .float => put(f32, to, @floatCast(try args_core.getNumber(argv, n))),

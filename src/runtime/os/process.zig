@@ -961,7 +961,10 @@ fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Error!repr.Value {
     const use_environ = !flagAt(flags, 0);
     const envp = try buildEnv(argv);
 
-    const exargs = try args_core.getIndexed(argv, 0);
+    // Gathered rather than read a run at a time: the arguments leave this
+    // runtime as one array of C strings, which no iterator can hand over.
+    var gathered = try args_core.gatherArg(argv, 0);
+    const exargs = gathered.items;
     if (exargs.len < 1) return raise.panic("expected at least 1 command line argument");
 
     var r: Redirection = .{};
@@ -1039,6 +1042,9 @@ fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Error!repr.Value {
         try spawnWindows(argv, exargs, &r, flags, envp, use_environ, chdir_path)
     else
         try spawnPosix(argv, exargs, &r, flags, envp, use_environ, chdir_path, mode);
+    // Released here rather than at each return below, `exargs` being read no
+    // further. A raise above this leaves the block to the scratch sweep.
+    gathered.free();
 
     proc.flags = r.owner_flags;
     if (flagAt(flags, 2)) proc.flags |= proc_error_nonzero;

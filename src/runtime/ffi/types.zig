@@ -446,9 +446,12 @@ pub fn decodeType(x: repr.Value) raise.Error!Type {
         ret.st = @ptrCast(@alignCast(wrap.toAbstract(x)));
         return ret;
     }
-    const els = args_core.indexedView(x) orelse {
+    // Gathered rather than read a run at a time: a type is decoded by
+    // position, and `buildStruct` reads the members as one list.
+    var gathered = (try args_core.gather(x)) orelse {
         return pp_format.panicf("bad native type %v", .{x});
     };
+    const els = gathered.items;
     if (repr.checkType(x, repr.Tag.array)) {
         if (els.len != 2 and els.len != 1) {
             return pp_format.panicf("array type must be of form @[type count], got %v", .{x});
@@ -470,6 +473,7 @@ pub fn decodeType(x: repr.Value) raise.Error!Type {
     } else {
         ret.st = try buildStruct(els);
     }
+    gathered.free();
     return ret;
 }
 
