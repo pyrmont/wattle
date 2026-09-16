@@ -137,14 +137,72 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         \\       (= (tuple/join [:a] v [:b]) (tuple/join [:a] oracle [:b])))
         \\(check "no arguments is the empty tuple" (= [] (tuple/join)))
         \\(check "a count that grows between the two reads"
-        \\       (= "indexed argument grew while being joined"
+        \\       (= "indexed value grew while being read"
         \\          (refusal tuple/join (sites/join 9 1))))
         \\(check "a count that shrinks between the two reads"
-        \\       (= "indexed argument shrank while being joined"
+        \\       (= "indexed value shrank while being read"
         \\          (refusal tuple/join (sites/join 9 2))))
         \\(check "what is not indexed is still refused"
         \\       (= "expected indexed type for argument 0, got 5"
         \\          (refusal tuple/join 5)))
+        \\failures
+    ;
+    expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.array));
+    const failed = wrap.toArray(out);
+    if (failed.count != 0) {
+        for (failed.slice()) |label| {
+            std.debug.print("indexed-sites check failed: {s}\n", .{wrap.toString(label)});
+        }
+        expect(false);
+    }
+}
+
+/// The three slice bindings read a window of an indexed value, so a run that
+/// begins before the window or reaches past it is cut to fit rather than
+/// refused. The same range of a tuple is the oracle for each case.
+///
+/// The probe's runs are three long, so a window starting or ending inside one
+/// is what cuts a run at that end.
+fn sliceReadsAWindowOfAnIndexedAbstract() void {
+    var out: repr.Value = undefined;
+    const env = harness.coreEnv();
+    const source =
+        \\(def failures @[])
+        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- refusal [f & a] (let [r (protect (f ;a))] (get r 1)))
+        \\(def v (sites/join 9))
+        \\(def oracle [0 10 20 30 40 50 60 70 80])
+        \\(check "a window cut at both ends"
+        \\       (= (tuple/slice v 2 7) (tuple/slice oracle 2 7)))
+        \\(check "and into an array"
+        \\       (deep= (array/slice v 2 7) (array/slice oracle 2 7)))
+        \\(check "and through slice"
+        \\       (= (slice v 2 7) (slice oracle 2 7)))
+        \\(check "a window over one whole run"
+        \\       (= (tuple/slice v 3 6) (tuple/slice oracle 3 6)))
+        \\(check "a window over everything"
+        \\       (= (tuple/slice v) (tuple/slice oracle)))
+        \\(check "an empty window"
+        \\       (= (tuple/slice v 4 4) (tuple/slice oracle 4 4)))
+        \\(check "the last element alone"
+        \\       (= (tuple/slice v 8) (tuple/slice oracle 8)))
+        \\(check "a negative index counts from the end"
+        \\       (= (tuple/slice v -2) (tuple/slice oracle -2)))
+        \\(check "an array slice of everything"
+        \\       (deep= (array/slice v) (array/slice oracle)))
+        \\(check "a range past the end is still refused"
+        \\       (= (refusal tuple/slice v 12) (refusal tuple/slice oracle 12)))
+        \\# A count that grows between the two reads is caught by the run
+        \\# check rather than by the total: `getSlice` reads the larger count,
+        \\# so the window runs past the length `chunks` read, and the callback
+        \\# is asked for an index its own length does not cover.
+        \\(check "a count that grows between the two reads"
+        \\       (= "chunk of indexed-sites/join does not hold index 9"
+        \\          (refusal tuple/slice (sites/join 9 1))))
+        \\# A count that shrinks gives a smaller range, which is read whole.
+        \\(check "a count that shrinks between the two reads"
+        \\       (= (tuple/slice oracle 0 6) (tuple/slice (sites/join 9 2))))
         \\failures
     ;
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
@@ -165,5 +223,6 @@ fn tupleJoinReadsAnIndexedAbstract() void {
 pub fn run() void {
     harness.init();
     tupleJoinReadsAnIndexedAbstract();
+    sliceReadsAWindowOfAnIndexedAbstract();
     vm_lifecycle.deinit();
 }

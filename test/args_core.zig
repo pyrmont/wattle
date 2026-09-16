@@ -777,6 +777,67 @@ fn chunksReadsAnAbstractRunByRun() raise.Error!void {
     refuses(args.Chunks.next, .{&past}, "chunk of args-core/runs does not hold index 9");
 }
 
+/// A window narrows both ends of the read. The runs an abstract gives are cut
+/// to it rather than refused, because a type whose runs are longer than the
+/// window asked for is answering correctly.
+///
+/// The elements are the same either side: a windowed abstract and the same
+/// range of a tuple hold the same values in the same order.
+fn aWindowNarrowsBothEnds() raise.Error!void {
+    const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .items = undefined };
+    for (&runs.items, 0..) |*item, i| item.* = harness.wrapInteger(@intCast(i * 10));
+    const abstract = wrap.fromAbstract(raw);
+    const tuple = wrap.fromTuple(tuples.newFrom(&runs.items));
+
+    // `[4, 8)` starts inside the run `[3, 6)` and ends inside `[6, 9)`, so
+    // both the first run and the last are cut.
+    var it = (try args.chunks(abstract)).?;
+    it.window(4, 8);
+    var read: [4]repr.Value = undefined;
+    var count: usize = 0;
+    var run_count: usize = 0;
+    while (try it.next()) |items| {
+        @memcpy(read[count..][0..items.len], items);
+        count += items.len;
+        run_count += 1;
+    }
+    expect(count == 4 and run_count == 2);
+    for (read, 4..) |element, i| expect(wrap.toInteger(element) == @as(i32, @intCast(i * 10)));
+
+    // A tuple is one run, and the window cuts that run to the same elements.
+    var from_tuple = (try args.chunks(tuple)).?;
+    from_tuple.window(4, 8);
+    const whole = (try from_tuple.next()).?;
+    expect(whole.len == 4);
+    expect(try from_tuple.next() == null);
+    for (whole, read) |a, b| expect(wrap.toInteger(a) == wrap.toInteger(b));
+
+    // An empty window reads nothing, and so does one whose end is below its
+    // start.
+    var empty = (try args.chunks(abstract)).?;
+    empty.window(5, 5);
+    expect(try empty.next() == null);
+    var inverted = (try args.chunks(tuple)).?;
+    inverted.window(6, 2);
+    expect(try inverted.next() == null);
+
+    // A window over everything reads what an unwindowed iterator reads.
+    var all = (try args.chunks(abstract)).?;
+    all.window(0, 10);
+    var total: usize = 0;
+    while (try all.next()) |items| total += items.len;
+    expect(total == 10);
+
+    // The last element alone, which is the short run's last position.
+    var last = (try args.chunks(abstract)).?;
+    last.window(9, 10);
+    const tail = (try last.next()).?;
+    expect(tail.len == 1 and wrap.toInteger(tail[0]) == 90);
+    expect(try last.next() == null);
+}
+
 /// A getter reads a slot the call never passed as nil rather than reading past
 /// the end of the frame, and the fault it reports names that nil.
 ///
@@ -997,6 +1058,7 @@ fn body() raise.Error!void {
     try theAbstractGettersAndTheBytesCallback();
     try cbytesTerminatesAnAbstractsView();
     try chunksReadsAnAbstractRunByRun();
+    try aWindowNarrowsBothEnds();
     try aSlotTheCallNeverPassedReadsAsNil();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();

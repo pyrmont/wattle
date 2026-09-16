@@ -498,13 +498,28 @@ fn cfunArrayRemove(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `array/slice`: a new array over a half-open range of an array or tuple.
+/// `array/slice`: a new array over a half-open range of an indexed value.
+///
+/// The array is allocated before the first run is taken, which is the order
+/// every site reading chunks keeps: a run stays valid only until the next call
+/// that can allocate. Its slots need no fill, unlike a tuple's, because the
+/// collector reads an array's elements up to `count` and that is set last.
 fn cfunArraySlice(argv: []repr.Value) raise.Error!repr.Value {
-    const view = try args_core.getIndexed(argv, 0);
+    const x = args_core.argSlot(argv, 0);
+    var source = try args_core.chunks(x) orelse {
+        return args_core.panicType(x, 0, repr.TagSet.indexed);
+    };
     const range = try args_core.getSlice(argv);
     const len: usize = @intCast(range.end - range.start);
     const array = new(len);
-    if (len != 0) @memcpy(array.data.?[0..len], view[@intCast(range.start)..][0..len]);
+    source.window(@intCast(range.start), @intCast(range.end));
+    var written: usize = 0;
+    while (try source.next()) |run| {
+        if (len - written < run.len) return raise.panic("indexed value grew while being read");
+        @memcpy(array.data.?[written..][0..run.len], run);
+        written += run.len;
+    }
+    if (written != len) return raise.panic("indexed value shrank while being read");
     array.count = len;
     return wrap.fromArray(array);
 }

@@ -299,9 +299,16 @@ pub const CBytes = enum { copy_buffer, copy_view, terminate, view };
 /// }
 /// ```
 pub const Chunks = struct {
+    /// Where the elements come from.
     source: Source,
+    /// The value's length, which is what a run is checked against rather than
+    /// what reading stops at.
     len: usize,
+    /// The position of the next element to return.
     index: usize = 0,
+    /// The position reading stops at. `chunks` sets it to `len` and `window`
+    /// narrows it.
+    limit: usize,
 
     /// Where the elements come from.
     pub const Source = union(enum) {
@@ -318,11 +325,12 @@ pub const Chunks = struct {
     /// loop, so a site reading an array or a tuple pays no call for the single
     /// run it gets back.
     pub inline fn next(self: *Chunks) raise.Error!?[]const repr.Value {
-        if (self.index >= self.len) return null;
+        if (self.index >= self.limit) return null;
         switch (self.source) {
             .contiguous => |items| {
-                self.index = self.len;
-                return items;
+                const run = items[self.index..self.limit];
+                self.index = self.limit;
+                return run;
             },
             .abstract => |a| {
                 const run = a.at.chunk.?(a.payload, self.index);
@@ -333,11 +341,30 @@ pub const Chunks = struct {
                         @as(u64, self.index),
                     });
                 }
-                const items = run.items.?[self.index - run.start .. run.len];
-                self.index = end;
+                // Clipped to the window at both ends. A run reaching past
+                // `limit` is a correct answer from a type whose runs are
+                // longer than what was asked for, which is every type worth
+                // having, so it is cut rather than refused.
+                const from = self.index - run.start;
+                const to = @min(run.len, self.limit - run.start);
+                const items = run.items.?[from..to];
+                self.index = run.start + to;
                 return items;
             },
         }
+    }
+
+    /// Narrows the iterator to the half-open range `[from, to)`.
+    ///
+    /// `from` and `to` are positions in the value, and the caller has already
+    /// checked both against its length: `getSlice` does that against
+    /// `access.length`. A `to` at or below `from` reads nothing.
+    ///
+    /// This does not reset what has already been read, so it is called on a
+    /// fresh iterator.
+    pub fn window(self: *Chunks, from: usize, to: usize) void {
+        self.index = from;
+        self.limit = to;
     }
 };
 
@@ -996,13 +1023,19 @@ pub fn checkuint8(x: repr.Value) bool {
 ///
 /// See `Chunks` for how long a run stays valid.
 pub fn chunks(x: repr.Value) raise.Error!?Chunks {
-    if (indexedView(x)) |items| return .{ .source = .{ .contiguous = items }, .len = items.len };
+    if (indexedView(x)) |items| {
+        return .{ .source = .{ .contiguous = items }, .len = items.len, .limit = items.len };
+    }
     if (!repr.checkType(x, repr.Tag.abstract)) return null;
     const abst = wrap.toAbstract(x);
     const at = abi.abstractHead(abst).type;
     if (at.chunk == null) return null;
     const len = try access.length(x);
-    return .{ .source = .{ .abstract = .{ .payload = abst, .at = at } }, .len = @intCast(len) };
+    return .{
+        .source = .{ .abstract = .{ .payload = abst, .at = at } },
+        .len = @intCast(len),
+        .limit = @intCast(len),
+    };
 }
 
 /// The entries of a table or a struct, or nothing.

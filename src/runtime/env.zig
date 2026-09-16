@@ -1029,9 +1029,12 @@ fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
     if (args_core.bytesView(x)) |bytes| {
         const range = try args_core.getSlice(argv);
         return value.fromBytes(bytes[@intCast(range.start)..@intCast(range.end)], .string);
-    } else if (args_core.indexedView(x)) |items| {
+    } else if (try args_core.chunks(x)) |found| {
+        var source = found;
         const range = try args_core.getSlice(argv);
-        return wrap.fromTuple(tuples.newFrom(items[@intCast(range.start)..@intCast(range.end)]));
+        source.window(@intCast(range.start), @intCast(range.end));
+        const length: usize = @intCast(range.end - range.start);
+        return wrap.fromTuple(try tuples.newFromChunks(&source, length));
     }
     // The message is the fault layer's and has no spelling on this side.
     return args_core.panicType(x, 0, repr.TagSet.bytes.with(repr.TagSet.indexed));

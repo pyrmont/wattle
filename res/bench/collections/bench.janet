@@ -109,6 +109,23 @@
   (for i 0 50000 (set acc (+ acc (length (tuple/join large)))))
   acc)
 
+# The slice bindings read a window of their argument rather than the whole of
+# it, so a run at either end of the window is cut to fit.
+(defn- tuple-slice-small []
+  (var acc 0)
+  (for i 0 3500000 (set acc (+ acc (length (tuple/slice small 1)))))
+  acc)
+
+(defn- tuple-slice-large []
+  (var acc 0)
+  (for i 0 50000 (set acc (+ acc (length (tuple/slice large 1 1023)))))
+  acc)
+
+(defn- array-slice-large []
+  (var acc 0)
+  (for i 0 370000 (set acc (+ acc (length (array/slice large 1 1023)))))
+  acc)
+
 # The control: a put and a get on a table, reading no elements.
 (defn- control []
   (def t @{})
@@ -130,4 +147,7 @@
 (bench "join-small" join-small)
 (bench "tuple-join-small" tuple-join-small)
 (bench "tuple-join-large" tuple-join-large)
+(bench "tuple-slice-small" tuple-slice-small)
+(bench "tuple-slice-large" tuple-slice-large)
+(bench "array-slice-large" array-slice-large)
 (bench "control" control)

@@ -114,6 +114,13 @@ pub inline fn data(hd: *const TupleHead) [*]repr.Value {
     return @ptrFromInt(@intFromPtr(hd) +% tuple_payload);
 }
 
+/// What a copy reports when a value's count grew between the two reads that
+/// bracket the allocation.
+const grew_message = "indexed value grew while being read";
+
+/// What a copy reports when that count shrank instead.
+const shrank_message = "indexed value shrank while being read";
+
 /// Closes a tuple, which is where its hash comes from.
 ///
 /// `tuple` is the slot array. Every slot must be filled before this runs,
@@ -159,6 +166,33 @@ pub fn lib(env: *tables.Table) void {
 }
 
 /// Allocates and closes a tuple over `values`.
+/// Builds a tuple from the runs `it` gives, which must total `length`.
+///
+/// `it` is an iterator, windowed by the caller where only part of the value is
+/// wanted, and this reads it to the end. `length` is how many elements that
+/// window holds, which the caller has from the same range it windowed with.
+///
+/// This function raises where `args.Chunks.next` does, and where the runs do
+/// not total `length`: the count came from a `length` callback for an
+/// abstract, and a second call to that callback can answer differently.
+///
+/// Where the source is an abstract the slots are filled with nil first, since
+/// `begin` links the block into the collector's list with them unwritten and
+/// anything raised below allocates. A contiguous source reads no callback, so
+/// nothing between `begin` and `end` can raise and every slot is written.
+pub fn newFromChunks(it: *args_core.Chunks, length: usize) raise.Error![*]const repr.Value {
+    const tup = begin(length);
+    if (it.source == .abstract) @memset(tup[0..length], wrap.fromNil());
+    var written: usize = 0;
+    while (try it.next()) |run| {
+        if (length - written < run.len) return raise.panic(grew_message);
+        @memcpy(tup[written..][0..run.len], run);
+        written += run.len;
+    }
+    if (written != length) return raise.panic(shrank_message);
+    return end(tup);
+}
+
 pub fn newFrom(values: []const repr.Value) [*]const repr.Value {
     const t = begin(values.len);
     @memcpy(t[0..values.len], values);
@@ -253,12 +287,12 @@ fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
             // both come from a callback that runs code, so the two can
             // disagree and the copy holds itself to the total the tuple was
             // made for.
-            if (total - written < run.len) return raise.panic("indexed argument grew while being joined");
+            if (total - written < run.len) return raise.panic(grew_message);
             @memcpy(tup[written..][0..run.len], run);
             written += run.len;
         }
     }
-    if (written != total) return raise.panic("indexed argument shrank while being joined");
+    if (written != total) return raise.panic(shrank_message);
     return wrap.fromTuple(end(tup));
 }
 
@@ -271,9 +305,14 @@ fn cfunTupleSetmap(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 fn cfunTupleSlice(argv: []repr.Value) raise.Error!repr.Value {
-    const indexed = try args_core.getIndexed(argv, 0);
+    const x = args_core.argSlot(argv, 0);
+    var source = try args_core.chunks(x) orelse {
+        return args_core.panicType(x, 0, repr.TagSet.indexed);
+    };
     const range = try args_core.getSlice(argv);
-    return wrap.fromTuple(newFrom(indexed[@intCast(range.start)..@intCast(range.end)]));
+    source.window(@intCast(range.start), @intCast(range.end));
+    const length: usize = @intCast(range.end - range.start);
+    return wrap.fromTuple(try newFromChunks(&source, length));
 }
 
 fn cfunTupleSourcemap(argv: []repr.Value) raise.Error!repr.Value {
