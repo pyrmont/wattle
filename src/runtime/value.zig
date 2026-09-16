@@ -72,6 +72,7 @@ pub const structs = @import("value/structs.zig");
 pub const abstracts = @import("value/abstracts.zig");
 pub const fibers = @import("value/fibers.zig");
 pub const functions = @import("value/functions.zig");
+pub const vectors = @import("value/vectors.zig");
 pub const order = @import("value/helpers/order.zig");
 pub const access = @import("value/helpers/access.zig");
 pub const wrap = @import("value/helpers/wrap.zig");

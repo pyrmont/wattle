@@ -63,6 +63,7 @@ const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
+const vectors = @import("subsystems").value.vectors;
 const vm_entry = @import("subsystems").vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const vm_state = @import("subsystems").vm_state;
@@ -431,6 +432,114 @@ fn anAbstractWithoutAGcmark() void {
     expect(reachable(utils.abstractHead(abstract)));
 }
 
+/// A leaf marks every element, the last slot included, since a leaf does not
+/// record how many of its slots are in use.
+fn aVectorLeafMarksItsElements() void {
+    const leaf = vectors.newLeaf();
+    const first = value.fromBytes("first leaf element", .string);
+    const last = value.fromBytes("last leaf element", .string);
+    leaf.items[0] = first;
+    leaf.items[vectors.width - 1] = last;
+
+    unmark(leaf);
+    unmarkValue(first);
+    unmarkValue(last);
+
+    gc_mark.markNode(&leaf.gc);
+
+    expect(reachable(leaf));
+    expect(valueReachable(first));
+    expect(valueReachable(last));
+}
+
+/// An inner node marks each child that is not null, whether the child is a
+/// leaf or another inner node, and so reaches an element two levels down.
+fn aVectorInnerNodeMarksItsChildren() void {
+    const root = vectors.newInner();
+    const middle = vectors.newInner();
+    const near = vectors.newLeaf();
+    const far = vectors.newLeaf();
+    const element = value.fromBytes("under two inner nodes", .string);
+    far.items[0] = element;
+    root.children[0] = &near.gc;
+    root.children[1] = &middle.gc;
+    middle.children[vectors.width - 1] = &far.gc;
+
+    unmark(root);
+    unmark(middle);
+    unmark(near);
+    unmark(far);
+    unmarkValue(element);
+
+    gc_mark.markNode(&root.gc);
+
+    expect(reachable(root));
+    expect(reachable(middle));
+    expect(reachable(near));
+    expect(reachable(far));
+    expect(valueReachable(element));
+}
+
+/// A node already marked is not walked again. The element's mark is cleared
+/// after the shared leaf is marked through one parent, so marking the other
+/// parent leaves the element unmarked only if the walk stopped at the leaf.
+fn aSharedNodeIsWalkedOnce() void {
+    const leaf = vectors.newLeaf();
+    const element = value.fromBytes("in a shared leaf", .string);
+    leaf.items[0] = element;
+    const a = vectors.newInner();
+    const b = vectors.newInner();
+    a.children[0] = &leaf.gc;
+    b.children[0] = &leaf.gc;
+
+    unmark(a);
+    unmark(b);
+    unmark(leaf);
+    unmarkValue(element);
+
+    gc_mark.markNode(&a.gc);
+    expect(valueReachable(element));
+
+    unmarkValue(element);
+    gc_mark.markNode(&b.gc);
+    expect(reachable(b));
+    expect(!valueReachable(element));
+}
+
+/// Descending through nodes does not spend the recursion guard, because a
+/// node cannot be rooted in place of being walked. A trie seven levels deep,
+/// the most a vector has, is marked to its element with a budget of one, and
+/// nothing is rooted.
+fn nodesDoNotSpendTheGuard() void {
+    const leaf = vectors.newLeaf();
+    const element = value.fromBytes("seven levels down", .string);
+    leaf.items[0] = element;
+    unmark(leaf);
+    unmarkValue(element);
+
+    var top: *abi.GCObject = &leaf.gc;
+    for (0..6) |_| {
+        const inner = vectors.newInner();
+        inner.children[0] = top;
+        unmark(inner);
+        top = &inner.gc;
+    }
+
+    const saved = harness.vm().gc.depth;
+    const roots = harness.vm().roots.items.len;
+    harness.vm().gc.depth = 1;
+
+    gc_mark.markNode(top);
+
+    const depth = harness.vm().gc.depth;
+    harness.vm().gc.depth = saved;
+    expect(depth == 1);
+    expect(harness.vm().roots.items.len == roots);
+    expect(reachable(top));
+    expect(reachable(leaf));
+    expect(valueReachable(element));
+}
+
 /// `func->envs[i]`, which `@cImport` cannot spell: `envs` is a flexible array
 /// member. `theHeadOffsets` is what makes this arithmetic safe to write.
 fn funcEnv(function: *functions.Function, index: usize) *functions.FuncEnv {
@@ -763,6 +872,11 @@ fn body() !void {
 
     anAbstractMarksThroughItsCallbackOnce();
     anAbstractWithoutAGcmark();
+
+    aVectorLeafMarksItsElements();
+    aVectorInnerNodeMarksItsChildren();
+    aSharedNodeIsWalkedOnce();
+    nodesDoNotSpendTheGuard();
 
     aClosureMarksItsCapturedEnvironment();
     aSuspendedFiberMarksItsFrames();

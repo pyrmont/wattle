@@ -84,7 +84,7 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 | directory        | files | contents                                   |
 | ---------------- | ----- | ------------------------------------------ |
 | `runtime/`       | 33    | subsystems with no subdirectory            |
-| `value/`         | 11    | a file per Janet value type                |
+| `value/`         | 12    | a file per Janet value type                |
 | `value/helpers/` | 3     | operations on any value                    |
 | `vm/`            | 3     | `entry`, `lifecycle`, `state`              |
 | `gc/`            | 2     | `mark`, `sweep`                            |
@@ -104,8 +104,8 @@ The files directly in `runtime/` are the parser, the PEG engine, the
 marshaller, the argument layer, the environment, the pretty printer's entry
 point, the allocator (`gc.zig`), `capi.zig`, `io`, `math`, `scan` and `signal`.
 `value/` has arrays, buffers, strings, symbols, tuples, tables, structs,
-fibers, functions, abstracts and integer types. `value/helpers/` is `wrap`,
-`access` and `order`.
+fibers, functions, abstracts, integer types and vectors. `value/helpers/` is
+`wrap`, `access` and `order`.
 
 In `vm/`, `entry.zig` is the interpreter's entry points, `lifecycle.zig` is
 init and teardown, and `state.zig` is the `Vm` type, its storage and its

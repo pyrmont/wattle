@@ -1,12 +1,12 @@
-//! Stress contract for the two collector behaviours no per-increment contract
-//! covers: allocation from inside a GC callback, and the cross-thread
-//! facilities.
+//! Stress contract for the three collector behaviours no per-increment
+//! contract covers: allocation from inside a GC callback, nodes shared across
+//! many versions of a trie, and the cross-thread facilities.
 //!
 //! This file is not a subsystem contract. Root categories are covered by
 //! `test/gc_alloc.zig`, deep and cyclic graphs by `test/gc_mark.zig`, weak
 //! references by `test/gc_sweep.zig`, and repeated init/deinit by the cycle
-//! test those files end with. These two are the remainder, and they are here
-//! rather than split across three files because both are properties of the
+//! test those files end with. These three are the remainder, and they are here
+//! rather than split across three files because each is a property of the
 //! collector as a whole rather than of any one function in it.
 //!
 //! ## What a GC callback may allocate
@@ -56,7 +56,9 @@ const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const options = @import("options");
+const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
+const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -71,6 +73,8 @@ const at_finalizing_parent = abstract_type.define(anyopaque, .{
     .name = "gc-stress/finalizing-parent",
     .gc = allocatingGc,
 });
+
+const at_holder = abstract_type.define(anyopaque, .{ .name = "gc-stress/holder", .gcmark = holderGcmark });
 
 const at_marking_parent = abstract_type.define(anyopaque, .{
     .name = "gc-stress/marking-parent",
@@ -93,6 +97,7 @@ var shared_abstract: ?*anyopaque = null;
 const stress_rounds = 2000;
 const stress_threads = 4;
 var threaded_finalized: i32 = 0;
+const version_rounds = 200;
 
 // ==========================================================================
 // Cases
@@ -247,6 +252,87 @@ fn finalizerAllocationSurvivesAtTheHead() void {
     expect(orphanedBlocks() == orphans_before);
 }
 
+/// An abstract whose payload is one inner node, marked through
+/// `gc_mark.markNode` as a vector's `gcmark` marks its root.
+fn holder(root: *vectors.Inner) repr.Value {
+    const payload = abstracts.newBytes(&at_holder, @sizeOf(*vectors.Inner));
+    const slot: **vectors.Inner = @ptrCast(@alignCast(payload));
+    slot.* = root;
+    return wrap.fromAbstract(payload);
+}
+
+fn holderGcmark(data: *anyopaque, _: usize) void {
+    const slot: **vectors.Inner = @ptrCast(@alignCast(data));
+    gc_mark.markNode(&slot.*.gc);
+}
+
+fn holderRoot(val: repr.Value) *vectors.Inner {
+    const slot: **vectors.Inner = @ptrCast(@alignCast(wrap.toAbstract(val)));
+    return slot.*;
+}
+
+fn leafAt(root: *vectors.Inner, index: usize) *vectors.Leaf {
+    return @alignCast(@fieldParentPtr("gc", root.children[index].?));
+}
+
+/// A trie updated by path copying keeps exactly the nodes a live version
+/// reaches. Each round copies the root, replaces one leaf, and drops the
+/// version before last, with a collection after every update. Two versions
+/// are live after each round, and they share every leaf but one, so the heap
+/// holds two holders, two roots and thirty-three leaves above where it began.
+/// The last version's elements are each round's writes, and the gap between
+/// `block_count` and the walked list never opens.
+fn sharedNodesAcrossVersions() void {
+    const orphans_before = orphanedBlocks();
+    gc_mark.collect();
+    const before = harness.vm().gc.block_count;
+
+    var expected: [vectors.width]i32 = undefined;
+    const first = vectors.newInner();
+    for (0..vectors.width) |i| {
+        const leaf = vectors.newLeaf();
+        expected[i] = @intCast(i);
+        leaf.items[0] = harness.wrapInteger(expected[i]);
+        first.children[i] = &leaf.gc;
+    }
+    var current = holder(first);
+    gc_alloc.gcroot(current);
+    var previous: ?repr.Value = null;
+
+    for (0..version_rounds) |round| {
+        const old_root = holderRoot(current);
+        const slot = round % vectors.width;
+        const root = vectors.newInner();
+        root.children = old_root.children;
+        const leaf = vectors.newLeaf();
+        leaf.items = leafAt(old_root, slot).items;
+        expected[slot] = @intCast(vectors.width + round);
+        leaf.items[0] = harness.wrapInteger(expected[slot]);
+        root.children[slot] = &leaf.gc;
+
+        const next = holder(root);
+        gc_alloc.gcroot(next);
+        if (previous) |dropped| _ = gc_alloc.gcunroot(dropped);
+        previous = current;
+        current = next;
+
+        gc_mark.collect();
+        expect(orphanedBlocks() == orphans_before);
+        expect(harness.vm().gc.block_count == before + 2 + 2 + vectors.width + 1);
+    }
+
+    const root = holderRoot(current);
+    for (0..vectors.width) |i| {
+        expect(harness.integerIs(leafAt(root, i).items[0], expected[i]));
+    }
+
+    _ = gc_alloc.gcunroot(previous.?);
+    _ = gc_alloc.gcunroot(current);
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+    expect(orphanedBlocks() == orphans_before);
+}
+
 /// Each worker runs its own runtime, which is what a real second thread does.
 /// The reference it takes is balanced before it exits, so the count returns to
 /// exactly what the main thread left.
@@ -359,6 +445,8 @@ fn body() !void {
     allocationFromGcmarkDiesInTheSameCollection();
     finalizerAllocationSurvivesWhenMidList();
     finalizerAllocationSurvivesAtTheHead();
+
+    sharedNodesAcrossVersions();
 
     if (has_threads) {
         try theRefcountIsAtomicAcrossThreads();

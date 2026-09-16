@@ -64,6 +64,7 @@ const options = @import("options");
 const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
 const value = @import("subsystems").value;
+const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -72,6 +73,8 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 
 const at_final = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/final", .gc = probeGc });
+
+const at_holder = abstract_type.define(anyopaque, .{ .name = "gc-sweep-test/holder", .gcmark = holderGcmark });
 
 const at_ordered = abstract_type.define(anyopaque, .{
     .name = "gc-sweep-test/ordered",
@@ -160,6 +163,20 @@ fn probeThreadedGc(_: *anyopaque, _: usize) void {
 
 fn probeThreadedPerthread(_: *anyopaque, _: usize) void {
     threaded_perthread_calls += 1;
+}
+
+/// An abstract whose payload is one node pointer, marked through
+/// `gc_mark.markNode` as a collection's `gcmark` marks its nodes.
+fn holder(node: ?*abi.GCObject) repr.Value {
+    const payload = abstracts.newBytes(&at_holder, @sizeOf(?*abi.GCObject));
+    const slot: *?*abi.GCObject = @ptrCast(@alignCast(payload));
+    slot.* = node;
+    return wrap.fromAbstract(payload);
+}
+
+fn holderGcmark(data: *anyopaque, _: usize) void {
+    const slot: *?*abi.GCObject = @ptrCast(@alignCast(data));
+    if (slot.*) |node| gc_mark.markNode(node);
 }
 
 fn plain() *const abi.AbstractType {
@@ -311,6 +328,86 @@ fn aSymbolLeavesTheCache() void {
     gc_mark.collect();
     expect(harness.vm().symcache.count == count);
     expect(harness.vm().symcache.deleted == deleted + 1);
+}
+
+/// A vector node has no finalizer and is freed like any other block. Nothing
+/// marks an inner node and its two leaves, so the sweep frees all three.
+fn unreachableNodesAreFreed() void {
+    settle();
+    const before = harness.vm().gc.block_count;
+
+    const inner = vectors.newInner();
+    inner.children[0] = &vectors.newLeaf().gc;
+    inner.children[1] = &vectors.newLeaf().gc;
+    expect(harness.vm().gc.block_count == before + 3);
+
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+}
+
+/// Nodes reached through a rooted abstract survive with their elements, and
+/// lose their marks. The buffer in the leaf is referred to by nothing else, so
+/// it survives only because the leaf's elements were marked.
+fn nodesSurviveThroughTheirHolder() void {
+    settle();
+    const before = harness.vm().gc.block_count;
+
+    const buffer = buffers.new(8);
+    _ = buffers.pushCstringAbi(buffer, "in a leaf");
+    const leaf = vectors.newLeaf();
+    leaf.items[0] = wrap.fromBuffer(buffer);
+    const inner = vectors.newInner();
+    inner.children[0] = &leaf.gc;
+    const val = holder(&inner.gc);
+    gc_alloc.gcroot(val);
+
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before + 4);
+    expect(onList(harness.vm().gc.blocks, inner));
+    expect(onList(harness.vm().gc.blocks, leaf));
+    expect(!reachable(inner));
+    expect(!reachable(leaf));
+    expect(wrap.toBuffer(leaf.items[0]) == buffer);
+    expect(std.mem.eql(u8, buffer.slice()[0..9], "in a leaf"));
+
+    _ = gc_alloc.gcunroot(val);
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+}
+
+/// A node two tries share is freed only when neither is reachable. Dropping
+/// one holder frees that holder and its own inner node, and the shared leaf
+/// and its element stay until the second holder goes.
+fn aSharedNodeOutlivesOneHolder() void {
+    settle();
+    const before = harness.vm().gc.block_count;
+
+    const buffer = buffers.new(8);
+    const leaf = vectors.newLeaf();
+    leaf.items[0] = wrap.fromBuffer(buffer);
+    const a = vectors.newInner();
+    const b = vectors.newInner();
+    a.children[0] = &leaf.gc;
+    b.children[0] = &leaf.gc;
+    const holder_a = holder(&a.gc);
+    const holder_b = holder(&b.gc);
+    gc_alloc.gcroot(holder_a);
+    gc_alloc.gcroot(holder_b);
+
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before + 6);
+
+    _ = gc_alloc.gcunroot(holder_a);
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before + 4);
+    expect(onList(harness.vm().gc.blocks, b));
+    expect(onList(harness.vm().gc.blocks, leaf));
+    expect(onList(harness.vm().gc.blocks, buffer));
+    expect(b.children[0] == &leaf.gc);
+
+    _ = gc_alloc.gcunroot(holder_b);
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
 }
 
 /// A weak array keeps its shape and loses its dead elements. The count does
@@ -530,6 +627,9 @@ fn repeatedCycles() void {
             value.fromBytes("abstract", .keyword),
             wrap.fromAbstract(abstracts.newBytes(plain(), 8)),
         );
+        const inner = vectors.newInner();
+        inner.children[0] = &vectors.newLeaf().gc;
+        tables.put(table, value.fromBytes("nodes", .keyword), holder(&inner.gc));
 
         var function: repr.Value = wrap.fromNil();
         _ = core_env.dostring(harness.coreEnv(), "(fn [] 1)", "gc-sweep-test", &function);
@@ -562,6 +662,10 @@ pub fn run() void {
     perthreadRunsBeforeGc();
     anAbstractWithoutFinalizers();
     aSymbolLeavesTheCache();
+
+    unreachableNodesAreFreed();
+    nodesSurviveThroughTheirHolder();
+    aSharedNodeOutlivesOneHolder();
 
     aWeakArrayDropsDeadElementsInPlace();
     theFourTableKinds();

@@ -1,8 +1,9 @@
 //! The mark phase: the traversal that decides what is reachable, the recursion
 //! guard that stops it running off the stack, and `collect`, which drives it.
 //!
-//! `collect` runs a whole collection and `mark` marks one value and everything
-//! it refers to. Everything else here is one type's step of the walk.
+//! `collect` runs a whole collection, `mark` marks one value and everything it
+//! refers to, and `markNode` marks one collection node and everything under
+//! it. Everything else here is one type's step of the walk.
 //!
 //! Nothing here frees anything. The traversal only ever sets `reachable` in a
 //! header it did not allocate and will not release. That is what makes the
@@ -24,6 +25,12 @@
 //! `callback_type.dispatchTotal` is what the walk reaches it through: a raise
 //! from the mark event aborts there rather than travelling. Either way the
 //! frames of the walk own nothing.
+//!
+//! A collection node is not a value, so the guard in `markGuarded` cannot root
+//! one in place of traversing it. `markNode` descends through nodes without
+//! spending the guard, and spends it only on the elements a node holds. A
+//! vector trie is at most seven levels deep, which bounds the stack that
+//! descent uses.
 //!
 //! One detail of the walk reads as redundant and is not: `markArray` marks
 //! elements only for `MemoryType.array`, so a weak array's contents are
@@ -55,6 +62,7 @@ const strings = @import("../value/strings.zig");
 const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
+const vectors = @import("../value/vectors.zig");
 const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
@@ -137,6 +145,18 @@ pub fn collect() void {
 /// itself lives.
 pub fn mark(x: repr.Value) void {
     markGuarded(vm_state.pinned(), x);
+}
+
+/// Marks a collection node as reachable, along with everything under it.
+///
+/// `node` is the header of a `vector_inner` or `vector_leaf` block. A
+/// collection's `gcmark` callback calls this for each node its payload points
+/// at. Passing a block of any other memory type is illegal behaviour.
+///
+/// A node already marked in this collection is not walked again, so a node
+/// shared by several collections is walked once.
+pub fn markNode(node: *abi.GCObject) void {
+    markNodeIn(vm_state.pinned(), node);
 }
 
 /// `mark` on a VM the caller already holds, and the recursive step of the walk.
@@ -368,6 +388,39 @@ fn markMany(vm: *vm_state.Vm, values: []const repr.Value) void {
     for (values) |x| markGuarded(vm, x);
 }
 
+/// `markNode` on a VM the caller already holds, and the recursive step of the
+/// walk through nodes.
+///
+/// The switch lists every memory type, so a new node type is a compile error
+/// here until it has an arm.
+fn markNodeIn(vm: *vm_state.Vm, node: *abi.GCObject) void {
+    if (node.flags.reachable) return;
+    node.flags.reachable = true;
+    switch (gc_alloc.memoryTypeOf(node)) {
+        .vector_inner => markVectorInner(vm, @alignCast(@fieldParentPtr("gc", node))),
+        .vector_leaf => markVectorLeaf(vm, @alignCast(@fieldParentPtr("gc", node))),
+        .none,
+        .string,
+        .symbol,
+        .array,
+        .tuple,
+        .table,
+        .@"struct",
+        .fiber,
+        .buffer,
+        .function,
+        .abstract,
+        .funcenv,
+        .funcdef,
+        .threaded_abstract,
+        .table_weakk,
+        .table_weakv,
+        .table_weakkv,
+        .array_weak,
+        => unreachable,
+    }
+}
+
 /// Marks a string, symbol or keyword, all three of which are one head with no
 /// values under it.
 fn markString(str: [*]const u8) void {
@@ -428,6 +481,20 @@ fn markTuple(vm: *vm_state.Vm, tuple: [*]const repr.Value) void {
 /// Marks the value of every entry in `kvs`, for a weak-keyed table.
 fn markValues(vm: *vm_state.Vm, kvs: []const tables.KV) void {
     for (kvs) |kv| markGuarded(vm, kv.value);
+}
+
+/// Marks every child of a vector's inner node. The node itself is already
+/// marked.
+fn markVectorInner(vm: *vm_state.Vm, inner: *vectors.Inner) void {
+    for (inner.children) |slot| {
+        if (slot) |child| markNodeIn(vm, child);
+    }
+}
+
+/// Marks every element of a vector's leaf, unused slots included, since each
+/// holds nil. The leaf itself is already marked.
+fn markVectorLeaf(vm: *vm_state.Vm, leaf: *vectors.Leaf) void {
+    markMany(vm, &leaf.items);
 }
 
 /// The run of `n` items at `p`, or an empty slice.

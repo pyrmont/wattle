@@ -176,6 +176,10 @@ pub const Collector = struct {
 /// compiles reads a memory type: it is the collector's vocabulary.
 /// `memoryTypeOf` is a free function rather than a `GCObject` method for the
 /// same reason, since a method would take this enum into the boundary module.
+///
+/// The four weak types are numbered last, because `gcallocBytes` puts every
+/// type at or above `first_weak_type` on the weak heap. A new type goes before
+/// `table_weakk`.
 pub const MemoryType = enum(u8) {
     none = 0,
     string = 1,
@@ -191,10 +195,12 @@ pub const MemoryType = enum(u8) {
     funcenv = 11,
     funcdef = 12,
     threaded_abstract = 13,
-    table_weakk = 14,
-    table_weakv = 15,
-    table_weakkv = 16,
-    array_weak = 17,
+    vector_inner = 14,
+    vector_leaf = 15,
+    table_weakk = 16,
+    table_weakv = 17,
+    table_weakkv = 18,
+    array_weak = 19,
 };
 
 /// A scratch allocation's header: the finalizer, and the memory that follows
@@ -640,22 +646,24 @@ inline fn scratchData(s: *ScratchBlock) *anyopaque {
 // Tests
 // ==========================================================================
 
-// `MemoryType` against the numbering a marshalled image is read with.
+// `MemoryType` against the numbering `gcallocBytes` splits the two heaps by.
 comptime {
-    // Eighteen values in the header's order, and a byte-wide field wide enough
+    // Twenty values in the header's order, and a byte-wide field wide enough
     // for them.
     std.debug.assert(@sizeOf(MemoryType) == 1);
     // Every value, not a sample: a sample cannot catch a transposition, since
     // swapping two unasserted members leaves both the count and every sampled
-    // value correct. This vocabulary is read out of a marshalled image, so a
-    // transposition is a wrong result from a working program.
+    // value correct. The numbers are stored only in a block's flag byte, and
+    // the marshaller names a type rather than numbering it. A transposition
+    // across `first_weak_type` puts a type on the wrong heap.
     const expected_memory = [_]struct { MemoryType, comptime_int }{
-        .{ .none, 0 },         .{ .string, 1 },             .{ .symbol, 2 },
-        .{ .array, 3 },        .{ .tuple, 4 },              .{ .table, 5 },
-        .{ .@"struct", 6 },    .{ .fiber, 7 },              .{ .buffer, 8 },
-        .{ .function, 9 },     .{ .abstract, 10 },          .{ .funcenv, 11 },
-        .{ .funcdef, 12 },     .{ .threaded_abstract, 13 }, .{ .table_weakk, 14 },
-        .{ .table_weakv, 15 }, .{ .table_weakkv, 16 },      .{ .array_weak, 17 },
+        .{ .none, 0 },          .{ .string, 1 },             .{ .symbol, 2 },
+        .{ .array, 3 },         .{ .tuple, 4 },              .{ .table, 5 },
+        .{ .@"struct", 6 },     .{ .fiber, 7 },              .{ .buffer, 8 },
+        .{ .function, 9 },      .{ .abstract, 10 },          .{ .funcenv, 11 },
+        .{ .funcdef, 12 },      .{ .threaded_abstract, 13 }, .{ .vector_inner, 14 },
+        .{ .vector_leaf, 15 },  .{ .table_weakk, 16 },       .{ .table_weakv, 17 },
+        .{ .table_weakkv, 18 }, .{ .array_weak, 19 },
     };
     std.debug.assert(expected_memory.len == @typeInfo(MemoryType).@"enum".fields.len);
     for (expected_memory) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
