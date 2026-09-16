@@ -5,8 +5,8 @@
 //! asked for; an `opt*` function takes a default for an absent or nil slot.
 //! `fixarity` and `arity` check the count. `getSlice` and `getRange` fold a
 //! slice argument, `getFlags` decodes a keyword of flag characters, and
-//! `indexedView`, `bytesView` and `dictionaryView` classify a value without
-//! raising at all.
+//! `items`, `bytesView` and `dictionaryView` classify a value without raising
+//! at all.
 //!
 //! Deciding and saying are one layer here. A getter that formats its own
 //! complaint allocates and allocation can raise, so the kernels, the wording,
@@ -14,7 +14,7 @@
 //!
 //! ## Why the kernels report a fault instead of raising
 //!
-//! Three probes must not raise at all. `indexedView`, `bytesView` and
+//! Three probes must not raise at all. `items`, `bytesView` and
 //! `dictionaryView` report "not that kind of value" to the pretty printer, the
 //! bytecode reader and the compiler's constant folding, and `checkabstract`
 //! gives back null; a kernel that raised would need a non-raising twin for
@@ -339,29 +339,22 @@ pub const Chunks = struct {
     pub inline fn next(self: *Chunks) raise.Error!?[]const repr.Value {
         if (self.index >= self.limit) return null;
         switch (self.source) {
-            .contiguous => |items| {
-                const run = items[self.index..self.limit];
+            .contiguous => |elements| {
+                const run = elements[self.index..self.limit];
                 self.index = self.limit;
                 return run;
             },
             .abstract => |a| {
-                const run = a.at.chunk.?(a.payload, self.index);
-                const end = run.start +| run.len;
-                if (run.start > self.index or end <= self.index or end > self.len) {
-                    return pp_format.panicf("chunk of %t does not hold index %u", .{
-                        wrap.fromAbstract(a.payload),
-                        @as(u64, self.index),
-                    });
-                }
+                const run = try takeChunk(a.payload, a.at, self.index, self.len);
                 // Clipped to the window at both ends. A run reaching past
                 // `limit` is a correct answer from a type whose runs are
                 // longer than what was asked for, which is every type worth
                 // having, so it is cut rather than refused.
                 const from = self.index - run.start;
                 const to = @min(run.len, self.limit - run.start);
-                const items = run.items.?[from..to];
+                const elements = run.items.?[from..to];
                 self.index = run.start + to;
-                return items;
+                return elements;
             },
         }
     }
@@ -807,8 +800,8 @@ pub fn argIndexed(
     const x = argSlot(argv, n);
     if (repr.checkType(x, repr.Tag.array)) {
         const array = wrap.toArray(x);
-        const items = array.data orelse return &.{};
-        return items[0..@intCast(array.count)];
+        const elements = array.data orelse return &.{};
+        return elements[0..@intCast(array.count)];
     } else if (repr.checkType(x, repr.Tag.tuple)) {
         const tuple = wrap.toTuple(x);
         return tuple[0..tuples.head(tuple).length];
@@ -921,15 +914,15 @@ pub fn bytesView(str: repr.Value) ?[]const u8 {
 
 /// `bytesView`, published.
 ///
-/// An out-parameter here and an optional on both sides of it. `bytesView`,
-/// `indexedView` and `dictionaryView` give back `?T`, which is the shape the
-/// header argues for; a `callconv(.c)` return admits neither an optional nor
-/// a slice, so absence becomes the `bool` and the value becomes the `extern`
-/// view. `module.zig` rebuilds the optional, so an author sees the same shape
-/// a runtime caller does and nobody outside these three functions reads a zero
-/// beside an out-parameter.
+/// An out-parameter here and an optional on both sides of it. `bytesView` and
+/// `dictionaryView` give back `?T`, which is the shape the header argues for;
+/// a `callconv(.c)` return admits neither an optional nor a slice, so absence
+/// becomes the `bool` and the value becomes the `extern` view. `module.zig`
+/// rebuilds the optional, so an author sees the same shape a runtime caller
+/// does and nobody outside these functions reads a zero beside an
+/// out-parameter. `toIndexedAbi` has the same shape.
 ///
-/// None of the three can raise: `bytesView`'s abstract arm runs a `bytes`
+/// Neither `bytesViewAbi` nor `dictionaryViewAbi` can raise: `bytesView`'s abstract arm runs a `bytes`
 /// callback, which `abi.zig` declares `callconv(.c)`, so there is no report to
 /// flatten.
 pub fn bytesViewAbi(x: repr.Value, out: *abi.ByteView) callconv(.c) bool {
@@ -1069,8 +1062,8 @@ pub fn checkuint8(x: repr.Value) bool {
 ///
 /// See `Chunks` for how long a run stays valid.
 pub fn chunks(x: repr.Value) raise.Error!?Chunks {
-    if (indexedView(x)) |items| {
-        return .{ .source = .{ .contiguous = items }, .len = items.len, .limit = items.len };
+    if (items(x)) |elements| {
+        return .{ .source = .{ .contiguous = elements }, .len = elements.len, .limit = elements.len };
     }
     if (!repr.checkType(x, repr.Tag.abstract)) return null;
     const abst = wrap.toAbstract(x);
@@ -1175,7 +1168,7 @@ pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.Abstrac
 /// question.
 pub fn gatherArg(argv: []const repr.Value, n: usize) raise.Error!Gathered {
     var fault: Fault = undefined;
-    if (argIndexed(argv, n, &fault)) |items| return .{ .items = items, .copied = false };
+    if (argIndexed(argv, n, &fault)) |elements| return .{ .items = elements, .copied = false };
     return (try gather(argSlot(argv, n))) orelse raiseFault(argv, fault);
 }
 
@@ -1199,12 +1192,12 @@ pub fn gatherArg(argv: []const repr.Value, n: usize) raise.Error!Gathered {
 pub fn gather(x: repr.Value) raise.Error!?Gathered {
     // Answered without an iterator where the value already holds one block,
     // which is what an array or a tuple is and what nearly every call is.
-    if (indexedView(x)) |items| return .{ .items = items, .copied = false };
+    if (items(x)) |elements| return .{ .items = elements, .copied = false };
     var source = (try chunks(x)) orelse return null;
     switch (source.source) {
-        // Unreachable: `indexedView` above answers for every contiguous
+        // Unreachable: `items` above answers for every contiguous
         // value, so `chunks` reaching here has taken the abstract arm.
-        .contiguous => |items| return .{ .items = items, .copied = false },
+        .contiguous => |elements| return .{ .items = elements, .copied = false },
         .abstract => {
             // Allocated at the length rather than grown into, the count being
             // known before the first run is taken.
@@ -1381,19 +1374,48 @@ pub fn halfRange(argv: []const repr.Value, n: usize, length: i32, which: [*:0]co
     return argHalfrange(argv, n, length, which, &fault) orelse raiseFault(argv, fault);
 }
 
-/// The elements of anything indexed, or nothing.
-pub fn indexedView(seq: repr.Value) ?[]const repr.Value {
-    var argv = [_]repr.Value{seq};
-    var fault: Fault = undefined;
-    return argIndexed(&argv, 0, &fault);
+/// The run of an indexed abstract that holds `index`.
+///
+/// `x` is the abstract, `index` the element asked for and `len` the length it
+/// reported. The run is whole rather than cut at `index`, so its `start` may
+/// be below `index`.
+///
+/// This function raises if `x` is not an abstract with a `chunk` callback, if
+/// `index` is not below `len`, or where `Chunks.next` raises for the run.
+///
+/// See `Chunks` for how long a run stays valid.
+pub fn indexedChunk(x: repr.Value, index: usize, len: usize) raise.Error!abi.Chunk {
+    if (!repr.checkType(x, repr.Tag.abstract)) {
+        return pp_format.panicf("expected indexed abstract, got %v", .{x});
+    }
+    const abst = wrap.toAbstract(x);
+    const at = abi.abstractHead(abst).type;
+    if (at.chunk == null) return pp_format.panicf("expected indexed abstract, got %v", .{x});
+    if (index >= len) {
+        return pp_format.panicf("index %u is past the end of %t of length %u", .{
+            @as(u64, index),
+            x,
+            @as(u64, len),
+        });
+    }
+    return takeChunk(abst, at, index, len);
 }
 
-/// `indexedView`, published. See `bytesViewAbi`.
-pub fn indexedViewAbi(x: repr.Value, out: *abi.IndexedView) callconv(.c) bool {
+/// `indexedChunk`, published.
+pub fn indexedChunkAbi(x: repr.Value, index: usize, len: usize) callconv(.c) abi.Chunk {
     vm_state.requireJanetThread();
-    const items = indexedView(x) orelse return false;
-    out.* = .{ .items = items.ptr, .len = items.len };
-    return true;
+    return indexedChunk(x, index, len) catch raise.reportToAbi(abi.Chunk);
+}
+
+/// The elements of an array or a tuple, or nothing.
+///
+/// `x` is the value. This function returns null if `x` is neither, including
+/// when it is an abstract with a `chunk` callback. The slice is the value's
+/// own storage. See `chunks` for reading any indexed value.
+pub fn items(x: repr.Value) ?[]const repr.Value {
+    var argv = [_]repr.Value{x};
+    var fault: Fault = undefined;
+    return argIndexed(&argv, 0, &fault);
 }
 
 /// Whether `x` is a keyword whose bytes equal `cstring`.
@@ -1478,6 +1500,17 @@ pub fn symeq(x: repr.Value, cstring: [*:0]const u8) bool {
     return argStrlike(repr.Tag.symbol, x, cstring);
 }
 
+/// `indexedOf`, published as `to_indexed`.
+///
+/// An out-parameter and a `bool` for the optional, as `bytesViewAbi` uses.
+/// Unlike `bytesViewAbi` and `dictionaryViewAbi`, this can raise, because an
+/// abstract's `length` callback can. A raise is reported and gives back false.
+pub fn toIndexedAbi(x: repr.Value, out: *abi.Indexed) callconv(.c) bool {
+    vm_state.requireJanetThread();
+    out.* = (indexedOf(x) catch return raise.reportToAbi(bool)) orelse return false;
+    return true;
+}
+
 /// A byte view as the range it describes.
 ///
 /// `ByteView` is `extern` because an abstract type's `bytes` callback returns
@@ -1527,16 +1560,33 @@ fn checkRange(comptime T: type, dval: f64) bool {
     return dval == back;
 }
 
-/// `getIndexed`'s result as the struct the boundary accepts.
+/// The indexed value at `n` as the struct the boundary accepts.
 ///
-/// The one getter in the family that needs a conversion. `getBytes` and
-/// `getDictionary` already give back an `extern` struct; this one gives back a
-/// slice, which has no guaranteed in-memory representation and so cannot
-/// appear in a `callconv(.c)` signature. The pointer and the count cross as
-/// `abi.IndexedView` and `module.getIndexed` rebuilds the slice.
-fn indexedAbi(argv: []const repr.Value, n: usize) raise.Error!abi.IndexedView {
-    const items = try getIndexed(argv, n);
-    return .{ .items = items.ptr, .len = items.len };
+/// The published `getindexed`. It reads an indexed abstract as well as an
+/// array or a tuple, which the runtime's own `getIndexed` does not, and raises
+/// the refusal `getIndexed` gives for anything else. `module.getIndexed`
+/// builds a `module.Indexed` from the result.
+fn indexedAbi(argv: []const repr.Value, n: usize) raise.Error!abi.Indexed {
+    var fault: Fault = undefined;
+    if (argIndexed(argv, n, &fault)) |elements| {
+        return .{ .items = elements.ptr, .len = elements.len, .value = argSlot(argv, n) };
+    }
+    return (try indexedOf(argSlot(argv, n))) orelse raiseFault(argv, fault);
+}
+
+/// An indexed value as the boundary gives it to a module, or nothing.
+///
+/// An array's or a tuple's elements are its own storage. An abstract's are
+/// left to `indexedChunk`, so `items` is null and `len` is what its `length`
+/// callback reported.
+///
+/// This function raises if an abstract's `length` callback raises.
+fn indexedOf(x: repr.Value) raise.Error!?abi.Indexed {
+    const it = (try chunks(x)) orelse return null;
+    return switch (it.source) {
+        .contiguous => |elements| .{ .items = elements.ptr, .len = elements.len, .value = x },
+        .abstract => .{ .items = null, .len = it.len, .value = x },
+    };
 }
 
 /// Builds one numeric kernel: the predicate `check`, the noun `expect`, and
@@ -1664,4 +1714,25 @@ fn range(
         return null;
     }
     return @intCast(not_raw);
+}
+
+/// Runs an abstract's `chunk` callback for `index` and checks the run.
+///
+/// `payload` and `at` are the abstract and its type, and `len` is the length
+/// the run is checked against.
+///
+/// This function raises if the run does not hold `index` or reaches past
+/// `len`.
+///
+/// It is `inline` because `Chunks.next` is, for the reason given there.
+inline fn takeChunk(payload: *anyopaque, at: *const abi.AbstractType, index: usize, len: usize) raise.Error!abi.Chunk {
+    const run = at.chunk.?(payload, index);
+    const end = run.start +| run.len;
+    if (run.start > index or end <= index or end > len) {
+        return pp_format.panicf("chunk of %t does not hold index %u", .{
+            wrap.fromAbstract(payload),
+            @as(u64, index),
+        });
+    }
+    return run;
 }

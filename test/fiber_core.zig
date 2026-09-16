@@ -671,7 +671,7 @@ fn release(memory: [*]u8, bytes: usize) void {
 /// `JOP_PUSH_ARRAY` is the one push whose count comes from a value rather than
 /// from the instruction, so an array claiming `INT32_MAX` elements drives
 /// `pushn` past its bound without the contract having to reach inside a
-/// running fiber. Nothing dereferences the claim, `args.indexedView` copying
+/// running fiber. Nothing dereferences the claim, `args.items` copying
 /// the pointer and the count and `pushn` checking the count first, but the
 /// collector would, so the array exists only inside a `gc.gclock`.
 ///

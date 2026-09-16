@@ -272,8 +272,8 @@ fn buildDestructureHeads(
     suboptions.flags.drop = false;
 
     if (has_drop and lhs_indexed and rhs_indexed) {
-        const lhs_items = args_core.indexedView(lhs).?;
-        const rhs_items = args_core.indexedView(rhs).?;
+        const lhs_items = args_core.items(lhs).?;
+        const rhs_items = args_core.items(rhs).?;
         var found_amp = false;
         var found_splice = false;
         for (rhs_items) |item| {
@@ -449,7 +449,7 @@ fn destructure(
     switch (repr.typeOf(lhs)) {
         repr.Tag.symbol => return try bindLeaf(compiler, wrap.toSymbol(lhs), rhs, binding_kind, attributes),
         repr.Tag.tuple, repr.Tag.array => {
-            const values = args_core.indexedView(lhs).?;
+            const values = args_core.items(lhs).?;
             // `index` is a position in `values`; the casts left below are the
             // points where it becomes a bytecode operand or a Janet integer.
             for (0..values.len) |index| {

@@ -434,7 +434,7 @@ pub fn asmFillSourcemap(
     source: repr.Value,
 ) AsmError!void {
     const sourcemap = getFieldByName(source, "sourcemap");
-    const items = args_core.indexedView(sourcemap) orelse unreachable;
+    const items = args_core.items(sourcemap) orelse unreachable;
     const definition = a.def;
     for (items, 0..) |entry, index| {
         if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
@@ -459,7 +459,7 @@ pub fn asmFillSymbolmap(
     source: repr.Value,
 ) AsmError!void {
     const symbolmap = getFieldByName(source, "symbolmap");
-    const items = args_core.indexedView(symbolmap) orelse unreachable;
+    const items = args_core.items(symbolmap) orelse unreachable;
     const definition = a.def;
     for (items, 0..) |entry, index| {
         if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
@@ -508,7 +508,7 @@ pub fn defAt(source: repr.Value, index: usize) repr.Value {
     if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    const items = args_core.indexedView(definitions) orelse unreachable;
+    const items = args_core.items(definitions) orelse unreachable;
     return items[index];
 }
 
@@ -520,7 +520,7 @@ pub fn fillBytecode(
     a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const items = args_core.indexedView(source) orelse unreachable;
+    const items = args_core.items(source) orelse unreachable;
     const definition = a.def;
     a.bytecode_count = 0;
     // As in `scanBytecode`: a position in `items`, cast only where it is
@@ -549,7 +549,7 @@ pub fn fillConstants(
     source: repr.Value,
 ) void {
     const consts = getFieldByName(source, "constants");
-    const items = args_core.indexedView(consts) orelse unreachable;
+    const items = args_core.items(consts) orelse unreachable;
     const definition = a.def;
     for (items, 0..) |item, index| {
         definition.constants.?[index] = item;
@@ -562,7 +562,7 @@ pub fn fillEnvironments(
     source: repr.Value,
 ) AsmError!void {
     const environments = getFieldByName(source, "environments");
-    const items = args_core.indexedView(environments) orelse unreachable;
+    const items = args_core.items(environments) orelse unreachable;
     const definition = a.def;
     for (items, 0..) |val, index| {
         if (!args_core.checkint(val)) return a.fail("expected integer");
@@ -694,7 +694,7 @@ pub fn parseSlots(
     source: repr.Value,
 ) AsmError!void {
     const slots_value = getFieldByName(source, "slots");
-    const items = args_core.indexedView(slots_value) orelse return;
+    const items = args_core.items(slots_value) orelse return;
     const slots = argumentTable(a, constants.OperandKind.slot).?;
     // `index` is a position in `items`; the cast is at the seam where it
     // becomes a Janet integer in the slot table.
@@ -749,7 +749,7 @@ pub fn scanBytecode(
     a: *Assembler,
     source: repr.Value,
 ) AsmError!i32 {
-    const items = args_core.indexedView(source) orelse {
+    const items = args_core.items(source) orelse {
         a.errindex = 0;
         return a.fail("bytecode expected");
     };
@@ -777,7 +777,7 @@ pub fn scanConstants(
     source: repr.Value,
 ) i32 {
     const consts = getFieldByName(source, "constants");
-    const items = args_core.indexedView(consts) orelse return 0;
+    const items = args_core.items(consts) orelse return 0;
     return @intCast(items.len);
 }
 
@@ -788,7 +788,7 @@ pub fn scanDefs(source: repr.Value) usize {
     if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    const items = args_core.indexedView(definitions) orelse return 0;
+    const items = args_core.items(definitions) orelse return 0;
     return items.len;
 }
 
@@ -802,7 +802,7 @@ pub fn scanEnvironments(
     source: repr.Value,
 ) i32 {
     const environments = getFieldByName(source, "environments");
-    const items = args_core.indexedView(environments) orelse return -1;
+    const items = args_core.items(environments) orelse return -1;
     return @intCast(items.len);
 }
 
@@ -813,7 +813,7 @@ pub fn scanSourcemap(
     source: repr.Value,
 ) AsmError!i32 {
     const sourcemap = getFieldByName(source, "sourcemap");
-    const items = args_core.indexedView(sourcemap) orelse return 0;
+    const items = args_core.items(sourcemap) orelse return 0;
     if (items.len != a.def.bytecode_length) {
         return a.fail("sourcemap must have the same length as the bytecode");
     }
@@ -826,7 +826,7 @@ pub fn scanSymbolmap(
     source: repr.Value,
 ) i32 {
     const symbolmap = getFieldByName(source, "symbolmap");
-    const items = args_core.indexedView(symbolmap) orelse return 0;
+    const items = args_core.items(symbolmap) orelse return 0;
     return @intCast(items.len);
 }
 

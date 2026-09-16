@@ -40,17 +40,20 @@ group of types identically:
 | the getter | the types | what the module gets |
 | --- | --- | --- |
 | `getBytes` | string, symbol, keyword, buffer | `[]const u8` |
-| `getIndexed` | tuple, array | `[]const Value` |
+| `getIndexed` | tuple, array | `Indexed` |
 | `getDictionary` | struct, table | `Pairs` |
 
-Each has a `Value` form beside it: `wattle.bytesView`, `wattle.indexedView` and
+Each has a `Value` form beside it: `wattle.bytesView`, `wattle.toIndexed` and
 `wattle.dictionaryView`, which return `null` where the getter would raise.
+
+`getIndexed` also reads an abstract whose type has a `chunk` callback. Its
+elements may be in more than one run, so `Indexed` is read with `next`, `get`
+or `nextChunk` rather than as a slice.
 
 ### Construction as the getters run backwards
 
 A constructor takes exactly what the getter of the same type returns, so
-`wattle.string(try wattle.getBytes(argv, 0))` type-checks and so does
-`wattle.tuple(try wattle.getIndexed(argv, 0))`. `parse-query` is the worked
+`wattle.string(try wattle.getBytes(argv, 0))` type-checks. `parse-query` is the worked
 instance. It reads the slice `getBytes` returns and builds a struct out of
 slices of it, with no copy and no length recomputed on the module's side.
 The runtime interns its own copy, so the struct outlives the argument. That
@@ -110,9 +113,9 @@ returns null rather than raising. `query` uses it, and the refusal that follows
 names the key the caller wrote instead of a slot number the caller cannot see.
 
 Where the value is an argument slot, the getters need no help. They take any
-slice of values and an index into it, so `wattle.getNumber(items, i)` over what
-`wattle.getIndexed` returned is already legal, and a tuple of numbers needs no
-second family of functions.
+slice of values and an index into it, so `wattle.getNumber(chunk, i)` over a run
+`nextChunk` returned is already legal, and a tuple of numbers needs no second
+family of functions.
 
 ## Building a module outside this repository
 

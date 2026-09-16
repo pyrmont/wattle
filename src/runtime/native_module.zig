@@ -268,8 +268,8 @@ fn attempt(argv: []wattle.Value) wattle.Error!wattle.Value {
 ///
 /// Every constructor takes exactly what the getter of the same type returns.
 /// `built` passes the slice `getBytes` returns straight to `string`, `symbol`,
-/// `keyword` and `buffer`, and passes a `[]const Value`, the type `getIndexed`
-/// returns, to `tuple` and `array`.
+/// `keyword` and `buffer`, and passes a `[]const Value` to `tuple` and
+/// `array`.
 fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
     // The slice goes straight into the three interning constructors: no
@@ -393,7 +393,8 @@ fn defs(env: *wattle.Env) wattle.Error!void {
         wattle.reg("classify", &classify, "(classify x)\n\nThe name of a value's type."),
         wattle.reg("named", &named, "(named x)\n\nThe name of a string, a symbol or a keyword."),
         wattle.reg("peek", &peek, "(peek indexed n)\n\nThe value the keeper at index n holds."),
-        wattle.reg("viewed", &viewed, "(viewed x)\n\nWhich *View function reads a value, and its length."),
+        wattle.reg("viewed", &viewed, "(viewed x)\n\nWhich Value-form getter reads a value, and its length."),
+        wattle.reg("walked", &walked, "(walked indexed)\n\nAn indexed argument read with next, get and nextChunk."),
         wattle.reg("built", &built, "(built bytes)\n\nOne of every composite, built from the argument."),
         wattle.reg("pointer-value", &pointerValue, "(pointer-value)\n\nA raw pointer as a value."),
         wattle.reg("mutate", &mutate, "(mutate array table buffer)\n\nThe three mutations, through the Value."),
@@ -655,8 +656,8 @@ fn markCount(argv: []wattle.Value) wattle.Error!wattle.Value {
 ///
 /// Four steps, and every one of them was unreachable from a module before the
 /// getters this file exercises existed: reading the byte argument, reading the
-/// indexed argument, reading a keyword out of that slice, and refusing with a
-/// message naming what was wrong.
+/// indexed argument, reading a keyword out of it, and refusing with a message
+/// naming what was wrong.
 fn markup(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.arity(argv, 1, 3);
     const input = try wattle.getBytes(argv, 0);
@@ -664,9 +665,11 @@ fn markup(argv: []wattle.Value) wattle.Error!wattle.Value {
 
     var flags: u32 = 0;
     if (argv.len >= 2) {
-        // The slice's elements are read with the checked unwrap, which is
-        // what tells the members of a `[]const Value` apart.
-        for (try wattle.getIndexed(argv, 1), 0..) |option, i| {
+        // The elements are read with the checked unwrap, which is what tells
+        // the members of an `Indexed` apart.
+        var options = try wattle.getIndexed(argv, 1);
+        var i: usize = 0;
+        while (try options.next()) |option| : (i += 1) {
             const name = wattle.toKeyword(option) orelse
                 return wattle.panicFormat("option {d} is not a keyword", .{i});
             if (render_options.get(name)) |bit| {
@@ -748,10 +751,10 @@ fn oddValue(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// type's payload.
 fn peek(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 2);
-    const items = try wattle.getIndexed(argv, 0);
+    var items = try wattle.getIndexed(argv, 0);
     const n = try wattle.getSize(argv, 1);
-    if (n >= items.len) return wattle.panicFormat("index {d} is past the end", .{n});
-    const self = wattle.toAbstract(Keeper, items[n], &keeper_type) orelse
+    const item = try items.get(n) orelse return wattle.panicFormat("index {d} is past the end", .{n});
+    const self = wattle.toAbstract(Keeper, item, &keeper_type) orelse
         return wattle.panicFormat("element {d} is not a keeper", .{n});
     return self.kept;
 }
@@ -807,11 +810,11 @@ fn size(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// refers to them and `gc/mark.zig` traverses what it marks.
 ///
 /// The sort itself reads and writes through `get` and `put` rather than
-/// through the slice `getIndexed` returned, because that slice is
-/// `data[0..count]` and a re-entry may move it.
+/// through the `Indexed` `getIndexed` returned, because an `Indexed` does not
+/// survive a re-entry.
 fn sorted(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 2);
-    const items = try wattle.getIndexed(argv, 1);
+    var items = try wattle.getIndexed(argv, 1);
     const count = items.len;
     // Copied out of `argv` before the first call, which is not optional. A
     // cfunction's arguments live on the fiber's stack and a call into Janet may
@@ -821,7 +824,11 @@ fn sorted(argv: []wattle.Value) wattle.Error!wattle.Value {
     // comparator is safe as a local because the Janet frame that passed it is
     // still live.
     const cmp = argv[0];
-    const out = wattle.array(items);
+    // Built before the first call, while the `Indexed` is still valid.
+    const out = wattle.array(&.{});
+    while (try items.nextChunk()) |chunk| {
+        for (chunk) |item| try wattle.arrayPush(out, item);
+    }
     wattle.gcroot(out);
     defer _ = wattle.gcunroot(out);
     var i: usize = 1;
@@ -941,13 +948,13 @@ fn unsafeSeen(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.number(@floatFromInt(unsafe_seen));
 }
 
-/// `(viewed x)`: which of the three `*View` functions reads a value, and how
-/// long the result is.
+/// `(viewed x)`: which of `bytesView`, `toIndexed` and `dictionaryView` reads
+/// a value, and how long the result is.
 ///
 /// These are the `Value` form of the three getters. A getter takes an argument
-/// slot and raises naming it; these take the `Value` and raise nothing,
-/// because a value pulled out of a tuple or a dictionary is in no slot the
-/// caller can be told about.
+/// slot and raises naming it; these take the `Value` and return null, because
+/// a value pulled out of a tuple or a dictionary is in no slot the caller can
+/// be told about.
 fn viewed(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
     const v = argv[0];
@@ -956,7 +963,7 @@ fn viewed(argv: []wattle.Value) wattle.Error!wattle.Value {
         if (wattle.bytesView(v)) |bytes| {
             break :blk std.fmt.bufPrintZ(&out, "bytes {d}", .{bytes.len});
         }
-        if (wattle.indexedView(v)) |items| {
+        if (try wattle.toIndexed(v)) |items| {
             break :blk std.fmt.bufPrintZ(&out, "indexed {d}", .{items.len});
         }
         if (wattle.dictionaryView(v)) |dict| {
@@ -971,6 +978,50 @@ fn viewed(argv: []wattle.Value) wattle.Error!wattle.Value {
 fn wakeRefused(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 0);
     return wattle.number(@floatFromInt(wake_refused));
+}
+
+/// `(walked indexed)`: the elements of an indexed argument, read four ways.
+///
+/// The result is a tuple of five values: an array read with `next`, an array
+/// read with `get` from the last index to the first, how many runs `nextChunk`
+/// gave, how long the run `nextChunk` gave after one `next` was, and whether
+/// `get` of the length was null. The `get`s come before the `next`s, and do not
+/// move where `next` starts. A keeper's runs are four long, so a keeper crosses
+/// a run boundary each way.
+fn walked(argv: []wattle.Value) wattle.Error!wattle.Value {
+    try wattle.fixarity(argv, 1);
+    var items = try wattle.getIndexed(argv, 0);
+    const forward = wattle.array(&.{});
+    const backward = wattle.array(&.{});
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        const item = try items.get(i) orelse return wattle.panic("get refused an index below the length");
+        try wattle.arrayPush(backward, item);
+    }
+    while (try items.next()) |item| try wattle.arrayPush(forward, item);
+    const past_end = try items.get(items.len) == null;
+
+    var whole = try wattle.getIndexed(argv, 0);
+    var runs: usize = 0;
+    while (try whole.nextChunk()) |_| runs += 1;
+
+    // A second `Indexed` over the same value, read only after the first is
+    // finished with.
+    var rest = try wattle.getIndexed(argv, 0);
+    var rest_len: usize = 0;
+    if (try rest.next() != null) {
+        if (try rest.nextChunk()) |chunk| rest_len = chunk.len;
+    }
+
+    const row = [_]wattle.Value{
+        forward,
+        backward,
+        wattle.number(@floatFromInt(runs)),
+        wattle.number(@floatFromInt(rest_len)),
+        wattle.boolean(past_end),
+    };
+    return wattle.tuple(&row);
 }
 
 /// The callback the worker posts: wakes the fiber, then frees the root and the

@@ -17,7 +17,8 @@
 //! A declaration is here because the runtime's compilation and the module's
 //! compilation must agree on it. There are five kinds of declarations:
 //!
-//! - The three views: `ByteView`, `IndexedView` and `DictView`.
+//! - The two views, `ByteView` and `DictView`, and `Indexed`, which a view
+//!   cannot describe.
 //!
 //! - The six capabilities: `Env`, `Loop`, `Marshal`, `Render`, `Unmarshal`
 //!   and `Wake`.
@@ -44,10 +45,13 @@
 //! collection's own storage. This would be a slice in Zig but it is defined as
 //! an `extern struct` because it crosses a `callconv(.c)` signature which a
 //! slice cannot do. `module.zig` then rebuilds an author's own type from it: a
-//! slice for a `ByteView`'s bytes and an `IndexedView`'s elements, and
-//! `module.Pairs` for a `DictView`, whose storage is sparse rather than dense
-//! and so has no faithful slice. The three views are: `ByteView`,
-//! `IndexedView` and `DictView`. A view offers no ability to mutate.
+//! slice for a `ByteView`'s bytes, and `module.Pairs` for a `DictView`, whose
+//! storage is sparse rather than dense and so has no faithful slice. The two
+//! views are `ByteView` and `DictView`. A view offers no ability to mutate.
+//!
+//! `Indexed` is not a view, because an indexed abstract's elements are in as
+//! many runs as its `chunk` callback gives, and no one pointer covers them.
+//! `module.zig` builds `module.Indexed` from it.
 //!
 //! A _capability_ is `opaque {}`. It is the authority to perform an operation
 //! rather than a handle to data: an author holds a pointer, passes it back to
@@ -329,19 +333,21 @@ pub const GCObject = extern struct {
     data: GCData = std.mem.zeroes(GCData),
 };
 
-/// The elements of an array or tuple.
+/// The elements of an array, a tuple or an indexed abstract.
 ///
-/// `module.getIndexed` and `module.indexedView` return a `[]const Value`
-/// built from the `IndexedView` the runtime gives them.
+/// `module.getIndexed` and `module.toIndexed` return a `module.Indexed` built
+/// from the `Indexed` the runtime gives them.
 ///
-/// `items` is the aggregate's own storage and `len` is how many elements are
-/// in it. `items` is null when the aggregate is empty, because an empty array
-/// has no storage to point at. `module.getIndexed` and `module.indexedView`
-/// substitute the empty slice for a null `items` so a caller of those two
-/// receives a slice and never a null pointer.
-pub const IndexedView = extern struct {
+/// `value` is the value read and `len` is how many elements it has. For an
+/// array or a tuple, `items` is the aggregate's own storage. For an abstract,
+/// `items` is null and the elements are read a run at a time through the
+/// `indexed_chunk` crossing. `items` is also null when an array is empty,
+/// because an empty array has no storage to point at, so a null `items` names
+/// an abstract only when `len` is not zero.
+pub const Indexed = extern struct {
     items: ?[*]const repr.Value = null,
     len: usize = 0,
+    value: repr.Value = std.mem.zeroes(repr.Value),
 };
 
 /// A key-value pair from a struct or table.

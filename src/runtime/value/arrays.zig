@@ -316,7 +316,7 @@ fn appendIndexed(array: *Array, x: repr.Value, it: *args_core.Chunks) raise.Erro
         .abstract => false,
     };
     ensure(array, array.count + it.len, 2);
-    if (aliased) it.source = .{ .contiguous = args_core.indexedView(x).? };
+    if (aliased) it.source = .{ .contiguous = args_core.items(x).? };
     while (try it.next()) |run| {
         @memcpy(array.reserved()[array.count..][0..run.len], run);
         array.count += run.len;

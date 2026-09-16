@@ -348,10 +348,11 @@ The string, tuple and struct heads of section 3 are internal: nothing outside
 the runtime depends on their layout, and neither do the `Table`, `Array` and
 `Buffer` structs. A native module reads these values through three functions in
 `module.zig`. `wattle.bytesView` returns a slice of a string's, symbol's,
-keyword's, buffer's or byte-like abstract's bytes, `wattle.indexedView` a slice
-of an array's or tuple's elements, and `wattle.dictionaryView` an iterator over a
-table's or struct's buckets. Each is one call through the module table and each
-uses the value's own storage rather than a copy.
+keyword's, buffer's or byte-like abstract's bytes, `wattle.toIndexed` an
+`Indexed` over an array's, tuple's or indexed abstract's elements, and
+`wattle.dictionaryView` an iterator over a table's or struct's buckets. Each is
+one call through the module table and each uses the value's own storage rather
+than a copy. An indexed abstract's elements take one further call per run.
 
 The abstract head is the exception. `wattle.toAbstract` is compiled into a
 module that defines an abstract type, and the function must read the head's
@@ -568,8 +569,8 @@ there may be nothing to point at: an empty array has no storage.
 Rebuilding a slice from a view therefore maps a null pointer to the empty
 slice rather than unwrapping it with `.?`, since slicing a null pointer traps
 even for an empty range. The runtime does this in `viewBytes` in
-`runtime/args.zig`, and `module.zig` does it inline in `bytesView`,
-`getBytes`, `indexedView` and `getIndexed`:
+`runtime/args.zig`, and `module.zig` does it inline in `bytesView` and
+`getBytes`, and in `indexedOf`, which `getIndexed` and `toIndexed` share:
 
 ```zig
 pub inline fn viewBytes(view: abi.ByteView) []const u8 {
@@ -845,7 +846,7 @@ exports the symbols. The runtime's loader looks both up by name when it opens
 the shared object: `_wattle_mod_config` reports what the module was built
 against (Wattle's version, the configuration bits, the Zig version and the
 interface fingerprint), and `_wattle_init` receives the module table (every call
-a module makes into the runtime goes through one of the table's 80 crossings).
+a module makes into the runtime goes through one of the table's 81 crossings).
 
 With nothing exported, every program built using this implementation reaches
 the runtime by `@import`: the client, the image generator and the contracts
@@ -953,8 +954,8 @@ of an abstract's payload, includes it.
    that carries a pointer, and the integer range test, go through a crossing
    (section 13).
 
-2. `abi.zig`, the boundary. It declares five kinds of type: the three views
-   (`ByteView`, `IndexedView` and `DictView`), the six capabilities, the two
+2. `abi.zig`, the boundary. It declares five kinds of type: the two views
+   (`ByteView` and `DictView`) with `Indexed`, the six capabilities, the two
    enums (`Signal` and `FiberStatus`), the layouts a crossing takes or returns
    by pointer (`Reg`, `Range`, `BuildConfig`, `KV`, `CFunction`, and
    `AbstractHead` with the `GCObject` it begins with), and `AbstractType`. A
@@ -1166,7 +1167,7 @@ need only name the fields it sets.
 Almost every native module will need to interact with some of the built-in data
 types in Janet. A type crosses to a module author as a view or as a capability.
 Section 12 makes the abstract type the native-module interface, and five of its
-fourteen slots need something to cross: `tostring` needs a way to append to the
+fifteen slots need something to cross: `tostring` needs a way to append to the
 render buffer, `marshal` and `unmarshal` need a stream to write and read,
 `bytes` needs to return a view, and `gcmark` needs a `mark` to call.
 
@@ -1177,6 +1178,12 @@ One rule determines what may cross:
 > author can only pass back. Anything an author can obtain from a `Value` or
 > turn into a `Value` is addressed by that `Value` and never as a pointer. A
 > capability is never convertible to or from a `Value` on the author's side.
+
+An indexed abstract's elements are the one read that takes a further crossing.
+Its `abi.Indexed` has no storage to point at, so `Indexed` reads each run
+through `indexed_chunk`, which takes the abstract as a `Value` and returns a
+`Chunk`. The abstract is still addressed by its `Value`, and each `Chunk` is
+consumed as it arrives.
 
 `examples/url` is the worked example of this section, as `examples/numarray` is
 of section 12.
@@ -1190,7 +1197,7 @@ as and which layout in `abi.zig` carries it.
 | ------------------------------- | --------------------------------- | ------------------------------ |
 | nil, boolean, number, pointer   | the `Value`, its payload included | none                           |
 | string, symbol, keyword, buffer | the bytes, as `[]const u8`        | `ByteView`                     |
-| tuple, array                    | the elements, as `[]const Value`  | `IndexedView`                  |
+| tuple, array                    | the elements, through `Indexed`   | `Indexed`, `Chunk`             |
 | struct, table                   | the pairs, read through `Pairs`   | `DictView` + `KV`              |
 | abstract                        | `*T`, the author's own payload    | `AbstractType`, `AbstractHead` |
 | function, cfunction, fiber      | the `Value`, its payload opaque   | never                          |
@@ -1199,17 +1206,19 @@ The internal implementation (e.g. the `Array` struct) is not exposed to the
 module author.
 
 The table has a row for each of Janet's sixteen tags, so the layouts that carry
-a Janet type to an author are a closed set: `ByteView`, `IndexedView`,
-`DictView` with `KV`, `AbstractType` and `AbstractHead`. The other layouts in
+a Janet type to an author are a closed set: `ByteView`, `Indexed` with
+`Chunk`, `DictView` with `KV`, `AbstractType` and `AbstractHead`. `Chunk` also
+carries an indexed abstract's elements to the runtime from its `chunk`
+callback. The other layouts in
 `abi.zig` carry no Janet type: `Reg` is a registration row, `BuildConfig` is
 what the loader checks a module against, `Range` is the pair of indices
 `getRange` returns, and `GCObject`, `GCFlags` and `GCData` are parts of
 `AbstractHead`.
 
 The closed set is of layouts, not of crossings. A function is not a layout, so
-the constructors and the `*View` functions (see below) add fields to the module
-table without adding to `abi.zig`: the constructors return `Value`s, and the
-`*View` functions reuse the three views. An enum is not a layout either.
+the constructors and the `Value`-form getters (see below) add fields to the
+module table without adding to `abi.zig`: the constructors return `Value`s,
+and the getters reuse the two views and `Indexed`. An enum is not a layout either.
 `Signal` and `FiberStatus` are in `abi.zig` because each is a numbering the
 runtime and a module are compiled to agree on, not a type an author is given.
 
@@ -1257,16 +1266,26 @@ under one name would make a stream ambiguous.
 An author holds no view. A view is the crossing's shape: a pointer and a count.
 It is `extern` because a slice cannot cross a `callconv(.c)` signature (see
 'Why a slice cannot cross' in section 7). However, it is not a type for an
-author to use, and `module.zig` exports none of the three. What an author holds
-is whatever ordinary Zig type is faithful to the storage behind the view.
+author to use, and `module.zig` exports neither of the two, nor `abi.Indexed`.
+What an author holds is whatever ordinary Zig type is faithful to the storage
+behind the view.
 
 As a result:
 
 - Dense storage returns a slice. A string's, a symbol's or a keyword's bytes
-  and a tuple's or an array's elements are contiguous, so `getBytes`,
-  `bytesView`, `getIndexed` and `indexedView` return `[]const u8` and `[]const
-  Value`. A slice rather than an iterator, because a slice is what a C library
-  takes.
+  are contiguous, and a byte-like abstract's `bytes` callback returns one view,
+  so `getBytes` and `bytesView` return `[]const u8`. A slice rather than an
+  iterator, because a slice is what a C library takes.
+
+- Indexed storage returns `module.Indexed`. A tuple's or an array's elements
+  are contiguous, but an indexed abstract's are in as many runs as its `chunk`
+  callback gives, so there is no one slice to return. `getIndexed` and
+  `toIndexed` return an `Indexed`, whose `get` reads by position, `next` in
+  order and `nextChunk` a run at a time. A tuple or an array is one run, read
+  with no further crossing. An abstract takes one `indexed_chunk` crossing per
+  run, and the run read most recently is kept, so a `get` inside it makes no
+  crossing. No copy is offered: a module that wants its own block copies the
+  runs `nextChunk` returns.
 
 - Sparse storage returns an iterator. A dictionary's storage is a hash array:
   `cap` slots with empties among them, `len` of which are occupied, and that is
@@ -1282,7 +1301,10 @@ immutable types (string, symbol, keyword, tuple, struct) are stable while the
 value is reachable. The mutable types (buffer, array, table) are
 `data[0..count]`, and a push or a put may move them. The runtime follows the
 same rule internally: finish with what a getter returned inside the call that
-obtained it.
+obtained it. An `Indexed` over an abstract is valid until the module re-enters
+Janet code, and until another run is read from the same abstract, because a
+type may return every run from one buffer it reuses. Two `Indexed` over one
+abstract are therefore not read in turn.
 
 A `bytes` callback is written over a slice as well. `Spec(T)`'s `bytes` slot is
 `fn (*const T, usize) []const u8`, and `define`'s shim builds the `ByteView` the
@@ -1293,10 +1315,12 @@ return a slice of its own payload.
 ### Construction as the getters run backwards
 
 A constructor takes exactly what the getter of the same type returns, being
-`[]const u8` and `[]const Value`, so `string(try getBytes(argv, 0))`
-type-checks and so does `tuple(try getIndexed(argv, 0))`. That symmetry is what
-the rule implies. The dictionary half shares the element type rather than the
-container: `structOf` and `tableOf` take `[]const Pair`, and `getDictionary`
+`[]const u8`, so `string(try getBytes(argv, 0))` type-checks. That symmetry is
+what the rule implies. The indexed half shares the element type rather than the
+container: `tuple` and `array` take `[]const Value`, and `getIndexed` returns
+`Indexed`, whose `nextChunk` returns a `[]const Value`. A run is a slice of
+the elements, and the value may have more than one. The dictionary half shares
+the element type as well: `structOf` and `tableOf` take `[]const Pair`, and `getDictionary`
 returns `Pairs`, whose `next` returns a `Pair`. A constructor's argument is
 `len` pairs with nothing empty among them, where `Pairs` walks the `cap` slots
 of a hash array, so the two are different types. The names end in `Of` because
@@ -1329,7 +1353,7 @@ module given a tuple of its own abstracts has to read an element.
 
 | reads a slot                              | reads a `Value`                              |
 | ----------------------------------------- | -------------------------------------------- |
-| `getBytes`, `getDictionary`, `getIndexed` | `bytesView`, `dictionaryView`, `indexedView` |
+| `getBytes`, `getDictionary`, `getIndexed` | `bytesView`, `dictionaryView`, `toIndexed`   |
 | `getInteger`, `getNumber`                 | `toInteger`, `toNumber`                      |
 | `getBoolean`                              | `truthy`                                     |
 | `getAbstract`                             | `toAbstract`                                 |
@@ -1338,7 +1362,9 @@ module given a tuple of its own abstracts has to read an element.
 
 Each `Value` form except `truthy` checks the tag and returns `?T`. A wrong type
 is a null rather than undefined behaviour, and the `*View` functions have the
-same shape. `truthy` returns `bool`, because every value has a truthiness.
+same shape. `toIndexed` returns `Error!?Indexed`, because an abstract's
+`length` callback can raise. `truthy` returns `bool`, because every value has a
+truthiness.
 
 | function                                     | returns         | null when                                                                     |
 | -------------------------------------------- | --------------- | ----------------------------------------------------------------------------- |
@@ -1347,6 +1373,7 @@ same shape. `truthy` returns `bool`, because every value has a truthiness.
 | `toKeyword(v)`, `toString(v)`, `toSymbol(v)` | `?[:0]const u8` | `v` does not have that tag                                                    |
 | `toPointer(v)`                               | `??*anyopaque`  | outer null: not a pointer. inner null: the null pointer `pointer(null)` wraps |
 | `toAbstract(T, v, at)`                       | `?*T`           | not an abstract, or an abstract of another type                               |
+| `toIndexed(v)`                               | `Error!?Indexed` | not an array, a tuple or an abstract with a `chunk` callback                 |
 
 The result is optional rather than raising because a value with no slot gives
 the runtime nothing to name in a refusal, and the author can write a better

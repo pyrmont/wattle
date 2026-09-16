@@ -653,7 +653,7 @@ fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Error!void {
 /// An array or a tuple.
 fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Error!void {
     const isarray = repr.checkType(x, repr.Tag.array);
-    const arr = args_core.indexedView(x).?;
+    const arr = args_core.items(x).?;
     const bracketed = !isarray and tuples.isBracketed(tuples.head(arr.ptr));
 
     const opener: [*:0]const u8 = if (isarray) "@[" else if (bracketed) "[" else "(";

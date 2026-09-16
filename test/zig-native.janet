@@ -135,6 +135,8 @@
 (assert (= "<0></0>" (markup "")) "an empty argument is the empty slice, not a trap")
 (assert (= "<5>hi</5>" (markup "hi" [:sourcepos :smart])) "getIndexed reads a tuple")
 (assert (= "<5>hi</5>" (markup "hi" @[:sourcepos :smart])) "and an array")
+(assert (= "option 0 is not a keyword" (refusal markup "hi" k))
+        "and an indexed abstract, whose elements are the keeper's numbers")
 (assert (= "<0>hi</0>" (markup "hi" [])) "an empty tuple is the empty slice")
 (assert (= "<15>x</15>" (markup "x" [:sourcepos :hardbreaks :smart :footnotes]))
         "every option composes")
@@ -251,6 +253,22 @@
         "and the first index past the end is refused")
 # The other half of that test -- an abstract of this module's *other* type --
 # is asserted where `odd` is defined, further down.
+(assert (= "index 6 is past the end" (refusal peek k 6))
+        "get on an indexed abstract is null past its length")
+
+# `Indexed` read with `next`, with `get` from the last index back, with
+# `nextChunk`, and with `nextChunk` after one `next`. A keeper's runs are four
+# long, so the six elements of "keeper" are two runs. The oracle is the text's
+# bytes, taken from the string rather than from the callback.
+(def walked (from-module 'walked))
+(def codes (string/bytes "keeper"))
+(assert (deep= [(array ;codes) (array ;(reverse codes)) 2 3 true] (walked k))
+        "an indexed abstract, across a run boundary in each direction")
+(assert (deep= [@[1 2 3] @[3 2 1] 1 2 true] (walked [1 2 3]))
+        "a tuple is one run")
+(assert (deep= [@[1 2 3] @[3 2 1] 1 2 true] (walked @[1 2 3])) "and so is an array")
+(assert (deep= [@[] @[] 0 0 true] (walked [])) "an empty tuple has no runs")
+(assert (deep= [@[] @[] 0 0 true] (walked @[])) "nor does an empty array")
 
 # The three `Value`-form getters, which read a value that came out of an
 # aggregate rather than an argument slot.
@@ -261,14 +279,14 @@
 (assert (= "bytes 3" (viewed @"abc")) "and on a buffer")
 (assert (= "bytes 3" (viewed :abc)) "and on a keyword")
 (assert (= "bytes 0" (viewed "")) "and on an empty one")
-(assert (= "indexed 2" (viewed [1 2])) "indexedView on a tuple")
+(assert (= "indexed 2" (viewed [1 2])) "toIndexed on a tuple")
 (assert (= "indexed 2" (viewed @[1 2])) "and on an array")
 (assert (= "indexed 0" (viewed @[])) "and on an empty array, whose data pointer is null")
 (assert (= "dictionary 2" (viewed {:a 1 :b 2})) "dictionaryView on a struct")
 (assert (= "dictionary 2" (viewed @{:a 1 :b 2})) "and on a table")
 (assert (= "dictionary 0" (viewed @{})) "an empty table has entries, and none of them")
 (assert (= "dictionary 0" (viewed {})) "and so does an empty struct")
-(assert (= "none" (viewed 3)) "no *View function reads a number, and that is not a refusal")
+(assert (= "none" (viewed 3)) "no Value-form getter reads a number, and that is not a refusal")
 (assert (= "none" (viewed nil)) "nor does nil")
 (assert (= "bytes 6" (viewed k)) "a byte-like abstract answers through its bytes callback")
 
@@ -505,6 +523,8 @@
         "a comparator that raises raises through the sort")
 (assert (deep= @[1 2 3 5 9] (sorted (fn [a b] (gccollect) (< a b)) @[5 1 9 2 3]))
         "and the working array survives a collection inside the comparator")
+(assert (deep= (sort (array ;(string/bytes "keeper"))) (sorted < k))
+        "an indexed abstract is copied into the working array run by run")
 
 # Forwarding a cfunction's own `argv` is the shortest thing a module does with
 # `call`, and those arguments are a slice of the fiber's own stack -- so the

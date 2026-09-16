@@ -36,8 +36,9 @@
 //! A _view_ is a pointer and a count over a heap type's own storage. It is
 //! what a slice becomes at the boundary: a slice cannot cross a `callconv(.c)`
 //! signature, so the pointer and the count cross separately. This file
-//! rebuilds an author's own type from it: a slice for a string's bytes and a
-//! tuple's elements, and `Pairs` for a dictionary, whose storage is sparse
+//! rebuilds an author's own type from it: a slice for a string's bytes,
+//! `Indexed` for a tuple's elements, which an indexed abstract has in many
+//! runs rather than one, and `Pairs` for a dictionary, whose storage is sparse
 //! rather than dense. How long a getter's result stays valid depends on the
 //! type it came from. A string's, a tuple's and a struct's are stable while
 //! the value is reachable; a buffer's, an array's and a table's are not.
@@ -129,6 +130,9 @@
 //!
 //! - A view taken from `argv` is unaffected. It points at the aggregate's own
 //!   heap storage. What invalidates a view is a mutation of the aggregate.
+//!
+//! - An `Indexed` over an abstract does not survive. Janet code may read the
+//!   same abstract's runs, and a type may reuse the storage of a run.
 //!
 //! Three examples are included to show how to use modules: `examples/digest`
 //! (the event loop), `examples/numarray` (an abstract type in a module that
@@ -280,6 +284,97 @@ pub const Chunk = struct { items: []const Value, start: usize };
 /// return register and the signal beside it. Every function here that can
 /// raise returns `Error!T`.
 pub const Error = error{JanetSignal};
+
+/// The elements of an array, a tuple or an indexed abstract, read by position
+/// or in order.
+///
+/// `getIndexed` and `toIndexed` return an `Indexed`. `len` is how many
+/// elements there are. The other fields are the position `next` has reached
+/// and the run of elements read most recently, and an author does not set
+/// them.
+///
+/// An array's or a tuple's elements are one run, read with no crossing. An
+/// abstract's are read through its `chunk` callback, one crossing per run, and
+/// the run read most recently is kept. `get` of an index inside that run makes
+/// no crossing.
+///
+/// An `Indexed` is valid until the module re-enters Janet code or mutates the
+/// value it reads. The elements of a tuple are stable while it is reachable.
+/// The elements of an array are not; a push may reallocate. A run of an
+/// abstract is valid until the next run is read from the same abstract, so two
+/// `Indexed` over one abstract are not read in turn.
+///
+/// The `Value`s it returns are not rooted. See the file header for when that
+/// matters.
+///
+/// ```zig
+/// var items = try getIndexed(argv, 0);
+/// const first = try items.get(0);
+/// while (try items.next()) |item| {
+///     // item is a Value
+/// }
+/// ```
+pub const Indexed = struct {
+    len: usize,
+    value: Value,
+    position: usize = 0,
+    run: []const Value = &.{},
+    run_start: usize = 0,
+
+    /// Returns the element at `i`, or null if `i` is not below `len`.
+    ///
+    /// It does not move the position `next` and `nextChunk` read from.
+    ///
+    /// This function raises if an abstract's `chunk` callback returns a run
+    /// that does not hold `i`.
+    pub fn get(self: *Indexed, i: usize) Error!?Value {
+        if (i >= self.len) return null;
+        try self.hold(i);
+        return self.run[i - self.run_start];
+    }
+
+    /// Returns the next element, or null when every element has been
+    /// returned.
+    ///
+    /// This function raises if an abstract's `chunk` callback returns a run
+    /// that does not hold the next index.
+    pub fn next(self: *Indexed) Error!?Value {
+        if (self.position >= self.len) return null;
+        try self.hold(self.position);
+        const item = self.run[self.position - self.run_start];
+        self.position += 1;
+        return item;
+    }
+
+    /// Returns the elements from the next position to the end of the run that
+    /// holds it, or null when every element has been returned.
+    ///
+    /// An array or a tuple returns every element not yet returned in one
+    /// slice.
+    ///
+    /// This function raises if an abstract's `chunk` callback returns a run
+    /// that does not hold the next index.
+    pub fn nextChunk(self: *Indexed) Error!?[]const Value {
+        if (self.position >= self.len) return null;
+        try self.hold(self.position);
+        const items = self.run[self.position - self.run_start ..];
+        self.position = self.run_start + self.run.len;
+        return items;
+    }
+
+    /// Makes `run` the run that holds `i`, reading it if it is not already.
+    ///
+    /// `i` is below `len`. An array's or a tuple's run holds every index, so
+    /// only an abstract reaches the crossing.
+    fn hold(self: *Indexed, i: usize) Error!void {
+        if (i >= self.run_start and i - self.run_start < self.run.len) return;
+        const run = try fromAbi(interface.rt.indexed_chunk(self.value, i, self.len));
+        // The runtime refuses a run that does not hold `i`, so `len` is not
+        // zero and `items` is not null.
+        self.run = run.items.?[0..run.len];
+        self.run_start = run.start;
+    }
+};
 
 /// One row of a method table: a name and a cfunction that raises.
 ///
@@ -786,22 +881,19 @@ pub fn getDictionary(argv: []const Value, n: i32) Error!Pairs {
     return .{ .len = view.len, .view = view };
 }
 
-/// Gets and unwraps the elements of an array or tuple from a slice of `Value`.
+/// Gets the elements of an array, a tuple or an indexed abstract from a slice
+/// of `Value`.
 ///
 /// `argv` is named as such because this function is typically used to
 /// get the unwrapped value at index `n` in an argument list.
 ///
-/// This function raises if the unwrapped value is not an array or tuple.
+/// This function raises if the value is none of those types, or if an
+/// abstract's `length` callback raises.
 ///
-/// The result can be passed to the other `get` functions, since each takes any
-/// slice of `Value` and an index into it.
-///
-/// The elements of a tuple are stable while it is reachable. The elements of
-/// an array are not; a push may reallocate.
-pub fn getIndexed(argv: []const Value, n: i32) Error![]const Value {
-    const view = try fromAbi(interface.rt.getindexed(argv.ptr, n));
-    const p = view.items orelse return &.{};
-    return p[0..view.len];
+/// See `Indexed`, which is what the reading and the validity of the result are
+/// described on.
+pub fn getIndexed(argv: []const Value, n: i32) Error!Indexed {
+    return indexedOf(try fromAbi(interface.rt.getindexed(argv.ptr, n)));
 }
 
 /// Gets and unwraps a 32-bit signed integer from a slice of `Value`.
@@ -880,14 +972,6 @@ pub fn getSize(argv: []const Value, n: i32) Error!usize {
 /// integer.
 pub fn getUInteger(argv: []const Value, n: i32) Error!u32 {
     return fromAbi(interface.rt.getuinteger(argv.ptr, n));
-}
-
-/// Returns an optional slice into the payload of a wrapped array or tuple.
-pub fn indexedView(v: Value) ?[]const Value {
-    var out: abi.IndexedView = undefined;
-    if (!interface.rt.indexed_view(v, &out)) return null;
-    const p = out.items orelse return &.{};
-    return p[0..out.len];
 }
 
 /// Returns whether a wrapped value is an array.
@@ -1419,6 +1503,22 @@ pub fn toAbstract(comptime T: type, v: Value, at: *const AbstractType) ?*T {
     return @ptrCast(@alignCast(p));
 }
 
+/// Returns the elements of an array, a tuple or an indexed abstract.
+///
+/// `v` is a value read out of a view rather than an argument slot, such as an
+/// element of a tuple.
+///
+/// This function returns null if `v` is none of those types. It raises if an
+/// abstract's `length` callback raises.
+///
+/// See `Indexed`, which is what the reading and the validity of the result are
+/// described on.
+pub fn toIndexed(v: Value) Error!?Indexed {
+    var out: abi.Indexed = undefined;
+    if (!try fromAbi(interface.rt.to_indexed(v, &out))) return null;
+    return indexedOf(out);
+}
+
 /// Returns the unwrapped number value as an `i32`.
 ///
 /// This function returns null if `v` is not a number that an `i32` represents
@@ -1564,6 +1664,15 @@ inline fn checkTag(v: Value, comptime t: repr.Tag) bool {
 /// because the table field it crossed has a C calling convention.
 inline fn fromAbi(v: anytype) Error!@TypeOf(v) {
     return raise.fromAbi(v);
+}
+
+/// Builds an `Indexed` from the `abi.Indexed` the runtime gives.
+///
+/// An array's or a tuple's storage is the one run. A null `items` is an empty
+/// value or an abstract, and either starts with no run.
+fn indexedOf(view: abi.Indexed) Indexed {
+    const run: []const Value = if (view.items) |p| p[0..view.len] else &.{};
+    return .{ .len = view.len, .value = view.value, .run = run };
 }
 
 /// Appends a null-name row to a table.

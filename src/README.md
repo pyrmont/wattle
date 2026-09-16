@@ -204,8 +204,8 @@ Three things cross a boundary, and each is checked differently.
 ### The module table
 
 Nothing in `src/` exports a `janet_*` symbol. `api/interface.zig`'s `Runtime` is
-an `extern struct` of 80 `callconv(.c)` function pointers, and both the runtime
-and a module compile that file. `runtime/capi.zig` has the 80 definitions, and
+an `extern struct` of 81 `callconv(.c)` function pointers, and both the runtime
+and a module compile that file. `runtime/capi.zig` has the 81 definitions, and
 its `table` fills the struct with them. `runtime/env.zig` passes the table's
 address to `_wattle_init`; `module.zig`'s shim stores it in `interface.rt`, and
 every call an author makes goes through that pointer. Each crossing is

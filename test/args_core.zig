@@ -838,6 +838,39 @@ fn aWindowNarrowsBothEnds() raise.Error!void {
     expect(try last.next() == null);
 }
 
+/// `indexedChunk`, the crossing a module reads an abstract's runs through,
+/// gives the whole run that holds an index rather than cutting it there, so a
+/// module can read back as well as forward inside it. It refuses what is not
+/// an indexed abstract, an index at or past the length, and a run the check in
+/// `Chunks.next` refuses.
+fn indexedChunkGivesTheWholeRun() raise.Error!void {
+    const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .items = undefined };
+    for (&runs.items, 0..) |*item, i| item.* = harness.wrapInteger(@intCast(i * 10));
+    const abstract = wrap.fromAbstract(raw);
+
+    // Index 4 is inside `[3, 6)`, and the run starts at 3, not at 4.
+    const middle = try args.indexedChunk(abstract, 4, 10);
+    expect(middle.start == 3 and middle.len == 3);
+    expect(wrap.toInteger(middle.items.?[0]) == 30);
+    const short = try args.indexedChunk(abstract, 9, 10);
+    expect(short.start == 9 and short.len == 1);
+
+    refuses(args.indexedChunk, .{ abstract, 10, 10 }, "index 10 is past the end of args-core/runs of length 10");
+    refuses(args.indexedChunk, .{ wrap.fromNil(), 0, 1 }, "expected indexed abstract, got nil");
+    refusesWithPrefix(
+        args.indexedChunk,
+        .{ wrap.fromAbstract(abstracts.newBytes(&probe_at, 4)), 0, 1 },
+        "expected indexed abstract, got <args-core/probe",
+    );
+
+    // A length below the one the type has makes a correct run reach past it.
+    refuses(args.indexedChunk, .{ abstract, 0, 2 }, "chunk of args-core/runs does not hold index 0");
+    runs.lie = .wrong_index;
+    refuses(args.indexedChunk, .{ abstract, 4, 10 }, "chunk of args-core/runs does not hold index 4");
+}
+
 /// A getter reads a slot the call never passed as nil rather than reading past
 /// the end of the frame, and the fault it reports names that nil.
 ///
@@ -1023,11 +1056,11 @@ fn thePredicatesAgreeWithTheGetters() void {
 fn theViewHelpersAnswerNothingRatherThanRefusing() void {
     const array = arrays.new(0);
     harness.arrayPush(array, harness.wrapInteger(1));
-    const from_array = args.indexedView(wrap.fromArray(array)).?;
+    const from_array = args.items(wrap.fromArray(array)).?;
     expect(from_array.len == 1);
     const tuple = wrap.fromTuple(tuples.newFrom(from_array[0..1]));
-    expect(args.indexedView(tuple).?.len == 1);
-    expect(args.indexedView(wrap.fromNil()) == null);
+    expect(args.items(tuple).?.len == 1);
+    expect(args.items(wrap.fromNil()) == null);
 
     expect(args.bytesView(value.fromBytes("ab", .string)).?.len == 2);
     expect(args.bytesView(value.fromBytes("ab", .symbol)).?.len == 2);
@@ -1059,6 +1092,7 @@ fn body() raise.Error!void {
     try cbytesTerminatesAnAbstractsView();
     try chunksReadsAnAbstractRunByRun();
     try aWindowNarrowsBothEnds();
+    try indexedChunkGivesTheWholeRun();
     try aSlotTheCallNeverPassedReadsAsNil();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();

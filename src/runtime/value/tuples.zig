@@ -235,7 +235,7 @@ fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     var any_abstract = false;
     for (argv, 0..) |arg, index| {
         var len: usize = undefined;
-        if (args_core.indexedView(arg)) |vals| {
+        if (args_core.items(arg)) |vals| {
             len = vals.len;
         } else {
             const counted = try args_core.chunks(arg) orelse {
@@ -258,7 +258,7 @@ fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     if (!any_abstract) {
         var cursor = tup;
         for (argv) |arg| {
-            const vals = args_core.indexedView(arg).?;
+            const vals = args_core.items(arg).?;
             @memcpy(cursor[0..vals.len], vals);
             cursor += vals.len;
         }

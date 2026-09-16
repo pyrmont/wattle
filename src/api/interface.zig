@@ -115,14 +115,18 @@ const Value = repr.Value;
 /// `runtime/signal.zig` and `runtime/fatal.zig`, and `config.native_module`
 /// picks the arm.
 ///
-/// `module.zig` is the only caller of every other field. The three views cross
-/// as the `extern` structs `abi.zig` declares, and `module.zig` rebuilds a
-/// slice from each. `getrange` takes the argument count as well, because an
-/// absent second slot is what makes the end default. `bytes_view`,
-/// `indexed_view` and `dictionary_view` read a `Value` that is not in an
-/// argument slot, such as an element of a tuple; each returns `?T` in `module.zig`, and a
-/// `callconv(.c)` return admits neither an optional nor a slice, so the
-/// optional is the out-parameter. None of the three can raise.
+/// `module.zig` is the only caller of every other field. The two views and
+/// `abi.Indexed` cross as the `extern` structs `abi.zig` declares, and
+/// `module.zig` rebuilds an author's type from each. `getrange` takes the
+/// argument count as well, because an absent second slot is what makes the end
+/// default. `bytes_view`, `dictionary_view` and `to_indexed` read a `Value`
+/// that is not in an argument slot, such as an element of a tuple; each returns
+/// `?T` in `module.zig`, and a `callconv(.c)` return admits neither an optional
+/// nor a slice, so the optional is the out-parameter. `bytes_view` and
+/// `dictionary_view` cannot raise. `to_indexed` can, because an abstract's
+/// `length` callback can. `indexed_chunk` reads the run of an indexed abstract
+/// that holds `index`, and `len` is the length `getindexed` or `to_indexed`
+/// reported.
 ///
 /// `cfuns_ext` and `def` take a capability rather than an aggregate.
 /// `abi.Env` and `abi.Render` are `opaque {}` over `runtime/value/tables.zig`'s
@@ -213,7 +217,7 @@ pub const Runtime = extern struct {
     getboolean: *const fn (argv: [*]const Value, n: i32) callconv(.c) bool,
     getbytes: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.ByteView,
     getdictionary: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.DictView,
-    getindexed: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.IndexedView,
+    getindexed: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.Indexed,
     getinteger: *const fn (argv: [*]const Value, n: i32) callconv(.c) i32,
     /// Takes `method_type.CMethod` rather than `module.Method`. The two share
     /// one layout and differ only in the declared type of `cfun`. This field
@@ -224,7 +228,7 @@ pub const Runtime = extern struct {
     getrange: *const fn (argv: [*]const Value, argc: i32, n: i32, length: i32) callconv(.c) abi.Range,
     getsize: *const fn (argv: [*]const Value, n: i32) callconv(.c) usize,
     getuinteger: *const fn (argv: [*]const Value, n: i32) callconv(.c) u32,
-    indexed_view: *const fn (x: Value, out: *abi.IndexedView) callconv(.c) bool,
+    indexed_chunk: *const fn (x: Value, index: usize, len: usize) callconv(.c) abi.Chunk,
     length: *const fn (x: Value) callconv(.c) i32,
     mark: *const fn (x: Value) callconv(.c) void,
     marshal_abstract: *const fn (m: *abi.Marshal, p: ?*anyopaque) callconv(.c) void,
@@ -266,6 +270,7 @@ pub const Runtime = extern struct {
     /// none, which is a program not running under the loop at all.
     root_fiber_value: *const fn () callconv(.c) Value,
     signal_record: *const fn (sig: c_uint, message: Value) callconv(.c) void,
+    to_indexed: *const fn (x: Value, out: *abi.Indexed) callconv(.c) bool,
     unmarshal_abstract: *const fn (u: *abi.Unmarshal, size: usize) callconv(.c) ?*anyopaque,
     unmarshal_abstract_reuse: *const fn (u: *abi.Unmarshal, p: ?*anyopaque) callconv(.c) void,
     unmarshal_byte: *const fn (u: *abi.Unmarshal) callconv(.c) u8,

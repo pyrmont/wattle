@@ -85,9 +85,12 @@ const Style = struct {
 fn readStyle(argv: []wattle.Value, n: i32) wattle.Error!Style {
     var style: Style = .{};
     if (argv.len <= @as(usize, @intCast(n))) return style;
-    // `wattle.getIndexed` returns a `[]const Value`, so this is an ordinary
-    // loop.
-    for (try wattle.getIndexed(argv, n), 0..) |option, i| {
+    // `wattle.getIndexed` returns a `wattle.Indexed`, and `next` gives its
+    // elements in order whether the value is a tuple, an array or an indexed
+    // abstract.
+    var options = try wattle.getIndexed(argv, n);
+    var i: usize = 0;
+    while (try options.next()) |option| : (i += 1) {
         // `wattle.toKeyword` returns null rather than raising, so both refusals
         // below are this module's: an unknown option is not a type error, and
         // the runtime does not check it.
