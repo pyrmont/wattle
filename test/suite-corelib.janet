@@ -620,4 +620,19 @@
 (assert (native-extension? ".dylib") "module/paths imports a .dylib by path")
 (assert (not (native-extension? ".dylibx")) "and not an extension nobody registered")
 
+# Each of the seven slice bindings reads its first slot before anything has
+# checked the arity, `getSlice` being what checks it. A call with no arguments
+# at all reached that read and went past the end of the frame; it refuses now,
+# and the refusal names the slot, as it does for an argument of the wrong type.
+(assert-error "array/slice with no arguments" (array/slice))
+(assert-error "tuple/slice with no arguments" (tuple/slice))
+(assert-error "slice with no arguments" (slice))
+(assert-error "string/slice with no arguments" (string/slice))
+(assert-error "buffer/slice with no arguments" (buffer/slice))
+(assert-error "keyword/slice with no arguments" (keyword/slice))
+(assert-error "symbol/slice with no arguments" (symbol/slice))
+(assert (= "bad slot #0, expected array or tuple, got nil"
+           (get (protect (array/slice)) 1))
+        "and the refusal names the slot it did not get")
+
 (end-suite)

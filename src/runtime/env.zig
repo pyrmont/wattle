@@ -1023,15 +1023,18 @@ fn cfunSignal(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(slice x &opt start end)`.
 fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
-    if (args_core.bytesView(argv[0])) |bytes| {
+    // Read through `argSlot`, because `getSlice` is what checks the arity and
+    // it runs after this: `(slice)` reaches here with no argument at all.
+    const x = args_core.argSlot(argv, 0);
+    if (args_core.bytesView(x)) |bytes| {
         const range = try args_core.getSlice(argv);
         return value.fromBytes(bytes[@intCast(range.start)..@intCast(range.end)], .string);
-    } else if (args_core.indexedView(argv[0])) |items| {
+    } else if (args_core.indexedView(x)) |items| {
         const range = try args_core.getSlice(argv);
         return wrap.fromTuple(tuples.newFrom(items[@intCast(range.start)..@intCast(range.end)]));
     }
     // The message is the fault layer's and has no spelling on this side.
-    return args_core.panicType(argv[0], 0, repr.TagSet.bytes.with(repr.TagSet.indexed));
+    return args_core.panicType(x, 0, repr.TagSet.bytes.with(repr.TagSet.indexed));
 }
 
 /// `(struct & kvs)`.

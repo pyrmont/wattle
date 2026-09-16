@@ -777,6 +777,35 @@ fn chunksReadsAnAbstractRunByRun() raise.Error!void {
     refuses(args.Chunks.next, .{&past}, "chunk of args-core/runs does not hold index 9");
 }
 
+/// A getter reads a slot the call never passed as nil rather than reading past
+/// the end of the frame, and the fault it reports names that nil.
+///
+/// The optional getters have always handled a slot past the end, `argIsdefault`
+/// checking the length. The type and number getters did not, and a cfunction
+/// that reads a slot before its arity has been checked reaches them that way:
+/// each of the seven `slice` bindings does, because `getSlice` is what checks
+/// the arity and it runs after the value has been read.
+fn aSlotTheCallNeverPassedReadsAsNil() raise.Error!void {
+    var argv = [_]repr.Value{harness.wrapInteger(5)};
+    const a = slots(&argv);
+    const none = slots(argv[0..0]);
+
+    expect(repr.checkType(args.argSlot(a, 0), repr.Tag.number));
+    expect(repr.checkType(args.argSlot(a, 1), repr.Tag.nil));
+    expect(repr.checkType(args.argSlot(none, 0), repr.Tag.nil));
+
+    // One getter of each shape, against an empty frame and against a slot past
+    // the end of a frame that has one argument.
+    refuses(args.getIndexed, .{ none, 0 }, "bad slot #0, expected array or tuple, got nil");
+    refuses(args.getIndexed, .{ a, 1 }, "bad slot #1, expected array or tuple, got nil");
+    refuses(args.getBytes, .{ none, 0 }, "bad slot #0, expected string, symbol, keyword or buffer, got nil");
+    refuses(args.getInteger, .{ none, 0 }, "bad slot #0, expected 32 bit signed integer, got nil");
+    refuses(args.getNat, .{ none, 0 }, "bad slot #0, expected non-negative 32 bit signed integer, got nil");
+    refuses(args.getTuple, .{ none, 0 }, "bad slot #0, expected tuple, got nil");
+    refuses(args.getDictionary, .{ none, 0 }, "bad slot #0, expected table or struct, got nil");
+    refuses(args.getNumber, .{ none, 0 }, "bad slot #0, expected number, got nil");
+}
+
 fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Error!void {
     var argv = [_]repr.Value{
         harness.wrapInteger(5),
@@ -968,6 +997,7 @@ fn body() raise.Error!void {
     try theAbstractGettersAndTheBytesCallback();
     try cbytesTerminatesAnAbstractsView();
     try chunksReadsAnAbstractRunByRun();
+    try aSlotTheCallNeverPassedReadsAsNil();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();
     nextmethodIsAnIterator();

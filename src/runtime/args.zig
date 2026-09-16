@@ -40,7 +40,9 @@
 //! count at all: `getBytesAbi(argv, n)` has nowhere to put one.
 //! The Zig side takes a slice, because the tree calls it a great many times
 //! and `argv[n]` should be checked. `IndexAbi` makes the join, and each
-//! `*Abi` name is where that is paid.
+//! `*Abi` name is where that is paid. `argSlot` is where the check happens: a
+//! kernel reads its argument through it, and a slot past the end reads as
+//! nil.
 //!
 //! A bare pointer stays at the border rather than at the directory: what a C
 //! caller hands over is a bare pointer, and a slice built here would state a
@@ -498,7 +500,7 @@ fn TypeGetter(comptime unwrap: anytype, comptime janet_type: repr.Tag, comptime 
             if (!argChecktype(argv, n, janet_type, typeflags, &fault)) {
                 return raiseFault(argv, fault);
             }
-            return unwrap(argv[n]);
+            return unwrap(argSlot(argv, n));
         }
         pub const abi = IndexAbi(get).abi;
     };
@@ -510,7 +512,7 @@ fn Wide(comptime T: type, comptime unwrap: anytype, comptime kernel: anytype) ty
     return struct {
         pub const Value = T;
         pub fn get(argv: []const repr.Value, n: usize) raise.Error!T {
-            if (int_types_enabled) return unwrap(argv[n]);
+            if (int_types_enabled) return unwrap(argSlot(argv, n));
             var fault: Fault = undefined;
             return kernel(argv, n, &fault) orelse raiseFault(argv, fault);
         }
@@ -536,7 +538,7 @@ pub fn argAbstract(
     at: *const abi.AbstractType,
     fault: *Fault,
 ) ?*anyopaque {
-    const x = argv[n];
+    const x = argSlot(argv, n);
     if (repr.checkType(x, repr.Tag.abstract)) {
         const abstractx = wrap.toAbstract(x);
         if (abi.abstractHead(abstractx).type == at) return abstractx;
@@ -602,7 +604,7 @@ pub fn argBytes(x: repr.Value, n: usize, fault: *Fault) ?Bytes {
 /// Which shape `getCBytes` must use for the argument at `n`. It cannot fault,
 /// so it takes no fault.
 pub fn argCbytes(argv: []const repr.Value, n: usize) CBytes {
-    const x = argv[n];
+    const x = argSlot(argv, n);
     if (repr.checkType(x, repr.Tag.buffer)) {
         const buffer = wrap.toBuffer(x);
         if (buffers.isForeign(buffer) and buffer.count == buffer.capacity) {
@@ -623,7 +625,7 @@ pub fn argChecktype(
     typeflags: repr.TagSet,
     fault: *Fault,
 ) bool {
-    if (repr.checkType(argv[n], janet_type)) return true;
+    if (repr.checkType(argSlot(argv, n), janet_type)) return true;
     fault.* = .{ .wrong_type = .{ .slot = n, .expected = typeflags } };
     return false;
 }
@@ -639,7 +641,7 @@ pub fn argDictionary(
     n: usize,
     fault: *Fault,
 ) ?DictView {
-    const x = argv[n];
+    const x = argSlot(argv, n);
     if (repr.checkType(x, repr.Tag.table)) {
         const table = wrap.toTable(x);
         return .{
@@ -729,7 +731,7 @@ pub fn argIndexed(
     n: usize,
     fault: *Fault,
 ) ?[]const repr.Value {
-    const x = argv[n];
+    const x = argSlot(argv, n);
     if (repr.checkType(x, repr.Tag.array)) {
         const array = wrap.toArray(x);
         const items = array.data orelse return &.{};
@@ -745,7 +747,7 @@ pub fn argIndexed(
 /// The argument at `n` as an `i32`, filling in a `.wrong_number` fault
 /// otherwise.
 pub fn argInteger(argv: []const repr.Value, n: usize, fault: *Fault) ?i32 {
-    const x = argv[n];
+    const x = argSlot(argv, n);
     if (!checkint(x)) {
         fault.* = .{ .wrong_number = .{ .slot = n, .expected = .s32 } };
         return null;
@@ -775,7 +777,7 @@ pub fn argMethod(
 /// The argument at `n` as a non-negative `i32`, filling in a `.wrong_number`
 /// fault otherwise.
 pub fn argNat(argv: []const repr.Value, n: usize, fault: *Fault) ?i32 {
-    const x = argv[n];
+    const x = argSlot(argv, n);
     if (checkint(x)) {
         const ret = wrap.toInteger(x);
         if (ret >= 0) return ret;
@@ -1090,7 +1092,7 @@ pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.Abstrac
 /// for the reason `Bytes` gives, which no longer determines anything.
 pub fn getBytes(argv: []const repr.Value, n: usize) raise.Error!abi.ByteView {
     var fault: Fault = undefined;
-    const bytes = argBytes(argv[n], n, &fault) orelse return raiseFault(argv, fault);
+    const bytes = argBytes(argSlot(argv, n), n, &fault) orelse return raiseFault(argv, fault);
     return switch (bytes) {
         .view => |view| view,
         .abstract => |abst| abstractBytes(abst),
@@ -1110,7 +1112,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*:0]const u8 {
             // Make a copy with `gc_alloc.smalloc` in the rare case we have
             // a buffer that cannot be realloced and pushing a 0 byte would
             // raise.
-            const buffer = wrap.toBuffer(argv[n]);
+            const buffer = wrap.toBuffer(argSlot(argv, n));
             const count: usize = @intCast(buffer.count);
             const copy: [*]u8 = @ptrCast(gc_alloc.smalloc(count + 1));
             @memcpy(copy[0..count], buffer.slice()[0..count]);
@@ -1131,7 +1133,7 @@ pub fn getCBytes(argv: []const repr.Value, n: usize) raise.Error![*:0]const u8 {
         },
         .terminate => {
             // Ensure trailing 0
-            const buffer = wrap.toBuffer(argv[n]);
+            const buffer = wrap.toBuffer(argSlot(argv, n));
             try buffers.pushU8(buffer, 0);
             buffer.count -= 1;
             cstr = @ptrCast(buffer.data.?);
@@ -1405,6 +1407,22 @@ fn indexedAbi(argv: []const repr.Value, n: usize) raise.Error!abi.IndexedView {
 /// Builds one numeric kernel: the predicate `check`, the noun `expect`, and
 /// the conversion to `T`.
 ///
+/// The argument at `n`, or nil where the call passed no such argument.
+///
+/// `argv` is the frame and `n` is the slot. This function cannot fault.
+///
+/// Every kernel reads its argument through this, and so does a cfunction
+/// that reads a slot before its arity has been checked. A cfunction may read a slot
+/// before anything has checked its arity, and each of the seven `slice`
+/// bindings does: `getSlice` is what checks the arity, and it runs after the
+/// value has been read. A slot past the end reads as nil, so such a call
+/// reports a fault naming a nil rather than reading past the end of the
+/// frame.
+pub inline fn argSlot(argv: []const repr.Value, n: usize) repr.Value {
+    if (n >= argv.len) return wrap.fromNil();
+    return argv[n];
+}
+
 /// Every width except `argInteger` converts the double; that one unwraps an
 /// integer, which is a distinct operation under a tagged representation where
 /// an integer is not stored as a double.
@@ -1415,7 +1433,7 @@ fn numberGetter(
 ) fn ([]const repr.Value, usize, *Fault) ?T {
     return struct {
         fn get(argv: []const repr.Value, n: usize, fault: *Fault) ?T {
-            const x = argv[n];
+            const x = argSlot(argv, n);
             if (!check(x)) {
                 fault.* = .{ .wrong_number = .{ .slot = n, .expected = expect } };
                 return null;
@@ -1435,13 +1453,16 @@ fn numberGetter(
 /// range kinds, the flag kind and the embedded zero all render without
 /// touching the argument list, and the two arity checks are reached from a
 /// count with no argument list to pass.
+///
+/// The three arms that do name a slot read it through `argSlot`, because the
+/// fault they render can be about a slot the call never passed.
 fn raiseFault(argv: ?[]const repr.Value, fault: Fault) raise.Error {
     return switch (fault) {
-        .wrong_type => |f| panicType(argv.?[f.slot], @intCast(f.slot), f.expected),
-        .wrong_abstract => |f| panicAbstract(argv.?[f.slot], @intCast(f.slot), f.at),
+        .wrong_type => |f| panicType(argSlot(argv.?, f.slot), @intCast(f.slot), f.expected),
+        .wrong_abstract => |f| panicAbstract(argSlot(argv.?, f.slot), @intCast(f.slot), f.at),
         .wrong_number => |f| pp_format.panicf(
             "bad slot #%d, expected %s, got %v",
-            .{ @as(i32, @intCast(f.slot)), f.expected.name(), argv.?[f.slot] },
+            .{ @as(i32, @intCast(f.slot)), f.expected.name(), argSlot(argv.?, f.slot) },
         ),
         // The three arguments to "%d" below are `i64`. There is no va_list
         // here: "%d" renders the 64 bits its specifier asks for, so the width
