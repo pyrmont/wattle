@@ -1530,13 +1530,13 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                     // the matcher's recursion.
                     repr.Tag.cfunction => {
                         cap = try raise.cfunction(wrap.toCfunction(constant))(
-                            (s.captures.data.? + @as(usize, @intCast(cs.cap)))[0..@intCast(s.captures.count - cs.cap)],
+                            s.captures.slice()[@intCast(cs.cap)..],
                         );
                     },
                     repr.Tag.function => {
                         cap = try vm_entry.call(
                             wrap.toFunction(constant),
-                            (s.captures.data.? + @as(usize, @intCast(cs.cap)))[0..@intCast(s.captures.count - cs.cap)],
+                            s.captures.slice()[@intCast(cs.cap)..],
                         );
                     },
                     else => cap = constant,

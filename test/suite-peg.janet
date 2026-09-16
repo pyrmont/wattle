@@ -1149,4 +1149,17 @@
 (assert (deep= @["ab"] (peg/match '(accumulate (* '"a" (accumulate '"b"))) "ab"))
         "a nested accumulation folds into the one around it")
 
+# `cmt` and `cms` hand the captures their sub-pattern made to the function they
+# call. A sub-pattern that captured nothing leaves that run empty, and the
+# array holding the captures has no allocation behind it until something is
+# pushed, so the run was taken from a null pointer.
+(assert (deep= @[:x] (peg/match ~(cmt "a" ,(fn [& _] :x)) "a"))
+        "cmt calls its function with no captures")
+(assert (deep= @[:p :q] (peg/match ~(cms "a" ,(fn [& _] [:p :q])) "a"))
+        "and cms splices what that function returns")
+(assert (deep= @[:x] (peg/match ~(cmt (capture "a") ,(fn [_] :x)) "a"))
+        "a captured sub-pattern still reaches the function")
+(assert (deep= @["a"] (peg/match ~(cmt (capture "a") ,(fn [c] c)) "a"))
+        "and what it captured is what the function is given")
+
 (end-suite)
