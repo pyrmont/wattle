@@ -42,6 +42,14 @@
 (put k :rank 9)
 (assert (= 9 (:rank k)) "the put slot")
 
+# `chunk`: the splice operator reads the keeper one run at a time, and the
+# runs cross a boundary at four. The oracle is the same six numbers taken from
+# the text rather than from the callback.
+(defn- spliced [& xs] xs)
+(assert (deep= (string/bytes "keeper") (spliced ;k)) "the chunk slot splices")
+(assert (deep= (string/bytes "keeperkeeper") (spliced ;k ;k)) "twice in one call")
+(assert (deep= (string/bytes "keeper") (apply spliced k)) "and apply reads it")
+
 # `tostring`, through both of the pretty-printer's dispatch sites.
 (assert (= "keeper#9@1" (string k)) "the tostring slot")
 (assert (= "<zig-native/keeper keeper#9@1>" (describe k)) "and the described form")

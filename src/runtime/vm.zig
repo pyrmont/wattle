@@ -182,9 +182,9 @@ const Interp = struct {
     /// raise at a tail call into an implicit return.
     ///
     /// It does not commit. Each site keeps whatever commit it already had,
-    /// because that is not uniform: `.push_array` commits nothing, `.call`
-    /// commits before entering `fibers.funcframe` and its `stack` is stale
-    /// afterwards, and `.tailcall` commits to a frame it recomputes.
+    /// because that is not uniform: `.call` commits before entering
+    /// `fibers.funcframe` and its `stack` is stale afterwards, and `.tailcall`
+    /// commits to a frame it recomputes.
     inline fn raiseSignal(self: *Interp, sig: abi.Signal, v: repr.Value) raise.Error!abi.Signal {
         _ = self;
         // Returned rather than jumped. `raise.signal` reaches the same
@@ -1172,12 +1172,17 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         },
 
         .push_array => {
-            if (args_core.indexedView(self.stack[fD(self.pc)])) |vals| {
-                try fibers.pushn(fiber, vals);
+            // Committed the way `.length` commits: `chunks` reads an
+            // abstract's `length` callback, which may raise.
+            self.commit();
+            const spliced = self.stack[fD(self.pc)];
+            var source = try args_core.chunks(spliced);
+            if (source) |*it| {
+                try fibers.pushChunks(fiber, it);
             } else {
                 return try self.raisef("expected %T, got %v", .{
                     repr.TagSet.indexed,
-                    self.stack[fD(self.pc)],
+                    spliced,
                 });
             }
             self.reload();

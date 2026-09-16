@@ -2,10 +2,11 @@
 //! call goes through on its way onto and off a fiber's value stack.
 //!
 //! `new` allocates a fiber and seeds it, `reset` does the same over a fiber
-//! that already exists. `push`, `push2`, `push3` and `pushn` put values on the
-//! stack; `funcframe`, `funcframeTail` and `cframe` push a call frame over
-//! them and `popframe` takes one off. `status`, `finished` and `canResume`
-//! read a fiber's state, and `current` and `root` name the two the VM tracks.
+//! that already exists. `push`, `push2`, `push3`, `pushn` and `pushChunks` put
+//! values on the stack; `funcframe`, `funcframeTail` and `cframe` push a call
+//! frame over them and `popframe` takes one off. `status`, `finished` and
+//! `canResume` read a fiber's state, and `current` and `root` name the two the
+//! VM tracks.
 //!
 //! This file reaches the VM state by name and reads and writes `Fiber`,
 //! `vm/state.zig`'s `StackFrame` and `functions.FuncEnv` directly. All three
@@ -16,7 +17,7 @@
 //!
 //! ## The kernels raise by returning
 //!
-//! The four pushes raise by returning `raise.Error`, and their callers `try`
+//! The five pushes raise by returning `raise.Error`, and their callers `try`
 //! them. A frame push is different: an argument count outside the callee's
 //! arity comes back as `error.Arity`, which is not a raise, because every
 //! caller decides for itself what to say about it and two of them say nothing.
@@ -460,6 +461,34 @@ pub fn push3(fiber: *Fiber, x: repr.Value, y: repr.Value, z: repr.Value) raise.E
     slots[0] = x;
     slots[1] = y;
     slots[2] = z;
+    fiber.stacktop = newtop;
+}
+
+/// Pushes the elements of an indexed value onto `fiber`'s stack, one run at a
+/// time. See `push`.
+///
+/// `it` is an iterator from `args_core.chunks` and is read to its end. This
+/// function raises where `pushn` does, and where `args_core.Chunks.next` does.
+///
+/// The room for every element is reserved before the first run is taken,
+/// because a run stays valid only until the next call that can allocate.
+/// `stacktop` moves once, after the last run is copied: a raise part way
+/// through leaves the slots already written above `stacktop`, where
+/// `gc/mark.zig`'s `markFiber` does not look.
+///
+/// `pushn` re-derives its source after a growth because a caller may hand it a
+/// slice of this stack. A run here comes from an array, a tuple or an
+/// abstract's payload, and none of the three is this stack.
+pub fn pushChunks(fiber: *Fiber, it: *args_core.Chunks) raise.Error!void {
+    const n: i32 = @intCast(it.len);
+    if (fiber.stacktop > std.math.maxInt(i32) -% n) return raise.panic("stack overflow");
+    const newtop = fiber.stacktop +% n;
+    if (newtop > fiber.capacity) grow(fiber, newtop);
+    var at = fiber.stacktop;
+    while (try it.next()) |run| {
+        @memcpy(dataAt(fiber, at)[0..run.len], run);
+        at +%= @intCast(run.len);
+    }
     fiber.stacktop = newtop;
 }
 

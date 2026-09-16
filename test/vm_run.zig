@@ -56,6 +56,7 @@ const std = @import("std");
 const abi = @import("abi");
 const abstract_type = subsystems.abstract_type;
 const abstracts = @import("subsystems").value.abstracts;
+const args = subsystems.args;
 const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
@@ -403,6 +404,81 @@ fn theTypeAssertions() void {
     }
     // JOP_PUSH_ARRAY, which is the splice operator.
     expectError("(do (defn f [& xs] xs) (f ;5))", "expected array or tuple, got 5");
+}
+
+/// Numbers handed out in runs of three from one buffer the callback overwrites
+/// on every call.
+///
+/// The buffer is what this fixture is for. A reader holding two runs of one
+/// value at once reads the poison rather than the elements it asked for, so
+/// `(f ;v ;v)` fails here and would pass against a type that hands out its own
+/// storage. The elements are numbers, so nothing in the buffer has to be
+/// marked.
+const Runs = struct {
+    count: usize,
+    buffer: [3]repr.Value,
+
+    /// What a slot holds where the run is shorter than the buffer, and what a
+    /// stale run reads back as. No element takes this value.
+    const poison = -1;
+};
+
+const runs_at = abstract_type.define(Runs, .{
+    .name = "vm-run/runs",
+    .length = runsLength,
+    .chunk = runsChunk,
+});
+
+/// Element `i` is `i * 10`, and the runs are `[0..3)`, `[3..6)` and so on, the
+/// last of them short where `count` is not a multiple of three.
+fn runsChunk(self: *Runs, index: usize) abstract_type.Chunk {
+    const start = index - index % 3;
+    const end = @min(start + 3, self.count);
+    for (&self.buffer) |*slot| slot.* = wrap.fromInteger(Runs.poison);
+    for (self.buffer[0 .. end - start], start..) |*slot, i| {
+        slot.* = wrap.fromInteger(@intCast(i * 10));
+    }
+    return .{ .items = self.buffer[0 .. end - start], .start = start };
+}
+
+fn runsLength(self: *Runs, _: usize) raise.Error!usize {
+    return self.count;
+}
+
+fn cfunRuns(argv: []repr.Value) raise.Error!repr.Value {
+    try args.fixarity(argv, 1);
+    const count = try args.getInteger(argv, 0);
+    const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .count = @intCast(count), .buffer = undefined };
+    return wrap.fromAbstract(raw);
+}
+
+/// JOP_PUSH_ARRAY reads its operand one run at a time, so an abstract type
+/// with a `chunk` callback splices where an array or a tuple does. Every case
+/// is checked against a tuple holding the same elements.
+///
+/// The counts cross a run boundary, end on a short run and end on a full one.
+/// The last case grows the stack, which happens before the first run is taken
+/// rather than between two of them.
+fn spliceReadsAnIndexedAbstract() void {
+    const f = "(defn f [& xs] xs) ";
+    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 10)))", "(do " ++ f ++ "(f ;[0 10 20 30 40 50 60 70 80 90]))");
+    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 9)))", "(do " ++ f ++ "(f ;[0 10 20 30 40 50 60 70 80]))");
+    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 2)))", "(do " ++ f ++ "(f ;[0 10]))");
+    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 0)))", "(do " ++ f ++ "(f ;[]))");
+    // Pushes before and after the splice keep their places.
+    expectEqual("(do " ++ f ++ "(f :a ;(vmrun/runs 4) :b))", "(do " ++ f ++ "(f :a ;[0 10 20 30] :b))");
+    // One value spliced twice, which is what the reused buffer is here for.
+    expectEqual(
+        "(do " ++ f ++ "(def v (vmrun/runs 4)) (f ;v ;v))",
+        "(do " ++ f ++ "(f ;[0 10 20 30] ;[0 10 20 30]))",
+    );
+    // `apply` reaches the same opcode with its last argument.
+    expectEqual("(apply + (vmrun/runs 10))", "450");
+    expectEqual("(apply + 5 (vmrun/runs 4))", "65");
+    // A splice long enough to grow the fiber's stack.
+    expectEqual("(apply + (vmrun/runs 1000))", "(apply + (map |(* $ 10) (range 1000)))");
 }
 
 fn theCollectionConstructors() void {
@@ -891,6 +967,7 @@ fn cfunAllocated(argv: []repr.Value) raise.Error!repr.Value {
 const cfuns = [_]abi.Reg{
     .{ .name = "vmrun/arm-collection", .cfun = raise.stored(&cfunArmCollection), .documentation = null },
     .{ .name = "vmrun/allocated", .cfun = raise.stored(&cfunAllocated), .documentation = null },
+    .{ .name = "vmrun/runs", .cfun = raise.stored(&cfunRuns), .documentation = null },
 };
 
 // ==========================================================================
@@ -916,6 +993,7 @@ fn body() raise.Error!void {
     theStackLimitIsInclusive();
 
     theTypeAssertions();
+    spliceReadsAnIndexedAbstract();
     theCollectionConstructors();
     if (has_assembler) {
         anOddConstructorArgumentCount();
