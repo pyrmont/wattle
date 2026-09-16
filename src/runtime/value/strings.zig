@@ -505,7 +505,9 @@ fn cfunStringHassuffix(argv: []repr.Value) raise.Error!repr.Value {
 /// them.
 fn cfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
-    const parts = try args_core.getIndexed(argv, 0);
+    var source = try args_core.chunks(argv[0]) orelse {
+        return args_core.panicType(argv[0], 0, repr.TagSet.indexed);
+    };
     const joiner: abi.ByteView = if (argv.len == 2)
         try args_core.getBytes(argv, 1)
     else
@@ -515,25 +517,69 @@ fn cfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
     // allocated until every item is known to be a byte sequence and the total
     // is known to fit.
     var finallen: i64 = 0;
-    for (0..parts.len) |i| {
-        const chunk = args_core.bytesView(parts[i]) orelse {
-            return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ @as(i64, @intCast(i)), parts[i] });
-        };
-        if (i != 0) finallen += @intCast(joiner.len);
-        finallen += @intCast(chunk.len);
-        if (finallen > std.math.maxInt(i32)) return raise.panic("result string too long");
+    var counted: usize = 0;
+    while (try source.next()) |run| {
+        for (run) |part| {
+            const chunk = args_core.bytesView(part) orelse {
+                return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ @as(i64, @intCast(counted)), part });
+            };
+            if (counted != 0) finallen += @intCast(joiner.len);
+            finallen += @intCast(chunk.len);
+            if (finallen > std.math.maxInt(i32)) return raise.panic("result string too long");
+            counted += 1;
+        }
     }
 
-    const buf = begin(@intCast(finallen));
+    const total: usize = @intCast(finallen);
+    const buf = begin(total);
+    // Rewound rather than built a second time, so an abstract's `length`
+    // callback is read once and the two passes cannot disagree about how many
+    // parts there are. What each part holds can still differ, a `chunk`
+    // callback running code of its own, so the copy stays inside what the
+    // first pass measured. The bytes of an unfinished string are not walked by
+    // the collector, unlike a tuple's slots, so nothing has to be filled in
+    // first.
     var out: usize = 0;
-    for (0..parts.len) |i| {
-        if (i != 0) {
-            @memcpy(buf[out..][0..joiner.len], args_core.viewBytes(joiner));
-            out += joiner.len;
-        }
-        const chunk = args_core.bytesView(parts[i]).?;
-        @memcpy(buf[out..][0..chunk.len], chunk);
-        out += chunk.len;
+    switch (source.source) {
+        // Every part is where the first pass saw it, an array or a tuple
+        // holding its own elements, so this is the copy the function has
+        // always done.
+        .contiguous => |parts| {
+            for (parts, 0..) |part, i| {
+                if (i != 0) {
+                    @memcpy(buf[out..][0..joiner.len], args_core.viewBytes(joiner));
+                    out += joiner.len;
+                }
+                const chunk = args_core.bytesView(part).?;
+                @memcpy(buf[out..][0..chunk.len], chunk);
+                out += chunk.len;
+            }
+        },
+        // A `chunk` callback runs code, so what it gives the second time need
+        // not be what it gave the first. The copy stays inside what the first
+        // pass measured, and a part that is no longer a byte sequence is
+        // refused rather than unwrapped.
+        .abstract => {
+            source.window(0, source.len);
+            var index: usize = 0;
+            while (try source.next()) |run| {
+                for (run) |part| {
+                    const chunk = args_core.bytesView(part) orelse {
+                        return pp_format.panicf("item %d of parts is not a byte sequence, got %v", .{ @as(i64, @intCast(index)), part });
+                    };
+                    const wanted = chunk.len + if (index != 0) joiner.len else 0;
+                    if (total - out < wanted) return raise.panic(args_core.grew_message);
+                    if (index != 0) {
+                        @memcpy(buf[out..][0..joiner.len], args_core.viewBytes(joiner));
+                        out += joiner.len;
+                    }
+                    @memcpy(buf[out..][0..chunk.len], chunk);
+                    out += chunk.len;
+                    index += 1;
+                }
+            }
+            if (out != total) return raise.panic(args_core.shrank_message);
+        },
     }
     return wrap.fromString(end(buf));
 }

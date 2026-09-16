@@ -126,6 +126,15 @@
   (for i 0 370000 (set acc (+ acc (length (array/slice large 1 1023)))))
   acc)
 
+# string/join walks its parts twice, once to measure and once to copy, and
+# rewinds the iterator between rather than building a second one.
+(def- parts ["ab" "cde" "f" "ghij" "k" "lm"])
+
+(defn- string-join []
+  (var acc 0)
+  (for i 0 1900000 (set acc (+ acc (length (string/join parts "-")))))
+  acc)
+
 # The control: a put and a get on a table, reading no elements.
 (defn- control []
   (def t @{})
@@ -150,4 +159,5 @@
 (bench "tuple-slice-small" tuple-slice-small)
 (bench "tuple-slice-large" tuple-slice-large)
 (bench "array-slice-large" array-slice-large)
+(bench "string-join" string-join)
 (bench "control" control)

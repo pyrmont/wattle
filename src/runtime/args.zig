@@ -282,6 +282,18 @@ pub const Bytes = union(enum) {
 /// cannot fault, so it takes no fault.
 pub const CBytes = enum { copy_buffer, copy_view, terminate, view };
 
+/// What a site reports when what it read the second time is longer than what
+/// it measured the first.
+///
+/// A site that measures, allocates and then copies reads its value twice, and
+/// an abstract answers both reads through callbacks that run code. The copy
+/// holds itself to what was measured and reports this rather than writing past
+/// what it allocated.
+pub const grew_message = "indexed value grew while being read";
+
+/// What that site reports when the second read is shorter instead.
+pub const shrank_message = "indexed value shrank while being read";
+
 /// The elements of an indexed value, read one run at a time. `chunks` returns
 /// a `Chunks`.
 ///
@@ -360,8 +372,10 @@ pub const Chunks = struct {
     /// checked both against its length: `getSlice` does that against
     /// `access.length`. A `to` at or below `from` reads nothing.
     ///
-    /// This does not reset what has already been read, so it is called on a
-    /// fresh iterator.
+    /// The window is where reading now stands, so a `from` below what has
+    /// already been read rewinds: a site making two passes over one value
+    /// rewinds between them rather than building a second iterator, and reads
+    /// `length` once instead of twice.
     pub fn window(self: *Chunks, from: usize, to: usize) void {
         self.index = from;
         self.limit = to;

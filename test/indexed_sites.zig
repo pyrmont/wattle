@@ -40,6 +40,7 @@ const abstracts = @import("subsystems").value.abstracts;
 const args = @import("subsystems").args;
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
+const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const raise = @import("subsystems").raise;
 const registry = @import("subsystems").registry;
@@ -113,7 +114,64 @@ fn cfunJoin(argv: []repr.Value) raise.Error!repr.Value {
 
 const cfuns = [_]abi.Reg{
     .{ .name = "sites/join", .cfun = raise.stored(&cfunJoin), .documentation = null },
+    .{ .name = "sites/held", .cfun = raise.stored(&cfunHeld), .documentation = null },
 };
+
+/// Values given at construction, handed out in runs of a chosen size.
+///
+/// `Join` hands out numbers it computes, which suits a site that compares
+/// elements. A site that reads what the elements *are* needs to be given them,
+/// so this one holds them and marks them: they are on the collector's heap and
+/// the payload is the only thing pointing at them.
+///
+/// The run size is a parameter because a clause of two elements arriving as
+/// two runs of one is the case a site gathering into a fixed buffer has to
+/// get right.
+const Held = struct {
+    count: usize,
+    run: usize,
+    items: [max_held]repr.Value,
+
+    /// The most values one of these can be given, which is the width of the
+    /// array rather than anything a site requires.
+    const max_held = 8;
+};
+
+const held_at = abstract_type.define(Held, .{
+    .name = "indexed-sites/held",
+    .length = heldLength,
+    .chunk = heldChunk,
+    .gcmark = heldMark,
+});
+
+fn heldChunk(self: *Held, index: usize) abstract_type.Chunk {
+    const start = index - index % self.run;
+    const end = @min(start + self.run, self.count);
+    return .{ .items = self.items[start..end], .start = start };
+}
+
+fn heldLength(self: *Held, _: usize) raise.Error!usize {
+    return self.count;
+}
+
+fn heldMark(self: *Held, _: usize) void {
+    for (self.items[0..self.count]) |item| gc_mark.mark(item);
+}
+
+fn cfunHeld(argv: []repr.Value) raise.Error!repr.Value {
+    try args.arity(argv, 1, -1);
+    const per_run = try args.getSize(argv, 0);
+    const values = argv[1..];
+    if (per_run == 0 or values.len > Held.max_held) return raise.panic("bad probe");
+    const raw = abstracts.newBytes(&held_at, @sizeOf(Held));
+    const held: *Held = @ptrCast(@alignCast(raw));
+    held.* = .{ .count = values.len, .run = per_run, .items = undefined };
+    // Every slot written before the value is reachable, so `gcmark` never
+    // walks one that was never set.
+    for (&held.items) |*item| item.* = wrap.fromNil();
+    @memcpy(held.items[0..values.len], values);
+    return wrap.fromAbstract(raw);
+}
 
 /// `tuple/join` counts every argument, allocates, and then copies, and it
 /// reads each argument twice to do it. A tuple holding the same elements is
@@ -216,6 +274,59 @@ fn sliceReadsAWindowOfAnIndexedAbstract() void {
     }
 }
 
+/// `string/join` reads its parts through the protocol, and `ev/select` reads
+/// a write clause through it. Both are given an abstract whose runs are
+/// shorter than what they read, so each crosses a run boundary.
+///
+/// `string/join` counts its parts across runs to name a bad one by index, and
+/// the collection here is what shows the probe's `gcmark` doing its work: the
+/// strings it holds are reachable from nothing else.
+fn joinAndSelectReadAnIndexedAbstract() void {
+    var out: repr.Value = undefined;
+    const env = harness.coreEnv();
+    const source =
+        \\(def failures @[])
+        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- refusal [f & a] (let [r (protect (f ;a))] (get r 1)))
+        \\(def oracle ["ab" "cd" "ef"])
+        \\(check "string/join over runs of two"
+        \\       (= (string/join (sites/held 2 "ab" "cd" "ef")) (string/join oracle)))
+        \\(check "and with a separator between the parts"
+        \\       (= (string/join (sites/held 2 "ab" "cd" "ef") "-") (string/join oracle "-")))
+        \\(check "runs of one reach the same string"
+        \\       (= (string/join (sites/held 1 "ab" "cd" "ef")) (string/join oracle)))
+        \\(check "an empty abstract joins to the empty string"
+        \\       (= "" (string/join (sites/held 1))))
+        \\(check "a part that is not a byte sequence is named by its index"
+        \\       (= (refusal string/join (sites/held 2 "ab" "cd" 5))
+        \\          (refusal string/join ["ab" "cd" 5])))
+        \\# The strings are built rather than written as literals, so nothing
+        \\# but the abstract's payload points at them.
+        \\(def held (sites/held 2 (string "x" "y") (string "z" "w")))
+        \\(gccollect)
+        \\(check "the values an abstract holds survive a collection"
+        \\       (= "xyzw" (string/join held)))
+        \\# `ev/select` takes a write clause as two elements. Given in two runs
+        \\# of one, both have to reach the gather.
+        \\(def ch (ev/chan 1))
+        \\(def result (ev/select (sites/held 1 ch :v)))
+        \\(check "ev/select reads a write clause given in two runs"
+        \\       (= [:give ch] result))
+        \\(check "and the value it wrote is the one read back"
+        \\       (= :v (get (ev/select ch) 2)))
+        \\failures
+    ;
+    expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.array));
+    const failed = wrap.toArray(out);
+    if (failed.count != 0) {
+        for (failed.slice()) |label| {
+            std.debug.print("indexed-sites check failed: {s}\n", .{wrap.toString(label)});
+        }
+        expect(false);
+    }
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -224,5 +335,6 @@ pub fn run() void {
     harness.init();
     tupleJoinReadsAnIndexedAbstract();
     sliceReadsAWindowOfAnIndexedAbstract();
+    joinAndSelectReadAnIndexedAbstract();
     vm_lifecycle.deinit();
 }

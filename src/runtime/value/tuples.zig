@@ -114,13 +114,6 @@ pub inline fn data(hd: *const TupleHead) [*]repr.Value {
     return @ptrFromInt(@intFromPtr(hd) +% tuple_payload);
 }
 
-/// What a copy reports when a value's count grew between the two reads that
-/// bracket the allocation.
-const grew_message = "indexed value grew while being read";
-
-/// What a copy reports when that count shrank instead.
-const shrank_message = "indexed value shrank while being read";
-
 /// Closes a tuple, which is where its hash comes from.
 ///
 /// `tuple` is the slot array. Every slot must be filled before this runs,
@@ -185,11 +178,11 @@ pub fn newFromChunks(it: *args_core.Chunks, length: usize) raise.Error![*]const 
     if (it.source == .abstract) @memset(tup[0..length], wrap.fromNil());
     var written: usize = 0;
     while (try it.next()) |run| {
-        if (length - written < run.len) return raise.panic(grew_message);
+        if (length - written < run.len) return raise.panic(args_core.grew_message);
         @memcpy(tup[written..][0..run.len], run);
         written += run.len;
     }
-    if (written != length) return raise.panic(shrank_message);
+    if (written != length) return raise.panic(args_core.shrank_message);
     return end(tup);
 }
 
@@ -287,12 +280,12 @@ fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
             // both come from a callback that runs code, so the two can
             // disagree and the copy holds itself to the total the tuple was
             // made for.
-            if (total - written < run.len) return raise.panic(grew_message);
+            if (total - written < run.len) return raise.panic(args_core.grew_message);
             @memcpy(tup[written..][0..run.len], run);
             written += run.len;
         }
     }
-    if (written != total) return raise.panic(shrank_message);
+    if (written != total) return raise.panic(args_core.shrank_message);
     return wrap.fromTuple(end(tup));
 }
 

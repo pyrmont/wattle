@@ -281,10 +281,11 @@ fn cfunChoice(argv: []repr.Value) raise.Error!repr.Value {
 
     // Check channels for immediate reads and writes.
     for (argv, 0..) |arg, i| {
-        // An argument that is not indexed reads as an empty view, whose
-        // length is not two, which is the read arm, and the same result the
-        // null test gave.
-        const data = args_core.indexedView(arg) orelse &[_]repr.Value{};
+        // An argument that is not a write clause reads as an empty slice,
+        // whose length is not two, which is the read arm, and the same result
+        // the null test gave.
+        var pair: [2]repr.Value = undefined;
+        const data = (try writeClause(arg, &pair)) orelse &[_]repr.Value{};
         if (data.len == 2) {
             // Write.
             const chan = try channelArg(data, 0);
@@ -311,7 +312,8 @@ fn cfunChoice(argv: []repr.Value) raise.Error!repr.Value {
 
     // Wait for all readers or writers.
     for (argv, 0..) |arg, i| {
-        const data = args_core.indexedView(arg) orelse &[_]repr.Value{};
+        var pair: [2]repr.Value = undefined;
+        const data = (try writeClause(arg, &pair)) orelse &[_]repr.Value{};
         if (data.len == 2) {
             const chan = try channelArg(data, 0);
             lock(chan);
@@ -832,6 +834,29 @@ fn threadChanCallback(msg: ev.GenericMessage) callconv(.c) void {
 /// A `defer` has no error channel, and a mutex this thread took and cannot
 /// release leaves the channel unusable by anyone, so the failure is fatal at
 /// the site rather than a report for whatever opens the next scope.
+/// The two elements of a write clause, or nothing where `arg` is not an
+/// indexed value of exactly two.
+///
+/// `arg` is one clause of `ev/select` and `pair` is where its elements are
+/// put, which is the caller's stack: a clause is two elements wherever they
+/// come from, so gathering the runs of an abstract into one costs no
+/// allocation. This function raises where `args.chunks` and
+/// `args.Chunks.next` do.
+///
+/// The runs total two exactly, so the copy needs no bound of its own: the
+/// length was read once, `next` stops at it, and nothing allocates between
+/// that read and this copy for a second read to disagree with.
+fn writeClause(arg: repr.Value, pair: *[2]repr.Value) raise.Error!?[]const repr.Value {
+    var source = (try args_core.chunks(arg)) orelse return null;
+    if (source.len != 2) return null;
+    var written: usize = 0;
+    while (try source.next()) |run| {
+        @memcpy(pair[written..][0..run.len], run);
+        written += run.len;
+    }
+    return pair[0..2];
+}
+
 fn unlock(chan: *Channel) void {
     if (!isThreaded(chan)) return;
     raise.total(os_locks.mutexUnlock(@ptrCast(&chan.lock)), "a channel's unlock");
