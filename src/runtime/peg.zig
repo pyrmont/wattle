@@ -1543,12 +1543,18 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                 }
                 capLoadKeept(s, cs);
                 if (constants.PegRule.fromWord(rule[0]) != .replace and !repr.truthy(cap)) return null;
-                const elements: ?[]const repr.Value = if (constants.PegRule.fromWord(rule[0]) == .matchsplice)
-                    args_core.indexedView(cap)
+                // Gathered rather than read a run at a time, because
+                // `pushcap` grows the capture array: a run is good only until
+                // the next call that can allocate, and every element here is
+                // pushed through one. An array or a tuple is borrowed, so the
+                // rule this serves pays nothing it did not pay before.
+                var elements: ?args_core.Gathered = if (constants.PegRule.fromWord(rule[0]) == .matchsplice)
+                    try args_core.gather(cap)
                 else
                     null;
-                if (elements) |items| {
-                    for (items) |element| try pushcap(s, element, tag);
+                if (elements) |*gathered| {
+                    for (gathered.items) |element| try pushcap(s, element, tag);
+                    gathered.free();
                 } else {
                     try pushcap(s, cap, tag);
                 }

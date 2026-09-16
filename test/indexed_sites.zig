@@ -389,6 +389,55 @@ fn theGatheringSitesReadAnIndexedAbstract() void {
     }
 }
 
+/// A `cms` rule splices what its function returns into the captures, and reads
+/// that value through the protocol.
+///
+/// The elements are gathered rather than streamed: `pushcap` grows the capture
+/// array, so a run taken from the value would not survive the first element
+/// being pushed.
+fn aPegSpliceReadsAnIndexedAbstract() void {
+    var out: repr.Value = undefined;
+    const env = harness.coreEnv();
+    if (harness.coreOptional("peg/match") == null) return;
+    const source =
+        \\(def failures @[])
+        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\# The expected captures are written out rather than taken from a
+        \\# tuple beside them: a tuple reaches the same converted code, so an
+        \\# oracle built that way moves whenever the subject does.
+        \\(check "a cms splicing an abstract in runs of two"
+        \\       (deep= @[:p :q :r]
+        \\              (peg/match ~(cms "a" ,(fn [& _] (sites/held 2 :p :q :r))) "a")))
+        \\(check "runs of one reach the same captures"
+        \\       (deep= @[:p :q :r]
+        \\              (peg/match ~(cms "a" ,(fn [& _] (sites/held 1 :p :q :r))) "a")))
+        \\(check "and a tuple still reaches them too"
+        \\       (deep= @[:p :q :r]
+        \\              (peg/match ~(cms "a" ,(fn [& _] [:p :q :r])) "a")))
+        \\(check "an empty abstract splices nothing"
+        \\       (deep= @[] (peg/match ~(cms "a" ,(fn [& _] (sites/held 1))) "a")))
+        \\# A value that is not indexed is one capture, which is the arm the
+        \\# conversion leaves alone.
+        \\(check "a value that is not indexed is a single capture"
+        \\       (deep= @[:solo] (peg/match ~(cms "a" ,(fn [& _] :solo)) "a")))
+        \\# Enough elements to grow the capture array part way through, which is
+        \\# what a borrowed run would not survive.
+        \\(check "a splice long enough to grow the captures"
+        \\       (deep= @[1 2 3 4 5 6 7 8]
+        \\              (peg/match ~(cms "a" ,(fn [& _] (sites/held 2 1 2 3 4 5 6 7 8))) "a")))
+        \\failures
+    ;
+    expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.array));
+    const failed = wrap.toArray(out);
+    if (failed.count != 0) {
+        for (failed.slice()) |label| {
+            std.debug.print("indexed-sites check failed: {s}\n", .{wrap.toString(label)});
+        }
+        expect(false);
+    }
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -399,5 +448,6 @@ pub fn run() void {
     sliceReadsAWindowOfAnIndexedAbstract();
     joinAndSelectReadAnIndexedAbstract();
     theGatheringSitesReadAnIndexedAbstract();
+    aPegSpliceReadsAnIndexedAbstract();
     vm_lifecycle.deinit();
 }

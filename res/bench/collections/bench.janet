@@ -135,6 +135,15 @@
   (for i 0 1900000 (set acc (+ acc (length (string/join parts "-")))))
   acc)
 
+# A `cms` rule splices what its function returns into the captures, and is the
+# one PEG rule that reads an indexed value. Neither older corpus contains one.
+(def- splice-peg (peg/compile ~(any (cms "a" ,(fn [& _] [:p :q :r])))))
+
+(defn- peg-splice []
+  (var n 0)
+  (for i 0 200000 (set n (+ n (length (peg/match splice-peg "aaaaaaaa")))))
+  n)
+
 # The control: a put and a get on a table, reading no elements.
 (defn- control []
   (def t @{})
@@ -160,4 +169,5 @@
 (bench "tuple-slice-large" tuple-slice-large)
 (bench "array-slice-large" array-slice-large)
 (bench "string-join" string-join)
+(bench "peg-splice" peg-splice)
 (bench "control" control)
