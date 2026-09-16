@@ -507,7 +507,7 @@ fn cfunArrayRemove(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunArraySlice(argv: []repr.Value) raise.Error!repr.Value {
     const x = args_core.argSlot(argv, 0);
     var source = try args_core.chunks(x) orelse {
-        return args_core.panicType(x, 0, repr.TagSet.indexed);
+        return args_core.panicIndexed(x, 0, repr.TagSet.none);
     };
     const range = try args_core.getSlice(argv);
     const len: usize = @intCast(range.end - range.start);

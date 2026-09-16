@@ -388,7 +388,9 @@ fn theStackLimitIsInclusive() void {
 }
 
 /// `vm_assert_type` and `vm_assert_types` share one message and one formatter,
-/// and `%T` renders a bitmask of permitted types rather than a single one.
+/// and `%T` renders a bitmask of permitted types rather than a single one. A
+/// set that includes both array and tuple is rendered by `%K`, which names
+/// them `indexed value`.
 fn theTypeAssertions() void {
     // JOP_RESUME, JOP_CANCEL and JOP_PROPAGATE all assert a single type.
     expectError("(resume 5)", "expected fiber, got 5");
@@ -398,12 +400,18 @@ fn theTypeAssertions() void {
     // one the compiler would not.
     if (has_assembler) {
         expectError("((asm '{:arity 1 :bytecode [(tchck 0 :number) (ret 0)]}) :kw)", "expected number, got :kw");
-        expectError("((asm '{:arity 1 :bytecode [(tchck 0 :indexed) (ret 0)]}) :kw)", "expected array or tuple, got :kw");
+        expectError("((asm '{:arity 1 :bytecode [(tchck 0 :indexed) (ret 0)]}) :kw)", "expected indexed value, got :kw");
+        expectError(
+            "((asm '{:arity 1 :bytecode [(tchck 0 (:number :indexed)) (ret 0)]}) :kw)",
+            "expected number or indexed value, got :kw",
+        );
+        // A set naming one of the two is rendered as it always was.
+        expectError("((asm '{:arity 1 :bytecode [(tchck 0 :array) (ret 0)]}) :kw)", "expected array, got :kw");
         // A check that passes moves on by one instruction and no further.
         expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :number) (ldi 1 7) (ret 1)]}) 1)", "7");
     }
     // JOP_PUSH_ARRAY, which is the splice operator.
-    expectError("(do (defn f [& xs] xs) (f ;5))", "expected array or tuple, got 5");
+    expectError("(do (defn f [& xs] xs) (f ;5))", "expected indexed value, got 5");
 }
 
 /// Numbers handed out in runs of three from one buffer the callback overwrites
@@ -479,6 +487,70 @@ fn spliceReadsAnIndexedAbstract() void {
     expectEqual("(apply + 5 (vmrun/runs 4))", "65");
     // A splice long enough to grow the fiber's stack.
     expectEqual("(apply + (vmrun/runs 1000))", "(apply + (map |(* $ 10) (range 1000)))");
+}
+
+/// A type check whose set includes both array and tuple passes an abstract
+/// with a `chunk` callback, and one naming only one of the two does not.
+fn aTypeCheckPassesAnIndexedAbstract() void {
+    expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :indexed) (ldi 1 7) (ret 1)]}) (vmrun/runs 2))", "7");
+    expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 (:number :indexed)) (ldi 1 7) (ret 1)]}) (vmrun/runs 2))", "7");
+    // The refusal renders the abstract with its address, so only its start is
+    // compared.
+    expectEqual(
+        "(string/has-prefix? \"expected array, got <vm-run/runs\" (last (protect ((asm '{:arity 1 :bytecode [(tchck 0 :array) (ret 0)]}) (vmrun/runs 2)))))",
+        "true",
+    );
+}
+
+/// `indexed?` answers true for an abstract with a `chunk` callback, so the
+/// functions `boot.janet` writes over it read one.
+///
+/// Each expected result is written out. These functions reach `tuple/slice`
+/// and `indexed?` for a tuple as well, so a result built from a tuple would
+/// move with the subject.
+fn theBootFunctionsReadAnIndexedAbstract() void {
+    expectEqual("(indexed? (vmrun/runs 2))", "true");
+    expectEqual("(indexed? 5)", "false");
+    expectEqual("(indexed? \"ab\")", "false");
+    expectEqual("(take 2 (vmrun/runs 5))", "'(0 10)");
+    expectEqual("(take -2 (vmrun/runs 5))", "'(30 40)");
+    expectEqual("(drop 3 (vmrun/runs 5))", "'(30 40)");
+    expectEqual("(take-while |(< $ 25) (vmrun/runs 5))", "'(0 10 20)");
+    expectEqual("(drop-until |(> $ 25) (vmrun/runs 5))", "'(30 40)");
+    expectEqual("(partition 2 (vmrun/runs 5))", "@['(0 10) '(20 30) '(40)]");
+    expectEqual("(flatten [1 (vmrun/runs 4) 2])", "@[1 0 10 20 30 2]");
+    expectEqual("(match (vmrun/runs 2) [a b] (+ a b) _ :no)", "10");
+    expectEqual("(match (vmrun/runs 3) [a b] (+ a b) _ :no)", "10");
+}
+
+/// A type with `chunk` and neither `get` nor `next` is read by key from its
+/// runs: `get`, `in`, the destructuring opcode and `next`, and what is built
+/// on them.
+fn getAndNextAreDerivedFromTheRuns() void {
+    expectEqual("(get (vmrun/runs 5) 4)", "40");
+    expectEqual("(get (vmrun/runs 5) 5)", "nil");
+    expectEqual("(get (vmrun/runs 5) -1)", "nil");
+    expectEqual("(get (vmrun/runs 5) :x)", "nil");
+    expectEqual("(get (vmrun/runs 5) 1.5)", "nil");
+    expectEqual("(in (vmrun/runs 5) 3)", "30");
+    expectEqual(
+        "(string/has-prefix? \"key 5 not found in <vm-run/runs\" (last (protect (in (vmrun/runs 5) 5))))",
+        "true",
+    );
+    // Destructuring reads through the get-index opcode.
+    expectEqual("(do (def [a b c] (vmrun/runs 5)) [a b c])", "[0 10 20]");
+    expectEqual("(do (def [a b] (vmrun/runs 1)) [a b])", "[0 nil]");
+    expectEqual("(next (vmrun/runs 2) nil)", "0");
+    expectEqual("(next (vmrun/runs 2) 0)", "1");
+    expectEqual("(next (vmrun/runs 2) 1)", "nil");
+    expectEqual("(next (vmrun/runs 0) nil)", "nil");
+    expectEqual("(next (vmrun/runs 2) :x)", "nil");
+    expectEqual("(keys (vmrun/runs 4))", "@[0 1 2 3]");
+    expectEqual("(map inc (vmrun/runs 4))", "@[1 11 21 31]");
+    expectEqual("(do (var acc 0) (each x (vmrun/runs 7) (+= acc x)) acc)", "210");
+    // Two readers of one value, each copying an element out before the other
+    // reads, which the reused buffer would expose otherwise.
+    expectEqual("(do (def v (vmrun/runs 7)) (map + v v))", "@[0 20 40 60 80 100 120]");
 }
 
 fn theCollectionConstructors() void {
@@ -994,6 +1066,9 @@ fn body() raise.Error!void {
 
     theTypeAssertions();
     spliceReadsAnIndexedAbstract();
+    if (has_assembler) aTypeCheckPassesAnIndexedAbstract();
+    theBootFunctionsReadAnIndexedAbstract();
+    getAndNextAreDerivedFromTheRuns();
     theCollectionConstructors();
     if (has_assembler) {
         anOddConstructorArgumentCount();

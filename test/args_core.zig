@@ -121,6 +121,11 @@ fn refusesWithPrefix(function: anytype, arguments: anytype, prefix: []const u8) 
     }
 }
 
+/// `args.panicIndexed` as an error union, which is the shape `refuses` calls.
+fn panicIndexed(x: repr.Value, n: i32, also: repr.TagSet) raise.Error!void {
+    return args.panicIndexed(x, n, also);
+}
+
 /// The identity: the argument layer takes a slice, so a contract hands it the
 /// slice it built. Kept as a name because sixty call sites read
 /// `slots(&.{ ... })` and the word is what says "an argument vector" at each
@@ -871,6 +876,31 @@ fn indexedChunkGivesTheWholeRun() raise.Error!void {
     refuses(args.indexedChunk, .{ abstract, 4, 10 }, "chunk of args-core/runs does not hold index 4");
 }
 
+/// `checkindexed` answers for an array, a tuple and an abstract with a `chunk`
+/// callback, and for nothing else. `panicIndexed` names array and tuple as
+/// `indexed value`, after any other types the site accepts.
+fn anIndexedValueIsCheckedAndRefusedByTheProtocol() void {
+    const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
+    expect(args.checkindexed(wrap.fromAbstract(raw)));
+    expect(args.checkindexed(wrap.fromTuple(tuples.newFrom(&.{}))));
+    expect(args.checkindexed(wrap.fromArray(arrays.new(0))));
+    expect(!args.checkindexed(wrap.fromNil()));
+    expect(!args.checkindexed(value.fromBytes("ab", .string)));
+    expect(!args.checkindexed(wrap.fromAbstract(abstracts.newBytes(&probe_at, 4))));
+
+    refuses(panicIndexed, .{ wrap.fromNil(), 0, repr.TagSet.none }, "bad slot #0, expected indexed value, got nil");
+    refuses(
+        panicIndexed,
+        .{ wrap.fromNil(), 2, repr.TagSet.bytes },
+        "bad slot #2, expected string, symbol, keyword, buffer or indexed value, got nil",
+    );
+    refuses(
+        panicIndexed,
+        .{ wrap.fromNil(), 1, repr.TagSet.one(.number) },
+        "bad slot #1, expected number or indexed value, got nil",
+    );
+}
+
 /// A getter reads a slot the call never passed as nil rather than reading past
 /// the end of the frame, and the fault it reports names that nil.
 ///
@@ -1093,6 +1123,7 @@ fn body() raise.Error!void {
     try chunksReadsAnAbstractRunByRun();
     try aWindowNarrowsBothEnds();
     try indexedChunkGivesTheWholeRun();
+    anIndexedValueIsCheckedAndRefusedByTheProtocol();
     try aSlotTheCallNeverPassedReadsAsNil();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();

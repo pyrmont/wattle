@@ -506,7 +506,7 @@ fn cfunStringHassuffix(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     var source = try args_core.chunks(argv[0]) orelse {
-        return args_core.panicType(argv[0], 0, repr.TagSet.indexed);
+        return args_core.panicIndexed(argv[0], 0, repr.TagSet.none);
     };
     const joiner: abi.ByteView = if (argv.len == 2)
         try args_core.getBytes(argv, 1)

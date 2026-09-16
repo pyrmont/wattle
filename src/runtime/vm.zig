@@ -228,10 +228,15 @@ const Interp = struct {
         return try self.raisef("expected %T, got %v", .{ repr.TagSet.one(t), x });
     }
 
-    /// The same for a set of tags.
+    /// The same for a set of tags. A set that includes both array and tuple
+    /// also passes an abstract whose type has a `chunk` callback, and its
+    /// refusal names `indexed value`.
     inline fn assertTypes(self: *Interp, x: repr.Value, typeflags: repr.TagSet) raise.Error!?abi.Signal {
         if (repr.checkTypes(x, typeflags)) return null;
+        const indexed = typeflags.bits() & repr.TagSet.indexed.bits() == repr.TagSet.indexed.bits();
+        if (indexed and args_core.checkindexed(x)) return null;
         self.commit();
+        if (indexed) return try self.raisef("expected %K, got %v", .{ typeflags, x });
         return try self.raisef("expected %T, got %v", .{ typeflags, x });
     }
 
@@ -1180,7 +1185,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             if (source) |*it| {
                 try fibers.pushChunks(fiber, it);
             } else {
-                return try self.raisef("expected %T, got %v", .{
+                return try self.raisef("expected %K, got %v", .{
                     repr.TagSet.indexed,
                     spliced,
                 });

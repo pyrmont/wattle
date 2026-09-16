@@ -162,7 +162,7 @@
 (assert (= "bad slot #0, expected string, symbol, keyword or buffer, got 3"
            (refusal markup 3))
         "getBytes refuses a number")
-(assert (= "bad slot #1, expected array or tuple, got 3" (refusal markup "x" 3))
+(assert (= "bad slot #1, expected indexed value, got 3" (refusal markup "x" 3))
         "getIndexed refuses a number")
 (assert (= "bad slot #0, expected table or struct, got \"x\"" (refusal tally "x"))
         "getDictionary refuses a string")
@@ -255,6 +255,8 @@
 # is asserted where `odd` is defined, further down.
 (assert (= "index 6 is past the end" (refusal peek k 6))
         "get on an indexed abstract is null past its length")
+(assert (indexed? k) "a type with the chunk slot is indexed")
+(assert (deep= [107 101] (take 2 k)) "and take slices it as a tuple")
 
 # `Indexed` read with `next`, with `get` from the last index back, with
 # `nextChunk`, and with `nextChunk` after one `next`. A keeper's runs are four

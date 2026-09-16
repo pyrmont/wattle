@@ -977,6 +977,16 @@ pub fn checkfloat(x: repr.Value) bool {
     return dval == back;
 }
 
+/// Whether `x` is an array, a tuple or an abstract whose type has a `chunk`
+/// callback.
+///
+/// It reads the tag and, for an abstract, its type, and calls no callback.
+pub fn checkindexed(x: repr.Value) bool {
+    if (repr.checkTypes(x, repr.TagSet.indexed)) return true;
+    if (!repr.checkType(x, repr.Tag.abstract)) return false;
+    return abi.abstractHead(wrap.toAbstract(x)).type.chunk != null;
+}
+
 /// Whether `x` is a double exactly representable as an `i32`.
 pub fn checkint(x: repr.Value) bool {
     return checkNumber(i32, x);
@@ -1159,9 +1169,8 @@ pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.Abstrac
 
 /// `gather` over an argument slot, raising rather than answering null.
 ///
-/// `argv` is the frame and `n` the slot. This function raises `wrong_type`
-/// naming `TagSet.indexed` where the slot is not indexed, which is the refusal
-/// `getIndexed` gives for the same slot, and raises where `gather` does.
+/// `argv` is the frame and `n` the slot. This function raises `panicIndexed`'s
+/// refusal where the slot is not indexed, and raises where `gather` does.
 ///
 /// The contiguous answer is taken from the slot directly rather than through
 /// `gather`, which would have to build a frame of its own to ask the same
@@ -1169,7 +1178,8 @@ pub fn getAbstractPtr(argv: []const repr.Value, n: usize, at: *const abi.Abstrac
 pub fn gatherArg(argv: []const repr.Value, n: usize) raise.Error!Gathered {
     var fault: Fault = undefined;
     if (argIndexed(argv, n, &fault)) |elements| return .{ .items = elements, .copied = false };
-    return (try gather(argSlot(argv, n))) orelse raiseFault(argv, fault);
+    const x = argSlot(argv, n);
+    return (try gather(x)) orelse panicIndexed(x, @intCast(n), repr.TagSet.none);
 }
 
 /// Returns every element of an indexed value in one block.
@@ -1465,6 +1475,15 @@ pub fn panicAbstractAbi(x: repr.Value, n: i32, at: *const abi.AbstractType) void
     raise.report(panicAbstract(x, n, at));
 }
 
+/// The wrong type in a slot a site reads through the indexed protocol.
+///
+/// `x` is the value in slot `n`, and `also` is the other types the site
+/// accepts, empty where it reads an indexed value alone. The refusal names
+/// `indexed value` where `panicType` would name array and tuple.
+pub fn panicIndexed(x: repr.Value, n: i32, also: repr.TagSet) raise.Error {
+    return pp_format.panicf("bad slot #%d, expected %K, got %v", .{ n, also.with(repr.TagSet.indexed), x });
+}
+
 /// The wrong type in a slot.
 ///
 /// It lives with the argument layer rather than with the rest of the panic
@@ -1564,14 +1583,15 @@ fn checkRange(comptime T: type, dval: f64) bool {
 ///
 /// The published `getindexed`. It reads an indexed abstract as well as an
 /// array or a tuple, which the runtime's own `getIndexed` does not, and raises
-/// the refusal `getIndexed` gives for anything else. `module.getIndexed`
-/// builds a `module.Indexed` from the result.
+/// `panicIndexed`'s refusal for anything else. `module.getIndexed` builds a
+/// `module.Indexed` from the result.
 fn indexedAbi(argv: []const repr.Value, n: usize) raise.Error!abi.Indexed {
     var fault: Fault = undefined;
+    const x = argSlot(argv, n);
     if (argIndexed(argv, n, &fault)) |elements| {
-        return .{ .items = elements.ptr, .len = elements.len, .value = argSlot(argv, n) };
+        return .{ .items = elements.ptr, .len = elements.len, .value = x };
     }
-    return (try indexedOf(argSlot(argv, n))) orelse raiseFault(argv, fault);
+    return (try indexedOf(x)) orelse panicIndexed(x, @intCast(n), repr.TagSet.none);
 }
 
 /// An indexed value as the boundary gives it to a module, or nothing.

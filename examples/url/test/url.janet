@@ -107,8 +107,8 @@
 (assert (= "bad slot #0, expected string, symbol, keyword or buffer, got 3"
            (refusal url/slug 3))
         "getBytes names the four types it takes")
-(assert (= "bad slot #1, expected array or tuple, got :lower" (refusal url/slug "x" :lower))
-        "getIndexed names its two")
+(assert (= "bad slot #1, expected indexed value, got :lower" (refusal url/slug "x" :lower))
+        "getIndexed names the protocol it reads")
 (assert (= "bad slot #0, expected table or struct, got \"x\"" (refusal url/query "x"))
         "and getDictionary names its two")
 

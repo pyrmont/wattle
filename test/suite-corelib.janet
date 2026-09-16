@@ -317,7 +317,7 @@
 
 # slice reports both accepted shapes in one message
 (assert-error-value "slice reports both accepted shapes"
-                    "bad slot #0, expected string, symbol, keyword, array, tuple or buffer, got 1"
+                    "bad slot #0, expected string, symbol, keyword, buffer or indexed value, got 1"
                     (slice 1))
 
 # signal, by keyword and by number
@@ -631,7 +631,7 @@
 (assert-error "buffer/slice with no arguments" (buffer/slice))
 (assert-error "keyword/slice with no arguments" (keyword/slice))
 (assert-error "symbol/slice with no arguments" (symbol/slice))
-(assert (= "bad slot #0, expected array or tuple, got nil"
+(assert (= "bad slot #0, expected indexed value, got nil"
            (get (protect (array/slice)) 1))
         "and the refusal names the slot it did not get")
 

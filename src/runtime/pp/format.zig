@@ -5,7 +5,7 @@
 //! Adapted from Lua's `lstrlib.c`. A specifier is rewritten into an ordinary
 //! C one and handed to `c.snprintf` for the numeric and string conversions.
 //! The Janet-specific conversions are rendered here: `%v`, `%V`, `%t`, `%T`,
-//! `%j` and the eight spellings of pretty-printing.
+//! `%K`, `%j` and the eight spellings of pretty-printing.
 //!
 //! `formatTuple` takes its arguments as a comptime tuple rather than a
 //! `va_list`, and its format string is `comptime` too, so the walk happens
@@ -18,7 +18,7 @@
 //!
 //! `formatTuple` and `bufferFormat` look like the same function and are not.
 //! `%s` reads a C string in the first and a Janet value through
-//! `args.getCBytes` in the second, `%S` and `%T` exist only in the first,
+//! `args.getCBytes` in the second, `%S`, `%T` and `%K` exist only in the first,
 //! only the second can run out of arguments, and an invalid conversion is a
 //! compile error in the first and a raise in the second. They share the
 //! specifier parser, the item buffer and the pretty-flag decoding.
@@ -582,6 +582,29 @@ inline fn isDigit(byte: u8) bool {
     return byte >= '0' and byte <= '9';
 }
 
+/// `%K`. Renders a type set a site reading through the indexed protocol
+/// accepts, as `pushtypes` does, with array and tuple named together as
+/// `indexed value` and placed last.
+///
+/// `typeflags` includes both array and tuple. A tag set cannot name an
+/// abstract type with a `chunk` callback, which such a site accepts as well.
+fn pushIndexedTypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
+    const others = typeflags.bits() & ~repr.TagSet.indexed.bits();
+    var remaining = others;
+    var i: usize = 0;
+    while (remaining != 0) : ({
+        i += 1;
+        remaining >>= 1;
+    }) {
+        if (1 & remaining == 0) continue;
+        try buffers.pushBytes(b, utils.typeNames[i]);
+        // Every name here is followed by another, `indexed value` being last,
+        // so the name before it is joined with "or" and the rest with commas.
+        try buffers.pushCString(b, if (remaining == 1) " or " else ", ");
+    }
+    try buffers.pushCString(b, "indexed value");
+}
+
 /// `pushtypes`. Renders a type set, the bitmask an argument check reports, as
 /// `"a, b or c"`.
 fn pushtypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
@@ -656,6 +679,7 @@ inline fn renderConversion(
         'v' => try pp_describe.descriptionB(b, @as(repr.Value, arg)),
         't' => try buffers.pushBytes(b, typestr(@as(repr.Value, arg))),
         'T' => try pushtypes(b, @as(repr.TagSet, arg)),
+        'K' => try pushIndexedTypes(b, @as(repr.TagSet, arg)),
 
         'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
             b,

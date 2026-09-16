@@ -1998,6 +1998,32 @@ relies on that: `take` and `partition` test `indexed?` before `bytes?`, so a
 string that answered `indexed?` would come back from `(take 2 "abc")` as
 `(97 98)`.
 
+### What the runtime derives from `chunk`
+
+Most of Janet's core reads an indexed value by key rather than by run: `in`,
+`get`, `next` and the destructuring opcodes, and through them `each`, `map`,
+`find-index`, `take-while` and `match`. For an abstract those read through the
+type's `get` and `next` callbacks. So where a type with `chunk` has no `get`,
+the runtime answers from the runs, and likewise where it has no `next`.
+
+- A key that is an integer at or above zero and below the length reads the
+  element from the run that holds it. Any other key is absent: `get` gives nil,
+  and `in` refuses with the message it gives any abstract whose `get` reports
+  absence.
+- `next` gives 0 after nil and `k + 1` after `k` while that is below the
+  length, and nil otherwise, as it does for a tuple.
+
+Each callback is derived on its own, so a type that supplies `get` to add
+method keywords still has `next` derived. A type that supplies either is
+called instead, and nothing checks that its answers agree with its runs.
+
+Deriving rather than requiring keeps the slot's presence the declaration. A
+type that had to supply `get` and `next` as well would write the same two
+callbacks as every other indexed type, and three callbacks would have to agree
+for `indexed?`'s promise to hold. The derived answers sit on the arm that
+finds no callback, which gave nil or refused before, so a type with its own
+`get` and `next` pays nothing for them.
+
 ### How long a run is valid
 
 A run is valid until the next call that can allocate or run Janet code, or
@@ -2052,10 +2078,10 @@ Four rules hold at a site:
 `indexed?` answers true for an abstract whose type has `chunk`. Were it to
 answer false, code that checks a value before acting on it would fail where
 code that acts directly succeeds, and `match` would never match a vector. With
-it true, `take`, `drop`, `match` and `flatten` read a vector a Janet library is
-given. The predicate answers true only once every site reads through the
-protocol, because it promises that the value is read wherever an array or a
-tuple is.
+it true, and `get` and `next` derived where a type has neither, `take`, `drop`,
+`match` and `flatten` read a vector a Janet library is given. The predicate
+answers true only once every site reads through the protocol, because it
+promises that the value is read wherever an array or a tuple is.
 
 A site that reads an indexed value names the protocol when it refuses:
 'expected indexed value, got 5' where the C implementation says 'expected

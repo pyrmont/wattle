@@ -864,6 +864,13 @@ fn cfunIsAbstract(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(repr.checkType(argv[0], repr.Tag.abstract));
 }
 
+/// `(indexed? x)`: an array, a tuple, or an abstract whose type has a `chunk`
+/// callback.
+fn cfunIsIndexed(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 1);
+    return wrap.fromBoolean(args_core.checkindexed(argv[0]));
+}
+
 /// `(memcmp a b &opt len offset-a offset-b)`.
 fn cfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
@@ -1037,7 +1044,7 @@ fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
         return wrap.fromTuple(try tuples.newFromChunks(&source, length));
     }
     // The message is the fault layer's and has no spelling on this side.
-    return args_core.panicType(x, 0, repr.TagSet.bytes.with(repr.TagSet.indexed));
+    return args_core.panicIndexed(x, 0, repr.TagSet.bytes);
 }
 
 /// `(struct & kvs)`.
@@ -1323,7 +1330,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("int?", &cfunCheckInt, @src(), "(int? x)", "Check if x can be exactly represented as a 32 bit signed two's complement integer."),
         corefn.reg("nat?", &cfunCheckNat, @src(), "(nat? x)", "Check if x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
         corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).cfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
-        corefn.reg("indexed?", &TypeFlagPredicate(repr.TagSet.indexed).cfun, @src(), "(indexed? x)", "Check if x is an array or tuple."),
+        corefn.reg("indexed?", &cfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a tuple, or an abstract type that implements the indexed protocol."),
         corefn.reg("dictionary?", &TypeFlagPredicate(repr.TagSet.dictionary).cfun, @src(), "(dictionary? x)", "Check if x is a table or struct."),
         corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).cfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
         corefn.reg("slice", &cfunSlice, @src(), "(slice x &opt start end)", "Extract a sub-range of an indexed data structure or byte sequence."),

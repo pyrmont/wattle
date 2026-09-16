@@ -23,6 +23,11 @@
 //! down: whether a non-integer key on a tuple is an error, whether an
 //! abstract type with no `get` callback is an error, whether a fiber
 //! accepts a key other than zero.
+//!
+//! An abstract type with a `chunk` callback and no `get` or `next` is read
+//! from its runs instead, by `chunkElement` and `chunkNext`, so that a type
+//! implementing the indexed protocol is read by key as a tuple is. Each
+//! callback is replaced on its own, and only where the type has none.
 //! `getIndex` is a third policy again, taking an `i32` rather than a `Value`,
 //! panicking only on a negative index and a missing setter and returning nil
 //! for everything else. Factoring the three into one function with a policy
@@ -89,7 +94,10 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
-            const getter = at.get orelse return wrap.fromNil();
+            const getter = at.get orelse {
+                if (at.chunk == null) return wrap.fromNil();
+                return try chunkElement(ds, key) orelse wrap.fromNil();
+            };
             return try getter(abst, key) orelse wrap.fromNil();
         },
         repr.Tag.array, repr.Tag.tuple, repr.Tag.buffer => {
@@ -179,6 +187,8 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.get) |getter| {
                 val = try getter(wrap.toAbstract(ds), wrap.fromInteger(index)) orelse wrap.fromNil();
+            } else if (at.chunk != null) {
+                val = try chunkElement(ds, wrap.fromInteger(index)) orelse wrap.fromNil();
             } else {
                 return pp_format.panicf("no getter for %v", .{ds});
             }
@@ -240,6 +250,9 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.get) |getter| {
                 val = try getter(wrap.toAbstract(ds), key) orelse
+                    return pp_format.panicf("key %v not found in %v ", .{ key, ds });
+            } else if (at.chunk != null) {
+                val = try chunkElement(ds, key) orelse
                     return pp_format.panicf("key %v not found in %v ", .{ key, ds });
             } else {
                 return pp_format.panicf("no getter for %v", .{ds});
@@ -433,7 +446,10 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
-            const callback = at.next orelse return wrap.fromNil();
+            const callback = at.next orelse {
+                if (at.chunk == null) return wrap.fromNil();
+                return chunkNext(ds, key);
+            };
             return callback(abst, key);
         },
         repr.Tag.fiber => {
@@ -602,6 +618,46 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
 /// bound. It is the one copy of that message.
 fn badKey(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error {
     return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intFromEnum(vtype)].ptr, @as(c_int, max), key });
+}
+
+/// The element of an abstract with a `chunk` callback at `key`, read from the
+/// run that holds it, or null.
+///
+/// `ds` is the abstract. This function returns null if `key` is not an integer
+/// at or above zero and below the length. It raises if the type's `length`
+/// callback raises, and where `args.indexedChunk` refuses the run.
+fn chunkElement(ds: repr.Value, key: repr.Value) raise.Error!?repr.Value {
+    if (!args_core.checkint(key)) return null;
+    const index = wrap.toInteger(key);
+    if (index < 0) return null;
+    const len = try length(ds);
+    if (index >= len) return null;
+    const at: usize = @intCast(index);
+    // The element is copied out before anything else runs, so the run is not
+    // held past the call that can invalidate it.
+    const run = try args_core.indexedChunk(ds, at, @intCast(len));
+    return run.items.?[at - run.start];
+}
+
+/// The key after `key` in an abstract with a `chunk` callback, as `nextImpl`
+/// gives it for a tuple.
+///
+/// `ds` is the abstract. This function returns nil at the end, and for a key
+/// that is neither nil nor an integer. It raises if the type's `length`
+/// callback raises.
+fn chunkNext(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
+    var i: i32 = undefined;
+    if (repr.checkType(key, repr.Tag.nil)) {
+        i = 0;
+    } else if (args_core.checkint(key)) {
+        const previous = wrap.toInteger(key);
+        if (previous == std.math.maxInt(i32)) return wrap.fromNil();
+        i = previous + 1;
+    } else {
+        return wrap.fromNil();
+    }
+    if (i < 0 or i >= try length(ds)) return wrap.fromNil();
+    return wrap.fromInteger(i);
 }
 
 /// Checks that a key is an integer, non-negative and below `max`, and returns
