@@ -126,8 +126,10 @@ difference that small. An isolated benchmark of the one function and
 `otool -tV` on both binaries can.
 
 The corpora are beside the scripts: `interpreter/` is the general workload,
-`value/` is the value-access workload, and `hashbench/` is a hash workload from
-upstream.
+`value/` is the value-access workload, `collections/` reads a collection's
+elements, and `hashbench/` is a hash workload from upstream. A corpus is
+written for the increment that needed it and says so in its header, so reach
+for the one whose subject the change touches rather than the newest.
 
 ## repo
 
