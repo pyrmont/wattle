@@ -23,6 +23,7 @@ programming language.
 - [13. Modules: built-in types](#13-modules-built-in-types)
 - [14. Modules: functions](#14-modules-functions)
 - [15. Modules: re-entry and scheduling](#15-modules-re-entry-and-scheduling)
+- [16. The indexed protocol](#16-the-indexed-protocol)
 
 ## Introduction
 
@@ -34,8 +35,21 @@ explore whether a version of Janet could be written that:
 
 What it keeps from the C implementation is the behaviour a program written in
 Janet observes: error messages, signal kinds, traces, marshalled bytes,
-bytecode and the core image (section 10). What it does not keep is the C
-interface: `janet.h`. It is a non-goal to support code that relies on the C
+bytecode and the core image (section 10). A program written in Janet, using
+only values Janet can make, behaves as it does on the C implementation, within
+reason. Within reason is four kinds of difference, and no others:
+
+- the differences the Naming subsection lists;
+- defects in the C implementation that this runtime fixes deliberately;
+- new names wherever an environment is enumerated, as by `all-bindings`;
+- an error message or docstring that names what a function accepts, where this
+  runtime accepts more (section 16).
+
+The promise does not cover a program in which a value only this runtime can
+make reaches Janet code. There is no C implementation for that program to
+behave as.
+
+What it does not keep is the C interface: `janet.h`. It is a non-goal to support code that relies on the C
 ABI, including native modules written in C. The Zig implementation supports
 native modules written in Zig.
 
@@ -72,9 +86,11 @@ messages are the places where a Janet program can observe the difference. The
 bindings, the docstrings and the command-line client's strings are part of the
 core image, so the image differs from the C implementation's in those bytes.
 
-The numbered sections fall into three groups. Sections 1 to 6 are about the
+The numbered sections fall into four groups. Sections 1 to 6 are about the
 implementation of Janet 'values'. Sections 7 to 9 are about types and errors.
-Sections 10 to 15 are about what a native module sees.
+Sections 10 to 15 are about what a native module sees. Section 16 is about the
+indexed protocol, through which an abstract type is read where an array or a
+tuple is.
 
 ## 1. Value representation
 
@@ -834,10 +850,10 @@ The public interface is the Zig module interface. A native module is written in
 Zig and compiled to a shared object, which the Zig implementation loads in the
 same way that the C implementation loads native modules written in C.
 
-This runtime aims to preserve behaviour identity with the C runtime. A program
-written in Janet should work the same way with the same error messages, signal
-kinds, traces, marshalled bytes, bytecode and the core image. It does not
-preserve an identical C symbol table.
+This runtime aims to preserve behaviour identity with the C runtime, within the
+limits the Introduction sets. A program written in Janet should work the same
+way with the same error messages, signal kinds, traces, marshalled bytes,
+bytecode and the core image. It does not preserve an identical C symbol table.
 
 The runtime exports no symbols. A module exports two (`_wattle_mod_config` and
 `_wattle_init`) but the author is not expected to write either directly. Rather,
@@ -1935,3 +1951,146 @@ added if a module needs it:
 There is also no synchronous `resume(fiber, value)` for driving a Janet
 generator past its first yield. `wake` only queues a fiber; `resume` would run
 it inside the calling cfunction.
+
+## 16. The indexed protocol
+
+A _protocol_ is a set of callbacks through which the runtime reads an abstract
+type as it reads a built-in type. It is called a protocol rather than an
+interface because "interface" already names the native module interface
+(`api/interface.zig`). The indexed protocol is the one this runtime has: an
+abstract type that implements it is read wherever an array or a tuple is read.
+
+Reading an indexed value used to mean taking a pointer to its elements and a
+count. A collection that does not keep its elements in one block has neither.
+A persistent vector is a tree of small blocks, so splice, `apply`, the slices
+and the `take` and `drop` family could only refuse one, and Janet code could
+not pass one to a library that expected an array or a tuple.
+
+### What a type provides
+
+A type implements the protocol with the `chunk` callback, the fifteenth slot
+of `AbstractType` (section 12). `chunk(p, index)` returns a `Chunk`: the run of
+elements that holds `index`, and the index of the run's first element. A
+vector's leaves are already such runs, so it answers without copying.
+
+- A type with `chunk` also has `length`, which bounds the index. `define`
+  refuses a `chunk` without a `length` at compile time.
+- The slot's presence is the declaration. A separate flag would cost the same
+  two reads, the abstract's type pointer and a field of the type, and would let
+  a type claim to be indexed without being readable as one.
+- `chunk` cannot raise, allocate or run Janet code (section 12), so a run
+  cannot change while a reader holds it.
+- The name is for what the callback returns. `indexed`, by analogy with
+  `bytes`, was rejected: `bytes` returns the whole value in one view, and a
+  name for what the type is read as would suggest that shape.
+
+A type need not store `Value`s. A run is a `[]const Value`, and a type that
+stores something else, such as `examples/numarray`'s `f64`s, converts its
+elements into a buffer in its payload and returns that. It converts rather
+than reinterprets, because an `f64` has a `Value`'s bits only under NaN
+boxing, and even there a NaN element would read as a pointer. The buffer
+exists before the call, because the callback cannot allocate, and the type's
+`gcmark` marks any `Value` that only the buffer refers to.
+
+The protocol is opt-in, and no value that exists without it changes. No byte
+type implements it, so `indexed?` and `bytes?` stay disjoint. Janet's core
+relies on that: `take` and `partition` test `indexed?` before `bytes?`, so a
+string that answered `indexed?` would come back from `(take 2 "abc")` as
+`(97 98)`.
+
+### How long a run is valid
+
+A run is valid until the next call that can allocate or run Janet code, or
+until the next `chunk` call on the same value.
+
+The first two clauses are the rule an array's own elements already have, and
+the collector does not move objects, so a reader learns nothing new. The third
+exists for a type that converts into one reused buffer, which cannot hand out
+two runs at once. Keeping a buffer for every live run would cost exactly the
+types the protocol means to admit. So a reader holds one run of a value at a
+time, and a site given the same value twice, as `(array/concat @[] v v)` is,
+finishes with one run before taking the next.
+
+A module reads through `wattle.Indexed`, whose rule is looser about
+allocation (section 13).
+
+### Where a value is read
+
+Every site that reads a Janet program's value as indexed reads it through
+`args.chunks`. It gives an array or a tuple as one run and an abstract as the
+runs its callback returns, and `Chunks.window` narrows the read to a range, so
+a slice of a vector does not walk from zero to reach its start. A run that
+does not hold the index asked for, or that reaches past the length, is
+refused.
+
+A site that needs every element in one block uses `args.gather`, which borrows
+an array's or a tuple's block and copies an abstract's runs into one on the
+scratch heap. `os/execute` hands its arguments over as one array of C strings,
+the FFI passes elements on as an argument list, and a PEG's `cms` pushes each
+element through a call that allocates.
+
+The runtime's own reads of tuples and arrays it built use `args.items`, which
+answers for those two types only.
+
+Four rules hold at a site:
+
+- Room for every element is reserved, from `Chunks.len`, before the first run
+  is taken, because a run does not survive an allocation.
+- An opcode commits its program counter before it reads, as `.length` does,
+  because an abstract's `length` callback can raise and run code.
+- A guard that exists only because a callback runs code, such as bounding a
+  copy against a count that changed or filling a fresh tuple with nil, sits on
+  the abstract arm. Nothing between two passes over an array or a tuple runs
+  code. On every path, those guards cost 13% on a `tuple/join` of two
+  three-element tuples and 10 to 14% on a `string/join` of six short parts.
+- `Chunks.next` is `inline`. Without it, appending a few elements to an array
+  with room cost 13% more than the loop it replaced, the call being most of
+  the operation at that size.
+
+### What Janet code sees
+
+`indexed?` answers true for an abstract whose type has `chunk`. Were it to
+answer false, code that checks a value before acting on it would fail where
+code that acts directly succeeds, and `match` would never match a vector. With
+it true, `take`, `drop`, `match` and `flatten` read a vector a Janet library is
+given. The predicate answers true only once every site reads through the
+protocol, because it promises that the value is read wherever an array or a
+tuple is.
+
+A site that reads an indexed value names the protocol when it refuses:
+'expected indexed value, got 5' where the C implementation says 'expected
+array or tuple, got 5', and `slice`'s 'expected string, symbol, keyword,
+buffer or indexed value, got 5' where it says 'expected string, symbol,
+keyword, array, tuple or buffer, got 5'. `indexed?`'s docstring says the same. The old text
+would be narrower than what the site accepts. This is the fourth difference
+the Introduction allows. A refusal is rendered from a tag set, which cannot
+name a protocol, so these refusals have their own spelling.
+
+The `tchck` opcode passes an indexed abstract where its tag set includes both
+array and tuple, as `(tchck 0 :indexed)`'s does.
+
+No callback builds a result. What `take` returns is the environment's to
+decide: Janet's `take` calls `tuple/slice`, which returns a tuple whatever it
+reads. The shared runtime only reads.
+
+### How a site is tested
+
+A probe type in each contract that covers a site returns every run from one
+buffer, overwritten on each call, and the site is given the same value twice.
+A site that holds two runs of one value then fails, where a vector, which hands
+out its own leaves, would let it pass. The probe is declared per contract
+because contracts share no declarations.
+
+A site's expected result is written out when `boot.janet` does not use the
+site. A tuple holding the same elements goes through the same `args.chunks`
+code, so an oracle built from one moves whenever the subject does.
+
+### What the protocol leaves out
+
+- Writes. `sort` needs to set an element, and a mutable protocol is a separate
+  decision from a readable one.
+- Dictionaries. A persistent map has the problem a vector had, with structs
+  and tables, and its protocol is to be designed after this one has been used.
+- Sequences. A string's elements are bytes, with no `Value`s for a run to hold,
+  so a protocol for going through elements in order, without random access or
+  `Value` storage, is where strings belong.
