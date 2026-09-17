@@ -96,6 +96,21 @@
 //! both tries in step. A collection's hash is kept current rather than
 //! computed when asked: `sum` is the wrapping sum of one term per entry, and a
 //! term does not depend on where the entry is.
+//!
+//! ## Marshalling
+//!
+//! A map or a set is written as its count and then its entries, in the order
+//! `next` gives them: a key and then its value for a map, and an element for a
+//! set. Nodes are not written, so the shape is rebuilt by adding the entries
+//! in place to a trie no collection refers to yet, as `hash-map` builds one.
+//! Reading back applies `hash-map`'s rules to what it reads: a nil or NaN key
+//! raises, a nil value removes its key, and a repeated key replaces the
+//! earlier entry. A stream the marshaller wrote has none of these, and the
+//! rules keep a forged one from making a trie that breaks the rules above.
+//!
+//! A map or a set enters the marshaller's reference table after its entries,
+//! as a vector does and for the reason `vectors.zig` gives: its hash depends
+//! on its entries.
 
 // ==========================================================================
 // Standard library imports
@@ -116,6 +131,7 @@ const corefn = @import("../corefn.zig");
 const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_mark = @import("../gc/mark.zig");
+const marsh = @import("../marsh.zig");
 const order = @import("helpers/order.zig");
 const pp = @import("../pp.zig");
 const pp_format = @import("../pp/format.zig");
@@ -143,6 +159,8 @@ pub const map_type = abstract_type.define(Trie, .{
     .length = trieLength,
     .hash = trieHash,
     .tostring = mapTostring,
+    .marshal = trieMarshal,
+    .unmarshal = mapUnmarshal,
 });
 
 /// Bit 1 of the collector header's per-type field: the node is a collision
@@ -162,6 +180,8 @@ pub const set_type = abstract_type.define(Trie, .{
     .length = trieLength,
     .hash = trieHash,
     .tostring = setTostring,
+    .marshal = trieMarshal,
+    .unmarshal = setUnmarshal,
 });
 
 // ==========================================================================
@@ -810,6 +830,18 @@ fn mapTostring(t: *Trie, render: *abi.Render) raise.Error!void {
     try describeTrie(t, render);
 }
 
+/// `core/map`'s `unmarshal` callback: reads what `trieMarshal` wrote.
+fn mapUnmarshal(u: *abi.Unmarshal) raise.Error!*Trie {
+    return unmarshalTrie(u, .map);
+}
+
+/// Marshals the values of `node`'s entries, and then those of its children,
+/// in the order `describeNode` describes them.
+fn marshalNode(m: *abi.Marshal, node: *Node) raise.Error!void {
+    for (entries(node)) |x| try marsh.marshalJanet(m, x);
+    for (children(node)) |slot| try marshalNode(m, asNode(slot.?));
+}
+
 /// Returns a new subtree holding two entries whose keys differ, placed from
 /// `shift` down.
 fn merge(kind: Kind, shift: u32, a: []const repr.Value, hash_a: u32, b: []const repr.Value, hash_b: u32, mode: Mode) *Node {
@@ -1013,6 +1045,11 @@ fn setTostring(t: *Trie, render: *abi.Render) raise.Error!void {
     try describeTrie(t, render);
 }
 
+/// `core/set`'s `unmarshal` callback: reads what `trieMarshal` wrote.
+fn setUnmarshal(u: *abi.Unmarshal) raise.Error!*Trie {
+    return unmarshalTrie(u, .set);
+}
+
 /// The term the entry `entry` adds to a collection's `sum`.
 ///
 /// A term depends on the entry and not on where it is, so two tries with equal
@@ -1041,6 +1078,46 @@ fn trieLength(t: *Trie, _: usize) raise.Error!usize {
 /// `core/map`'s and `core/set`'s `gcmark` callback: the trie.
 fn trieMark(t: *Trie, _: usize) void {
     mark(t);
+}
+
+/// `core/map`'s and `core/set`'s `marshal` callback: the count, then each
+/// entry's values.
+///
+/// The collection is entered in the reference table last. The file header
+/// says why.
+fn trieMarshal(t: *Trie, m: *abi.Marshal) raise.Error!void {
+    try marsh.marshalSize(m, t.count);
+    // Nodes do not change, so a node stays valid across marshalling a value.
+    if (t.root) |root| try marshalNode(m, root);
+    marsh.marshalAbstract(m, t);
+}
+
+/// Reads a collection of `kind` that `trieMarshal` wrote.
+///
+/// The entries are added in place to a trie held here, under `hash-map`'s
+/// rules. Its nodes are rooted nowhere, which is safe because no collection
+/// runs during unmarshalling. The abstract is made and entered in the
+/// reference table after the last entry. This function raises if a key is nil
+/// or NaN.
+fn unmarshalTrie(u: *abi.Unmarshal, kind: Kind) raise.Error!*Trie {
+    // Nothing is allocated for the count up front, so a count longer than the
+    // stream needs no check of its own: the read past the end refuses it.
+    const count = try marsh.unmarshalSize(u);
+    const w = kind.entryWidth();
+    var built: Trie = .{};
+    var entry: [2]repr.Value = undefined;
+    for (0..count) |_| {
+        for (entry[0..w]) |*x| x.* = try marsh.unmarshalJanet(u);
+        try checkKey(entry[0]);
+        if (kind == .map and repr.checkType(entry[1], repr.Tag.nil)) {
+            removeKey(&built, kind, entry[0], .fresh);
+        } else {
+            putEntry(&built, kind, entry[0..w], .fresh);
+        }
+    }
+    const t: *Trie = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Trie))));
+    t.* = built;
+    return t;
 }
 
 /// Returns a copy of `node` with `child` in place of its child at `index`, or

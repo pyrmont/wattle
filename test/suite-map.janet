@@ -191,6 +191,33 @@
 (def ordered (sort @[(hash-set 1 2) (hash-set) (hash-set 3)]))
 (assert (= (hash-set) (in ordered 0)) "sort")
 
+# Marshalling
+
+(defn round-trip [x] (unmarshal (marshal x)))
+(assert (= m (round-trip m)) "marshal a map")
+(assert (= s (round-trip s)) "marshal a set")
+(assert (= (hash-map) (round-trip (hash-map))) "marshal an empty map")
+(assert (= :core/map (type (round-trip m))) "a marshalled map is a map")
+(assert (= :core/set (type (round-trip s))) "a marshalled set is a set")
+(assert (= big (round-trip big)) "marshal a large set")
+(assert (= (hash grown) (hash (round-trip grown))) "a marshalled map hashes alike")
+(assert (= batched (round-trip batched)) "marshal a map a transient made")
+(def mixed (hash-map "s" 1.5 'sym @[1] [1 2] {:a 1} (vector 1) (hash-set :x)))
+(def mixed-back (round-trip mixed))
+(assert (= 4 (length mixed-back)) "marshal mixed entries")
+(assert (deep= @[1] (get mixed-back 'sym)) "marshal an array value")
+(assert (= (hash-set :x) (get mixed-back (vector 1))) "marshal nested collections")
+(def pair (round-trip @[s s]))
+(assert (= (in pair 0) (in pair 1)) "a set marshalled twice")
+(def cyc @{})
+(def holder (hash-map :t cyc))
+(put cyc holder :found)
+(def holder-back (round-trip holder))
+(assert (= :found (get (in holder-back :t) holder-back))
+  "a map used as a key in its own value")
+(assert-error "marshal a transient map" (marshal (transient m)))
+(assert-error "marshal a transient set" (marshal (transient s)))
+
 # Printing
 
 (assert (= "<core/map :a 1>" (describe (hash-map :a 1))) "describe a map")

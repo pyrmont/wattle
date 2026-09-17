@@ -1,6 +1,6 @@
 //! Behavioral contract for `core/map` and `core/set` and their transients: the
 //! shape of a trie, reading and iterating, persistence across updates, what a
-//! transient may change, equality, order and hash.
+//! transient may change, equality, order and hash, and marshalling.
 //!
 //! The oracle is a list of entries searched by `order.equals`, which shares
 //! no code with the trie it checks. Each case updates a list the way it
@@ -11,7 +11,9 @@
 //! callback returns a stored hash and whose `compare` callback orders by a
 //! stored id. Probes with one hash and different ids are distinct keys that no
 //! depth of the trie can separate, and probes whose hashes differ in one bit
-//! separate at the level that reads that bit.
+//! separate at the level that reads that bit. A probe marshals its hash and
+//! its id, so a collection holding probes can be read back with its collision
+//! nodes.
 //!
 //! Every collection a case keeps across a collection is rooted, and so is every
 //! key a case keeps outside one.
@@ -26,16 +28,22 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
 const abstracts = @import("subsystems").value.abstracts;
 const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
 const expect = @import("expect.zig").expect;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const maps = @import("subsystems").value.maps;
+const marsh = @import("subsystems").marsh;
 const order = @import("subsystems").value.order;
+const raise = @import("subsystems").raise;
+const registry = @import("subsystems").registry;
 const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
 const transients = @import("subsystems").value.transients;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -61,6 +69,8 @@ const probe_type = abstract_type.define(Probe, .{
     .name = "maps-test/probe",
     .hash = probeHash,
     .compare = probeCompare,
+    .marshal = probeMarshal,
+    .unmarshal = probeUnmarshal,
 });
 
 // ==========================================================================
@@ -105,6 +115,19 @@ fn probeCompare(a: *const Probe, b: *const Probe) i32 {
 
 fn probeHash(p: *const Probe, _: usize) i32 {
     return @bitCast(p.hash);
+}
+
+fn probeMarshal(p: *Probe, m: *abi.Marshal) raise.Error!void {
+    marsh.marshalAbstract(m, p);
+    try marsh.marshalInt(m, @bitCast(p.hash));
+    try marsh.marshalInt(m, p.id);
+}
+
+fn probeUnmarshal(u: *abi.Unmarshal) raise.Error!*Probe {
+    const p: *Probe = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Probe))));
+    p.hash = @bitCast(try marsh.unmarshalInt(u));
+    p.id = try marsh.unmarshalInt(u);
+    return p;
 }
 
 /// The keys the random cases draw from, in a rooted array: integers, strings,
@@ -567,6 +590,178 @@ fn equalityOrderAndHash() !void {
     expect(order.compare(wrap.fromAbstract(empty_a), wrap.fromAbstract(as_map)) < 0);
 }
 
+/// `x` marshalled into a new buffer.
+fn marshalled(x: repr.Value) raise.Error!*buffers.Buffer {
+    const b = buffers.new(16);
+    try marsh.marshal(b, x, null, 0);
+    return b;
+}
+
+/// The value `bytes` unmarshals to.
+fn unmarshalled(bytes: []const u8) raise.Error!repr.Value {
+    return marsh.unmarshal(bytes, 0, null, null);
+}
+
+/// A map or a set read back from its marshalled form has the entries, the
+/// shape and the hash of the one written, collision nodes included, and none
+/// of its nodes is editable. It is read again after a collection, so a node
+/// the unmarshaller made and did not store is a failure here.
+fn marshallingRoundTrips() !void {
+    const allocator = std.heap.c_allocator;
+    var prng = std.Random.DefaultPrng.init(0x6d61_7273);
+    const random = prng.random();
+    const pool = keyPool();
+    defer _ = gc_alloc.gcunroot(wrap.fromArray(pool));
+    const keys = pool.slice();
+
+    const shuffled = try allocator.alloc(Entry, keys.len);
+    defer allocator.free(shuffled);
+    for (shuffled, keys) |*e, key| e.* = .{ .key = key, .value = keys[random.uintLessThan(usize, keys.len)] };
+    random.shuffle(Entry, shuffled);
+
+    for ([_]maps.Kind{ .map, .set }) |kind| {
+        for ([_]usize{ 0, 1, 2, 31, 33, 100, keys.len }) |n| {
+            const written = wrap.fromAbstract(buildOn(kind, &empty_trie, shuffled[0..n]));
+            gc_alloc.gcroot(written);
+            defer _ = gc_alloc.gcunroot(written);
+            const back = try unmarshalled((try marshalled(written)).slice());
+            gc_alloc.gcroot(back);
+            defer _ = gc_alloc.gcunroot(back);
+            gc_mark.collect();
+            const t = maps.toTrie(back, kind).?;
+            try expectEntries(kind, t, shuffled[0..n]);
+            expect(sameShape(t.root, maps.toTrie(written, kind).?.root));
+            expect(editableIn(t) == 0);
+            expect(order.equals(back, written));
+            expect(order.hash(back) == order.hash(written));
+        }
+    }
+}
+
+/// The bytes of a marshalled map and set: the abstract's lead byte and type
+/// name, the count in `marshalSize`'s encoding, and then each entry's values.
+/// A marshalled stream is a file format, so the bytes are the contract.
+fn theWireFormat() !void {
+    const lb_abstract = 217;
+    const lb_symbol = 207;
+    const one = harness.wrapInteger(1);
+    const two = harness.wrapInteger(2);
+    const map = try marshalled(wrap.fromAbstract(maps.put(&empty_trie, .map, &.{ one, two })));
+    expect(std.mem.eql(u8, map.slice(), &[_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/map".* ++ [_]u8{ 1, 1, 2 }));
+    const set = try marshalled(wrap.fromAbstract(maps.put(&empty_trie, .set, &.{one})));
+    expect(std.mem.eql(u8, set.slice(), &[_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".* ++ [_]u8{ 1, 1 }));
+    const empty = try marshalled(wrap.fromAbstract(maps.remove(&empty_trie, .set, one)));
+    expect(std.mem.eql(u8, empty.slice(), &[_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".* ++ [_]u8{0}));
+}
+
+/// A collection that occurs twice in what is marshalled is read back as one,
+/// and equal collections are too. A collection reachable from its own entry is
+/// read back as two equal collections, and a table that has the inner one as a
+/// key still finds it, which is why a collection enters the reference table
+/// after its entries.
+fn marshallingKeepsIdentityAndHashes() !void {
+    var entries: [40]Entry = undefined;
+    for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i * 3)) };
+    for ([_]maps.Kind{ .map, .set }) |kind| {
+        const shared = wrap.fromAbstract(buildOn(kind, &empty_trie, &entries));
+        const equal = wrap.fromAbstract(buildOn(kind, &empty_trie, &entries));
+        const holder = arrays.new(3);
+        harness.arrayPush(holder, shared);
+        harness.arrayPush(holder, shared);
+        harness.arrayPush(holder, equal);
+        const back = try unmarshalled((try marshalled(wrap.fromArray(holder))).slice());
+        const items = wrap.toArray(back).slice();
+        expect(items.len == 3);
+        expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[1]));
+        expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[2]));
+        try expectEntries(kind, maps.toTrie(items[0], kind).?, &entries);
+
+        // A table holding, as a key, the collection that holds the table: as
+        // a map's value, and as a set's element.
+        const t = tables.new(1);
+        const entry = [2]repr.Value{ harness.wrapInteger(1), wrap.fromTable(t) };
+        const outer = wrap.fromAbstract(switch (kind) {
+            .map => maps.put(&empty_trie, .map, &entry),
+            .set => maps.put(&empty_trie, .set, entry[1..]),
+        });
+        tables.put(t, outer, harness.wrapInteger(7));
+        const cycled = try unmarshalled((try marshalled(outer)).slice());
+        const back_t = wrap.toTable(switch (kind) {
+            .map => maps.find(maps.toTrie(cycled, .map).?, .map, entry[0]).?[1],
+            .set => maps.entries(maps.toTrie(cycled, .set).?.root.?)[0],
+        });
+        expect(harness.integerIs(tables.get(back_t, cycled), 7));
+        for (back_t.slots()[0..back_t.capacity]) |kv| {
+            if (repr.checkType(kv.key, repr.Tag.nil)) continue;
+            expect(wrap.toAbstract(kv.key) != wrap.toAbstract(cycled));
+        }
+    }
+}
+
+/// A stream a marshaller did not write is read under `hash-map`'s rules: a
+/// repeated key replaces the earlier entry, a nil value removes its key, and a
+/// nil or NaN key is refused. What is read back keeps every rule of a trie's
+/// shape.
+fn aForgedStreamIsReadAsHashMapReadsItsArguments() !void {
+    const lb_abstract = 217;
+    const lb_symbol = 207;
+    const lb_nil = 201;
+    const map_head = [_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/map".*;
+    const set_head = [_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".*;
+    const one = harness.wrapInteger(1);
+    const three = harness.wrapInteger(3);
+
+    const repeated = try unmarshalled(&(map_head ++ [_]u8{ 2, 1, 2, 1, 3 }));
+    try expectEntries(.map, maps.toTrie(repeated, .map).?, &.{.{ .key = one, .value = three }});
+    const twice = try unmarshalled(&(set_head ++ [_]u8{ 3, 1, 3, 1 }));
+    try expectEntries(.set, maps.toTrie(twice, .set).?, &.{ .{ .key = one, .value = one }, .{ .key = three, .value = three } });
+    const removed = try unmarshalled(&(map_head ++ [_]u8{ 3, 1, 2, 3, 4, 1, lb_nil }));
+    try expectEntries(.map, maps.toTrie(removed, .map).?, &.{.{ .key = three, .value = harness.wrapInteger(4) }});
+    const emptied = try unmarshalled(&(map_head ++ [_]u8{ 1, 1, lb_nil }));
+    expect(maps.toTrie(emptied, .map).?.root == null);
+
+    const nil_key = harness.raised(unmarshalled, .{@as([]const u8, &(map_head ++ [_]u8{ 1, lb_nil, 2 }))});
+    expect(nil_key != null and nil_key.?.says("cannot use nil as a key"));
+    const nan = try marshalled(wrap.fromNumber(std.math.nan(f64)));
+    var nan_stream: [set_head.len + 1 + 9]u8 = undefined;
+    @memcpy(nan_stream[0..set_head.len], &set_head);
+    nan_stream[set_head.len] = 1;
+    @memcpy(nan_stream[set_head.len + 1 ..], nan.slice());
+    const nan_key = harness.raised(unmarshalled, .{@as([]const u8, &nan_stream)});
+    expect(nan_key != null and nan_key.?.beginsWith("cannot use nan"));
+}
+
+/// A stream cut short anywhere is refused, and so is a count the rest of the
+/// stream is too short to hold.
+fn aShortStreamIsRefused() !void {
+    var entries: [70]Entry = undefined;
+    for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i)) };
+    entries[40].value = wrap.fromAbstract(buildOn(.set, &empty_trie, entries[0..3]));
+    const whole = try marshalled(wrap.fromAbstract(buildOn(.map, &empty_trie, &entries)));
+    gc_alloc.gcroot(wrap.fromBuffer(whole));
+    for (0..@intCast(whole.count)) |len| {
+        const refusal = harness.raised(unmarshalled, .{whole.slice()[0..len]});
+        expect(refusal != null and refusal.?.signal == abi.Signal.@"error");
+    }
+    _ = gc_alloc.gcunroot(wrap.fromBuffer(whole));
+
+    const lb_abstract = 217;
+    const lb_symbol = 207;
+    const lying = [_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".* ++ [_]u8{ 0xF1, 0xF0, 1, 2 };
+    expect(harness.raised(unmarshalled, .{@as([]const u8, &lying)}).?.says("unexpected end of source"));
+}
+
+/// A transient has no `marshal` callback, so marshalling one of a map or a
+/// set is refused.
+fn aTransientIsNotMarshalled() !void {
+    const one = harness.wrapInteger(1);
+    for ([_]maps.Kind{ .map, .set }) |kind| {
+        const source = maps.put(&empty_trie, kind, (&[2]repr.Value{ one, one })[0..kind.entryWidth()]);
+        const refusal = harness.raised(marshalled, .{wrap.fromAbstract(transients.fromTrie(source, kind))});
+        expect(refusal != null and refusal.?.beginsWith("cannot marshal"));
+    }
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -579,6 +774,16 @@ fn body() !void {
     try aTransientChangesOnlyItsOwnNodes();
     try anAbandonedTransientIsCollected();
     try equalityOrderAndHash();
+    // Unmarshalling finds a type by name in the registry, and building the
+    // core environment is what registers `core/map` and `core/set`.
+    _ = harness.coreEnv();
+    try registry.registerAbstractType(&probe_type);
+    try marshallingRoundTrips();
+    try theWireFormat();
+    try marshallingKeepsIdentityAndHashes();
+    try aForgedStreamIsReadAsHashMapReadsItsArguments();
+    try aShortStreamIsRefused();
+    try aTransientIsNotMarshalled();
 }
 
 pub fn run() void {
