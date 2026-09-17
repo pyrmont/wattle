@@ -64,6 +64,7 @@ const join_at = abstract_type.define(Join, .{
     .name = "indexed-sites/join",
     .length = joinLength,
     .chunk = joinChunk,
+    .contents = .elements,
 });
 
 /// Element `i` is `i * 10`, in the run of three that holds `index`.
@@ -118,6 +119,7 @@ const held_at = abstract_type.define(Held, .{
     .name = "indexed-sites/held",
     .length = heldLength,
     .chunk = heldChunk,
+    .contents = .elements,
     .gcmark = heldMark,
 });
 

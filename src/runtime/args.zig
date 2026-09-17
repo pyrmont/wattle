@@ -487,6 +487,77 @@ pub const GetUInteger8 = ArgGetter(u8, argUinteger8);
 pub const GetInteger64 = Wide(i64, if (int_types_enabled) inttypes.unwrapS64 else {}, argInteger64);
 pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 else {}, argUinteger64);
 
+/// The pairs of a table, a struct or an abstract whose contents are pairs,
+/// read one run or one pair at a time. `keyvals` returns a `Keyvals`.
+///
+/// A run alternates keys and values. A table or a struct is one run, its
+/// slots read as values, so the run holds its empty slots, whose keys are nil.
+/// An abstract is as many runs as its `chunk` callback gives, each starting
+/// where the one before ended. `next` skips the empty slots and `nextRun`
+/// does not. A reader uses one or the other, since `next` keeps the part of a
+/// run it has not yet returned.
+///
+/// A run stays valid as a `Chunks` run does.
+///
+/// ```zig
+/// var it = (try args.keyvals(x)) orelse return fault;
+/// while (try it.next()) |kv| {
+///     // kv.key, kv.value
+/// }
+/// ```
+pub const Keyvals = struct {
+    /// Where the values come from.
+    source: Chunks.Source,
+    /// The number of values: twice the slots of a table or a struct, or twice
+    /// an abstract's length.
+    len: usize,
+    /// The position of the next run.
+    index: usize = 0,
+    /// What `next` has not yet returned of the run it read most recently.
+    rest: []const repr.Value = &.{},
+
+    /// Returns the next pair that is not an empty slot, or null when every
+    /// pair has been returned.
+    ///
+    /// This function raises where `nextRun` does.
+    pub inline fn next(self: *Keyvals) raise.Error!?abi.Keyval {
+        while (true) {
+            while (self.rest.len != 0) {
+                const kv: abi.Keyval = .{ .key = self.rest[0], .value = self.rest[1] };
+                self.rest = self.rest[2..];
+                if (!repr.checkType(kv.key, repr.Tag.nil)) return kv;
+            }
+            self.rest = (try self.nextRun()) orelse return null;
+        }
+    }
+
+    /// Returns the next run, or null when every run has been returned.
+    ///
+    /// This function raises if a `chunk` callback returns a run that does not
+    /// start at the position asked for, that does not have an even length, or
+    /// that reaches past twice the length.
+    pub inline fn nextRun(self: *Keyvals) raise.Error!?[]const repr.Value {
+        if (self.index >= self.len) return null;
+        switch (self.source) {
+            .contiguous => |values| {
+                self.index = self.len;
+                return values;
+            },
+            .abstract => |a| {
+                const run = try takeChunk(a.payload, a.at, self.index, self.len);
+                if (run.start != self.index or run.len % 2 != 0) {
+                    return pp_format.panicf("chunk of %t does not give whole pairs from position %u", .{
+                        wrap.fromAbstract(a.payload),
+                        @as(u64, self.index),
+                    });
+                }
+                self.index += run.len;
+                return run.items.?[0..run.len];
+            },
+        }
+    }
+};
+
 /// The index family: `f(argv, n)` published as `abi(argv, n)`. Passing `n`
 /// asserts that `n` is in range, so the slice is exactly long enough for it.
 ///
@@ -965,14 +1036,14 @@ pub fn checkfloat(x: repr.Value) bool {
     return dval == back;
 }
 
-/// Whether `x` is an array, a tuple or an abstract whose type has a `chunk`
-/// callback.
+/// Whether `x` is an array, a tuple or an abstract whose contents are
+/// elements.
 ///
 /// It reads the tag and, for an abstract, its type, and calls no callback.
 pub fn checkindexed(x: repr.Value) bool {
     if (repr.checkTypes(x, repr.TagSet.indexed)) return true;
     if (!repr.checkType(x, repr.Tag.abstract)) return false;
-    return abi.abstractHead(wrap.toAbstract(x)).type.chunk != null;
+    return abi.abstractHead(wrap.toAbstract(x)).type.contents == .elements;
 }
 
 /// Whether `x` is a double exactly representable as an `i32`.
@@ -1052,8 +1123,8 @@ pub fn checkuint8(x: repr.Value) bool {
     return checkNumber(u8, x);
 }
 
-/// Returns the elements of an array, a tuple or an abstract with a `chunk`
-/// callback, read one run at a time.
+/// Returns the elements of an array, a tuple or an abstract whose contents
+/// are elements, read one run at a time.
 ///
 /// `x` is the value. This function returns null if `x` is none of the three.
 /// It raises if an abstract's `length` callback raises.
@@ -1066,12 +1137,26 @@ pub fn chunks(x: repr.Value) raise.Error!?Chunks {
     if (!repr.checkType(x, repr.Tag.abstract)) return null;
     const abst = wrap.toAbstract(x);
     const at = abi.abstractHead(abst).type;
-    if (at.chunk == null) return null;
+    if (at.contents != .elements) return null;
     const len: usize = @intCast(try access.length(x));
     return .{
         .source = .{ .abstract = .{ .payload = abst, .at = at } },
         .len = len,
         .limit = len,
+    };
+}
+
+/// What `x` holds: `elements` for an array, a tuple or an abstract that
+/// declares them, `pairs` for a table, a struct or an abstract that declares
+/// them, and `none` for everything else.
+///
+/// It reads the tag and, for an abstract, its type, and calls no callback.
+pub fn contentsOf(x: repr.Value) abi.Contents {
+    return switch (repr.typeOf(x)) {
+        .array, .tuple => .elements,
+        .table, .@"struct" => .pairs,
+        .abstract => abi.abstractHead(wrap.toAbstract(x)).type.contents,
+        else => .none,
     };
 }
 
@@ -1378,8 +1463,8 @@ pub fn halfRange(argv: []const repr.Value, n: usize, length: i32, which: [*:0]co
 /// reported. The run is whole rather than cut at `index`, so its `start` may
 /// be below `index`.
 ///
-/// This function raises if `x` is not an abstract with a `chunk` callback, if
-/// `index` is not below `len`, or where `Chunks.next` raises for the run.
+/// This function raises if `x` is not an abstract whose contents are elements,
+/// if `index` is not below `len`, or where `Chunks.next` raises for the run.
 ///
 /// See `Chunks` for how long a run stays valid.
 pub fn indexedChunk(x: repr.Value, index: usize, len: usize) raise.Error!abi.Chunk {
@@ -1388,7 +1473,7 @@ pub fn indexedChunk(x: repr.Value, index: usize, len: usize) raise.Error!abi.Chu
     }
     const abst = wrap.toAbstract(x);
     const at = abi.abstractHead(abst).type;
-    if (at.chunk == null) return pp_format.panicf("expected indexed abstract, got %v", .{x});
+    if (at.contents != .elements) return pp_format.panicf("expected indexed abstract, got %v", .{x});
     if (index >= len) {
         return pp_format.panicf("index %u is past the end of %t of length %u", .{
             @as(u64, index),
@@ -1419,6 +1504,35 @@ pub fn items(x: repr.Value) ?[]const repr.Value {
 /// Whether `x` is a keyword whose bytes equal `cstring`.
 pub fn keyeq(x: repr.Value, cstring: [*:0]const u8) bool {
     return argStrlike(repr.Tag.keyword, x, cstring);
+}
+
+/// Returns the pairs of a table, a struct or an abstract whose contents are
+/// pairs, read one run at a time or one pair at a time.
+///
+/// `x` is the value. This function returns null if `x` is none of the three.
+/// It raises if an abstract's `length` callback raises.
+///
+/// See `Keyvals` for how long a run stays valid.
+pub fn keyvals(x: repr.Value) raise.Error!?Keyvals {
+    switch (repr.typeOf(x)) {
+        .table => {
+            const table = wrap.toTable(x);
+            const data = table.data orelse return .{ .source = .{ .contiguous = &.{} }, .len = 0 };
+            return slotsOf(data[0..table.capacity]);
+        },
+        .@"struct" => {
+            const structure = wrap.toStruct(x);
+            return slotsOf(structure[0..structs.head(structure).capacity]);
+        },
+        .abstract => {
+            const abst = wrap.toAbstract(x);
+            const at = abi.abstractHead(abst).type;
+            if (at.contents != .pairs) return null;
+            const len: usize = @intCast(try access.length(x));
+            return .{ .source = .{ .abstract = .{ .payload = abst, .at = at } }, .len = 2 * len };
+        },
+        else => return null,
+    }
 }
 
 /// The keyword naming the method after `key` in `methods`, or nil at the end.
@@ -1722,6 +1836,13 @@ fn range(
         return null;
     }
     return @intCast(not_raw);
+}
+
+/// A table's or a struct's slots as one run of values, key then value.
+fn slotsOf(slots: []const abi.Keyval) Keyvals {
+    const values: [*]const repr.Value = @ptrCast(slots.ptr);
+    const len = 2 * slots.len;
+    return .{ .source = .{ .contiguous = values[0..len] }, .len = len };
 }
 
 /// Runs an abstract's `chunk` callback for `index` and checks the run.

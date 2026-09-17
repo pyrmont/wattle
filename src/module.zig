@@ -101,6 +101,10 @@
 //! |               |                                    |           |
 //! | `chunk`       | `fn (*T, usize) Chunk`             | no        |
 //!
+//! `contents` is a field beside the callbacks rather than one of them: what
+//! the runs `chunk` returns hold, `elements` or `pairs`. A type sets it
+//! exactly when it has `chunk`.
+//!
 //! The restrictions on the collector's callbacks are in `Spec`, and
 //! `examples/numarray` is the worked example.
 //!
@@ -175,6 +179,10 @@ pub const panic = raise.panic;
 /// through. `define` returns an `AbstractType`.
 pub const AbstractType = abstract_type.AbstractType;
 
+/// What a value holds: `none`, `elements` or `pairs`. An abstract type
+/// declares its own in `define`'s `contents` field.
+pub const Contents = abi.Contents;
+
 /// The capability to define a binding in the environment a module is loading
 /// into. `entry`'s `defs` function takes a `*Env`.
 pub const Env = abi.Env;
@@ -187,6 +195,10 @@ pub const Env = abi.Env;
 /// `.@"error"` in Zig.
 pub const FiberStatus = abi.FiberStatus;
 
+/// One key-value pair of a struct or a table. `Pairs.next` returns a
+/// `Keyval`, and `structOf` and `tableOf` take a slice of `Keyval`.
+pub const Keyval = abi.Keyval;
+
 /// The capability to queue a callback for the loop thread's next turn.
 /// `loop` returns a `*Loop` and `post` takes a `*Loop`.
 pub const Loop = abi.Loop;
@@ -194,10 +206,6 @@ pub const Loop = abi.Loop;
 /// The capability to append to the stream a value is being marshalled into.
 /// An abstract type's `marshal` callback takes a `*Marshal`.
 pub const Marshal = abi.Marshal;
-
-/// One key-value pair of a struct or a table. `Pairs.next` returns a `Pair`,
-/// and `structOf` and `tableOf` take a slice of `Pair`.
-pub const Pair = abi.KV;
 
 /// A slice argument's two folded indices, which `getRange` returns.
 ///
@@ -259,9 +267,12 @@ pub const CFunction = *const fn ([]Value) Error!Value;
 
 /// The return type of an abstract type's `chunk` callback.
 ///
-/// `items` is a run of the type's elements and `start` is the index of the
-/// first of them. The run must hold the index `chunk` was called with, and must
-/// not reach past the type's length.
+/// `items` is a run of the type's contents and `start` is the position of the
+/// first of them. The run must hold the position `chunk` was called with, and
+/// must not reach past the type's length. For `elements` a position is an
+/// index. For `pairs` a run alternates keys and values, pair i is at position
+/// 2i, a run starts at an even position and has an even length, and the
+/// positions end at twice the length, which counts pairs.
 ///
 /// `items` may point into the payload's own storage, or into a buffer the
 /// payload keeps. A `Value` that only that buffer refers to must be marked by
@@ -411,7 +422,7 @@ pub const Pairs = struct {
     /// Returns the next pair, or null when every pair has been returned.
     ///
     /// This function cannot raise.
-    pub fn next(self: *Pairs) ?Pair {
+    pub fn next(self: *Pairs) ?Keyval {
         const kvs = self.view.kvs orelse return null;
         while (self.index < self.view.cap) {
             const kv = kvs[self.index];
@@ -513,14 +524,18 @@ pub fn Spec(comptime T: type) type {
         marshal: ?*const fn (*T, *Marshal) Error!void = null,
         unmarshal: ?*const fn (*Unmarshal) Error!*T = null,
 
-        // Indexing.
+        // Contents.
 
-        /// Returns the run of elements that holds `index`, which is below
-        /// the type's length. A type with `chunk` must also have `length`. It
-        /// may not allocate or call into Janet code. The run stays valid until
-        /// the next call that can do either, or until the next `chunk` call on
-        /// the same payload.
+        /// Returns the run of contents that holds `index`, which is below
+        /// the type's length, or twice it for `pairs`. A type with `chunk`
+        /// must also have `length` and a `contents` other than `none`. It may
+        /// not allocate or call into Janet code. The run stays valid until the
+        /// next call that can do either, or until the next `chunk` call on the
+        /// same payload.
         chunk: ?*const fn (*T, usize) Chunk = null,
+        /// What `chunk`'s runs hold: `elements` for an indexed type and
+        /// `pairs` for a dictionary. A type without `chunk` leaves it `none`.
+        contents: Contents = .none,
     };
 }
 
@@ -697,6 +712,7 @@ pub fn define(comptime T: type, comptime spec: anytype) AbstractType {
         .marshal = if (cb.marshal != null) &E.marshal else null,
         .unmarshal = if (cb.unmarshal != null) &E.unmarshal else null,
         .chunk = if (cb.chunk != null) &E.chunk else null,
+        .contents = cb.contents,
     };
 }
 
@@ -1468,7 +1484,7 @@ pub fn string(bytes: []const u8) Value {
 /// hash array.
 ///
 /// The name is due to `struct` being a reserved word in Zig.
-pub fn structOf(pairs: []const Pair) Value {
+pub fn structOf(pairs: []const Keyval) Value {
     return interface.rt.new_struct(pairs.ptr, pairs.len);
 }
 
@@ -1481,7 +1497,7 @@ pub fn symbol(bytes: []const u8) Value {
 ///
 /// See `structOf` for a further explanation of duplicate keys and nil values.
 /// The name matches `structOf`.
-pub fn tableOf(pairs: []const Pair) Value {
+pub fn tableOf(pairs: []const Keyval) Value {
     return interface.rt.new_table(pairs.ptr, pairs.len);
 }
 

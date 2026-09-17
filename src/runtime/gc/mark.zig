@@ -375,12 +375,12 @@ fn markFunction(vm: *vm_state.Vm, func: *functions.Function) void {
 }
 
 /// Marks the key of every entry in `kvs`, for a weak-valued table.
-fn markKeys(vm: *vm_state.Vm, kvs: []const tables.KV) void {
+fn markKeys(vm: *vm_state.Vm, kvs: []const tables.Keyval) void {
     for (kvs) |kv| markGuarded(vm, kv.key);
 }
 
 /// Marks both halves of every entry in `kvs`.
-fn markKvs(vm: *vm_state.Vm, kvs: []const tables.KV) void {
+fn markKvs(vm: *vm_state.Vm, kvs: []const tables.Keyval) void {
     for (kvs) |kv| {
         markGuarded(vm, kv.key);
         markGuarded(vm, kv.value);
@@ -444,7 +444,7 @@ fn markString(str: [*]const u8) void {
 
 /// Marks a struct, its entries and its prototype chain, following the chain
 /// iteratively so that a long chain costs no stack frame per link.
-fn markStruct(vm: *vm_state.Vm, st_in: [*]const tables.KV) void {
+fn markStruct(vm: *vm_state.Vm, st_in: [*]const tables.Keyval) void {
     var st = st_in;
     while (true) {
         const head = structs.head(st);
@@ -494,7 +494,7 @@ fn markTuple(vm: *vm_state.Vm, tuple: [*]const repr.Value) void {
 }
 
 /// Marks the value of every entry in `kvs`, for a weak-keyed table.
-fn markValues(vm: *vm_state.Vm, kvs: []const tables.KV) void {
+fn markValues(vm: *vm_state.Vm, kvs: []const tables.Keyval) void {
     for (kvs) |kv| markGuarded(vm, kv.value);
 }
 

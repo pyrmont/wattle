@@ -404,7 +404,7 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
 /// nothing to truncate to here, so a quadratic sort over every entry would
 /// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
 /// so the order agrees with `%p`'s entry for entry.
-fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Error!bool {
+fn printJdnKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error!bool {
     const ks_start = S.keysort_start;
     defer S.keysort_start = ks_start;
 
@@ -442,7 +442,7 @@ fn printJdnKvs(S: *Pretty, kvs: []const tables.KV, depth: c_int) raise.Error!boo
         next += 1;
     }
     std.mem.sort(i32, buf[0..len], kvs, struct {
-        fn lessThan(context: []const tables.KV, a: i32, b: i32) bool {
+        fn lessThan(context: []const tables.Keyval, a: i32, b: i32) bool {
             return order.compare(
                 context[@intCast(a)].key,
                 context[@intCast(b)].key,
@@ -643,7 +643,7 @@ fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Error!void {
 }
 
 /// One key and its value, a space apart.
-fn prettyEntry(S: *Pretty, kv: tables.KV) raise.Error!void {
+fn prettyEntry(S: *Pretty, kv: tables.Keyval) raise.Error!void {
     try prettyOne(S, kv.key);
     try S.pushByte(' ');
     S.align_col += 1;

@@ -1224,7 +1224,7 @@ fn namesFor(platform: Platform) []const [:0]const u8 {
 /// byte, which is what makes a path ending in `/` split on that separator, and
 /// it was written out twice in C.
 fn splitPath(
-    kvs: [*]tables.KV,
+    kvs: [*]tables.Keyval,
     path: repr.Value,
     no_sep_dir: repr.Value,
     no_sep_file: repr.Value,

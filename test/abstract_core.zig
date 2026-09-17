@@ -400,7 +400,7 @@ fn beginThreadedRegistersWithoutTheHeap() void {
     // `value.memallocEmpty` bills its new bucket array to the same counter.
     var table_charge: usize = 0;
     if (harness.vm().ev.threaded_abstracts.capacity != before_capacity) {
-        table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(tables.KV);
+        table_charge = @as(usize, @intCast(harness.vm().ev.threaded_abstracts.capacity)) * @sizeOf(tables.Keyval);
     }
     expect(harness.vm().gc.next_collection ==
         before_charge + @sizeOf(abi.AbstractHead) + 48 + table_charge);

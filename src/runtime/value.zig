@@ -136,10 +136,10 @@ pub fn capacityFor(val: usize) usize {
 /// A capacity of zero sends this off the array; see `mapHash`. No constructor
 /// produces one, and a safety-checked build traps at the first index rather
 /// than reading below the array.
-pub fn dictionaryFind(buckets: []const tables.KV, key: repr.Value) ?*const tables.KV {
+pub fn dictionaryFind(buckets: []const tables.Keyval, key: repr.Value) ?*const tables.Keyval {
     const cap: i32 = @intCast(buckets.len);
     const index = mapHash(cap, order.hash(key));
-    var first_bucket: ?*const tables.KV = null;
+    var first_bucket: ?*const tables.Keyval = null;
 
     // Index loops, rather than `for (buckets[start..]) |*kv|`. Zig's `for`
     // over a sub-slice with a pointer capture leaves both the element pointer
@@ -181,15 +181,15 @@ pub fn dictionaryFind(buckets: []const tables.KV, key: repr.Value) ?*const table
 /// `repr.Tag.keyword` alone, and that is not an oversight: the three tags share
 /// one representation, and the head is what the comparison reads.
 pub fn dictionaryFindKeyword(
-    buckets: []const tables.KV,
+    buckets: []const tables.Keyval,
     cstr: [*]const u8,
     cstr_len: i32,
-) ?*const tables.KV {
+) ?*const tables.Keyval {
     const cap: i32 = @intCast(buckets.len);
     const key_bytes = cstr[0..@intCast(cstr_len)];
     const hash = hashBytes(key_bytes);
     const index = mapHash(cap, hash);
-    var first_bucket: ?*const tables.KV = null;
+    var first_bucket: ?*const tables.Keyval = null;
 
     // Index loops for the reason `dictionaryFind` states above, and measured
     // with it: this is the same probe over the same buckets.
@@ -222,7 +222,7 @@ pub fn dictionaryFindKeyword(
 /// Looks a key up in a struct or table's buckets, and gives nil for absent.
 ///
 /// `data` is the hash array and `key` the key.
-pub fn dictionaryGet(data: []const tables.KV, key: repr.Value) repr.Value {
+pub fn dictionaryGet(data: []const tables.Keyval, key: repr.Value) repr.Value {
     const kv = dictionaryFind(data, key) orelse return wrap.fromNil();
     if (!isNil(kv.key)) return kv.value;
     return wrap.fromNil();
@@ -235,11 +235,11 @@ pub fn dictionaryGet(data: []const tables.KV, key: repr.Value) repr.Value {
 /// `while (dictionaryNext(kvs, at)) |kv|`. Bucket order is not insertion order
 /// and is not stable across a rehash.
 pub fn dictionaryNext(
-    kvs: []const tables.KV,
-    kv: ?*const tables.KV,
-) ?*const tables.KV {
+    kvs: []const tables.Keyval,
+    kv: ?*const tables.Keyval,
+) ?*const tables.Keyval {
     const start: usize = if (kv) |at|
-        (@intFromPtr(at) - @intFromPtr(kvs.ptr)) / @sizeOf(tables.KV) + 1
+        (@intFromPtr(at) - @intFromPtr(kvs.ptr)) / @sizeOf(tables.Keyval) + 1
     else
         0;
     for (kvs[start..]) |*bucket| {
@@ -291,7 +291,7 @@ pub fn hashBytes(bytes: []const u8) i32 {
 /// Returns the hash of a run of key-value pairs, for `structs.end`.
 ///
 /// `kvs` is the run.
-pub fn hashDictionary(kvs: []const tables.KV) i32 {
+pub fn hashDictionary(kvs: []const tables.Keyval) i32 {
     var hash: u32 = 33;
     for (kvs) |kv| {
         hash = hashMix(hash, @bitCast(order.hash(kv.key)));
@@ -340,9 +340,9 @@ pub fn initHashKey(new_key: [*]u8) void {
 /// `utils.rawAlloc`, a collection charge and an out-of-memory exit, and what
 /// they allocate is a bucket array, which is this bucket's subject.
 /// `value/tables.zig` and `value/structs.zig` are the two callers.
-pub fn memallocEmpty(count: usize) [*]tables.KV {
+pub fn memallocEmpty(count: usize) [*]tables.Keyval {
     const bytes = kvBytes(count);
-    const mmem: [*]tables.KV = @ptrCast(@alignCast(utils.rawAlloc(bytes)));
+    const mmem: [*]tables.Keyval = @ptrCast(@alignCast(utils.rawAlloc(bytes)));
     vm_state.current().gc.next_collection +%= bytes;
     for (mmem[0..count]) |*kv| {
         kv.key = wrap.fromNil();
@@ -355,7 +355,7 @@ pub fn memallocEmpty(count: usize) [*]tables.KV {
 ///
 /// `mem` is the block. This is how a table is cleared and how a struct's
 /// bucket array is initialised from the scratch allocator.
-pub fn memempty(mem: []tables.KV) void {
+pub fn memempty(mem: []tables.Keyval) void {
     for (mem) |*kv| {
         kv.key = wrap.fromNil();
         kv.value = wrap.fromNil();
@@ -417,7 +417,7 @@ inline fn isNil(val: repr.Value) bool {
 /// and `capacityFor`, which clamps at `INT32_MAX`, is the only thing that
 /// produces one.
 inline fn kvBytes(count: usize) usize {
-    return count *% @sizeOf(tables.KV);
+    return count *% @sizeOf(tables.Keyval);
 }
 
 /// Returns a hash folded into a bucket index.

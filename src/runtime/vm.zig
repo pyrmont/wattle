@@ -610,7 +610,7 @@ pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Error!
 /// `.make_struct`, over a struct still under construction: `structs.put`
 /// writes into the buckets `structs.begin` allocated, and the caller calls
 /// `structs.end` afterwards.
-pub fn fillStruct(st: [*]tables.KV, mem: [*]const repr.Value, count: i32) void {
+pub fn fillStruct(st: [*]tables.Keyval, mem: [*]const repr.Value, count: i32) void {
     var i: i32 = 0;
     while (i < count) : (i += 2) {
         structs.put(st, mem[utils.asSize(i)], mem[utils.asSize(i + 1)]);

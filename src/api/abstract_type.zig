@@ -193,7 +193,8 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
 /// It is a compile error if `spec` is not a struct, if a field names no slot,
 /// if a callback returns an error union where its slot cannot raise or omits
 /// one where its slot may, if a callback's first parameter is not `*T` or
-/// `*const T`, or if `chunk` is given without `length`. The parameter check
+/// `*const T`, if `chunk` is given without `length`, or if `chunk` is given
+/// without a `contents` or a `contents` without `chunk`. The parameter check
 /// skips `unmarshal`, which takes no payload.
 ///
 /// A shape this does not recognise is left alone and reaches the coercion in
@@ -207,6 +208,7 @@ pub fn check(comptime T: type, comptime spec: anytype) void {
     }
     for (info.@"struct".fields) |f| {
         if (comptime std.mem.eql(u8, f.name, "name")) continue;
+        if (comptime std.mem.eql(u8, f.name, "contents")) continue;
         comptime var known = false;
         inline for (slots) |s| {
             if (comptime std.mem.eql(u8, f.name, s)) known = true;
@@ -222,6 +224,15 @@ pub fn check(comptime T: type, comptime spec: anytype) void {
             "`chunk` must also have `length`. The length bounds the index `chunk` is " ++
             "called with.");
     }
+    const contents = comptime contentsOf(spec);
+    if (sets(spec, "chunk") and contents == .none) {
+        @compileError("abstract type '" ++ spec.name ++ "', callback 'chunk': a type with " ++
+            "`chunk` must say what its runs hold. Set `contents` to `.elements` or `.pairs`.");
+    }
+    if (!sets(spec, "chunk") and contents != .none) {
+        @compileError("abstract type '" ++ spec.name ++ "', field 'contents': a type whose " ++
+            "contents are not `.none` must have `chunk`, which is how its contents are read.");
+    }
 }
 
 /// Moves a `define` literal's fields into a `Spec(T)`, one slot at a time.
@@ -236,7 +247,7 @@ pub fn check(comptime T: type, comptime spec: anytype) void {
 /// in any case: through `anytype` it has a concrete anonymous type, which Zig
 /// will not coerce to `Spec(T)`.
 pub fn collect(comptime T: type, comptime spec: anytype) Spec(T) {
-    comptime var cb: Spec(T) = .{ .name = spec.name };
+    comptime var cb: Spec(T) = .{ .name = spec.name, .contents = contentsOf(spec) };
     inline for (slots) |s| {
         if (@hasField(@TypeOf(spec), s)) {
             const given = @field(spec, s);
@@ -316,6 +327,15 @@ fn checkSlot(comptime T: type, comptime name: []const u8, comptime slot: []const
             }
         }
     }
+}
+
+/// Returns the `contents` a `define` literal declares, or `none` where it
+/// declares none.
+///
+/// `spec` is the literal an author wrote.
+fn contentsOf(comptime spec: anytype) abi.Contents {
+    if (!@hasField(@TypeOf(spec), "contents")) return .none;
+    return spec.contents;
 }
 
 /// Returns the payload of a slot's return type, spelled as the "may raise"

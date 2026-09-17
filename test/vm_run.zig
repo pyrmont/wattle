@@ -435,6 +435,7 @@ const runs_at = abstract_type.define(Runs, .{
     .name = "vm-run/runs",
     .length = runsLength,
     .chunk = runsChunk,
+    .contents = .elements,
 });
 
 /// Element `i` is `i * 10`, and the runs are `[0..3)`, `[3..6)` and so on, the

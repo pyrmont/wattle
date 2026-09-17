@@ -24,10 +24,10 @@
 //! abstract type with no `get` callback is an error, whether a fiber
 //! accepts a key other than zero.
 //!
-//! An abstract type with a `chunk` callback and no `get` or `next` is read
-//! from its runs instead, by `chunkElement` and `chunkNext`, so that a type
-//! implementing the indexed protocol is read by key as a tuple is. Each
-//! callback is replaced on its own, and only where the type has none.
+//! An abstract type whose contents are elements and which has no `get` or
+//! `next` is read from its runs instead, by `chunkElement` and `chunkNext`, so
+//! that a type implementing the indexed protocol is read by key as a tuple is.
+//! Each callback is replaced on its own, and only where the type has none.
 //! `getIndex` is a third policy again, taking an `i32` rather than a `Value`,
 //! panicking only on a negative index and a missing setter and returning nil
 //! for everything else. Factoring the three into one function with a policy
@@ -94,7 +94,7 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
             const getter = at.get orelse {
-                if (at.chunk == null) return wrap.fromNil();
+                if (at.contents != .elements) return wrap.fromNil();
                 return try chunkElement(ds, key) orelse wrap.fromNil();
             };
             return try getter(abst, key) orelse wrap.fromNil();
@@ -186,7 +186,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.get) |getter| {
                 val = try getter(wrap.toAbstract(ds), wrap.fromInteger(index)) orelse wrap.fromNil();
-            } else if (at.chunk != null) {
+            } else if (at.contents == .elements) {
                 val = try chunkElement(ds, wrap.fromInteger(index)) orelse wrap.fromNil();
             } else {
                 return pp_format.panicf("no getter for %v", .{ds});
@@ -250,7 +250,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
             if (at.get) |getter| {
                 val = try getter(wrap.toAbstract(ds), key) orelse
                     return pp_format.panicf("key %v not found in %v ", .{ key, ds });
-            } else if (at.chunk != null) {
+            } else if (at.contents == .elements) {
                 val = try chunkElement(ds, key) orelse
                     return pp_format.panicf("key %v not found in %v ", .{ key, ds });
             } else {
@@ -376,7 +376,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
     switch (t) {
         repr.Tag.table, repr.Tag.@"struct" => {
             var cap: i32 = undefined;
-            var start: [*]const tables.KV = undefined;
+            var start: [*]const tables.Keyval = undefined;
             if (t == repr.Tag.table) {
                 const tab = wrap.toTable(ds);
                 cap = @intCast(tab.capacity);
@@ -387,7 +387,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
                 start = st;
             }
             const end = start + utils.asSize(cap);
-            var kv: [*]const tables.KV = if (repr.checkType(key, repr.Tag.nil))
+            var kv: [*]const tables.Keyval = if (repr.checkType(key, repr.Tag.nil))
                 start
             else
                 @ptrCast(nextBucket(value.dictionaryFind(start[0..@intCast(cap)], key)));
@@ -425,7 +425,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
             const abst = wrap.toAbstract(ds);
             const at = abstract_type.ofAbstract(abst);
             const callback = at.next orelse {
-                if (at.chunk == null) return wrap.fromNil();
+                if (at.contents != .elements) return wrap.fromNil();
                 return chunkNext(ds, key);
             };
             return callback(abst, key);
@@ -598,8 +598,8 @@ fn badKey(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error {
     return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intFromEnum(vtype)].ptr, @as(c_int, max), key });
 }
 
-/// The element of an abstract with a `chunk` callback at `key`, read from the
-/// run that holds it, or null.
+/// The element at `key` of an abstract whose contents are elements, read from
+/// the run that holds it, or null.
 ///
 /// `ds` is the abstract. This function returns null if `key` is not an integer
 /// at or above zero and below the length. It raises if the type's `length`
@@ -617,8 +617,8 @@ fn chunkElement(ds: repr.Value, key: repr.Value) raise.Error!?repr.Value {
     return run.items.?[at - run.start];
 }
 
-/// The key after `key` in an abstract with a `chunk` callback, as `nextImpl`
-/// gives it for a tuple.
+/// The key after `key` in an abstract whose contents are elements, as
+/// `nextImpl` gives it for a tuple.
 ///
 /// `ds` is the abstract. This function returns nil at the end, and for a key
 /// that is neither nil nor an integer. It raises if the type's `length`
@@ -665,8 +665,8 @@ fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error!i32 {
 /// produces, dies inside `dictionaryFind` rather than returning from it. The
 /// arithmetic is on `usize` so that it stays defined for whatever makes it
 /// reachable later.
-inline fn nextBucket(p: ?*const tables.KV) *const tables.KV {
-    return @ptrFromInt(@intFromPtr(p) +% @sizeOf(tables.KV));
+inline fn nextBucket(p: ?*const tables.Keyval) *const tables.Keyval {
+    return @ptrFromInt(@intFromPtr(p) +% @sizeOf(tables.Keyval));
 }
 
 /// The refusal for an abstract with no `length` callback, in the words C

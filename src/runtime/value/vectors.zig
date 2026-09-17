@@ -136,6 +136,7 @@ pub const vector_type = abstract_type.define(Vector, .{
     .marshal = vectorMarshal,
     .unmarshal = vectorUnmarshal,
     .chunk = vectorChunk,
+    .contents = .elements,
 });
 
 /// The number of slots in a node.

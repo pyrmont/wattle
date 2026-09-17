@@ -23,10 +23,10 @@
 //! - The six capabilities: `Env`, `Loop`, `Marshal`, `Render`, `Unmarshal`
 //!   and `Wake`.
 //!
-//! - The two enums: `Signal` and `FiberStatus`.
+//! - The three enums: `Contents`, `Signal` and `FiberStatus`.
 //!
 //! - The layouts a crossing takes or returns by pointer: `Reg`, `Range`,
-//!   `BuildConfig` and `KV`; the heap header an abstract payload
+//!   `BuildConfig` and `Keyval`; the heap header an abstract payload
 //!   sits behind, `AbstractHead` (which includes `GCObject`, `GCFlags` and
 //!   `GCData`); and the function pointer type `CFunction`.
 //!
@@ -168,8 +168,9 @@ pub const AbstractType = struct {
     marshal: ?*const fn (p: *anyopaque, m: *Marshal) error{JanetSignal}!void = null,
     unmarshal: ?*const fn (u: *Unmarshal) error{JanetSignal}!?*anyopaque = null,
 
-    // Indexing.
+    // Contents.
     chunk: ?*const fn (p: *anyopaque, index: usize) callconv(.c) Chunk = null,
+    contents: Contents = .none,
 };
 
 /// What a module was built against: a Janet version, the configuration bits,
@@ -220,14 +221,15 @@ pub const ByteView = extern struct {
     len: usize = 0,
 };
 
-/// A run of an indexed abstract's elements, and the index of its first.
+/// A run of an abstract's contents, and the position of its first value.
 ///
 /// The erased `chunk` callback of `AbstractType` returns a `Chunk`. A module
 /// author writes the callback to return a `module.Chunk`, which holds a slice,
 /// and `module.define` generates the shim that converts it.
 ///
-/// `items` points at `len` elements, the first of which is at index `start`.
-/// `items` is null only when `len` is zero.
+/// `items` points at `len` values, the first of which is at position `start`.
+/// `items` is null only when `len` is zero. What a value is depends on the
+/// type's `Contents`.
 pub const Chunk = extern struct {
     items: ?[*]const repr.Value = null,
     len: usize = 0,
@@ -247,6 +249,26 @@ pub const Chunk = extern struct {
 /// stored pointer back before the runtime makes a call.
 pub const CFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) repr.Value;
 
+/// What a value holds: nothing a reader walks, elements, or pairs.
+///
+/// Every value has contents. An array, a tuple and a vector hold `elements`,
+/// a table and a map hold `pairs`, and every other value holds `none`.
+/// `args.contentsOf` answers for any value, from its tag for a built-in type
+/// and from `AbstractType.contents` for an abstract.
+///
+/// An abstract type whose contents are not `none` has a `chunk` callback, and
+/// one whose contents are `none` has none. `module.define` refuses either
+/// mismatch. For `elements`, a run from `chunk` is a run of elements and a
+/// position is an index. For `pairs`, a run alternates keys and values, a nil
+/// key is an empty slot a reader skips, and pair i is at position 2i, so every
+/// run starts at an even position and has an even length. A type's `length`
+/// counts pairs, so its positions are below twice its length.
+pub const Contents = enum(c_uint) {
+    none = 0,
+    elements = 1,
+    pairs = 2,
+};
+
 /// A sparse sequence of key-value pairs.
 ///
 /// `module.getDictionary` and `module.dictionaryView` return a `module.Pairs`
@@ -255,7 +277,7 @@ pub const CFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) 
 /// `kvs` is the whole hash array and is `cap` long. `len` is how many of its
 /// slots are occupied, so a walk reads every slot and skips the empty ones.
 pub const DictView = extern struct {
-    kvs: ?[*]const KV = null,
+    kvs: ?[*]const Keyval = null,
     len: usize = 0,
     cap: usize = 0,
 };
@@ -352,10 +374,14 @@ pub const Indexed = extern struct {
 
 /// A key-value pair from a struct or table.
 ///
-/// `DictView.kvs` points at an array of `KV`, `module.Pairs.next` returns a
-/// `KV`, and `module.structOf` and `module.tableOf` take a slice of `KV`.
-/// `module.Pair` is this type. A pair whose `key` is nil is an empty slot.
-pub const KV = extern struct {
+/// `DictView.kvs` points at an array of `Keyval`, `module.Pairs.next` returns
+/// a `Keyval`, and `module.structOf` and `module.tableOf` take a slice of
+/// `Keyval`. `module.Keyval` is this type. A pair whose `key` is nil is an
+/// empty slot.
+///
+/// A `Keyval` is two values with no padding, so a run of them can be read as
+/// a run of values, key then value.
+pub const Keyval = extern struct {
     key: repr.Value = std.mem.zeroes(repr.Value),
     value: repr.Value = std.mem.zeroes(repr.Value),
 };
@@ -534,6 +560,15 @@ comptime {
     std.debug.assert(@as(u32, @bitCast(GCFlags{ .reachable = true })) == 0x100);
     std.debug.assert(@as(u32, @bitCast(GCFlags{ .disabled = true })) == 0x200);
     std.debug.assert(@as(u32, @bitCast(GCFlags{ .own = 0x3F })) == 0x3F0000);
+}
+
+comptime {
+    // A reader of `pairs` contents reads a table's slots as a run of values,
+    // so a `Keyval` has to be its key and then its value, with nothing between
+    // or after them.
+    std.debug.assert(@sizeOf(Keyval) == 2 * @sizeOf(repr.Value));
+    std.debug.assert(@offsetOf(Keyval, "key") == 0);
+    std.debug.assert(@offsetOf(Keyval, "value") == @sizeOf(repr.Value));
 }
 
 comptime {

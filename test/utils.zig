@@ -323,7 +323,7 @@ fn theKeywordProbeComparesLengthBeforeBytes() void {
 
 fn dictionaryNextSkipsTombstones() void {
     const t = tables.new(8);
-    var kv: ?*const tables.KV = null;
+    var kv: ?*const tables.Keyval = null;
 
     // An empty dictionary ends immediately.
     expect(value.dictionaryNext(t.slots(), null) == null);

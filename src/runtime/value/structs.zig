@@ -77,7 +77,7 @@ pub const struct_payload = @offsetOf(StructHead, "_data");
 // ==========================================================================
 
 /// The bucket array Janet passes a struct around as.
-pub const Struct = [*]const tables.KV;
+pub const Struct = [*]const tables.Keyval;
 
 // ==========================================================================
 // Types
@@ -102,8 +102,8 @@ pub const StructHead = extern struct {
     length: u32 = 0,
     hash: i32 = 0,
     capacity: u32 = 0,
-    proto: ?[*]const tables.KV = null,
-    _data: [0]tables.KV = std.mem.zeroes([0]tables.KV),
+    proto: ?[*]const tables.Keyval = null,
+    _data: [0]tables.Keyval = std.mem.zeroes([0]tables.Keyval),
 };
 
 // ==========================================================================
@@ -130,13 +130,13 @@ pub const StructHead = extern struct {
 /// `put` enforces the declared length: `put` returns early once the count
 /// reaches `count`, so a struct given more pairs than it was begun with
 /// silently drops the surplus.
-pub fn begin(count: usize) [*]tables.KV {
+pub fn begin(count: usize) [*]tables.Keyval {
     const capacity = value.capacityFor(2 *% count);
 
     const hd = gc_alloc.gcallocWithPayload(
         StructHead,
         .@"struct",
-        capacity *% @sizeOf(tables.KV),
+        capacity *% @sizeOf(tables.Keyval),
     );
     hd.length = @intCast(count);
     hd.capacity = @intCast(capacity);
@@ -153,7 +153,7 @@ pub fn begin(count: usize) [*]tables.KV {
 /// `hd` is the head. It is `*const` and the result is mutable: the allocator's
 /// caller writes through the result, and a comparison or a hash is given a
 /// const head.
-pub inline fn data(hd: *const StructHead) [*]tables.KV {
+pub inline fn data(hd: *const StructHead) [*]tables.Keyval {
     return @ptrFromInt(@intFromPtr(hd) +% struct_payload);
 }
 
@@ -168,7 +168,7 @@ pub inline fn data(hd: *const StructHead) [*]tables.KV {
 ///
 /// The prototype contributes to the hash by a multiply rather than by being
 /// walked, so a struct's hash is O(capacity) and not O(prototype depth).
-pub fn end(st_in: [*]tables.KV) [*]const tables.KV {
+pub fn end(st_in: [*]tables.Keyval) [*]const tables.Keyval {
     var st = st_in;
     if (head(st).hash != head(st).length) {
         const newst = begin(@intCast(head(st).hash));
@@ -194,7 +194,7 @@ pub fn end(st_in: [*]tables.KV) [*]const tables.KV {
 /// ends the search and there is no reusable-bucket bookkeeping. Null comes
 /// back only where the array is entirely full, which `begin`'s capacity policy
 /// prevents for any struct built through the public constructors.
-pub fn find(st: [*]const tables.KV, key: repr.Value) ?*const tables.KV {
+pub fn find(st: [*]const tables.Keyval, key: repr.Value) ?*const tables.Keyval {
     const cap = head(st).capacity;
     const index = mapHash(cap, order.hash(key));
     for (st[index..cap]) |*kv| {
@@ -207,7 +207,7 @@ pub fn find(st: [*]const tables.KV, key: repr.Value) ?*const tables.KV {
 }
 
 /// Looks `key` up in `st_in`, following prototypes to `config.max_proto_depth`.
-pub fn get(st_in: [*]const tables.KV, key: repr.Value) repr.Value {
+pub fn get(st_in: [*]const tables.Keyval, key: repr.Value) repr.Value {
     var st: ?Struct = st_in;
     var i: c_int = config.max_proto_depth;
     while (i != 0) : (i -= 1) {
@@ -221,7 +221,7 @@ pub fn get(st_in: [*]const tables.KV, key: repr.Value) repr.Value {
 
 /// The same as `get`, also reporting which struct in the prototype chain the
 /// value came from.
-pub fn getEx(st_in: [*]const tables.KV, key: repr.Value) Found {
+pub fn getEx(st_in: [*]const tables.Keyval, key: repr.Value) Found {
     var st: ?Struct = st_in;
     var i: c_int = config.max_proto_depth;
     while (i != 0) : (i -= 1) {
@@ -236,7 +236,7 @@ pub fn getEx(st_in: [*]const tables.KV, key: repr.Value) Found {
 }
 
 /// Recovers a struct's head from its bucket array.
-pub inline fn head(st: [*]const tables.KV) *StructHead {
+pub inline fn head(st: [*]const tables.Keyval) *StructHead {
     return @ptrFromInt(@intFromPtr(st) -% struct_payload);
 }
 
@@ -267,7 +267,7 @@ pub fn lib(env: *tables.Table) void {
 /// the true count, so a caller may pass duplicates and get what a struct
 /// literal gives. A nil value or an unstorable key drops its pair,
 /// exactly as a literal does.
-pub fn newFrom(kvs: []const tables.KV) [*]const tables.KV {
+pub fn newFrom(kvs: []const tables.Keyval) [*]const tables.Keyval {
     const st = begin(kvs.len);
     for (kvs) |kv| put(st, kv.key, kv.value);
     return end(st);
@@ -276,7 +276,7 @@ pub fn newFrom(kvs: []const tables.KV) [*]const tables.KV {
 /// Inserts into a struct under construction, replacing the value of a
 /// duplicate key. `putExt` is the version that takes that choice as an
 /// argument.
-pub fn put(st: [*]tables.KV, key: repr.Value, val: repr.Value) void {
+pub fn put(st: [*]tables.Keyval, key: repr.Value, val: repr.Value) void {
     putExt(st, key, val, true);
 }
 
@@ -297,7 +297,7 @@ pub fn put(st: [*]tables.KV, key: repr.Value, val: repr.Value) void {
 /// Comparing two keys dispatches to an abstract type's `compare` for an
 /// abstract key. `abi.zig` declares that callback `callconv(.c)`, so it has no
 /// way to raise, and nothing here is stranded across it.
-pub fn putExt(st: [*]tables.KV, key_in: repr.Value, value_in: repr.Value, replace: bool) void {
+pub fn putExt(st: [*]tables.Keyval, key_in: repr.Value, value_in: repr.Value, replace: bool) void {
     var key = key_in;
     var val = value_in;
     const hd = head(st);
@@ -360,14 +360,14 @@ pub fn putExt(st: [*]tables.KV, key_in: repr.Value, value_in: repr.Value, replac
 }
 
 /// Looks `key` up in `st` alone, without following prototypes.
-pub fn rawget(st: [*]const tables.KV, key: repr.Value) repr.Value {
+pub fn rawget(st: [*]const tables.Keyval, key: repr.Value) repr.Value {
     const kv = find(st, key) orelse return wrap.fromNil();
     return kv.value;
 }
 
 /// Copies `st`'s own pairs into a fresh table. The prototype is not copied;
 /// `struct/to-table` rebuilds the chain itself where asked to.
-pub fn toTable(st: [*]const tables.KV) *tables.Table {
+pub fn toTable(st: [*]const tables.Keyval) *tables.Table {
     const cap = head(st).capacity;
     const table = tables.new(@intCast(cap));
     for (st[0..cap]) |*kv| {
@@ -509,8 +509,8 @@ comptime {
         length: i32 = 0,
         hash: i32 = 0,
         capacity: i32 = 0,
-        proto: ?[*]const tables.KV = null,
-        _data: [0]tables.KV = std.mem.zeroes([0]tables.KV),
+        proto: ?[*]const tables.Keyval = null,
+        _data: [0]tables.Keyval = std.mem.zeroes([0]tables.Keyval),
     };
     std.debug.assert(@offsetOf(StructHead, "_data") == @offsetOf(SignedHead, "_data"));
     std.debug.assert(@offsetOf(StructHead, "proto") == @offsetOf(SignedHead, "proto"));

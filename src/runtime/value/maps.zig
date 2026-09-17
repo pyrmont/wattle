@@ -86,6 +86,14 @@
 //! set's lookup gives the element itself, so `each`, `keys` and `values` all
 //! give a set's elements.
 //!
+//! ## Runs
+//!
+//! A map's contents are `pairs`, and `mapChunk` hands out a leaf's entries as
+//! they are stored, a key then its value, with no copy. A leaf's first pair is
+//! at the number of entries before it, found from the inner nodes' counts, so
+//! its run starts at twice that. A set has no `chunk`: its entry is one value,
+//! not a pair.
+//!
 //! ## The cursor
 //!
 //! A payload records the leaf and index of the entry `next` last gave. `next`
@@ -175,6 +183,8 @@ pub const map_type = abstract_type.define(Tree, .{
     .tostring = describeTree,
     .marshal = treeMarshal,
     .unmarshal = mapUnmarshal,
+    .chunk = mapChunk,
+    .contents = .pairs,
 });
 
 /// The length below which a node a removal changed merges with a neighbour.
@@ -1058,6 +1068,27 @@ fn lowerBound(hs: []const u32, hash: u32) u32 {
         if (hs[mid] < hash) lo = mid + 1 else hi = mid;
     }
     return lo;
+}
+
+/// `core/map`'s `chunk` callback: the entries of the leaf that holds the pair
+/// at `position`, which counts values, so pair i is at 2i.
+///
+/// `t` is not empty, because `position` is below twice its count. This
+/// function cannot raise.
+fn mapChunk(t: *Tree, position: usize) abstract_type.Chunk {
+    var node = t.root.?;
+    var at = position / 2;
+    var first: usize = 0;
+    while (isInner(node)) {
+        const sizes = counts(node);
+        var i: usize = 0;
+        while (at >= sizes[i]) : (i += 1) {
+            at -= sizes[i];
+            first += sizes[i];
+        }
+        node = childAt(node, i);
+    }
+    return .{ .items = leafEntries(node, 2), .start = first * 2 };
 }
 
 /// `core/map`'s `get` callback: the value at `key`, or nil.

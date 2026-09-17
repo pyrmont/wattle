@@ -47,6 +47,7 @@ const std = @import("std");
 const abi = @import("abi");
 const abstract_type = subsystems.abstract_type;
 const abstracts = @import("subsystems").value.abstracts;
+const access = @import("subsystems").value.access;
 const args = subsystems.args;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
@@ -61,6 +62,7 @@ const method_type = @import("subsystems").method_type;
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
+const structs = @import("subsystems").value.structs;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
@@ -701,18 +703,50 @@ fn cbytesTerminatesAnAbstractsView() raise.Error!void {
 }
 
 /// Ten numbers handed out in runs of three, so that a reader crosses three run
-/// boundaries and ends on a short run. `lie` makes `chunk` answer wrongly in
-/// one of two ways.
+/// boundaries and ends on a short run. `lie` makes `chunk` answer wrongly:
+/// `runs_at` lies with `wrong_index` and `past_end`, and `pair_runs_at` with
+/// `wrong_index` and `odd`.
 const Runs = struct {
     items: [10]repr.Value,
-    lie: enum { none, wrong_index, past_end } = .none,
+    lie: enum { none, wrong_index, past_end, odd } = .none,
 };
 
 const runs_at = abstract_type.define(Runs, .{
     .name = "args-core/runs",
     .length = runsLength,
     .chunk = runsChunk,
+    .contents = .elements,
 });
+
+/// `Runs` declared as pairs: five keys, each followed by its value, in runs of
+/// two pairs. `lie` makes `chunk` answer wrongly in one of two ways.
+const pair_runs_at = abstract_type.define(Runs, .{
+    .name = "args-core/pair-runs",
+    .length = pairRunsLength,
+    .chunk = pairRunsChunk,
+    .contents = .pairs,
+});
+
+/// The runs are `items[0..4]`, `[4..8]` and `[8..10]`. A `wrong_index` run
+/// starts two positions before the one asked for, and holds it. An `odd` run
+/// starts where asked and is three values long.
+fn pairRunsChunk(self: *Runs, position: usize) abstract_type.Chunk {
+    const start = position - position % 4;
+    const end = @min(start + 4, self.items.len);
+    return switch (self.lie) {
+        .wrong_index => if (start == 4)
+            .{ .items = self.items[2..8], .start = 2 }
+        else
+            .{ .items = self.items[start..end], .start = start },
+        .odd => .{ .items = self.items[start .. start + 3], .start = start },
+        else => .{ .items = self.items[start..end], .start = start },
+    };
+}
+
+/// The pairs, which are half the values.
+fn pairRunsLength(self: *Runs, _: usize) raise.Error!usize {
+    return self.items.len / 2;
+}
 
 /// The runs are `items[0..3]`, `[3..6]`, `[6..9]` and `[9..10]`. A
 /// `wrong_index` run starts after the index asked for. A `past_end` last run
@@ -721,7 +755,7 @@ fn runsChunk(self: *Runs, index: usize) abstract_type.Chunk {
     const start = index - index % 3;
     const end = @min(start + 3, self.items.len);
     return switch (self.lie) {
-        .none => .{ .items = self.items[start..end], .start = start },
+        .none, .odd => .{ .items = self.items[start..end], .start = start },
         .wrong_index => .{ .items = self.items[start..end], .start = index + 1 },
         .past_end => if (start == 9)
             .{ .items = self.items[7..10], .start = 9 }
@@ -876,8 +910,8 @@ fn indexedChunkGivesTheWholeRun() raise.Error!void {
     refuses(args.indexedChunk, .{ abstract, 4, 10 }, "chunk of args-core/runs does not hold index 4");
 }
 
-/// `checkindexed` answers for an array, a tuple and an abstract with a `chunk`
-/// callback, and for nothing else. `panicIndexed` names array and tuple as
+/// `checkindexed` answers for an array, a tuple and an abstract whose contents
+/// are elements, and for nothing else. `panicIndexed` names array and tuple as
 /// `indexed value`, after any other types the site accepts.
 fn anIndexedValueIsCheckedAndRefusedByTheProtocol() void {
     const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
@@ -899,6 +933,107 @@ fn anIndexedValueIsCheckedAndRefusedByTheProtocol() void {
         .{ wrap.fromNil(), 1, repr.TagSet.one(.number) },
         "bad slot #1, expected number or indexed value, got nil",
     );
+}
+
+/// `contentsOf` answers from the tag for a built-in type and from the type for
+/// an abstract. An abstract whose contents are pairs has runs and is still not
+/// indexed: `checkindexed` refuses it, `chunks` gives nothing, and `get` and
+/// `next` derive no answer from its runs.
+fn contentsOfAnswersForEveryValue() raise.Error!void {
+    expect(args.contentsOf(wrap.fromArray(arrays.new(0))) == .elements);
+    expect(args.contentsOf(wrap.fromTuple(tuples.newFrom(&.{}))) == .elements);
+    expect(args.contentsOf(wrap.fromTable(tables.new(0))) == .pairs);
+    expect(args.contentsOf(wrap.fromNil()) == .none);
+    expect(args.contentsOf(value.fromBytes("ab", .string)) == .none);
+    expect(args.contentsOf(wrap.fromAbstract(abstracts.newBytes(&probe_at, 4))) == .none);
+    expect(args.contentsOf(wrap.fromAbstract(abstracts.newBytes(&runs_at, @sizeOf(Runs)))) == .elements);
+
+    const raw = abstracts.newBytes(&pair_runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .items = undefined };
+    for (&runs.items, 0..) |*item, i| item.* = harness.wrapInteger(@intCast(i));
+    const pairs = wrap.fromAbstract(raw);
+    expect(args.contentsOf(pairs) == .pairs);
+    expect(!args.checkindexed(pairs));
+    expect(try args.chunks(pairs) == null);
+    expect(repr.checkType(try access.get(pairs, harness.wrapInteger(0)), repr.Tag.nil));
+    expect(repr.checkType(try access.next(pairs, wrap.fromNil()), repr.Tag.nil));
+    refusesWithPrefix(args.indexedChunk, .{ pairs, 0, 10 }, "expected indexed abstract, got <args-core/pair-runs");
+}
+
+/// `keyvals` reads a table and a struct as one run of their slots, empty slots
+/// included, and `next` skips the empty ones. It reads an abstract whose
+/// contents are pairs in the runs its `chunk` gives, to twice its length, and
+/// refuses a run that does not start where the last ended or is not whole
+/// pairs. Nothing else has pairs.
+fn keyvalsReadsEveryDictionary() raise.Error!void {
+    const table = tables.new(8);
+    gc_alloc.gcroot(wrap.fromTable(table));
+    defer _ = gc_alloc.gcunroot(wrap.fromTable(table));
+    for (0..3) |i| tables.put(table, harness.wrapInteger(@intCast(i)), harness.wrapInteger(@intCast(i * 10)));
+    var from_table = (try args.keyvals(wrap.fromTable(table))).?;
+    var seen: usize = 0;
+    while (try from_table.next()) |kv| {
+        expect(wrap.toInteger(kv.value) == wrap.toInteger(kv.key) * 10);
+        seen += 1;
+    }
+    expect(seen == 3);
+    var table_runs = (try args.keyvals(wrap.fromTable(table))).?;
+    expect((try table_runs.nextRun()).?.len == 2 * table.capacity);
+    expect(try table_runs.nextRun() == null);
+
+    const constructed = structs.begin(2);
+    structs.put(constructed, value.fromBytes("a", .keyword), harness.wrapInteger(1));
+    structs.put(constructed, value.fromBytes("b", .keyword), harness.wrapInteger(2));
+    const structure = structs.end(constructed);
+    var from_struct = (try args.keyvals(wrap.fromStruct(structure))).?;
+    var sum: i32 = 0;
+    seen = 0;
+    while (try from_struct.next()) |kv| {
+        expect(harness.isType(kv.key, repr.Tag.keyword));
+        sum += wrap.toInteger(kv.value);
+        seen += 1;
+    }
+    expect(seen == 2 and sum == 3);
+
+    var empty = (try args.keyvals(wrap.fromTable(tables.new(0)))).?;
+    expect(try empty.next() == null);
+
+    expect(try args.keyvals(wrap.fromNil()) == null);
+    expect(try args.keyvals(wrap.fromTuple(tuples.newFrom(&.{}))) == null);
+    expect(try args.keyvals(wrap.fromAbstract(abstracts.newBytes(&runs_at, @sizeOf(Runs)))) == null);
+
+    const raw = abstracts.newBytes(&pair_runs_at, @sizeOf(Runs));
+    const runs: *Runs = @ptrCast(@alignCast(raw));
+    runs.* = .{ .items = undefined };
+    for (&runs.items, 0..) |*item, i| item.* = harness.wrapInteger(@intCast(i));
+    const pairs = wrap.fromAbstract(raw);
+
+    var by_run = (try args.keyvals(pairs)).?;
+    var lengths: [3]usize = undefined;
+    for (&lengths) |*length| length.* = (try by_run.nextRun()).?.len;
+    expect(lengths[0] == 4 and lengths[1] == 4 and lengths[2] == 2);
+    expect(try by_run.nextRun() == null);
+
+    var by_pair = (try args.keyvals(pairs)).?;
+    seen = 0;
+    while (try by_pair.next()) |kv| {
+        expect(wrap.toInteger(kv.key) == 2 * @as(i32, @intCast(seen)));
+        expect(wrap.toInteger(kv.value) == wrap.toInteger(kv.key) + 1);
+        seen += 1;
+    }
+    expect(seen == 5);
+
+    runs.lie = .wrong_index;
+    refuses(drainKeyvals, .{pairs}, "chunk of args-core/pair-runs does not give whole pairs from position 4");
+    runs.lie = .odd;
+    refuses(drainKeyvals, .{pairs}, "chunk of args-core/pair-runs does not give whole pairs from position 0");
+}
+
+/// Reads every pair of `x`, for a case that expects the reading to raise.
+fn drainKeyvals(x: repr.Value) raise.Error!void {
+    var it = (try args.keyvals(x)).?;
+    while (try it.next()) |_| {}
 }
 
 /// A getter reads a slot the call never passed as nil rather than reading past
@@ -1124,6 +1259,8 @@ fn body() raise.Error!void {
     try aWindowNarrowsBothEnds();
     try indexedChunkGivesTheWholeRun();
     anIndexedValueIsCheckedAndRefusedByTheProtocol();
+    try contentsOfAnswersForEveryValue();
+    try keyvalsReadsEveryDictionary();
     try aSlotTheCallNeverPassedReadsAsNil();
     try pastTheEndAndAnExplicitNilBothMeanTheDefault();
     theThreeStrlikeComparisonsCheckTheTypeToo();

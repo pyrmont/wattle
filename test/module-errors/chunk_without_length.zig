@@ -17,6 +17,7 @@ fn chunk(self: *Payload, _: usize) wattle.Chunk {
 pub const at = wattle.define(Payload, .{
     .name = "module-errors/chunk-without-length",
     .chunk = chunk,
+    .contents = .elements,
 });
 
 comptime {

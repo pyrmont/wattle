@@ -212,7 +212,7 @@ pub fn stringHead(s: [*]const u8) *strings.StringHead {
     return strings.head(s);
 }
 
-pub fn structHead(st: [*]const tables.KV) *structs.StructHead {
+pub fn structHead(st: [*]const tables.Keyval) *structs.StructHead {
     return structs.head(st);
 }
 
@@ -406,7 +406,7 @@ pub inline fn resizeMany(comptime T: type, old: ?[*]T, n: usize) [*]T {
 /// Both the algorithm and the comparison order are kept as upstream has them,
 /// because `order.compare` decides key order for every printed table.
 pub fn sortedKeys(
-    dict: [*]const tables.KV,
+    dict: [*]const tables.Keyval,
     cap: i32,
     index_buffer: ?[*]i32,
 ) i32 {

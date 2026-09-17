@@ -549,7 +549,7 @@ pub fn janet_new_string(bytes: [*]const u8, len: usize) callconv(.c) repr.Value 
     return impl.value.fromBytes(bytes[0..len], .string);
 }
 
-pub fn janet_new_struct(kvs: [*]const abi.KV, len: usize) callconv(.c) repr.Value {
+pub fn janet_new_struct(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
     requireJanetThread();
     return impl.value_helpers_wrap.abi.fromStruct(impl.value_structs.newFrom(kvs[0..len]));
 }
@@ -559,7 +559,7 @@ pub fn janet_new_symbol(bytes: [*]const u8, len: usize) callconv(.c) repr.Value 
     return impl.value.fromBytes(bytes[0..len], .symbol);
 }
 
-pub fn janet_new_table(kvs: [*]const abi.KV, len: usize) callconv(.c) repr.Value {
+pub fn janet_new_table(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
     requireJanetThread();
     return impl.value_helpers_wrap.abi.fromTable(impl.value_tables.newFrom(kvs[0..len]));
 }

@@ -125,7 +125,7 @@ const covered = [_]struct { name: []const u8, type: type }{
     .{ .name = "Chunk", .type = abi.Chunk },
     .{ .name = "DictView", .type = abi.DictView },
     .{ .name = "Indexed", .type = abi.Indexed },
-    .{ .name = "KV", .type = abi.KV },
+    .{ .name = "Keyval", .type = abi.Keyval },
     .{ .name = "Range", .type = abi.Range },
     .{ .name = "Reg", .type = abi.Reg },
     .{ .name = "AtomicInt", .type = abi.AtomicInt },

@@ -86,7 +86,7 @@ const own_scratch: u6 = 1;
 /// array, so both compilations have to spell the same two fields; the
 /// operations over a table are all here, which is the split `AbstractHead`,
 /// `Method` and `ByteView` already have.
-pub const KV = abi.KV;
+pub const Keyval = abi.Keyval;
 
 // ==========================================================================
 // Types
@@ -114,7 +114,7 @@ pub const Table = struct {
     count: usize = 0,
     capacity: usize = 0,
     deleted: usize = 0,
-    data: ?[*]KV = null,
+    data: ?[*]Keyval = null,
     proto: ?*Table = null,
     /// The open-addressed slot array, `capacity` long, rather than the
     /// entries: `count` is how many slots are occupied and `deleted` how many
@@ -126,7 +126,7 @@ pub const Table = struct {
     /// Empty rather than a trap for a table that has never been grown: a
     /// zeroed `Table` has a null `data` and a zero `capacity`, and
     /// `data.?[0..0]` traps on exactly that.
-    pub inline fn slots(self: anytype) utils.View(@TypeOf(self), KV) {
+    pub inline fn slots(self: anytype) utils.View(@TypeOf(self), Keyval) {
         if (self.capacity == 0) return &.{};
         return self.data.?[0..self.capacity];
     }
@@ -161,7 +161,7 @@ pub fn clone(table: *Table) *Table {
     new_table.capacity = table.capacity;
     new_table.deleted = table.deleted;
     new_table.proto = table.proto;
-    new_table.data = utils.allocMany(KV, new_table.capacity);
+    new_table.data = utils.allocMany(Keyval, new_table.capacity);
     @memcpy(new_table.slots(), table.slots());
     return new_table;
 }
@@ -181,7 +181,7 @@ pub fn deinit(table: *Table) void {
 }
 
 /// Returns the bucket with `key` in it, or the bucket it should go in.
-pub fn find(t: *Table, key: repr.Value) ?*KV {
+pub fn find(t: *Table, key: repr.Value) ?*Keyval {
     return @constCast(value.dictionaryFind(t.slots(), key));
 }
 
@@ -281,7 +281,7 @@ pub fn lib(env: *Table) void {
 }
 
 /// Merges a struct's own pairs into `table`. Its prototype is not consulted.
-pub fn mergeStruct(table: *Table, other: [*]const KV) void {
+pub fn mergeStruct(table: *Table, other: [*]const Keyval) void {
     mergeKV(table, other[0..structs.head(other).capacity]);
 }
 
@@ -308,7 +308,7 @@ pub fn new(capacity: usize) *Table {
 /// gives four buckets and the second pair reallocates. Sizing up front makes
 /// the first allocation the only allocation, which is what a constructor
 /// filling a table it just made should cost.
-pub fn newFrom(kvs: []const KV) *Table {
+pub fn newFrom(kvs: []const Keyval) *Table {
     const t = new(2 *| kvs.len);
     for (kvs) |kv| put(t, kv.key, kv.value);
     return t;
@@ -404,7 +404,7 @@ pub fn remove(t: *Table, key: repr.Value) repr.Value {
 /// The struct is begun at `count` rather than at `capacity`, so tombstones
 /// cost nothing here. The prototype is not copied; `table/to-struct` takes the
 /// struct's prototype as a separate argument.
-pub fn toStruct(t: *Table) [*]const KV {
+pub fn toStruct(t: *Table) [*]const Keyval {
     const st = structs.begin(@intCast(t.count));
     for (t.slots()) |kv| {
         if (!isNilKey(kv.key)) structs.put(st, kv.key, kv.value);
@@ -569,8 +569,8 @@ inline fn isUnstorableKey(key: repr.Value) bool {
 /// check for failure: `gc.smalloc` exits the process rather than returning
 /// null. Scratch memory is released wholesale by `gc.freeAllScratch`, which is
 /// also what recovers it if a signal unwinds past a scratch table.
-fn memallocEmptyLocal(count: usize) [*]KV {
-    const mem: [*]KV = @ptrCast(@alignCast(gc_alloc.smalloc(count *% @sizeOf(KV))));
+fn memallocEmptyLocal(count: usize) [*]Keyval {
+    const mem: [*]Keyval = @ptrCast(@alignCast(gc_alloc.smalloc(count *% @sizeOf(Keyval))));
     for (mem[0..count]) |*kv| {
         kv.key = wrap.fromNil();
         kv.value = wrap.fromNil();
@@ -579,7 +579,7 @@ fn memallocEmptyLocal(count: usize) [*]KV {
 }
 
 /// Copies every live pair in `kvs` into `table`.
-fn mergeKV(table: *Table, kvs: []const KV) void {
+fn mergeKV(table: *Table, kvs: []const Keyval) void {
     for (kvs) |kv| {
         if (!isNilKey(kv.key)) put(table, kv.key, kv.value);
     }
@@ -619,7 +619,7 @@ fn putNoOverwrite(t: *Table, key: repr.Value, val: repr.Value) void {
 fn rehash(t: *Table, size: usize) void {
     const olddata = t.data;
     const islocal = isScratch(t);
-    const newdata: [*]KV = if (islocal)
+    const newdata: [*]Keyval = if (islocal)
         memallocEmptyLocal(size)
     else
         value.memallocEmpty(size);

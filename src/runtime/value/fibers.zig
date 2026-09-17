@@ -90,7 +90,7 @@ const has_ev = constants.JANET_VM_HAS_EV != 0;
 /// It is declared in `abi.zig` because a module author reads one:
 /// `module.pcall` gives back a fiber and `module.fiberStatus` reads this over
 /// it, so both compilations have to agree on the numbering. Every operation
-/// over a fiber is here, which is the split `KV`, `Method` and `ByteView`
+/// over a fiber is here, which is the split `Keyval`, `Method` and `ByteView`
 /// already have. It is a vocabulary rather than a layout.
 pub const FiberStatus = abi.FiberStatus;
 

@@ -257,7 +257,7 @@ fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
     const text = try wattle.getBytes(argv, 0);
     if (text.len == 0) return wattle.structOf(&.{});
 
-    var pairs: [32]wattle.Pair = undefined;
+    var pairs: [32]wattle.Keyval = undefined;
     var n: usize = 0;
     var fields = std.mem.splitScalar(u8, text, '&');
     while (fields.next()) |field| {

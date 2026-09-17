@@ -880,6 +880,18 @@ pub fn build(b: *std.Build) void {
                 "`chunk` is called with.",
         },
         .{
+            .file = "test/module-errors/chunk_without_contents.zig",
+            .phrase = "abstract type 'module-errors/chunk-without-contents', callback 'chunk': " ++
+                "a type with `chunk` must say what its runs hold. Set `contents` to " ++
+                "`.elements` or `.pairs`.",
+        },
+        .{
+            .file = "test/module-errors/contents_without_chunk.zig",
+            .phrase = "abstract type 'module-errors/contents-without-chunk', field 'contents': " ++
+                "a type whose contents are not `.none` must have `chunk`, which is how its " ++
+                "contents are read.",
+        },
+        .{
             .file = "test/module-errors/wrong_cfunction.zig",
             .phrase = "cfunction 'identity': it takes its arguments as one `[]Value` slice, " ++
                 "not a count and a pointer. It must be `fn (argv: []Value) Error!Value`",

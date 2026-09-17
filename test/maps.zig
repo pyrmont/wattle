@@ -30,6 +30,7 @@ const std = @import("std");
 const abi = @import("abi");
 const abstract_type = @import("subsystems").abstract_type;
 const abstracts = @import("subsystems").value.abstracts;
+const args = @import("subsystems").args;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
 const expect = @import("expect.zig").expect;
@@ -227,8 +228,8 @@ fn checkNode(kind: maps.Kind, node: *maps.Node, is_root: bool) Checked {
 }
 
 /// Asserts that `t` has exactly the entries of `entries`: by count, by lookup,
-/// by iteration through its type's `next` callback, and by the shape of its
-/// tree.
+/// by iteration through its type's `next` callback, by the shape of its tree,
+/// and, for a map, by reading its runs, one per leaf.
 fn expectEntries(kind: maps.Kind, t: *maps.Tree, entries: []const Entry) !void {
     expect(t.count == entries.len);
     if (t.root) |root| {
@@ -252,6 +253,32 @@ fn expectEntries(kind: maps.Kind, t: *maps.Tree, entries: []const Entry) !void {
         expect(oracleFind(entries, key) != null);
         seen += 1;
         expect(seen <= entries.len);
+    }
+    expect(seen == entries.len);
+
+    // `t` may be a transient's payload rather than a map's, so the reader is
+    // built over the tree itself rather than through `args.keyvals`.
+    if (kind == .set) return;
+    const over: args.Keyvals = .{
+        .source = .{ .abstract = .{ .payload = t, .at = &maps.map_type } },
+        .len = 2 * t.count,
+    };
+    var runs = over;
+    var values: usize = 0;
+    while (try runs.nextRun()) |leaf| {
+        expect(leaf.len != 0);
+        values += leaf.len;
+    }
+    expect(values == 2 * entries.len);
+    var pairs = over;
+    seen = 0;
+    while (try pairs.next()) |kv| {
+        const at = oracleFind(entries, kv.key) orelse {
+            expect(false);
+            continue;
+        };
+        expect(order.equals(entries[at].value, kv.value));
+        seen += 1;
     }
     expect(seen == entries.len);
 }
@@ -451,6 +478,12 @@ fn randomUpdatesAgainstLists(kind: maps.Kind, seed: u64) !void {
         gc_alloc.gcroot(wrap.fromAbstract(t));
         try versions.append(allocator, .{ .tree = t, .entries = entries });
         try expectEntries(kind, t, entries.items);
+        // A map is read as pairs, to twice its count, and a set is not.
+        if (try args.keyvals(wrap.fromAbstract(t))) |pairs| {
+            expect(kind == .map and pairs.len == 2 * t.count);
+        } else {
+            expect(kind == .set);
+        }
 
         if (round % 97 == 0) {
             const shuffled = try allocator.dupe(Entry, entries.items);

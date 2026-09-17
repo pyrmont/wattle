@@ -63,6 +63,7 @@ const keeper_type = wattle.define(Keeper, .{
     .bytes = keeperBytes,
     .gcperthread = keeperPerThread,
     .chunk = keeperChunk,
+    .contents = .elements,
 });
 
 /// How many times the collector has reached `gcmark`.
@@ -274,7 +275,7 @@ fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
     // Pairs, not a hash array. `structOf` and `tableOf` take what the caller
     // wrote; a dictionary's own storage is `cap` slots with empties among
     // them, and `Pairs` is what reads that.
-    const pairs = [_]wattle.Pair{
+    const pairs = [_]wattle.Keyval{
         .{ .key = wattle.keyword("a"), .value = wattle.number(1) },
         .{ .key = wattle.keyword("b"), .value = wattle.number(2) },
     };
@@ -594,7 +595,7 @@ fn kept(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// nothing the collector scans while `f` runs.
 fn keptAcross(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
-    const pairs = [_]wattle.Pair{
+    const pairs = [_]wattle.Keyval{
         .{ .key = wattle.keyword("kept"), .value = wattle.string("across a collection") },
     };
     const held = wattle.tableOf(&pairs);
@@ -922,7 +923,7 @@ fn tally(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// back.
 fn unkeptAcross(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
-    const pairs = [_]wattle.Pair{
+    const pairs = [_]wattle.Keyval{
         .{ .key = wattle.keyword("kept"), .value = wattle.string("across a collection") },
     };
     const held = wattle.tableOf(&pairs);

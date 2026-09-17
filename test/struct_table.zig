@@ -1,9 +1,9 @@
 //! Behavioral contract for the key/value containers: structs and tables,
 //! including the three weak table variants.
 //!
-//! The two share the `tables.KV` bucket layout and nothing else about how they
-//! use it, so this file is organised around the two probing disciplines rather
-//! than around the two halves of the subsystem.
+//! The two share the `tables.Keyval` bucket layout and nothing else about how
+//! they use it, so this file is organised around the two probing disciplines
+//! rather than around the two halves of the subsystem.
 //!
 //! A struct's layout is observable and is part of the language contract. Robin
 //! Hood insertion exists so that the bucket array depends on the *set* of
@@ -70,23 +70,23 @@ const wrap = @import("subsystems").value.wrap;
 // Cases
 // ==========================================================================
 
-fn structLength(st: [*]const tables.KV) u32 {
+fn structLength(st: [*]const tables.Keyval) u32 {
     return structs.head(st).length;
 }
 
-fn structCapacity(st: [*]const tables.KV) u32 {
+fn structCapacity(st: [*]const tables.Keyval) u32 {
     return structs.head(st).capacity;
 }
 
-fn structHash(st: [*]const tables.KV) i32 {
+fn structHash(st: [*]const tables.Keyval) i32 {
     return structs.head(st).hash;
 }
 
-fn structProto(st: [*]const tables.KV) ?[*]const tables.KV {
+fn structProto(st: [*]const tables.Keyval) ?[*]const tables.Keyval {
     return structs.head(st).proto;
 }
 
-fn setStructProto(st: [*]tables.KV, proto: ?[*]const tables.KV) void {
+fn setStructProto(st: [*]tables.Keyval, proto: ?[*]const tables.Keyval) void {
     structs.head(st).proto = proto;
 }
 
@@ -135,7 +135,7 @@ fn findColliding(capacity: u32, out: []repr.Value) u32 {
 /// on garbage from the allocator rather than on layout, and passes or fails at
 /// random. The layout claim is about which value sits in which bucket, so it
 /// is asserted that way.
-fn sameLayout(a: [*]const tables.KV, b: [*]const tables.KV, capacity: u32) bool {
+fn sameLayout(a: [*]const tables.Keyval, b: [*]const tables.Keyval, capacity: u32) bool {
     var i: usize = 0;
     while (i < capacity) : (i += 1) {
         if (repr.typeOf(a[i].key) != repr.typeOf(b[i].key)) return false;
@@ -413,8 +413,8 @@ fn structFindReturnsAnEmptyBucketForAnAbsentKey() void {
 
 /// Build a chain `depth` deep and return the deepest struct. Entry `i` has
 /// the key `i` and its prototype is entry `i - 1`.
-fn structChain(depth: i32) [*]const tables.KV {
-    var proto: ?[*]const tables.KV = null;
+fn structChain(depth: i32) [*]const tables.Keyval {
+    var proto: ?[*]const tables.Keyval = null;
     var i: i32 = 0;
     while (i < depth) : (i += 1) {
         const st = structs.begin(1);

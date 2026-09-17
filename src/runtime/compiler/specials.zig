@@ -710,7 +710,7 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
             const view = args_core.dictionaryView(val).?;
             // An empty table has no bucket array at all; the walk over no
             // buckets is the empty walk, which is what the null test spelled.
-            const kvs: []const tables.KV = if (view.kvs) |buckets| buckets[0..@intCast(view.cap)] else &.{};
+            const kvs: []const tables.Keyval = if (view.kvs) |buckets| buckets[0..@intCast(view.cap)] else &.{};
             var pair = value.dictionaryNext(kvs, null);
             while (pair) |current| : (pair = value.dictionaryNext(kvs, current)) {
                 var key = try quasiquote(suboptions, current.key, depth - 1, level);
