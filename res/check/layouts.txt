@@ -20,35 +20,35 @@
 fixed    Aapcs64ReturnGeneral         runtime/ffi/call.zig:149           abi,host
 fixed    Aapcs64ReturnPointer         runtime/ffi/call.zig:153           abi,host,repr
 fixed    Aapcs64ReturnSse             runtime/ffi/call.zig:155           abi,host
-fixed    AbstractHead                 api/abi.zig:99                     repr
+fixed    AbstractHead                 api/abi.zig:98                     repr
 residue  AbstractNative               runtime/ffi.zig:40                 
 fixed    AssembleResult               runtime/bytecode.zig:194           abi
 fixed    Binding                      runtime/registry.zig:70            abi
-fixed    BuildConfig                  api/abi.zig:195                    abi
-fixed    ByteView                     api/abi.zig:219                    abi,field
+fixed    BuildConfig                  api/abi.zig:194                    abi
+fixed    ByteView                     api/abi.zig:218                    abi,field
 fixed    CMethod                      runtime/method_type.zig:58         abi,field,repr
-fixed    Chunk                        api/abi.zig:233                    abi,field
-fixed    DictView                     api/abi.zig:278                    abi,field
+fixed    Chunk                        api/abi.zig:232                    abi,field
+fixed    Dictionary                   api/abi.zig:283                    abi,field
 fixed    FILETIME                     host/cabi.zig:100                  host
 fixed    Fiber                        runtime/value/fibers.zig:132       abi,field
 residue  FramePc                      runtime/vm/state.zig:98            
 fixed    FuncEnvRef                   runtime/value/functions.zig:216    abi,repr
 fixed    Function                     runtime/value/functions.zig:228    field,repr
-fixed    GCData                       api/abi.zig:327                    abi,field,repr
-fixed    GCObject                     api/abi.zig:352                    abi,field,repr
+fixed    GCData                       api/abi.zig:333                    abi,field,repr
+fixed    GCObject                     api/abi.zig:358                    abi,field,repr
 fixed    GenericMessage               runtime/ev.zig:178                 abi,field,repr
 fixed    ITimerSpec                   host/cabi.zig:107                  abi,host
-fixed    Indexed                      api/abi.zig:368                    abi,field
+fixed    Indexed                      api/abi.zig:374                    abi,field
 residue  Inner                        runtime/value/vectors.zig:160      
 fixed    JittedFn                     runtime/ffi/call.zig:198           host,repr
-fixed    Keyval                       api/abi.zig:383                    abi,field,repr
+fixed    Keyval                       api/abi.zig:389                    abi,field,repr
 residue  Layout                       runtime/ffi/types.zig:154          
 residue  Leaf                         runtime/value/vectors.zig:169      
 fixed    Mapping                      runtime/ffi/types.zig:203          field
-fixed    Method                       module.zig:396                     repr
+fixed    Method                       module.zig:467                     repr
 fixed    Nanbox32Payload              api/repr.zig:155                   field,repr
 fixed    Nanbox32Tagged               api/repr.zig:161                   field
-fixed    Node                         runtime/value/maps.zig:276         repr
+fixed    Node                         runtime/value/maps.zig:286         repr
 fixed    OVERLAPPED                   host/cabi.zig:115                  field,host
 fixed    OVERLAPPED                   runtime/filewatch/abi.zig:71       field,host
 fixed    OVERLAPPED                   runtime/net.zig:214                field,host
@@ -57,9 +57,9 @@ fixed    Overlapped                   runtime/ev/stream.zig:165          field,h
 fixed    Overlapped                   runtime/filewatch/abi.zig:82       field,host,repr
 fixed    Overlapped                   runtime/net.zig:233                field,host,repr
 fixed    OverlappedWatch              runtime/filewatch.zig:717          host,repr
-fixed    Range                        api/abi.zig:418                    abi,field
-fixed    Reg                          api/abi.zig:429                    abi,field
-fixed    Runtime                      api/interface.zig:188              abi
+fixed    Range                        api/abi.zig:424                    abi,field
+fixed    Reg                          api/abi.zig:435                    abi,field
+fixed    Runtime                      api/interface.zig:190              abi
 fixed    ScratchBlock                 runtime/gc.zig:214                 repr
 fixed    SecurityAttributes           host/cabi.zig:124                  host
 fixed    SelfPipeEvent                runtime/ev.zig:316                 repr

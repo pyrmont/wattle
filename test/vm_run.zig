@@ -390,7 +390,8 @@ fn theStackLimitIsInclusive() void {
 /// `vm_assert_type` and `vm_assert_types` share one message and one formatter,
 /// and `%T` renders a bitmask of permitted types rather than a single one. A
 /// set that includes both array and tuple is rendered by `%K`, which names
-/// them `indexed value`.
+/// them `indexed value`, and so is one that includes both table and struct,
+/// which it names `dictionary value`.
 fn theTypeAssertions() void {
     // JOP_RESUME, JOP_CANCEL and JOP_PROPAGATE all assert a single type.
     expectError("(resume 5)", "expected fiber, got 5");
@@ -405,6 +406,14 @@ fn theTypeAssertions() void {
             "((asm '{:arity 1 :bytecode [(tchck 0 (:number :indexed)) (ret 0)]}) :kw)",
             "expected number or indexed value, got :kw",
         );
+        expectError("((asm '{:arity 1 :bytecode [(tchck 0 :dictionary) (ret 0)]}) :kw)", "expected dictionary value, got :kw");
+        expectError(
+            "((asm '{:arity 1 :bytecode [(tchck 0 (:indexed :dictionary)) (ret 0)]}) :kw)",
+            "expected indexed value or dictionary value, got :kw",
+        );
+        // A map passes a check for a dictionary, and a set does not.
+        expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :dictionary) (ldi 1 7) (ret 1)]}) (hash-map :a 1))", "7");
+        expectError("((asm '{:arity 1 :bytecode [(tchck 0 :dictionary) (ret 0)]}) (hash-set 1))", "expected dictionary value, got <core/set 1>");
         // A set naming one of the two is rendered as it always was.
         expectError("((asm '{:arity 1 :bytecode [(tchck 0 :array) (ret 0)]}) :kw)", "expected array, got :kw");
         // A check that passes moves on by one instruction and no further.

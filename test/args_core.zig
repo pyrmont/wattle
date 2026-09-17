@@ -123,6 +123,12 @@ fn refusesWithPrefix(function: anytype, arguments: anytype, prefix: []const u8) 
     }
 }
 
+/// `args.panicDictionary` as an error union, which is the shape `refuses`
+/// calls.
+fn panicDictionary(x: repr.Value, n: i32, also: repr.TagSet) raise.Error!void {
+    return args.panicDictionary(x, n, also);
+}
+
 /// `args.panicIndexed` as an error union, which is the shape `refuses` calls.
 fn panicIndexed(x: repr.Value, n: i32, also: repr.TagSet) raise.Error!void {
     return args.panicIndexed(x, n, also);
@@ -189,7 +195,7 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Error!void {
         .{ a, 0 },
         "bad slot #0, expected string, symbol, keyword or buffer, got nil",
     );
-    refuses(args.getDictionary, .{ a, 0 }, "bad slot #0, expected table or struct, got nil");
+    refuses(args.getKeyvals, .{ a, 0 }, "bad slot #0, expected dictionary value, got nil");
 
     // And the success paths, where the data and the length are what a caller
     // reads rather than a message.
@@ -935,6 +941,39 @@ fn anIndexedValueIsCheckedAndRefusedByTheProtocol() void {
     );
 }
 
+/// `checkdictionary` answers for a table, a struct and an abstract whose
+/// contents are pairs, and for nothing else. `panicDictionary` names table and
+/// struct as `dictionary value`, after any other types the site accepts and
+/// after `indexed value` where the site accepts that too.
+fn aDictionaryIsCheckedAndRefusedByTheProtocol() void {
+    expect(args.checkdictionary(wrap.fromAbstract(abstracts.newBytes(&pair_runs_at, @sizeOf(Runs)))));
+    expect(args.checkdictionary(wrap.fromTable(tables.new(0))));
+    const constructed = structs.begin(0);
+    expect(args.checkdictionary(wrap.fromStruct(structs.end(constructed))));
+    expect(!args.checkdictionary(wrap.fromNil()));
+    expect(!args.checkdictionary(wrap.fromTuple(tuples.newFrom(&.{}))));
+    expect(!args.checkdictionary(wrap.fromAbstract(abstracts.newBytes(&runs_at, @sizeOf(Runs)))));
+    expect(!args.checkdictionary(wrap.fromAbstract(abstracts.newBytes(&probe_at, 4))));
+
+    refuses(panicDictionary, .{ wrap.fromNil(), 0, repr.TagSet.none }, "bad slot #0, expected dictionary value, got nil");
+    refuses(
+        panicDictionary,
+        .{ wrap.fromNil(), 1, repr.TagSet.one(.number) },
+        "bad slot #1, expected number or dictionary value, got nil",
+    );
+    refuses(
+        panicDictionary,
+        .{ wrap.fromNil(), 2, repr.TagSet.indexed.with(repr.TagSet.one(.string)) },
+        "bad slot #2, expected string, indexed value or dictionary value, got nil",
+    );
+    // A set naming one of the pair is rendered by name.
+    refuses(
+        panicIndexed,
+        .{ wrap.fromNil(), 3, repr.TagSet.one(.table) },
+        "bad slot #3, expected table or indexed value, got nil",
+    );
+}
+
 /// `contentsOf` answers from the tag for a built-in type and from the type for
 /// an abstract. An abstract whose contents are pairs has runs and is still not
 /// indexed: `checkindexed` refuses it, `chunks` gives nothing, and `get` and
@@ -1024,8 +1063,19 @@ fn keyvalsReadsEveryDictionary() raise.Error!void {
     }
     expect(seen == 5);
 
+    const middle = try args.dictionaryChunk(pairs, 4, 10);
+    expect(middle.start == 4 and middle.len == 4);
+    refuses(args.dictionaryChunk, .{ pairs, 10, 10 }, "position 10 is past the end of args-core/pair-runs of 10 values");
+    refuses(args.dictionaryChunk, .{ wrap.fromNil(), 0, 2 }, "expected dictionary abstract, got nil");
+    refusesWithPrefix(
+        args.dictionaryChunk,
+        .{ wrap.fromAbstract(abstracts.newBytes(&runs_at, @sizeOf(Runs))), 0, 2 },
+        "expected dictionary abstract, got <args-core/runs",
+    );
+
     runs.lie = .wrong_index;
     refuses(drainKeyvals, .{pairs}, "chunk of args-core/pair-runs does not give whole pairs from position 4");
+    refuses(args.dictionaryChunk, .{ pairs, 4, 10 }, "chunk of args-core/pair-runs does not give whole pairs from position 4");
     runs.lie = .odd;
     refuses(drainKeyvals, .{pairs}, "chunk of args-core/pair-runs does not give whole pairs from position 0");
 }
@@ -1061,7 +1111,7 @@ fn aSlotTheCallNeverPassedReadsAsNil() raise.Error!void {
     refuses(args.getInteger, .{ none, 0 }, "bad slot #0, expected 32 bit signed integer, got nil");
     refuses(args.getNat, .{ none, 0 }, "bad slot #0, expected non-negative 32 bit signed integer, got nil");
     refuses(args.getTuple, .{ none, 0 }, "bad slot #0, expected tuple, got nil");
-    refuses(args.getDictionary, .{ none, 0 }, "bad slot #0, expected table or struct, got nil");
+    refuses(args.getKeyvals, .{ none, 0 }, "bad slot #0, expected dictionary value, got nil");
     refuses(args.getNumber, .{ none, 0 }, "bad slot #0, expected number, got nil");
 }
 
@@ -1259,6 +1309,7 @@ fn body() raise.Error!void {
     try aWindowNarrowsBothEnds();
     try indexedChunkGivesTheWholeRun();
     anIndexedValueIsCheckedAndRefusedByTheProtocol();
+    aDictionaryIsCheckedAndRefusedByTheProtocol();
     try contentsOfAnswersForEveryValue();
     try keyvalsReadsEveryDictionary();
     try aSlotTheCallNeverPassedReadsAsNil();

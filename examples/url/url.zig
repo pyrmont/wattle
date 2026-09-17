@@ -20,8 +20,8 @@
 //!
 //! Three getters cover every Janet aggregate an argument can be:
 //! `getBytes`, `getIndexed` and `getDictionary`. Each reads a pair of types
-//! the same way: a string or a buffer, a tuple or an array, a struct or a
-//! table. `slug` calls `getBytes` and `getIndexed`, `query` calls
+//! the same way: a string or a buffer, a tuple or an array, a struct, a
+//! table or a map. `slug` calls `getBytes` and `getIndexed`, `query` calls
 //! `getDictionary`, and `cut` takes a range over a length of its own. Between them that is the whole of what
 //! this module asks the runtime for.
 //!
@@ -163,7 +163,7 @@ fn slug(argv: []wattle.Value) wattle.Error!wattle.Value {
 
 /// Returns `params` as a query string. Implements `(url/query params)`.
 ///
-/// `argv` slot 0 is a struct or a table. Every key must be a keyword and
+/// `argv` slot 0 is a dictionary. Every key must be a keyword and
 /// every value must be a number or a byte value. The result is in hash order,
 /// the order Janet's own `pairs` gives; a caller that needs a stable string
 /// sorts it.
@@ -171,7 +171,7 @@ fn slug(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// This function raises if the arity is wrong, if slot 0 is not a
 /// dictionary, if a key is not a keyword, if a value is neither a number nor
 /// text, if the result does not fit in `limit` bytes, or if the walk finds a
-/// different number of entries from `len`.
+/// different number of entries from `count`.
 fn query(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
     var params = try wattle.getDictionary(argv, 0);
@@ -179,9 +179,9 @@ fn query(argv: []wattle.Value) wattle.Error!wattle.Value {
     var out: [limit]u8 = undefined;
     var n: usize = 0;
     var written: usize = 0;
-    // `wattle.getDictionary` returns an iterator over the filled slots of the
-    // hash array; `len` is how many there are.
-    while (params.next()) |kv| {
+    // `wattle.getDictionary` returns an iterator over the pairs, which skips
+    // a table's empty slots; `count` is how many pairs there are.
+    while (try params.next()) |kv| {
         const name = wattle.toKeyword(kv.key) orelse
             return wattle.panic("every query key must be a keyword");
 
@@ -203,10 +203,10 @@ fn query(argv: []wattle.Value) wattle.Error!wattle.Value {
         written += 1;
     }
 
-    // `len` counts the filled slots, so a walk that saw a different number is
-    // a defect.
-    if (written != params.len) {
-        return wattle.panicFormat("walked {d} entries where len says {d}", .{ written, params.len });
+    // `count` counts the pairs, so a walk that saw a different number is a
+    // defect.
+    if (written != params.count) {
+        return wattle.panicFormat("walked {d} entries where count says {d}", .{ written, params.count });
     }
     out[n] = 0;
     return wattle.cstring(out[0..n :0]);

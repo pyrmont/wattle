@@ -273,8 +273,8 @@ fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
     const seed = try wattle.getBytes(argv, 0);
     const items = [_]wattle.Value{ wattle.number(1), wattle.number(2) };
     // Pairs, not a hash array. `structOf` and `tableOf` take what the caller
-    // wrote; a dictionary's own storage is `cap` slots with empties among
-    // them, and `Pairs` is what reads that.
+    // wrote; a table's own storage is slots with empties among them, and
+    // `Dictionary` is what reads that.
     const pairs = [_]wattle.Keyval{
         .{ .key = wattle.keyword("a"), .value = wattle.number(1) },
         .{ .key = wattle.keyword("b"), .value = wattle.number(2) },
@@ -891,25 +891,24 @@ fn statusOf(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.keyword(@tagName(try wattle.fiberStatus(argv[0])));
 }
 
-/// `(tally dict)`: the sum of a struct's or a table's numeric values.
+/// `(tally dict)`: the sum of a dictionary's numeric values.
 ///
-/// The walk reads every slot and skips the empty ones, which is what the
-/// view's `cap` is for beside its `len`: the array is `cap` long and `len` of
-/// its slots are occupied.
+/// The walk skips a table's empty slots, which is what `count` is for beside
+/// `len`: the runs hold `len` values and `count` pairs are occupied.
 ///
-/// The walk is `Pairs` and the count is checked against it. An author never
-/// sees the hash array, so what a module can still get wrong is trusting `len`
-/// without walking, and this compares the two.
+/// The walk is `Dictionary.next` and the count is checked against it. What a
+/// module can still get wrong is trusting `count` without walking, and this
+/// compares the two.
 fn tally(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
     var entries = try wattle.getDictionary(argv, 0);
     var sum: f64 = 0;
     var seen: usize = 0;
-    while (entries.next()) |kv| {
+    while (try entries.next()) |kv| {
         seen += 1;
         if (wattle.toNumber(kv.value)) |x| sum += x;
     }
-    if (seen != entries.len) return wattle.panicFormat("walked {d} entries where len says {d}", .{ seen, entries.len });
+    if (seen != entries.count) return wattle.panicFormat("walked {d} entries where count says {d}", .{ seen, entries.count });
     return wattle.number(sum);
 }
 
@@ -937,7 +936,7 @@ fn unsafeSeen(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.number(@floatFromInt(unsafe_seen));
 }
 
-/// `(viewed x)`: which of `bytesView`, `toIndexed` and `dictionaryView` reads
+/// `(viewed x)`: which of `bytesView`, `toIndexed` and `toDictionary` reads
 /// a value, and how long the result is.
 ///
 /// These are the `Value` form of the three getters. A getter takes an argument
@@ -955,8 +954,8 @@ fn viewed(argv: []wattle.Value) wattle.Error!wattle.Value {
         if (try wattle.toIndexed(v)) |items| {
             break :blk std.fmt.bufPrintZ(&out, "indexed {d}", .{items.len});
         }
-        if (wattle.dictionaryView(v)) |dict| {
-            break :blk std.fmt.bufPrintZ(&out, "dictionary {d}", .{dict.len});
+        if (try wattle.toDictionary(v)) |dict| {
+            break :blk std.fmt.bufPrintZ(&out, "dictionary {d}", .{dict.count});
         }
         break :blk std.fmt.bufPrintZ(&out, "none", .{});
     } catch return wattle.panic("the description does not fit");

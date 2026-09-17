@@ -38,8 +38,9 @@
 //! signature, so the pointer and the count cross separately. This file
 //! rebuilds an author's own type from it: a slice for a string's bytes,
 //! `Indexed` for a tuple's elements, which an indexed abstract has in many
-//! runs rather than one, and `Pairs` for a dictionary, whose storage is sparse
-//! rather than dense. How long a getter's result stays valid depends on the
+//! runs rather than one, and `Dictionary` for a dictionary's pairs, which a
+//! table holds with empty slots between them and a dictionary abstract in many
+//! runs. How long a getter's result stays valid depends on the
 //! type it came from. A string's, a tuple's and a struct's are stable while
 //! the value is reachable; a buffer's, an array's and a table's are not.
 //!
@@ -133,8 +134,9 @@
 //! - A view taken from `argv` is unaffected. It points at the aggregate's own
 //!   heap storage. What invalidates a view is a mutation of the aggregate.
 //!
-//! - An `Indexed` over an abstract does not survive. Janet code may read the
-//!   same abstract's runs, and a type may reuse the storage of a run.
+//! - An `Indexed` or a `Dictionary` over an abstract does not survive. Janet
+//!   code may read the same abstract's runs, and a type may reuse the storage
+//!   of a run.
 //!
 //! Three examples are included to show how to use modules: `examples/digest`
 //! (the event loop), `examples/numarray` (an abstract type in a module that
@@ -195,7 +197,7 @@ pub const Env = abi.Env;
 /// `.@"error"` in Zig.
 pub const FiberStatus = abi.FiberStatus;
 
-/// One key-value pair of a struct or a table. `Pairs.next` returns a
+/// One key-value pair of a struct or a table. `Dictionary.next` returns a
 /// `Keyval`, and `structOf` and `tableOf` take a slice of `Keyval`.
 pub const Keyval = abi.Keyval;
 
@@ -285,6 +287,74 @@ pub const CFunction = *const fn ([]Value) Error!Value;
 /// }
 /// ```
 pub const Chunk = struct { items: []const Value, start: usize };
+
+/// The pairs of a table, a struct or an abstract whose contents are pairs,
+/// read in order.
+///
+/// `getDictionary` and `toDictionary` return a `Dictionary`. `count` is how
+/// many pairs there are, and `len` is how many values the runs hold, which
+/// counts a table's or a struct's empty slots. The other fields are the
+/// position reading has reached and the part of a run not yet returned, and an
+/// author does not set them.
+///
+/// A table's or a struct's slots are one run, read with no crossing. An
+/// abstract's are read through its `chunk` callback, one crossing per run.
+///
+/// A `Dictionary` is valid until the module re-enters Janet code or mutates
+/// the value it reads. The pairs of a struct are stable while it is reachable.
+/// A `put` on a table may rehash and move every pair, so a walk finishes
+/// before any `put`.
+///
+/// ```zig
+/// var pairs = try getDictionary(argv, 0);
+/// while (try pairs.next()) |pair| {
+///     // pair.key, pair.value
+/// }
+/// ```
+pub const Dictionary = struct {
+    count: usize,
+    len: usize,
+    value: Value,
+    position: usize = 0,
+    rest: []const Value = &.{},
+
+    /// Returns the next pair, or null when every pair has been returned. An
+    /// empty slot is skipped.
+    ///
+    /// This function raises if an abstract's `chunk` callback returns a run
+    /// that does not start at the next position or does not hold whole pairs.
+    pub fn next(self: *Dictionary) Error!?Keyval {
+        while (true) {
+            while (self.rest.len != 0) {
+                const kv: Keyval = .{ .key = self.rest[0], .value = self.rest[1] };
+                self.rest = self.rest[2..];
+                if (!isNil(kv.key)) return kv;
+            }
+            self.rest = (try self.nextChunk()) orelse return null;
+        }
+    }
+
+    /// Returns the values from the next position to the end of its run, key
+    /// then value, or null when every run has been returned.
+    ///
+    /// A table's or a struct's run includes its empty slots, whose keys are
+    /// nil. A run `next` has begun is returned from the next pair on.
+    ///
+    /// This function raises where `next` does.
+    pub fn nextChunk(self: *Dictionary) Error!?[]const Value {
+        if (self.rest.len != 0) {
+            const run = self.rest;
+            self.rest = &.{};
+            return run;
+        }
+        if (self.position >= self.len) return null;
+        const run = try fromAbi(interface.rt.dictionary_chunk(self.value, self.position, self.len));
+        // The runtime refuses a run that does not start at `position`, so
+        // `len` is not zero and `items` is not null.
+        self.position += run.len;
+        return run.items.?[0..run.len];
+    }
+};
 
 /// The error a raise returns.
 ///
@@ -397,40 +467,6 @@ pub const Indexed = struct {
 pub const Method = extern struct {
     name: ?[*:0]const u8 = null,
     cfun: ?CFunction = null,
-};
-
-/// The key-value pairs of a struct or table, read one at a time.
-///
-/// `getDictionary` and `dictionaryView` return a `Pairs`. `len` is how many
-/// pairs there are.
-///
-/// The pairs of a struct are stable while it is reachable. The pairs of a
-/// table are not; a `put` may rehash and move every pair, so a walk finishes
-/// before any `put`.
-///
-/// ```zig
-/// var pairs = try getDictionary(argv, 0);
-/// while (pairs.next()) |pair| {
-///     // pair.key, pair.value
-/// }
-/// ```
-pub const Pairs = struct {
-    len: usize,
-    view: abi.DictView,
-    index: usize = 0,
-
-    /// Returns the next pair, or null when every pair has been returned.
-    ///
-    /// This function cannot raise.
-    pub fn next(self: *Pairs) ?Keyval {
-        const kvs = self.view.kvs orelse return null;
-        while (self.index < self.view.cap) {
-            const kv = kvs[self.index];
-            self.index += 1;
-            if (!isNil(kv.key)) return kv;
-        }
-        return null;
-    }
 };
 
 /// The callback that `post` queues for the loop thread.
@@ -716,15 +752,6 @@ pub fn define(comptime T: type, comptime spec: anytype) AbstractType {
     };
 }
 
-/// Returns the entries of a wrapped struct or table.
-///
-/// This function returns null if `v` is neither.
-pub fn dictionaryView(v: Value) ?Pairs {
-    var res: abi.DictView = undefined;
-    if (!interface.rt.dictionary_view(v, &res)) return null;
-    return .{ .len = res.len, .view = res };
-}
-
 /// Exports the two symbols the loader looks up by name.
 ///
 /// A module writes:
@@ -887,18 +914,19 @@ pub fn getBytes(argv: []const Value, n: i32) Error![]const u8 {
     return p[0..view.len];
 }
 
-/// Gets and unwraps the entries of a struct or table from a slice of `Value`.
+/// Gets the pairs of a table, a struct or a dictionary abstract from a slice of
+/// `Value`.
 ///
 /// `argv` is named as such because this function is typically used to
 /// get the unwrapped value at index `n` in an argument list.
 ///
-/// This function raises if the unwrapped value is not a struct or a table.
+/// This function raises if the value is none of those types, or if an
+/// abstract's `length` callback raises.
 ///
-/// See `Pairs`, which is what the walk and the stability of the pairs are
-/// described on.
-pub fn getDictionary(argv: []const Value, n: i32) Error!Pairs {
-    const view = try fromAbi(interface.rt.getdictionary(argv.ptr, n));
-    return .{ .len = view.len, .view = view };
+/// See `Dictionary`, which is what the reading and the validity of the result
+/// are described on.
+pub fn getDictionary(argv: []const Value, n: i32) Error!Dictionary {
+    return dictionaryOf(try fromAbi(interface.rt.getdictionary(argv.ptr, n)));
 }
 
 /// Gets the elements of an array, a tuple or an indexed abstract from a slice
@@ -1520,6 +1548,22 @@ pub fn toAbstract(comptime T: type, v: Value, at: *const AbstractType) ?*T {
     return @ptrCast(@alignCast(p));
 }
 
+/// Returns the pairs of a table, a struct or a dictionary abstract.
+///
+/// `v` is a value read out of a view rather than an argument slot, such as an
+/// element of a tuple.
+///
+/// This function returns null if `v` is none of those types. It raises if an
+/// abstract's `length` callback raises.
+///
+/// See `Dictionary`, which is what the reading and the validity of the result
+/// are described on.
+pub fn toDictionary(v: Value) Error!?Dictionary {
+    var out: abi.Dictionary = undefined;
+    if (!try fromAbi(interface.rt.to_dictionary(v, &out))) return null;
+    return dictionaryOf(out);
+}
+
 /// Returns the elements of an array, a tuple or an indexed abstract.
 ///
 /// `v` is a value read out of a view rather than an argument slot, such as an
@@ -1681,6 +1725,18 @@ inline fn checkTag(v: Value, comptime t: repr.Tag) bool {
 /// because the table field it crossed has a C calling convention.
 inline fn fromAbi(v: anytype) Error!@TypeOf(v) {
     return raise.fromAbi(v);
+}
+
+/// Builds a `Dictionary` from the `abi.Dictionary` the runtime gives.
+///
+/// A table's or a struct's slots are the one run, so reading starts past it
+/// with the run as what is not yet returned. A null `items` is an empty value
+/// or an abstract, and either starts with no run.
+fn dictionaryOf(view: abi.Dictionary) Dictionary {
+    if (view.items) |p| {
+        return .{ .count = view.count, .len = view.len, .value = view.value, .position = view.len, .rest = p[0..view.len] };
+    }
+    return .{ .count = view.count, .len = view.len, .value = view.value };
 }
 
 /// Builds an `Indexed` from the `abi.Indexed` the runtime gives.

@@ -115,18 +115,20 @@ const Value = repr.Value;
 /// `runtime/signal.zig` and `runtime/fatal.zig`, and `config.native_module`
 /// picks the arm.
 ///
-/// `module.zig` is the only caller of every other field. The two views and
-/// `abi.Indexed` cross as the `extern` structs `abi.zig` declares, and
-/// `module.zig` rebuilds an author's type from each. `getrange` takes the
-/// argument count as well, because an absent second slot is what makes the end
-/// default. `bytes_view`, `dictionary_view` and `to_indexed` read a `Value`
-/// that is not in an argument slot, such as an element of a tuple; each returns
-/// `?T` in `module.zig`, and a `callconv(.c)` return admits neither an optional
-/// nor a slice, so the optional is the out-parameter. `bytes_view` and
-/// `dictionary_view` cannot raise. `to_indexed` can, because an abstract's
-/// `length` callback can. `indexed_chunk` reads the run of an indexed abstract
-/// that holds `index`, and `len` is the length `getindexed` or `to_indexed`
-/// reported.
+/// `module.zig` is the only caller of every other field. `abi.ByteView`,
+/// `abi.Indexed` and `abi.Dictionary` cross as the `extern` structs `abi.zig`
+/// declares, and `module.zig` rebuilds an author's type from each. `getrange`
+/// takes the argument count as well, because an absent second slot is what
+/// makes the end default. `bytes_view`, `to_indexed` and `to_dictionary` read
+/// a `Value` that is not in an argument slot, such as an element of a tuple;
+/// each returns `?T` in `module.zig`, and a `callconv(.c)` return admits
+/// neither an optional nor a slice, so the optional is the out-parameter.
+/// `bytes_view` cannot raise. `to_indexed` and `to_dictionary` can, because an
+/// abstract's `length` callback can. `indexed_chunk` reads the run of an
+/// indexed abstract that holds `index`, and `len` is the length `getindexed`
+/// or `to_indexed` reported. `dictionary_chunk` reads the run of a dictionary
+/// abstract that starts at `position`, and `len` is the `len` `getdictionary`
+/// or `to_dictionary` reported.
 ///
 /// `cfuns_ext` and `def` take a capability rather than an aggregate.
 /// `abi.Env` and `abi.Render` are `opaque {}` over `runtime/value/tables.zig`'s
@@ -205,7 +207,7 @@ pub const Runtime = extern struct {
     /// The loop this cfunction is running on. Raises where the build has none.
     current_loop: *const fn () callconv(.c) *abi.Loop,
     def: *const fn (env: *abi.Env, name: [*:0]const u8, val: Value, doc: ?[*:0]const u8) callconv(.c) void,
-    dictionary_view: *const fn (x: Value, out: *abi.DictView) callconv(.c) bool,
+    dictionary_chunk: *const fn (x: Value, position: usize, len: usize) callconv(.c) abi.Chunk,
     fatal: *const fn (message: [*:0]const u8) callconv(.c) noreturn,
     fiber_status_value: *const fn (fiber: Value) callconv(.c) abi.FiberStatus,
     fixarity: *const fn (argc: i32, fix: i32) callconv(.c) void,
@@ -216,7 +218,7 @@ pub const Runtime = extern struct {
     getabstract: *const fn (argv: [*]const Value, n: i32, at: *const abi.AbstractType) callconv(.c) ?*anyopaque,
     getboolean: *const fn (argv: [*]const Value, n: i32) callconv(.c) bool,
     getbytes: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.ByteView,
-    getdictionary: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.DictView,
+    getdictionary: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.Dictionary,
     getindexed: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.Indexed,
     getinteger: *const fn (argv: [*]const Value, n: i32) callconv(.c) i32,
     /// Takes `method_type.CMethod` rather than `module.Method`. The two share
@@ -270,6 +272,7 @@ pub const Runtime = extern struct {
     /// none, which is a program not running under the loop at all.
     root_fiber_value: *const fn () callconv(.c) Value,
     signal_record: *const fn (sig: c_uint, message: Value) callconv(.c) void,
+    to_dictionary: *const fn (x: Value, out: *abi.Dictionary) callconv(.c) bool,
     to_indexed: *const fn (x: Value, out: *abi.Indexed) callconv(.c) bool,
     unmarshal_abstract: *const fn (u: *abi.Unmarshal, size: usize) callconv(.c) ?*anyopaque,
     unmarshal_abstract_reuse: *const fn (u: *abi.Unmarshal, p: ?*anyopaque) callconv(.c) void,

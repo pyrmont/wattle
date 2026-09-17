@@ -17,7 +17,7 @@
 //! A declaration is here because the runtime's compilation and the module's
 //! compilation must agree on it. There are five kinds of declarations:
 //!
-//! - The two views, `ByteView` and `DictView`, and `Indexed`, which a view
+//! - The view, `ByteView`, and `Indexed` and `Dictionary`, which a view
 //!   cannot describe.
 //!
 //! - The six capabilities: `Env`, `Loop`, `Marshal`, `Render`, `Unmarshal`
@@ -44,14 +44,13 @@
 //! A _view_ is a pointer to a collection of elements and a count over that
 //! collection's own storage. This would be a slice in Zig but it is defined as
 //! an `extern struct` because it crosses a `callconv(.c)` signature which a
-//! slice cannot do. `module.zig` then rebuilds an author's own type from it: a
-//! slice for a `ByteView`'s bytes, and `module.Pairs` for a `DictView`, whose
-//! storage is sparse rather than dense and so has no faithful slice. The two
-//! views are `ByteView` and `DictView`. A view offers no ability to mutate.
+//! slice cannot do. `module.zig` then rebuilds a slice from it. The one view is
+//! `ByteView`. A view offers no ability to mutate.
 //!
-//! `Indexed` is not a view, because an indexed abstract's elements are in as
-//! many runs as its `chunk` callback gives, and no one pointer covers them.
-//! `module.zig` builds `module.Indexed` from it.
+//! `Indexed` and `Dictionary` are not views, because an abstract's contents
+//! are in as many runs as its `chunk` callback gives, and no one pointer covers
+//! them. `module.zig` builds `module.Indexed` and `module.Dictionary` from
+//! them.
 //!
 //! A _capability_ is `opaque {}`. It is the authority to perform an operation
 //! rather than a handle to data: an author holds a pointer, passes it back to
@@ -269,17 +268,23 @@ pub const Contents = enum(c_uint) {
     pairs = 2,
 };
 
-/// A sparse sequence of key-value pairs.
+/// The pairs of a table, a struct or an abstract whose contents are pairs.
 ///
-/// `module.getDictionary` and `module.dictionaryView` return a `module.Pairs`
-/// over a `DictView`.
+/// `module.getDictionary` and `module.toDictionary` return a
+/// `module.Dictionary` built from the `Dictionary` the runtime gives them.
 ///
-/// `kvs` is the whole hash array and is `cap` long. `len` is how many of its
-/// slots are occupied, so a walk reads every slot and skips the empty ones.
-pub const DictView = extern struct {
-    kvs: ?[*]const Keyval = null,
+/// `value` is the value read and `count` is how many pairs it has. `len` is
+/// how many values its runs hold: twice the slots of a table or a struct, or
+/// twice an abstract's length. For a table or a struct, `items` is its slots
+/// read as one run of values, key then value, empty slots included. For an
+/// abstract, `items` is null and the runs are read through the
+/// `dictionary_chunk` crossing. `items` is also null when `len` is zero, so a
+/// null `items` names an abstract only when `len` is not zero.
+pub const Dictionary = extern struct {
+    items: ?[*]const repr.Value = null,
     len: usize = 0,
-    cap: usize = 0,
+    count: usize = 0,
+    value: repr.Value = std.mem.zeroes(repr.Value),
 };
 
 /// The capability to define a binding in the environment into which a module
@@ -374,10 +379,10 @@ pub const Indexed = extern struct {
 
 /// A key-value pair from a struct or table.
 ///
-/// `DictView.kvs` points at an array of `Keyval`, `module.Pairs.next` returns
-/// a `Keyval`, and `module.structOf` and `module.tableOf` take a slice of
-/// `Keyval`. `module.Keyval` is this type. A pair whose `key` is nil is an
-/// empty slot.
+/// `module.Dictionary.next` returns a `Keyval`, and `module.structOf` and
+/// `module.tableOf` take a slice of `Keyval`. `module.Keyval` is this type. A
+/// table's slots are an array of `Keyval`, and a slot whose `key` is nil is
+/// empty.
 ///
 /// A `Keyval` is two values with no padding, so a run of them can be read as
 /// a run of values, key then value.

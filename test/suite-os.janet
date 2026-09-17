@@ -53,6 +53,9 @@
 (assert (= (os/mktime (os/date now)) now) "UTC os/mktime")
 (assert (= (os/mktime (os/date now true) true) now) "local os/mktime")
 (assert (= (os/mktime {:year 1970}) 0) "os/mktime default values")
+(assert (= 1388608200 (os/mktime (hash-map :minutes 30 :dst false :year 2014 :hours 20)))
+        "os/mktime reads a map")
+(assert-error "os/mktime refuses a set" (os/mktime (hash-set :year)))
 
 # OS strftime test
 # 5cd729c4c
@@ -307,6 +310,14 @@
   # an empty name as `=x`, and the child reads it back.
   (assert (= [0 "x"] (child `(prin (get (os/environ) ""))` :pe {"" "x"}))
           "a child is started with an empty name in its environment")
+
+  # A map gives the options and the environment as a table does.
+  (let [p (os/spawn [;run janet "-e" `(prin (os/getenv "WATTLE_MAP"))`] :pe
+                    (hash-map :out :pipe "WATTLE_MAP" "x"))
+        out (string (:read (p :out) :all))]
+    (assert (= [0 "x"] [(os/proc-wait p) out]) "a map as the options and the environment"))
+  (assert-error "os/spawn refuses a set as its options"
+                (os/spawn [;run janet "-e" "1"] :p (hash-set :out)))
 
   # A process collected without being waited for is killed and reaped, and
   # one spawned with :d is left alone. `kill -0` asks whether a pid is still a

@@ -261,6 +261,7 @@ fn expectEntries(kind: maps.Kind, t: *maps.Tree, entries: []const Entry) !void {
     if (kind == .set) return;
     const over: args.Keyvals = .{
         .source = .{ .abstract = .{ .payload = t, .at = &maps.map_type } },
+        .count = t.count,
         .len = 2 * t.count,
     };
     var runs = over;

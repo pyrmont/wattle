@@ -260,8 +260,8 @@ pub fn lib(env: *tables.Table) void {
 /// Builds a struct from `kvs`, which is what `module.structOf` reaches through
 /// `capi.zig`'s `new_struct`.
 ///
-/// The pairs are not a hash array. A `DictView` is `cap` slots with empties
-/// among them; `kvs` is `kvs.len` pairs with nothing empty among them, and
+/// The pairs are not a hash array. A struct's storage is `capacity` slots with
+/// empties among them; `kvs` is `kvs.len` pairs with nothing empty among them, and
 /// `begin` sizes the table from that count. A repeated key replaces without
 /// filling a new slot, so the struct is under-filled and `end` re-begins it at
 /// the true count, so a caller may pass duplicates and get what a struct

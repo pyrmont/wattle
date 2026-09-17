@@ -582,27 +582,40 @@ inline fn isDigit(byte: u8) bool {
     return byte >= '0' and byte <= '9';
 }
 
-/// `%K`. Renders a type set a site reading through the indexed protocol
-/// accepts, as `pushtypes` does, with array and tuple named together as
-/// `indexed value` and placed last.
+/// `%K`. Renders a type set a site reading through the indexed or the
+/// dictionary protocol accepts, as `pushtypes` does, with array and tuple named
+/// together as `indexed value` and table and struct as `dictionary value`,
+/// placed last in that order.
 ///
-/// `typeflags` includes both array and tuple. A tag set cannot name an
-/// abstract type with a `chunk` callback, which such a site accepts as well.
-fn pushIndexedTypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
-    const others = typeflags.bits() & ~repr.TagSet.indexed.bits();
-    var remaining = others;
-    var i: usize = 0;
-    while (remaining != 0) : ({
-        i += 1;
-        remaining >>= 1;
-    }) {
-        if (1 & remaining == 0) continue;
-        try buffers.pushBytes(b, utils.typeNames[i]);
-        // Every name here is followed by another, `indexed value` being last,
-        // so the name before it is joined with "or" and the rest with commas.
-        try buffers.pushCString(b, if (remaining == 1) " or " else ", ");
+/// A composite is named only where the set has both of its types. A tag set
+/// cannot name an abstract type whose contents are elements or pairs, which
+/// such a site accepts as well.
+fn pushProtocolTypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
+    var names: [repr.tag_count + 2][]const u8 = undefined;
+    var count: usize = 0;
+    var bits = typeflags.bits();
+    const indexed = bits & repr.TagSet.indexed.bits() == repr.TagSet.indexed.bits();
+    const dictionary = bits & repr.TagSet.dictionary.bits() == repr.TagSet.dictionary.bits();
+    if (indexed) bits &= ~repr.TagSet.indexed.bits();
+    if (dictionary) bits &= ~repr.TagSet.dictionary.bits();
+    for (0..repr.tag_count) |i| {
+        if (bits >> @intCast(i) & 1 == 0) continue;
+        names[count] = utils.typeNames[i];
+        count += 1;
     }
-    try buffers.pushCString(b, "indexed value");
+    if (indexed) {
+        names[count] = "indexed value";
+        count += 1;
+    }
+    if (dictionary) {
+        names[count] = "dictionary value";
+        count += 1;
+    }
+    for (names[0..count], 0..) |name, i| {
+        // The last name is joined with "or" and the rest with commas.
+        if (i != 0) try buffers.pushCString(b, if (i + 1 == count) " or " else ", ");
+        try buffers.pushBytes(b, name);
+    }
 }
 
 /// `pushtypes`. Renders a type set, the bitmask an argument check reports, as
@@ -679,7 +692,7 @@ inline fn renderConversion(
         'v' => try pp_describe.descriptionB(b, @as(repr.Value, arg)),
         't' => try buffers.pushBytes(b, typestr(@as(repr.Value, arg))),
         'T' => try pushtypes(b, @as(repr.TagSet, arg)),
-        'K' => try pushIndexedTypes(b, @as(repr.TagSet, arg)),
+        'K' => try pushProtocolTypes(b, @as(repr.TagSet, arg)),
 
         'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
             b,

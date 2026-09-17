@@ -81,9 +81,9 @@ const own_scratch: u6 = 1;
 
 /// One entry: a key beside its value.
 ///
-/// It is declared in `abi.zig` because a module author walks an array of them.
-/// A dictionary crosses to an author as `abi.DictView`, which points at such an
-/// array, so both compilations have to spell the same two fields; the
+/// It is declared in `abi.zig` because a module author receives and passes
+/// them: `module.Dictionary.next` returns one and `module.tableOf` takes a
+/// slice of them, so both compilations have to spell the same two fields; the
 /// operations over a table are all here, which is the split `AbstractHead`,
 /// `Method` and `ByteView` already have.
 pub const Keyval = abi.Keyval;

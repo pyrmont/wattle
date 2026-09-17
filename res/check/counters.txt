@@ -13,5 +13,5 @@
 # columns: class  site  counter  bound
 
 b-seam       src/runtime/marsh.zig:1828               i                length
-a-janet      src/runtime/peg.zig:1630                 i                nrep
+a-janet      src/runtime/peg.zig:1654                 i                nrep
 c-decision   src/runtime/utils.zig:346                index            len

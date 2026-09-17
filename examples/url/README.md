@@ -41,14 +41,16 @@ group of types identically:
 | --- | --- | --- |
 | `getBytes` | string, symbol, keyword, buffer | `[]const u8` |
 | `getIndexed` | tuple, array | `Indexed` |
-| `getDictionary` | struct, table | `Pairs` |
+| `getDictionary` | struct, table, map | `Dictionary` |
 
 Each has a `Value` form beside it: `wattle.bytesView`, `wattle.toIndexed` and
-`wattle.dictionaryView`, which return `null` where the getter would raise.
+`wattle.toDictionary`, which return `null` where the getter would raise.
 
-`getIndexed` also reads an abstract whose type has a `chunk` callback. Its
-elements may be in more than one run, so `Indexed` is read with `next`, `get`
-or `nextChunk` rather than as a slice.
+`getIndexed` also reads an abstract whose contents are elements, and
+`getDictionary` one whose contents are pairs, such as a map. Their contents may
+be in more than one run, so `Indexed` is read with `next`, `get` or
+`nextChunk` rather than as a slice, and `Dictionary` with `next` or
+`nextChunk`.
 
 ### Construction as the getters run backwards
 

@@ -150,7 +150,7 @@ pub const getTuple = GetTuple.get;
 /// The three view getters, published. Each takes `argv` and `n` and reports a
 /// raise through `raise.reportToAbi`.
 pub const getBytesAbi = IndexAbi(getBytes).abi;
-pub const getDictionaryAbi = IndexAbi(getDictionary).abi;
+pub const getDictionaryAbi = IndexAbi(dictionaryAbi).abi;
 pub const getIndexedAbi = IndexAbi(indexedAbi).abi;
 
 /// The eleven numeric getters, as a Zig caller names them.
@@ -228,14 +228,13 @@ pub const optUInteger64 = Opt(GetUInteger64).get;
 // Aliased types
 // ==========================================================================
 
-/// `dictionaryView`'s result, and `getSlice`'s.
+/// `getSlice`'s result.
 ///
-/// Both are declared in `abi.zig` because a module author receives them:
-/// `getDictionaryAbi` and `getRangeAbi` return them by value across the
-/// boundary, so the two compilations have to spell the same fields. The
-/// operations that build them are here, which is the split every other crossed
-/// layout has. `abi.zig` has what each field means.
-pub const DictView = abi.DictView;
+/// It is declared in `abi.zig` because a module author receives it:
+/// `getRangeAbi` returns it by value across the boundary, so the two
+/// compilations have to spell the same fields. The operations that build it
+/// are here, which is the split every other crossed layout has. `abi.zig` has
+/// what each field means.
 pub const Range = abi.Range;
 
 // ==========================================================================
@@ -361,6 +360,21 @@ pub const Chunks = struct {
         self.index = from;
         self.limit = to;
     }
+};
+
+/// A table's or a struct's slots, which `dictionaryView` returns.
+///
+/// Three quantities rather than two: `kvs` is the whole hash array, `cap`
+/// long, and `len` is how many of its slots are occupied. A walk reads every
+/// slot and skips the empty ones, so neither number alone describes it.
+///
+/// Only the compiler and the printer's `{}` arm read one, because both are
+/// reached by a table's or a struct's tag. Every other site reads a dictionary
+/// through `keyvals`.
+pub const DictView = struct {
+    kvs: ?[*]const abi.Keyval = null,
+    len: usize = 0,
+    cap: usize = 0,
 };
 
 /// What a numeric kernel expected, and the only place the nouns are written.
@@ -508,6 +522,8 @@ pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 el
 pub const Keyvals = struct {
     /// Where the values come from.
     source: Chunks.Source,
+    /// The number of pairs, empty slots not counted.
+    count: usize,
     /// The number of values: twice the slots of a table or a struct, or twice
     /// an abstract's length.
     len: usize,
@@ -533,9 +549,7 @@ pub const Keyvals = struct {
 
     /// Returns the next run, or null when every run has been returned.
     ///
-    /// This function raises if a `chunk` callback returns a run that does not
-    /// start at the position asked for, that does not have an even length, or
-    /// that reaches past twice the length.
+    /// This function raises where `pairsChunk` refuses a run.
     pub inline fn nextRun(self: *Keyvals) raise.Error!?[]const repr.Value {
         if (self.index >= self.len) return null;
         switch (self.source) {
@@ -544,13 +558,7 @@ pub const Keyvals = struct {
                 return values;
             },
             .abstract => |a| {
-                const run = try takeChunk(a.payload, a.at, self.index, self.len);
-                if (run.start != self.index or run.len % 2 != 0) {
-                    return pp_format.panicf("chunk of %t does not give whole pairs from position %u", .{
-                        wrap.fromAbstract(a.payload),
-                        @as(u64, self.index),
-                    });
-                }
+                const run = try pairsChunk(a.payload, a.at, self.index, self.len);
                 self.index += run.len;
                 return run.items.?[0..run.len];
             },
@@ -755,37 +763,6 @@ pub fn argChecktype(
     return false;
 }
 
-/// A table's or a struct's entries.
-///
-/// Three quantities rather than two: the slice is the whole hash array, `cap`
-/// long, and `len` is how many of its slots are occupied. A walk over a
-/// dictionary reads every slot and skips the empty ones, so neither number
-/// alone describes it.
-pub fn argDictionary(
-    argv: []const repr.Value,
-    n: usize,
-    fault: *Fault,
-) ?DictView {
-    const x = argSlot(argv, n);
-    if (repr.checkType(x, repr.Tag.table)) {
-        const table = wrap.toTable(x);
-        return .{
-            .kvs = table.data.?,
-            .cap = @intCast(table.capacity),
-            .len = @intCast(table.count),
-        };
-    } else if (repr.checkType(x, repr.Tag.@"struct")) {
-        const structure = wrap.toStruct(x);
-        return .{
-            .kvs = structure,
-            .cap = structs.head(structure).capacity,
-            .len = structs.head(structure).length,
-        };
-    }
-    fault.* = .{ .wrong_type = .{ .slot = n, .expected = repr.TagSet.dictionary } };
-    return null;
-}
-
 /// Whether `count` is exactly `fix`, filling in an `.arity_fix` fault
 /// otherwise.
 pub fn argFixarity(count: i32, fix: i32, fault: *Fault) bool {
@@ -973,15 +950,15 @@ pub fn bytesView(str: repr.Value) ?[]const u8 {
 
 /// `bytesView`, published.
 ///
-/// An out-parameter here and an optional on both sides of it. `bytesView` and
-/// `dictionaryView` give back `?T`, which is the shape the header argues for;
-/// a `callconv(.c)` return admits neither an optional nor a slice, so absence
-/// becomes the `bool` and the value becomes the `extern` view. `module.zig`
-/// rebuilds the optional, so an author sees the same shape a runtime caller
-/// does and nobody outside these functions reads a zero beside an
-/// out-parameter. `toIndexedAbi` has the same shape.
+/// An out-parameter here and an optional on both sides of it. `bytesView`
+/// gives back `?T`, which is the shape the header argues for; a `callconv(.c)`
+/// return admits neither an optional nor a slice, so absence becomes the
+/// `bool` and the value becomes the `extern` view. `module.zig` rebuilds the
+/// optional, so an author sees the same shape a runtime caller does and nobody
+/// outside these functions reads a zero beside an out-parameter.
+/// `toIndexedAbi` and `toDictionaryAbi` have the same shape.
 ///
-/// Neither `bytesViewAbi` nor `dictionaryViewAbi` can raise: `bytesView`'s abstract arm runs a `bytes`
+/// `bytesViewAbi` cannot raise: `bytesView`'s abstract arm runs a `bytes`
 /// callback, which `abi.zig` declares `callconv(.c)`, so there is no report to
 /// flatten.
 pub fn bytesViewAbi(x: repr.Value, out: *abi.ByteView) callconv(.c) bool {
@@ -1014,6 +991,15 @@ pub fn checkabstract(x: repr.Value, at: *const abi.AbstractType) ?*anyopaque {
     var argv = [_]repr.Value{x};
     var fault: Fault = undefined;
     return argAbstract(&argv, 0, at, &fault);
+}
+
+/// Whether `x` is a table, a struct or an abstract whose contents are pairs.
+///
+/// It reads the tag and, for an abstract, its type, and calls no callback.
+pub fn checkdictionary(x: repr.Value) bool {
+    if (repr.checkTypes(x, repr.TagSet.dictionary)) return true;
+    if (!repr.checkType(x, repr.Tag.abstract)) return false;
+    return abi.abstractHead(wrap.toAbstract(x)).type.contents == .pairs;
 }
 
 /// Whether `x` is a double exactly representable as an `f32`.
@@ -1160,18 +1146,54 @@ pub fn contentsOf(x: repr.Value) abi.Contents {
     };
 }
 
-/// The entries of a table or a struct, or nothing.
-pub fn dictionaryView(tab: repr.Value) ?DictView {
-    var argv = [_]repr.Value{tab};
-    var fault: Fault = undefined;
-    return argDictionary(&argv, 0, &fault);
+/// The run of an abstract whose contents are pairs that starts at `position`.
+///
+/// `x` is the abstract, `position` the position of the pair asked for and
+/// `len` twice the length it reported.
+///
+/// This function raises if `x` is not an abstract whose contents are pairs,
+/// if `position` is not below `len`, or where `Keyvals.nextRun` refuses the
+/// run.
+pub fn dictionaryChunk(x: repr.Value, position: usize, len: usize) raise.Error!abi.Chunk {
+    if (!repr.checkType(x, repr.Tag.abstract)) {
+        return pp_format.panicf("expected dictionary abstract, got %v", .{x});
+    }
+    const abst = wrap.toAbstract(x);
+    const at = abi.abstractHead(abst).type;
+    if (at.contents != .pairs) return pp_format.panicf("expected dictionary abstract, got %v", .{x});
+    if (position >= len) {
+        return pp_format.panicf("position %u is past the end of %t of %u values", .{
+            @as(u64, position),
+            x,
+            @as(u64, len),
+        });
+    }
+    return pairsChunk(abst, at, position, len);
 }
 
-/// `dictionaryView`, published. See `bytesViewAbi`.
-pub fn dictionaryViewAbi(x: repr.Value, out: *abi.DictView) callconv(.c) bool {
+/// `dictionaryChunk`, published.
+pub fn dictionaryChunkAbi(x: repr.Value, position: usize, len: usize) callconv(.c) abi.Chunk {
     vm_state.requireJanetThread();
-    out.* = dictionaryView(x) orelse return false;
-    return true;
+    return dictionaryChunk(x, position, len) catch raise.reportToAbi(abi.Chunk);
+}
+
+/// The slots of a table or a struct, or nothing.
+pub fn dictionaryView(x: repr.Value) ?DictView {
+    switch (repr.typeOf(x)) {
+        .table => {
+            const table = wrap.toTable(x);
+            return .{ .kvs = table.data, .cap = table.capacity, .len = table.count };
+        },
+        .@"struct" => {
+            const structure = wrap.toStruct(x);
+            return .{
+                .kvs = structure,
+                .cap = structs.head(structure).capacity,
+                .len = structs.head(structure).length,
+            };
+        },
+        else => return null,
+    }
 }
 
 /// The end of a slice argument at `n`, folded against `length`. An absent or
@@ -1369,12 +1391,6 @@ pub fn getCString(argv: []const repr.Value, n: usize) raise.Error![*:0]const u8 
     return getCBytes(argv, n);
 }
 
-/// The entries of the table or struct at `n`.
-pub fn getDictionary(argv: []const repr.Value, n: usize) raise.Error!DictView {
-    var fault: Fault = undefined;
-    return argDictionary(argv, n, &fault) orelse raiseFault(argv, fault);
-}
-
 /// The bits of `flags` that the keyword at `n` names.
 pub fn getFlags(argv: []const repr.Value, n: usize, flags: [*:0]const u8) raise.Error!u64 {
     const keyw = try GetKeyword.get(argv, n);
@@ -1387,6 +1403,16 @@ pub fn getFlags(argv: []const repr.Value, n: usize, flags: [*:0]const u8) raise.
 pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Error![]const repr.Value {
     var fault: Fault = undefined;
     return argIndexed(argv, n, &fault) orelse raiseFault(argv, fault);
+}
+
+/// The pairs of the dictionary at `n`, read as `keyvals` reads them.
+///
+/// This function raises `panicDictionary`'s refusal where the slot is not a
+/// table, a struct or an abstract whose contents are pairs, and raises where
+/// `keyvals` does.
+pub fn getKeyvals(argv: []const repr.Value, n: usize) raise.Error!Keyvals {
+    const x = argSlot(argv, n);
+    return (try keyvals(x)) orelse panicDictionary(x, @intCast(n), repr.TagSet.none);
 }
 
 /// The two ends of a slice argument sitting at `n` and `n + 1`, folded against
@@ -1517,19 +1543,20 @@ pub fn keyvals(x: repr.Value) raise.Error!?Keyvals {
     switch (repr.typeOf(x)) {
         .table => {
             const table = wrap.toTable(x);
-            const data = table.data orelse return .{ .source = .{ .contiguous = &.{} }, .len = 0 };
-            return slotsOf(data[0..table.capacity]);
+            const data = table.data orelse return .{ .source = .{ .contiguous = &.{} }, .count = 0, .len = 0 };
+            return slotsOf(data[0..table.capacity], table.count);
         },
         .@"struct" => {
             const structure = wrap.toStruct(x);
-            return slotsOf(structure[0..structs.head(structure).capacity]);
+            const hd = structs.head(structure);
+            return slotsOf(structure[0..hd.capacity], hd.length);
         },
         .abstract => {
             const abst = wrap.toAbstract(x);
             const at = abi.abstractHead(abst).type;
             if (at.contents != .pairs) return null;
             const len: usize = @intCast(try access.length(x));
-            return .{ .source = .{ .abstract = .{ .payload = abst, .at = at } }, .len = 2 * len };
+            return .{ .source = .{ .abstract = .{ .payload = abst, .at = at } }, .count = len, .len = 2 * len };
         },
         else => return null,
     }
@@ -1577,6 +1604,15 @@ pub fn panicAbstractAbi(x: repr.Value, n: i32, at: *const abi.AbstractType) void
     raise.report(panicAbstract(x, n, at));
 }
 
+/// The wrong type in a slot a site reads through the dictionary protocol.
+///
+/// `x` is the value in slot `n`, and `also` is the other types the site
+/// accepts, empty where it reads a dictionary alone. The refusal names
+/// `dictionary value` where `panicType` would name table and struct.
+pub fn panicDictionary(x: repr.Value, n: i32, also: repr.TagSet) raise.Error {
+    return pp_format.panicf("bad slot #%d, expected %K, got %v", .{ n, also.with(repr.TagSet.dictionary), x });
+}
+
 /// The wrong type in a slot a site reads through the indexed protocol.
 ///
 /// `x` is the value in slot `n`, and `also` is the other types the site
@@ -1621,11 +1657,21 @@ pub fn symeq(x: repr.Value, cstring: [*:0]const u8) bool {
     return argStrlike(repr.Tag.symbol, x, cstring);
 }
 
+/// `dictionaryOf`, published as `to_dictionary`.
+///
+/// An out-parameter and a `bool` for the optional, as `toIndexedAbi` uses, and
+/// for the same reason it can raise. A raise is reported and gives back false.
+pub fn toDictionaryAbi(x: repr.Value, out: *abi.Dictionary) callconv(.c) bool {
+    vm_state.requireJanetThread();
+    out.* = (dictionaryOf(x) catch return raise.reportToAbi(bool)) orelse return false;
+    return true;
+}
+
 /// `indexedOf`, published as `to_indexed`.
 ///
 /// An out-parameter and a `bool` for the optional, as `bytesViewAbi` uses.
-/// Unlike `bytesViewAbi` and `dictionaryViewAbi`, this can raise, because an
-/// abstract's `length` callback can. A raise is reported and gives back false.
+/// Unlike `bytesViewAbi`, this can raise, because an abstract's `length`
+/// callback can. A raise is reported and gives back false.
 pub fn toIndexedAbi(x: repr.Value, out: *abi.Indexed) callconv(.c) bool {
     vm_state.requireJanetThread();
     out.* = (indexedOf(x) catch return raise.reportToAbi(bool)) orelse return false;
@@ -1679,6 +1725,36 @@ fn checkRange(comptime T: type, dval: f64) bool {
     const truncated: T = @intFromFloat(dval);
     const back: f64 = @floatFromInt(truncated);
     return dval == back;
+}
+
+/// The dictionary at `n` as the struct the boundary accepts.
+///
+/// The published `getdictionary`. It raises `panicDictionary`'s refusal for
+/// anything but a table, a struct or an abstract whose contents are pairs.
+/// `module.getDictionary` builds a `module.Dictionary` from the result.
+fn dictionaryAbi(argv: []const repr.Value, n: usize) raise.Error!abi.Dictionary {
+    const x = argSlot(argv, n);
+    return (try dictionaryOf(x)) orelse panicDictionary(x, @intCast(n), repr.TagSet.none);
+}
+
+/// A dictionary as the boundary gives it to a module, or nothing.
+///
+/// A table's or a struct's slots are its own storage, read as values. An
+/// abstract's runs are left to `dictionaryChunk`, so `items` is null and `len`
+/// is twice what its `length` callback reported.
+///
+/// This function raises if an abstract's `length` callback raises.
+fn dictionaryOf(x: repr.Value) raise.Error!?abi.Dictionary {
+    const it = (try keyvals(x)) orelse return null;
+    return switch (it.source) {
+        .contiguous => |values| .{
+            .items = if (values.len == 0) null else values.ptr,
+            .len = values.len,
+            .count = it.count,
+            .value = x,
+        },
+        .abstract => .{ .items = null, .len = it.len, .count = it.count, .value = x },
+    };
 }
 
 /// The indexed value at `n` as the struct the boundary accepts.
@@ -1752,6 +1828,29 @@ fn numberGetter(
             };
         }
     }.get;
+}
+
+/// Runs an abstract's `chunk` callback for the pair at `position` and checks
+/// the run.
+///
+/// `payload` and `at` are the abstract and its type, and `len` is twice its
+/// length. A reader of pairs reads forward from where the last run ended, so
+/// the run has to start at `position`, where `takeChunk` accepts any run that
+/// holds it.
+///
+/// This function raises where `takeChunk` does, and if the run does not start
+/// at `position` or does not hold whole pairs.
+///
+/// It is `inline` because `Keyvals.nextRun` is.
+inline fn pairsChunk(payload: *anyopaque, at: *const abi.AbstractType, position: usize, len: usize) raise.Error!abi.Chunk {
+    const run = try takeChunk(payload, at, position, len);
+    if (run.start != position or run.len % 2 != 0) {
+        return pp_format.panicf("chunk of %t does not give whole pairs from position %u", .{
+            wrap.fromAbstract(payload),
+            @as(u64, position),
+        });
+    }
+    return run;
 }
 
 /// Turns a fault into the raise its message renders.
@@ -1838,11 +1937,12 @@ fn range(
     return @intCast(not_raw);
 }
 
-/// A table's or a struct's slots as one run of values, key then value.
-fn slotsOf(slots: []const abi.Keyval) Keyvals {
+/// A table's or a struct's slots as one run of values, key then value, of
+/// which `count` are occupied.
+fn slotsOf(slots: []const abi.Keyval, count: usize) Keyvals {
     const values: [*]const repr.Value = @ptrCast(slots.ptr);
     const len = 2 * slots.len;
-    return .{ .source = .{ .contiguous = values[0..len] }, .len = len };
+    return .{ .source = .{ .contiguous = values[0..len] }, .count = count, .len = len };
 }
 
 /// Runs an abstract's `chunk` callback for `index` and checks the run.

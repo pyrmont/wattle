@@ -185,8 +185,8 @@ and 43.
 
 **A type's block names its producers and consumers right after the summary.**
 A type has no calling shape of its own, so the second paragraph says which
-functions return the type and which take it. `module.zig` `Pairs`:
-"`getDictionary` and `dictionaryView` return a `Pairs`." `abi.zig`
+functions return the type and which take it. `module.zig` `Dictionary`:
+"`getDictionary` and `toDictionary` return a `Dictionary`." `abi.zig`
 `ByteView`: "`module.getBytes` and `module.bytesView` return a `[]const u8`
 built from the `ByteView` the runtime gives them."
 
@@ -199,9 +199,9 @@ argument passed to `module.cfuns` and `module.def`".
 **A struct's fields are described in the container's block, by name in
 backticks, in prose,** the way parameters are. A field that its type already
 explains is not named. `module.zig` `Called` names `signal`, `value` and
-`fiber`; `Pairs` names `len` and leaves `view` and `index` to the code.
-`abi.zig` `DictView` names `kvs`, `len` and `cap`; `AbstractHead` names
-none.
+`fiber`; `Dictionary` names `count` and `len` and leaves `position` and
+`rest` to the code. `abi.zig` `Dictionary` names all four; `AbstractHead`
+names none.
 
 **A `//` group comment inside a struct is one line: a noun phrase ending in a
 full stop, with a blank line before it.** The same group has the same

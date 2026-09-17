@@ -50,13 +50,14 @@
 
 # ---------------------------------------------------------- getDictionary
 #
-# Both types, and the walk `Pairs` gives. The order is the hash
+# All three types, and the walk `Dictionary` gives. The order is the hash
 # order, so the assertions sort.
 
 (defn- parts [s] (sort (string/split "&" s)))
 
 (assert (deep= @["a=1" "b=2"] (parts (url/query {:a 1 :b 2}))) "a struct")
 (assert (deep= @["a=1" "b=2"] (parts (url/query @{:a 1 :b 2}))) "a table")
+(assert (deep= @["a=1" "b=2"] (parts (url/query (hash-map :a 1 :b 2)))) "a map")
 (assert (= "" (url/query {})) "an empty struct has no entries to walk")
 (assert (= "" (url/query @{})) "and neither does an empty table")
 (assert (deep= @["name=ada" "tag=x"] (parts (url/query {:name "ada" :tag :x})))
@@ -109,7 +110,7 @@
         "getBytes names the four types it takes")
 (assert (= "bad slot #1, expected indexed value, got :lower" (refusal url/slug "x" :lower))
         "getIndexed names the protocol it reads")
-(assert (= "bad slot #0, expected table or struct, got \"x\"" (refusal url/query "x"))
-        "and getDictionary names its two")
+(assert (= "bad slot #0, expected dictionary value, got \"x\"" (refusal url/query "x"))
+        "and getDictionary names the protocol it reads")
 
 (print "url example ok")

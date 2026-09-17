@@ -164,14 +164,16 @@
         "getBytes refuses a number")
 (assert (= "bad slot #1, expected indexed value, got 3" (refusal markup "x" 3))
         "getIndexed refuses a number")
-(assert (= "bad slot #0, expected table or struct, got \"x\"" (refusal tally "x"))
+(assert (= "bad slot #0, expected dictionary value, got \"x\"" (refusal tally "x"))
         "getDictionary refuses a string")
 
-# `getDictionary`, on both members of its pair. The walk is `Pairs`, whose
-# `next` answers one pair at a time, and the fixture refuses if its own count
-# disagrees with the `len` it was given.
+# `getDictionary`, on a struct, a table and a map. The walk is `Dictionary`,
+# whose `next` answers one pair at a time, and the fixture refuses if its own
+# count disagrees with the `count` it was given.
 (assert (= 6 (tally {:a 1 :b 2 :c 3})) "getDictionary reads a struct")
 (assert (= 6 (tally @{:a 1 :b 2 :c 3})) "and a table")
+(assert (= 6 (tally (hash-map :a 1 :b 2 :c 3))) "and a map")
+(assert (= 780 (tally (hash-map ;(mapcat |[(keyword "k" $) $] (range 40))))) "and a map of more than one leaf")
 (assert (= 0 (tally {})) "an empty struct walks to zero")
 (assert (= 0 (tally @{})) "and an empty table")
 (assert (= 3 (tally {:a 1 :b :two :c 2})) "a non-numeric value is skipped, not refused")
@@ -284,10 +286,12 @@
 (assert (= "indexed 2" (viewed [1 2])) "toIndexed on a tuple")
 (assert (= "indexed 2" (viewed @[1 2])) "and on an array")
 (assert (= "indexed 0" (viewed @[])) "and on an empty array, whose data pointer is null")
-(assert (= "dictionary 2" (viewed {:a 1 :b 2})) "dictionaryView on a struct")
+(assert (= "dictionary 2" (viewed {:a 1 :b 2})) "toDictionary on a struct")
 (assert (= "dictionary 2" (viewed @{:a 1 :b 2})) "and on a table")
 (assert (= "dictionary 0" (viewed @{})) "an empty table has entries, and none of them")
 (assert (= "dictionary 0" (viewed {})) "and so does an empty struct")
+(assert (= "dictionary 2" (viewed (hash-map :a 1 :b 2))) "and on a map")
+(assert (= "none" (viewed (hash-set 1 2))) "a set holds no pairs")
 (assert (= "none" (viewed 3)) "no Value-form getter reads a number, and that is not a refusal")
 (assert (= "none" (viewed nil)) "nor does nil")
 (assert (= "bytes 6" (viewed k)) "a byte-like abstract answers through its bytes callback")

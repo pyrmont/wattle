@@ -31,6 +31,7 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
+const access = @import("../value/helpers/access.zig");
 const args_core = @import("../args.zig");
 const c = @import("cabi");
 const corefn = @import("../corefn.zig");
@@ -144,11 +145,8 @@ fn cfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     // Zeroed whole, so that no field is left as whatever the frame had.
     var t_info: h.struct_tm = std.mem.zeroes(h.struct_tm);
 
-    if (!repr.checkType(argv[0], repr.Tag.table) and
-        !repr.checkType(argv[0], repr.Tag.@"struct"))
-    {
-        // The message is the fault layer's and has no spelling on this side.
-        return args_core.panicType(argv[0], 0, repr.TagSet.dictionary);
+    if (!args_core.checkdictionary(argv[0])) {
+        return args_core.panicDictionary(argv[0], 0, repr.TagSet.none);
     }
 
     t_info.tm_sec = @intCast(try entryGetInt(argv[0], "seconds"));
@@ -157,7 +155,7 @@ fn cfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     t_info.tm_mday = @intCast(try entryGetInt(argv[0], "month-day") + 1);
     t_info.tm_mon = @intCast(try entryGetInt(argv[0], "month"));
     t_info.tm_year = @intCast(try entryGetInt(argv[0], "year") - 1900);
-    t_info.tm_isdst = entryGetDst(argv[0]);
+    t_info.tm_isdst = try entryGetDst(argv[0]);
 
     var t: h.time_t = undefined;
     if (argv.len >= 2 and repr.truthy(argv[1])) {
@@ -195,17 +193,26 @@ fn cfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
 }
 
+/// The value a date dictionary holds for the keyword `field`, or nil.
+///
+/// A table and a struct are read with their prototypes, and a dictionary
+/// abstract through its `get`. Anything else holds nothing.
+fn entryField(entry: repr.Value, comptime field: [:0]const u8) raise.Error!repr.Value {
+    return switch (repr.typeOf(entry)) {
+        .table => tables.getKeyword(wrap.toTable(entry), field),
+        .@"struct" => structs.get(wrap.toStruct(entry), value.fromBytes(field, .keyword)),
+        .abstract => if (args_core.checkdictionary(entry))
+            access.get(entry, value.fromBytes(field, .keyword))
+        else
+            wrap.fromNil(),
+        else => wrap.fromNil(),
+    };
+}
+
 /// The DST field an entry names: -1 where it says nothing, which is
 /// `tm_isdst`'s "unknown".
-fn entryGetDst(entry: repr.Value) c_int {
-    var v: repr.Value = undefined;
-    if (repr.checkType(entry, repr.Tag.table)) {
-        v = tables.getKeyword(wrap.toTable(entry), "dst");
-    } else if (repr.checkType(entry, repr.Tag.@"struct")) {
-        v = structs.get(wrap.toStruct(entry), value.fromBytes("dst", .keyword));
-    } else {
-        v = wrap.fromNil();
-    }
+fn entryGetDst(entry: repr.Value) raise.Error!c_int {
+    const v = try entryField(entry, "dst");
     if (repr.checkType(v, repr.Tag.nil)) return -1;
     // `tm_isdst` is a tri-state and stays `c_int` for it: -1 is "unknown", not
     // "false".
@@ -214,14 +221,7 @@ fn entryGetDst(entry: repr.Value) c_int {
 
 /// One integer field of a date struct or table, or zero where it is absent.
 fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Error!timeint_t {
-    var i: repr.Value = undefined;
-    if (repr.checkType(entry, repr.Tag.table)) {
-        i = tables.getKeyword(wrap.toTable(entry), field);
-    } else if (repr.checkType(entry, repr.Tag.@"struct")) {
-        i = structs.get(wrap.toStruct(entry), value.fromBytes(field, .keyword));
-    } else {
-        return 0;
-    }
+    const i = try entryField(entry, field);
     if (repr.checkType(i, repr.Tag.nil)) return 0;
     if (windows) {
         if (!args_core.checkint(i)) {

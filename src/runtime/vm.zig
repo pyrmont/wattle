@@ -229,14 +229,17 @@ const Interp = struct {
     }
 
     /// The same for a set of tags. A set that includes both array and tuple
-    /// also passes an abstract whose type has a `chunk` callback, and its
-    /// refusal names `indexed value`.
+    /// also passes an abstract whose contents are elements, and a set that
+    /// includes both table and struct one whose contents are pairs. The
+    /// refusal of either names `indexed value` or `dictionary value`.
     inline fn assertTypes(self: *Interp, x: repr.Value, typeflags: repr.TagSet) raise.Error!?abi.Signal {
         if (repr.checkTypes(x, typeflags)) return null;
         const indexed = typeflags.bits() & repr.TagSet.indexed.bits() == repr.TagSet.indexed.bits();
+        const dictionary = typeflags.bits() & repr.TagSet.dictionary.bits() == repr.TagSet.dictionary.bits();
         if (indexed and args_core.checkindexed(x)) return null;
+        if (dictionary and args_core.checkdictionary(x)) return null;
         self.commit();
-        if (indexed) return try self.raisef("expected %K, got %v", .{ typeflags, x });
+        if (indexed or dictionary) return try self.raisef("expected %K, got %v", .{ typeflags, x });
         return try self.raisef("expected %T, got %v", .{ typeflags, x });
     }
 

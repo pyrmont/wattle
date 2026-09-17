@@ -493,6 +493,17 @@
 (assert (peg/match '{:main (replace "S" {"S" :spade})} "S7")
         "regression #300")
 
+# A map is a grammar and a replacement table, as a struct is. Its keys that
+# are not keywords are not rules.
+(assert (deep= @[:spade] (peg/match ~(replace '"S" ,(hash-map "S" :spade)) "S7"))
+        "a map as a replacement table")
+(assert (deep= @[nil] (peg/match ~(replace '"H" ,(hash-map "S" :spade)) "H7"))
+        "a map without the capture replaces it with nil")
+(assert (peg/match (hash-map :main '(* :a :a -1) :a "x" "b" "y") "xx")
+        "a map as a grammar")
+(assert-error "a map grammar needs :main" (peg/compile (hash-map :a "x")))
+(assert-error "a set is not a grammar" (peg/compile (hash-set :main)))
+
 # Lenprefix rule
 # 8b5bcaee3
 (def peg (peg/compile ~(* (lenprefix (/ (* '(any (if-not ":" 1)) ":")

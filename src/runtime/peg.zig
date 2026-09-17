@@ -39,6 +39,7 @@ const std = @import("std");
 const abi = @import("abi");
 const abstract_type = @import("../api/abstract_type.zig");
 const abstracts = @import("value/abstracts.zig");
+const access = @import("value/helpers/access.zig");
 const args_core = @import("args.zig");
 const arrays = @import("value/arrays.zig");
 const buffers = @import("value/buffers.zig");
@@ -805,10 +806,12 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
     // The final rule to return.
     var rule: u32 = @intCast(b.bytecode.items.len);
 
-    // Add to the cache. A struct is not cached, because the rule it compiles
-    // to is not settled yet, and caching the struct's main rule is just as
-    // effective.
-    if (!repr.checkType(peg, repr.Tag.@"struct")) {
+    // Add to the cache. A struct or a dictionary abstract is not cached,
+    // because the rule it compiles to is not settled yet, and caching its main
+    // rule is just as effective.
+    const copied_grammar = repr.checkType(peg, repr.Tag.@"struct") or
+        (repr.checkType(peg, repr.Tag.abstract) and args_core.checkdictionary(peg));
+    if (!copied_grammar) {
         var which_grammar = grammar;
         // A primitive pattern goes in the global cache, the root grammar table.
         if (!repr.checkType(peg, repr.Tag.tuple)) {
@@ -850,23 +853,10 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
                 return pegPanic(b, "grammar requires :main rule");
             rule = try pegCompile1(b, main_rule);
         },
-        repr.Tag.@"struct" => {
-            // Build a grammar table.
-            const st = wrap.toStruct(peg);
-            const capacity = structs.head(st).capacity;
-            const new_grammar = tables.new(@intCast(2 * capacity));
-            for (st[0..capacity]) |entry| {
-                if (repr.checkType(entry.key, repr.Tag.keyword)) {
-                    tables.put(new_grammar, entry.key, entry.value);
-                }
-            }
-            new_grammar.proto = grammar;
-            grammar = new_grammar;
-            b.grammar = grammar;
-            const main_rule = tables.rawget(grammar, value.fromBytes("main", .keyword));
-            if (repr.checkType(main_rule, repr.Tag.nil))
-                return pegPanic(b, "grammar requires :main rule");
-            rule = try pegCompile1(b, main_rule);
+        repr.Tag.@"struct" => rule = try pegGrammar(b, peg, grammar),
+        repr.Tag.abstract => {
+            if (!copied_grammar) return pegPanic(b, "unexpected peg source");
+            rule = try pegGrammar(b, peg, grammar);
         },
         repr.Tag.tuple => {
             const tup = wrap.toTuple(peg);
@@ -950,6 +940,28 @@ fn pegGetset(b: *Builder, x: repr.Value) raise.Error![*]const u8 {
 /// The method lookup behind `(:match peg text)` and its siblings.
 fn pegGetter(_: *Peg, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&peg_methods));
+}
+
+/// Compiles a struct or a dictionary abstract as a grammar, and returns its
+/// `:main` rule.
+///
+/// `peg` is the grammar's source and `outer` the grammar it is inside. The
+/// keyword pairs of `peg` are copied into a table whose prototype is `outer`,
+/// which becomes the grammar its rules are compiled in. A table is compiled as
+/// a grammar by cloning rather than through this.
+fn pegGrammar(b: *Builder, peg: repr.Value, outer: *tables.Table) raise.Error!u32 {
+    var pairs = (try args_core.keyvals(peg)).?;
+    // Sized so that no `put` below grows it, so nothing is allocated while a
+    // run is held.
+    const grammar = tables.new(2 * pairs.count + 2);
+    while (try pairs.next()) |kv| {
+        if (repr.checkType(kv.key, repr.Tag.keyword)) tables.put(grammar, kv.key, kv.value);
+    }
+    grammar.proto = outer;
+    b.grammar = grammar;
+    const main_rule = tables.rawget(grammar, value.fromBytes("main", .keyword));
+    if (repr.checkType(main_rule, repr.Tag.nil)) return pegPanic(b, "grammar requires :main rule");
+    return pegCompile1(b, main_rule);
 }
 
 /// Traces the constants, which are the only Janet values a compiled peg
@@ -1522,6 +1534,18 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                         if (s.captures.count != 0) {
                             cap = tables.get(
                                 wrap.toTable(constant),
+                                s.captures.slice()[@intCast(s.captures.count - 1)],
+                            );
+                        }
+                    },
+                    // A dictionary abstract is looked up as a table is, and any
+                    // other abstract is the replacement itself.
+                    repr.Tag.abstract => {
+                        if (!args_core.checkdictionary(constant)) {
+                            cap = constant;
+                        } else if (s.captures.count != 0) {
+                            cap = try access.get(
+                                constant,
                                 s.captures.slice()[@intCast(s.captures.count - 1)],
                             );
                         }

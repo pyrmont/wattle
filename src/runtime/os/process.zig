@@ -42,6 +42,7 @@ const builtin = @import("builtin");
 const abi = @import("abi");
 const abstract_type = @import("../../api/abstract_type.zig");
 const abstracts = @import("../value/abstracts.zig");
+const access = @import("../value/helpers/access.zig");
 const args_core = @import("../args.zig");
 const buffers = @import("../value/buffers.zig");
 const c = @import("cabi");
@@ -63,6 +64,7 @@ const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const stdio = @import("../stdio.zig");
 const strings = @import("../value/strings.zig");
+const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
@@ -654,18 +656,26 @@ pub fn wait(pid: i64, val: *i32) i32 {
 /// `envKeyOk` is called only where the C original called it.
 fn buildEnv(argv: []repr.Value) raise.Error!EnvBlock {
     if (argv.len <= 2) return null;
-    const dict = try args_core.getDictionary(argv, 2);
+    var dict = try args_core.getKeyvals(argv, 2);
     if (windows) {
+        // Measured in one pass and filled in a second, so the buffer grows
+        // once and no run is held across an allocation.
+        var total: usize = 0;
+        while (try dict.next()) |kv| {
+            if (!repr.checkType(kv.key, repr.Tag.string)) continue;
+            if (!repr.checkType(kv.value, repr.Tag.string)) continue;
+            total += strings.head(wrap.toString(kv.key)).length + strings.head(wrap.toString(kv.value)).length + 2;
+        }
         const temp = buffers.new(10);
-        for (0..dict.cap) |i| {
-            const kv = &dict.kvs.?[i];
+        try buffers.extra(temp, @intCast(total));
+        dict = try args_core.getKeyvals(argv, 2);
+        while (try dict.next()) |kv| {
             if (!repr.checkType(kv.key, repr.Tag.string)) continue;
             if (!repr.checkType(kv.value, repr.Tag.string)) continue;
             const keys = wrap.toString(kv.key);
             const vals = wrap.toString(kv.value);
             const klen = strings.head(keys).length;
             const vlen = strings.head(vals).length;
-            try buffers.extra(temp, @intCast(klen + vlen + 2));
             envEntryFill(keys, klen, vals, vlen, temp.data.? + temp.count);
             temp.count += klen + vlen + 2;
         }
@@ -676,11 +686,10 @@ fn buildEnv(argv: []repr.Value) raise.Error!EnvBlock {
         @memcpy(ret[0..@intCast(temp.count)], temp.slice());
         return ret;
     } else {
-        const slots: usize = @intCast(dict.len + 1);
+        const slots: usize = dict.count + 1;
         const envp: [*]?[*:0]u8 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(?*u8) * slots)));
         var j: usize = 0;
-        for (0..dict.cap) |i| {
-            const kv = &dict.kvs.?[i];
+        while (try dict.next()) |kv| {
             if (!repr.checkType(kv.key, repr.Tag.string)) continue;
             if (!repr.checkType(kv.value, repr.Tag.string)) continue;
             const keys = wrap.toString(kv.key);
@@ -971,10 +980,10 @@ fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Error!repr.Value {
     r.owner_flags = if (is_spawn and flags & 0x8 != 0) proc_allow_zombie else 0;
 
     if (argv.len > 2 and mode != .exec) {
-        const tab = try args_core.getDictionary(argv, 2);
-        const maybe_stdin = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("in", .keyword));
-        const maybe_stdout = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("out", .keyword));
-        const maybe_stderr = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("err", .keyword));
+        _ = try args_core.getKeyvals(argv, 2);
+        const maybe_stdin = try optionOf(argv[2], "in");
+        const maybe_stdout = try optionOf(argv[2], "out");
+        const maybe_stderr = try optionOf(argv[2], "err");
         var slot = maybe_stdin;
         if (is_spawn and args_core.keyeq(maybe_stdin, "pipe")) {
             if (makePipes(true)) |p| {
@@ -1018,8 +1027,8 @@ fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Error!repr.Value {
     // The working directory, for `os/execute` and `os/spawn` alike.
     var chdir_path: ?[*:0]const u8 = null;
     if (argv.len > 2) {
-        const tab = try args_core.getDictionary(argv, 2);
-        const workdir = value.dictionaryGet(tab.kvs.?[0..@intCast(tab.cap)], value.fromBytes("cd", .keyword));
+        _ = try args_core.getKeyvals(argv, 2);
+        const workdir = try optionOf(argv[2], "cd");
         if (repr.checkType(workdir, repr.Tag.string)) {
             chdir_path = @ptrCast(wrap.toString(workdir));
             if (!spawn_chdir) {
@@ -1199,6 +1208,19 @@ fn newProc() *Proc {
     proc.err = null;
     proc.flags = 0;
     return proc;
+}
+
+/// The value the options dictionary `x` holds for the keyword `name`, or nil.
+///
+/// A table's or a struct's own slots are read and its prototype is not, and a
+/// dictionary abstract is read through its `get`.
+fn optionOf(x: repr.Value, comptime name: []const u8) raise.Error!repr.Value {
+    const key = value.fromBytes(name, .keyword);
+    return switch (repr.typeOf(x)) {
+        .table => tables.rawget(wrap.toTable(x), key),
+        .@"struct" => structs.rawget(wrap.toStruct(x), key),
+        else => access.get(x, key),
+    };
 }
 
 /// Reaps the child and frees its stdio when the abstract is collected.
