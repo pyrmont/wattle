@@ -43,7 +43,6 @@ const std = @import("std");
 const abi = @import("abi");
 const args_core = @import("../args.zig");
 const corefn = @import("../corefn.zig");
-const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
@@ -73,11 +72,6 @@ pub const tuple_payload = @offsetOf(TupleHead, "_data");
 // ==========================================================================
 // Types
 // ==========================================================================
-
-/// An argument of `tuple/join` and how many elements it has, where it is an
-/// abstract. An array's or a tuple's count is read again once no more code
-/// can run, since that code could change it.
-const JoinPart = struct { x: repr.Value, len: usize };
 
 /// The slot array Janet passes a tuple around as.
 pub const Tuple = [*]const repr.Value;
@@ -221,10 +215,8 @@ pub inline fn view(t: [*]const repr.Value) []const repr.Value {
 /// channel in its signature, so each of these delivers its raise through an
 /// abi, and none keeps a value across a call that can raise.
 ///
-/// `cfunTupleJoin` reads its arguments before it allocates. An abstract's
-/// `length` callback can run code, and code can collect, which would free a
-/// tuple nothing roots yet, so every length is read and every argument checked
-/// before `begin`, and nothing after it runs code.
+/// `cfunTupleJoin` checks every argument and counts every element before it
+/// allocates, so a refusal leaves nothing behind.
 fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
     const tup = newFrom(argv);
     setBracketed(head(tup));
@@ -234,8 +226,8 @@ fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, -1);
     var total: usize = 0;
-    for (argv, 0..) |arg, index| {
-        const vals = args_core.items(arg) orelse return joinParts(argv, index);
+    for (argv) |arg| {
+        const vals = args_core.items(arg) orelse return joinParts(argv);
         total = try joinedLength(total, vals.len);
     }
     // Every argument is an array or a tuple, so nothing here runs code and
@@ -289,50 +281,30 @@ fn cfunTupleType(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes("parens", .keyword);
 }
 
-/// `tuple/join` where an abstract is among the arguments, `first` being the
-/// first argument that is not an array or a tuple.
+/// `tuple/join` where an argument is not an array or a tuple.
 ///
-/// The arguments are copied out of `argv` before any `length` callback runs,
-/// because a callback that calls Janet code can grow the fiber's stack, which
-/// `argv` points into. Every length is then read, and everything after that
-/// runs no code: the counts, the allocation and the copy.
-fn joinParts(argv: []repr.Value, first: usize) raise.Error!repr.Value {
-    var small: [8]JoinPart = undefined;
-    const parts = if (argv.len <= small.len)
-        small[0..argv.len]
-    else
-        gc_alloc.scratch_heap.alloc(JoinPart, argv.len) catch fatal.outOfMemory();
-    for (parts, argv) |*part, arg| part.* = .{ .x = arg, .len = 0 };
-
-    for (parts[first..], first..) |*part, index| {
-        if (args_core.items(part.x) != null) continue;
-        const source = try args_core.chunks(part.x) orelse {
-            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i32, @intCast(index)), part.x });
-        };
-        part.len = source.len;
-    }
-
+/// Each argument is read twice, once to count and once to copy, since a run
+/// does not survive the allocation between. Neither `length` nor `chunk` can
+/// call into Janet code, so the second read gives what the first counted and
+/// nothing can collect the tuple before `end`.
+fn joinParts(argv: []repr.Value) raise.Error!repr.Value {
     var total: usize = 0;
-    for (parts) |part| {
-        const len = if (args_core.items(part.x)) |vals| vals.len else part.len;
-        total = try joinedLength(total, len);
+    for (argv, 0..) |arg, index| {
+        const source = try args_core.chunks(arg) orelse {
+            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i32, @intCast(index)), arg });
+        };
+        total = try joinedLength(total, source.len);
     }
     const tup = begin(total);
     var written: usize = 0;
-    for (parts) |part| {
-        if (args_core.items(part.x)) |vals| {
-            @memcpy(tup[written..][0..vals.len], vals);
-            written += vals.len;
-            continue;
-        }
-        var source = args_core.chunksOfLength(part.x, part.len);
+    for (argv) |arg| {
+        var source = (try args_core.chunks(arg)).?;
         while (try source.next()) |run| {
             @memcpy(tup[written..][0..run.len], run);
             written += run.len;
         }
     }
     std.debug.assert(written == total);
-    if (parts.ptr != &small) gc_alloc.scratch_heap.free(parts);
     return wrap.fromTuple(end(tup));
 }
 

@@ -486,8 +486,10 @@ pub fn Spec(comptime T: type) type {
         next: ?*const fn (*T, Value) Error!Value = null,
         /// Returns the number of elements. It may raise, but may not call
         /// into Janet code, so a caller can read a length while it holds
-        /// `argv` or a value nothing roots. A type without it has no length:
-        /// the runtime does not fall back to a `:length` method.
+        /// `argv` or a value nothing roots, and it gives the same answer until
+        /// the payload changes, so a caller can read it twice. A type without
+        /// it has no length: the runtime does not fall back to a `:length`
+        /// method.
         length: ?*const fn (*T, usize) Error!usize = null,
         call: ?*const fn (*T, []Value) Error!Value = null,
 

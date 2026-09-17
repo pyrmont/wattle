@@ -8,22 +8,18 @@
 //! its own because every other thing it does has a Janet spelling and
 //! `suite-corelib.janet` covers it.
 //!
-//! What no Janet suite can cover is a type that answers badly. A run is valid
-//! only until the next run is taken from the same value, and a `length`
-//! callback runs code, so it can answer differently each time it is called
-//! and can collect. `tuple/join` has to read each length once, and before it
-//! allocates the tuple.
-//! Neither property can be reached from Janet, because nothing a Janet
-//! program can make implements the callback at all, and neither can be
-//! reached from `test/zig-native.janet`, because a module written to be
-//! correct answers consistently.
+//! What no Janet suite can cover is a type whose runs a real collection would
+//! not hand out. A run is valid only until the next run is taken from the same
+//! value, so the probes here reuse one buffer for every run, and a site that
+//! holds two runs of one value at once reads the wrong elements. That cannot
+//! be reached from Janet, because nothing a Janet program can make implements
+//! the callback at all, nor from `test/zig-native.janet`, whose module hands
+//! out stable runs.
 //!
-//! ## What this file cannot cover
-//!
-//! The collector is driven here only from a `length` callback. A raise part
-//! way through a copy leaves a tuple nothing reaches, which the sweep frees
-//! without reading its slots, and `test/gc_stress.zig` is where that belongs.
-//! What is asserted here is that the raise happens at all.
+//! A `length` callback may not call into Janet code, so nothing here drives
+//! one that does, and nothing tests a length that changes while the payload
+//! does not. A type that breaks either rule is broken, as one whose `chunk`
+//! allocates is.
 
 // ==========================================================================
 // Standard library imports
@@ -46,8 +42,6 @@ const harness = @import("harness.zig");
 const raise = @import("subsystems").raise;
 const registry = @import("subsystems").registry;
 const repr = @import("repr");
-const tuples = @import("subsystems").value.tuples;
-const vm_entry = @import("subsystems").vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -56,22 +50,14 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 
 /// Numbers in runs of three from one buffer the callback overwrites on every
-/// call, with a `length` that can disagree with itself.
+/// call.
 ///
-/// `count` is what `length` reports the first time. `lie` is what it reports
-/// afterwards, which is how the two counts `tuple/join` reads are made to
-/// differ: a real type answers the same both times.
-///
-/// Every run is three long, so `count` is a multiple of three wherever the
-/// elements are read rather than the disagreement. The elements are numbers,
-/// so nothing in the buffer has to be marked.
+/// Every run is three long, so `count` is a multiple of three wherever a whole
+/// value is read. The elements are numbers, so nothing in the buffer has to be
+/// marked.
 const Join = struct {
     count: usize,
-    lie: Lie,
-    calls: usize,
     buffer: [3]repr.Value,
-
-    const Lie = enum { none, grow, shrink };
 };
 
 const join_at = abstract_type.define(Join, .{
@@ -90,83 +76,23 @@ fn joinChunk(self: *Join, index: usize) abstract_type.Chunk {
     return .{ .items = &self.buffer, .start = start };
 }
 
-/// Reports `count`, and then what `lie` asks for on every later call.
 fn joinLength(self: *Join, _: usize) raise.Error!usize {
-    defer self.calls += 1;
-    if (self.calls == 0) return self.count;
-    return switch (self.lie) {
-        .none => self.count,
-        .grow => self.count + 3,
-        .shrink => self.count - 3,
-    };
+    return self.count;
 }
 
 fn cfunJoin(argv: []repr.Value) raise.Error!repr.Value {
-    try args.arity(argv, 1, 2);
+    try args.fixarity(argv, 1);
     const count = try args.getInteger(argv, 0);
-    const lie: Join.Lie = if (argv.len == 2) switch (try args.getInteger(argv, 1)) {
-        1 => .grow,
-        2 => .shrink,
-        else => .none,
-    } else .none;
     const raw = abstracts.newBytes(&join_at, @sizeOf(Join));
     const join: *Join = @ptrCast(@alignCast(raw));
-    join.* = .{ .count = @intCast(count), .lie = lie, .calls = 0, .buffer = undefined };
+    join.* = .{ .count = @intCast(count), .buffer = undefined };
     return wrap.fromAbstract(raw);
 }
 
 const cfuns = [_]abi.Reg{
     .{ .name = "sites/join", .cfun = raise.stored(&cfunJoin), .documentation = null },
     .{ .name = "sites/held", .cfun = raise.stored(&cfunHeld), .documentation = null },
-    .{ .name = "sites/reenter", .cfun = raise.stored(&cfunReenter), .documentation = null },
 };
-
-/// Numbers as `Join` gives them, with a `length` that calls a Janet function
-/// on a fresh fiber every time after the first.
-///
-/// A module's `pcall` resumes a fiber without suspending the collector, so a
-/// `length` callback is a place a collection can run. A site that allocates
-/// and then calls `length` holds a block nothing roots across that
-/// collection.
-const Reenter = struct {
-    count: usize,
-    calls: usize,
-    callback: repr.Value,
-    buffer: [3]repr.Value,
-};
-
-const reenter_at = abstract_type.define(Reenter, .{
-    .name = "indexed-sites/reenter",
-    .length = reenterLength,
-    .chunk = reenterChunk,
-    .gcmark = reenterMark,
-});
-
-fn reenterChunk(self: *Reenter, index: usize) abstract_type.Chunk {
-    const start = index - index % 3;
-    for (&self.buffer, start..) |*slot, i| slot.* = wrap.fromInteger(@intCast(i * 10));
-    return .{ .items = &self.buffer, .start = start };
-}
-
-fn reenterLength(self: *Reenter, _: usize) raise.Error!usize {
-    defer self.calls += 1;
-    if (self.calls > 0) _ = vm_entry.pcall(wrap.toFunction(self.callback), &.{}, null);
-    return self.count;
-}
-
-fn reenterMark(self: *Reenter, _: usize) void {
-    gc_mark.mark(self.callback);
-}
-
-fn cfunReenter(argv: []repr.Value) raise.Error!repr.Value {
-    try args.fixarity(argv, 2);
-    const count = try args.getSize(argv, 0);
-    const callback = try args.getFunction(argv, 1);
-    const raw = abstracts.newBytes(&reenter_at, @sizeOf(Reenter));
-    const reenter: *Reenter = @ptrCast(@alignCast(raw));
-    reenter.* = .{ .count = count, .calls = 0, .callback = wrap.fromFunction(callback), .buffer = undefined };
-    return wrap.fromAbstract(raw);
-}
 
 /// Values given at construction, handed out in runs of a chosen size.
 ///
@@ -225,9 +151,7 @@ fn cfunHeld(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `tuple/join` counts every argument, allocates, and then copies. A tuple
-/// holding the same elements is the oracle. A `length` that would answer
-/// differently a second time is read once, so the tuple has the elements of
-/// the first answer.
+/// holding the same elements is the oracle.
 fn tupleJoinReadsAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
@@ -245,12 +169,6 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         \\(check "mixed with tuples"
         \\       (= (tuple/join [:a] v [:b]) (tuple/join [:a] oracle [:b])))
         \\(check "no arguments is the empty tuple" (= [] (tuple/join)))
-        \\(check "a length that would grow is read once"
-        \\       (= (tuple/join oracle) (tuple/join (sites/join 9 1))))
-        \\(check "a length that would shrink is read once"
-        \\       (= (tuple/join oracle) (tuple/join (sites/join 9 2))))
-        \\(check "and after a tuple"
-        \\       (= (tuple/join [:a] oracle) (tuple/join [:a] (sites/join 9 1))))
         \\(check "what is not indexed is still refused"
         \\       (= "expected indexed type for argument 0, got 5"
         \\          (refusal tuple/join 5)))
@@ -272,27 +190,6 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         }
         expect(false);
     }
-}
-
-/// A collection run by an argument's `length` callback does not free the
-/// tuple `tuple/join` is building. The tuple is checked against the heap list
-/// by address before anything reads it, so a tuple the sweep freed fails here
-/// rather than being read.
-fn tupleJoinSurvivesACollectionInACallback() void {
-    var out: repr.Value = undefined;
-    const env = harness.coreEnv();
-    registry.cfuns(env, null, &cfuns);
-    const source =
-        \\(tuple/join [:a] (sites/reenter 9 (fn [] (gccollect))) [:b])
-    ;
-    expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
-    expect(harness.isType(out, repr.Tag.tuple));
-    const tup = wrap.toTuple(out);
-    expect(harness.heap.onList(harness.vm().gc.blocks, tuples.head(tup)));
-    const view = tuples.view(tup);
-    expect(view.len == 11);
-    expect(harness.keywordIs(view[0], "a") and harness.keywordIs(view[10], "b"));
-    for (view[1..10], 0..) |x, i| expect(harness.integerIs(x, @intCast(i * 10)));
 }
 
 /// The three slice bindings read a window of an indexed value, so a run that
@@ -330,16 +227,6 @@ fn sliceReadsAWindowOfAnIndexedAbstract() void {
         \\       (deep= (array/slice v) (array/slice oracle)))
         \\(check "a range past the end is still refused"
         \\       (= (refusal tuple/slice v 12) (refusal tuple/slice oracle 12)))
-        \\# A count that grows between the two reads is caught by the run
-        \\# check rather than by the total: `getSlice` reads the larger count,
-        \\# so the window runs past the length `chunks` read, and the callback
-        \\# is asked for an index its own length does not cover.
-        \\(check "a count that grows between the two reads"
-        \\       (= "chunk of indexed-sites/join does not hold index 9"
-        \\          (refusal tuple/slice (sites/join 9 1))))
-        \\# A count that shrinks gives a smaller range, which is read whole.
-        \\(check "a count that shrinks between the two reads"
-        \\       (= (tuple/slice oracle 0 6) (tuple/slice (sites/join 9 2))))
         \\failures
     ;
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
@@ -540,7 +427,6 @@ fn aPegSpliceReadsAnIndexedAbstract() void {
 pub fn run() void {
     harness.init();
     tupleJoinReadsAnIndexedAbstract();
-    tupleJoinSurvivesACollectionInACallback();
     sliceReadsAWindowOfAnIndexedAbstract();
     joinAndSelectReadAnIndexedAbstract();
     theGatheringSitesReadAnIndexedAbstract();

@@ -515,11 +515,10 @@ fn cfunArraySlice(argv: []repr.Value) raise.Error!repr.Value {
     source.window(@intCast(range.start), @intCast(range.end));
     var written: usize = 0;
     while (try source.next()) |run| {
-        if (len - written < run.len) return raise.panic(args_core.grew_message);
         @memcpy(array.data.?[written..][0..run.len], run);
         written += run.len;
     }
-    if (written != len) return raise.panic(args_core.shrank_message);
+    std.debug.assert(written == len);
     array.count = len;
     return wrap.fromArray(array);
 }
