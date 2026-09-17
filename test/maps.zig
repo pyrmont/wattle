@@ -1,6 +1,6 @@
-//! Behavioral contract for `core/map` and `core/set`: the shape of a trie,
-//! reading and iterating, persistence across updates, equality, order and
-//! hash.
+//! Behavioral contract for `core/map` and `core/set` and their transients: the
+//! shape of a trie, reading and iterating, persistence across updates, what a
+//! transient may change, equality, order and hash.
 //!
 //! The oracle is a list of entries searched by `order.equals`, which shares
 //! no code with the trie it checks. Each case updates a list the way it
@@ -36,6 +36,7 @@ const harness = @import("harness.zig");
 const maps = @import("subsystems").value.maps;
 const order = @import("subsystems").value.order;
 const repr = @import("repr");
+const transients = @import("subsystems").value.transients;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
@@ -238,8 +239,106 @@ fn sameShape(a: ?*maps.Node, b: ?*maps.Node) bool {
     return true;
 }
 
+/// The number of nodes with `own_editable` set in the trie under `node`,
+/// `node` included. The walk follows every child, not only editable ones, so
+/// it does not rely on the rule that `persistent` does.
+fn editableUnder(node: *maps.Node) usize {
+    var count: usize = if (node.gc.flags.own & maps.own_editable != 0) 1 else 0;
+    for (maps.children(node)) |slot| count += editableUnder(maps.asNode(slot.?));
+    return count;
+}
+
+/// The number of nodes with `own_editable` set in `t`'s trie.
+fn editableIn(t: *const maps.Trie) usize {
+    return if (t.root) |root| editableUnder(root) else 0;
+}
+
+/// A transient changes a node in place once it has made the node, and never a
+/// node of the collection it came from. `persistent` leaves no node editable,
+/// and a second transient of the result copies rather than changing the first
+/// transient's nodes.
+fn aTransientChangesOnlyItsOwnNodes() !void {
+    const allocator = std.heap.c_allocator;
+    var entries: [400]Entry = undefined;
+    for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i)) };
+    const original = buildOn(.map, &empty_trie, &entries);
+    gc_alloc.gcroot(wrap.fromAbstract(original));
+    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+
+    const t = transients.fromTrie(original, .map);
+    gc_alloc.gcroot(wrap.fromAbstract(t));
+    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(t));
+    const marker = harness.wrapInteger(-1);
+
+    // The first update copies the root, and the second changes the copy.
+    maps.transientPut(&t.map, .map, &.{ harness.wrapInteger(7), marker });
+    const copied = t.map.root.?;
+    expect(copied != original.root.?);
+    expect(copied.gc.flags.own & maps.own_editable != 0);
+    maps.transientPut(&t.map, .map, &.{ harness.wrapInteger(8), marker });
+    expect(t.map.root.? == copied);
+
+    // Additions and then removals of every other key from 100 to 298, with a
+    // collection among the additions.
+    var expected: [600]Entry = undefined;
+    @memcpy(expected[0..400], &entries);
+    expected[7].value = marker;
+    expected[8].value = marker;
+    for (400..600) |i| {
+        expected[i] = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i)) };
+        maps.transientPut(&t.map, .map, entryOf(.map, &expected[i]));
+        if (i == 500) gc_mark.collect();
+    }
+    for (0..100) |i| maps.transientRemove(&t.map, .map, harness.wrapInteger(@intCast(i * 2 + 100)));
+    var remaining: std.ArrayListUnmanaged(Entry) = .empty;
+    defer remaining.deinit(allocator);
+    for (expected, 0..) |e, i| {
+        if (i >= 100 and i < 300 and i % 2 == 0) continue;
+        try remaining.append(allocator, e);
+    }
+    expect(editableIn(&t.map) > 0);
+    try expectEntries(.map, &t.map, remaining.items);
+    try expectEntries(.map, original, &entries);
+    expect(editableIn(original) == 0);
+
+    const persisted = maps.toTrie(transients.persistent(t), .map).?;
+    gc_alloc.gcroot(wrap.fromAbstract(persisted));
+    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(persisted));
+    expect(t.* == .ended);
+    expect(editableIn(persisted) == 0);
+    try expectEntries(.map, persisted, remaining.items);
+    expect(sameShape(persisted.root, buildOn(.map, &empty_trie, remaining.items).root));
+
+    const second = transients.fromTrie(persisted, .map);
+    gc_alloc.gcroot(wrap.fromAbstract(second));
+    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(second));
+    maps.transientPut(&second.map, .map, &.{ harness.wrapInteger(9), harness.wrapInteger(-2) });
+    expect(second.map.root.? != persisted.root.?);
+    try expectEntries(.map, persisted, remaining.items);
+}
+
+/// A transient that is never persisted is collected with every node it made,
+/// and the collection it came from keeps its own.
+fn anAbandonedTransientIsCollected() !void {
+    var entries: [200]Entry = undefined;
+    for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(0) };
+    const original = buildOn(.set, &empty_trie, &entries);
+    gc_alloc.gcroot(wrap.fromAbstract(original));
+    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    gc_mark.collect();
+    const before = harness.vm().gc.block_count;
+
+    const t = transients.fromTrie(original, .set);
+    for (200..700) |i| maps.transientPut(&t.set, .set, &.{harness.wrapInteger(@intCast(i))});
+    for (0..50) |i| maps.transientRemove(&t.set, .set, harness.wrapInteger(@intCast(i)));
+    expect(harness.vm().gc.block_count > before + 15);
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+    try expectEntries(.set, original, &entries);
+}
+
 /// Updates chosen at random from a fixed seed, each applied to a version
-/// chosen at random or to the latest, agree with the same updates applied to lists. Every so
+/// chosen at random or to the latest, some through a transient, agree with the same updates applied to lists. Every so
 /// often a version is rebuilt from its list in a shuffled order, and the two
 /// tries are the same node by node, equal, and of one hash. Every version made
 /// is kept and rooted, and every one is checked again after the last update
@@ -278,7 +377,37 @@ fn randomUpdatesAgainstLists(kind: maps.Kind, seed: u64) !void {
         else
             keys[random.uintLessThan(usize, keys.len)];
         var t: *maps.Trie = undefined;
-        if (random.uintLessThan(u8, 3) == 0) {
+        const choice = random.uintLessThan(u8, 8);
+        if (choice == 0) {
+            // A batch through a transient, rooted in case the batch collects,
+            // with a removal for every two additions.
+            const transient = transients.fromTrie(source.trie, kind);
+            gc_alloc.gcroot(wrap.fromAbstract(transient));
+            const trie = switch (transient.*) {
+                .map, .set => |*held| held,
+                else => unreachable,
+            };
+            for (0..random.uintLessThan(usize, 60)) |i| {
+                const batch_key = keys[random.uintLessThan(usize, keys.len)];
+                if (i % 3 == 2) {
+                    maps.transientRemove(trie, kind, batch_key);
+                    if (oracleFind(entries.items, batch_key)) |at| _ = entries.swapRemove(at);
+                } else {
+                    const x = harness.wrapInteger(@intCast(round * 100 + i));
+                    const e: Entry = .{ .key = batch_key, .value = x };
+                    maps.transientPut(trie, kind, entryOf(kind, &e));
+                    if (oracleFind(entries.items, batch_key)) |at| {
+                        entries.items[at].value = x;
+                    } else {
+                        try entries.append(allocator, e);
+                    }
+                }
+                if (i == 30) gc_mark.collect();
+            }
+            t = maps.toTrie(transients.persistent(transient), kind).?;
+            _ = gc_alloc.gcunroot(wrap.fromAbstract(transient));
+            expect(editableIn(t) == 0);
+        } else if (choice < 3) {
             t = maps.remove(source.trie, kind, key);
             if (oracleFind(entries.items, key)) |i| _ = entries.swapRemove(i);
         } else {
@@ -447,6 +576,8 @@ fn body() !void {
     try randomUpdatesAgainstLists(.set, 0x7365_74);
     try removalsLeaveTheShapeInsertionMakes();
     try anUpdateKeepsTheOriginal();
+    try aTransientChangesOnlyItsOwnNodes();
+    try anAbandonedTransientIsCollected();
     try equalityOrderAndHash();
 }
 

@@ -62,6 +62,22 @@
 //!   alone. A removal that leaves a child so puts the collision node in the
 //!   child's place, where inserting the same keys would have put it.
 //!
+//! ## Updating a trie in place
+//!
+//! `transients.zig`'s transient holds a `Trie` and updates it through
+//! `transientPut` and `transientRemove`, and `persistent` makes a map or a set
+//! of it. These rules make that safe:
+//!
+//! - A transient update sets `own_editable` on every node it makes, and
+//!   changes a node in place only where the bit is set. A node a transient
+//!   made is reachable from that transient and from nothing else, because a
+//!   transient is made only from a persistent collection and `persistent!`
+//!   ends it.
+//!
+//! - An update makes the whole path from the root editable, so every editable
+//!   node's parent is editable. `persistent` clears the bits by walking down
+//!   through set bits only, which visits exactly the nodes the transient made.
+//!
 //! ## Keys and values
 //!
 //! A key is never nil or NaN. Nil is where `next` starts and ends, and NaN is
@@ -278,6 +294,17 @@ pub fn assocMap(argv: []const repr.Value) raise.Error!repr.Value {
     return result(argv[0], src, built, .map);
 }
 
+/// Refuses a key that cannot be stored: nil, which is where `next` starts and
+/// ends, and NaN, which is not equal to itself.
+///
+/// This function raises if `key` is nil or NaN.
+pub fn checkKey(key: repr.Value) raise.Error!void {
+    const nan = repr.checkType(key, repr.Tag.number) and std.math.isNan(wrap.toNumber(key));
+    if (repr.checkType(key, repr.Tag.nil) or nan) {
+        return pp_format.panicf("cannot use %v as a key", .{key});
+    }
+}
+
 /// Returns the child slots of `node`, one for each bit set in `nodemap`.
 ///
 /// This function cannot raise.
@@ -419,6 +446,16 @@ pub fn ofHead(head: *const abi.GCObject) *const Trie {
     return @ptrCast(@alignCast(abstracts.data(abstract_head)));
 }
 
+/// Returns a new collection of `kind` with `t`'s entries, and clears
+/// `own_editable` on every node a transient update of `t` made.
+///
+/// This function cannot raise. The new collection takes `t`'s nodes, so the
+/// caller makes no further transient update of `t`.
+pub fn persistent(t: *const Trie, kind: Kind) *Trie {
+    if (t.root) |root| clearEditable(root);
+    return newTrie(kind, t.*);
+}
+
 /// Returns a new collection of `kind` equal to `src` with `entry` added, or
 /// with the value of the entry that has its key replaced.
 ///
@@ -451,6 +488,26 @@ pub fn toTrie(x: repr.Value, kind: Kind) ?*Trie {
     const payload = wrap.toAbstract(x);
     if (abi.abstractHead(payload).type != kind.abstractType()) return null;
     return @ptrCast(@alignCast(payload));
+}
+
+/// Adds `entry` to `t` in place, or replaces the value of the entry that has
+/// its key.
+///
+/// This function cannot raise. `entry` is as many values as `kind` says, the
+/// key first. The key must not be nil or NaN and a map's value must not be
+/// nil, and either is illegal behaviour. `t` must be a transient's, since the
+/// update changes the nodes it has made.
+pub fn transientPut(t: *Trie, kind: Kind, entry: []const repr.Value) void {
+    std.debug.assert(entry.len == kind.entryWidth());
+    putEntry(t, kind, entry, .transient);
+}
+
+/// Removes the entry whose key is `key` from `t` in place, if there is one.
+///
+/// This function cannot raise. `t` must be a transient's, since the update
+/// changes the nodes it has made.
+pub fn transientRemove(t: *Trie, kind: Kind, key: repr.Value) void {
+    removeKey(t, kind, key, .transient);
 }
 
 // ==========================================================================
@@ -575,15 +632,6 @@ fn cfunHashSet(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(newTrie(.set, built));
 }
 
-/// Refuses a key that cannot be stored: nil, which is where `next` starts and
-/// ends, and NaN, which is not equal to itself.
-fn checkKey(key: repr.Value) raise.Error!void {
-    const nan = repr.checkType(key, repr.Tag.number) and std.math.isNan(wrap.toNumber(key));
-    if (repr.checkType(key, repr.Tag.nil) or nan) {
-        return pp_format.panicf("cannot use %v as a key", .{key});
-    }
-}
-
 /// The index among `node`'s children of the child in slot `bit`.
 inline fn childIndex(node: *const Node, bit: u32) usize {
     return @popCount(node.nodemap & (bit - 1));
@@ -595,6 +643,16 @@ fn childOffset(kind: Kind, len: u32) usize {
     const values = std.math.mul(usize, len, kind.entryWidth()) catch fatal.outOfMemory();
     const bytes = std.math.mul(usize, values, @sizeOf(repr.Value)) catch fatal.outOfMemory();
     return std.math.add(usize, @offsetOf(Node, "_entries"), bytes) catch fatal.outOfMemory();
+}
+
+/// Clears `own_editable` on `node` and on every node under it that has it set.
+///
+/// Every editable node's parent is editable, because a transient update makes
+/// the whole path editable, so the walk stops at a node without the bit.
+fn clearEditable(node: *Node) void {
+    if (!isEditable(node)) return;
+    node.gc.flags.own &= ~own_editable;
+    for (children(node)) |slot| clearEditable(asNode(slot.?));
 }
 
 /// Allocates a copy of `node`, editable where `editable` is true.

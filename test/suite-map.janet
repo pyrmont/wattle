@@ -90,7 +90,6 @@
   "bad slot #0, expected core/vector or core/map, got <core/set 1>"
   (assoc (hash-set 1) 1 2))
 (assert-error "disj a map" (disj m :a))
-(assert-error "transient of a map" (transient m))
 
 (var grown (hash-map))
 (for i 0 3000 (set grown (assoc grown i (* i i))))
@@ -101,6 +100,70 @@
 (loop [i :range [0 3000 2]] (set shrunk (dissoc shrunk i)))
 (assert (= 1500 (length shrunk)) "dissoc one at a time")
 (assert (= 3000 (length grown)) "dissoc leaves every earlier version")
+
+# Transients
+
+(def tm (transient (hash-map :a 1 :b 2)))
+(assert (= :core/transient (type tm)) "a transient of a map is a core/transient")
+(assert (= tm (assoc! tm :c 3 :a 10)) "assoc! returns the transient")
+(assert (= tm (dissoc! tm :b :z nil)) "dissoc! returns the transient")
+(assert (= 2 (length tm)) "transient map length")
+(assert (= 10 (get tm :a)) "transient map get")
+(assert (nil? (in tm :b)) "transient map in a missing key")
+(assert (= :dflt (get tm :b :dflt)) "transient map get with a default")
+(assoc! tm :c nil)
+(assert (= 1 (length tm)) "assoc! nil removes the key")
+(assert-error-value "assoc! a nil key" "cannot use nil as a key" (assoc! tm nil 1))
+(assert-error "assoc! a NaN key" (assoc! tm math/nan 1))
+(assert-error-value "conj! a transient of a map"
+  "expected a transient of a vector or a set, got a transient of a map"
+  (conj! tm [:d 4]))
+(assert-error-value "disj! a transient of a map"
+  "expected a transient of a set, got a transient of a map" (disj! tm :a))
+(assert-error "each over a transient map" (each _ tm))
+(assert-error "keys of a transient map" (keys tm))
+(def tm-base (hash-map :a 1 :b 2))
+(def tm2 (transient tm-base))
+(assoc! tm2 :a 99)
+(dissoc! tm2 :b)
+(assert (= (hash-map :a 99) (persistent! tm2)) "persistent! of a map")
+(assert (= (hash-map :a 1 :b 2) tm-base) "a transient leaves its map")
+(assert-error-value "dissoc! after persistent!"
+  "transient used after persistent!" (dissoc! tm2 :a))
+
+(def ts (transient (hash-set 1 2)))
+(assert (= ts (conj! ts 3 4 1)) "conj! returns the transient")
+(assert (= ts (disj! ts 2 9 nil)) "disj! returns the transient")
+(assert (= 3 (length ts)) "transient set length")
+(assert (= 3 (get ts 3)) "transient set get gives the element")
+(assert (nil? (in ts 2)) "transient set in a missing element")
+(assert-error-value "conj! nil into a transient set"
+  "cannot use nil as a key" (conj! ts nil))
+(assert-error-value "assoc! a transient of a set"
+  "expected a transient of a vector or a map, got a transient of a set"
+  (assoc! ts 1 2))
+(assert-error-value "dissoc! a transient of a set"
+  "expected a transient of a map, got a transient of a set" (dissoc! ts 1))
+(assert-error-value "dissoc! a transient of a vector"
+  "expected a transient of a map, got a transient of a vector"
+  (dissoc! (transient (vector 1)) 0))
+(assert (= (hash-set 1 3 4) (persistent! ts)) "persistent! of a set")
+(assert-error "disj! after persistent!" (disj! ts 1))
+(assert-error-value "transient of a number"
+  "bad slot #0, expected core/vector, core/map or core/set, got 5"
+  (transient 5))
+
+(def batch (transient (hash-map)))
+(for i 0 5000 (assoc! batch i (* 2 i)))
+(gccollect)
+(loop [i :range [0 5000 2]] (dissoc! batch i))
+(def batched (persistent! batch))
+(def direct (hash-map ;(mapcat |[$ (* 2 $)] (range 1 5000 2))))
+(assert (= direct batched) "a long batch")
+(assert (= (hash direct) (hash batched)) "a batch hashes as the map it equals")
+(def again (transient batched))
+(assoc! again 1 :changed)
+(assert (= 2 (get batched 1)) "a second transient leaves the first's map")
 
 # Equality, order and hash
 
