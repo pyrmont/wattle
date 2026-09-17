@@ -197,10 +197,12 @@ pub const MemoryType = enum(u8) {
     threaded_abstract = 13,
     vector_inner = 14,
     vector_leaf = 15,
-    table_weakk = 16,
-    table_weakv = 17,
-    table_weakkv = 18,
-    array_weak = 19,
+    map_node = 16,
+    set_node = 17,
+    table_weakk = 18,
+    table_weakv = 19,
+    table_weakkv = 20,
+    array_weak = 21,
 };
 
 /// A scratch allocation's header: the finalizer, and the memory that follows
@@ -648,8 +650,8 @@ inline fn scratchData(s: *ScratchBlock) *anyopaque {
 
 // `MemoryType` against the numbering `gcallocBytes` splits the two heaps by.
 comptime {
-    // Twenty values in the header's order, and a byte-wide field wide enough
-    // for them.
+    // Twenty-two values in the header's order, and a byte-wide field wide
+    // enough for them.
     std.debug.assert(@sizeOf(MemoryType) == 1);
     // Every value, not a sample: a sample cannot catch a transposition, since
     // swapping two unasserted members leaves both the count and every sampled
@@ -657,13 +659,14 @@ comptime {
     // the marshaller names a type rather than numbering it. A transposition
     // across `first_weak_type` puts a type on the wrong heap.
     const expected_memory = [_]struct { MemoryType, comptime_int }{
-        .{ .none, 0 },          .{ .string, 1 },             .{ .symbol, 2 },
-        .{ .array, 3 },         .{ .tuple, 4 },              .{ .table, 5 },
-        .{ .@"struct", 6 },     .{ .fiber, 7 },              .{ .buffer, 8 },
-        .{ .function, 9 },      .{ .abstract, 10 },          .{ .funcenv, 11 },
-        .{ .funcdef, 12 },      .{ .threaded_abstract, 13 }, .{ .vector_inner, 14 },
-        .{ .vector_leaf, 15 },  .{ .table_weakk, 16 },       .{ .table_weakv, 17 },
-        .{ .table_weakkv, 18 }, .{ .array_weak, 19 },
+        .{ .none, 0 },         .{ .string, 1 },             .{ .symbol, 2 },
+        .{ .array, 3 },        .{ .tuple, 4 },              .{ .table, 5 },
+        .{ .@"struct", 6 },    .{ .fiber, 7 },              .{ .buffer, 8 },
+        .{ .function, 9 },     .{ .abstract, 10 },          .{ .funcenv, 11 },
+        .{ .funcdef, 12 },     .{ .threaded_abstract, 13 }, .{ .vector_inner, 14 },
+        .{ .vector_leaf, 15 }, .{ .map_node, 16 },          .{ .set_node, 17 },
+        .{ .table_weakk, 18 }, .{ .table_weakv, 19 },       .{ .table_weakkv, 20 },
+        .{ .array_weak, 21 },
     };
     std.debug.assert(expected_memory.len == @typeInfo(MemoryType).@"enum".fields.len);
     for (expected_memory) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);

@@ -215,8 +215,8 @@ fn checkLiveref(x: repr.Value) bool {
 /// because the sweep has to unlink it in between.
 ///
 /// The types with no case are not an omission. A string, keyword, tuple,
-/// struct, function or vector node stores its payload inside the same
-/// allocation, so freeing the block frees the payload. A vector node's
+/// struct, function or collection node stores its payload inside the same
+/// allocation, so freeing the block frees the payload. A collection node's
 /// children are blocks of their own, which the sweep frees when they are
 /// unreachable. A symbol is the one immutable type
 /// with an external obligation, because it has to leave the symbol cache.
@@ -301,6 +301,8 @@ fn deinitBlock(mem: *abi.GCObject) void {
         gc_alloc.MemoryType.threaded_abstract,
         gc_alloc.MemoryType.vector_inner,
         gc_alloc.MemoryType.vector_leaf,
+        gc_alloc.MemoryType.map_node,
+        gc_alloc.MemoryType.set_node,
         => {},
     }
 }

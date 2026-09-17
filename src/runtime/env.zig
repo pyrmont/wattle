@@ -60,6 +60,7 @@ const interface = @import("../api/interface.zig");
 const inttypes = @import("value/ints.zig");
 const io_core = @import("io.zig");
 const marsh = @import("marsh.zig");
+const maps = @import("value/maps.zig");
 const math = @import("math.zig");
 const net = @import("net.zig");
 const numscan = @import("scan.zig");
@@ -1386,6 +1387,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     arrays.lib(env);
     tuples.lib(env);
     try vectors.lib(env);
+    try maps.lib(env);
     try transients.lib(env);
     buffers.lib(env);
     tables.lib(env);

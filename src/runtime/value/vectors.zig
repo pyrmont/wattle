@@ -2,7 +2,8 @@
 //!
 //! A vector is an abstract whose payload is a `Vector`. `vector_type` is the
 //! abstract type, `lib` installs `vector`, `vec`, `conj` and `assoc`, and `at`
-//! reads one element. A Janet program reads a vector as it reads a tuple,
+//! reads one element. `conj` and `assoc` also take a set and a map, which they
+//! pass to `maps.zig`. A Janet program reads a vector as it reads a tuple,
 //! through `chunk`: the runtime derives `get` and `next` from it, and every
 //! site that reads an indexed value accepts one.
 //!
@@ -99,6 +100,7 @@ const buffers = @import("buffers.zig");
 const corefn = @import("../corefn.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_mark = @import("../gc/mark.zig");
+const maps = @import("maps.zig");
 const marsh = @import("../marsh.zig");
 const order = @import("helpers/order.zig");
 const pp = @import("../pp.zig");
@@ -239,6 +241,19 @@ pub fn conj(src: *const Vector, x: repr.Value) *Vector {
     return dest;
 }
 
+/// The finalizer from 32-bit MurmurHash3, used on its own as an integer mixer.
+///
+/// This function cannot raise. `maps.zig` mixes its terms with it too.
+pub fn fmix32(h_in: u32) u32 {
+    var h = h_in;
+    h ^= h >> 16;
+    h *%= 0x85ebca6b;
+    h ^= h >> 13;
+    h *%= 0xc2b2ae35;
+    h ^= h >> 16;
+    return h;
+}
+
 /// Returns a new vector of the elements of `xs`.
 ///
 /// This function cannot raise. `xs` must stay valid while the vector is built,
@@ -285,8 +300,8 @@ pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("vector", &cfunVector, @src(), "(vector & xs)", "Create a new persistent vector containing the elements xs."),
         corefn.reg("vec", &cfunVec, @src(), "(vec ind)", "Create a persistent vector with the elements of the indexed value `ind`. A vector is returned unchanged."),
-        corefn.reg("conj", &cfunConj, @src(), "(conj coll & xs)", "Return a new collection with the elements xs added to `coll`. For a vector, the elements are added at the end."),
-        corefn.reg("assoc", &cfunAssoc, @src(), "(assoc coll key val & kvs)", "Return a new collection in which each key is associated with the value that follows it. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end."),
+        corefn.reg("conj", &cfunConj, @src(), "(conj coll & xs)", "Return a new collection with the elements xs added to `coll`, a vector or a set. For a vector, the elements are added at the end."),
+        corefn.reg("assoc", &cfunAssoc, @src(), "(assoc coll key val & kvs)", "Return a new collection in which each key is associated with the value that follows it, in the vector or map `coll`. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a map, a nil value removes the key."),
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&vector_type);
@@ -429,11 +444,13 @@ inline fn asLeaf(node: *abi.GCObject) *Leaf {
     return @alignCast(@fieldParentPtr("gc", node));
 }
 
-/// `assoc`: a new vector with each key's element replaced, or appended where
-/// the key is the length.
+/// `assoc`: for a vector, a new vector with each key's element replaced, or
+/// appended where the key is the length. A map goes to `maps.assocMap`.
 fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
-    var v = try args_core.getAbstract(Vector, argv, 0, &vector_type);
+    if (maps.toTrie(argv[0], .map) != null) return maps.assocMap(argv);
+    var v = toVector(argv[0]) orelse
+        return pp_format.panicf("bad slot #0, expected core/vector or core/map, got %v", .{argv[0]});
     try checkPairs(argv);
     var i: usize = 1;
     while (i < argv.len) : (i += 2) {
@@ -443,10 +460,13 @@ fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(v);
 }
 
-/// `conj`: a new vector with the elements appended.
+/// `conj`: for a vector, a new vector with the elements appended. A set goes
+/// to `maps.conjSet`.
 fn cfunConj(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
-    var v = try args_core.getAbstract(Vector, argv, 0, &vector_type);
+    if (maps.toTrie(argv[0], .set) != null) return maps.conjSet(argv);
+    var v = toVector(argv[0]) orelse
+        return pp_format.panicf("bad slot #0, expected core/vector or core/set, got %v", .{argv[0]});
     for (argv[1..]) |x| v = conj(v, x);
     return wrap.fromAbstract(v);
 }
@@ -493,17 +513,6 @@ fn copyLeaf(node: *const Leaf) *Leaf {
     const copy = newLeaf();
     copy.items = node.items;
     return copy;
-}
-
-/// The finalizer from 32-bit MurmurHash3, used on its own as an integer mixer.
-fn fmix32(h_in: u32) u32 {
-    var h = h_in;
-    h ^= h >> 16;
-    h *%= 0x85ebca6b;
-    h ^= h >> 13;
-    h *%= 0xc2b2ae35;
-    h ^= h >> 16;
-    return h;
 }
 
 /// Whether `node` has `own_editable` set.

@@ -192,7 +192,7 @@ fn theWeakTypesGoOnTheWeakHeap() void {
 
 /// Every type below the boundary goes on the normal heap. Worth stating for
 /// `MemoryType.none` in particular, which is zero and therefore the value a
-/// caller reaches by mistake, and for the vector node types, which are
+/// caller reaches by mistake, and for the collection node types, which are
 /// numbered after `threaded_abstract` and immediately below the boundary.
 fn theStrongTypesGoOnTheNormalHeap() void {
     const strong_types = [_]gc_alloc.MemoryType{
@@ -203,6 +203,8 @@ fn theStrongTypesGoOnTheNormalHeap() void {
         gc_alloc.MemoryType.threaded_abstract,
         gc_alloc.MemoryType.vector_inner,
         gc_alloc.MemoryType.vector_leaf,
+        gc_alloc.MemoryType.map_node,
+        gc_alloc.MemoryType.set_node,
     };
 
     for (strong_types) |memory_type| {

@@ -29,7 +29,8 @@
 //! A collection node is not a value, so the guard in `markGuarded` cannot root
 //! one in place of traversing it. `markNode` descends through nodes without
 //! spending the guard, and spends it only on the elements a node holds. A
-//! vector trie is at most seven levels deep, which bounds the stack that
+//! vector trie is at most seven levels deep, and a map's or a set's trie at
+//! most seven bitmap levels and a collision node, which bounds the stack that
 //! descent uses.
 //!
 //! One detail of the walk reads as redundant and is not: `markArray` marks
@@ -57,6 +58,7 @@ const fibers = @import("../value/fibers.zig");
 const functions = @import("../value/functions.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_sweep = @import("sweep.zig");
+const maps = @import("../value/maps.zig");
 const repr = @import("repr");
 const strings = @import("../value/strings.zig");
 const structs = @import("../value/structs.zig");
@@ -149,7 +151,8 @@ pub fn mark(x: repr.Value) void {
 
 /// Marks a collection node as reachable, along with everything under it.
 ///
-/// `node` is the header of a `vector_inner` or `vector_leaf` block. A
+/// `node` is the header of a `vector_inner`, `vector_leaf`, `map_node` or
+/// `set_node` block. A
 /// collection's `gcmark` callback calls this for each node its payload points
 /// at. Passing a block of any other memory type is illegal behaviour.
 ///
@@ -388,6 +391,16 @@ fn markMany(vm: *vm_state.Vm, values: []const repr.Value) void {
     for (values) |x| markGuarded(vm, x);
 }
 
+/// Marks every entry and every child of a map's or a set's node, unfilled
+/// slots included, since each holds nil or null. The node itself is already
+/// marked.
+fn markMapNode(vm: *vm_state.Vm, node: *maps.Node) void {
+    markMany(vm, maps.entries(node));
+    for (maps.children(node)) |slot| {
+        if (slot) |child| markNodeIn(vm, child);
+    }
+}
+
 /// `markNode` on a VM the caller already holds, and the recursive step of the
 /// walk through nodes.
 ///
@@ -399,6 +412,7 @@ fn markNodeIn(vm: *vm_state.Vm, node: *abi.GCObject) void {
     switch (gc_alloc.memoryTypeOf(node)) {
         .vector_inner => markVectorInner(vm, @alignCast(@fieldParentPtr("gc", node))),
         .vector_leaf => markVectorLeaf(vm, @alignCast(@fieldParentPtr("gc", node))),
+        .map_node, .set_node => markMapNode(vm, maps.asNode(node)),
         .none,
         .string,
         .symbol,

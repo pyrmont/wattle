@@ -56,6 +56,7 @@ const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
+const maps = @import("subsystems").value.maps;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const structs = @import("subsystems").value.structs;
@@ -506,6 +507,83 @@ fn aSharedNodeIsWalkedOnce() void {
     expect(!valueReachable(element));
 }
 
+/// A map node marks the key and the value of every entry, the last included,
+/// and its entries end where its first child slot begins, since an entry of a
+/// `map_node` block is two values.
+fn aMapNodeMarksKeysAndValues() void {
+    const node = maps.newNode(.map, 0b1 | (1 << 31), 1 << 7);
+    const first_key = value.fromBytes("first key", .string);
+    const last_value = value.fromBytes("last value", .string);
+    const items = maps.entries(node);
+    expect(items.len == 4);
+    expect(maps.children(node).len == 1);
+    expect(@intFromPtr(maps.children(node).ptr) == @intFromPtr(items.ptr) + 4 * @sizeOf(repr.Value));
+    items[0] = first_key;
+    items[3] = last_value;
+
+    unmark(node);
+    unmarkValue(first_key);
+    unmarkValue(last_value);
+
+    gc_mark.markNode(&node.gc);
+
+    expect(reachable(node));
+    expect(valueReachable(first_key));
+    expect(valueReachable(last_value));
+}
+
+/// A set node marks its elements and each child that is not null, a
+/// collision node among them, and so reaches an element two levels down. An
+/// entry of a `set_node` block is one value, so the child slots begin one
+/// value after each element.
+fn aSetNodeMarksItsElementsAndChildren() void {
+    const root = maps.newNode(.set, 1 << 2, (1 << 0) | (1 << 9));
+    const middle = maps.newNode(.set, 1 << 4, 0);
+    const collision = maps.newCollision(.set, 0xdead, 3);
+    const top = value.fromBytes("in the root", .string);
+    const inner = value.fromBytes("in a child", .string);
+    const deep = value.fromBytes("last in a collision node", .string);
+    expect(maps.entries(root).len == 1);
+    expect(@intFromPtr(maps.children(root).ptr) == @intFromPtr(maps.entries(root).ptr) + @sizeOf(repr.Value));
+    maps.entries(root)[0] = top;
+    maps.entries(middle)[0] = inner;
+    maps.entries(collision)[2] = deep;
+    maps.children(root)[0] = &middle.gc;
+    maps.children(root)[1] = &collision.gc;
+
+    unmark(root);
+    unmark(middle);
+    unmark(collision);
+    unmarkValue(top);
+    unmarkValue(inner);
+    unmarkValue(deep);
+
+    gc_mark.markNode(&root.gc);
+
+    expect(reachable(root));
+    expect(reachable(middle));
+    expect(reachable(collision));
+    expect(valueReachable(top));
+    expect(valueReachable(inner));
+    expect(valueReachable(deep));
+}
+
+/// A new node's slots are valid before the caller fills any: nil entries and
+/// null children, which the mark phase reads as nothing to mark.
+fn aNewTrieNodeMarksAsEmpty() void {
+    const node = maps.newNode(.map, 0b110, 0b1001);
+    for (maps.entries(node)) |x| expect(harness.isType(x, repr.Tag.nil));
+    for (maps.children(node)) |slot| expect(slot == null);
+    const collision = maps.newCollision(.set, 7, 2);
+    expect(maps.children(collision).len == 0);
+    expect(collision.gc.flags.own & maps.own_collision != 0);
+    expect(node.gc.flags.own & maps.own_collision == 0);
+
+    unmark(node);
+    gc_mark.markNode(&node.gc);
+    expect(reachable(node));
+}
+
 /// Descending through nodes does not spend the recursion guard, because a
 /// node cannot be rooted in place of being walked. A trie seven levels deep,
 /// the most a vector has, is marked to its element with a budget of one, and
@@ -537,6 +615,40 @@ fn nodesDoNotSpendTheGuard() void {
     expect(harness.vm().roots.items.len == roots);
     expect(reachable(top));
     expect(reachable(leaf));
+    expect(valueReachable(element));
+}
+
+/// A map's or a set's trie descends without spending the guard too. Seven
+/// bitmap levels and a collision node, the deepest a trie can be, are marked
+/// to the collision node's element with a budget of one, and nothing is
+/// rooted.
+fn trieNodesDoNotSpendTheGuard() void {
+    const collision = maps.newCollision(.set, 0xffff_ffff, 2);
+    const element = value.fromBytes("under seven bitmap levels", .string);
+    maps.entries(collision)[1] = element;
+    unmark(collision);
+    unmarkValue(element);
+
+    var top: *abi.GCObject = &collision.gc;
+    for (0..7) |_| {
+        const node = maps.newNode(.set, 0, 1 << 31);
+        maps.children(node)[0] = top;
+        unmark(node);
+        top = &node.gc;
+    }
+
+    const saved = harness.vm().gc.depth;
+    const roots = harness.vm().roots.items.len;
+    harness.vm().gc.depth = 1;
+
+    gc_mark.markNode(top);
+
+    const depth = harness.vm().gc.depth;
+    harness.vm().gc.depth = saved;
+    expect(depth == 1);
+    expect(harness.vm().roots.items.len == roots);
+    expect(reachable(top));
+    expect(reachable(collision));
     expect(valueReachable(element));
 }
 
@@ -877,6 +989,10 @@ fn body() !void {
     aVectorInnerNodeMarksItsChildren();
     aSharedNodeIsWalkedOnce();
     nodesDoNotSpendTheGuard();
+    aMapNodeMarksKeysAndValues();
+    aSetNodeMarksItsElementsAndChildren();
+    aNewTrieNodeMarksAsEmpty();
+    trieNodesDoNotSpendTheGuard();
 
     aClosureMarksItsCapturedEnvironment();
     aSuspendedFiberMarksItsFrames();

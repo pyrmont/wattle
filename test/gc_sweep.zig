@@ -60,6 +60,7 @@ const fibers = @import("subsystems").value.fibers;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
+const maps = @import("subsystems").value.maps;
 const options = @import("options");
 const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
@@ -410,6 +411,52 @@ fn aSharedNodeOutlivesOneHolder() void {
     expect(harness.vm().gc.block_count == before);
 }
 
+/// A map's or a set's node has no finalizer either. Nothing marks a map node,
+/// its bitmap child and its collision child, so the sweep frees all three.
+fn unreachableTrieNodesAreFreed() void {
+    settle();
+    const before = harness.vm().gc.block_count;
+
+    const root = maps.newNode(.map, 0, 0b11);
+    maps.children(root)[0] = &maps.newNode(.map, 0b1, 0).gc;
+    maps.children(root)[1] = &maps.newCollision(.map, 42, 2).gc;
+    expect(harness.vm().gc.block_count == before + 3);
+
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+}
+
+/// Trie nodes reached through a rooted abstract survive with their entries.
+/// The buffer is the value of a collision node's second entry and is referred
+/// to by nothing else, so it survives only because the collision node's
+/// entries were marked at the width a map's entry has.
+fn trieNodesSurviveThroughTheirHolder() void {
+    settle();
+    const before = harness.vm().gc.block_count;
+
+    const buffer = buffers.new(8);
+    _ = buffers.pushCstringAbi(buffer, "a value");
+    const collision = maps.newCollision(.map, 42, 2);
+    maps.entries(collision)[3] = wrap.fromBuffer(buffer);
+    const root = maps.newNode(.map, 0, 1 << 5);
+    maps.children(root)[0] = &collision.gc;
+    const val = holder(&root.gc);
+    gc_alloc.gcroot(val);
+
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before + 4);
+    expect(onList(harness.vm().gc.blocks, root));
+    expect(onList(harness.vm().gc.blocks, collision));
+    expect(!reachable(root));
+    expect(!reachable(collision));
+    expect(wrap.toBuffer(maps.entries(collision)[3]) == buffer);
+    expect(std.mem.eql(u8, buffer.slice()[0..7], "a value"));
+
+    _ = gc_alloc.gcunroot(val);
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+}
+
 /// A weak array keeps its shape and loses its dead elements. The count does
 /// not change and the live entries do not move: a dead slot becomes nil in
 /// place, which is what lets an index into a weak array stay meaningful across
@@ -630,6 +677,9 @@ fn repeatedCycles() void {
         const inner = vectors.newInner();
         inner.children[0] = &vectors.newLeaf().gc;
         tables.put(table, value.fromBytes("nodes", .keyword), holder(&inner.gc));
+        const trie = maps.newNode(.set, 0b1, 0b10);
+        maps.children(trie)[0] = &maps.newCollision(.set, 9, 2).gc;
+        tables.put(table, value.fromBytes("trie", .keyword), holder(&trie.gc));
 
         var function: repr.Value = wrap.fromNil();
         _ = core_env.dostring(harness.coreEnv(), "(fn [] 1)", "gc-sweep-test", &function);
@@ -666,6 +716,8 @@ pub fn run() void {
     unreachableNodesAreFreed();
     nodesSurviveThroughTheirHolder();
     aSharedNodeOutlivesOneHolder();
+    unreachableTrieNodesAreFreed();
+    trieNodesSurviveThroughTheirHolder();
 
     aWeakArrayDropsDeadElementsInPlace();
     theFourTableKinds();
