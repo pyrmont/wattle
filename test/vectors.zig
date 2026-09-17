@@ -1,6 +1,6 @@
-//! Behavioral contract for `core/vector`: its shape at each boundary of the
-//! trie, reading it as a tuple is read, persistence across updates, and
-//! equality, order and hash.
+//! Behavioral contract for `core/vector` and its transient: the shape at each
+//! boundary of the trie, reading a vector as a tuple is read, persistence
+//! across updates, what a transient may change, and equality, order and hash.
 //!
 //! The oracle is a tuple. Each case builds the elements a vector should have
 //! as a plain array, updates that array the way the vector was updated, and
@@ -22,6 +22,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
 const args = @import("subsystems").args;
 const expect = @import("expect.zig").expect;
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -29,6 +30,7 @@ const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
 const order = @import("subsystems").value.order;
 const repr = @import("repr");
+const transients = @import("subsystems").value.transients;
 const tuples = @import("subsystems").value.tuples;
 const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -196,6 +198,113 @@ fn anUpdateKeepsTheOriginal() !void {
     _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
 }
 
+/// The number of nodes with `own_editable` set in the trie under `node`,
+/// `node` included. The walk follows every child, not only editable ones, so
+/// it does not rely on the rule that `persistent` does.
+fn editableUnder(node: *abi.GCObject) usize {
+    var count: usize = if (node.flags.own & vectors.own_editable != 0) 1 else 0;
+    if (gc_alloc.memoryTypeOf(node) == .vector_inner) {
+        const inner: *vectors.Inner = @alignCast(@fieldParentPtr("gc", node));
+        for (inner.children) |slot| {
+            if (slot) |child| count += editableUnder(child);
+        }
+    }
+    return count;
+}
+
+/// The number of nodes with `own_editable` set in `v`'s trie and tail.
+fn editableIn(v: *const vectors.Vector) usize {
+    var count: usize = 0;
+    if (v.root) |root| count += editableUnder(root);
+    if (v.tail) |tail| count += editableUnder(&tail.gc);
+    return count;
+}
+
+/// A transient changes a node in place once it has made the node, and never a
+/// node of the vector it came from. `persistent` leaves no node editable, and
+/// a second transient of the result copies rather than changing the first
+/// transient's nodes, which is the case where one bit and not an edit token
+/// has to be enough.
+fn aTransientChangesOnlyItsOwnNodes() !void {
+    var buffer: [1100]repr.Value = undefined;
+    const elements = counting(&buffer);
+    const original = vectors.fromSlice(elements);
+    gc_alloc.gcroot(wrap.fromAbstract(original));
+    const at = vectors.vector_type.chunk.?;
+
+    const t = transients.fromVector(original);
+    gc_alloc.gcroot(wrap.fromAbstract(t));
+    const marker = harness.wrapInteger(-1);
+
+    // The first update copies the leaf, and the second changes the copy.
+    vectors.transientAssoc(&t.vector, 40, marker);
+    const copied = at(&t.vector, 40).items.?;
+    expect(copied != at(original, 40).items.?);
+    vectors.transientAssoc(&t.vector, 41, marker);
+    expect(at(&t.vector, 41).items.? == copied);
+    expect(at(&t.vector, 63).items.? == copied);
+
+    // Appends past two leaves, with a collection between them.
+    var tail_made: *vectors.Leaf = undefined;
+    var expected: [1200]repr.Value = undefined;
+    @memcpy(expected[0..1100], elements);
+    expected[40] = marker;
+    expected[41] = marker;
+    for (1100..1200) |i| {
+        expected[i] = harness.wrapInteger(@intCast(i * 7));
+        vectors.transientConj(&t.vector, expected[i]);
+        if (i == 1150) gc_mark.collect();
+        // Index 1184 starts a new tail. The transient made it, so the next
+        // append changes it in place.
+        if (i == 1184) tail_made = t.vector.tail.?;
+        if (i == 1185) expect(t.vector.tail.? == tail_made);
+    }
+    expect(editableIn(&t.vector) > 0);
+    try expectElements(original, elements);
+    expect(editableIn(original) == 0);
+
+    const v = vectors.toVector(transients.persistent(t)).?;
+    gc_alloc.gcroot(wrap.fromAbstract(v));
+    expect(t.* == .ended);
+    expect(editableIn(v) == 0);
+    try expectElements(v, &expected);
+    const built = vectors.fromSlice(&expected);
+    expect(order.equals(wrap.fromAbstract(v), wrap.fromAbstract(built)));
+    expect(order.hash(wrap.fromAbstract(v)) == order.hash(wrap.fromAbstract(built)));
+
+    // A second transient of the result must not change it.
+    const second = transients.fromVector(v);
+    vectors.transientAssoc(&second.vector, 41, harness.wrapInteger(-2));
+    vectors.transientConj(&second.vector, harness.wrapInteger(-3));
+    try expectElements(v, &expected);
+    expect(at(&second.vector, 41).items.? != at(v, 41).items.?);
+
+    _ = gc_alloc.gcunroot(wrap.fromAbstract(v));
+    _ = gc_alloc.gcunroot(wrap.fromAbstract(t));
+    _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+}
+
+/// A transient that is never persisted is collected with every node it made,
+/// and the vector it came from keeps its own.
+fn anAbandonedTransientIsCollected() !void {
+    var buffer: [40]repr.Value = undefined;
+    const elements = counting(&buffer);
+    const original = vectors.fromSlice(elements);
+    gc_alloc.gcroot(wrap.fromAbstract(original));
+    gc_mark.collect();
+    const before = harness.vm().gc.block_count;
+
+    const t = transients.fromVector(original);
+    for (0..500) |i| vectors.transientConj(&t.vector, harness.wrapInteger(@intCast(i)));
+    vectors.transientAssoc(&t.vector, 3, harness.wrapInteger(-1));
+    expect(harness.vm().gc.block_count > before + 15);
+
+    gc_mark.collect();
+    expect(harness.vm().gc.block_count == before);
+    try expectElements(original, elements);
+    _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+}
+
 /// A version and the elements it should have.
 const Version = struct {
     vector: *vectors.Vector,
@@ -203,7 +312,8 @@ const Version = struct {
 };
 
 /// Updates chosen at random from a fixed seed, each applied to a version
-/// chosen at random, agree with the same updates applied to arrays. Every
+/// chosen at random, agree with the same updates applied to arrays. Some
+/// rounds make a batch of updates through a transient. Every
 /// version made is kept and rooted, and every one is read again after the last
 /// update and a collection, so an update that changed a node another version
 /// shares is a failure here.
@@ -230,7 +340,28 @@ fn randomUpdatesAgainstArrays() !void {
         var elements = try source.elements.clone(allocator);
         const x = harness.wrapInteger(@intCast(round));
         var v: *vectors.Vector = undefined;
-        if (elements.items.len == 0 or random.uintLessThan(u8, 3) != 0) {
+        const choice = random.uintLessThan(u8, 4);
+        if (choice == 3) {
+            // A batch through a transient, rooted in case the batch collects.
+            const t = transients.fromVector(source.vector);
+            gc_alloc.gcroot(wrap.fromAbstract(t));
+            for (0..random.uintLessThan(usize, 100)) |i| {
+                const element = harness.wrapInteger(@intCast(round * 100 + i));
+                const len = elements.items.len;
+                if (len == 0 or random.boolean()) {
+                    vectors.transientConj(&t.vector, element);
+                    try elements.append(allocator, element);
+                } else {
+                    const index = random.uintLessThan(usize, len);
+                    vectors.transientAssoc(&t.vector, index, element);
+                    elements.items[index] = element;
+                }
+                if (i == 50 and round % 10 == 0) gc_mark.collect();
+            }
+            _ = gc_alloc.gcunroot(wrap.fromAbstract(t));
+            v = vectors.toVector(transients.persistent(t)).?;
+            expect(editableIn(v) == 0);
+        } else if (elements.items.len == 0 or choice != 0) {
             // Appends outnumber replacements, so the versions grow past a
             // trie level.
             const count = 1 + random.uintLessThan(usize, 80);
@@ -319,6 +450,8 @@ fn body() !void {
     try theShapeAtEachBoundary();
     try aChunkIsALeafOrTheTail();
     try anUpdateKeepsTheOriginal();
+    try aTransientChangesOnlyItsOwnNodes();
+    try anAbandonedTransientIsCollected();
     try randomUpdatesAgainstArrays();
     equalityOrderAndHash();
 }

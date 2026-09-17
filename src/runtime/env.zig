@@ -78,6 +78,7 @@ const structs = @import("value/structs.zig");
 const symbols = @import("value/symbols.zig");
 const tables = @import("value/tables.zig");
 const trace_frames = @import("debug.zig");
+const transients = @import("value/transients.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
@@ -1385,6 +1386,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     arrays.lib(env);
     tuples.lib(env);
     try vectors.lib(env);
+    try transients.lib(env);
     buffers.lib(env);
     tables.lib(env);
     structs.lib(env);

@@ -1,10 +1,10 @@
 //! `core/vector`: the persistent vector, a trie of 32-way nodes with a tail.
 //!
 //! A vector is an abstract whose payload is a `Vector`. `vector_type` is the
-//! abstract type, `lib` installs `vector`, `vec`, `conj` and `assoc`, and
-//! `at` reads one element. A Janet program reads a vector as it reads a
-//! tuple, through `chunk`: the runtime derives `get` and `next` from it, and
-//! every site that reads an indexed value accepts one.
+//! abstract type, `lib` installs `vector`, `vec`, `conj` and `assoc`, and `at`
+//! reads one element. A Janet program reads a vector as it reads a tuple,
+//! through `chunk`: the runtime derives `get` and `next` from it, and every
+//! site that reads an indexed value accepts one.
 //!
 //! A vector's nodes are collector blocks of their own memory types. An
 //! _inner node_ is a `vector_inner` block and has 32 child pointers. A _leaf_
@@ -33,10 +33,24 @@
 //!
 //! - A node is not changed once a vector refers to it. An update copies the
 //!   path from the root to the element it changes, so the old vector and the
-//!   new one share every other node. A node a transient made has
-//!   `own_editable` set, and only such a node is changed in place. Building a
-//!   vector from a slice changes the nodes it has just allocated, before any
-//!   vector refers to them.
+//!   new one share every other node. Two updates change nodes in place: a
+//!   transient's, on the nodes it made, and building a vector from a slice,
+//!   on nodes no vector refers to yet.
+//!
+//! ## Updating a vector in place
+//!
+//! `transients.zig`'s transient holds a `Vector` and updates it through
+//! `transientConj` and `transientAssoc`, and `persistent` makes a vector of
+//! it. These rules make that safe:
+//!
+//! - A transient update sets `own_editable` on every node it makes, and
+//!   changes a node in place only where the bit is set. A node a transient
+//!   made is reachable from that transient and from nothing else, because a
+//!   transient is made only from a vector and `persistent!` ends it.
+//!
+//! - An update makes the whole path from the root editable, so every editable
+//!   node's parent is editable. `persistent` clears the bits by walking down
+//!   through set bits only, which visits exactly the nodes the transient made.
 //!
 //! ## Equality, order and hash
 //!
@@ -135,6 +149,14 @@ pub const Leaf = extern struct {
     items: [width]repr.Value,
 };
 
+/// How an update treats the nodes on the path it changes.
+///
+/// `persistent` copies every one, for a vector that others may share.
+/// `transient` changes a node with `own_editable` set in place, and copies any
+/// other with the bit set on the copy. `fresh` changes every one in place, for
+/// a trie no vector refers to yet.
+const Mode = enum { persistent, transient, fresh };
+
 /// A vector's payload.
 ///
 /// `count` is the number of elements. `root` is the trie and `shift` the bit
@@ -162,31 +184,7 @@ pub const Vector = struct {
 pub fn assoc(src: *const Vector, index: usize, x: repr.Value) *Vector {
     const dest = newVector();
     dest.* = src.*;
-    const offset = tailOffset(src);
-    var old: repr.Value = undefined;
-    if (index >= offset) {
-        const tail = copyLeaf(src.tail.?);
-        old = tail.items[index - offset];
-        tail.items[index - offset] = x;
-        dest.tail = tail;
-    } else {
-        // Copy the path from the root down, replacing each child with its copy.
-        var level: usize = src.shift;
-        var node = src.root.?;
-        var slot: *?*abi.GCObject = &dest.root;
-        while (level > 0) : (level -= bits) {
-            const copy = copyInner(asInner(node));
-            slot.* = &copy.gc;
-            const child_index = (index >> @as(Shift, @intCast(level))) & mask;
-            node = copy.children[child_index].?;
-            slot = &copy.children[child_index];
-        }
-        const leaf = copyLeaf(asLeaf(node));
-        old = leaf.items[index & mask];
-        leaf.items[index & mask] = x;
-        slot.* = &leaf.gc;
-    }
-    dest.sum = src.sum -% term(index, old) +% term(index, x);
+    replaceIn(dest, index, x, .persistent);
     return dest;
 }
 
@@ -201,6 +199,16 @@ pub fn at(v: *const Vector, index: usize) repr.Value {
     return leafFor(v, index).items[index & mask];
 }
 
+/// Refuses a key-value list with a key and no value.
+///
+/// `argv` is a frame whose first argument is the collection and the rest keys
+/// and values. This function raises if a key has no value.
+pub fn checkPairs(argv: []const repr.Value) raise.Error!void {
+    if (argv.len % 2 == 0) {
+        return pp_format.panicf("expected an even number of keys and values, got %d", .{@as(i32, @intCast(argv.len - 1))});
+    }
+}
+
 /// Returns a new vector equal to `src` with `x` appended.
 ///
 /// This function cannot raise. The new vector shares every node with `src`
@@ -208,21 +216,16 @@ pub fn at(v: *const Vector, index: usize) repr.Value {
 pub fn conj(src: *const Vector, x: repr.Value) *Vector {
     const dest = newVector();
     dest.* = src.*;
-    const tail_count = src.count - tailOffset(src);
-    const tail = if (tail_count == 0 or tail_count == width) newLeaf() else copyLeaf(src.tail.?);
-    if (tail_count == width) pushLeaf(dest, src.tail.?, src.count, true);
-    tail.items[tail_count % width] = x;
-    dest.tail = tail;
-    dest.count = src.count + 1;
-    dest.sum = src.sum +% term(src.count, x);
+    appendIn(dest, x, .persistent);
     return dest;
 }
 
 /// Returns a new vector of the elements of `xs`.
 ///
 /// This function cannot raise. `xs` must stay valid while the vector is built,
-/// which no allocation this makes can change. The full leaves are grafted into a trie no vector refers to yet, so the
-/// graft changes the nodes it reaches rather than copying them.
+/// which no allocation this makes can change. The full leaves are grafted into
+/// a trie no vector refers to yet, so the graft changes the nodes it reaches
+/// rather than copying them.
 pub fn fromSlice(xs: []const repr.Value) *Vector {
     const v = newVector();
     const n = xs.len;
@@ -232,7 +235,7 @@ pub fn fromSlice(xs: []const repr.Value) *Vector {
     while (start < trie_len) : (start += width) {
         const leaf = newLeaf();
         leaf.items = xs[start..][0..width].*;
-        pushLeaf(v, leaf, start + width, false);
+        pushLeaf(v, leaf, start + width, .fresh);
     }
     const tail = newLeaf();
     @memcpy(tail.items[0 .. n - trie_len], xs[trie_len..]);
@@ -240,6 +243,19 @@ pub fn fromSlice(xs: []const repr.Value) *Vector {
     v.count = n;
     for (xs, 0..) |x, index| v.sum +%= term(index, x);
     return v;
+}
+
+/// Returns the index in argument `n` of `argv`.
+///
+/// `count` is the length of the vector the index is into. This function raises
+/// if the argument is not a non-negative integer, or is past `count`. An index
+/// equal to `count` is where an element is appended.
+pub fn getIndex(argv: []const repr.Value, n: usize, count: usize) raise.Error!usize {
+    const index = try args_core.getSize(argv, n);
+    if (index > count) {
+        return pp_format.panicf("index %u out of range for vector of length %u", .{ @as(u64, index), @as(u64, count) });
+    }
+    return index;
 }
 
 /// Installs `vector`, `vec`, `conj` and `assoc` into the core environment and
@@ -255,6 +271,26 @@ pub fn lib(env: *tables.Table) raise.Error!void {
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&vector_type);
+}
+
+/// Returns the element of `v` at `key`, or null.
+///
+/// This function cannot raise. It returns null if `key` is not an integer at
+/// or above zero and below `v.count`.
+pub fn lookup(v: *const Vector, key: repr.Value) ?repr.Value {
+    if (!args_core.checkint(key)) return null;
+    const index = wrap.toInteger(key);
+    if (index < 0 or @as(usize, @intCast(index)) >= v.count) return null;
+    return at(v, @intCast(index));
+}
+
+/// Marks `v`'s trie and tail.
+///
+/// This function cannot raise. It is what a `gcmark` callback calls for a
+/// payload that includes a `Vector`.
+pub fn mark(v: *const Vector) void {
+    if (v.root) |root| gc_mark.markNode(root);
+    if (v.tail) |tail| gc_mark.markNode(&tail.gc);
 }
 
 /// Returns whether two vectors can be equal: whether their lengths and hashes
@@ -298,6 +334,19 @@ pub fn ofHead(head: *const abi.GCObject) *const Vector {
     return @ptrCast(@alignCast(abstracts.data(abstract_head)));
 }
 
+/// Returns a new vector with `v`'s elements, and clears `own_editable` on
+/// every node a transient update of `v` made.
+///
+/// This function cannot raise. The new vector takes `v`'s nodes, so the caller
+/// makes no further transient update of `v`.
+pub fn persistent(v: *const Vector) *Vector {
+    const result = newVector();
+    result.* = v.*;
+    if (result.root) |root| clearEditable(root);
+    if (result.tail) |tail| clearEditable(&tail.gc);
+    return result;
+}
+
 /// Returns the payload of `x` if `x` is a vector, and null otherwise.
 pub fn toVector(x: repr.Value) ?*Vector {
     if (!repr.checkType(x, repr.Tag.abstract)) return null;
@@ -306,22 +355,70 @@ pub fn toVector(x: repr.Value) ?*Vector {
     return @ptrCast(@alignCast(payload));
 }
 
+/// Replaces the element at `index` of `v` with `x` in place, or appends `x`
+/// where `index` is `v.count`.
+///
+/// This function cannot raise. `index` must be at or below `v.count`, and an
+/// index past it is illegal behaviour. `v` must be a transient's, since the
+/// update changes the nodes it has made.
+pub fn transientAssoc(v: *Vector, index: usize, x: repr.Value) void {
+    std.debug.assert(index <= v.count);
+    if (index == v.count) {
+        appendIn(v, x, .transient);
+    } else {
+        replaceIn(v, index, x, .transient);
+    }
+}
+
+/// Appends `x` to `v` in place.
+///
+/// This function cannot raise. `v` must be a transient's, since the update
+/// changes the nodes it has made.
+pub fn transientConj(v: *Vector, x: repr.Value) void {
+    appendIn(v, x, .transient);
+}
+
 // ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// Appends `x` to `v`, treating the nodes it changes as `mode` says.
+fn appendIn(v: *Vector, x: repr.Value, mode: Mode) void {
+    const tail_count = v.count - tailOffset(v);
+    if (tail_count == width) {
+        pushLeaf(v, v.tail.?, v.count, mode);
+        v.tail = newLeafFor(mode);
+    } else if (tail_count == 0) {
+        v.tail = newLeafFor(mode);
+    } else {
+        v.tail = ownLeaf(v.tail.?, mode);
+    }
+    v.tail.?.items[tail_count % width] = x;
+    v.sum +%= term(v.count, x);
+    v.count += 1;
+}
+
+/// Casts a node header to the inner node it begins.
+inline fn asInner(node: *abi.GCObject) *Inner {
+    std.debug.assert(gc_alloc.memoryTypeOf(node) == .vector_inner);
+    return @alignCast(@fieldParentPtr("gc", node));
+}
+
+/// Casts a node header to the leaf it begins.
+inline fn asLeaf(node: *abi.GCObject) *Leaf {
+    std.debug.assert(gc_alloc.memoryTypeOf(node) == .vector_leaf);
+    return @alignCast(@fieldParentPtr("gc", node));
+}
 
 /// `assoc`: a new vector with each key's element replaced, or appended where
 /// the key is the length.
 fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
-    if (argv.len % 2 == 0) return pp_format.panicf("expected an even number of keys and values, got %d", .{@as(i32, @intCast(argv.len - 1))});
     var v = try args_core.getAbstract(Vector, argv, 0, &vector_type);
+    try checkPairs(argv);
     var i: usize = 1;
     while (i < argv.len) : (i += 2) {
-        const index = try args_core.getSize(argv, i);
-        if (index > v.count) {
-            return pp_format.panicf("index %u out of range for vector of length %u", .{ @as(u64, index), @as(u64, v.count) });
-        }
+        const index = try getIndex(argv, i, v.count);
         v = if (index == v.count) conj(v, argv[i + 1]) else assoc(v, index, argv[i + 1]);
     }
     return wrap.fromAbstract(v);
@@ -352,16 +449,17 @@ fn cfunVector(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(fromSlice(argv));
 }
 
-/// Casts a node header to the inner node it begins.
-inline fn asInner(node: *abi.GCObject) *Inner {
-    std.debug.assert(gc_alloc.memoryTypeOf(node) == .vector_inner);
-    return @alignCast(@fieldParentPtr("gc", node));
-}
-
-/// Casts a node header to the leaf it begins.
-inline fn asLeaf(node: *abi.GCObject) *Leaf {
-    std.debug.assert(gc_alloc.memoryTypeOf(node) == .vector_leaf);
-    return @alignCast(@fieldParentPtr("gc", node));
+/// Clears `own_editable` on `node` and on every node under it that has it set.
+///
+/// Every editable node's parent is editable, because a transient update makes
+/// the whole path editable, so the walk stops at a node without the bit.
+fn clearEditable(node: *abi.GCObject) void {
+    if (!isEditable(node)) return;
+    node.flags.own &= ~own_editable;
+    if (gc_alloc.memoryTypeOf(node) != .vector_inner) return;
+    for (asInner(node).children) |slot| {
+        if (slot) |child| clearEditable(child);
+    }
 }
 
 /// Allocates a copy of an inner node.
@@ -389,6 +487,11 @@ fn fmix32(h_in: u32) u32 {
     return h;
 }
 
+/// Whether `node` has `own_editable` set.
+inline fn isEditable(node: *const abi.GCObject) bool {
+    return node.flags.own & own_editable != 0;
+}
+
 /// Returns the leaf in `v`'s trie that holds `index`, which is below the tail.
 fn leafFor(v: *const Vector, index: usize) *Leaf {
     var node = v.root.?;
@@ -399,6 +502,20 @@ fn leafFor(v: *const Vector, index: usize) *Leaf {
     return asLeaf(node);
 }
 
+/// Allocates an inner node, editable where `mode` is `transient`.
+fn newInnerFor(mode: Mode) *Inner {
+    const node = newInner();
+    if (mode == .transient) node.gc.flags.own |= own_editable;
+    return node;
+}
+
+/// Allocates a leaf, editable where `mode` is `transient`.
+fn newLeafFor(mode: Mode) *Leaf {
+    const node = newLeaf();
+    if (mode == .transient) node.gc.flags.own |= own_editable;
+    return node;
+}
+
 /// Allocates an empty vector.
 fn newVector() *Vector {
     const payload: *Vector = @ptrCast(@alignCast(abstracts.newBytes(&vector_type, @sizeOf(Vector))));
@@ -406,25 +523,52 @@ fn newVector() *Vector {
     return payload;
 }
 
+/// Returns the inner node `node` or a copy of it, whichever an update in `mode`
+/// may change.
+fn ownInner(node: *abi.GCObject, mode: Mode) *Inner {
+    return switch (mode) {
+        .fresh => asInner(node),
+        .persistent => copyInner(asInner(node)),
+        .transient => if (isEditable(node)) asInner(node) else blk: {
+            const copy = copyInner(asInner(node));
+            copy.gc.flags.own |= own_editable;
+            break :blk copy;
+        },
+    };
+}
+
+/// Returns the leaf `node` or a copy of it, whichever an update in `mode` may
+/// change.
+fn ownLeaf(node: *Leaf, mode: Mode) *Leaf {
+    return switch (mode) {
+        .fresh => node,
+        .persistent => copyLeaf(node),
+        .transient => if (isEditable(&node.gc)) node else blk: {
+            const copy = copyLeaf(node);
+            copy.gc.flags.own |= own_editable;
+            break :blk copy;
+        },
+    };
+}
+
 /// Grafts a full leaf into `v`'s trie, growing the root by a level where the
 /// trie is full.
 ///
 /// `leaf` becomes the last leaf of the trie, and `old_count` is the number of
-/// elements up to and including it. Where `copy` is true, every inner node on
-/// the path is copied before it changes. Where it is false, the path's nodes
-/// belong to a vector nothing else refers to and change in place.
-fn pushLeaf(v: *Vector, leaf: *Leaf, old_count: usize, copy: bool) void {
+/// elements up to and including it. `mode` says whether an inner node on the
+/// path is copied before it changes.
+fn pushLeaf(v: *Vector, leaf: *Leaf, old_count: usize, mode: Mode) void {
     if (old_count == width) {
         v.root = &leaf.gc;
         return;
     }
     var root: *Inner = undefined;
     if ((old_count >> bits) > (@as(usize, 1) << @as(Shift, @intCast(v.shift)))) {
-        root = newInner();
+        root = newInnerFor(mode);
         root.children[0] = v.root;
         v.shift += bits;
     } else {
-        root = if (copy) copyInner(asInner(v.root.?)) else asInner(v.root.?);
+        root = ownInner(v.root.?, mode);
     }
     v.root = &root.gc;
 
@@ -434,13 +578,44 @@ fn pushLeaf(v: *Vector, leaf: *Leaf, old_count: usize, copy: bool) void {
     while (level > bits) : (level -= bits) {
         const child_index = (index >> @as(Shift, @intCast(level))) & mask;
         const child = if (node.children[child_index]) |existing|
-            (if (copy) copyInner(asInner(existing)) else asInner(existing))
+            ownInner(existing, mode)
         else
-            newInner();
+            newInnerFor(mode);
         node.children[child_index] = &child.gc;
         node = child;
     }
     node.children[(index >> bits) & mask] = &leaf.gc;
+}
+
+/// Replaces the element at `index` of `v` with `x`, treating the nodes on the
+/// path as `mode` says. `index` is below `v.count`.
+fn replaceIn(v: *Vector, index: usize, x: repr.Value, mode: Mode) void {
+    const offset = tailOffset(v);
+    var old: repr.Value = undefined;
+    if (index >= offset) {
+        const tail = ownLeaf(v.tail.?, mode);
+        old = tail.items[index - offset];
+        tail.items[index - offset] = x;
+        v.tail = tail;
+    } else {
+        // Each node on the path is replaced in its parent by the node an
+        // update in `mode` may change, from the root down.
+        var level: usize = v.shift;
+        var node = v.root.?;
+        var slot: *?*abi.GCObject = &v.root;
+        while (level > 0) : (level -= bits) {
+            const inner = ownInner(node, mode);
+            slot.* = &inner.gc;
+            const child_index = (index >> @as(Shift, @intCast(level))) & mask;
+            node = inner.children[child_index].?;
+            slot = &inner.children[child_index];
+        }
+        const leaf = ownLeaf(asLeaf(node), mode);
+        old = leaf.items[index & mask];
+        leaf.items[index & mask] = x;
+        slot.* = &leaf.gc;
+    }
+    v.sum = v.sum -% term(index, old) +% term(index, x);
 }
 
 /// The index of the first element in `v`'s tail.
@@ -478,8 +653,7 @@ fn vectorLength(v: *Vector, _: usize) raise.Error!usize {
 
 /// `core/vector`'s `gcmark` callback: the trie and the tail.
 fn vectorMark(v: *Vector, _: usize) void {
-    if (v.root) |root| gc_mark.markNode(root);
-    if (v.tail) |tail| gc_mark.markNode(&tail.gc);
+    mark(v);
 }
 
 /// `core/vector`'s `tostring` callback: each element described, separated by

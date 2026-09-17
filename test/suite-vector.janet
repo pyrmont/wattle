@@ -68,6 +68,51 @@
 (gccollect)
 (assert (= (vec (range 5000)) grown) "conj one at a time")
 
+# Transients
+
+(def base (vector 1 2 3))
+(def tr (transient base))
+(assert (= :core/transient (type tr)) "a transient is a core/transient")
+(assert (= tr (conj! tr 4 5)) "conj! returns the transient")
+(assert (= tr (assoc! tr 0 :a 5 6)) "assoc! returns the transient")
+(assert (= 6 (length tr)) "transient length")
+(assert (= :a (get tr 0)) "transient get")
+(assert (= 6 (in tr 5)) "transient in")
+(assert (nil? (get tr 6)) "transient get past the end")
+(assert-error "transient in past the end" (in tr 6))
+(assert (not (indexed? tr)) "a transient is not indexed")
+(assert-error "splice a transient" (tuple ;tr))
+(assert-error "map a transient" (map inc tr))
+(assert-error "each over a transient" (each _ tr))
+(assert-error "keys of a transient" (keys tr))
+(assert-error-value "assoc! past the length"
+  "index 9 out of range for vector of length 6" (assoc! tr 9 0))
+(assert-error "transient of a transient" (transient tr))
+(assert-error "transient of a tuple" (transient [1 2]))
+(assert-error "conj! a vector" (conj! base 4))
+(def persisted (persistent! tr))
+(assert (= (vector :a 2 3 4 5 6) persisted) "persistent!")
+(assert (= (vector 1 2 3) base) "a transient leaves its vector")
+(assert-error-value "conj! after persistent!"
+  "transient used after persistent!" (conj! tr 7))
+(assert-error "assoc! after persistent!" (assoc! tr 0 7))
+(assert-error "length after persistent!" (length tr))
+(assert-error "get after persistent!" (get tr 0))
+(assert-error "persistent! twice" (persistent! tr))
+(def again (transient persisted))
+(assoc! again 1 :b)
+(assert (= (vector :a 2 3 4 5 6) persisted)
+  "a second transient leaves the first's vector")
+
+(def batch (transient (vector)))
+(for i 0 5000 (conj! batch i))
+(gccollect)
+(for i 0 5000 (assoc! batch i (* 2 i)))
+(def doubled (persistent! batch))
+(assert (= (vec (map |(* 2 $) (range 5000))) doubled) "a long batch")
+(assert (= (hash (vec (map |(* 2 $) (range 5000)))) (hash doubled))
+  "a batch hashes as the vector it equals")
+
 # Equality, order and hash
 
 (assert (= (vector) (vector)) "empty vectors are equal")
