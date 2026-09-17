@@ -131,6 +131,31 @@
 (assert (deep= @[(vector) (vector 0 9) (vector 1)]
                (sort @[(vector 1) (vector) (vector 0 9)])) "sort")
 
+# Marshalling
+
+(defn round-trip [x] (unmarshal (marshal x)))
+(assert (= v (round-trip v)) "marshal a vector")
+(assert (= (vector) (round-trip (vector))) "marshal an empty vector")
+(assert (= big (round-trip big)) "marshal a long vector")
+(assert (= :core/vector (type (round-trip v))) "a marshalled vector is a vector")
+(assert (= (hash grown) (hash (round-trip grown))) "a marshalled vector hashes alike")
+(def mixed (vector 1.5 "s" :k 'sym @[1] {:a 1} [1 2] (vector (vector 3))))
+(def mixed-back (round-trip mixed))
+(assert (= 8 (length mixed-back)) "marshal mixed elements")
+(assert (deep= @[1] (get mixed-back 4)) "marshal an array element")
+(assert (= (vector (vector 3)) (get mixed-back 7)) "marshal nested vectors")
+(def pair (round-trip @[v v]))
+(assert (= (in pair 0) (in pair 1)) "a vector marshalled twice")
+(def cyc @{})
+(def holder (vector cyc))
+(put cyc holder :found)
+(def holder-back (round-trip holder))
+(assert (= :found (get (in holder-back 0) holder-back))
+  "a vector used as a key in its own element")
+(assert (= (vector :a 2 3 4 5 6) (round-trip persisted))
+  "marshal a vector a transient made")
+(assert-error "marshal a transient" (marshal (transient v)))
+
 # Printing
 
 (assert (= "<core/vector 1 2 3>" (describe v)) "describe")

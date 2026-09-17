@@ -64,6 +64,22 @@
 //! element's index with the element's hash. `conj` adds one term and `assoc`
 //! replaces one, so neither walks the vector, and hashing a vector nested in
 //! another does not recurse.
+//!
+//! ## Marshalling
+//!
+//! A vector is written as its length and then its elements, and read back by
+//! appending each element in place, as a transient does, to a trie no vector
+//! refers to yet. Nodes are not written, so two vectors that share nodes share
+//! none once read back.
+//!
+//! A vector enters the marshaller's reference table after its elements, as a
+//! tuple does, not before them, as an abstract usually does. Its hash depends
+//! on its elements, so a vector that was referred to while it was still being
+//! read would hash differently once complete, and a table or a struct that
+//! had used it as a key would no longer find it. A later occurrence of the
+//! same vector is still written as a reference. A vector reachable from its
+//! own elements, through a table or an array, is read back as two equal
+//! vectors, the inner one written in full.
 
 // ==========================================================================
 // Standard library imports
@@ -83,6 +99,7 @@ const buffers = @import("buffers.zig");
 const corefn = @import("../corefn.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_mark = @import("../gc/mark.zig");
+const marsh = @import("../marsh.zig");
 const order = @import("helpers/order.zig");
 const pp = @import("../pp.zig");
 const pp_format = @import("../pp/format.zig");
@@ -114,6 +131,8 @@ pub const vector_type = abstract_type.define(Vector, .{
     .length = vectorLength,
     .hash = vectorHash,
     .tostring = vectorTostring,
+    .marshal = vectorMarshal,
+    .unmarshal = vectorUnmarshal,
     .chunk = vectorChunk,
 });
 
@@ -656,6 +675,23 @@ fn vectorMark(v: *Vector, _: usize) void {
     mark(v);
 }
 
+/// `core/vector`'s `marshal` callback: the length, then each element.
+///
+/// The vector is entered in the reference table last. The file header says
+/// why.
+fn vectorMarshal(v: *Vector, m: *abi.Marshal) raise.Error!void {
+    try marsh.marshalSize(m, v.count);
+    // The runs are nodes, which do not change, so a run stays valid across
+    // marshalling an element.
+    var index: usize = 0;
+    while (index < v.count) {
+        const run = vectorChunk(v, index);
+        for (run.items) |x| try marsh.marshalJanet(m, x);
+        index += run.items.len;
+    }
+    marsh.marshalAbstract(m, v);
+}
+
 /// `core/vector`'s `tostring` callback: each element described, separated by
 /// spaces.
 fn vectorTostring(v: *Vector, render: *abi.Render) raise.Error!void {
@@ -671,4 +707,21 @@ fn vectorTostring(v: *Vector, render: *abi.Render) raise.Error!void {
             index += 1;
         }
     }
+}
+
+/// `core/vector`'s `unmarshal` callback: reads what `vectorMarshal` wrote.
+///
+/// The elements are appended in place to a vector held here. Its nodes are
+/// rooted nowhere, which is safe because no collection runs during
+/// unmarshalling. The abstract is made and entered in the reference table
+/// after the last element.
+fn vectorUnmarshal(u: *abi.Unmarshal) raise.Error!*Vector {
+    // Nothing is allocated for the count up front, so a count longer than the
+    // stream needs no check of its own: the read past the end refuses it.
+    const count = try marsh.unmarshalSize(u);
+    var built: Vector = .{};
+    for (0..count) |_| appendIn(&built, try marsh.unmarshalJanet(u), .fresh);
+    const v: *Vector = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Vector))));
+    v.* = built;
+    return v;
 }

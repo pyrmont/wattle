@@ -1,6 +1,7 @@
 //! Behavioral contract for `core/vector` and its transient: the shape at each
 //! boundary of the trie, reading a vector as a tuple is read, persistence
-//! across updates, what a transient may change, and equality, order and hash.
+//! across updates, what a transient may change, equality, order and hash, and
+//! marshalling.
 //!
 //! The oracle is a tuple. Each case builds the elements a vector should have
 //! as a plain array, updates that array the way the vector was updated, and
@@ -24,12 +25,17 @@ const std = @import("std");
 
 const abi = @import("abi");
 const args = @import("subsystems").args;
+const arrays = @import("subsystems").value.arrays;
+const buffers = @import("subsystems").value.buffers;
 const expect = @import("expect.zig").expect;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
+const marsh = @import("subsystems").marsh;
 const order = @import("subsystems").value.order;
+const raise = @import("subsystems").raise;
 const repr = @import("repr");
+const tables = @import("subsystems").value.tables;
 const transients = @import("subsystems").value.transients;
 const tuples = @import("subsystems").value.tuples;
 const vectors = @import("subsystems").value.vectors;
@@ -442,6 +448,124 @@ fn equalityOrderAndHash() void {
     expect(!order.equals(built, wrap.fromTuple(tuples.newFrom(elements))));
 }
 
+/// `x` marshalled into a new buffer.
+fn marshalled(x: repr.Value) raise.Error!*buffers.Buffer {
+    const b = buffers.new(16);
+    try marsh.marshal(b, x, null, 0);
+    return b;
+}
+
+/// The value `bytes` unmarshals to.
+fn unmarshalled(bytes: []const u8) raise.Error!repr.Value {
+    return marsh.unmarshal(bytes, 0, null, null);
+}
+
+/// A vector read back from its marshalled form has the shape, the elements
+/// and the hash of the one written, at every length where the shape changes,
+/// and none of its nodes is editable. It is read again after a collection, so
+/// a node the unmarshaller made and did not store is a failure here.
+fn marshallingRoundTripsAtEachBoundary() !void {
+    const most = boundary_lengths[boundary_lengths.len - 1];
+    const buffer = try std.heap.c_allocator.alloc(repr.Value, most);
+    defer std.heap.c_allocator.free(buffer);
+    const elements = counting(buffer);
+
+    for (boundary_lengths) |n| {
+        const written = wrap.fromAbstract(vectors.fromSlice(elements[0..n]));
+        const bytes = try marshalled(written);
+        const back = try unmarshalled(bytes.slice());
+        const v = vectors.toVector(back).?;
+        gc_alloc.gcroot(back);
+        gc_mark.collect();
+        expect(v.shift == expectedShift(n));
+        expect(editableIn(v) == 0);
+        try expectElements(v, elements[0..n]);
+        expect(order.hash(back) == order.hash(wrap.fromAbstract(vectors.fromSlice(elements[0..n]))));
+        _ = gc_alloc.gcunroot(back);
+    }
+}
+
+/// The bytes of a marshalled vector: the abstract's lead byte and type name,
+/// the length in `marshalSize`'s encoding, and then each element. A marshalled
+/// stream is a file format, so the bytes are the contract.
+fn theWireFormat() !void {
+    const lb_abstract = 217;
+    const lb_symbol = 207;
+    const three = wrap.fromAbstract(vectors.fromSlice(&.{
+        harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3),
+    }));
+    const b = try marshalled(three);
+    expect(std.mem.eql(u8, b.slice(), &[_]u8{ lb_abstract, lb_symbol, 11 } ++ "core/vector".* ++ [_]u8{ 3, 1, 2, 3 }));
+
+    // A length above 0xF0 is a byte count and then its bytes, little endian.
+    var many: [300]repr.Value = undefined;
+    const long = try marshalled(wrap.fromAbstract(vectors.fromSlice(counting(&many))));
+    expect(std.mem.eql(u8, long.slice()[14..17], &[_]u8{ 0xF2, 0x2C, 0x01 }));
+    expect(long.slice()[17] == 0);
+}
+
+/// A vector that occurs twice in what is marshalled is read back as one
+/// vector, and equal vectors are too, as equal tuples are. A vector reachable
+/// from its own element is read back as two equal vectors, and a table that
+/// has the inner one as a key still finds it, which is why a vector enters the
+/// reference table after its elements.
+fn marshallingKeepsIdentityAndHashes() !void {
+    var buffer: [40]repr.Value = undefined;
+    const shared = wrap.fromAbstract(vectors.fromSlice(counting(&buffer)));
+    const equal = wrap.fromAbstract(vectors.fromSlice(counting(&buffer)));
+    const holder = arrays.new(3);
+    harness.arrayPush(holder, shared);
+    harness.arrayPush(holder, shared);
+    harness.arrayPush(holder, equal);
+    const back = try unmarshalled((try marshalled(wrap.fromArray(holder))).slice());
+    const items = wrap.toArray(back).slice();
+    expect(items.len == 3);
+    expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[1]));
+    expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[2]));
+    try expectElements(vectors.toVector(items[0]).?, counting(&buffer));
+
+    // A table holding, as a key, the vector that holds the table.
+    const t = tables.new(1);
+    const outer = wrap.fromAbstract(vectors.fromSlice(&.{wrap.fromTable(t)}));
+    tables.put(t, outer, harness.wrapInteger(7));
+    const cycled = try unmarshalled((try marshalled(outer)).slice());
+    const back_v = vectors.toVector(cycled).?;
+    expect(back_v.count == 1);
+    const back_t = wrap.toTable(vectors.at(back_v, 0));
+    expect(harness.integerIs(tables.get(back_t, cycled), 7));
+    for (back_t.slots()[0..back_t.capacity]) |kv| {
+        if (repr.checkType(kv.key, repr.Tag.nil)) continue;
+        expect(wrap.toAbstract(kv.key) != wrap.toAbstract(cycled));
+    }
+}
+
+/// A stream cut short anywhere is refused, and so is a length the rest of the
+/// stream is too short to hold.
+fn aShortStreamIsRefused() !void {
+    var buffer: [70]repr.Value = undefined;
+    const elements = counting(&buffer);
+    elements[40] = wrap.fromAbstract(vectors.fromSlice(elements[0..3]));
+    const whole = try marshalled(wrap.fromAbstract(vectors.fromSlice(elements)));
+    gc_alloc.gcroot(wrap.fromBuffer(whole));
+    for (0..@intCast(whole.count)) |len| {
+        const refusal = harness.raised(unmarshalled, .{whole.slice()[0..len]});
+        expect(refusal != null and refusal.?.signal == abi.Signal.@"error");
+    }
+    _ = gc_alloc.gcunroot(wrap.fromBuffer(whole));
+
+    const lb_abstract = 217;
+    const lb_symbol = 207;
+    const lying = [_]u8{ lb_abstract, lb_symbol, 11 } ++ "core/vector".* ++ [_]u8{ 0xF1, 0xF0, 1, 2 };
+    expect(harness.raised(unmarshalled, .{@as([]const u8, &lying)}).?.says("unexpected end of source"));
+}
+
+/// A transient has no `marshal` callback, so marshalling one is refused.
+fn aTransientIsNotMarshalled() !void {
+    const t = transients.fromVector(vectors.fromSlice(&.{harness.wrapInteger(1)}));
+    const refusal = harness.raised(marshalled, .{wrap.fromAbstract(t)});
+    expect(refusal != null and refusal.?.beginsWith("cannot marshal"));
+}
+
 // ==========================================================================
 // Entry
 // ==========================================================================
@@ -454,6 +578,14 @@ fn body() !void {
     try anAbandonedTransientIsCollected();
     try randomUpdatesAgainstArrays();
     equalityOrderAndHash();
+    // Unmarshalling finds a type by name in the registry, and building the
+    // core environment is what registers `core/vector`.
+    _ = harness.coreEnv();
+    try marshallingRoundTripsAtEachBoundary();
+    try theWireFormat();
+    try marshallingKeepsIdentityAndHashes();
+    try aShortStreamIsRefused();
+    try aTransientIsNotMarshalled();
 }
 
 pub fn run() void {
