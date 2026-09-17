@@ -1710,10 +1710,11 @@ runs, the interpreter is suspended in the call and reaches no instruction
 boundary, and no Janet code is running to call `gccollect`. Then, once the
 cfunction returns, its result is on the fiber's stack and reachable. The
 exception is a cfunction that runs Janet code before it returns, because that
-code does reach instruction boundaries and can collect. Four functions on the
-surface do that: `call`, `mcall` and `pcall`, which exist to do it, and `length`
-on an abstract type with no `length` slot, which falls through to a Janet-level
-`:length` method.
+code does reach instruction boundaries and can collect. Three functions on the
+surface do that: `call`, `mcall` and `pcall`, which exist to do it. `length`
+does not: a `length` callback may not call into Janet code, and an abstract type
+with no `length` slot has no length rather than falling through to a
+Janet-level `:length` method, as it does in C Janet.
 
 `gcroot` is what protects a value across a re-entry, and it is a pair per value.
 The root set is a multiset, so a root and its unroot are matched one for one and

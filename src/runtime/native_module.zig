@@ -84,11 +84,12 @@ const methods = [_]wattle.Method{
 /// has a 64-bit field to write and `tostring` something to show in.
 var next_serial: i64 = 1;
 
-/// A method table whose `:length` lies, in one of two ways. `mcall` finds it
+/// A method table with a `:length`, which a call such as `(:length o)` finds
 /// through `get`.
 const odd_methods = [_]wattle.Method{.{ .name = "length", .cfun = &oddLength }};
 
-/// No `length` slot, on purpose: that is what sends `length` to the method.
+/// No `length` slot, on purpose: `length` refuses such a type rather than
+/// calling its `:length` method, as C Janet would.
 const odd_type = wattle.define(Odd, .{ .name = "zig-native/odd", .get = oddGet });
 
 /// What `pointerValue` hands out the address of. A file-scope variable rather
@@ -151,17 +152,10 @@ const Keeper = struct {
     codes: [6]wattle.Value,
 };
 
-/// `mode` selects what the `:length` method returns, so that both kinds of
-/// wrong result are reachable from a test.
-///
-/// This is the one path on the surface where a runtime call re-enters Janet
-/// code, and the only fixture in the tree that reaches it. An abstract type
-/// with no `length` slot resolves `:length` as a Janet method, which is an
-/// ordinary call back into the interpreter, so the collector's safe points are
-/// live under this module's frame while it runs. That is also where
-/// `access.length` could come back negative, since a method may return one,
-/// and this type is what fires the refusal that now stops it.
-const Odd = struct { mode: u8 = 0 };
+/// An abstract type with a `:length` method and no `length` slot, which
+/// `length` refuses rather than calling the method. The payload is a byte
+/// because an abstract needs one to exist.
+const Odd = struct { unused: u8 = 0 };
 
 /// What several threads posting at once share.
 ///
@@ -400,7 +394,7 @@ fn defs(env: *wattle.Env) wattle.Error!void {
         wattle.reg("mutate", &mutate, "(mutate array table buffer)\n\nThe three mutations, through the Value."),
         wattle.reg("fetch", &fetch, "(fetch ds key)\n\nJanet's own get, over anything."),
         wattle.reg("size", &size, "(size x)\n\nThe generic length."),
-        wattle.reg("odd", &oddValue, "(odd)\n\nAn abstract whose :length method returns -1."),
+        wattle.reg("odd", &oddValue, "(odd)\n\nAn abstract with a :length method and no length slot."),
         wattle.reg("apply", &apply, "(apply f & args)\n\nCall f on the current fiber, raising on anything but a return."),
         wattle.reg("invoke", &invoke, "(invoke name & args)\n\nCall the method name on the first of args."),
         wattle.reg("attempt", &attempt, "(attempt f & args)\n\nCall f on a fresh fiber, returning [signal value fiber]."),
@@ -723,23 +717,17 @@ fn oddGet(_: *Odd, key: wattle.Value) wattle.Error!?wattle.Value {
     return wattle.getMethod(key, &odd_methods);
 }
 
-/// `(:length o)`: a length that is negative in mode 0 and not a number
-/// otherwise.
+/// `(:length o)`: 3.
 fn oddLength(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
-    const self = try wattle.getAbstract(Odd, argv, 0, &odd_type);
-    return switch (self.mode) {
-        0 => wattle.number(-1),
-        else => wattle.cstring("not a number at all"),
-    };
+    _ = try wattle.getAbstract(Odd, argv, 0, &odd_type);
+    return wattle.number(3);
 }
 
-/// `(odd &opt mode)`.
+/// `(odd)`.
 fn oddValue(argv: []wattle.Value) wattle.Error!wattle.Value {
-    try wattle.arity(argv, 0, 1);
-    const o = wattle.new(Odd, &odd_type, null);
-    o.mode = if (argv.len == 1) @truncate(try wattle.getUInteger(argv, 0)) else 0;
-    return wattle.abstract(o);
+    try wattle.fixarity(argv, 0);
+    return wattle.abstract(wattle.new(Odd, &odd_type, null));
 }
 
 /// `(peek indexed n)`: the value the keeper at index `n` kept.

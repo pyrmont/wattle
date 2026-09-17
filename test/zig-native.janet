@@ -378,30 +378,21 @@
            (refusal size 3))
         "length refuses a number with the runtime's own message")
 
-# The one path where a runtime call re-enters Janet code: an abstract with no
-# `length` slot resolves `:length` as a Janet method. A method may answer a
-# negative, and the runtime refuses it. This is the only place in the tree that
-# reaches the method arm at all.
-# Two ways for a method to answer something that is not a length, and both
-# spellings of the question must refuse both. `length` and `lengthv` used to
-# disagree here -- one checked its method's answer and the other did not -- and
-# each half of that was found by running it.
-(assert (= -1 (:length (odd 0))) "the method really does answer -1")
-(assert (= "not a number at all" (:length (odd 1))) "and really does answer a string")
-
-(assert (= "invalid integer length -1" (refusal size (odd 0)))
-        "the module's length refuses a negative")
-(assert (= "invalid integer length -1" (refusal length (odd 0)))
-        "and so does Janet's own, through the other entry point")
-(assert (= "invalid integer length \"not a number at all\"" (refusal size (odd 1)))
-        "the module's length refuses a non-number")
-(assert (= "invalid integer length \"not a number at all\"" (refusal length (odd 1)))
-        "and so does Janet's own -- the two agree on every arm but the bound")
+# An abstract with no `length` slot has no length, even with a `:length`
+# method, which C Janet would call. A `length` callback may not call into Janet
+# code, so reading a length never runs any. The refusal keeps C Janet's words.
+(assert (= 3 (:length (odd))) "the method answers when called as a method")
+(assert (string/has-prefix? "could not find method :length for <zig-native/odd"
+                            (refusal size (odd)))
+        "but the module's length does not call it")
+(assert (string/has-prefix? "could not find method :length for <zig-native/odd"
+                            (refusal length (odd)))
+        "and neither does Janet's own")
 
 # `toAbstract` tests the abstract type's identity rather than the tag: an
 # `odd` unwraps to a valid pointer into a payload that is not a keeper's, and
 # reading it as one would fail silently.
-(assert (= "element 0 is not a keeper" (refusal peek [(odd 0)] 0))
+(assert (= "element 0 is not a keeper" (refusal peek [(odd)] 0))
         "an abstract of the module's other type is not a keeper")
 
 # ==========================================================================

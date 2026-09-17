@@ -111,11 +111,9 @@
 //! collection so a value a cfunction builds is safe for as long as that
 //! cfunction's frame is live.
 //!
-//! Re-entering Janet code stops this being true. Four functions callable by a
-//! module author may re-enter: `call`, `mcall`, `pcall` and (in certain
-//! situations) `length`. (The `length` call is on an abstract type with no
-//! `length` slot, which falls through to a Janet-level `:length` method.) Four
-//! rules apply across such a re-entry:
+//! Re-entering Janet code stops this being true. Three functions callable by a
+//! module author may re-enter: `call`, `mcall` and `pcall`. Four rules apply
+//! across such a re-entry:
 //!
 //! - A `Value` reachable from nothing but the module's own stack can be freed.
 //!   `gcroot` before and `gcunroot` after is the protection, one pair per
@@ -486,6 +484,10 @@ pub fn Spec(comptime T: type) type {
         get: ?*const fn (*T, Value) Error!?Value = null,
         put: ?*const fn (*T, Value, Value) Error!void = null,
         next: ?*const fn (*T, Value) Error!Value = null,
+        /// Returns the number of elements. It may raise, but may not call
+        /// into Janet code, so a caller can read a length while it holds
+        /// `argv` or a value nothing roots. A type without it has no length:
+        /// the runtime does not fall back to a `:length` method.
         length: ?*const fn (*T, usize) Error!usize = null,
         call: ?*const fn (*T, []Value) Error!Value = null,
 
@@ -1086,15 +1088,12 @@ pub fn keyword(bytes: []const u8) Value {
 /// Returns the length of a value.
 ///
 /// `v` may be a string, symbol, keyword, buffer, array, tuple, struct or
-/// table. It may also be an abstract type, whose length comes from its
-/// `length` callback when the type declares that callback and from a
-/// Janet-level `:length` method otherwise.
+/// table. It may also be an abstract type with a `length` callback. A type
+/// without one has no length, whatever methods it has: a `:length` method is
+/// not called, as it would be in C Janet.
 ///
 /// This function raises an error for any other value, and for an abstract type
-/// with neither a `length` callback nor a `:length` method.
-///
-/// The method arm re-enters Janet code, so the re-entry rules at the top of
-/// this file apply in such a case.
+/// without a `length` callback. It never runs Janet code.
 pub fn length(v: Value) Error!usize {
     return @intCast(try fromAbi(interface.rt.length(v)));
 }

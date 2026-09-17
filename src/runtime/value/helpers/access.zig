@@ -61,7 +61,6 @@ const tables = @import("../tables.zig");
 const tuples = @import("../tuples.zig");
 const utils = @import("../../utils.zig");
 const value = @import("../../value.zig");
-const vm_calls = @import("../../vm.zig");
 const vm_entry = @import("../../vm/entry.zig");
 const vm_state = @import("../../vm/state.zig");
 const wrap = @import("wrap.zig");
@@ -274,12 +273,14 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
 /// Returns a value's length as a machine integer.
 ///
 /// `x` is the value. Six of the seven built-in cases read a count that is
-/// already an `i32`. The abstract case is the one that can fail, and it fails
-/// in two different ways depending on which of two mechanisms is used: a
-/// `length` callback returns a `usize`, which is rejected when it exceeds
-/// `INT32_MAX`; a type without one is asked for a `length` method through
-/// `vm_calls.mcall`, which returns a `Value` and is rejected when that is not
-/// an integer. Two rejections, two messages, two format specifiers.
+/// already an `i32`. The abstract case is the one that can fail: its `length`
+/// callback returns a `usize`, which is rejected when it exceeds `INT32_MAX`,
+/// and a type without the callback has no length. It is not asked for a
+/// `:length` method, as C Janet asks it. A callback may raise but may not call
+/// into Janet code, so reading a length never runs Janet code, and a caller
+/// holding `argv` or a block nothing roots need not guard against it. The
+/// refusal keeps C Janet's wording for the method it no longer looks for, so a
+/// Janet program sees the same message.
 ///
 /// The rejection message renders that `usize` with `%u`, which the formatter
 /// reads as a `u64`. The two agree only where a `usize` is 64 bits, which is
@@ -303,17 +304,7 @@ pub fn length(x: repr.Value) raise.Error!i32 {
                 }
                 return @intCast(len);
             }
-            var argv = [_]repr.Value{x};
-            const len = try vm_calls.mcall("length", &argv);
-            // Both ends of the range, in one rule. The slot arm above
-            // rejects a length past `maxInt(i32)` because no caller can use
-            // it; a Janet-level `:length` method may give a negative, which
-            // `checkint` accepts and no caller can use either. Rejecting it
-            // here rather than at each caller is what lets every reader of
-            // this function's `i32` treat it as a count.
-            if (!args_core.checkint(len) or wrap.toInteger(len) < 0)
-                return pp_format.panicf("invalid integer length %v", .{len});
-            return wrap.toInteger(len);
+            return noLength(x);
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }
@@ -354,20 +345,7 @@ pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
                     }
                 }
             }
-            var argv = [_]repr.Value{x};
-            const len = try vm_calls.mcall("length", &argv);
-            // A length, and this is the arm the `length` builtin reaches.
-            // `checksize` is the whole rule: a number, integral, and in
-            // `[0, maxInt(usize)]`, so a method giving a negative, a
-            // fraction or something that is not a number at all is refused
-            // here rather than handed on as a length. `length` above asks
-            // `checkint` for the same three things against a narrower bound,
-            // which is the one documented difference between these two
-            // functions.
-            if (!args_core.checksize(len)) {
-                return pp_format.panicf("invalid integer length %v", .{len});
-            }
-            return len;
+            return noLength(x);
         },
         else => return pp_format.panicf("expected %T, got %v", .{ repr.TagSet.lengthable, x }),
     }
@@ -689,4 +667,10 @@ fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error!i32 {
 /// reachable later.
 inline fn nextBucket(p: ?*const tables.KV) *const tables.KV {
     return @ptrFromInt(@intFromPtr(p) +% @sizeOf(tables.KV));
+}
+
+/// The refusal for an abstract with no `length` callback, in the words C
+/// Janet uses when it finds no `:length` method either.
+fn noLength(x: repr.Value) raise.Error {
+    return pp_format.panicf("could not find method :length for %v", .{x});
 }

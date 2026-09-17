@@ -40,8 +40,8 @@
 //! expected it. Nothing counts them at the foot of the file, because there is
 //! no macro whose every invocation has to be shown to have run.
 //!
-//! The abstract fixtures need no adapter either. Five of the callbacks used
-//! here, `get`, `put`, `next`, `length` and the two methods, are raising in
+//! The abstract fixtures need no adapter either. The callbacks used here,
+//! `get`, `put`, `next`, `length` and the method, are raising in
 //! `abstract_type.zig`, and here they are ordinary functions returning
 //! `raise.Error!T`.
 //!
@@ -88,11 +88,6 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-const at_bad_method = abstract_type.define(anyopaque, .{
-    .name = "value-access/bad-method",
-    .get = &badMethodGet,
-});
-
 /// No callbacks at all: the type every "no getter", "no setter" and "no next"
 /// arm is written for.
 const at_bare = abstract_type.define(anyopaque, .{ .name = "value-access/bare" });
@@ -109,11 +104,6 @@ const at_huge = abstract_type.define(anyopaque, .{
     .length = if (intmax_int64_fits_in_a_length) &hugeLength else null,
 });
 
-const at_zero_method = abstract_type.define(anyopaque, .{
-    .name = "value-access/zero-method",
-    .get = &zeroMethodGet,
-});
-
 const at_slots = abstract_type.define(Slots, .{
     .name = "value-access/slots",
     .get = &slotsGet,
@@ -122,13 +112,11 @@ const at_slots = abstract_type.define(Slots, .{
     .length = &slotsLength,
 });
 
-var bad_method_value: repr.Value = undefined;
 var bare_value: repr.Value = undefined;
 var big_value: repr.Value = undefined;
 var edge_value: repr.Value = undefined;
 var good_method_value: repr.Value = undefined;
 var huge_value: repr.Value = undefined;
-var zero_method_value: repr.Value = undefined;
 
 /// Whether the upper half of that straddle can be *expressed* on this target.
 ///
@@ -226,43 +214,17 @@ fn hugeLength(_: *anyopaque, _: usize) raise.Error!usize {
     return 9007199254740992; // JANET_INTMAX_INT64
 }
 
-/// A type with no `length` callback but a `:length` method, which is the other
-/// half of `length`'s abstract arm. The method is found through `access.get`,
-/// one of the functions under test, so this arm re-enters the file it is
-/// testing.
+/// The `:length` method of a type with no `length` callback, which `length`
+/// does not consult.
 fn methodSeven(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(7);
 }
 
-fn methodKeyword(argv: []repr.Value) raise.Error!repr.Value {
-    _ = @as(i32, @intCast(argv.len));
-
-    return value.fromBytes("not-a-number", .keyword);
-}
-
 fn goodMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
     if (!args_core.keyeq(key, "length")) return null;
     return wrap.fromCfunction(raise.stored(&methodSeven));
-}
-
-fn badMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
-    if (!args_core.keyeq(key, "length")) return null;
-    return wrap.fromCfunction(raise.stored(&methodKeyword));
-}
-
-/// A `:length` method that answers zero, the smallest length either function
-/// accepts.
-fn methodZero(argv: []repr.Value) raise.Error!repr.Value {
-    _ = @as(i32, @intCast(argv.len));
-
-    return harness.wrapInteger(0);
-}
-
-fn zeroMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
-    if (!args_core.keyeq(key, "length")) return null;
-    return wrap.fromCfunction(raise.stored(&methodZero));
 }
 
 fn typeOf(at: *const AbstractType) *const abi.AbstractType {
@@ -278,16 +240,12 @@ fn makeAbstracts() void {
     edge_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_edge), 8));
     huge_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_huge), 8));
     good_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_good_method), 8));
-    bad_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_bad_method), 8));
-    zero_method_value = wrap.fromAbstract(abstracts.newBytes(typeOf(&at_zero_method), 8));
     gc_alloc.gcroot(slots_value);
     gc_alloc.gcroot(bare_value);
     gc_alloc.gcroot(big_value);
     gc_alloc.gcroot(edge_value);
     gc_alloc.gcroot(huge_value);
     gc_alloc.gcroot(good_method_value);
-    gc_alloc.gcroot(bad_method_value);
-    gc_alloc.gcroot(zero_method_value);
 }
 
 fn aCFunctionValue() repr.Value {
@@ -992,23 +950,15 @@ fn theTwoLengthBoundsAreDifferent() !void {
     }
 }
 
-/// Without a `length` callback the length comes from a `:length` method, which
-/// is looked up through `access.get`, so this arm re-enters the file under
-/// test.
-///
-/// Both check the method's result and the bound is the only thing they differ
-/// on. `length` asks `checkint` and `lengthv` asks `checksize`, so each
-/// refuses a method that gives back a negative, a fraction or something that
-/// is not a number, and they part company only where a length exceeds the
-/// range of an `i32`, which is what `lengthv` exists for.
-fn theLengthFallsBackToAMethod() !void {
-    expect(try access.length(good_method_value) == 7);
-    expect(harness.equals(try access.lengthv(good_method_value), intv(7)));
-    expect(try access.length(zero_method_value) == 0);
-    expect(harness.equals(try access.lengthv(zero_method_value), intv(0)));
-
-    expect(refusal(access.length, .{bad_method_value}).says("invalid integer length :not-a-number"));
-    expect(refusal(access.lengthv, .{bad_method_value}).says("invalid integer length :not-a-number"));
+/// Without a `length` callback an abstract has no length, even with a
+/// `:length` method, which C Janet would call. A callback cannot call into
+/// Janet code, so reading a length never runs any. The refusal keeps C Janet's
+/// words for the method it did not find.
+fn theLengthIgnoresAMethod() !void {
+    expect(refusal(access.length, .{good_method_value})
+        .beginsWith("could not find method :length for <value-access/good-method "));
+    expect(refusal(access.lengthv, .{good_method_value})
+        .beginsWith("could not find method :length for <value-access/good-method "));
 
     expect(refusal(access.length, .{bare_value})
         .beginsWith("could not find method :length for <value-access/bare "));
@@ -1331,7 +1281,7 @@ fn body() !void {
     try theLengthOfATableIgnoresTombstones();
     try theAbstractLengthCallback();
     try theTwoLengthBoundsAreDifferent();
-    try theLengthFallsBackToAMethod();
+    try theLengthIgnoresAMethod();
     theLengthOfANonLengthablePanics();
 
     try putGrowsAnArrayWithNils();
