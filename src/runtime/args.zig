@@ -1079,11 +1079,25 @@ pub fn chunks(x: repr.Value) raise.Error!?Chunks {
     const abst = wrap.toAbstract(x);
     const at = abi.abstractHead(abst).type;
     if (at.chunk == null) return null;
-    const len = try access.length(x);
+    return chunksOfLength(x, @intCast(try access.length(x)));
+}
+
+/// Returns the elements of an abstract with a `chunk` callback, whose length
+/// the caller has already read.
+///
+/// `x` is the value and `len` what its `length` callback answered. This is for
+/// a site that reads every length before it allocates and must not read one
+/// again afterwards, because a `length` callback can run code and so collect.
+/// `x` must be an abstract with a `chunk` callback, and any other value is
+/// illegal behaviour.
+pub fn chunksOfLength(x: repr.Value, len: usize) Chunks {
+    const abst = wrap.toAbstract(x);
+    const at = abi.abstractHead(abst).type;
+    std.debug.assert(at.chunk != null);
     return .{
         .source = .{ .abstract = .{ .payload = abst, .at = at } },
-        .len = @intCast(len),
-        .limit = @intCast(len),
+        .len = len,
+        .limit = len,
     };
 }
 

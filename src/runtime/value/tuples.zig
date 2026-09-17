@@ -23,9 +23,12 @@
 //! gives it its own file is that taxonomy, which makes `arrays.zig` its
 //! neighbour rather than `strings.zig`.
 //!
-//! Nothing here keeps a value across a raise. Nothing here raises directly, but
-//! `gcalloc` can trigger a collection and a finalizer may raise, so a raise can
-//! still pass through these frames.
+//! Nothing here keeps a value across a raise. Allocating does not collect, so a
+//! tuple between `begin` and `end` is safe while nothing runs Janet code: it is
+//! unreachable, and the collector neither marks it nor reads its slots, and a
+//! raise leaves it for the next sweep with its slots unwritten. Code that can
+//! collect, such as an abstract's `length` callback, has to run before
+//! `begin`.
 
 // ==========================================================================
 // Standard library imports
@@ -40,6 +43,7 @@ const std = @import("std");
 const abi = @import("abi");
 const args_core = @import("../args.zig");
 const corefn = @import("../corefn.zig");
+const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
@@ -69,6 +73,11 @@ pub const tuple_payload = @offsetOf(TupleHead, "_data");
 // ==========================================================================
 // Types
 // ==========================================================================
+
+/// An argument of `tuple/join` and how many elements it has, where it is an
+/// abstract. An array's or a tuple's count is read again once no more code
+/// can run, since that code could change it.
+const JoinPart = struct { x: repr.Value, len: usize };
 
 /// The slot array Janet passes a tuple around as.
 pub const Tuple = [*]const repr.Value;
@@ -165,24 +174,19 @@ pub fn lib(env: *tables.Table) void {
 /// wanted, and this reads it to the end. `length` is how many elements that
 /// window holds, which the caller has from the same range it windowed with.
 ///
-/// This function raises where `args.Chunks.next` does, and where the runs do
-/// not total `length`: the count came from a `length` callback for an
-/// abstract, and a second call to that callback can answer differently.
-///
-/// Where the source is an abstract the slots are filled with nil first, since
-/// `begin` links the block into the collector's list with them unwritten and
-/// anything raised below allocates. A contiguous source reads no callback, so
-/// nothing between `begin` and `end` can raise and every slot is written.
+/// This function raises where `args.Chunks.next` does. That is the only call
+/// between `begin` and `end`, and a `chunk` callback cannot run code, so the
+/// slots need no fill: a raise leaves an unreachable tuple, which the sweep
+/// frees without reading them. `next` returns every element of the window or
+/// raises, so the runs total `length`.
 pub fn newFromChunks(it: *args_core.Chunks, length: usize) raise.Error![*]const repr.Value {
     const tup = begin(length);
-    if (it.source == .abstract) @memset(tup[0..length], wrap.fromNil());
     var written: usize = 0;
     while (try it.next()) |run| {
-        if (length - written < run.len) return raise.panic(args_core.grew_message);
         @memcpy(tup[written..][0..run.len], run);
         written += run.len;
     }
-    if (written != length) return raise.panic(args_core.shrank_message);
+    std.debug.assert(written == length);
     return end(tup);
 }
 
@@ -217,12 +221,10 @@ pub inline fn view(t: [*]const repr.Value) []const repr.Value {
 /// channel in its signature, so each of these delivers its raise through an
 /// abi, and none keeps a value across a call that can raise.
 ///
-/// `cfunTupleJoin`'s two passes over `argv` are not redundant: the first is
-/// what rejects a bad argument and checks the total for overflow, and it has to
-/// finish before anything is allocated, because `begin` would otherwise leave a
-/// half-filled tuple behind when a later argument turned out not to be indexed.
-/// The second pass can raise all the same, which is why the slots are filled
-/// with nil before it runs.
+/// `cfunTupleJoin` reads its arguments before it allocates. An abstract's
+/// `length` callback can run code, and code can collect, which would free a
+/// tuple nothing roots yet, so every length is read and every argument checked
+/// before `begin`, and nothing after it runs code.
 fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
     const tup = newFrom(argv);
     setBracketed(head(tup));
@@ -231,61 +233,21 @@ fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
 
 fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, -1);
-    var total_len: i32 = 0;
-    var any_abstract = false;
+    var total: usize = 0;
     for (argv, 0..) |arg, index| {
-        var len: usize = undefined;
-        if (args_core.items(arg)) |vals| {
-            len = vals.len;
-        } else {
-            const counted = try args_core.chunks(arg) orelse {
-                return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i32, @intCast(index)), arg });
-            };
-            any_abstract = true;
-            len = counted.len;
-        }
-        if (std.math.maxInt(i32) - total_len < @as(i64, @intCast(len))) return raise.panic("tuple too large");
-        total_len += @intCast(len);
+        const vals = args_core.items(arg) orelse return joinParts(argv, index);
+        total = try joinedLength(total, vals.len);
     }
-    const total: usize = @intCast(total_len);
+    // Every argument is an array or a tuple, so nothing here runs code and
+    // every count is the one the copy reads. This arm is the one a Janet
+    // program reaches, and it is the copy this function has always done.
     const tup = begin(total);
-
-    // With no abstract among the arguments, nothing between the two passes
-    // runs code: `begin` allocates and every count came from a view rather
-    // than a callback. So the counts cannot have changed, nothing below can
-    // raise, and every slot is written. This arm is the one a Janet program
-    // reaches, and it is the copy this function has always done.
-    if (!any_abstract) {
-        var cursor = tup;
-        for (argv) |arg| {
-            const vals = args_core.items(arg).?;
-            @memcpy(cursor[0..vals.len], vals);
-            cursor += vals.len;
-        }
-        return wrap.fromTuple(end(tup));
-    }
-
-    // An abstract is among them, so a `length` callback runs again below and
-    // a `chunk` callback can answer with a run that is refused. The slots are
-    // filled first because `begin` links the block into the collector's list
-    // with them uninitialised, and building a raised value allocates, an
-    // allocation can collect, and a collection walks every slot of this
-    // tuple.
-    @memset(tup[0..total], wrap.fromNil());
-    var written: usize = 0;
+    var cursor = tup;
     for (argv) |arg| {
-        var source = (try args_core.chunks(arg)).?;
-        while (try source.next()) |run| {
-            // The count this pass reads is not the count the first pass read:
-            // both come from a callback that runs code, so the two can
-            // disagree and the copy holds itself to the total the tuple was
-            // made for.
-            if (total - written < run.len) return raise.panic(args_core.grew_message);
-            @memcpy(tup[written..][0..run.len], run);
-            written += run.len;
-        }
+        const vals = args_core.items(arg).?;
+        @memcpy(cursor[0..vals.len], vals);
+        cursor += vals.len;
     }
-    if (written != total) return raise.panic(args_core.shrank_message);
     return wrap.fromTuple(end(tup));
 }
 
@@ -325,6 +287,59 @@ fn cfunTupleType(argv: []repr.Value) raise.Error!repr.Value {
         return value.fromBytes("brackets", .keyword);
     }
     return value.fromBytes("parens", .keyword);
+}
+
+/// `tuple/join` where an abstract is among the arguments, `first` being the
+/// first argument that is not an array or a tuple.
+///
+/// The arguments are copied out of `argv` before any `length` callback runs,
+/// because a callback that calls Janet code can grow the fiber's stack, which
+/// `argv` points into. Every length is then read, and everything after that
+/// runs no code: the counts, the allocation and the copy.
+fn joinParts(argv: []repr.Value, first: usize) raise.Error!repr.Value {
+    var small: [8]JoinPart = undefined;
+    const parts = if (argv.len <= small.len)
+        small[0..argv.len]
+    else
+        gc_alloc.scratch_heap.alloc(JoinPart, argv.len) catch fatal.outOfMemory();
+    for (parts, argv) |*part, arg| part.* = .{ .x = arg, .len = 0 };
+
+    for (parts[first..], first..) |*part, index| {
+        if (args_core.items(part.x) != null) continue;
+        const source = try args_core.chunks(part.x) orelse {
+            return pp_format.panicf("expected indexed type for argument %d, got %v", .{ @as(i32, @intCast(index)), part.x });
+        };
+        part.len = source.len;
+    }
+
+    var total: usize = 0;
+    for (parts) |part| {
+        const len = if (args_core.items(part.x)) |vals| vals.len else part.len;
+        total = try joinedLength(total, len);
+    }
+    const tup = begin(total);
+    var written: usize = 0;
+    for (parts) |part| {
+        if (args_core.items(part.x)) |vals| {
+            @memcpy(tup[written..][0..vals.len], vals);
+            written += vals.len;
+            continue;
+        }
+        var source = args_core.chunksOfLength(part.x, part.len);
+        while (try source.next()) |run| {
+            @memcpy(tup[written..][0..run.len], run);
+            written += run.len;
+        }
+    }
+    std.debug.assert(written == total);
+    if (parts.ptr != &small) gc_alloc.scratch_heap.free(parts);
+    return wrap.fromTuple(end(tup));
+}
+
+/// The total so far with `len` more elements, refused past what a tuple holds.
+fn joinedLength(total: usize, len: usize) raise.Error!usize {
+    if (@as(usize, std.math.maxInt(i32)) - total < len) return raise.panic("tuple too large");
+    return total + len;
 }
 
 // ==========================================================================

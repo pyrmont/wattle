@@ -9,9 +9,10 @@
 //! `suite-corelib.janet` covers it.
 //!
 //! What no Janet suite can cover is a type that answers badly. A run is valid
-//! only until the next run is taken from the same value, and the two counts
-//! `tuple/join` reads come from a `length` callback that runs code between
-//! them, so the site has to hold itself to the total the tuple was made for.
+//! only until the next run is taken from the same value, and a `length`
+//! callback runs code, so it can answer differently each time it is called
+//! and can collect. `tuple/join` has to read each length once, and before it
+//! allocates the tuple.
 //! Neither property can be reached from Janet, because nothing a Janet
 //! program can make implements the callback at all, and neither can be
 //! reached from `test/zig-native.janet`, because a module written to be
@@ -19,10 +20,10 @@
 //!
 //! ## What this file cannot cover
 //!
-//! The collector is not driven here. A raise part way through the copy leaves
-//! a tuple whose slots were filled with nil before the copy began, and
-//! `test/gc_stress.zig` is where a walk over a half-built value belongs. What
-//! is asserted here is that the raise happens at all.
+//! The collector is driven here only from a `length` callback. A raise part
+//! way through a copy leaves a tuple nothing reaches, which the sweep frees
+//! without reading its slots, and `test/gc_stress.zig` is where that belongs.
+//! What is asserted here is that the raise happens at all.
 
 // ==========================================================================
 // Standard library imports
@@ -45,6 +46,8 @@ const harness = @import("harness.zig");
 const raise = @import("subsystems").raise;
 const registry = @import("subsystems").registry;
 const repr = @import("repr");
+const tuples = @import("subsystems").value.tuples;
+const vm_entry = @import("subsystems").vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -115,7 +118,55 @@ fn cfunJoin(argv: []repr.Value) raise.Error!repr.Value {
 const cfuns = [_]abi.Reg{
     .{ .name = "sites/join", .cfun = raise.stored(&cfunJoin), .documentation = null },
     .{ .name = "sites/held", .cfun = raise.stored(&cfunHeld), .documentation = null },
+    .{ .name = "sites/reenter", .cfun = raise.stored(&cfunReenter), .documentation = null },
 };
+
+/// Numbers as `Join` gives them, with a `length` that calls a Janet function
+/// on a fresh fiber every time after the first.
+///
+/// A module's `pcall` resumes a fiber without suspending the collector, so a
+/// `length` callback is a place a collection can run. A site that allocates
+/// and then calls `length` holds a block nothing roots across that
+/// collection.
+const Reenter = struct {
+    count: usize,
+    calls: usize,
+    callback: repr.Value,
+    buffer: [3]repr.Value,
+};
+
+const reenter_at = abstract_type.define(Reenter, .{
+    .name = "indexed-sites/reenter",
+    .length = reenterLength,
+    .chunk = reenterChunk,
+    .gcmark = reenterMark,
+});
+
+fn reenterChunk(self: *Reenter, index: usize) abstract_type.Chunk {
+    const start = index - index % 3;
+    for (&self.buffer, start..) |*slot, i| slot.* = wrap.fromInteger(@intCast(i * 10));
+    return .{ .items = &self.buffer, .start = start };
+}
+
+fn reenterLength(self: *Reenter, _: usize) raise.Error!usize {
+    defer self.calls += 1;
+    if (self.calls > 0) _ = vm_entry.pcall(wrap.toFunction(self.callback), &.{}, null);
+    return self.count;
+}
+
+fn reenterMark(self: *Reenter, _: usize) void {
+    gc_mark.mark(self.callback);
+}
+
+fn cfunReenter(argv: []repr.Value) raise.Error!repr.Value {
+    try args.fixarity(argv, 2);
+    const count = try args.getSize(argv, 0);
+    const callback = try args.getFunction(argv, 1);
+    const raw = abstracts.newBytes(&reenter_at, @sizeOf(Reenter));
+    const reenter: *Reenter = @ptrCast(@alignCast(raw));
+    reenter.* = .{ .count = count, .calls = 0, .callback = wrap.fromFunction(callback), .buffer = undefined };
+    return wrap.fromAbstract(raw);
+}
 
 /// Values given at construction, handed out in runs of a chosen size.
 ///
@@ -173,10 +224,10 @@ fn cfunHeld(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(raw);
 }
 
-/// `tuple/join` counts every argument, allocates, and then copies, and it
-/// reads each argument twice to do it. A tuple holding the same elements is
-/// the oracle, and a count that changes between the two reads is refused
-/// rather than copied past the end of the tuple.
+/// `tuple/join` counts every argument, allocates, and then copies. A tuple
+/// holding the same elements is the oracle. A `length` that would answer
+/// differently a second time is read once, so the tuple has the elements of
+/// the first answer.
 fn tupleJoinReadsAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
@@ -194,15 +245,22 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         \\(check "mixed with tuples"
         \\       (= (tuple/join [:a] v [:b]) (tuple/join [:a] oracle [:b])))
         \\(check "no arguments is the empty tuple" (= [] (tuple/join)))
-        \\(check "a count that grows between the two reads"
-        \\       (= "indexed value grew while being read"
-        \\          (refusal tuple/join (sites/join 9 1))))
-        \\(check "a count that shrinks between the two reads"
-        \\       (= "indexed value shrank while being read"
-        \\          (refusal tuple/join (sites/join 9 2))))
+        \\(check "a length that would grow is read once"
+        \\       (= (tuple/join oracle) (tuple/join (sites/join 9 1))))
+        \\(check "a length that would shrink is read once"
+        \\       (= (tuple/join oracle) (tuple/join (sites/join 9 2))))
+        \\(check "and after a tuple"
+        \\       (= (tuple/join [:a] oracle) (tuple/join [:a] (sites/join 9 1))))
         \\(check "what is not indexed is still refused"
         \\       (= "expected indexed type for argument 0, got 5"
         \\          (refusal tuple/join 5)))
+        \\(check "and after an abstract"
+        \\       (= "expected indexed type for argument 2, got 5"
+        \\          (refusal tuple/join [:a] v 5)))
+        \\(check "more arguments than fit on the stack"
+        \\       (= (tuple/join ;(map (fn [_] oracle) (range 12)))
+        \\          (tuple/join ;(map (fn [i] (if (even? i) (sites/join 9) oracle))
+        \\                            (range 12)))))
         \\failures
     ;
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
@@ -214,6 +272,27 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         }
         expect(false);
     }
+}
+
+/// A collection run by an argument's `length` callback does not free the
+/// tuple `tuple/join` is building. The tuple is checked against the heap list
+/// by address before anything reads it, so a tuple the sweep freed fails here
+/// rather than being read.
+fn tupleJoinSurvivesACollectionInACallback() void {
+    var out: repr.Value = undefined;
+    const env = harness.coreEnv();
+    registry.cfuns(env, null, &cfuns);
+    const source =
+        \\(tuple/join [:a] (sites/reenter 9 (fn [] (gccollect))) [:b])
+    ;
+    expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
+    expect(harness.isType(out, repr.Tag.tuple));
+    const tup = wrap.toTuple(out);
+    expect(harness.heap.onList(harness.vm().gc.blocks, tuples.head(tup)));
+    const view = tuples.view(tup);
+    expect(view.len == 11);
+    expect(harness.keywordIs(view[0], "a") and harness.keywordIs(view[10], "b"));
+    for (view[1..10], 0..) |x, i| expect(harness.integerIs(x, @intCast(i * 10)));
 }
 
 /// The three slice bindings read a window of an indexed value, so a run that
@@ -461,6 +540,7 @@ fn aPegSpliceReadsAnIndexedAbstract() void {
 pub fn run() void {
     harness.init();
     tupleJoinReadsAnIndexedAbstract();
+    tupleJoinSurvivesACollectionInACallback();
     sliceReadsAWindowOfAnIndexedAbstract();
     joinAndSelectReadAnIndexedAbstract();
     theGatheringSitesReadAnIndexedAbstract();
