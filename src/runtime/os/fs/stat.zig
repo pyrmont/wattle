@@ -335,7 +335,7 @@ pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Error!repr.Value {
     var tab: ?*tables.Table = null;
     var key: ?strings.Keyword = null;
     if (argv.len == 2) {
-        if (repr.checkType(argv[1], repr.Tag.keyword)) {
+        if (wrap.isKeyword(argv[1])) {
             key = try args_core.getKeyword(argv, 1);
         } else {
             tab = try args_core.getTable(argv, 1);

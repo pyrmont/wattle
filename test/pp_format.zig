@@ -216,8 +216,13 @@ fn theTypeSetConversion() void {
     // Three: commas until the last, then " or ". Getting this backwards reads
     // as English either way and is wrong in every message Janet prints.
     checkString(
-        fmt.formatc("%T", .{repr.TagSet.of(&.{ .number, .string, .keyword })}) catch @panic("raised"),
-        "number, string or keyword",
+        fmt.formatc("%T", .{repr.TagSet.of(&.{ .number, .string, .buffer })}) catch @panic("raised"),
+        "number, buffer or string",
+    );
+    // The symbol tag is named twice, since a keyword has it too.
+    checkString(
+        fmt.formatc("%T", .{repr.TagSet.of(&.{ .string, .symbol })}) catch @panic("raised"),
+        "string, symbol or keyword",
     );
     // An empty set renders as nothing rather than as an error.
     checkString(fmt.formatc("%T", .{repr.TagSet.none}) catch @panic("raised"), "");
@@ -228,6 +233,7 @@ fn theTypeSetConversion() void {
 fn theTypeNameConversion() void {
     checkString(fmt.formatc("%t", .{wrapInteger(1)}) catch @panic("raised"), "number");
     checkString(fmt.formatc("%t", .{value.fromBytes("k", .keyword)}) catch @panic("raised"), "keyword");
+    checkString(fmt.formatc("%t", .{value.fromBytes("k", .symbol)}) catch @panic("raised"), "symbol");
     checkString(fmt.formatc("%t", .{wrap.fromNil()}) catch @panic("raised"), "nil");
 }
 

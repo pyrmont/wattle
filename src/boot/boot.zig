@@ -159,7 +159,7 @@ fn reportBootFailure(result: repr.Value) void {
     const tag = repr.typeOf(result);
     var buffer: [512]u8 = undefined;
     const text = switch (tag) {
-        .string, .symbol, .keyword => blk: {
+        .string, .symbol => blk: {
             const bytes = wrap.toString(result);
             const len = std.mem.len(bytes);
             break :blk std.fmt.bufPrint(&buffer, "boot failed: {s}\n", .{bytes[0..@min(len, 400)]}) catch

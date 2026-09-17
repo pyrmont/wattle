@@ -1099,6 +1099,8 @@ fn cfunType(argv: []repr.Value) raise.Error!repr.Value {
     if (t == .abstract) {
         return value.fromBytes(abi.abstractHead(wrap.toAbstract(argv[0])).type.name, .keyword);
     }
+    // A keyword has the symbol tag, and is told apart by its kind.
+    if (wrap.isKeyword(argv[0])) return value.fromBytes("keyword", .keyword);
     return value.fromBytes(utils.typeNames[@intFromEnum(t)], .keyword);
 }
 

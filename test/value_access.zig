@@ -128,8 +128,8 @@ var huge_value: repr.Value = undefined;
 /// faked, and Zig refusing the literal is what forces the choice.
 const intmax_int64_fits_in_a_length = std.math.maxInt(usize) >= 9007199254740992;
 
-const not_lengthable = "expected string, symbol, keyword, array, tuple, " ++
-    "table, struct or buffer, got ";
+const not_lengthable = "expected buffer, string, array, table, struct, " ++
+    "symbol, keyword or tuple, got ";
 
 var slots_value: repr.Value = undefined;
 
@@ -1159,15 +1159,15 @@ fn putOnANonWritablePanics() void {
     const st = wrap.fromStruct(structs.end(structs.begin(0)));
 
     expect(refusal(access.put, .{ tup, intv(0), intv(1) })
-        .beginsWith("expected array, table or buffer, got <tuple "));
+        .beginsWith("expected buffer, array or table, got <tuple "));
     expect(refusal(access.putIndex, .{ st, 0, intv(1) })
-        .beginsWith("expected array, table or buffer, got <struct "));
+        .beginsWith("expected buffer, array or table, got <struct "));
     expect(refusal(access.put, .{ value.fromBytes("ab", .string), intv(0), intv(1) })
-        .says("expected array, table or buffer, got \"ab\""));
+        .says("expected buffer, array or table, got \"ab\""));
     expect(refusal(access.putIndex, .{ intv(5), 0, intv(1) })
-        .says("expected array, table or buffer, got 5"));
+        .says("expected buffer, array or table, got 5"));
     expect(refusal(access.put, .{ wrap.fromNil(), intv(0), intv(1) })
-        .says("expected array, table or buffer, got nil"));
+        .says("expected buffer, array or table, got nil"));
     expect(refusal(access.put, .{ bare_value, intv(0), intv(1) })
         .beginsWith("no setter for <value-access/bare "));
     expect(refusal(access.putIndex, .{ bare_value, 0, intv(1) })

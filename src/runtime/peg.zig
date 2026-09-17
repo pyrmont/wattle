@@ -546,7 +546,7 @@ fn emitRule(r: Reserve, op: constants.PegRule, n: i32, body: [*]const u32) void 
 /// mention of it in one grammar. A tag rides in one byte of the tag buffer, so
 /// a grammar may name up to 255 of them.
 fn emitTag(b: *Builder, t: repr.Value) raise.Error!u32 {
-    if (!repr.checkType(t, repr.Tag.keyword))
+    if (!wrap.isKeyword(t))
         return pegPanicf(b, "expected keyword for capture tag, got %v", .{t});
     const check = tables.get(b.tags, t);
     if (repr.checkType(check, repr.Tag.nil)) {
@@ -763,7 +763,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
     // Resolve keyword references.
     var i: i32 = recursion_guard;
     var grammar: *tables.Table = old_grammar;
-    while (i > 0 and repr.checkType(peg, repr.Tag.keyword)) : (i -= 1) {
+    while (i > 0 and wrap.isKeyword(peg)) : (i -= 1) {
         // A miss gives back a null holder and a nil value, and the nil is
         // what the test below reads; the search continues from the table it
         // started from. A separate test of the holder would be dead, because
@@ -866,7 +866,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
                 const n = wrap.toInteger(tup[0]);
                 if (n < 0) return pegPanicf(b, "expected non-negative integer, got %d", .{n});
                 try specRepeat(b, tup[0..@intCast(len)]);
-            } else if (!repr.checkType(tup[0], repr.Tag.symbol)) {
+            } else if (!wrap.isSymbol(tup[0])) {
                 return pegPanicf(b, "expected grammar command, found %v", .{tup[0]});
             } else {
                 const sym = wrap.toSymbol(tup[0]);
@@ -955,7 +955,7 @@ fn pegGrammar(b: *Builder, peg: repr.Value, outer: *tables.Table) raise.Error!u3
     // run is held.
     const grammar = tables.new(2 * pairs.count + 2);
     while (try pairs.next()) |kv| {
-        if (repr.checkType(kv.key, repr.Tag.keyword)) tables.put(grammar, kv.key, kv.value);
+        if (wrap.isKeyword(kv.key)) tables.put(grammar, kv.key, kv.value);
     }
     grammar.proto = outer;
     b.grammar = grammar;

@@ -675,7 +675,7 @@ fn cfunFread(argv: []repr.Value) raise.Error!repr.Value {
     }
     const buffer = if (argv.len == 2) buffers.new(0) else try args_core.getBuffer(argv, 2);
     const bufstart = buffer.count;
-    if (repr.checkType(argv[1], repr.Tag.keyword)) {
+    if (wrap.isKeyword(argv[1])) {
         const sym = wrap.toKeyword(argv[1]);
         if (utils.cstrcmp(sym, "all") == 0) {
             var size_before: i32 = undefined;

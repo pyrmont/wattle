@@ -71,6 +71,7 @@ const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const tables = @import("subsystems").value.tables;
 const utils = @import("subsystems").utils;
+const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -378,7 +379,7 @@ fn nativeOrderIsTheHosts() !void {
     const b = buffers.new(4);
     var argv = [_]repr.Value{
         wrap.fromBuffer(b),
-        wrap.fromKeyword(strings.cstring("native")),
+        value.fromBytes("native", .keyword),
         harness.wrapInteger(word),
     };
     _ = try harness.callCore("buffer/push-uint16", &argv);
@@ -457,7 +458,7 @@ fn weakArrayIsANormalArrayElsewhere() !void {
 fn arrayNIsExactlyFull() void {
     var elements = [3]repr.Value{
         harness.wrapInteger(10),
-        wrap.fromKeyword(strings.cstring("k")),
+        value.fromBytes("k", .keyword),
         wrap.fromNil(),
     };
 

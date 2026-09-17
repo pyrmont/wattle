@@ -250,14 +250,15 @@ fn theHashAgreesWithEquality() void {
     expect(order.hash(s1) == order.hash(s2));
 }
 
-/// All three string-like types hash their bytes and nothing else, so a keyword,
-/// a symbol and a string spelled alike collide while comparing unequal. This is
-/// not an accident to be tidied up: it is exactly the collision that makes the
-/// `order.compare` tiebreak in `structs.putExt` load-bearing, and
-/// `test/struct_table.zig` has the other half of the story.
+/// A symbol and a string hash their bytes and nothing else, so the two spelled
+/// alike collide while comparing unequal. This is not an accident to be tidied
+/// up: it is exactly the collision that makes the `order.compare` tiebreak in
+/// `structs.putExt` load-bearing, and `test/struct_table.zig` has the other
+/// half of the story. A keyword shares a tag with a symbol, so its hash is
+/// mixed to keep it from colliding with the symbol of the same name.
 fn theStringLikesShareOneHash() void {
-    expect(order.hash(kw("tie")) == order.hash(str("tie")));
     expect(order.hash(sym("tie")) == order.hash(str("tie")));
+    expect(order.hash(kw("tie")) != order.hash(sym("tie")));
     expect(!harness.equals(kw("tie"), str("tie")));
     expect(!harness.equals(sym("tie"), str("tie")));
     expect(!harness.equals(kw("tie"), sym("tie")));
@@ -1100,7 +1101,11 @@ fn deepStructsDoNotRecurse() void {
     expect(harness.equals(a, b));
     expect(!harness.equals(a, d));
     expect(order.compare(a, b) == 0);
-    expect(order.compare(a, d) == -1);
+    // Structs order by hash before their entries, so which of `a` and `d`
+    // comes first depends on the hashes, and only that the two disagree is
+    // pinned.
+    expect(order.compare(a, d) != 0);
+    expect(order.compare(a, d) == -order.compare(d, a));
 }
 
 /// The three functions against one corpus covering every `repr.Tag`, checking
@@ -1186,8 +1191,8 @@ fn fromJanet() void {
     const src =
         "[(= [1 2] [1 2]) " ++
         " (= [1 2] (tuple 1 2)) " ++
-        " (= (hash :tie) (hash \"tie\")) " ++
-        " (= :tie \"tie\") " ++
+        " (= (hash 'tie) (hash \"tie\")) " ++
+        " (= 'tie \"tie\") " ++
         " (compare [1 2] [1 2 3]) " ++
         " (compare 1 2) " ++
         " (compare \"a\" \"b\") " ++
@@ -1218,7 +1223,7 @@ fn fromJanet() void {
     expect(harness.isType(sortd.?[3], repr.Tag.nil));
     expect(harness.isType(sortd.?[4], repr.Tag.boolean));
     expect(harness.isType(sortd.?[5], repr.Tag.string));
-    expect(harness.isType(sortd.?[6], repr.Tag.keyword));
+    expect(wrap.isKeyword(sortd.?[6]));
     expect(repr.truthy(r[10]));
 }
 

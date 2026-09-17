@@ -18,7 +18,7 @@
 //!
 //! The taxonomy that separates them is Janet's own: a string and a symbol are
 //! bytes, a tuple is indexed. There is no `keywords.zig` because a keyword is a
-//! symbol under a different tag, and `helpers/wrap.zig` is where the tag lives.
+//! symbol of the other kind, which `symbols.zig` interns.
 //! A tuple's core is the string pattern with a `Value` in place of a `u8`; what
 //! gives it its own file is that taxonomy, which makes `arrays.zig` its
 //! neighbour rather than `strings.zig`.

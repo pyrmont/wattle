@@ -291,7 +291,7 @@ fn aRuntimeErrorReportsTheValue() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
     expect(try doString("(error :thrown)", "contract", &out) == constants.JANET_DO_ERROR_RUNTIME);
-    expect(harness.isType(out, repr.Tag.keyword));
+    expect(wrap.isKeyword(out));
     expect(harness.stringIs(wrap.toKeyword(out), "thrown"));
     expectErrPrefix("error: thrown\n  in thunk [contract] ");
 }
@@ -375,7 +375,7 @@ fn theLookupTableTakesReplacements() raise.Error!void {
         tables.get(dict, value.fromBytes("gcinterval", .symbol)),
     ) == replacement_key);
     // A key the core does not define is added rather than rejected.
-    expect(harness.isType(tables.get(dict, value.fromBytes("contract/added", .symbol)), repr.Tag.keyword));
+    expect(wrap.isKeyword(tables.get(dict, value.fromBytes("contract/added", .symbol))));
     // A nil-keyed slot in the replacement table's storage is skipped, which is
     // what the walk over `capacity` rather than `count` is for.
     expect(dict.count > replacements.count);
@@ -628,7 +628,7 @@ fn body() raise.Error!void {
     {
         var out = wrap.fromNil();
         expect(try doString("(gcinterval)", "contract", &out) == 0);
-        expect(harness.isType(out, repr.Tag.keyword));
+        expect(wrap.isKeyword(out));
         expect(harness.stringIs(wrap.toKeyword(out), "replaced"));
     }
 

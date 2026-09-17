@@ -86,7 +86,7 @@ refuse, and it does, with the same message a C module got:
 
 ```
 (url/slug 3)
-# bad slot #0, expected string, symbol, keyword or buffer, got 3
+# bad slot #0, expected buffer, string, symbol or keyword, got 3
 ```
 
 An unknown option is not a type error, and the runtime has nothing to say about

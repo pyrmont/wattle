@@ -28,9 +28,8 @@
 //!    has an indeterminate hash and nothing may put it in a dictionary before
 //!    `end` runs.
 //!
-//! There is no `keywords.zig` because a keyword and a symbol are the same
-//! interned bytes under a different tag, and `helpers/wrap.zig` is where the
-//! tag lives. This file owns the string head accessors: `head` and `data` are
+//! There is no `keywords.zig` because a keyword is a symbol of the other kind,
+//! which `symbols.zig` interns and marks in the head. This file owns the string head accessors: `head` and `data` are
 //! `pub` so that `symbols.zig` reaches them rather than keeping a copy,
 //! because two copies of a pointer offset can disagree where a caller sees it.
 //!
@@ -90,9 +89,8 @@ pub const string_payload = @offsetOf(StringHead, "_data");
 // Aliased types
 // ==========================================================================
 
-/// The three interned byte pointers. A symbol and a keyword are the same
-/// interned bytes as a string under a different tag. Neither has a head of its
-/// own.
+/// The three byte pointers. A symbol and a keyword have a string's head, and a
+/// keyword is a symbol with `symbols.own_keyword` set in it.
 pub const Keyword = [*:0]const u8;
 pub const String = [*:0]const u8;
 pub const Symbol = [*:0]const u8;
@@ -394,8 +392,7 @@ pub fn new(buf: []const u8) [*:0]const u8 {
 fn cfunKeywordSlice(argv: []repr.Value) raise.Error!repr.Value {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
-    // A keyword and a symbol are the same interned bytes under a different tag.
-    return wrap.fromKeyword(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
+    return wrap.fromKeyword(symbols.keyword(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
 }
 
 /// `string/ascii-lower`: the ASCII upper-case bytes lowered.

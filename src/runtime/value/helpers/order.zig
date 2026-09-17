@@ -158,7 +158,13 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
                     return if (xx < yy) -1 else 1;
                 }
             },
-            repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+            repr.Tag.string, repr.Tag.symbol => {
+                // Every symbol orders before every keyword, as when a keyword
+                // had the tag after the symbol's.
+                if (tx == repr.Tag.symbol) {
+                    const kx = wrap.isKeyword(x);
+                    if (kx != wrap.isKeyword(y)) return if (kx) 1 else -1;
+                }
                 const diff = strings.compare(wrap.toString(x), wrap.toString(y));
                 if (diff != 0) return diff;
             },
@@ -338,7 +344,7 @@ pub fn hash(x: repr.Value) i32 {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => h = 0,
         repr.Tag.boolean => h = @intFromBool(wrap.toBoolean(x)),
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             h = stringHeadHash(wrap.toString(x));
         },
         repr.Tag.tuple => {

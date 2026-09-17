@@ -231,6 +231,9 @@ pub const Runtime = extern struct {
     getsize: *const fn (argv: [*]const Value, n: i32) callconv(.c) usize,
     getuinteger: *const fn (argv: [*]const Value, n: i32) callconv(.c) u32,
     indexed_chunk: *const fn (x: Value, index: usize, len: usize) callconv(.c) abi.Chunk,
+    /// Whether a value of the symbol tag is a keyword, which the value's bits
+    /// cannot say: the kind is in the interned block's head.
+    is_keyword: *const fn (x: Value) callconv(.c) bool,
     length: *const fn (x: Value) callconv(.c) i32,
     mark: *const fn (x: Value) callconv(.c) void,
     marshal_abstract: *const fn (m: *abi.Marshal, p: ?*anyopaque) callconv(.c) void,

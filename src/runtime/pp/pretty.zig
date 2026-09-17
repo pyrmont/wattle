@@ -481,8 +481,8 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             if (std.math.isInf(num)) return true;
             try numscan.bufferDtostr(S.buffer, num);
         },
-        repr.Tag.symbol, repr.Tag.keyword => {
-            if (containsBadChars(wrap.toKeyword(x), repr.typeOf(x) == repr.Tag.symbol)) return true;
+        repr.Tag.symbol => {
+            if (containsBadChars(wrap.toSymbol(x), !wrap.isKeyword(x))) return true;
             try describe.descriptionB(S.buffer, x);
         },
         repr.Tag.tuple => {

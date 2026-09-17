@@ -1054,7 +1054,7 @@ pub fn isInteger(v: Value) bool {
 
 /// Returns whether a wrapped value is a keyword.
 pub fn isKeyword(v: Value) bool {
-    return checkTag(v, .keyword);
+    return checkTag(v, .symbol) and interface.rt.is_keyword(v);
 }
 
 /// Returns whether a wrapped value is nil.
@@ -1084,7 +1084,7 @@ pub fn isStruct(v: Value) bool {
 
 /// Returns whether a wrapped value is a symbol.
 pub fn isSymbol(v: Value) bool {
-    return checkTag(v, .symbol);
+    return checkTag(v, .symbol) and !interface.rt.is_keyword(v);
 }
 
 /// Returns whether a wrapped value is a table.
@@ -1597,7 +1597,8 @@ pub fn toInteger(v: Value) ?i32 {
 /// The result is `[:0]` because a keyword is interned with a terminator. The
 /// bytes are stable while the value is reachable.
 pub fn toKeyword(v: Value) ?[:0]const u8 {
-    return toCString(v, .keyword);
+    if (!isKeyword(v)) return null;
+    return toCString(v, .symbol);
 }
 
 /// Returns the unwrapped number value as `f64`.
@@ -1635,6 +1636,7 @@ pub fn toString(v: Value) ?[:0]const u8 {
 /// The result is `[:0]` because a symbol is interned with a terminator. The
 /// bytes are stable while the value is reachable.
 pub fn toSymbol(v: Value) ?[:0]const u8 {
+    if (!isSymbol(v)) return null;
     return toCString(v, .symbol);
 }
 

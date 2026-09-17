@@ -419,6 +419,9 @@ pub const Expect = enum {
 /// `else`.
 pub const Fault = union(enum) {
     wrong_type: struct { slot: usize, expected: repr.TagSet },
+    /// A value of the symbol tag of the other kind, or of another tag, where
+    /// one kind was expected. A tag set cannot name a kind.
+    wrong_kind: struct { slot: usize, keyword: bool },
     wrong_abstract: struct { slot: usize, at: *const abi.AbstractType },
     wrong_number: struct { slot: usize, expected: Expect },
     /// Both range kinds. `inclusive` is the closed-interval rendering, which
@@ -475,12 +478,12 @@ pub const GetBuffer = TypeGetter(wrap.toBuffer, repr.Tag.buffer, repr.TagSet.one
 pub const GetCFunction = TypeGetter(wrap.toCfunction, repr.Tag.cfunction, repr.TagSet.one(.cfunction));
 pub const GetFiber = TypeGetter(wrap.toFiber, repr.Tag.fiber, repr.TagSet.one(.fiber));
 pub const GetFunction = TypeGetter(wrap.toFunction, repr.Tag.function, repr.TagSet.one(.function));
-pub const GetKeyword = TypeGetter(wrap.toKeyword, repr.Tag.keyword, repr.TagSet.one(.keyword));
+pub const GetKeyword = KindGetter(.keyword);
 pub const GetNumber = TypeGetter(wrap.toNumber, repr.Tag.number, repr.TagSet.one(.number));
 pub const GetPointer = TypeGetter(wrap.toPointer, repr.Tag.pointer, repr.TagSet.one(.pointer));
 pub const GetString = TypeGetter(wrap.toString, repr.Tag.string, repr.TagSet.one(.string));
 pub const GetStruct = TypeGetter(wrap.toStruct, repr.Tag.@"struct", repr.TagSet.one(.@"struct"));
-pub const GetSymbol = TypeGetter(wrap.toSymbol, repr.Tag.symbol, repr.TagSet.one(.symbol));
+pub const GetSymbol = KindGetter(.symbol);
 pub const GetTable = TypeGetter(wrap.toTable, repr.Tag.table, repr.TagSet.one(.table));
 pub const GetTuple = TypeGetter(wrap.toTuple, repr.Tag.tuple, repr.TagSet.one(.tuple));
 
@@ -590,6 +593,28 @@ fn IndexAbi(comptime f: anytype) type {
             }
         },
         else => @compileError("IndexAbi: unhandled arity"),
+    };
+}
+
+/// A getter for a symbol or a keyword, which share a tag and differ in kind.
+///
+/// It refuses a value of any other tag, and one of the symbol tag of the other
+/// kind, with a `.wrong_kind` fault naming the kind it wanted.
+fn KindGetter(comptime kind: enum { symbol, keyword }) type {
+    return struct {
+        pub const Value = strings.Symbol;
+        pub fn get(argv: []const repr.Value, n: usize) raise.Error!Value {
+            const x = argSlot(argv, n);
+            const matches = switch (kind) {
+                .symbol => wrap.isSymbol(x),
+                .keyword => wrap.isKeyword(x),
+            };
+            if (!matches) {
+                return raiseFault(argv, .{ .wrong_kind = .{ .slot = n, .keyword = kind == .keyword } });
+            }
+            return wrap.toSymbol(x);
+        }
+        pub const abi = IndexAbi(get).abi;
     };
 }
 
@@ -710,7 +735,7 @@ pub fn argArity(count: i32, min: i32, max: i32, fault: *Fault) bool {
 /// for why the stop buys nothing now, and what would collapse it.
 pub fn argBytes(x: repr.Value, n: usize, fault: *Fault) ?Bytes {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             const string = wrap.toString(x);
             return .{ .view = .{
                 .bytes = string,
@@ -910,9 +935,15 @@ pub fn argNextmethod(
     return entry;
 }
 
-/// Whether `x` has the tag `janet_type` and bytes equal to `cstring`.
-pub fn argStrlike(janet_type: repr.Tag, x: repr.Value, cstring: [*:0]const u8) bool {
-    if (repr.typeOf(x) != janet_type) return false;
+/// Whether `x` is a string, a symbol or a keyword, as `kind` names, with bytes
+/// equal to `cstring`.
+pub fn argStrlike(comptime kind: enum { string, symbol, keyword }, x: repr.Value, cstring: [*:0]const u8) bool {
+    const matches = switch (kind) {
+        .string => repr.checkType(x, repr.Tag.string),
+        .symbol => wrap.isSymbol(x),
+        .keyword => wrap.isKeyword(x),
+    };
+    if (!matches) return false;
     return utils.cstrcmp(wrap.toString(x), cstring) == 0;
 }
 
@@ -1209,7 +1240,7 @@ pub fn endRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!i32
 /// callback gives back: absence is `null` rather than a zero beside an
 /// out-parameter the caller then has to know not to read.
 pub fn findMethod(key: repr.Value, methods: [*]const method_type.CMethod) ?repr.Value {
-    if (!repr.checkType(key, repr.Tag.keyword)) return null;
+    if (!wrap.isKeyword(key)) return null;
     const found = argMethod(wrap.toKeyword(key), methods) orelse return null;
     return wrap.fromCfunction(found.cfun);
 }
@@ -1516,6 +1547,12 @@ pub fn indexedChunkAbi(x: repr.Value, index: usize, len: usize) callconv(.c) abi
     return indexedChunk(x, index, len) catch raise.reportToAbi(abi.Chunk);
 }
 
+/// Whether `x` is a keyword, published as `is_keyword`. It cannot raise.
+pub fn isKeywordAbi(x: repr.Value) callconv(.c) bool {
+    vm_state.requireJanetThread();
+    return wrap.isKeyword(x);
+}
+
 /// The elements of an array or a tuple, or nothing.
 ///
 /// `x` is the value. This function returns null if `x` is neither, including
@@ -1529,7 +1566,7 @@ pub fn items(x: repr.Value) ?[]const repr.Value {
 
 /// Whether `x` is a keyword whose bytes equal `cstring`.
 pub fn keyeq(x: repr.Value, cstring: [*:0]const u8) bool {
-    return argStrlike(repr.Tag.keyword, x, cstring);
+    return argStrlike(.keyword, x, cstring);
 }
 
 /// Returns the pairs of a table, a struct or an abstract whose contents are
@@ -1649,12 +1686,12 @@ pub fn startRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!i
 
 /// Whether `x` is a string whose bytes equal `cstring`.
 pub fn streq(x: repr.Value, cstring: [*:0]const u8) bool {
-    return argStrlike(repr.Tag.string, x, cstring);
+    return argStrlike(.string, x, cstring);
 }
 
 /// Whether `x` is a symbol whose bytes equal `cstring`.
 pub fn symeq(x: repr.Value, cstring: [*:0]const u8) bool {
-    return argStrlike(repr.Tag.symbol, x, cstring);
+    return argStrlike(.symbol, x, cstring);
 }
 
 /// `dictionaryOf`, published as `to_dictionary`.
@@ -1865,6 +1902,10 @@ inline fn pairsChunk(payload: *anyopaque, at: *const abi.AbstractType, position:
 fn raiseFault(argv: ?[]const repr.Value, fault: Fault) raise.Error {
     return switch (fault) {
         .wrong_type => |f| panicType(argSlot(argv.?, f.slot), @intCast(f.slot), f.expected),
+        .wrong_kind => |f| pp_format.panicf(
+            "bad slot #%d, expected %s, got %v",
+            .{ @as(i32, @intCast(f.slot)), if (f.keyword) "keyword" else "symbol", argSlot(argv.?, f.slot) },
+        ),
         .wrong_abstract => |f| panicAbstract(argSlot(argv.?, f.slot), @intCast(f.slot), f.at),
         .wrong_number => |f| pp_format.panicf(
             "bad slot #%d, expected %s, got %v",

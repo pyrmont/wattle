@@ -425,8 +425,8 @@ fn theTablesAreIndexedByTheNumbersACallerHas() void {
     // The tag order, which is not alphabetical and is not the order `repr.Tag`
     // would produce if it were sorted.
     const expected_types = [_][:0]const u8{
-        "number",   "nil",       "boolean",  "fiber",   "string", "symbol",
-        "keyword",  "array",     "tuple",    "table",   "struct", "buffer",
+        "number",   "nil",       "boolean",  "buffer",  "string", "array",
+        "unused",   "table",     "struct",   "symbol",  "tuple",  "fiber",
         "function", "cfunction", "abstract", "pointer",
     };
     for (expected_types, 0..) |want, i| {

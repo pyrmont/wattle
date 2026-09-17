@@ -500,11 +500,11 @@ pub fn stringValueIs(val: repr.Value, expected: [*:0]const u8) bool {
 }
 
 pub fn symbolIs(val: repr.Value, expected: [*:0]const u8) bool {
-    return isType(val, repr.Tag.symbol) and stringIs(wrap.toSymbol(val), expected);
+    return wrap.isSymbol(val) and stringIs(wrap.toSymbol(val), expected);
 }
 
 pub fn keywordIs(val: repr.Value, expected: [*:0]const u8) bool {
-    return isType(val, repr.Tag.keyword) and stringIs(wrap.toKeyword(val), expected);
+    return wrap.isKeyword(val) and stringIs(wrap.toKeyword(val), expected);
 }
 
 /// The sixty-four bits of payload. This is the one reading whose *spelling*

@@ -236,7 +236,7 @@ pub fn bindingFromEntry(entry: repr.Value) Binding {
     const val = tables.getKeyword(entry_table, "value");
     const ref = tables.getKeyword(entry_table, "ref");
 
-    if (repr.checkType(deprecate, repr.Tag.keyword)) {
+    if (wrap.isKeyword(deprecate)) {
         const depkw = wrap.toKeyword(deprecate);
         if (utils.cstrcmp(depkw, "relaxed") == 0) {
             binding.deprecation = .relaxed;

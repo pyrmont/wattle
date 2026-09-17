@@ -48,6 +48,7 @@ const fibers = @import("../fibers.zig");
 const functions = @import("../functions.zig");
 const repr = @import("repr");
 const strings = @import("../strings.zig");
+const symbols = @import("../symbols.zig");
 const structs = @import("../structs.zig");
 const tables = @import("../tables.zig");
 const tuples = @import("../tuples.zig");
@@ -213,8 +214,10 @@ pub inline fn fromInteger(x: i32) repr.Value {
     return repr.wrapNumber(@floatFromInt(x));
 }
 
+/// Wraps an interned keyword. The value has the symbol tag, and the keyword's
+/// own head says it is a keyword.
 pub inline fn fromKeyword(x: strings.Keyword) repr.Value {
-    return repr.wrapCPointer(x, repr.Tag.keyword);
+    return repr.wrapCPointer(x, repr.Tag.symbol);
 }
 
 pub inline fn fromNil() repr.Value {
@@ -255,6 +258,16 @@ pub inline fn fromTrue() repr.Value {
 
 pub inline fn fromTuple(x: tuples.Tuple) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.tuple);
+}
+
+/// Whether `x` is a keyword: the symbol tag, and the keyword bit in the head.
+pub inline fn isKeyword(x: repr.Value) bool {
+    return repr.checkType(x, repr.Tag.symbol) and symbols.isKeyword(toSymbol(x));
+}
+
+/// Whether `x` is a symbol and not a keyword.
+pub inline fn isSymbol(x: repr.Value) bool {
+    return repr.checkType(x, repr.Tag.symbol) and !symbols.isKeyword(toSymbol(x));
 }
 
 /// The per-layout helpers, each one layout's own.

@@ -175,11 +175,10 @@ pub fn dictionaryFind(buckets: []const tables.Keyval, key: repr.Value) ?*const t
 /// The same probe for a key given as bytes rather than as a `Value`.
 ///
 /// `buckets` is the hash array, and `cstr` and `cstr_len` the bytes. It exists
-/// so that a lookup by name neither interns a symbol nor allocates: the
-/// comparison is against the bucket's own string head, so a keyword, a symbol
-/// and a string with the same bytes all match. The type check names
-/// `repr.Tag.keyword` alone, and that is not an oversight: the three tags share
-/// one representation, and the head is what the comparison reads.
+/// so that a lookup by name neither interns a keyword nor allocates: the
+/// comparison is against the bucket's own string head. Only a keyword key
+/// matches, and the sought hash is mixed as a keyword's stored hash is, so the
+/// probe starts where the keyword would sit.
 pub fn dictionaryFindKeyword(
     buckets: []const tables.Keyval,
     cstr: [*]const u8,
@@ -187,7 +186,7 @@ pub fn dictionaryFindKeyword(
 ) ?*const tables.Keyval {
     const cap: i32 = @intCast(buckets.len);
     const key_bytes = cstr[0..@intCast(cstr_len)];
-    const hash = hashBytes(key_bytes);
+    const hash = hashBytes(key_bytes) ^ symbols.keyword_hash_mix;
     const index = mapHash(cap, hash);
     var first_bucket: ?*const tables.Keyval = null;
 
@@ -255,8 +254,8 @@ pub fn dictionaryNext(
 /// and a caller with a bare C pointer has to span it first, which puts the scan
 /// where it is visible rather than inside every call.
 ///
-/// A symbol and a keyword are interned identically and differ only in the tag,
-/// so they share an arm here and `value/symbols.zig` serves both.
+/// A symbol and a keyword are interned as two kinds by `value/symbols.zig`,
+/// and both wrap with the symbol tag.
 ///
 /// This is in the bucket rather than in a leaf because `strings` and `symbols`
 /// share it and neither owns it. It cannot be in `value/helpers/wrap.zig`: that
@@ -266,7 +265,7 @@ pub inline fn fromBytes(bytes: []const u8, comptime as: Bytes) repr.Value {
     return switch (as) {
         .string => wrap.fromString(strings.new(bytes)),
         .symbol => wrap.fromSymbol(symbols.new(bytes)),
-        .keyword => wrap.fromKeyword(symbols.new(bytes)),
+        .keyword => wrap.fromKeyword(symbols.keyword(bytes)),
     };
 }
 
@@ -441,7 +440,7 @@ inline fn mapHash(cap: i32, hash: i32) i32 {
 /// bytes. The hash is compared before the bytes, which is what makes the probe
 /// cheap: a string has its hash in its head, so a mismatch costs one load.
 fn matchesKeyword(key: repr.Value, hash: i32, cstr: []const u8) bool {
-    if (!repr.checkType(key, repr.Tag.keyword)) return false;
+    if (!wrap.isKeyword(key)) return false;
     const str = wrap.toString(key);
     const head = stringHead(str);
     if (head.hash != hash or head.length != cstr.len) return false;

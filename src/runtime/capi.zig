@@ -103,6 +103,7 @@ pub const table: interface.Runtime = .{
     .getsize = &impl.args.GetSize.abi,
     .getuinteger = &impl.args.GetUInteger.abi,
     .indexed_chunk = &impl.args.indexedChunkAbi,
+    .is_keyword = &impl.args.isKeywordAbi,
     .length = &janet_length,
     .mark = &janet_mark,
     .marshal_abstract = &janet_marshal_abstract,

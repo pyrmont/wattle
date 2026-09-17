@@ -87,6 +87,10 @@ const max_format = 32;
 /// The size of the scratch a rendered conversion goes into.
 const max_item = 256;
 
+/// The most names a type set renders as: every tag, a second name for the
+/// symbol tag, and the two protocol names.
+const type_names_max = repr.tag_count + 3;
+
 // ==========================================================================
 // Types
 // ==========================================================================
@@ -591,18 +595,13 @@ inline fn isDigit(byte: u8) bool {
 /// cannot name an abstract type whose contents are elements or pairs, which
 /// such a site accepts as well.
 fn pushProtocolTypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
-    var names: [repr.tag_count + 2][]const u8 = undefined;
-    var count: usize = 0;
+    var names: [type_names_max][]const u8 = undefined;
     var bits = typeflags.bits();
     const indexed = bits & repr.TagSet.indexed.bits() == repr.TagSet.indexed.bits();
     const dictionary = bits & repr.TagSet.dictionary.bits() == repr.TagSet.dictionary.bits();
     if (indexed) bits &= ~repr.TagSet.indexed.bits();
     if (dictionary) bits &= ~repr.TagSet.dictionary.bits();
-    for (0..repr.tag_count) |i| {
-        if (bits >> @intCast(i) & 1 == 0) continue;
-        names[count] = utils.typeNames[i];
-        count += 1;
-    }
+    var count = tagNames(bits, &names);
     if (indexed) {
         names[count] = "indexed value";
         count += 1;
@@ -611,9 +610,14 @@ fn pushProtocolTypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!voi
         names[count] = "dictionary value";
         count += 1;
     }
-    for (names[0..count], 0..) |name, i| {
-        // The last name is joined with "or" and the rest with commas.
-        if (i != 0) try buffers.pushCString(b, if (i + 1 == count) " or " else ", ");
+    try pushNames(b, names[0..count]);
+}
+
+/// Pushes `names` as `"a, b or c"`: the last joined with "or" and the rest
+/// with commas.
+fn pushNames(b: *buffers.Buffer, names: []const []const u8) raise.Error!void {
+    for (names, 0..) |name, i| {
+        if (i != 0) try buffers.pushCString(b, if (i + 1 == names.len) " or " else ", ");
         try buffers.pushBytes(b, name);
     }
 }
@@ -621,23 +625,28 @@ fn pushProtocolTypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!voi
 /// `pushtypes`. Renders a type set, the bitmask an argument check reports, as
 /// `"a, b or c"`.
 fn pushtypes(b: *buffers.Buffer, typeflags: repr.TagSet) raise.Error!void {
-    var remaining = typeflags.bits();
-    var first = true;
-    var i: usize = 0;
-    while (remaining != 0) : ({
-        i += 1;
-        remaining >>= 1;
-    }) {
-        if (1 & remaining == 0) continue;
-        if (first) {
-            first = false;
-        } else {
-            // The last one is joined with "or" rather than a comma, and
-            // `remaining == 1` is exactly the test for being on it.
-            try buffers.pushCString(b, if (remaining == 1) " or " else ", ");
+    var names: [type_names_max][]const u8 = undefined;
+    const count = tagNames(typeflags.bits(), &names);
+    try pushNames(b, names[0..count]);
+}
+
+/// Writes the names of the tags in `bits` into `names`, in tag order, and
+/// returns how many it wrote.
+///
+/// The symbol tag is named twice, as `symbol` and then `keyword`: a keyword is
+/// a symbol of the other kind, and a set with the tag accepts both.
+fn tagNames(bits: u16, names: *[type_names_max][]const u8) usize {
+    var count: usize = 0;
+    for (0..repr.tag_count) |i| {
+        if (bits >> @intCast(i) & 1 == 0) continue;
+        names[count] = utils.typeNames[i];
+        count += 1;
+        if (i == @intFromEnum(repr.Tag.symbol)) {
+            names[count] = "keyword";
+            count += 1;
         }
-        try buffers.pushBytes(b, utils.typeNames[i]);
     }
+    return count;
 }
 
 /// Renders one conversion into `b`.
@@ -787,9 +796,10 @@ fn scanFormat(strfrmt: [*]const u8, start: usize) raise.Error!Specifier {
 }
 
 /// `typestr`. The name of `x`'s type. An abstract reports its own type's name
-/// rather than `"abstract"`.
+/// rather than `"abstract"`, and a keyword `"keyword"` rather than its tag's.
 fn typestr(x: repr.Value) []const u8 {
     const t = repr.typeOf(x);
     if (t == .abstract) return abi.abstractHead(wrap.toAbstract(x)).type.name;
+    if (wrap.isKeyword(x)) return "keyword";
     return utils.typeNames[@intFromEnum(t)];
 }

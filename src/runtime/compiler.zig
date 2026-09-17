@@ -931,7 +931,8 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
                 }
                 result.flags.spliced = false;
             },
-            repr.Tag.symbol => result = try resolve(compiler, wrap.toSymbol(val)),
+            // A keyword is a constant, and a symbol names a binding.
+            repr.Tag.symbol => result = if (wrap.isKeyword(val)) cslot(val) else try resolve(compiler, wrap.toSymbol(val)),
             repr.Tag.array => result = try makeArray(options, val),
             repr.Tag.@"struct" => result = try makeDictionary(options, val, constants.Opcode.make_struct),
             repr.Tag.table => result = try makeDictionary(options, val, constants.Opcode.make_table),
@@ -997,10 +998,10 @@ fn cfunCompile(argv: []repr.Value) raise.Error!repr.Value {
         const x = argv[2];
         if (repr.checkType(x, repr.Tag.string)) {
             source = wrap.toString(x);
-        } else if (repr.checkType(x, repr.Tag.keyword)) {
+        } else if (wrap.isKeyword(x)) {
             source = wrap.toKeyword(x);
         } else if (!repr.checkType(x, repr.Tag.nil)) {
-            return args_core.panicType(x, 2, repr.TagSet.of(&.{ .string, .keyword }));
+            return pp_format.panicf("bad slot #2, expected string or keyword, got %v", .{x});
         }
     }
 
@@ -1085,7 +1086,7 @@ fn expandMacroOnce(compiler: *Compiler, val: repr.Value) raise.Error!Expansion {
         compiler.current_mapping.column = head.sm_column;
     }
     if (tuples.isBracketed(head)) return .done;
-    if (!repr.checkType(form[0], repr.Tag.symbol)) return .done;
+    if (!wrap.isSymbol(form[0])) return .done;
 
     const name = wrap.toSymbol(form[0]);
     if (specials_core.lookupSpecial(name)) |special| return .{ .special = special };
@@ -1450,7 +1451,7 @@ fn validateCall(
                 while (argument_index < form_length) : (argument_index += 2) {
                     const argument_key = form[@intCast(argument_index)];
                     var found = false;
-                    if (repr.checkType(argument_key, repr.Tag.keyword)) {
+                    if (wrap.isKeyword(argument_key)) {
                         var named_index: i32 = 0;
                         while (named_index < definition.named_args_count and
                             named_index < definition.constants_length) : (named_index += 1)
@@ -1475,12 +1476,13 @@ fn validateCall(
             }
         },
         repr.Tag.cfunction, repr.Tag.abstract, repr.Tag.nil => {},
-        repr.Tag.keyword => {
+        // A keyword is called as a method on its first argument, and anything
+        // else callable is a lookup of one key.
+        else => if (wrap.isKeyword(function.constant)) {
             if (minimum_arity == 0) {
                 recordError(compiler, try pp_format.formatc("%v expects at least 1 argument, got 0", .{function.constant}));
             }
-        },
-        else => {
+        } else {
             if (minimum_arity > 1 or minimum_arity == 0) {
                 recordError(compiler, try pp_format.formatc("%v expects 1 argument, got %d", .{ function.constant, minimum_arity }));
             }

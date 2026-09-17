@@ -1203,7 +1203,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             if (try self.maybeAutoSuspend(true)) |s| return s;
             var callee = self.stack[fE(self.pc)];
             if (fiber.stacktop > fiber.maxstack) return try self.throw("stack overflow");
-            if (repr.checkType(callee, repr.Tag.keyword)) {
+            if (wrap.isKeyword(callee)) {
                 self.commit();
                 callee = try vm_calls.resolveMethod(callee, fiber);
             }
@@ -1266,7 +1266,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             if (try self.maybeAutoSuspend(true)) |s| return s;
             var callee = self.stack[fD(self.pc)];
             if (fiber.stacktop > fiber.maxstack) return try self.throw("stack overflow");
-            if (repr.checkType(callee, repr.Tag.keyword)) {
+            if (wrap.isKeyword(callee)) {
                 self.commit();
                 callee = try vm_calls.resolveMethod(callee, fiber);
             }

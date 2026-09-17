@@ -82,7 +82,7 @@ const wrap = @import("wrap.zig");
 pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
     const t = repr.typeOf(ds);
     switch (t) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             if (!args_core.checkint(key)) return wrap.fromNil();
             const index = wrap.toInteger(key);
             if (index < 0) return wrap.fromNil();
@@ -152,7 +152,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
     var val: repr.Value = undefined;
     if (index < 0) return raise.panic("expected non-negative index");
     switch (repr.typeOf(ds)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             if (index >= strings.head(wrap.toString(ds)).length) {
                 val = wrap.fromNil();
             } else {
@@ -227,22 +227,22 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
         repr.Tag.table => val = tables.get(wrap.toTable(ds), key),
         repr.Tag.array => {
             const array = wrap.toArray(ds);
-            const index = getterCheckInt(vtype, key, @intCast(array.count));
+            const index = getterCheckInt(ds, key, @intCast(array.count));
             val = array.slice()[utils.asSize(try index)];
         },
         repr.Tag.tuple => {
             const tuple = wrap.toTuple(ds);
             const len = tuples.head(tuple).length;
-            val = tuple[utils.asSize(try getterCheckInt(vtype, key, @intCast(len)))];
+            val = tuple[utils.asSize(try getterCheckInt(ds, key, @intCast(len)))];
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
-            const index = getterCheckInt(vtype, key, @intCast(buffer.count));
+            const index = getterCheckInt(ds, key, @intCast(buffer.count));
             val = wrap.fromInteger(buffer.slice()[utils.asSize(try index)]);
         },
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             const str = wrap.toString(ds);
-            const index = getterCheckInt(vtype, key, @intCast(strings.head(str).length));
+            const index = getterCheckInt(ds, key, @intCast(strings.head(str).length));
             val = wrap.fromInteger(str[utils.asSize(try index)]);
         },
         repr.Tag.abstract => {
@@ -288,7 +288,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
 /// rendering identical there.
 pub fn length(x: repr.Value) raise.Error!i32 {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return @intCast(strings.head(wrap.toString(x)).length),
+        repr.Tag.string, repr.Tag.symbol => return @intCast(strings.head(wrap.toString(x)).length),
         repr.Tag.array => return @intCast(wrap.toArray(x).count),
         repr.Tag.buffer => return @intCast(wrap.toBuffer(x).count),
         repr.Tag.tuple => return @intCast(tuples.head(wrap.toTuple(x)).length),
@@ -323,7 +323,7 @@ pub fn length(x: repr.Value) raise.Error!i32 {
 /// builds for selects it.
 pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
     switch (repr.typeOf(x)) {
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.fromInteger(@intCast(strings.head(wrap.toString(x)).length)),
+        repr.Tag.string, repr.Tag.symbol => return wrap.fromInteger(@intCast(strings.head(wrap.toString(x)).length)),
         repr.Tag.array => return wrap.fromInteger(@intCast(wrap.toArray(x).count)),
         repr.Tag.buffer => return wrap.fromInteger(@intCast(wrap.toBuffer(x).count)),
         repr.Tag.tuple => return wrap.fromInteger(@intCast(tuples.head(wrap.toTuple(x)).length)),
@@ -395,7 +395,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
                 if (!repr.checkType(kv[0].key, repr.Tag.nil)) return kv[0].key;
             }
         },
-        repr.Tag.string, repr.Tag.keyword, repr.Tag.symbol, repr.Tag.buffer, repr.Tag.array, repr.Tag.tuple => {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.buffer, repr.Tag.array, repr.Tag.tuple => {
             var i: i32 = undefined;
             if (repr.checkType(key, repr.Tag.nil)) {
                 i = 0;
@@ -501,7 +501,7 @@ pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Error!void {
     switch (vtype) {
         repr.Tag.array => {
             const array = wrap.toArray(ds);
-            const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
+            const index = try getterCheckInt(ds, key, std.math.maxInt(i32) - 1);
             if (index >= array.count) {
                 arrays.ensure(array, @intCast(index + 1), 2);
                 @memset(array.reserved()[array.count..utils.asSize(index + 1)], wrap.fromNil());
@@ -511,7 +511,7 @@ pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Error!void {
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
-            const index = try getterCheckInt(vtype, key, std.math.maxInt(i32) - 1);
+            const index = try getterCheckInt(ds, key, std.math.maxInt(i32) - 1);
             if (!args_core.checkint(val))
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
             if (index >= buffer.count) {
@@ -550,7 +550,7 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
     switch (vtype) {
         repr.Tag.array => {
             const array = wrap.toArray(ds);
-            _ = try getterCheckInt(vtype, wrap.fromInteger(index), std.math.maxInt(i32) - 1);
+            _ = try getterCheckInt(ds, wrap.fromInteger(index), std.math.maxInt(i32) - 1);
             if (index >= array.count) {
                 arrays.ensure(array, @intCast(index + 1), 2);
                 @memset(array.reserved()[array.count..utils.asSize(index + 1)], wrap.fromNil());
@@ -560,7 +560,7 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
-            _ = try getterCheckInt(vtype, wrap.fromInteger(index), std.math.maxInt(i32) - 1);
+            _ = try getterCheckInt(ds, wrap.fromInteger(index), std.math.maxInt(i32) - 1);
             if (!args_core.checkint(val))
                 return pp_format.panicf("can only put integers in buffers, got %v", .{val});
             if (index >= buffer.count) {
@@ -592,10 +592,12 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
 
 /// Raises the shared bad-key message.
 ///
-/// `vtype` is the container's type, `key` the key and `max` the exclusive
-/// bound. It is the one copy of that message.
-fn badKey(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error {
-    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ utils.typeNames[@intFromEnum(vtype)].ptr, @as(c_int, max), key });
+/// `ds` is the container, `key` the key and `max` the exclusive bound. It is
+/// the one copy of that message, and it names a keyword by its kind rather
+/// than by its tag.
+fn badKey(ds: repr.Value, key: repr.Value, max: i32) raise.Error {
+    const name = if (wrap.isKeyword(ds)) "keyword" else utils.typeNames[@intFromEnum(repr.typeOf(ds))];
+    return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ name.ptr, @as(c_int, max), key });
 }
 
 /// The element at `key` of an abstract whose contents are elements, read from
@@ -641,14 +643,14 @@ fn chunkNext(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
 /// Checks that a key is an integer, non-negative and below `max`, and returns
 /// it.
 ///
-/// `vtype` is the container's type, `key` the key and `max` the exclusive
-/// bound. Any of the three failing raises the same message, through `badKey`.
-/// It is the bounds check the panicking accessors share.
-fn getterCheckInt(vtype: repr.Tag, key: repr.Value, max: i32) raise.Error!i32 {
-    if (!args_core.checkint(key)) return badKey(vtype, key, max);
+/// `ds` is the container, `key` the key and `max` the exclusive bound. Any of
+/// the three failing raises the same message, through `badKey`. It is the
+/// bounds check the panicking accessors share.
+fn getterCheckInt(ds: repr.Value, key: repr.Value, max: i32) raise.Error!i32 {
+    if (!args_core.checkint(key)) return badKey(ds, key, max);
     const ret = wrap.toInteger(key);
-    if (ret < 0) return badKey(vtype, key, max);
-    if (ret >= max) return badKey(vtype, key, max);
+    if (ret < 0) return badKey(ds, key, max);
+    if (ret >= max) return badKey(ds, key, max);
     return ret;
 }
 

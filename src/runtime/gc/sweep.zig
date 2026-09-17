@@ -187,7 +187,7 @@ fn checkLiveref(x: repr.Value) bool {
         repr.Tag.buffer,
         repr.Tag.fiber,
         => gcReachable(wrap.toPointer(x)),
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => gcReachable(strings.head(wrap.toString(x))),
+        repr.Tag.string, repr.Tag.symbol => gcReachable(strings.head(wrap.toString(x))),
         repr.Tag.abstract => gcReachable(abi.abstractHead(wrap.toAbstract(x))),
         repr.Tag.tuple => gcReachable(tuples.head(wrap.toTuple(x))),
         repr.Tag.@"struct" => gcReachable(structs.head(wrap.toStruct(x))),

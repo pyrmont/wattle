@@ -183,7 +183,7 @@ fn markGuarded(vm: *vm_state.Vm, x: repr.Value) void {
     if (g.depth != 0) {
         g.depth -= 1;
         switch (repr.typeOf(x)) {
-            repr.Tag.string, repr.Tag.keyword, repr.Tag.symbol => markString(wrap.toString(x)),
+            repr.Tag.string, repr.Tag.symbol => markString(wrap.toString(x)),
             repr.Tag.function => markFunction(vm, wrap.toFunction(x)),
             repr.Tag.array => markArray(vm, wrap.toArray(x)),
             repr.Tag.table => markTable(vm, wrap.toTable(x)),

@@ -39,4 +39,27 @@
 # issue #753 - a78cbd91d
 (assert (pos? (length (gensym))) "gensym not empty, regression #753")
 
+# A keyword is a symbol of the other kind: one tag, and two interned objects
+# for one name.
+(assert (not= :abc 'abc) "a keyword is not the symbol of its name")
+(assert (= :keyword (type :abc)) "type names a keyword")
+(assert (= :symbol (type 'abc)) "and a symbol")
+(assert (and (keyword? :abc) (not (symbol? :abc))) "keyword? is by kind")
+(assert (and (symbol? 'abc) (not (keyword? 'abc))) "and so is symbol?")
+(assert (not= (hash :abc) (hash 'abc)) "a keyword's hash is not its symbol's")
+(assert (= 2 (length @{:abc 1 'abc 2})) "a table keeps the two apart")
+(assert (= -1 (compare 'zzz :aaa)) "every symbol orders before every keyword")
+(assert (= 1 (compare :aaa 'zzz)) "and every keyword after every symbol")
+(assert (= :abc (unmarshal (marshal :abc))) "a keyword marshals as a keyword")
+(assert (= 'abc (unmarshal (marshal 'abc))) "and a symbol as a symbol")
+(assert (= :abc (keyword 'abc)) "a keyword from a symbol's name")
+(assert (= 'abc (symbol :abc)) "and a symbol from a keyword's name")
+(assert (= "abc" (string :abc)) "a keyword's bytes have no colon")
+(assert (= ":abc" (describe :abc)) "and its description has one")
+(defn- named-kind [&named alpha] alpha)
+(assert (= 1 (named-kind :alpha 1)) "&named keys a parameter by its keyword")
+(assert (= :abc (eval :abc)) "a keyword compiles to itself")
+(def abc :bound)
+(assert (= :bound (eval 'abc)) "and a symbol to its binding")
+
 (end-suite)

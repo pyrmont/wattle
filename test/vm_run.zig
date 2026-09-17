@@ -411,6 +411,10 @@ fn theTypeAssertions() void {
             "((asm '{:arity 1 :bytecode [(tchck 0 (:indexed :dictionary)) (ret 0)]}) :kw)",
             "expected indexed value or dictionary value, got :kw",
         );
+        // A symbol and a keyword share a tag, so a check for either passes
+        // both, and the refusal names both.
+        expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :keyword) (ldi 1 7) (ret 1)]}) 'sym)", "7");
+        expectError("((asm '{:arity 1 :bytecode [(tchck 0 :symbol) (ret 0)]}) 1)", "expected symbol or keyword, got 1");
         // A map passes a check for a dictionary, and a set does not.
         expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :dictionary) (ldi 1 7) (ret 1)]}) (hash-map :a 1))", "7");
         expectError("((asm '{:arity 1 :bytecode [(tchck 0 :dictionary) (ret 0)]}) (hash-set 1))", "expected dictionary value, got <core/set 1>");

@@ -447,7 +447,12 @@ fn destructure(
     attributes: ?*tables.Table,
 ) raise.Error!bool {
     switch (repr.typeOf(lhs)) {
-        repr.Tag.symbol => return try bindLeaf(compiler, wrap.toSymbol(lhs), rhs, binding_kind, attributes),
+        repr.Tag.symbol => if (!wrap.isKeyword(lhs)) {
+            return try bindLeaf(compiler, wrap.toSymbol(lhs), rhs, binding_kind, attributes);
+        } else {
+            compiler_primitives.recordError(compiler, try pp_format.formatc("unexpected type in destructuring, got %v", .{lhs}));
+            return true;
+        },
         repr.Tag.tuple, repr.Tag.array => {
             const values = args_core.items(lhs).?;
             // `index` is a position in `values`; the casts left below are the
@@ -473,7 +478,7 @@ fn destructure(
                         );
                         return true;
                     }
-                    if (!repr.checkType(values[index + 1], repr.Tag.symbol)) {
+                    if (!wrap.isSymbol(values[index + 1])) {
                         compiler_primitives.recordError(
                             compiler,
                             try pp_format.formatc("expected symbol following '& in destructuring pattern, found %q", .{values[index + 1]}),
@@ -549,20 +554,22 @@ fn handleAttributes(
         return null;
     }
     const table = tables.new(2);
-    const binding_name: [*:0]const u8 = if (repr.typeOf(arguments[0]) == repr.Tag.symbol)
+    const binding_name: [*:0]const u8 = if (wrap.isSymbol(arguments[0]))
         @ptrCast(wrap.toSymbol(arguments[0]))
     else
         "<multiple bindings>";
     for (arguments[1 .. arguments.len - 1]) |attribute| {
         switch (repr.typeOf(attribute)) {
             repr.Tag.tuple => compiler_primitives.cerror(compiler, "unexpected form - did you intend to use defn?"),
-            repr.Tag.keyword => tables.put(table, attribute, wrap.fromTrue()),
             repr.Tag.string => tables.put(table, value.fromBytes("doc", .keyword), attribute),
             repr.Tag.@"struct" => tables.mergeStruct(table, wrap.toStruct(attribute)),
-            else => compiler_primitives.recordError(
-                compiler,
-                try pp_format.formatc("cannot add metadata %v to binding %s", .{ attribute, binding_name }),
-            ),
+            else => if (wrap.isKeyword(attribute))
+                tables.put(table, attribute, wrap.fromTrue())
+            else
+                compiler_primitives.recordError(
+                    compiler,
+                    try pp_format.formatc("cannot add metadata %v to binding %s", .{ attribute, binding_name }),
+                ),
         }
     }
     return table;
@@ -677,7 +684,7 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
         repr.Tag.tuple => {
             const tuple = wrap.toTuple(val);
             const length = tuples.head(tuple).length;
-            if (length > 1 and repr.checkType(tuple[0], repr.Tag.symbol)) {
+            if (length > 1 and wrap.isSymbol(tuple[0])) {
                 const head = wrap.toSymbol(tuple[0]);
                 if (utils.cstrcmp(head, "unquote") == 0) {
                     if (level == 0) {
@@ -820,8 +827,8 @@ fn specialFn(
 
     var parameter_index: i32 = 0;
     const head = arguments[0];
-    const self_reference = repr.checkType(head, repr.Tag.symbol);
-    const has_name = self_reference or repr.checkType(head, repr.Tag.keyword);
+    const self_reference = wrap.isSymbol(head);
+    const has_name = self_reference or wrap.isKeyword(head);
     if (has_name) parameter_index = 1;
     if (parameter_index >= arguments.len or
         !repr.checkType(arguments[@intCast(parameter_index)], repr.Tag.tuple))
@@ -852,21 +859,21 @@ fn specialFn(
         // seen and nothing clears it, so every later parameter is a named one.
         if (named_table) |named| {
             arity -= 1;
-            if (!repr.checkType(parameter, repr.Tag.symbol)) {
+            if (!wrap.isSymbol(parameter)) {
                 scratch_vector.free(&destructured_parameters);
                 scratch_vector.free(&named_parameters);
                 return functionError(compiler, "only named arguments can follow &named");
             }
             tables.put(
                 named,
-                wrapKeyword(wrap.toSymbol(parameter)),
+                value.fromBytes(std.mem.span(wrap.toSymbol(parameter)), .keyword),
                 parameter,
             );
             pushSlot(&named_parameters, compiler_primitives.farslot(compiler) orelse nilSlot());
             continue;
         }
 
-        if (!repr.checkType(parameter, repr.Tag.symbol)) {
+        if (!wrap.isSymbol(parameter)) {
             pushSlot(&destructured_parameters, compiler_primitives.farslot(compiler) orelse nilSlot());
             continue;
         }
@@ -936,7 +943,7 @@ fn specialFn(
 
     var destructured_index: usize = 0;
     for (tuples.view(parameters)) |parameter| {
-        if (repr.checkType(parameter, repr.Tag.symbol)) continue;
+        if (wrap.isSymbol(parameter)) continue;
         if (destructured_index >= destructured_parameters.items.len) unreachable;
         const parameter_slot = destructured_parameters.items[destructured_index];
         destructured_index += 1;
@@ -1123,7 +1130,7 @@ fn specialSet(
     }
     const suboptions = compiler_primitives.foptsDefault(compiler);
 
-    if (repr.checkType(arguments[0], repr.Tag.symbol)) {
+    if (wrap.isSymbol(arguments[0])) {
         const destination = try compiler_primitives.resolve(compiler, wrap.toSymbol(arguments[0]));
         if (!destination.flags.mutable) {
             compiler_primitives.cerror(compiler, "cannot set constant");
@@ -1334,17 +1341,11 @@ fn specialWhile(
 
 /// Whether `val` is the symbol `string` names.
 fn symbolEquals(val: repr.Value, string: [*:0]const u8) bool {
-    return repr.checkType(val, repr.Tag.symbol) and
+    return wrap.isSymbol(val) and
         utils.cstrcmp(wrap.toSymbol(val), string) == 0;
 }
 
 /// The value `keyword` names in `table`.
 fn tableGetKeyword(table: *tables.Table, keyword: [*:0]const u8) repr.Value {
     return tables.get(table, value.fromBytes(std.mem.span(keyword), .keyword));
-}
-
-/// A keyword from a NUL-terminated literal, named so the special forms read as
-/// one thing.
-inline fn wrapKeyword(val: [*:0]const u8) repr.Value {
-    return wrap.fromKeyword(val);
 }

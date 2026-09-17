@@ -78,15 +78,15 @@
 (assert (compare>= 6.0 5.0 4.0 4.0 3.0 2.0 1.0)
         "compare greater than or equal to reals")
 (assert (compare< 1.0 nil false true
-           (fiber/new (fn [] 1))
+           (buffer "hi")
            "hi"
-           (quote hello)
-           :hello
            (array 1 2 3)
-           (tuple 1 2 3)
            (table "a" "b" "c" "d")
            (struct 1 2 3 4)
-           (buffer "hi")
+           (quote hello)
+           :hello
+           (tuple 1 2 3)
+           (fiber/new (fn [] 1))
            (fn [x] (+ x x))
            print) "compare type ordering")
 

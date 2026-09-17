@@ -77,15 +77,15 @@
 (assert (deep= @[0.8 1.8 2.8 3.8] (range 0.8 3.999)) "range 5")
 
 (assert (< 1.0 nil false true
-           (fiber/new (fn [] 1))
+           (buffer "hi")
            "hi"
-           (quote hello)
-           :hello
            (array 1 2 3)
-           (tuple 1 2 3)
            (table "a" "b" "c" "d")
            (struct 1 2 3 4)
-           (buffer "hi")
+           (quote hello)
+           :hello
+           (tuple 1 2 3)
+           (fiber/new (fn [] 1))
            (fn [x] (+ x x))
            print) "type ordering")
 
@@ -317,7 +317,7 @@
 
 # slice reports both accepted shapes in one message
 (assert-error-value "slice reports both accepted shapes"
-                    "bad slot #0, expected string, symbol, keyword, buffer or indexed value, got 1"
+                    "bad slot #0, expected buffer, string, symbol, keyword or indexed value, got 1"
                     (slice 1))
 
 # signal, by keyword and by number

@@ -1167,7 +1167,7 @@ fn decodeFlags(
 ) raise.Error!u32 {
     var mask: u32 = 0;
     for (options) |opt| {
-        if (!repr.checkType(opt, repr.Tag.keyword)) {
+        if (!wrap.isKeyword(opt)) {
             return pp_format.panicf("expected keyword, got %v", .{opt});
         }
         const keyw = wrap.toKeyword(opt);

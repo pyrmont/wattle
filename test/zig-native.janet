@@ -159,7 +159,7 @@
 
 # The wrong type, on each of the three getters. The message is `args.zig`'s,
 # which is the same one a C module got for the same mistake.
-(assert (= "bad slot #0, expected string, symbol, keyword or buffer, got 3"
+(assert (= "bad slot #0, expected buffer, string, symbol or keyword, got 3"
            (refusal markup 3))
         "getBytes refuses a number")
 (assert (= "bad slot #1, expected indexed value, got 3" (refusal markup "x" 3))
@@ -358,7 +358,7 @@
         "arrayPush refuses a table")
 (assert (= "expected buffer, got \"ab\"" (refusal mutate @[] @{} "ab"))
         "bufferPush refuses a string")
-(assert (= "expected array, table or buffer, got 3" (refusal mutate @[] 3 @""))
+(assert (= "expected buffer, array or table, got 3" (refusal mutate @[] 3 @""))
         "put refuses a number, with Janet's own message")
 
 # `get` is Janet's own: a miss is nil and so is a value with no indexed
@@ -378,7 +378,7 @@
 (assert (= 2 (size @[1 2])) "of an array")
 (assert (= 1 (size @{:a 1})) "of a table")
 (assert (= 6 (size k)) "and of an abstract with a length slot")
-(assert (= "expected string, symbol, keyword, array, tuple, table, struct or buffer, got 3"
+(assert (= "expected buffer, string, array, table, struct, symbol, keyword or tuple, got 3"
            (refusal size 3))
         "length refuses a number with the runtime's own message")
 

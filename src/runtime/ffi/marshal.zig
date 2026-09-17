@@ -57,7 +57,6 @@ pub fn getPointer(argv: []const repr.Value, n: usize) raise.Error!?*anyopaque {
     return switch (repr.typeOf(argv[n])) {
         repr.Tag.pointer,
         repr.Tag.string,
-        repr.Tag.keyword,
         repr.Tag.symbol,
         repr.Tag.cfunction,
         => wrap.toPointer(argv[n]),

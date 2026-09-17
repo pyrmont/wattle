@@ -45,7 +45,7 @@
         "a buffer and a string hash the same, because the view is the same view")
 
 # A wrong argument type is refused by the getter, before any thread starts.
-(assert (= "bad slot #0, expected string, symbol, keyword or buffer, got 3"
+(assert (= "bad slot #0, expected buffer, string, symbol or keyword, got 3"
            (refusal digest/sha256 3))
         "getBytes names the four types it takes")
 

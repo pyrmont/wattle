@@ -438,7 +438,7 @@ pub fn decodePrim(name: [*]const u8) raise.Error!Prim {
 
 /// `decode_ffi_type`.
 pub fn decodeType(x: repr.Value) raise.Error!Type {
-    if (repr.checkType(x, repr.Tag.keyword)) {
+    if (wrap.isKeyword(x)) {
         return Type.of(try decodePrim(wrap.toKeyword(x)));
     }
     var ret: Type = .{ .st = null, .prim = .@"struct", .array_count = -1 };

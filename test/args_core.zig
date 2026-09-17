@@ -193,9 +193,17 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Error!void {
     refuses(
         args.getBytes,
         .{ a, 0 },
-        "bad slot #0, expected string, symbol, keyword or buffer, got nil",
+        "bad slot #0, expected buffer, string, symbol or keyword, got nil",
     );
     refuses(args.getKeyvals, .{ a, 0 }, "bad slot #0, expected dictionary value, got nil");
+
+    // A symbol and a keyword share a tag, so their getters refuse each other
+    // by kind, and name the kind they wanted.
+    var kinds = [_]repr.Value{ value.fromBytes("a", .symbol), value.fromBytes("a", .keyword) };
+    refuses(args.getKeyword, .{ slots(&kinds), 0 }, "bad slot #0, expected keyword, got a");
+    refuses(args.getSymbol, .{ slots(&kinds), 1 }, "bad slot #1, expected symbol, got :a");
+    expect(args.keyeq(kinds[1], "a") and !args.keyeq(kinds[0], "a"));
+    expect(args.symeq(kinds[0], "a") and !args.symeq(kinds[1], "a"));
 
     // And the success paths, where the data and the length are what a caller
     // reads rather than a message.
@@ -549,7 +557,7 @@ fn theByteAndCstringShapes() raise.Error!void {
     refuses(
         args.getCBytes,
         .{ a, 3 },
-        "bad slot #3, expected string, symbol, keyword or buffer, got nil",
+        "bad slot #3, expected buffer, string, symbol or keyword, got nil",
     );
 
     // An embedded zero is rejected for every shape that can contain one.
@@ -656,7 +664,7 @@ fn theAbstractGettersAndTheBytesCallback() raise.Error!void {
     refusesWithPrefix(
         args.getBytes,
         .{ a, 0 },
-        "bad slot #0, expected string, symbol, keyword or buffer, got <args-core/probe 0x",
+        "bad slot #0, expected buffer, string, symbol or keyword, got <args-core/probe 0x",
     );
 
     expect(try args.optAbstract(a, 0, &probe_at, null) == p);
@@ -932,7 +940,7 @@ fn anIndexedValueIsCheckedAndRefusedByTheProtocol() void {
     refuses(
         panicIndexed,
         .{ wrap.fromNil(), 2, repr.TagSet.bytes },
-        "bad slot #2, expected string, symbol, keyword, buffer or indexed value, got nil",
+        "bad slot #2, expected buffer, string, symbol, keyword or indexed value, got nil",
     );
     refuses(
         panicIndexed,
@@ -1029,7 +1037,7 @@ fn keyvalsReadsEveryDictionary() raise.Error!void {
     var sum: i32 = 0;
     seen = 0;
     while (try from_struct.next()) |kv| {
-        expect(harness.isType(kv.key, repr.Tag.keyword));
+        expect(wrap.isKeyword(kv.key));
         sum += wrap.toInteger(kv.value);
         seen += 1;
     }
@@ -1107,7 +1115,7 @@ fn aSlotTheCallNeverPassedReadsAsNil() raise.Error!void {
     // the end of a frame that has one argument.
     refuses(args.getIndexed, .{ none, 0 }, "bad slot #0, expected array or tuple, got nil");
     refuses(args.getIndexed, .{ a, 1 }, "bad slot #1, expected array or tuple, got nil");
-    refuses(args.getBytes, .{ none, 0 }, "bad slot #0, expected string, symbol, keyword or buffer, got nil");
+    refuses(args.getBytes, .{ none, 0 }, "bad slot #0, expected buffer, string, symbol or keyword, got nil");
     refuses(args.getInteger, .{ none, 0 }, "bad slot #0, expected 32 bit signed integer, got nil");
     refuses(args.getNat, .{ none, 0 }, "bad slot #0, expected non-negative 32 bit signed integer, got nil");
     refuses(args.getTuple, .{ none, 0 }, "bad slot #0, expected tuple, got nil");

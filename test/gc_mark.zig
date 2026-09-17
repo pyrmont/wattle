@@ -117,7 +117,6 @@ fn headOf(val: repr.Value) ?*anyopaque {
         => wrap.toPointer(val),
         repr.Tag.string,
         repr.Tag.symbol,
-        repr.Tag.keyword,
         => utils.stringHead(wrap.toString(val)),
         repr.Tag.abstract => utils.abstractHead(wrap.toAbstract(val)),
         repr.Tag.tuple => utils.tupleHead(wrap.toTuple(val)),

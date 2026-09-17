@@ -547,7 +547,7 @@ inline fn funcEnv(func: *functions.Function, i: u32) *functions.FuncEnv {
 /// A keyword from a literal. Keywords and symbols are interned by the same
 /// function and differ only in how they are wrapped.
 inline fn kw(name: [*:0]const u8) repr.Value {
-    return wrap.fromKeyword(symbols.csymbol(name));
+    return wrap.fromKeyword(symbols.ckeyword(name));
 }
 
 /// Binds `name`, as a keyword, to `val` in `t`.

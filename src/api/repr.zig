@@ -166,12 +166,16 @@ pub const Nanbox32Tagged = extern struct {
 /// The type tag, as four bits.
 ///
 /// Four bits is the budget, so there are sixteen primitive types and no
-/// seventeenth without changing the representation. The order is Janet's and
-/// it is load-bearing, so the block under Tests asserts every value rather
-/// than trusting the transcription. `fiber` is 3, between `boolean` and
-/// `string`; listing it fourteenth instead would shift twelve tags and move
-/// the bit pattern of every non-number value, the core image and the
-/// marshalled surface with them.
+/// seventeenth without changing the representation. The order is load-bearing,
+/// so the block under Tests asserts every value rather than trusting the
+/// declaration: it is the order values of different types sort in, and the
+/// order a type set names its types in a message.
+///
+/// The order is Wattle's. After the three constants, each mutable built-in
+/// comes before its immutable one: buffer and string, array and vector, table
+/// and map. `unused` is the vector's slot and `struct` the map's until the two
+/// take them. A keyword is a symbol, and its kind is on the interned object
+/// rather than in the tag: `value/symbols.zig` has how.
 ///
 /// A four-bit enum rather than a bare integer, so that a `switch` omitting a
 /// case does not compile and the error names the value.
@@ -179,15 +183,15 @@ pub const Tag = enum(u4) {
     number,
     nil,
     boolean,
-    fiber,
+    buffer,
     string,
-    symbol,
-    keyword,
     array,
-    tuple,
+    unused,
     table,
     @"struct",
-    buffer,
+    symbol,
+    tuple,
+    fiber,
     function,
     cfunction,
     abstract,
@@ -200,7 +204,7 @@ pub const Tag = enum(u4) {
 /// The bit layout is the declaration order, because a `packed struct`'s first
 /// field is its least significant bit, and the order here is `Tag`'s. The
 /// block under Tests asserts all sixteen positions and the five composites
-/// against the values upstream Janet computes, so reordering either
+/// against fixed numbers, so reordering either
 /// declaration is a build failure rather than a set that quietly means
 /// something else.
 ///
@@ -210,15 +214,15 @@ pub const TagSet = packed struct(u16) {
     number: bool = false,
     nil: bool = false,
     boolean: bool = false,
-    fiber: bool = false,
+    buffer: bool = false,
     string: bool = false,
-    symbol: bool = false,
-    keyword: bool = false,
     array: bool = false,
-    tuple: bool = false,
+    unused: bool = false,
     table: bool = false,
     @"struct": bool = false,
-    buffer: bool = false,
+    symbol: bool = false,
+    tuple: bool = false,
+    fiber: bool = false,
     function: bool = false,
     cfunction: bool = false,
     abstract: bool = false,
@@ -228,7 +232,7 @@ pub const TagSet = packed struct(u16) {
     pub const all = fromBits(std.math.maxInt(u16));
 
     /// The five named unions, which a message or a check names directly.
-    pub const bytes = of(&.{ .string, .symbol, .buffer, .keyword });
+    pub const bytes = of(&.{ .string, .symbol, .buffer });
     pub const indexed = of(&.{ .array, .tuple });
     pub const dictionary = of(&.{ .table, .@"struct" });
     pub const lengthable = bytes.with(indexed).with(dictionary);
@@ -614,20 +618,19 @@ pub fn checkTypes(x: Value, set: TagSet) bool {
 // ==========================================================================
 
 comptime {
-    // `Tag`'s numbering, against upstream Janet's own type enumeration.
-    // Sixteen assertions rather than a count, because a transposition leaves
-    // the count unchanged.
+    // `Tag`'s numbering. Sixteen assertions rather than a count, because a
+    // transposition leaves the count unchanged.
     const expected = .{
         .{ Tag.number, 0 },    .{ Tag.nil, 1 },        .{ Tag.boolean, 2 },
-        .{ Tag.fiber, 3 },     .{ Tag.string, 4 },     .{ Tag.symbol, 5 },
-        .{ Tag.keyword, 6 },   .{ Tag.array, 7 },      .{ Tag.tuple, 8 },
-        .{ Tag.table, 9 },     .{ Tag.@"struct", 10 }, .{ Tag.buffer, 11 },
+        .{ Tag.buffer, 3 },    .{ Tag.string, 4 },     .{ Tag.array, 5 },
+        .{ Tag.unused, 6 },    .{ Tag.table, 7 },      .{ Tag.@"struct", 8 },
+        .{ Tag.symbol, 9 },    .{ Tag.tuple, 10 },     .{ Tag.fiber, 11 },
         .{ Tag.function, 12 }, .{ Tag.cfunction, 13 }, .{ Tag.abstract, 14 },
         .{ Tag.pointer, 15 },
     };
     for (expected) |pair| {
         if (@intFromEnum(pair[0]) != pair[1])
-            @compileError("tag " ++ @tagName(pair[0]) ++ " is not upstream's value");
+            @compileError("tag " ++ @tagName(pair[0]) ++ " has moved");
     }
     if (@typeInfo(Tag).@"enum".fields.len != tag_count)
         @compileError("Tag has grown a member; the tag has four bits, so " ++
@@ -635,31 +638,31 @@ comptime {
 }
 
 comptime {
-    // `TagSet`'s sixteen positions and five composites, against the values
-    // upstream Janet computes. Reordering `Tag` or `TagSet`'s fields fails
-    // here rather than in a program.
+    // `TagSet`'s sixteen positions and five composites, against fixed
+    // numbers. Reordering `Tag` or `TagSet`'s fields fails here rather than in
+    // a program.
     std.debug.assert(@sizeOf(TagSet) == 2);
     std.debug.assert(TagSet.one(.number).bits() == 0x0001);
     std.debug.assert(TagSet.one(.nil).bits() == 0x0002);
     std.debug.assert(TagSet.one(.boolean).bits() == 0x0004);
-    std.debug.assert(TagSet.one(.fiber).bits() == 0x0008);
+    std.debug.assert(TagSet.one(.buffer).bits() == 0x0008);
     std.debug.assert(TagSet.one(.string).bits() == 0x0010);
-    std.debug.assert(TagSet.one(.symbol).bits() == 0x0020);
-    std.debug.assert(TagSet.one(.keyword).bits() == 0x0040);
-    std.debug.assert(TagSet.one(.array).bits() == 0x0080);
-    std.debug.assert(TagSet.one(.tuple).bits() == 0x0100);
-    std.debug.assert(TagSet.one(.table).bits() == 0x0200);
-    std.debug.assert(TagSet.one(.@"struct").bits() == 0x0400);
-    std.debug.assert(TagSet.one(.buffer).bits() == 0x0800);
+    std.debug.assert(TagSet.one(.array).bits() == 0x0020);
+    std.debug.assert(TagSet.one(.unused).bits() == 0x0040);
+    std.debug.assert(TagSet.one(.table).bits() == 0x0080);
+    std.debug.assert(TagSet.one(.@"struct").bits() == 0x0100);
+    std.debug.assert(TagSet.one(.symbol).bits() == 0x0200);
+    std.debug.assert(TagSet.one(.tuple).bits() == 0x0400);
+    std.debug.assert(TagSet.one(.fiber).bits() == 0x0800);
     std.debug.assert(TagSet.one(.function).bits() == 0x1000);
     std.debug.assert(TagSet.one(.cfunction).bits() == 0x2000);
     std.debug.assert(TagSet.one(.abstract).bits() == 0x4000);
     std.debug.assert(TagSet.one(.pointer).bits() == 0x8000);
-    std.debug.assert(TagSet.bytes.bits() == 0x0870);
-    std.debug.assert(TagSet.indexed.bits() == 0x0180);
-    std.debug.assert(TagSet.dictionary.bits() == 0x0600);
-    std.debug.assert(TagSet.lengthable.bits() == 0x0FF0);
-    std.debug.assert(TagSet.callable.bits() == 0x7FF0);
+    std.debug.assert(TagSet.bytes.bits() == 0x0218);
+    std.debug.assert(TagSet.indexed.bits() == 0x0420);
+    std.debug.assert(TagSet.dictionary.bits() == 0x0180);
+    std.debug.assert(TagSet.lengthable.bits() == 0x07B8);
+    std.debug.assert(TagSet.callable.bits() == 0x77B8);
     // A named bit is its own field, so the struct and the shift agree only
     // if the two declaration orders do.
     for (0..tag_count) |i| {

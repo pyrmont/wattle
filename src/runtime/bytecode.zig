@@ -167,7 +167,7 @@ const type_aliases = [_]TypeAlias{
     .{ .name = "fiber", .mask = repr.TagSet.one(.fiber) },
     .{ .name = "function", .mask = repr.TagSet.one(.function) },
     .{ .name = "indexed", .mask = repr.TagSet.indexed },
-    .{ .name = "keyword", .mask = repr.TagSet.one(.keyword) },
+    .{ .name = "keyword", .mask = repr.TagSet.one(.symbol) },
     .{ .name = "nil", .mask = repr.TagSet.one(.nil) },
     .{ .name = "number", .mask = repr.TagSet.one(.number) },
     .{ .name = "pointer", .mask = repr.TagSet.one(.pointer) },
@@ -330,7 +330,7 @@ pub fn asmEncode(
     arguments: [*]const repr.Value,
 ) AsmError!u32 {
     if (!hasLengthAtLeast(arguments, 1)) return 0;
-    if (!repr.checkType(arguments[0], repr.Tag.symbol)) {
+    if (!wrap.isSymbol(arguments[0])) {
         return a.fail("expected symbol in assembly instruction");
     }
     const opcode = findOpcode(wrap.toSymbol(arguments[0])) orelse
@@ -464,7 +464,7 @@ pub fn asmFillSymbolmap(
     for (items, 0..) |entry, index| {
         if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
         const tuple = wrap.toTuple(entry);
-        const birth_pc: u32 = if (repr.checkType(tuple[0], repr.Tag.keyword) and
+        const birth_pc: u32 = if (wrap.isKeyword(tuple[0]) and
             utils.cstrcmp(wrap.toKeyword(tuple[0]), "upvalue") == 0)
             maximum_u32
         else if (args_core.checkint(tuple[0]))
@@ -473,7 +473,7 @@ pub fn asmFillSymbolmap(
             return a.fail("expected integer");
         if (!args_core.checkint(tuple[1])) return a.fail("expected integer");
         if (!args_core.checkint(tuple[2])) return a.fail("expected integer");
-        if (!repr.checkType(tuple[3], repr.Tag.symbol)) return a.fail("expected symbol");
+        if (!wrap.isSymbol(tuple[3])) return a.fail("expected symbol");
         definition.symbolmap.?[index] = .{
             .birth_pc = birth_pc,
             .death_pc = @bitCast(integerValue(tuple[1])),
@@ -527,7 +527,7 @@ pub fn fillBytecode(
     // handed to the signed `errindex`.
     for (0..items.len) |index| {
         const instruction = items[index];
-        if (repr.checkType(instruction, repr.Tag.keyword)) continue;
+        if (wrap.isKeyword(instruction)) continue;
         const tuple = wrap.toTuple(instruction);
         // Set before the encode rather than after it: an indexed failure
         // downstream formats its own message, and `fail` reads `errindex` to
@@ -703,12 +703,12 @@ pub fn parseSlots(
         if (repr.checkType(val, repr.Tag.tuple)) {
             const aliases = wrap.toTuple(val);
             for (tuples.view(aliases)) |alias| {
-                if (!repr.checkType(alias, repr.Tag.symbol)) {
+                if (!wrap.isSymbol(alias)) {
                     return a.fail("slot names must be symbols");
                 }
                 tables.put(slots, alias, wrap.fromInteger(@intCast(index)));
             }
-        } else if (repr.checkType(val, repr.Tag.symbol)) {
+        } else if (wrap.isSymbol(val)) {
             tables.put(slots, val, wrap.fromInteger(@intCast(index)));
         } else {
             return a.fail("slot names must be symbols or tuple of symbols");
@@ -759,7 +759,7 @@ pub fn scanBytecode(
     // its "no instruction" sentinel, so the cast sits at that assignment.
     for (0..items.len) |index| {
         const instruction = items[index];
-        if (repr.checkType(instruction, repr.Tag.keyword)) {
+        if (wrap.isKeyword(instruction)) {
             tables.put(labels, instruction, wrap.fromInteger(bytecode_length));
         } else if (repr.checkType(instruction, repr.Tag.tuple)) {
             bytecode_length += 1;
@@ -1135,7 +1135,8 @@ fn resolveArgument(
                 result |= try resolveArgument(a, context, constants.OperandKind.simple_type, element);
             }
         },
-        repr.Tag.keyword => {
+        // A keyword is a label or a type, and a symbol is a name in a table.
+        repr.Tag.symbol => if (wrap.isKeyword(val)) {
             const label_table: ?*tables.Table = if (argument_type == constants.OperandKind.label) table else null;
             if (label_table) |labels| {
                 const found = tables.get(labels, val);
@@ -1150,8 +1151,7 @@ fn resolveArgument(
             } else {
                 return a.failv(resolutionError(val, 0));
             }
-        },
-        repr.Tag.symbol => {
+        } else {
             const argument_table = table orelse return a.failv(resolutionError(val, 0));
             const found = tables.get(argument_table, val);
             if (repr.checkType(found, repr.Tag.number)) {

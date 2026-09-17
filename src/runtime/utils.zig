@@ -125,7 +125,7 @@ pub const statusNames: [16][*:0]const u8 = .{
     "alive",
 };
 
-/// Indexed by `repr.Tag`, so the order is Janet's and not alphabetical.
+/// Indexed by `repr.Tag`, so the order is the tag's and not alphabetical.
 /// A caller writes `typeNames[@intFromEnum(tag)]`: the tag is an `enum(u4)`
 /// and an enum is deliberately not an index.
 ///
@@ -144,15 +144,15 @@ pub const typeNames: [16][:0]const u8 = .{
     "number",
     "nil",
     "boolean",
-    "fiber",
+    "buffer",
     "string",
-    "symbol",
-    "keyword",
     "array",
-    "tuple",
+    "unused",
     "table",
     "struct",
-    "buffer",
+    "symbol",
+    "tuple",
+    "fiber",
     "function",
     "cfunction",
     "abstract",

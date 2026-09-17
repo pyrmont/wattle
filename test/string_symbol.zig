@@ -322,6 +322,35 @@ fn symbolInterns() void {
     expect(strings.equal(str, s1));
 }
 
+/// A keyword is a symbol of the other kind. The two kinds of one name are two
+/// blocks in one cache, each interned on its own, and a value of either has
+/// the symbol tag. The kind is the keyword bit in the head, and a keyword's
+/// stored hash is its bytes' hash mixed with `keyword_hash_mix`, which is what
+/// keeps the cache and a table from taking one kind for the other.
+fn aKeywordIsASymbolOfTheOtherKind() void {
+    const before = harness.vm().symcache.count;
+    const s = symbols.csymbol("interned-test-kind");
+    const k = symbols.ckeyword("interned-test-kind");
+    expect(k != s);
+    expect(harness.vm().symcache.count == before + 2);
+    expect(symbols.ckeyword("interned-test-kind") == k);
+    expect(symbols.csymbol("interned-test-kind") == s);
+    expect(harness.vm().symcache.count == before + 2);
+
+    expect(symbols.isKeyword(k) and !symbols.isKeyword(s));
+    expect(heap.memoryType(strings.head(k)) == gc_alloc.MemoryType.symbol);
+    expect(strings.head(s).hash == calchash(bytesOf(s)));
+    expect(strings.head(k).hash == calchash(bytesOf(k)) ^ symbols.keyword_hash_mix);
+    expect(strings.head(k).hash != strings.head(s).hash);
+
+    const kv = wrap.fromKeyword(k);
+    const sv = wrap.fromSymbol(s);
+    expect(repr.typeOf(kv) == repr.Tag.symbol and repr.typeOf(sv) == repr.Tag.symbol);
+    expect(wrap.isKeyword(kv) and !wrap.isSymbol(kv));
+    expect(wrap.isSymbol(sv) and !wrap.isKeyword(sv));
+    expect(wrap.toKeyword(value.fromBytes("interned-test-kind", .keyword)) == k);
+}
+
 /// Removing a symbol leaves a tombstone: the count falls, the deleted count
 /// rises, and the name is available again, at a new address.
 fn symbolDeinitLeavesATombstone() void {
@@ -658,7 +687,7 @@ fn tupleBeginAndEnd() void {
 
     t[0] = harness.wrapInteger(1);
     t[1] = wrap.fromNil();
-    t[2] = wrap.fromKeyword(strings.cstring("k"));
+    t[2] = value.fromBytes("k", .keyword);
     const done = tuples.end(t);
     expect(done == t);
     expect(tuples.head(done).hash == value.hashIndexed(t[0..3]));
@@ -777,6 +806,7 @@ pub fn run() void {
     stringEquality();
 
     symbolInterns();
+    aKeywordIsASymbolOfTheOtherKind();
     symbolDeinitLeavesATombstone();
     lookupReclaimsATombstone();
     cacheResizesAndKeepsIdentity();

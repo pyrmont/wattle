@@ -197,7 +197,7 @@ fn theEmbedderChannelApi() void {
     // read, so a second take behaves the same as the first.
     var out = value.fromBytes("untouched", .keyword);
     expect(!try_(channel.channelTake(chan, &out)));
-    expect(harness.isType(out, repr.Tag.keyword));
+    expect(wrap.isKeyword(out));
     expect(!try_(channel.channelTake(chan, &out)));
 
     // Two gives fit under the limit and report "do not block".

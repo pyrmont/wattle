@@ -641,7 +641,7 @@ pub fn parserTokenchar(
             parser.@"error" = "invalid utf-8 in keyword";
             return false;
         }
-        val = wrap.fromKeyword(symbols.new(parser.buf.items[1..@intCast(length)]));
+        val = wrap.fromKeyword(symbols.keyword(parser.buf.items[1..@intCast(length)]));
     } else {
         if (starts_with_number) {
             if (config.int_types) {

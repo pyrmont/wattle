@@ -78,7 +78,7 @@ pub fn description(x: repr.Value) strings.String {
 pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => return try buffers.pushCString(buffer, "nil"),
-        repr.Tag.keyword => try buffers.pushU8(buffer, ':'),
+        repr.Tag.symbol => if (wrap.isKeyword(x)) try buffers.pushU8(buffer, ':'),
         repr.Tag.string => return escapeStringB(buffer, wrap.toString(x)),
         repr.Tag.buffer => return escapeBufferB(buffer, wrap.toBuffer(x)),
         repr.Tag.abstract => {
@@ -141,7 +141,7 @@ pub fn toString(x: repr.Value) strings.String {
             const b = wrap.toBuffer(x);
             return strings.new(b.slice());
         },
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => return wrap.toString(x),
+        repr.Tag.string, repr.Tag.symbol => return wrap.toString(x),
         else => {
             var buffer: buffers.Buffer = undefined;
             _ = buffers.init(&buffer, 10);
@@ -160,7 +160,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
             if (wrap.toBoolean(x)) "true" else "false",
         ),
         repr.Tag.number => try numberToStringB(buffer, wrap.toNumber(x)),
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             const str = wrap.toString(x);
             try buffers.pushBytes(buffer, str[0..strings.head(str).length]);
         },

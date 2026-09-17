@@ -250,33 +250,33 @@ fn structCollisionRunIsOrderedByHash() void {
 
 /// The last tiebreak, and the only one that reaches outside this subsystem.
 ///
-/// `order.hash` reads only the bytes for all three string-like types, so a
-/// keyword and a string spelled the same have the same hash. They map to one
-/// same bucket, they tie on displacement and they tie on hash, so
-/// `order.compare` is the only thing left, and the only thing stopping the
-/// second from being taken for a duplicate of the first, which would silently
-/// drop it.
+/// `order.hash` reads only the bytes for a string and a symbol, so the two
+/// spelled the same have the same hash. (A keyword's hash is mixed, so a
+/// keyword does not tie with either.) They map to one same bucket, they tie on
+/// displacement and they tie on hash, so `order.compare` is the only thing
+/// left, and the only thing stopping the second from being taken for a
+/// duplicate of the first, which would silently drop it.
 fn structHashTieFallsThroughToCompare() void {
-    const as_keyword = kw("tie");
+    const as_symbol = value.fromBytes("tie", .symbol);
     const as_string = wrap.fromString(strings.cstring("tie"));
-    expect(order.hash(as_keyword) == order.hash(as_string));
-    expect(!harness.equals(as_keyword, as_string));
-    // The string tag sorts before the keyword tag, so the order is by type.
-    expect(order.compare(as_string, as_keyword) == -1);
+    expect(order.hash(as_symbol) == order.hash(as_string));
+    expect(!harness.equals(as_symbol, as_string));
+    // The string tag sorts before the symbol tag, so the order is by type.
+    expect(order.compare(as_string, as_symbol) == -1);
 
     const st = structs.begin(2);
-    structs.put(st, as_keyword, harness.wrapInteger(1));
+    structs.put(st, as_symbol, harness.wrapInteger(1));
     structs.put(st, as_string, harness.wrapInteger(2));
     // Both landed: neither was mistaken for the other.
     expect(structHash(st) == 2);
     const s = structs.end(st);
     expect(structLength(s) == 2);
-    expect(harness.equals(structs.rawget(s, as_keyword), harness.wrapInteger(1)));
+    expect(harness.equals(structs.rawget(s, as_symbol), harness.wrapInteger(1)));
     expect(harness.equals(structs.rawget(s, as_string), harness.wrapInteger(2)));
 
     const st2 = structs.begin(2);
     structs.put(st2, as_string, harness.wrapInteger(2));
-    structs.put(st2, as_keyword, harness.wrapInteger(1));
+    structs.put(st2, as_symbol, harness.wrapInteger(1));
     expect(sameLayout(s, structs.end(st2), structCapacity(s)));
 }
 

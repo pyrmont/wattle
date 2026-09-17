@@ -196,7 +196,7 @@ inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
 /// The eight wraps the field walk is built from, named locally so that each
 /// arm reads as one line.
 inline fn disasmKeyword(val: [*:0]const u8) repr.Value {
-    return wrap.fromKeyword(symbols.csymbol(val));
+    return wrap.fromKeyword(symbols.ckeyword(val));
 }
 
 inline fn disasmWrapArray(val: *arrays.Array) repr.Value {

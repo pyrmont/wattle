@@ -165,7 +165,9 @@ fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
     out[at(.fiber)] = wrap.abi.fromFiber(@ptrCast(@alignCast(pointerA())));
     out[at(.string)] = wrap.abi.fromString(strings.cstring("s"));
     out[at(.symbol)] = wrap.abi.fromSymbol(symbols.csymbol("s"));
-    out[at(.keyword)] = wrap.abi.fromKeyword(symbols.csymbol("s"));
+    // No value has the unused tag, and the representation carries it all the
+    // same, so the corpus makes one out of a pointer.
+    out[at(.unused)] = repr.wrapPointer(pointerA(), repr.Tag.unused);
     out[at(.array)] = wrap.abi.fromArray(arrays.new(0));
     out[at(.tuple)] = wrap.abi.fromTuple(tuples.newFrom(&.{}));
     out[at(.table)] = wrap.abi.fromTable(tables.new(0));
@@ -190,7 +192,8 @@ fn eachWrapperStampsItsType() void {
     expect(repr.typeOf(wrap.fromNumber(1.5)) == repr.Tag.number);
     expect(repr.typeOf(wrap.abi.fromString(@ptrCast(p))) == repr.Tag.string);
     expect(repr.typeOf(wrap.abi.fromSymbol(@ptrCast(p))) == repr.Tag.symbol);
-    expect(repr.typeOf(wrap.abi.fromKeyword(@ptrCast(p))) == repr.Tag.keyword);
+    // A keyword has the symbol tag; its kind is in its interned head.
+    expect(repr.typeOf(wrap.abi.fromKeyword(@ptrCast(p))) == repr.Tag.symbol);
     expect(repr.typeOf(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == repr.Tag.array);
     expect(repr.typeOf(wrap.abi.fromTuple(@ptrCast(@alignCast(p)))) == repr.Tag.tuple);
     expect(repr.typeOf(wrap.abi.fromStruct(@ptrCast(@alignCast(p)))) == repr.Tag.@"struct");
@@ -263,7 +266,9 @@ fn theTagIsPartOfTheValue() void {
     expect(!sameValue(as_array, as_pointer));
     expect(!sameValue(as_table, as_pointer));
     expect(!sameValue(wrap.abi.fromString(@ptrCast(p)), wrap.abi.fromSymbol(@ptrCast(p))));
-    expect(!sameValue(wrap.abi.fromSymbol(@ptrCast(p)), wrap.abi.fromKeyword(@ptrCast(p))));
+    // A symbol and a keyword over one pointer are one value: the kind is not
+    // in the value's bits.
+    expect(sameValue(wrap.abi.fromSymbol(@ptrCast(p)), wrap.abi.fromKeyword(@ptrCast(p))));
     expect(!sameValue(wrap.abi.fromTrue(), wrap.abi.fromFalse()));
     expect(!sameValue(wrap.abi.fromNil(), wrap.abi.fromFalse()));
 }
@@ -428,7 +433,7 @@ fn checkTypes() void {
     }
     expect(repr.checkTypes(values[at(.string)], repr.TagSet.bytes));
     expect(repr.checkTypes(values[at(.symbol)], repr.TagSet.bytes));
-    expect(repr.checkTypes(values[at(.keyword)], repr.TagSet.bytes));
+    expect(repr.checkTypes(wrap.fromKeyword(symbols.ckeyword("s")), repr.TagSet.bytes));
     expect(repr.checkTypes(values[at(.buffer)], repr.TagSet.bytes));
     expect(!repr.checkTypes(values[at(.array)], repr.TagSet.bytes));
 }

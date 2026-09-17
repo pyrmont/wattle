@@ -260,7 +260,7 @@ pub fn envLookupInto(
     while (env) |table| {
         for (0..table.capacity) |i| {
             const kv = table.slots()[i];
-            if (!repr.checkType(kv.key, repr.Tag.symbol)) continue;
+            if (!wrap.isSymbol(kv.key)) continue;
             if (prefix) |pre| {
                 const prelen = std.mem.len(pre);
                 const oldsym = wrap.toSymbol(kv.key);
@@ -699,7 +699,7 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
     }
     if (st.rreg) |rreg| {
         const check = tables.get(rreg, x);
-        if (repr.checkType(check, repr.Tag.symbol)) {
+        if (wrap.isSymbol(check)) {
             markSeen(st, x);
             const regname = wrap.toSymbol(check);
             try pushByte(st, Lead.registry.byte());
@@ -717,15 +717,17 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
             try pushBytes(st, &bytes);
             markSeen(st, x);
         },
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.keyword => {
+        repr.Tag.string, repr.Tag.symbol => {
             const str = wrap.toString(x);
             const length = strings.head(str).length;
             markSeen(st, x);
-            try pushByte(st, (switch (vtype) {
-                repr.Tag.string => Lead.string,
-                repr.Tag.symbol => Lead.symbol,
-                else => Lead.keyword,
-            }).byte());
+            const lead: Lead = if (vtype == repr.Tag.string)
+                Lead.string
+            else if (wrap.isKeyword(x))
+                Lead.keyword
+            else
+                Lead.symbol;
+            try pushByte(st, lead.byte());
             try pushInt(st, @intCast(length));
             try pushBytes(st, str[0..length]);
         },
@@ -1707,7 +1709,7 @@ fn unmarshalOneDef(
             entry.slot_index = @bitCast(try readInt(st, &data));
             const val = try unmarshalOne(st, data, flags + 1);
             data = val.next;
-            if (!repr.checkType(val.value, repr.Tag.symbol)) {
+            if (!wrap.isSymbol(val.value)) {
                 return pp_format.panicf(
                     "corrupted symbolmap when unmarshalling debug info, got %v",
                     .{val.value},

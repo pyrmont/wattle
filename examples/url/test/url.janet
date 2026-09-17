@@ -105,7 +105,7 @@
 # A wrong argument type is refused by the getter, with the message a C module
 # got for the same mistake. The module wrote none of these.
 
-(assert (= "bad slot #0, expected string, symbol, keyword or buffer, got 3"
+(assert (= "bad slot #0, expected buffer, string, symbol or keyword, got 3"
            (refusal url/slug 3))
         "getBytes names the four types it takes")
 (assert (= "bad slot #1, expected indexed value, got :lower" (refusal url/slug "x" :lower))

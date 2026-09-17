@@ -2,12 +2,11 @@
 //! counter.
 //!
 //! A `strings.Symbol` is a `strings.String` that also has an entry in
-//! `vm.symcache`, so two symbols with equal bytes are the same pointer and a
-//! pointer comparison decides equality. A keyword is the same interned bytes
-//! under a different tag, which `helpers/wrap.zig` applies; both come from
-//! `new`.
+//! `vm.symcache`, so two symbols of one kind with equal bytes are the same
+//! pointer and a pointer comparison decides equality.
 //!
-//! `new`, `csymbol`, `gen`, `cacheInit`, `cacheDeinit` and `deinit` are the
+//! `new`, `csymbol`, `keyword`, `ckeyword`, `gen`, `isKeyword`, `cacheInit`,
+//! `cacheDeinit` and `deinit` are the
 //! surface. Each fetches the current VM and delegates to a private function
 //! that takes the cache, and the counter where it needs the counter, so
 //! nothing below the surface asks which VM is current. Nothing here raises.
@@ -33,6 +32,20 @@
 //! the name was absent computed the hash already, and a symbol whose head is
 //! filled in a second step would be a symbol nothing may put in a dictionary
 //! until then.
+//!
+//! ## Keywords
+//!
+//! A keyword is a symbol of the other kind, and a value holding either has the
+//! symbol tag. The kind is on the block: a keyword's head has `own_keyword` set
+//! in its per-type bits, and `isKeyword` reads it. `a` and `:a` are two
+//! blocks, not one block under two tags.
+//!
+//! The cache holds both kinds and tells them apart by hash. A keyword's hash
+//! is its bytes' hash with `keyword_hash_mix` xored in, which is nonzero, so a
+//! symbol and a keyword with equal bytes never have equal hashes and the
+//! cache's comparison of hash and bytes never takes one for the other. The
+//! mixed hash is the stored one, so `a` and `:a` also land in different
+//! buckets of a table.
 
 // ==========================================================================
 // Project imports
@@ -54,6 +67,13 @@ const vm_state = @import("../vm/state.zig");
 /// `capacity - 1`.
 const initial_capacity: u32 = 1024;
 
+/// What a keyword's hash has xored into its bytes' hash. Any nonzero value
+/// keeps the two kinds apart; this one also spreads the bits.
+pub const keyword_hash_mix: i32 = @bitCast(@as(u32, 0x9e3779b9));
+
+/// Bit 0 of the collector header's per-type field: the symbol is a keyword.
+pub const own_keyword: u6 = 1;
+
 /// The tombstone, compared by address and never dereferenced.
 ///
 /// Declared `var` so that the linker cannot merge this single zero byte with
@@ -74,6 +94,9 @@ pub const GensymCounter = [8]u8;
 // ==========================================================================
 // Types
 // ==========================================================================
+
+/// Which of the two interned kinds a name is.
+pub const Kind = enum { symbol, keyword };
 
 /// Where a name sits in the cache, or where it would go.
 ///
@@ -119,6 +142,12 @@ pub fn cacheInit() void {
     gensymInit(&v.gensym_counter);
 }
 
+/// Interns a NUL-terminated name and returns the keyword. This is `keyword`
+/// for a caller that has a C string rather than a slice.
+pub fn ckeyword(cstr: [*:0]const u8) [*:0]const u8 {
+    return keyword(cstr[0..c.strlen(cstr)]);
+}
+
 /// Interns a NUL-terminated name and returns the symbol.
 ///
 /// `cstr` is the name, measured with `strlen` here. This is `new` for a caller
@@ -139,12 +168,28 @@ pub fn gen() [*:0]const u8 {
     return gensym(&v.symcache, &v.gensym_counter);
 }
 
+/// Whether the interned name `sym` is a keyword rather than a symbol.
+///
+/// It reads the block's head and cannot raise.
+pub inline fn isKeyword(sym: [*:0]const u8) bool {
+    return strings.head(sym).gc.flags.own & own_keyword != 0;
+}
+
+/// Interns `str` as a keyword in the current VM's cache and returns it.
+///
+/// The result is the existing keyword where one with the name is already
+/// cached. A symbol with the same bytes is a different block.
+pub fn keyword(str: []const u8) [*:0]const u8 {
+    return intern(&vm_state.current().symcache, str, .keyword);
+}
+
 /// Interns `str` in the current VM's cache and returns the symbol.
 ///
 /// The result is the existing symbol where the name is already cached, so two
-/// calls with equal bytes return the same pointer.
+/// calls with equal bytes return the same pointer. A keyword with the same
+/// bytes is a different block.
 pub fn new(str: []const u8) [*:0]const u8 {
-    return intern(&vm_state.current().symcache, str);
+    return intern(&vm_state.current().symcache, str, .symbol);
 }
 
 // ==========================================================================
@@ -349,16 +394,20 @@ fn incGensym(counter: *GensymCounter) void {
     }
 }
 
-/// Returns the symbol for `str` in `sc`, building and registering it where the
-/// name is not cached already.
-fn intern(sc: *SymbolCache, str: []const u8) [*:0]const u8 {
-    const hash = value.hashBytes(str);
+/// Returns the symbol of `kind` for `str` in `sc`, building and registering it
+/// where the name is not cached already as that kind.
+fn intern(sc: *SymbolCache, str: []const u8, kind: Kind) [*:0]const u8 {
+    const hash = switch (kind) {
+        .symbol => value.hashBytes(str),
+        .keyword => value.hashBytes(str) ^ keyword_hash_mix,
+    };
     const vacant = switch (cacheFindmem(sc, str, hash)) {
         .found => |slot| return slot.*.?,
         .vacant => |slot| slot,
     };
 
     const hd = gc_alloc.gcallocWithPayload(strings.StringHead, .symbol, str.len +% 1);
+    if (kind == .keyword) hd.gc.flags.own |= own_keyword;
     hd.hash = hash;
     hd.length = @intCast(str.len);
     const newstr = strings.data(hd);
