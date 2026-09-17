@@ -507,17 +507,17 @@ fn aSharedNodeIsWalkedOnce() void {
     expect(!valueReachable(element));
 }
 
-/// A map node marks the key and the value of every entry, the last included,
-/// and its entries end where its first child slot begins, since an entry of a
+/// A map's leaf marks the key and the value of every entry, the last included,
+/// and its entries end where its place hashes begin, since an entry of a
 /// `map_node` block is two values.
 fn aMapNodeMarksKeysAndValues() void {
-    const node = maps.newNode(.map, 0b1 | (1 << 31), 1 << 7);
+    const node = maps.newLeaf(.map, 2);
     const first_key = value.fromBytes("first key", .string);
     const last_value = value.fromBytes("last value", .string);
     const items = maps.entries(node);
     expect(items.len == 4);
-    expect(maps.children(node).len == 1);
-    expect(@intFromPtr(maps.children(node).ptr) == @intFromPtr(items.ptr) + 4 * @sizeOf(repr.Value));
+    expect(maps.children(node).len == 0);
+    expect(@intFromPtr(maps.hashes(node).ptr) == @intFromPtr(items.ptr) + 4 * @sizeOf(repr.Value));
     items[0] = first_key;
     items[3] = last_value;
 
@@ -532,56 +532,60 @@ fn aMapNodeMarksKeysAndValues() void {
     expect(valueReachable(last_value));
 }
 
-/// A set node marks its elements and each child that is not null, a
-/// collision node among them, and so reaches an element two levels down. An
-/// entry of a `set_node` block is one value, so the child slots begin one
-/// value after each element.
+/// An inner node marks each child, and a set's leaf its elements, so an
+/// element two levels down is reached. An entry of a `set_node` block is one
+/// value, so a leaf's place hashes begin one value after each element, and an
+/// inner node's separators begin one pointer after each child.
 fn aSetNodeMarksItsElementsAndChildren() void {
-    const root = maps.newNode(.set, 1 << 2, (1 << 0) | (1 << 9));
-    const middle = maps.newNode(.set, 1 << 4, 0);
-    const collision = maps.newCollision(.set, 0xdead, 3);
-    const top = value.fromBytes("in the root", .string);
-    const inner = value.fromBytes("in a child", .string);
-    const deep = value.fromBytes("last in a collision node", .string);
-    expect(maps.entries(root).len == 1);
-    expect(@intFromPtr(maps.children(root).ptr) == @intFromPtr(maps.entries(root).ptr) + @sizeOf(repr.Value));
-    maps.entries(root)[0] = top;
-    maps.entries(middle)[0] = inner;
-    maps.entries(collision)[2] = deep;
-    maps.children(root)[0] = &middle.gc;
-    maps.children(root)[1] = &collision.gc;
+    const root = maps.newInner(.set, 2);
+    const middle = maps.newInner(.set, 1);
+    const near = maps.newLeaf(.set, 1);
+    const far = maps.newLeaf(.set, 3);
+    const top = value.fromBytes("in a leaf of the root", .string);
+    const deep = value.fromBytes("last in a leaf two levels down", .string);
+    expect(maps.entries(root).len == 0);
+    expect(@intFromPtr(maps.separators(root).ptr) == @intFromPtr(maps.children(root).ptr) + 2 * @sizeOf(?*abi.GCObject));
+    expect(@intFromPtr(maps.hashes(far).ptr) == @intFromPtr(maps.entries(far).ptr) + 3 * @sizeOf(repr.Value));
+    maps.entries(near)[0] = top;
+    maps.entries(far)[2] = deep;
+    maps.children(root)[0] = &near.gc;
+    maps.children(root)[1] = &middle.gc;
+    maps.children(middle)[0] = &far.gc;
 
     unmark(root);
     unmark(middle);
-    unmark(collision);
+    unmark(near);
+    unmark(far);
     unmarkValue(top);
-    unmarkValue(inner);
     unmarkValue(deep);
 
     gc_mark.markNode(&root.gc);
 
     expect(reachable(root));
     expect(reachable(middle));
-    expect(reachable(collision));
+    expect(reachable(near));
+    expect(reachable(far));
     expect(valueReachable(top));
-    expect(valueReachable(inner));
     expect(valueReachable(deep));
 }
 
 /// A new node's slots are valid before the caller fills any: nil entries and
 /// null children, which the mark phase reads as nothing to mark.
-fn aNewTrieNodeMarksAsEmpty() void {
-    const node = maps.newNode(.map, 0b110, 0b1001);
-    for (maps.entries(node)) |x| expect(harness.isType(x, repr.Tag.nil));
-    for (maps.children(node)) |slot| expect(slot == null);
-    const collision = maps.newCollision(.set, 7, 2);
-    expect(maps.children(collision).len == 0);
-    expect(collision.gc.flags.own & maps.own_collision != 0);
-    expect(node.gc.flags.own & maps.own_collision == 0);
+fn aNewTreeNodeMarksAsEmpty() void {
+    const inner = maps.newInner(.map, 3);
+    for (maps.children(inner)) |slot| expect(slot == null);
+    expect(maps.isInner(inner) and inner.gc.flags.own & maps.own_inner != 0);
+    const leaf = maps.newLeaf(.set, 2);
+    for (maps.entries(leaf)) |x| expect(harness.isType(x, repr.Tag.nil));
+    expect(maps.children(leaf).len == 0);
+    expect(!maps.isInner(leaf));
 
-    unmark(node);
-    gc_mark.markNode(&node.gc);
-    expect(reachable(node));
+    unmark(inner);
+    gc_mark.markNode(&inner.gc);
+    expect(reachable(inner));
+    unmark(leaf);
+    gc_mark.markNode(&leaf.gc);
+    expect(reachable(leaf));
 }
 
 /// Descending through nodes does not spend the recursion guard, because a
@@ -618,20 +622,19 @@ fn nodesDoNotSpendTheGuard() void {
     expect(valueReachable(element));
 }
 
-/// A map's or a set's trie descends without spending the guard too. Seven
-/// bitmap levels and a collision node, the deepest a trie can be, are marked
-/// to the collision node's element with a budget of one, and nothing is
-/// rooted.
-fn trieNodesDoNotSpendTheGuard() void {
-    const collision = maps.newCollision(.set, 0xffff_ffff, 2);
-    const element = value.fromBytes("under seven bitmap levels", .string);
-    maps.entries(collision)[1] = element;
-    unmark(collision);
+/// A map's or a set's tree descends without spending the guard too. A leaf
+/// under seven inner nodes is marked to its element with a budget of one, and
+/// nothing is rooted.
+fn treeNodesDoNotSpendTheGuard() void {
+    const leaf = maps.newLeaf(.set, 2);
+    const element = value.fromBytes("under seven inner nodes", .string);
+    maps.entries(leaf)[1] = element;
+    unmark(leaf);
     unmarkValue(element);
 
-    var top: *abi.GCObject = &collision.gc;
+    var top: *abi.GCObject = &leaf.gc;
     for (0..7) |_| {
-        const node = maps.newNode(.set, 0, 1 << 31);
+        const node = maps.newInner(.set, 1);
         maps.children(node)[0] = top;
         unmark(node);
         top = &node.gc;
@@ -648,7 +651,7 @@ fn trieNodesDoNotSpendTheGuard() void {
     expect(depth == 1);
     expect(harness.vm().roots.items.len == roots);
     expect(reachable(top));
-    expect(reachable(collision));
+    expect(reachable(leaf));
     expect(valueReachable(element));
 }
 
@@ -991,8 +994,8 @@ fn body() !void {
     nodesDoNotSpendTheGuard();
     aMapNodeMarksKeysAndValues();
     aSetNodeMarksItsElementsAndChildren();
-    aNewTrieNodeMarksAsEmpty();
-    trieNodesDoNotSpendTheGuard();
+    aNewTreeNodeMarksAsEmpty();
+    treeNodesDoNotSpendTheGuard();
 
     aClosureMarksItsCapturedEnvironment();
     aSuspendedFiberMarksItsFrames();

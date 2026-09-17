@@ -5,7 +5,7 @@
 //! `transient_type` is its type. `lib` installs `transient`, which makes one
 //! from a vector, a map or a set; `conj!`, `assoc!`, `dissoc!` and `disj!`,
 //! which change it in place and return it; and `persistent!`, which makes a
-//! persistent collection of it and ends it. `fromVector`, `fromTrie` and
+//! persistent collection of it and ends it. `fromVector`, `fromTree` and
 //! `persistent` are the same for the runtime.
 //!
 //! One type serves every collection. The payload is a tagged union with an arm
@@ -74,13 +74,13 @@ pub const transient_type = abstract_type.define(Transient, .{
 
 /// A transient's payload.
 ///
-/// `fromVector` and `fromTrie` return a `Transient`, and `persistent` takes
+/// `fromVector` and `fromTree` return a `Transient`, and `persistent` takes
 /// one. `vector`, `map` and `set` are a transient of that collection, and
 /// `ended` is a transient `persistent!` has ended.
 pub const Transient = union(enum) {
     ended,
-    map: maps.Trie,
-    set: maps.Trie,
+    map: maps.Tree,
+    set: maps.Tree,
     vector: vectors.Vector,
 };
 
@@ -92,11 +92,11 @@ pub const Transient = union(enum) {
 ///
 /// This function cannot raise. `t` does not change, and the transient shares
 /// its nodes until an update copies them.
-pub fn fromTrie(t: *const maps.Trie, kind: maps.Kind) *Transient {
+pub fn fromTree(t: *const maps.Tree, kind: maps.Kind) *Transient {
     const result = newTransient();
     result.* = switch (kind) {
-        .map => .{ .map = t.* },
-        .set => .{ .set = t.* },
+        .map => .{ .map = maps.copyTree(t) },
+        .set => .{ .set = maps.copyTree(t) },
     };
     return result;
 }
@@ -227,8 +227,8 @@ fn cfunPersistent(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunTransient(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (vectors.toVector(argv[0])) |v| return wrap.fromAbstract(fromVector(v));
-    if (maps.toTrie(argv[0], .map)) |m| return wrap.fromAbstract(fromTrie(m, .map));
-    if (maps.toTrie(argv[0], .set)) |s| return wrap.fromAbstract(fromTrie(s, .set));
+    if (maps.toTree(argv[0], .map)) |m| return wrap.fromAbstract(fromTree(m, .map));
+    if (maps.toTree(argv[0], .set)) |s| return wrap.fromAbstract(fromTree(s, .set));
     return pp_format.panicf("bad slot #0, expected core/vector, core/map or core/set, got %v", .{argv[0]});
 }
 
@@ -274,7 +274,7 @@ fn transientGet(t: *Transient, key: repr.Value) raise.Error!?repr.Value {
 fn transientLength(t: *Transient, _: usize) raise.Error!usize {
     return switch (t.*) {
         .ended => raise.panic(ended_message),
-        .map, .set => |*trie| trie.count,
+        .map, .set => |*tree| tree.count,
         .vector => |*v| v.count,
     };
 }
@@ -283,7 +283,7 @@ fn transientLength(t: *Transient, _: usize) raise.Error!usize {
 fn transientMark(t: *Transient, _: usize) void {
     switch (t.*) {
         .ended => {},
-        .map, .set => |*trie| maps.mark(trie),
+        .map, .set => |*tree| maps.mark(tree),
         .vector => |*v| vectors.mark(v),
     }
 }

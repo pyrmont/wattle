@@ -3,9 +3,11 @@
 #
 # Written on 2026-09-17 to decide whether structs could be dropped from the
 # language, which notes/LANGUAGE.md records with the figures this gave. A
-# struct is one allocation with open-addressed lookup; a small map is an
-# abstract and a trie node. The question is what a small dictionary built at
-# runtime costs, since a constant literal folds either way.
+# struct is one allocation with open-addressed lookup. A map was then a CHAMP
+# trie, and is now a B-tree, whose small maps are an abstract and one leaf.
+# The question is what a small dictionary built at runtime costs, since a
+# constant literal folds either way. `sizes.janet` measures the same against
+# more sizes, from 2 entries to 400.
 #
 # Keys are keywords and values are built at runtime, so nothing folds into a
 # constant. Both sides are built through a call, `struct` and `hash-map`, so

@@ -64,10 +64,6 @@ const wrap = @import("wrap.zig");
 /// the payload in a nested union.
 const isBoxedUnion = config.value_repr != .tagged;
 
-/// The number of values a map or set node's frame hands back before its
-/// entries: its datamap, its nodemap and its length.
-const trie_shape = 3;
-
 /// The flag that says a tuple was written with brackets.
 const tuple_flag_bracketctor: i32 = constants.JANET_TUPLE_FLAG_BRACKETCTOR;
 
@@ -104,7 +100,7 @@ pub const TraversalNode = struct {
 
 /// Which of the collections `equals` and `compare` walk two abstracts as:
 /// two vectors, two maps or two sets, or neither.
-const Walked = enum { vector, trie, none };
+const Walked = enum { vector, tree, none };
 
 // ==========================================================================
 // Public functions
@@ -174,14 +170,16 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
                     // tuples are, and then ordered by length.
                     .vector => pushTraversalNode(stack, abi.abstractHead(xx), abi.abstractHead(yy), 1),
                     // Two maps or two sets order by count and hash, as two
-                    // structs order by capacity and hash, and then their tries
-                    // are walked in step.
-                    .trie => {
-                        const lt = maps.ofHead(&abi.abstractHead(xx).gc);
-                        const rt = maps.ofHead(&abi.abstractHead(yy).gc);
+                    // structs order by capacity and hash, and then their
+                    // entries are walked in order.
+                    .tree => {
+                        const hx = abi.abstractHead(xx);
+                        const hy = abi.abstractHead(yy);
+                        const lt = maps.ofHead(&hx.gc);
+                        const rt = maps.ofHead(&hy.gc);
                         if (lt.count != rt.count) return if (lt.count < rt.count) -1 else 1;
                         if (lt.sum != rt.sum) return if (lt.sum < rt.sum) -1 else 1;
-                        if (lt.root) |root| pushTraversalNode(stack, &root.gc, &rt.root.?.gc, 0);
+                        pushTraversalNode(stack, hx, hy, 0);
                     },
                     .none => {
                         const diff = compareAbstract(xx, yy);
@@ -285,14 +283,14 @@ pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
                         if (!vectors.mayEqual(vectors.ofHead(&hx.gc), vectors.ofHead(&hy.gc))) return false;
                         pushTraversalNode(stack, hx, hy, 0);
                     },
-                    // Two maps or two sets are walked node by node once their
-                    // counts and hashes are equal, since equal entries make
-                    // equal tries.
-                    .trie => {
-                        const lt = maps.ofHead(&abi.abstractHead(xx).gc);
-                        const rt = maps.ofHead(&abi.abstractHead(yy).gc);
-                        if (!maps.mayEqual(lt, rt)) return false;
-                        if (lt.root) |root| pushTraversalNode(stack, &root.gc, &rt.root.?.gc, 0);
+                    // Two maps or two sets are walked entry by entry in order
+                    // once their counts and hashes are equal, since equal
+                    // entries are in one order.
+                    .tree => {
+                        const hx = abi.abstractHead(xx);
+                        const hy = abi.abstractHead(yy);
+                        if (!maps.mayEqual(maps.ofHead(&hx.gc), maps.ofHead(&hy.gc))) return false;
+                        pushTraversalNode(stack, hx, hy, 0);
                     },
                     .none => if (compareAbstract(xx, yy) != 0) return false,
                 }
@@ -513,7 +511,9 @@ inline fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
         const other = node[0].other.?;
         const tother: *const tuples.TupleHead = @ptrCast(@alignCast(other));
         const sother: *const structs.StructHead = @ptrCast(@alignCast(other));
-        if (gc_alloc.memoryTypeOf(self) == .abstract) {
+        if (gc_alloc.memoryTypeOf(self) == .abstract and isTree(self)) {
+            if (treeFrameNext(stack, node, x, y)) return 0;
+        } else if (gc_alloc.memoryTypeOf(self) == .abstract) {
             // A vector node: index is the element to compare next, as for a
             // tuple.
             const vself = vectors.ofHead(self);
@@ -542,8 +542,6 @@ inline fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
             if (node[0].index2 != 0 and tself.length != tother.length) {
                 return if (tself.length > tother.length) 3 else 1;
             }
-        } else if (maps.kindOf(self) != null) {
-            if (trieFrameNext(stack, node, x, y)) return 0;
         } else {
             // A struct node: index is the bucket, and index2 says the key of
             // that bucket has already been handed back and the value is next.
@@ -585,61 +583,38 @@ inline fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
     return 2;
 }
 
-/// Hands back the next pair from a map or set node's frame, and returns false
-/// where the frame is exhausted.
-///
-/// `node` is the frame at the top of `stack`. Its index counts the node's
-/// datamap, nodemap and length, then each value of its entries, then its
-/// children. The first three are handed back as numbers, so a node whose
-/// shape differs is unequal before anything past its entries is read.
-///
-/// This is not inlined into `traversalNext`, which is inlined into `equals`
-/// and `compare`. Written inline, the frame made `compare` 13% slower on
-/// nested tuples and 15% on nested structs, frames that never reach it.
-noinline fn trieFrameNext(stack: *Traversal, node: [*]TraversalNode, x: *repr.Value, y: *repr.Value) bool {
-    const nself = maps.asNode(node[0].self.?);
-    const nother = maps.asNode(node[0].other.?);
-    const index = utils.asSize(node[0].index);
-    const items = maps.entries(nself);
-    if (index < trie_shape + items.len) {
-        node[0].index += 1;
-        if (index < trie_shape) {
-            x.* = trieShape(nself, index);
-            y.* = trieShape(nother, index);
-        } else {
-            x.* = items[index - trie_shape];
-            y.* = maps.entries(nother)[index - trie_shape];
-        }
-        stack.at = node;
-        return true;
-    }
-    const child = index - trie_shape - items.len;
-    const kids = maps.children(nself);
-    if (child < kids.len) {
-        node[0].index += 1;
-        const lhs = kids[child].?;
-        const rhs = maps.children(nother)[child].?;
-        // The push can move the stack, so nothing reads `node` after it. The
-        // child's frame starts past its datamap, which is handed back here.
-        stack.at = node;
-        pushTraversalNode(stack, lhs, rhs, 0);
-        stack.at.?[0].index = 1;
-        x.* = trieShape(maps.asNode(lhs), 0);
-        y.* = trieShape(maps.asNode(rhs), 0);
-        return true;
-    }
-    return false;
+/// Whether the abstract whose header is `head` is a map or a set.
+inline fn isTree(head: *const abi.GCObject) bool {
+    const t = abstractHeadOf(head).type;
+    return t == &maps.map_type or t == &maps.set_type;
 }
 
-/// One of the three numbers a map or set node's frame compares before its
-/// entries: its datamap, its nodemap or its length, by `index`.
-fn trieShape(node: *maps.Node, index: usize) repr.Value {
-    const n: u32 = switch (index) {
-        0 => node.datamap,
-        1 => node.nodemap,
-        else => node.len,
-    };
-    return wrap.fromNumber(@floatFromInt(n));
+/// The abstract header that begins with the collector header `head`.
+inline fn abstractHeadOf(head: *const abi.GCObject) *const abi.AbstractHead {
+    return @alignCast(@fieldParentPtr("gc", head));
+}
+
+/// Hands back the next pair from a map's or a set's frame, and returns false
+/// where the frame is exhausted.
+///
+/// `node` is the frame at the top of `stack`, over two collections of one type
+/// whose counts are equal. Its index counts each value of each entry in order.
+///
+/// This is not inlined into `traversalNext`, which is inlined into `equals`
+/// and `compare`. Written inline, a frame of its own made `compare` 13% slower
+/// on nested tuples and 15% on nested structs, frames that never reach it.
+noinline fn treeFrameNext(stack: *Traversal, node: [*]TraversalNode, x: *repr.Value, y: *repr.Value) bool {
+    const head = abstractHeadOf(node[0].self.?);
+    const kind: maps.Kind = if (head.type == &maps.map_type) .map else .set;
+    const lt = maps.ofHead(node[0].self.?);
+    const rt = maps.ofHead(node[0].other.?);
+    const index = utils.asSize(node[0].index);
+    if (index >= lt.count * kind.entryWidth()) return false;
+    node[0].index += 1;
+    x.* = maps.valueAt(lt, kind, index);
+    y.* = maps.valueAt(rt, kind, index);
+    stack.at = node;
+    return true;
 }
 
 /// How `equals` and `compare` treat two distinct abstracts: walked as two
@@ -649,6 +624,6 @@ inline fn walkedTogether(xx: abstracts.Abstract, yy: abstracts.Abstract) Walked 
     const xt = abi.abstractHead(xx).type;
     if (xt != abi.abstractHead(yy).type) return .none;
     if (xt == &vectors.vector_type) return .vector;
-    if (xt == &maps.map_type or xt == &maps.set_type) return .trie;
+    if (xt == &maps.map_type or xt == &maps.set_type) return .tree;
     return .none;
 }

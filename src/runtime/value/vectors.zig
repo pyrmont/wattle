@@ -448,7 +448,7 @@ inline fn asLeaf(node: *abi.GCObject) *Leaf {
 /// appended where the key is the length. A map goes to `maps.assocMap`.
 fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
-    if (maps.toTrie(argv[0], .map) != null) return maps.assocMap(argv);
+    if (maps.toTree(argv[0], .map) != null) return maps.assocMap(argv);
     var v = toVector(argv[0]) orelse
         return pp_format.panicf("bad slot #0, expected core/vector or core/map, got %v", .{argv[0]});
     try checkPairs(argv);
@@ -464,7 +464,7 @@ fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
 /// to `maps.conjSet`.
 fn cfunConj(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
-    if (maps.toTrie(argv[0], .set) != null) return maps.conjSet(argv);
+    if (maps.toTree(argv[0], .set) != null) return maps.conjSet(argv);
     var v = toVector(argv[0]) orelse
         return pp_format.panicf("bad slot #0, expected core/vector or core/set, got %v", .{argv[0]});
     for (argv[1..]) |x| v = conj(v, x);

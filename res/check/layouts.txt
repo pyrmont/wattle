@@ -39,16 +39,16 @@ fixed    GCObject                     api/abi.zig:331                    abi,fie
 fixed    GenericMessage               runtime/ev.zig:178                 abi,field,repr
 fixed    ITimerSpec                   host/cabi.zig:107                  abi,host
 fixed    Indexed                      api/abi.zig:347                    abi,field
-residue  Inner                        runtime/value/vectors.zig:157      
+residue  Inner                        runtime/value/vectors.zig:159      
 fixed    JittedFn                     runtime/ffi/call.zig:198           host,repr
 fixed    KV                           api/abi.zig:358                    abi,field,repr
 residue  Layout                       runtime/ffi/types.zig:154          
-residue  Leaf                         runtime/value/vectors.zig:166      
+residue  Leaf                         runtime/value/vectors.zig:168      
 fixed    Mapping                      runtime/ffi/types.zig:203          field
-fixed    Method                       module.zig:388                     repr
+fixed    Method                       module.zig:386                     repr
 fixed    Nanbox32Payload              api/repr.zig:155                   field,repr
 fixed    Nanbox32Tagged               api/repr.zig:161                   field
-fixed    Node                         runtime/value/maps.zig:109         repr
+fixed    Node                         runtime/value/maps.zig:276         repr
 fixed    OVERLAPPED                   host/cabi.zig:115                  field,host
 fixed    OVERLAPPED                   runtime/filewatch/abi.zig:71       field,host
 fixed    OVERLAPPED                   runtime/net.zig:214                field,host
@@ -64,9 +64,9 @@ fixed    ScratchBlock                 runtime/gc.zig:214                 repr
 fixed    SecurityAttributes           host/cabi.zig:124                  host
 fixed    SelfPipeEvent                runtime/ev.zig:316                 repr
 residue  Signature                    runtime/ffi/types.zig:272          
-fixed    SignedHead                   runtime/value/strings.zig:840      repr
+fixed    SignedHead                   runtime/value/strings.zig:831      repr
 fixed    SignedHead                   runtime/value/structs.zig:507      repr
-fixed    SignedHead                   runtime/value/tuples.zig:353       repr
+fixed    SignedHead                   runtime/value/tuples.zig:325       repr
 fixed    State                        runtime/filewatch.zig:437          host,repr
 fixed    Stream                       runtime/ev/stream.zig:209          field,repr
 fixed    StringHead                   runtime/value/strings.zig:188      repr
@@ -79,7 +79,7 @@ fixed    Sysv64SseIntReturn           runtime/ffi/call.zig:211           host
 fixed    Sysv64SseReturn              runtime/ffi/call.zig:213           host
 fixed    TaggedPayload                api/repr.zig:268                   field,repr
 fixed    ThreadInit                   runtime/ev.zig:335                 repr
-fixed    TupleHead                    runtime/value/tuples.zig:87        repr
+fixed    TupleHead                    runtime/value/tuples.zig:81        repr
 fixed    Type                         runtime/ffi/types.zig:333          field
 fixed    TypeNode                     runtime/ffi/classify.zig:150       repr
 fixed    Value                        api/repr.zig:281                   abi,field,repr

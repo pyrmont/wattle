@@ -29,9 +29,10 @@
 //! A collection node is not a value, so the guard in `markGuarded` cannot root
 //! one in place of traversing it. `markNode` descends through nodes without
 //! spending the guard, and spends it only on the elements a node holds. A
-//! vector trie is at most seven levels deep, and a map's or a set's trie at
-//! most seven bitmap levels and a collision node, which bounds the stack that
-//! descent uses.
+//! vector trie is at most seven levels deep, and a map's or a set's B-tree
+//! gains a level only when its root splits, which needs 33 children under the
+//! root, so the stack that descent uses grows with the logarithm of the entries
+//! a tree has held.
 //!
 //! One detail of the walk reads as redundant and is not: `markArray` marks
 //! elements only for `MemoryType.array`, so a weak array's contents are
@@ -391,9 +392,9 @@ fn markMany(vm: *vm_state.Vm, values: []const repr.Value) void {
     for (values) |x| markGuarded(vm, x);
 }
 
-/// Marks every entry and every child of a map's or a set's node, unfilled
-/// slots included, since each holds nil or null. The node itself is already
-/// marked.
+/// Marks every entry of a map's or a set's leaf, or every child of its inner
+/// node, unfilled slots included, since each holds nil or null. The node
+/// itself is already marked.
 fn markMapNode(vm: *vm_state.Vm, node: *maps.Node) void {
     markMany(vm, maps.entries(node));
     for (maps.children(node)) |slot| {
