@@ -54,6 +54,7 @@ const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const vm_entry = @import("vm/entry.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const vm_state = @import("vm/state.zig");
@@ -934,6 +935,7 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
             // A keyword is a constant, and a symbol names a binding.
             repr.Tag.symbol => result = if (wrap.isKeyword(val)) cslot(val) else try resolve(compiler, wrap.toSymbol(val)),
             repr.Tag.array => result = try makeArray(options, val),
+            repr.Tag.vector => result = try makeVector(options, val),
             repr.Tag.@"struct" => result = try makeDictionary(options, val, constants.Opcode.make_struct),
             repr.Tag.table => result = try makeDictionary(options, val, constants.Opcode.make_table),
             repr.Tag.buffer => result = try makeBuffer(options, val),
@@ -1196,6 +1198,20 @@ fn makeDictionary(options: FormOptions, val: repr.Value, operation: constants.Op
     return makeValue(options, try toslotskv(compiler, val), operation);
 }
 
+/// Emits the vector constructor over the slots already gathered.
+///
+/// `toslots` takes one block of forms and a vector's elements are several, so
+/// they are copied into one first. The copy is on the scratch heap and is
+/// released before the constructor is emitted; a raise from `toslots`
+/// abandons it, which is the rule for every user of that heap.
+fn makeVector(options: FormOptions, val: repr.Value) raise.Error!Slot {
+    const compiler: *Compiler = options.compiler;
+    var elements = (try args_core.gather(val)).?;
+    const slots = try toslots(compiler, elements.items.ptr, elements.items.len);
+    elements.free();
+    return makeValue(options, slots, constants.Opcode.make_vector);
+}
+
 /// Emits the tuple constructor over the slots already gathered.
 fn makeTuple(options: FormOptions, val: repr.Value) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
@@ -1222,6 +1238,14 @@ fn makeValue(options: FormOptions, slots: scratch_vector.Vector(Slot), operation
             structs.put(structure, slots.items[index].constant, slots.items[index + 1].constant);
         }
         const result = cslot(wrap.fromStruct(structs.end(structure)));
+        freeslots(compiler, slots);
+        return result;
+    }
+    if (can_inline and operation == constants.Opcode.make_vector) {
+        const elements: [*]repr.Value = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(repr.Value) * count)));
+        for (slots.items, 0..) |slot, index| elements[index] = slot.constant;
+        const result = cslot(wrap.fromVector(vectors.fromSlice(elements[0..count])));
+        gc_alloc.sfree(elements);
         freeslots(compiler, slots);
         return result;
     }

@@ -203,8 +203,22 @@
   # subjects and neither can be named: the pair is not listed at all under
   # `-Dev=false` or `-Dsingle-threaded=true`, which is the trap this header
   # records four times over. The `full` entries run all 65 and cover them.
-  ["args_core" "pp_format" "gc_alloc" "vm_state" "fiber_core" "vm_entry"
-   "signal_core" "value_wrap" "registry" "core_env"])
+  #
+  # The `make_vector` increment replaced these with the contracts over the
+  # opcode it added and the arms that emit it. An opcode is four tables and
+  # one interpreter arm, and each table is a separate way to be wrong: the
+  # instruction-shape table (`verify`), the assembler's name table in both
+  # directions (`asm_encode`, `asm_decode`, `disasm`), and the optimiser's two
+  # (`movopt`, `remove_noops`), which decide whether the instruction writes a
+  # register -- a miss there deletes a live one silently. `vm_run` is the arm
+  # itself. `compiler_primitives` and `specials_core` are the emitters: the
+  # value arm and its constant folding, and the parameter list, the
+  # destructuring pattern and quasiquote. `vectors` is the value the arm
+  # builds, and `emit_core` the instruction it emits. The three assembler
+  # contracts are already in the `no assembler` entry's skip list, which is
+  # what makes them safe to name.
+  ["verify" "vm_run" "compiler_primitives" "specials_core" "emit_core"
+   "movopt" "remove_noops" "vectors" "asm_encode" "asm_decode" "disasm"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty

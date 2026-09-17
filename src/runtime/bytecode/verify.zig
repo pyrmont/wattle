@@ -129,13 +129,14 @@ const rows = [_]Row{
     .{ .op = constants.Opcode.make_struct, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_table, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_tuple, .type = constants.InstructionType.s },
-    .{ .op = constants.Opcode.make_bracket_tuple, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_vector, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.greater_than_equal, .type = constants.InstructionType.sss },
     .{ .op = constants.Opcode.less_than_equal, .type = constants.InstructionType.sss },
     .{ .op = constants.Opcode.next, .type = constants.InstructionType.sss },
     .{ .op = constants.Opcode.not_equals, .type = constants.InstructionType.sss },
     .{ .op = constants.Opcode.not_equals_immediate, .type = constants.InstructionType.ssi },
     .{ .op = constants.Opcode.cancel, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.make_bracket_tuple, .type = constants.InstructionType.s },
 };
 
 // ==========================================================================

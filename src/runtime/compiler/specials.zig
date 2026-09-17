@@ -260,9 +260,9 @@ fn buildDestructureHeads(
     rhs: repr.Value,
 ) raise.Error!void {
     const compiler: *compiler_primitives.Compiler = options.compiler;
-    const lhs_indexed = repr.checkType(lhs, repr.Tag.tuple) or
-        repr.checkType(lhs, repr.Tag.array);
+    const lhs_indexed = repr.TagSet.indexed.has(repr.typeOf(lhs));
     const rhs_indexed = repr.checkType(rhs, repr.Tag.array) or
+        repr.checkType(rhs, repr.Tag.vector) or
         (repr.checkType(rhs, repr.Tag.tuple) and
             tuples.isBracketed(utils.tupleHead(wrap.toTuple(rhs))));
     const has_drop = options.flags.drop;
@@ -272,8 +272,15 @@ fn buildDestructureHeads(
     suboptions.flags.drop = false;
 
     if (has_drop and lhs_indexed and rhs_indexed) {
-        const lhs_items = args_core.items(lhs).?;
-        const rhs_items = args_core.items(rhs).?;
+        // Gathered rather than read a run at a time: both sides are indexed
+        // by position against each other, and a vector's elements are not one
+        // block. `free` is deferred because the walk below raises.
+        var lhs_gathered = (try args_core.gather(lhs)).?;
+        defer lhs_gathered.free();
+        var rhs_gathered = (try args_core.gather(rhs)).?;
+        defer rhs_gathered.free();
+        const lhs_items = lhs_gathered.items;
+        const rhs_items = rhs_gathered.items;
         var found_amp = false;
         var found_splice = false;
         for (rhs_items) |item| {
@@ -453,8 +460,13 @@ fn destructure(
             compiler_primitives.recordError(compiler, try pp_format.formatc("unexpected type in destructuring, got %v", .{lhs}));
             return true;
         },
-        repr.Tag.tuple, repr.Tag.array => {
-            const values = args_core.items(lhs).?;
+        repr.Tag.tuple, repr.Tag.array, repr.Tag.vector => {
+            // Gathered rather than read a run at a time: the pattern is walked
+            // by position and a vector's elements are not one block. `free` is
+            // deferred because every arm below can raise or return early.
+            var gathered = (try args_core.gather(lhs)).?;
+            defer gathered.free();
+            const values = gathered.items;
             // `index` is a position in `values`; the casts left below are the
             // points where it becomes a bytecode operand or a Janet integer.
             for (0..values.len) |index| {
@@ -713,6 +725,17 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
             }
             return quoteSlots(options, slots, constants.Opcode.make_array);
         },
+        repr.Tag.vector => {
+            // Gathered rather than read a run at a time: quasiquoting an
+            // element compiles a form, and a vector's elements are not one
+            // block.
+            var elements = (try args_core.gather(val)).?;
+            defer elements.free();
+            for (elements.items) |element| {
+                pushSlot(&slots, try quasiquote(suboptions, element, depth - 1, level));
+            }
+            return quoteSlots(options, slots, constants.Opcode.make_vector);
+        },
         repr.Tag.table, repr.Tag.@"struct" => {
             const view = args_core.dictionaryView(val).?;
             // An empty table has no bucket array at all; the walk over no
@@ -831,17 +854,22 @@ fn specialFn(
     const has_name = self_reference or wrap.isKeyword(head);
     if (has_name) parameter_index = 1;
     if (parameter_index >= arguments.len or
-        !repr.checkType(arguments[@intCast(parameter_index)], repr.Tag.tuple))
+        !repr.TagSet.of(&.{ .tuple, .vector }).has(repr.typeOf(arguments[@intCast(parameter_index)])))
     {
         return functionError(compiler, "expected function parameters");
     }
 
-    const parameters = wrap.toTuple(arguments[@intCast(parameter_index)]);
+    // Gathered rather than read a run at a time: the list is walked twice and
+    // indexed against the arity, and a vector's elements are not one block.
+    // `free` is deferred because every refusal below returns early.
+    var gathered = (try args_core.gather(arguments[@intCast(parameter_index)])).?;
+    defer gathered.free();
+    const parameters = gathered.items;
     // The arity arithmetic below subtracts one and two from this and compares
     // the result with an index, which is a signed question: `parameter_count`
-    // is the tuple's `u32` length narrowed once, here, rather than a `u32` that
+    // is the list's length narrowed once, here, rather than a `usize` that
     // would wrap under those subtractions.
-    const parameter_count: i32 = @intCast(tuples.head(parameters).length);
+    const parameter_count: i32 = @intCast(parameters.len);
     var destructured_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
     var named_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
     var named_table: ?*tables.Table = null;
@@ -854,7 +882,7 @@ fn specialFn(
     var seen_amp = false;
     var seen_optional = false;
 
-    for (tuples.view(parameters), 0..) |parameter, index| {
+    for (parameters, 0..) |parameter, index| {
         // `named_table` is the `&named` flag: it is created when the marker is
         // seen and nothing clears it, so every later parameter is a named one.
         if (named_table) |named| {
@@ -942,7 +970,7 @@ fn specialFn(
     }
 
     var destructured_index: usize = 0;
-    for (tuples.view(parameters)) |parameter| {
+    for (parameters) |parameter| {
         if (wrap.isSymbol(parameter)) continue;
         if (destructured_index >= destructured_parameters.items.len) unreachable;
         const parameter_slot = destructured_parameters.items[destructured_index];

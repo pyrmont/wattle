@@ -53,6 +53,7 @@ const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const vm_calls = @import("vm.zig");
 const vm_entry = @import("vm/entry.zig");
 const vm_state = @import("vm/state.zig");
@@ -1477,6 +1478,16 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 tuples.setBracketed(tuples.head(tup));
             }
             self.stack[fD(self.pc)] = wrap.fromTuple(tup);
+            fiber.stacktop = fiber.stackstart;
+            self.maybeCollect();
+            self.pc += 1;
+            continue :sw self.nextOp();
+        },
+
+        .make_vector => {
+            const count = fiber.stacktop - fiber.stackstart;
+            const mem = fiber.data.? + utils.asSize(fiber.stackstart);
+            self.stack[fD(self.pc)] = wrap.fromVector(vectors.fromSlice(mem[0..utils.asSize(count)]));
             fiber.stacktop = fiber.stackstart;
             self.maybeCollect();
             self.pc += 1;

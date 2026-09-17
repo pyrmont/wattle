@@ -120,6 +120,7 @@ pub const opcodes = [_]OpcodeDefinition{
     .{ .name = "mkstu", .opcode = constants.Opcode.make_struct },
     .{ .name = "mktab", .opcode = constants.Opcode.make_table },
     .{ .name = "mktup", .opcode = constants.Opcode.make_tuple },
+    .{ .name = "mkvec", .opcode = constants.Opcode.make_vector },
     .{ .name = "mod", .opcode = constants.Opcode.modulo },
     .{ .name = "movf", .opcode = constants.Opcode.move_far },
     .{ .name = "movn", .opcode = constants.Opcode.move_near },

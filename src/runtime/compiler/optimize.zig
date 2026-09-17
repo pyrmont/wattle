@@ -131,6 +131,7 @@ pub fn bytecodeMovopt(definition: *functions.FuncDef) void {
                 constants.Opcode.make_array,
                 constants.Opcode.make_tuple,
                 constants.Opcode.make_bracket_tuple,
+                constants.Opcode.make_vector,
                 => fieldD(instruction.*),
 
                 constants.Opcode.move_far => fieldE(instruction.*),
@@ -582,6 +583,7 @@ fn markReads(registers: *regalloc.RegisterAllocator, instruction: u32) void {
         constants.Opcode.make_table,
         constants.Opcode.make_tuple,
         constants.Opcode.make_bracket_tuple,
+        constants.Opcode.make_vector,
         constants.Opcode.@"return",
         constants.Opcode.push,
         constants.Opcode.push_array,

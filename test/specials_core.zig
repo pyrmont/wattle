@@ -41,6 +41,7 @@ const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vector = harness.vector;
+const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -270,6 +271,33 @@ fn theQuasiquoteForm(arguments: []repr.Value) !void {
     expect(emittedCount() == 4);
     expect(operationOf(emitted(3)) == harness.op(constants.Opcode.make_tuple));
     try compiler_primitives.popscope(&compiler);
+
+    // A quasiquoted vector is rebuilt the same way, by its own constructor.
+    // Before the arm it fell through to `cslot`, so `~[,x]` kept the literal
+    // `(unquote x)` as an element.
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "quasiquote-vector");
+    var elements = [2]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    arguments[0] = wrap.fromVector(vectors.fromSlice(&elements));
+    result = try compile("quasiquote", options, 1, arguments);
+    expect(!result.flags.constant);
+    expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.make_vector));
+    try compiler_primitives.popscope(&compiler);
+
+    // An unquote inside one is compiled, not kept: the element is the form's
+    // result rather than the `(unquote 43)` tuple.
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "quasiquote-unquote");
+    tuple = tuples.begin(2);
+    tuple[0] = value.fromBytes("unquote", .symbol);
+    tuple[1] = harness.wrapInteger(43);
+    elements[1] = wrap.fromTuple(tuples.end(tuple));
+    arguments[0] = wrap.fromVector(vectors.fromSlice(&elements));
+    result = try compile("quasiquote", options, 1, arguments);
+    expect(!result.flags.constant);
+    expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.make_vector));
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+    try compiler_primitives.popscope(&compiler);
 }
 
 /// `while` with a constant condition is either nothing at all or an infinite
@@ -426,6 +454,53 @@ fn theBindingForms(arguments: []repr.Value) !void {
     try compiler_primitives.popscope(&compiler);
 }
 
+/// A vector in the two binding positions: a parameter list and a
+/// destructuring pattern.
+///
+/// The parser cannot emit a vector yet and no suite can reach these, so this
+/// is the whole check on them. Before the arms, a vector parameter list was
+/// refused with "expected function parameters" and a vector pattern with
+/// "unexpected type in destructuring".
+fn theVectorBindingForms(arguments: []repr.Value) !void {
+    const options = compiler_primitives.foptsDefault(&compiler);
+    // Naming a parameter runs the shadow check, which reads the environment.
+    // The cases above bind nothing, so this is the first to need one.
+    compiler.env = tables.new(0);
+    var parameters = [2]repr.Value{
+        value.fromBytes("x", .symbol),
+        value.fromBytes("y", .symbol),
+    };
+
+    // A vector of symbols is a parameter list, and its length is the arity.
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "vector-fn-root");
+    arguments[0] = wrap.fromVector(vectors.fromSlice(&parameters));
+    arguments[1] = value.fromBytes("x", .symbol);
+    var result = try compile("fn", options, 2, arguments);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+    expect(!result.flags.constant);
+    expect(vector.count(scope.defs) == 1);
+    expect(scope.defs.items[0].arity == 2);
+    expect(scope.defs.items[0].min_arity == 2);
+    expect(scope.defs.items[0].max_arity == 2);
+    try compiler_primitives.popscope(&compiler);
+
+    // A vector is a destructuring pattern, read by position as a tuple is:
+    // one `get_index` per element.
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "vector-def-root");
+    arguments[0] = wrap.fromVector(vectors.fromSlice(&parameters));
+    arguments[1] = harness.wrapInteger(7);
+    result = try compile("def", options, 2, arguments);
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
+    var reads: i32 = 0;
+    for (0..@intCast(emittedCount())) |index| {
+        if (operationOf(emitted(index)) == harness.op(constants.Opcode.get_index)) reads += 1;
+    }
+    expect(reads == 2);
+    try compiler_primitives.popscope(&compiler);
+}
+
 /// The cases where the interesting behaviour is a whole compilation, driven
 /// from Janet source because that is what they are about.
 ///
@@ -568,6 +643,7 @@ fn body() !void {
     try theWhileForm(&arguments);
     try theSetForm(&arguments);
     try theBindingForms(&arguments);
+    try theVectorBindingForms(&arguments);
 
     vector.free(&compiler.buffer);
     theWholeCompilations();

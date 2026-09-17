@@ -47,6 +47,7 @@ const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vector = harness.vector;
+const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -429,6 +430,43 @@ fn theFourKindsOfForm() !void {
     compiler.recursion_guard = recursion_guard;
 }
 
+/// A vector in a syntax tree is a literal, not a call and not a constant
+/// holding the symbols the user wrote.
+///
+/// The parser cannot yet emit one, so this is the only place the two arms are
+/// exercised: a vector of constants folds to a constant vector, and one
+/// holding a form is built at run time by `make_vector`. Before the arm
+/// existed both fell through to `cslot`, which compiled `[x]` to a constant
+/// vector of the *symbol* `x` and said nothing.
+fn aVectorIsALiteral() !void {
+    compiler.recursion_guard = recursion_guard;
+    const options = primitives.foptsDefault(&compiler);
+
+    // Constants fold: nothing is emitted, and the constant is a vector of the
+    // elements rather than of the forms.
+    var elements = [2]repr.Value{ harness.wrapInteger(4), harness.wrapInteger(5) };
+    vector.empty(&compiler.buffer);
+    var slot = try primitives.valueImpl(options, wrap.fromVector(vectors.fromSlice(&elements)));
+    expect(slot.flags.constant);
+    expect(harness.isType(slot.constant, repr.Tag.vector));
+    expect(harness.integerIs(vectors.at(wrap.toVector(slot.constant), 0), 4));
+    expect(emittedCount() == 0);
+
+    // A form inside one does not: the elements are pushed and the vector is
+    // constructed, as an array literal is.
+    const call = tuples.begin(2);
+    call[0] = value.fromBytes("key", .keyword);
+    call[1] = harness.wrapInteger(9);
+    elements[1] = wrap.fromTuple(tuples.end(call));
+    vector.empty(&compiler.buffer);
+    compiler.recursion_guard = recursion_guard;
+    slot = try primitives.valueImpl(options, wrap.fromVector(vectors.fromSlice(&elements)));
+    expect(!slot.flags.constant);
+    expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.make_vector));
+    primitives.freeslot(&compiler, slot);
+    compiler.recursion_guard = recursion_guard;
+}
+
 /// Pushing arguments picks the widest instruction that fits, and a splice
 /// forces the one-at-a-time form, which is what the negative arity means.
 fn theArgumentPush() void {
@@ -593,6 +631,7 @@ fn body() !void {
     aHintIsHonouredOnlyWhenItIsNear();
     try valuesBecomeSlots();
     try theFourKindsOfForm();
+    try aVectorIsALiteral();
     theArgumentPush();
     try theGlobalBindings();
     const captured = try aLocalIsCaptured();
