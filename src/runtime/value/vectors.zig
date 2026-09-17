@@ -1,17 +1,18 @@
-//! `core/vector`: the persistent vector, a trie of 32-way nodes with a tail.
+//! `Vector`: the persistent vector, a trie of 32-way nodes with a tail.
 //!
-//! A vector is an abstract whose payload is a `Vector`. `vector_type` is the
-//! abstract type, `lib` installs `vector`, `vec`, `conj` and `assoc`, and `at`
-//! reads one element. `conj` and `assoc` also take a set and a map, which they
-//! pass to `maps.zig`. A Janet program reads a vector as it reads a tuple,
-//! through `chunk`: the runtime derives `get` and `next` from it, and every
-//! site that reads an indexed value accepts one.
+//! A vector is a built-in type with the tag `vector`. Its value points at a
+//! `Head`, a `vector` block holding the collector's object and a `Vector`.
+//! `lib` installs `vector`, `vec`, `conj` and `assoc`, and `at` reads one
+//! element. `conj` and `assoc` also take a set and a map, which they pass to
+//! `maps.zig`. A program reads a vector as it reads a tuple, by an arm of each
+//! switch on the tag, and `chunk` gives the runs `args.chunks` reads.
 //!
 //! A vector's nodes are collector blocks of their own memory types. An
 //! _inner node_ is a `vector_inner` block and has 32 child pointers. A _leaf_
 //! is a `vector_leaf` block and has 32 elements. `newInner` and `newLeaf`
 //! allocate them. `gc/mark.zig`'s `markNode` marks a node and everything under
-//! it, and `gc/sweep.zig` frees an unreachable node with no finalizer.
+//! it, and `gc/sweep.zig` frees an unreachable node with no finalizer. A
+//! `vector` block owns nothing outside itself either.
 //!
 //! ## The shape of a vector
 //!
@@ -68,13 +69,13 @@
 //!
 //! ## Marshalling
 //!
-//! A vector is written as its length and then its elements, and read back by
-//! appending each element in place, as a transient does, to a trie no vector
-//! refers to yet. Nodes are not written, so two vectors that share nodes share
-//! none once read back.
+//! `marsh.zig` writes a vector as its lead byte, its length and then its
+//! elements, and reads it back with `unmarshalAppend`, appending each element
+//! in place, as a transient does, to a trie no vector refers to yet. Nodes are not
+//! written, so two vectors that share nodes share none once read back.
 //!
 //! A vector enters the marshaller's reference table after its elements, as a
-//! tuple does, not before them, as an abstract usually does. Its hash depends
+//! tuple does, not before them, as a table does. Its hash depends
 //! on its elements, so a vector that was referred to while it was still being
 //! read would hash differently once complete, and a table or a struct that
 //! had used it as a key would no longer find it. A later occurrence of the
@@ -93,20 +94,14 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
-const abstract_type = @import("../../api/abstract_type.zig");
-const abstracts = @import("abstracts.zig");
 const args_core = @import("../args.zig");
-const buffers = @import("buffers.zig");
 const corefn = @import("../corefn.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_mark = @import("../gc/mark.zig");
 const maps = @import("maps.zig");
-const marsh = @import("../marsh.zig");
 const order = @import("helpers/order.zig");
-const pp = @import("../pp.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
-const registry = @import("../registry.zig");
 const repr = @import("repr");
 const tables = @import("tables.zig");
 const value = @import("../value.zig");
@@ -126,19 +121,6 @@ const mask: usize = width - 1;
 /// and may change it in place.
 pub const own_editable: u6 = 1;
 
-/// The abstract type a vector is.
-pub const vector_type = abstract_type.define(Vector, .{
-    .name = "core/vector",
-    .gcmark = vectorMark,
-    .length = vectorLength,
-    .hash = vectorHash,
-    .tostring = vectorTostring,
-    .marshal = vectorMarshal,
-    .unmarshal = vectorUnmarshal,
-    .chunk = vectorChunk,
-    .contents = .elements,
-});
-
 /// The number of slots in a node.
 pub const width = 1 << bits;
 
@@ -152,6 +134,15 @@ const Shift = std.math.Log2Int(usize);
 // ==========================================================================
 // Types
 // ==========================================================================
+
+/// A vector's block: the collector's object and the payload.
+///
+/// A vector's value points at its `Head`, and `ofHead` and `wrap.toVector`
+/// return the `Vector` inside it.
+pub const Head = extern struct {
+    gc: abi.GCObject = .{},
+    vector: Vector = .{},
+};
 
 /// A vector's inner node: the collector's object and 32 child pointers.
 ///
@@ -181,11 +172,12 @@ const Mode = enum { persistent, transient, fresh };
 
 /// A vector's payload.
 ///
-/// `count` is the number of elements. `root` is the trie and `shift` the bit
+/// It is the `vector` field of a `Head`, or a transient's own copy. `count` is
+/// the number of elements. `root` is the trie and `shift` the bit
 /// position its child index is read from, as the file header describes.
 /// `tail` is the leaf holding the last elements, and is null only when `count`
 /// is zero. `sum` is the running sum the hash is made from.
-pub const Vector = struct {
+pub const Vector = extern struct {
     count: usize = 0,
     shift: u32 = 0,
     root: ?*abi.GCObject = null,
@@ -231,6 +223,19 @@ pub fn checkPairs(argv: []const repr.Value) raise.Error!void {
     }
 }
 
+/// Returns the leaf or the tail that holds `index` of `v`, as a run.
+///
+/// This function cannot raise. `index` must be below `v.count`. The run is
+/// whole rather than cut at `index`, and a run of the tail ends at the last
+/// element. A run stays valid while `v` is reachable, since a node does not
+/// change once a vector refers to it.
+pub fn chunk(v: *const Vector, index: usize) abi.Chunk {
+    std.debug.assert(index < v.count);
+    const offset = tailOffset(v);
+    if (index >= offset) return .{ .items = &v.tail.?.items, .len = v.count - offset, .start = offset };
+    return .{ .items = &leafFor(v, index).items, .len = width, .start = index & ~mask };
+}
+
 /// Returns a new vector equal to `src` with `x` appended.
 ///
 /// This function cannot raise. The new vector shares every node with `src`
@@ -253,6 +258,15 @@ pub fn fmix32(h_in: u32) u32 {
     h *%= 0xc2b2ae35;
     h ^= h >> 16;
     return h;
+}
+
+/// Returns a new vector that takes the nodes `unmarshalAppend` built.
+///
+/// This function cannot raise.
+pub fn fromBuilt(built: Vector) *const Vector {
+    const v = newVector();
+    v.* = built;
+    return v;
 }
 
 /// Returns a new vector of the elements of `xs`.
@@ -293,11 +307,17 @@ pub fn getIndex(argv: []const repr.Value, n: usize, count: usize) raise.Error!us
     return index;
 }
 
-/// Installs `vector`, `vec`, `conj` and `assoc` into the core environment and
-/// registers `core/vector`.
+/// Returns a vector's hash: its length mixed with the running sum.
 ///
-/// `env` is the environment. This function raises if the registration does.
-pub fn lib(env: *tables.Table) raise.Error!void {
+/// This function cannot raise.
+pub fn hash(v: *const Vector) i32 {
+    return @bitCast(value.hashMix(@truncate(v.count), v.sum));
+}
+
+/// Installs `vector`, `vec`, `conj` and `assoc` into the core environment.
+///
+/// `env` is the environment.
+pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("vector", &cfunVector, @src(), "(vector & xs)", "Create a new persistent vector containing the elements xs."),
         corefn.reg("vec", &cfunVec, @src(), "(vec ind)", "Create a persistent vector with the elements of the indexed value `ind`. A vector is returned unchanged."),
@@ -305,7 +325,6 @@ pub fn lib(env: *tables.Table) raise.Error!void {
         corefn.reg("assoc", &cfunAssoc, @src(), "(assoc coll key val & kvs)", "Return a new collection in which each key is associated with the value that follows it, in the vector or map `coll`. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a map, a nil value removes the key."),
     };
     corefn.install(env, entries);
-    try registry.registerAbstractType(&vector_type);
 }
 
 /// Returns the element of `v` at `key`, or null.
@@ -359,14 +378,14 @@ pub fn newLeaf() *Leaf {
     return node;
 }
 
-/// Returns the payload of a vector's abstract header.
+/// Returns the payload of a vector's block.
 ///
-/// This function cannot raise. `head` must be the header of a `core/vector`,
+/// This function cannot raise. `head` must be the header of a `vector` block,
 /// and any other header is illegal behaviour.
 pub fn ofHead(head: *const abi.GCObject) *const Vector {
-    const abstract_head: *const abi.AbstractHead = @alignCast(@fieldParentPtr("gc", head));
-    std.debug.assert(abstract_head.type == &vector_type);
-    return @ptrCast(@alignCast(abstracts.data(abstract_head)));
+    std.debug.assert(gc_alloc.memoryTypeOf(head) == .vector);
+    const block: *const Head = @alignCast(@fieldParentPtr("gc", head));
+    return &block.vector;
 }
 
 /// Returns a new vector with `v`'s elements, and clears `own_editable` on
@@ -383,11 +402,9 @@ pub fn persistent(v: *const Vector) *Vector {
 }
 
 /// Returns the payload of `x` if `x` is a vector, and null otherwise.
-pub fn toVector(x: repr.Value) ?*Vector {
-    if (!repr.checkType(x, repr.Tag.abstract)) return null;
-    const payload = wrap.toAbstract(x);
-    if (abi.abstractHead(payload).type != &vector_type) return null;
-    return @ptrCast(@alignCast(payload));
+pub fn toVector(x: repr.Value) ?*const Vector {
+    if (!repr.checkType(x, repr.Tag.vector)) return null;
+    return wrap.toVector(x);
 }
 
 /// Replaces the element at `index` of `v` with `x` in place, or appends `x`
@@ -411,6 +428,16 @@ pub fn transientAssoc(v: *Vector, index: usize, x: repr.Value) void {
 /// changes the nodes it has made.
 pub fn transientConj(v: *Vector, x: repr.Value) void {
     appendIn(v, x, .transient);
+}
+
+/// Appends `x` to `v` in place, where no vector refers to `v`'s nodes yet.
+///
+/// This function cannot raise. `marsh.zig` builds a vector it reads with this
+/// on a `Vector` of its own, whose nodes are rooted nowhere, which is safe
+/// because no collection runs during unmarshalling. `v` becomes a vector with
+/// `fromBuilt`.
+pub fn unmarshalAppend(v: *Vector, x: repr.Value) void {
+    appendIn(v, x, .fresh);
 }
 
 // ==========================================================================
@@ -451,14 +478,14 @@ fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
     if (maps.toTree(argv[0], .map) != null) return maps.assocMap(argv);
     var v = toVector(argv[0]) orelse
-        return pp_format.panicf("bad slot #0, expected core/vector or core/map, got %v", .{argv[0]});
+        return pp_format.panicf("bad slot #0, expected vector or core/map, got %v", .{argv[0]});
     try checkPairs(argv);
     var i: usize = 1;
     while (i < argv.len) : (i += 2) {
         const index = try getIndex(argv, i, v.count);
         v = if (index == v.count) conj(v, argv[i + 1]) else assoc(v, index, argv[i + 1]);
     }
-    return wrap.fromAbstract(v);
+    return wrap.fromVector(v);
 }
 
 /// `conj`: for a vector, a new vector with the elements appended. A set goes
@@ -467,26 +494,26 @@ fn cfunConj(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     if (maps.toTree(argv[0], .set) != null) return maps.conjSet(argv);
     var v = toVector(argv[0]) orelse
-        return pp_format.panicf("bad slot #0, expected core/vector or core/set, got %v", .{argv[0]});
+        return pp_format.panicf("bad slot #0, expected vector or core/set, got %v", .{argv[0]});
     for (argv[1..]) |x| v = conj(v, x);
-    return wrap.fromAbstract(v);
+    return wrap.fromVector(v);
 }
 
 /// `vec`: a vector of an indexed value's elements.
 fn cfunVec(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
-    if (toVector(argv[0]) != null) return argv[0];
+    if (repr.checkType(argv[0], .vector)) return argv[0];
     // Gathered rather than read a run at a time, because building allocates
     // and a run does not survive an allocation.
     var gathered = try args_core.gatherArg(argv, 0);
     const v = fromSlice(gathered.items);
     gathered.free();
-    return wrap.fromAbstract(v);
+    return wrap.fromVector(v);
 }
 
 /// `vector`: a vector of the arguments.
 fn cfunVector(argv: []repr.Value) raise.Error!repr.Value {
-    return wrap.fromAbstract(fromSlice(argv));
+    return wrap.fromVector(fromSlice(argv));
 }
 
 /// Clears `own_editable` on `node` and on every node under it that has it set.
@@ -547,9 +574,9 @@ fn newLeafFor(mode: Mode) *Leaf {
 
 /// Allocates an empty vector.
 fn newVector() *Vector {
-    const payload: *Vector = @ptrCast(@alignCast(abstracts.newBytes(&vector_type, @sizeOf(Vector))));
-    payload.* = .{};
-    return payload;
+    const block = gc_alloc.gcalloc(Head, .vector);
+    block.vector = .{};
+    return &block.vector;
 }
 
 /// Returns the inner node `node` or a copy of it, whichever an update in `mode`
@@ -661,77 +688,4 @@ inline fn tailOffset(v: *const Vector) usize {
 inline fn term(index: usize, x: repr.Value) u32 {
     const position = fmix32(@as(u32, @truncate(index)) +% 0x9e3779b9);
     return fmix32(@as(u32, @bitCast(order.hash(x))) ^ position);
-}
-
-/// `core/vector`'s `chunk` callback: the leaf or the tail that holds `index`.
-fn vectorChunk(v: *Vector, index: usize) abstract_type.Chunk {
-    const offset = tailOffset(v);
-    if (index >= offset) return .{ .items = v.tail.?.items[0 .. v.count - offset], .start = offset };
-    return .{ .items = &leafFor(v, index).items, .start = index & ~mask };
-}
-
-/// `core/vector`'s `hash` callback: the length mixed with the running sum.
-fn vectorHash(v: *const Vector, _: usize) i32 {
-    return @bitCast(value.hashMix(@truncate(v.count), v.sum));
-}
-
-/// `core/vector`'s `length` callback.
-fn vectorLength(v: *Vector, _: usize) raise.Error!usize {
-    return v.count;
-}
-
-/// `core/vector`'s `gcmark` callback: the trie and the tail.
-fn vectorMark(v: *Vector, _: usize) void {
-    mark(v);
-}
-
-/// `core/vector`'s `marshal` callback: the length, then each element.
-///
-/// The vector is entered in the reference table last. The file header says
-/// why.
-fn vectorMarshal(v: *Vector, m: *abi.Marshal) raise.Error!void {
-    try marsh.marshalSize(m, v.count);
-    // The runs are nodes, which do not change, so a run stays valid across
-    // marshalling an element.
-    var index: usize = 0;
-    while (index < v.count) {
-        const run = vectorChunk(v, index);
-        for (run.items) |x| try marsh.marshalJanet(m, x);
-        index += run.items.len;
-    }
-    marsh.marshalAbstract(m, v);
-}
-
-/// `core/vector`'s `tostring` callback: each element described, separated by
-/// spaces.
-fn vectorTostring(v: *Vector, render: *abi.Render) raise.Error!void {
-    const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
-    // The runs are nodes, which do not change, so a run stays valid across the
-    // allocations and callbacks describing an element can make.
-    var index: usize = 0;
-    while (index < v.count) {
-        const run = vectorChunk(v, index);
-        for (run.items) |x| {
-            if (index > 0) try buffers.pushU8(buffer, ' ');
-            try pp.descriptionB(buffer, x);
-            index += 1;
-        }
-    }
-}
-
-/// `core/vector`'s `unmarshal` callback: reads what `vectorMarshal` wrote.
-///
-/// The elements are appended in place to a vector held here. Its nodes are
-/// rooted nowhere, which is safe because no collection runs during
-/// unmarshalling. The abstract is made and entered in the reference table
-/// after the last element.
-fn vectorUnmarshal(u: *abi.Unmarshal) raise.Error!*Vector {
-    // Nothing is allocated for the count up front, so a count longer than the
-    // stream needs no check of its own: the read past the end refuses it.
-    const count = try marsh.unmarshalSize(u);
-    var built: Vector = .{};
-    for (0..count) |_| appendIn(&built, try marsh.unmarshalJanet(u), .fresh);
-    const v: *Vector = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Vector))));
-    v.* = built;
-    return v;
 }

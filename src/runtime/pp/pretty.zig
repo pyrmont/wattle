@@ -64,26 +64,27 @@ const dict_limit: i32 = 30;
 const bufsize = 64;
 
 /// The escapes that are not per type: a prototype's `_name`, the reset that
-/// follows any escape, and a cycle marker.
+/// follows any escape, a cycle marker, and a keyword, which has the symbol's
+/// tag.
 const class_color = "\x1B[34m";
 const color_reset = "\x1B[0m";
 const cycle_color = "\x1B[36m";
+const keyword_color = "\x1B[33m";
 
-/// One escape per tag, in `repr.Tag` order, which starts at `repr.Tag.number`
-/// rather than at `repr.Tag.nil`.
+/// One escape per tag, in `repr.Tag` order.
 const type_colors = [16][*:0]const u8{
     "\x1B[32m", // number
     "\x1B[36m", // nil
     "\x1B[36m", // boolean
-    "\x1B[36m", // fiber
+    "\x1B[35m", // buffer
     "\x1B[35m", // string
-    "\x1B[34m", // symbol
-    "\x1B[33m", // keyword
     "\x1B[36m", // array
-    "\x1B[36m", // tuple
+    "\x1B[36m", // vector
     "\x1B[36m", // table
     "\x1B[36m", // struct
-    "\x1B[35m", // buffer
+    "\x1B[34m", // symbol
+    "\x1B[36m", // tuple
+    "\x1B[36m", // fiber
     "\x1B[36m", // function
     "\x1B[36m", // cfunction
     "\x1B[36m", // abstract
@@ -696,7 +697,7 @@ fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Error!void {
 /// The alignment is recovered from how much the buffer grew, since that layer
 /// counts no columns.
 fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Error!void {
-    try S.pushColor(type_colors[@intFromEnum(repr.typeOf(x))]);
+    try S.pushColor(if (wrap.isKeyword(x)) keyword_color else type_colors[@intFromEnum(repr.typeOf(x))]);
     if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
         // Printing a buffer into itself. Reserve the worst case first, then
         // escape only what was there when printing started, so that the loop

@@ -67,6 +67,7 @@ const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
+const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -911,17 +912,30 @@ fn indexedChunkGivesTheWholeRun() raise.Error!void {
     expect(short.start == 9 and short.len == 1);
 
     refuses(args.indexedChunk, .{ abstract, 10, 10 }, "index 10 is past the end of args-core/runs of length 10");
-    refuses(args.indexedChunk, .{ wrap.fromNil(), 0, 1 }, "expected indexed abstract, got nil");
+    refuses(args.indexedChunk, .{ wrap.fromNil(), 0, 1 }, "expected vector or indexed abstract, got nil");
     refusesWithPrefix(
         args.indexedChunk,
         .{ wrap.fromAbstract(abstracts.newBytes(&probe_at, 4)), 0, 1 },
-        "expected indexed abstract, got <args-core/probe",
+        "expected vector or indexed abstract, got <args-core/probe",
     );
 
     // A length below the one the type has makes a correct run reach past it.
     refuses(args.indexedChunk, .{ abstract, 0, 2 }, "chunk of args-core/runs does not hold index 0");
     runs.lie = .wrong_index;
     refuses(args.indexedChunk, .{ abstract, 4, 10 }, "chunk of args-core/runs does not hold index 4");
+
+    // A vector's run is the leaf that holds the index, or the tail, read with
+    // no callback. A length it does not have is refused.
+    var elements: [40]repr.Value = undefined;
+    for (&elements, 0..) |*item, i| item.* = harness.wrapInteger(@intCast(i));
+    const vector = wrap.fromVector(vectors.fromSlice(&elements));
+    const leaf = try args.indexedChunk(vector, 5, 40);
+    expect(leaf.start == 0 and leaf.len == 32);
+    const tail = try args.indexedChunk(vector, 39, 40);
+    expect(tail.start == 32 and tail.len == 8);
+    expect(wrap.toInteger(tail.items.?[7]) == 39);
+    refuses(args.indexedChunk, .{ vector, 40, 40 }, "index 40 is past the end of vector of length 40");
+    refuses(args.indexedChunk, .{ vector, 0, 41 }, "chunk of vector does not hold index 0");
 }
 
 /// `checkindexed` answers for an array, a tuple and an abstract whose contents
@@ -1005,7 +1019,7 @@ fn contentsOfAnswersForEveryValue() raise.Error!void {
     expect(try args.chunks(pairs) == null);
     expect(repr.checkType(try access.get(pairs, harness.wrapInteger(0)), repr.Tag.nil));
     expect(repr.checkType(try access.next(pairs, wrap.fromNil()), repr.Tag.nil));
-    refusesWithPrefix(args.indexedChunk, .{ pairs, 0, 10 }, "expected indexed abstract, got <args-core/pair-runs");
+    refusesWithPrefix(args.indexedChunk, .{ pairs, 0, 10 }, "expected vector or indexed abstract, got <args-core/pair-runs");
 }
 
 /// `keyvals` reads a table and a struct as one run of their slots, empty slots

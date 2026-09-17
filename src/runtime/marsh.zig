@@ -60,6 +60,7 @@ const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const verify = @import("bytecode/verify.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const vm_state = @import("vm/state.zig");
@@ -162,6 +163,7 @@ pub const Lead = enum(u8) {
     table_weakv_proto = 230,
     table_weakkv_proto = 231,
     array_weak = 232,
+    vector = 233,
     _,
 
     pub inline fn byte(self: Lead) u8 {
@@ -775,6 +777,23 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
             // Marked as seen AFTER marshalling: a tuple is immutable and
             // cannot contain itself, so a self-reference would be a forward
             // reference the reader could not resolve.
+            markSeen(st, x);
+        },
+        repr.Tag.vector => {
+            const v = wrap.toVector(x);
+            try pushByte(st, Lead.vector.byte());
+            try pushInt(st, @intCast(v.count));
+            // The runs are nodes, which do not change, so a run stays valid
+            // across marshalling an element. Each run starts where the last
+            // ended.
+            var index: usize = 0;
+            while (index < v.count) {
+                const run = vectors.chunk(v, index);
+                for (run.items.?[0..run.len]) |item| try marshalOne(st, item, flags + 1);
+                index += run.len;
+            }
+            // Marked as seen AFTER marshalling, for the reason the tuple case
+            // gives, and because a vector's hash depends on its elements.
             markSeen(st, x);
         },
         repr.Tag.table => {
@@ -1420,6 +1439,7 @@ fn unmarshalOne(
         Lead.array,
         Lead.array_weak,
         Lead.tuple,
+        Lead.vector,
         Lead.@"struct",
         Lead.struct_proto,
         Lead.table,
@@ -1464,6 +1484,17 @@ fn unmarshalOne(
                     data = item.next;
                 }
                 out = wrap.fromTuple(tuples.end(tup));
+                scratch_vector.push(&st.lookup, out);
+            } else if (lead == Lead.vector) {
+                // Built in place and entered in the lookup table after the
+                // last element, as `vectors.zig`'s header says.
+                var built: vectors.Vector = .{};
+                for (0..len) |_| {
+                    const item = try unmarshalOne(st, data, flags + 1);
+                    vectors.unmarshalAppend(&built, item.value);
+                    data = item.next;
+                }
+                out = wrap.fromVector(vectors.fromBuilt(built));
                 scratch_vector.push(&st.lookup, out);
             } else if (lead == Lead.@"struct" or lead == Lead.struct_proto) {
                 const struct_ = structs.begin(@intCast(len));

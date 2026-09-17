@@ -147,7 +147,7 @@ pub const typeNames: [16][:0]const u8 = .{
     "buffer",
     "string",
     "array",
-    "unused",
+    "vector",
     "table",
     "struct",
     "symbol",

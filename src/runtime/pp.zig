@@ -7,8 +7,9 @@
 //! `description` are the same two into a fresh scratch buffer, giving back an
 //! interned string. `escapeString` is the quoting the pretty printer shares.
 //!
-//! Nothing here recurses into a container and nothing here lays anything out.
-//! A tuple printed by `descriptionB` comes out as `<tuple 0x...>`; the layer
+//! Nothing here lays anything out, and nothing here recurses into a container
+//! other than a vector, whose elements are described in a row. A tuple
+//! printed by `descriptionB` comes out as `<tuple 0x...>`; the layer
 //! that walks it is `pp/pretty.zig`. That is the whole reason the seam is
 //! here: this file settles what a value is called, and the next one settles
 //! how a structure of them sits on a page. Only the second has a width, a
@@ -43,6 +44,7 @@ const registry = @import("registry.zig");
 const repr = @import("repr");
 const strings = @import("value/strings.zig");
 const utils = @import("utils.zig");
+const vectors = @import("value/vectors.zig");
 const wrap = @import("value/helpers/wrap.zig");
 
 // ==========================================================================
@@ -73,14 +75,20 @@ pub fn description(x: repr.Value) strings.String {
 
 /// Renders `x` the way `(describe x)` does, into `buffer`.
 ///
-/// A container is not walked: it comes out as `<tuple 0x...>`. An abstract
-/// with a `tostring` callback is rendered through it, inside angle brackets.
+/// A container is not walked: it comes out as `<tuple 0x...>`. A vector's
+/// elements are each described, inside angle brackets after its type's name,
+/// and so is an abstract with a `tostring` callback, through the callback.
 pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => return try buffers.pushCString(buffer, "nil"),
         repr.Tag.symbol => if (wrap.isKeyword(x)) try buffers.pushU8(buffer, ':'),
         repr.Tag.string => return escapeStringB(buffer, wrap.toString(x)),
         repr.Tag.buffer => return escapeBufferB(buffer, wrap.toBuffer(x)),
+        repr.Tag.vector => {
+            try buffers.pushCString(buffer, "<vector ");
+            try vectorElementsB(buffer, wrap.toVector(x));
+            return try buffers.pushCString(buffer, ">");
+        },
         repr.Tag.abstract => {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
@@ -171,6 +179,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
             if (buffer == to) try buffers.extra(buffer, @intCast(to.count));
             try buffers.pushBytes(buffer, to.slice());
         },
+        repr.Tag.vector => try vectorElementsB(buffer, wrap.toVector(x)),
         repr.Tag.abstract => {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
@@ -325,4 +334,20 @@ fn stringDescriptionB(buffer: *buffers.Buffer, title: []const u8, pointer: ?*con
     at[0] = '>';
     at += 1;
     buffer.count = @intCast(at - buffer.data.?);
+}
+
+/// Pushes each element of `v` described, separated by spaces.
+///
+/// The runs are nodes, which do not change, so a run stays valid across the
+/// allocations and callbacks describing an element can make.
+fn vectorElementsB(buffer: *buffers.Buffer, v: *const vectors.Vector) raise.Error!void {
+    var index: usize = 0;
+    while (index < v.count) {
+        const run = vectors.chunk(v, index);
+        for (run.items.?[0..run.len]) |x| {
+            if (index > 0) try buffers.pushU8(buffer, ' ');
+            try descriptionB(buffer, x);
+            index += 1;
+        }
+    }
 }

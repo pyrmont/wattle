@@ -477,8 +477,8 @@ pub fn push3(fiber: *Fiber, x: repr.Value, y: repr.Value, z: repr.Value) raise.E
 /// `gc/mark.zig`'s `markFiber` does not look.
 ///
 /// `pushn` re-derives its source after a growth because a caller may hand it a
-/// slice of this stack. A run here comes from an array, a tuple or an
-/// abstract's payload, and none of the three is this stack.
+/// slice of this stack. A run here comes from an array, a tuple, a vector's
+/// node or an abstract's payload, and none of the four is this stack.
 pub fn pushChunks(fiber: *Fiber, it: *args_core.Chunks) raise.Error!void {
     const n: i32 = @intCast(it.len);
     if (fiber.stacktop > std.math.maxInt(i32) -% n) return raise.panic("stack overflow");

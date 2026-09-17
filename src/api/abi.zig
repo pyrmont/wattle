@@ -360,17 +360,17 @@ pub const GCObject = extern struct {
     data: GCData = std.mem.zeroes(GCData),
 };
 
-/// The elements of an array, a tuple or an indexed abstract.
+/// The elements of an array, a vector, a tuple or an indexed abstract.
 ///
 /// `module.getIndexed` and `module.toIndexed` return a `module.Indexed` built
 /// from the `Indexed` the runtime gives them.
 ///
 /// `value` is the value read and `len` is how many elements it has. For an
-/// array or a tuple, `items` is the aggregate's own storage. For an abstract,
-/// `items` is null and the elements are read a run at a time through the
-/// `indexed_chunk` crossing. `items` is also null when an array is empty,
-/// because an empty array has no storage to point at, so a null `items` names
-/// an abstract only when `len` is not zero.
+/// array or a tuple, `items` is the aggregate's own storage. For a vector or
+/// an abstract, `items` is null and the elements are read a run at a time
+/// through the `indexed_chunk` crossing. `items` is also null when an array is
+/// empty, because an empty array has no storage to point at, so a null `items`
+/// names a vector or an abstract only when `len` is not zero.
 pub const Indexed = extern struct {
     items: ?[*]const repr.Value = null,
     len: usize = 0,

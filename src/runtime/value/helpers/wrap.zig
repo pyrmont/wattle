@@ -52,6 +52,7 @@ const symbols = @import("../symbols.zig");
 const structs = @import("../structs.zig");
 const tables = @import("../tables.zig");
 const tuples = @import("../tuples.zig");
+const vectors = @import("../vectors.zig");
 
 // ==========================================================================
 // Constants
@@ -260,6 +261,13 @@ pub inline fn fromTuple(x: tuples.Tuple) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.tuple);
 }
 
+/// A vector's value points at its block's head rather than at the payload, so
+/// the collector's header is where `toPointer` reads it.
+pub inline fn fromVector(x: *const vectors.Vector) repr.Value {
+    const head: *const vectors.Head = @alignCast(@fieldParentPtr("vector", x));
+    return repr.wrapCPointer(head, repr.Tag.vector);
+}
+
 /// Whether `x` is a keyword: the symbol tag, and the keyword bit in the head.
 pub inline fn isKeyword(x: repr.Value) bool {
     return repr.checkType(x, repr.Tag.symbol) and symbols.isKeyword(toSymbol(x));
@@ -387,4 +395,9 @@ pub fn toTable(x: repr.Value) *tables.Table {
 
 pub fn toTuple(x: repr.Value) tuples.Tuple {
     return @ptrCast(@alignCast(toPointer(x)));
+}
+
+pub fn toVector(x: repr.Value) *const vectors.Vector {
+    const head: *const vectors.Head = @ptrCast(@alignCast(toPointer(x)));
+    return &head.vector;
 }

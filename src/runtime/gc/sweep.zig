@@ -190,6 +190,7 @@ fn checkLiveref(x: repr.Value) bool {
         repr.Tag.string, repr.Tag.symbol => gcReachable(strings.head(wrap.toString(x))),
         repr.Tag.abstract => gcReachable(abi.abstractHead(wrap.toAbstract(x))),
         repr.Tag.tuple => gcReachable(tuples.head(wrap.toTuple(x))),
+        repr.Tag.vector => gcReachable(wrap.toPointer(x)),
         repr.Tag.@"struct" => gcReachable(structs.head(wrap.toStruct(x))),
         else => true,
     };
@@ -215,7 +216,7 @@ fn checkLiveref(x: repr.Value) bool {
 /// because the sweep has to unlink it in between.
 ///
 /// The types with no case are not an omission. A string, keyword, tuple,
-/// struct, function or collection node stores its payload inside the same
+/// struct, function, vector or collection node stores its payload inside the same
 /// allocation, so freeing the block frees the payload. A collection node's
 /// children are blocks of their own, which the sweep frees when they are
 /// unreachable. A symbol is the one immutable type
@@ -299,6 +300,7 @@ fn deinitBlock(mem: *abi.GCObject) void {
         gc_alloc.MemoryType.@"struct",
         gc_alloc.MemoryType.function,
         gc_alloc.MemoryType.threaded_abstract,
+        gc_alloc.MemoryType.vector,
         gc_alloc.MemoryType.vector_inner,
         gc_alloc.MemoryType.vector_leaf,
         gc_alloc.MemoryType.map_node,

@@ -1,4 +1,4 @@
-//! Behavioral contract for `core/vector` and its transient: the shape at each
+//! Behavioral contract for vectors and their transients: the shape at each
 //! boundary of the trie, reading a vector as a tuple is read, persistence
 //! across updates, what a transient may change, equality, order and hash, and
 //! marshalling.
@@ -68,11 +68,11 @@ fn counting(buffer: []repr.Value) []repr.Value {
 /// Asserts that `v` has exactly the elements of `expected`, read three ways:
 /// by `vectors.at`, run by run through `args.chunks`, and against a tuple of
 /// `expected` through `order.equals`.
-fn expectElements(v: *vectors.Vector, expected: []const repr.Value) !void {
+fn expectElements(v: *const vectors.Vector, expected: []const repr.Value) !void {
     expect(v.count == expected.len);
     for (expected, 0..) |x, i| expect(order.equals(vectors.at(v, i), x));
 
-    var it = (try args.chunks(wrap.fromAbstract(v))).?;
+    var it = (try args.chunks(wrap.fromVector(v))).?;
     expect(it.len == expected.len);
     var read: usize = 0;
     while (try it.next()) |part| {
@@ -128,24 +128,24 @@ fn theShapeAtEachBoundary() !void {
 
     // Built one element at a time, checked at every boundary on the way.
     var v = vectors.fromSlice(&.{});
-    gc_alloc.gcroot(wrap.fromAbstract(v));
+    gc_alloc.gcroot(wrap.fromVector(v));
     var next_boundary: usize = 0;
     for (0..most + 1) |n| {
         if (n == boundary_lengths[next_boundary]) {
             expect(v.shift == expectedShift(n));
             try expectElements(v, elements[0..n]);
             const built = vectors.fromSlice(elements[0..n]);
-            expect(order.equals(wrap.fromAbstract(v), wrap.fromAbstract(built)));
-            expect(order.hash(wrap.fromAbstract(v)) == order.hash(wrap.fromAbstract(built)));
+            expect(order.equals(wrap.fromVector(v), wrap.fromVector(built)));
+            expect(order.hash(wrap.fromVector(v)) == order.hash(wrap.fromVector(built)));
             next_boundary += 1;
         }
         if (n == most) break;
         const bigger = vectors.conj(v, elements[n]);
-        _ = gc_alloc.gcunroot(wrap.fromAbstract(v));
+        _ = gc_alloc.gcunroot(wrap.fromVector(v));
         v = bigger;
-        gc_alloc.gcroot(wrap.fromAbstract(v));
+        gc_alloc.gcroot(wrap.fromVector(v));
     }
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(v));
+    _ = gc_alloc.gcunroot(wrap.fromVector(v));
 }
 
 /// A chunk is a node's own storage: a full leaf for an index below the tail,
@@ -154,7 +154,7 @@ fn theShapeAtEachBoundary() !void {
 fn aChunkIsALeafOrTheTail() !void {
     var buffer: [100]repr.Value = undefined;
     const v = vectors.fromSlice(counting(&buffer));
-    const at = vectors.vector_type.chunk.?;
+    const at = vectors.chunk;
 
     const first = at(v, 5);
     expect(first.start == 0 and first.len == vectors.width);
@@ -172,13 +172,13 @@ fn anUpdateKeepsTheOriginal() !void {
     var buffer: [1100]repr.Value = undefined;
     const elements = counting(&buffer);
     const original = vectors.fromSlice(elements);
-    gc_alloc.gcroot(wrap.fromAbstract(original));
+    gc_alloc.gcroot(wrap.fromVector(original));
 
     const marker = harness.wrapInteger(-1);
     const updated = vectors.assoc(original, 40, marker);
-    gc_alloc.gcroot(wrap.fromAbstract(updated));
+    gc_alloc.gcroot(wrap.fromVector(updated));
     const appended = vectors.conj(original, marker);
-    gc_alloc.gcroot(wrap.fromAbstract(appended));
+    gc_alloc.gcroot(wrap.fromVector(appended));
 
     gc_mark.collect();
 
@@ -193,15 +193,15 @@ fn anUpdateKeepsTheOriginal() !void {
     try expectElements(appended, &longer);
 
     // Only the leaf holding index 40 differs between the two tries.
-    const at = vectors.vector_type.chunk.?;
+    const at = vectors.chunk;
     expect(at(original, 40).items.? != at(updated, 40).items.?);
     expect(at(original, 0).items.? == at(updated, 0).items.?);
     expect(at(original, 1000).items.? == at(updated, 1000).items.?);
     expect(at(original, 1000).items.? == at(appended, 1000).items.?);
 
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(appended));
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(updated));
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    _ = gc_alloc.gcunroot(wrap.fromVector(appended));
+    _ = gc_alloc.gcunroot(wrap.fromVector(updated));
+    _ = gc_alloc.gcunroot(wrap.fromVector(original));
 }
 
 /// The number of nodes with `own_editable` set in the trie under `node`,
@@ -235,8 +235,8 @@ fn aTransientChangesOnlyItsOwnNodes() !void {
     var buffer: [1100]repr.Value = undefined;
     const elements = counting(&buffer);
     const original = vectors.fromSlice(elements);
-    gc_alloc.gcroot(wrap.fromAbstract(original));
-    const at = vectors.vector_type.chunk.?;
+    gc_alloc.gcroot(wrap.fromVector(original));
+    const at = vectors.chunk;
 
     const t = transients.fromVector(original);
     gc_alloc.gcroot(wrap.fromAbstract(t));
@@ -270,13 +270,13 @@ fn aTransientChangesOnlyItsOwnNodes() !void {
     expect(editableIn(original) == 0);
 
     const v = vectors.toVector(transients.persistent(t)).?;
-    gc_alloc.gcroot(wrap.fromAbstract(v));
+    gc_alloc.gcroot(wrap.fromVector(v));
     expect(t.* == .ended);
     expect(editableIn(v) == 0);
     try expectElements(v, &expected);
     const built = vectors.fromSlice(&expected);
-    expect(order.equals(wrap.fromAbstract(v), wrap.fromAbstract(built)));
-    expect(order.hash(wrap.fromAbstract(v)) == order.hash(wrap.fromAbstract(built)));
+    expect(order.equals(wrap.fromVector(v), wrap.fromVector(built)));
+    expect(order.hash(wrap.fromVector(v)) == order.hash(wrap.fromVector(built)));
 
     // A second transient of the result must not change it.
     const second = transients.fromVector(v);
@@ -285,9 +285,9 @@ fn aTransientChangesOnlyItsOwnNodes() !void {
     try expectElements(v, &expected);
     expect(at(&second.vector, 41).items.? != at(v, 41).items.?);
 
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(v));
+    _ = gc_alloc.gcunroot(wrap.fromVector(v));
     _ = gc_alloc.gcunroot(wrap.fromAbstract(t));
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    _ = gc_alloc.gcunroot(wrap.fromVector(original));
 }
 
 /// A transient that is never persisted is collected with every node it made,
@@ -296,7 +296,7 @@ fn anAbandonedTransientIsCollected() !void {
     var buffer: [40]repr.Value = undefined;
     const elements = counting(&buffer);
     const original = vectors.fromSlice(elements);
-    gc_alloc.gcroot(wrap.fromAbstract(original));
+    gc_alloc.gcroot(wrap.fromVector(original));
     gc_mark.collect();
     const before = harness.vm().gc.block_count;
 
@@ -308,12 +308,12 @@ fn anAbandonedTransientIsCollected() !void {
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before);
     try expectElements(original, elements);
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    _ = gc_alloc.gcunroot(wrap.fromVector(original));
 }
 
 /// A version and the elements it should have.
 const Version = struct {
-    vector: *vectors.Vector,
+    vector: *const vectors.Vector,
     elements: std.ArrayListUnmanaged(repr.Value),
 };
 
@@ -331,21 +331,21 @@ fn randomUpdatesAgainstArrays() !void {
     var versions: std.ArrayListUnmanaged(Version) = .empty;
     defer {
         for (versions.items) |*version| {
-            _ = gc_alloc.gcunroot(wrap.fromAbstract(version.vector));
+            _ = gc_alloc.gcunroot(wrap.fromVector(version.vector));
             version.elements.deinit(allocator);
         }
         versions.deinit(allocator);
     }
 
     const empty = vectors.fromSlice(&.{});
-    gc_alloc.gcroot(wrap.fromAbstract(empty));
+    gc_alloc.gcroot(wrap.fromVector(empty));
     try versions.append(allocator, .{ .vector = empty, .elements = .empty });
 
     for (0..3000) |round| {
         const source = versions.items[random.uintLessThan(usize, versions.items.len)];
         var elements = try source.elements.clone(allocator);
         const x = harness.wrapInteger(@intCast(round));
-        var v: *vectors.Vector = undefined;
+        var v: *const vectors.Vector = undefined;
         const choice = random.uintLessThan(u8, 4);
         if (choice == 3) {
             // A batch through a transient, rooted in case the batch collects.
@@ -382,7 +382,7 @@ fn randomUpdatesAgainstArrays() !void {
             v = vectors.assoc(source.vector, index, x);
             elements.items[index] = x;
         }
-        gc_alloc.gcroot(wrap.fromAbstract(v));
+        gc_alloc.gcroot(wrap.fromVector(v));
         try versions.append(allocator, .{ .vector = v, .elements = elements });
         if (round % 500 == 0) gc_mark.collect();
     }
@@ -397,51 +397,51 @@ fn randomUpdatesAgainstArrays() !void {
 fn equalityOrderAndHash() void {
     var buffer: [70]repr.Value = undefined;
     const elements = counting(&buffer);
-    const built = wrap.fromAbstract(vectors.fromSlice(elements));
+    const built = wrap.fromVector(vectors.fromSlice(elements));
 
     var grown = vectors.fromSlice(&.{});
     for (elements) |x| grown = vectors.conj(grown, x);
-    expect(order.equals(built, wrap.fromAbstract(grown)));
-    expect(order.compare(built, wrap.fromAbstract(grown)) == 0);
-    expect(order.hash(built) == order.hash(wrap.fromAbstract(grown)));
+    expect(order.equals(built, wrap.fromVector(grown)));
+    expect(order.compare(built, wrap.fromVector(grown)) == 0);
+    expect(order.hash(built) == order.hash(wrap.fromVector(grown)));
 
     // Replacing an element and putting it back restores the hash.
     const changed = vectors.assoc(grown, 50, harness.wrapInteger(-5));
-    expect(!order.equals(built, wrap.fromAbstract(changed)));
+    expect(!order.equals(built, wrap.fromVector(changed)));
     const restored = vectors.assoc(changed, 50, elements[50]);
-    expect(order.equals(built, wrap.fromAbstract(restored)));
-    expect(order.hash(built) == order.hash(wrap.fromAbstract(restored)));
+    expect(order.equals(built, wrap.fromVector(restored)));
+    expect(order.hash(built) == order.hash(wrap.fromVector(restored)));
 
     // The first element that differs decides, and a lower one sorts first.
-    expect(order.compare(wrap.fromAbstract(changed), built) == -1);
-    expect(order.compare(built, wrap.fromAbstract(changed)) == 1);
-    const last_lower = wrap.fromAbstract(vectors.assoc(grown, 69, harness.wrapInteger(-5)));
+    expect(order.compare(wrap.fromVector(changed), built) == -1);
+    expect(order.compare(built, wrap.fromVector(changed)) == 1);
+    const last_lower = wrap.fromVector(vectors.assoc(grown, 69, harness.wrapInteger(-5)));
     expect(order.compare(last_lower, built) == -1);
     expect(order.compare(built, last_lower) == 1);
 
     // A hash depends on where an element is, not only on which elements
     // there are.
-    const forwards = wrap.fromAbstract(vectors.fromSlice(elements[0..2]));
-    const backwards = wrap.fromAbstract(vectors.fromSlice(&.{ elements[1], elements[0] }));
+    const forwards = wrap.fromVector(vectors.fromSlice(elements[0..2]));
+    const backwards = wrap.fromVector(vectors.fromSlice(&.{ elements[1], elements[0] }));
     expect(order.hash(forwards) != order.hash(backwards));
 
     // A prefix sorts before the vector it is a prefix of, and is not equal.
-    const prefix = wrap.fromAbstract(vectors.fromSlice(elements[0..69]));
+    const prefix = wrap.fromVector(vectors.fromSlice(elements[0..69]));
     expect(order.compare(prefix, built) == -1);
     expect(order.compare(built, prefix) == 1);
     expect(!order.equals(prefix, built));
 
     // Elements compare by the runtime's equality: negative zero equals zero.
-    const zero = wrap.fromAbstract(vectors.fromSlice(&.{wrap.fromNumber(0.0)}));
-    const negative = wrap.fromAbstract(vectors.fromSlice(&.{wrap.fromNumber(-0.0)}));
+    const zero = wrap.fromVector(vectors.fromSlice(&.{wrap.fromNumber(0.0)}));
+    const negative = wrap.fromVector(vectors.fromSlice(&.{wrap.fromNumber(-0.0)}));
     expect(order.equals(zero, negative));
     expect(order.hash(zero) == order.hash(negative));
 
     // Vectors nest, and compare through the nesting.
-    const inner_a = wrap.fromAbstract(vectors.fromSlice(elements[0..3]));
-    const inner_b = wrap.fromAbstract(vectors.fromSlice(elements[0..3]));
-    const outer_a = wrap.fromAbstract(vectors.fromSlice(&.{ inner_a, elements[9] }));
-    const outer_b = wrap.fromAbstract(vectors.fromSlice(&.{ inner_b, elements[9] }));
+    const inner_a = wrap.fromVector(vectors.fromSlice(elements[0..3]));
+    const inner_b = wrap.fromVector(vectors.fromSlice(elements[0..3]));
+    const outer_a = wrap.fromVector(vectors.fromSlice(&.{ inner_a, elements[9] }));
+    const outer_b = wrap.fromVector(vectors.fromSlice(&.{ inner_b, elements[9] }));
     expect(order.equals(outer_a, outer_b));
     expect(order.hash(outer_a) == order.hash(outer_b));
 
@@ -471,7 +471,7 @@ fn marshallingRoundTripsAtEachBoundary() !void {
     const elements = counting(buffer);
 
     for (boundary_lengths) |n| {
-        const written = wrap.fromAbstract(vectors.fromSlice(elements[0..n]));
+        const written = wrap.fromVector(vectors.fromSlice(elements[0..n]));
         const bytes = try marshalled(written);
         const back = try unmarshalled(bytes.slice());
         const v = vectors.toVector(back).?;
@@ -480,28 +480,29 @@ fn marshallingRoundTripsAtEachBoundary() !void {
         expect(v.shift == expectedShift(n));
         expect(editableIn(v) == 0);
         try expectElements(v, elements[0..n]);
-        expect(order.hash(back) == order.hash(wrap.fromAbstract(vectors.fromSlice(elements[0..n]))));
+        expect(order.hash(back) == order.hash(wrap.fromVector(vectors.fromSlice(elements[0..n]))));
         _ = gc_alloc.gcunroot(back);
     }
 }
 
-/// The bytes of a marshalled vector: the abstract's lead byte and type name,
-/// the length in `marshalSize`'s encoding, and then each element. A marshalled
-/// stream is a file format, so the bytes are the contract.
+/// The bytes of a marshalled vector: its own lead byte, the length as a
+/// marshalled integer, and then each element, as a tuple is written but with
+/// no flags. A marshalled stream is a file format, so the bytes are the
+/// contract.
 fn theWireFormat() !void {
-    const lb_abstract = 217;
-    const lb_symbol = 207;
-    const three = wrap.fromAbstract(vectors.fromSlice(&.{
+    const lb_vector = 233;
+    const three = wrap.fromVector(vectors.fromSlice(&.{
         harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3),
     }));
     const b = try marshalled(three);
-    expect(std.mem.eql(u8, b.slice(), &[_]u8{ lb_abstract, lb_symbol, 11 } ++ "core/vector".* ++ [_]u8{ 3, 1, 2, 3 }));
+    expect(std.mem.eql(u8, b.slice(), &[_]u8{ lb_vector, 3, 1, 2, 3 }));
 
-    // A length above 0xF0 is a byte count and then its bytes, little endian.
+    // A length from 128 to 8191 is two bytes, the high six bits under 0x80
+    // and then the low byte.
     var many: [300]repr.Value = undefined;
-    const long = try marshalled(wrap.fromAbstract(vectors.fromSlice(counting(&many))));
-    expect(std.mem.eql(u8, long.slice()[14..17], &[_]u8{ 0xF2, 0x2C, 0x01 }));
-    expect(long.slice()[17] == 0);
+    const long = try marshalled(wrap.fromVector(vectors.fromSlice(counting(&many))));
+    expect(std.mem.eql(u8, long.slice()[0..3], &[_]u8{ lb_vector, 0x81, 0x2C }));
+    expect(long.slice()[3] == 0);
 }
 
 /// A vector that occurs twice in what is marshalled is read back as one
@@ -511,8 +512,8 @@ fn theWireFormat() !void {
 /// reference table after its elements.
 fn marshallingKeepsIdentityAndHashes() !void {
     var buffer: [40]repr.Value = undefined;
-    const shared = wrap.fromAbstract(vectors.fromSlice(counting(&buffer)));
-    const equal = wrap.fromAbstract(vectors.fromSlice(counting(&buffer)));
+    const shared = wrap.fromVector(vectors.fromSlice(counting(&buffer)));
+    const equal = wrap.fromVector(vectors.fromSlice(counting(&buffer)));
     const holder = arrays.new(3);
     harness.arrayPush(holder, shared);
     harness.arrayPush(holder, shared);
@@ -520,13 +521,13 @@ fn marshallingKeepsIdentityAndHashes() !void {
     const back = try unmarshalled((try marshalled(wrap.fromArray(holder))).slice());
     const items = wrap.toArray(back).slice();
     expect(items.len == 3);
-    expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[1]));
-    expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[2]));
+    expect(wrap.toVector(items[0]) == wrap.toVector(items[1]));
+    expect(wrap.toVector(items[0]) == wrap.toVector(items[2]));
     try expectElements(vectors.toVector(items[0]).?, counting(&buffer));
 
     // A table holding, as a key, the vector that holds the table.
     const t = tables.new(1);
-    const outer = wrap.fromAbstract(vectors.fromSlice(&.{wrap.fromTable(t)}));
+    const outer = wrap.fromVector(vectors.fromSlice(&.{wrap.fromTable(t)}));
     tables.put(t, outer, harness.wrapInteger(7));
     const cycled = try unmarshalled((try marshalled(outer)).slice());
     const back_v = vectors.toVector(cycled).?;
@@ -535,7 +536,7 @@ fn marshallingKeepsIdentityAndHashes() !void {
     expect(harness.integerIs(tables.get(back_t, cycled), 7));
     for (back_t.slots()[0..back_t.capacity]) |kv| {
         if (repr.checkType(kv.key, repr.Tag.nil)) continue;
-        expect(wrap.toAbstract(kv.key) != wrap.toAbstract(cycled));
+        expect(wrap.toVector(kv.key) != wrap.toVector(cycled));
     }
 }
 
@@ -544,8 +545,8 @@ fn marshallingKeepsIdentityAndHashes() !void {
 fn aShortStreamIsRefused() !void {
     var buffer: [70]repr.Value = undefined;
     const elements = counting(&buffer);
-    elements[40] = wrap.fromAbstract(vectors.fromSlice(elements[0..3]));
-    const whole = try marshalled(wrap.fromAbstract(vectors.fromSlice(elements)));
+    elements[40] = wrap.fromVector(vectors.fromSlice(elements[0..3]));
+    const whole = try marshalled(wrap.fromVector(vectors.fromSlice(elements)));
     gc_alloc.gcroot(wrap.fromBuffer(whole));
     for (0..@intCast(whole.count)) |len| {
         const refusal = harness.raised(unmarshalled, .{whole.slice()[0..len]});
@@ -553,9 +554,9 @@ fn aShortStreamIsRefused() !void {
     }
     _ = gc_alloc.gcunroot(wrap.fromBuffer(whole));
 
-    const lb_abstract = 217;
-    const lb_symbol = 207;
-    const lying = [_]u8{ lb_abstract, lb_symbol, 11 } ++ "core/vector".* ++ [_]u8{ 0xF1, 0xF0, 1, 2 };
+    // A length of 200 with two elements after it.
+    const lb_vector = 233;
+    const lying = [_]u8{ lb_vector, 0x80, 0xC8, 1, 2 };
     expect(harness.raised(unmarshalled, .{@as([]const u8, &lying)}).?.says("unexpected end of source"));
 }
 
@@ -578,9 +579,6 @@ fn body() !void {
     try anAbandonedTransientIsCollected();
     try randomUpdatesAgainstArrays();
     equalityOrderAndHash();
-    // Unmarshalling finds a type by name in the registry, and building the
-    // core environment is what registers `core/vector`.
-    _ = harness.coreEnv();
     try marshallingRoundTripsAtEachBoundary();
     try theWireFormat();
     try marshallingKeepsIdentityAndHashes();

@@ -5,7 +5,7 @@
 # Construction
 
 (def v (vector 1 2 3))
-(assert (= :core/vector (type v)) "a vector is a core/vector")
+(assert (= :vector (type v)) "a vector is a vector")
 (assert (= 3 (length v)) "vector length")
 (assert (= 0 (length (vector))) "empty vector length")
 (assert (= (vector 1 2 3) (vec [1 2 3])) "vec of a tuple")
@@ -24,9 +24,13 @@
 (assert (nil? (get v -1)) "get a negative index")
 (assert (nil? (get v :a)) "get a keyword")
 (assert (= 2 (in v 1)) "in")
-(assert-error "in past the end" (in v 3))
+(assert-error-value "in past the end"
+  "expected integer key for vector in range [0, 3), got 3" (in v 3))
 (assert (indexed? v) "a vector is indexed")
 (assert (not (bytes? v)) "a vector is not bytes")
+(assert (lengthable? v) "a vector is lengthable")
+(assert (= 2 (v 1)) "call")
+(assert-error "call past the end" (v 3))
 (assert (= [1 2 3] (tuple ;v)) "splice")
 (assert (= 6 (+ ;v)) "splice into a call")
 (assert (deep= @[2 3 4] (map inc v)) "map")
@@ -126,8 +130,11 @@
 (assert (= :found (get {(vector 1 2) :found} (vector 1 2))) "a vector as a struct key")
 (assert (= :found (get @{(vec (range 40)) :found} (vec (range 40))))
   "a vector as a table key")
+(assert (= 0 (cmp v v)) "one vector against itself")
 (assert (= -1 (cmp (vector 1 2) (vector 1 3))) "order by element")
 (assert (= -1 (cmp (vector 1 2) (vector 1 2 0))) "a prefix orders first")
+(assert (deep= @[@[] (vector) @{}] (sort @[@{} (vector) @[]]))
+  "a vector sorts between an array and a table")
 (assert (deep= @[(vector) (vector 0 9) (vector 1)]
                (sort @[(vector 1) (vector) (vector 0 9)])) "sort")
 
@@ -137,7 +144,8 @@
 (assert (= v (round-trip v)) "marshal a vector")
 (assert (= (vector) (round-trip (vector))) "marshal an empty vector")
 (assert (= big (round-trip big)) "marshal a long vector")
-(assert (= :core/vector (type (round-trip v))) "a marshalled vector is a vector")
+(assert (= :vector (type (round-trip v))) "a marshalled vector is a vector")
+(assert (= 233 (get (marshal (vector)) 0)) "a vector has its own lead byte")
 (assert (= (hash grown) (hash (round-trip grown))) "a marshalled vector hashes alike")
 (def mixed (vector 1.5 "s" :k 'sym @[1] {:a 1} [1 2] (vector (vector 3))))
 (def mixed-back (round-trip mixed))
@@ -158,9 +166,10 @@
 
 # Printing
 
-(assert (= "<core/vector 1 2 3>" (describe v)) "describe")
-(assert (= "<core/vector 1 \"a\" :b <core/vector 2>>"
+(assert (= "<vector 1 2 3>" (describe v)) "describe")
+(assert (= "<vector 1 \"a\" :b <vector 2>>"
            (describe (vector 1 "a" :b (vector 2)))) "describe nested")
-(assert (= "<core/vector 1 2 3>" (string/format "%q" v)) "format")
+(assert (= "<vector 1 2 3>" (string/format "%q" v)) "format")
+(assert (= "1 2 3" (string v)) "string")
 
 (end-suite)

@@ -79,7 +79,7 @@
 (assert (= m (dissoc m nil)) "dissoc nil")
 (assert (= (hash-map :a 1 :b 2 :c 3) m) "dissoc leaves the original")
 (assert-error-value "conj a map"
-  "bad slot #0, expected core/vector or core/set, got <core/map :a 1>"
+  "bad slot #0, expected vector or core/set, got <core/map :a 1>"
   (conj (hash-map :a 1) [:d 4]))
 (assert-error "dissoc a set" (dissoc s 1))
 
@@ -88,7 +88,7 @@
 (assert (= (hash-set 3) (disj s 1 2 9)) "disj")
 (assert-error-value "conj nil into a set" "cannot use nil as a key" (conj s nil))
 (assert-error-value "assoc a set"
-  "bad slot #0, expected core/vector or core/map, got <core/set 1>"
+  "bad slot #0, expected vector or core/map, got <core/set 1>"
   (assoc (hash-set 1) 1 2))
 (assert-error "disj a map" (disj m :a))
 
@@ -151,7 +151,7 @@
 (assert (= (hash-set 1 3 4) (persistent! ts)) "persistent! of a set")
 (assert-error "disj! after persistent!" (disj! ts 1))
 (assert-error-value "transient of a number"
-  "bad slot #0, expected core/vector, core/map or core/set, got 5"
+  "bad slot #0, expected vector, core/map or core/set, got 5"
   (transient 5))
 
 (def batch (transient (hash-map)))
@@ -224,7 +224,7 @@
 (assert (= "<core/map :a 1>" (describe (hash-map :a 1))) "describe a map")
 (assert (= "<core/set 1>" (describe (hash-set 1))) "describe a set")
 (assert (= "<core/map >" (describe (hash-map))) "describe an empty map")
-(assert (= "<core/set <core/vector 1>>" (describe (hash-set (vector 1))))
+(assert (= "<core/set <vector 1>>" (describe (hash-set (vector 1))))
   "describe nested")
 (assert (= "<core/map :a 1>" (string/format "%q" (hash-map :a 1))) "format")
 

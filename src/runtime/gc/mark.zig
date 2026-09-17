@@ -189,6 +189,7 @@ fn markGuarded(vm: *vm_state.Vm, x: repr.Value) void {
             repr.Tag.table => markTable(vm, wrap.toTable(x)),
             repr.Tag.@"struct" => markStruct(vm, wrap.toStruct(x)),
             repr.Tag.tuple => markTuple(vm, wrap.toTuple(x)),
+            repr.Tag.vector => markVector(vm, wrap.toVector(x)),
             repr.Tag.buffer => markBuffer(wrap.toBuffer(x)),
             repr.Tag.fiber => markFiber(vm, wrap.toFiber(x)),
             repr.Tag.abstract => markAbstract(vm, wrap.toAbstract(x)),
@@ -428,6 +429,7 @@ fn markNodeIn(vm: *vm_state.Vm, node: *abi.GCObject) void {
         .funcenv,
         .funcdef,
         .threaded_abstract,
+        .vector,
         .table_weakk,
         .table_weakv,
         .table_weakkv,
@@ -496,6 +498,15 @@ fn markTuple(vm: *vm_state.Vm, tuple: [*]const repr.Value) void {
 /// Marks the value of every entry in `kvs`, for a weak-keyed table.
 fn markValues(vm: *vm_state.Vm, kvs: []const tables.Keyval) void {
     for (kvs) |kv| markGuarded(vm, kv.value);
+}
+
+/// Marks a vector's block, then its trie and tail.
+fn markVector(vm: *vm_state.Vm, v: *const vectors.Vector) void {
+    const head: *vectors.Head = @alignCast(@constCast(@fieldParentPtr("vector", v)));
+    if (gcReachable(head)) return;
+    gcMark(head);
+    if (v.root) |root| markNodeIn(vm, root);
+    if (v.tail) |tail| markNodeIn(vm, &tail.gc);
 }
 
 /// Marks every child of a vector's inner node. The node itself is already

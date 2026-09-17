@@ -551,7 +551,7 @@ fn cfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
         },
         // Rewound to take the runs again, since a run does not survive the
         // allocation between the passes.
-        .abstract => {
+        .vector, .abstract => {
             source.window(0, source.len);
             var index: usize = 0;
             while (try source.next()) |run| {

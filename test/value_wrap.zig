@@ -79,6 +79,7 @@ const symbols = @import("subsystems").value.symbols;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
+const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -165,9 +166,7 @@ fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
     out[at(.fiber)] = wrap.abi.fromFiber(@ptrCast(@alignCast(pointerA())));
     out[at(.string)] = wrap.abi.fromString(strings.cstring("s"));
     out[at(.symbol)] = wrap.abi.fromSymbol(symbols.csymbol("s"));
-    // No value has the unused tag, and the representation carries it all the
-    // same, so the corpus makes one out of a pointer.
-    out[at(.unused)] = repr.wrapPointer(pointerA(), repr.Tag.unused);
+    out[at(.vector)] = wrap.fromVector(vectors.fromSlice(&.{}));
     out[at(.array)] = wrap.abi.fromArray(arrays.new(0));
     out[at(.tuple)] = wrap.abi.fromTuple(tuples.newFrom(&.{}));
     out[at(.table)] = wrap.abi.fromTable(tables.new(0));
@@ -196,6 +195,7 @@ fn eachWrapperStampsItsType() void {
     expect(repr.typeOf(wrap.abi.fromKeyword(@ptrCast(p))) == repr.Tag.symbol);
     expect(repr.typeOf(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == repr.Tag.array);
     expect(repr.typeOf(wrap.abi.fromTuple(@ptrCast(@alignCast(p)))) == repr.Tag.tuple);
+    expect(repr.typeOf(wrap.fromVector(@ptrCast(@alignCast(p)))) == repr.Tag.vector);
     expect(repr.typeOf(wrap.abi.fromStruct(@ptrCast(@alignCast(p)))) == repr.Tag.@"struct");
     expect(repr.typeOf(wrap.abi.fromFiber(@ptrCast(@alignCast(p)))) == repr.Tag.fiber);
     expect(repr.typeOf(wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))) == repr.Tag.buffer);

@@ -176,6 +176,7 @@ const type_aliases = [_]TypeAlias{
     .{ .name = "symbol", .mask = repr.TagSet.one(.symbol) },
     .{ .name = "table", .mask = repr.TagSet.one(.table) },
     .{ .name = "tuple", .mask = repr.TagSet.one(.tuple) },
+    .{ .name = "vector", .mask = repr.TagSet.one(.vector) },
 };
 
 // ==========================================================================

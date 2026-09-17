@@ -364,21 +364,22 @@ pub const Dictionary = struct {
 /// raise returns `Error!T`.
 pub const Error = error{JanetSignal};
 
-/// The elements of an array, a tuple or an indexed abstract, read by position
-/// or in order.
+/// The elements of an array, a vector, a tuple or an indexed abstract, read by
+/// position or in order.
 ///
 /// `getIndexed` and `toIndexed` return an `Indexed`. `len` is how many
 /// elements there are. The other fields are the position `next` has reached
 /// and the run of elements read most recently, and an author does not set
 /// them.
 ///
-/// An array's or a tuple's elements are one run, read with no crossing. An
-/// abstract's are read through its `chunk` callback, one crossing per run, and
-/// the run read most recently is kept. `get` of an index inside that run makes
-/// no crossing.
+/// An array's or a tuple's elements are one run, read with no crossing. A
+/// vector's are one run per leaf and an abstract's are read through its
+/// `chunk` callback, one crossing per run, and the run read most recently is
+/// kept. `get` of an index inside that run makes no crossing.
 ///
 /// An `Indexed` is valid until the module re-enters Janet code or mutates the
-/// value it reads. The elements of a tuple are stable while it is reachable.
+/// value it reads. The elements of a tuple or a vector are stable while it is
+/// reachable.
 /// The elements of an array are not; a push may reallocate. A run of an
 /// abstract is valid until the next run is read from the same abstract, so two
 /// `Indexed` over one abstract are not read in turn.
@@ -444,7 +445,7 @@ pub const Indexed = struct {
     /// Makes `run` the run that holds `i`, reading it if it is not already.
     ///
     /// `i` is below `len`. An array's or a tuple's run holds every index, so
-    /// only an abstract reaches the crossing.
+    /// only a vector or an abstract reaches the crossing.
     fn hold(self: *Indexed, i: usize) Error!void {
         if (i >= self.run_start and i - self.run_start < self.run.len) return;
         const run = try fromAbi(interface.rt.indexed_chunk(self.value, i, self.len));
@@ -929,8 +930,8 @@ pub fn getDictionary(argv: []const Value, n: i32) Error!Dictionary {
     return dictionaryOf(try fromAbi(interface.rt.getdictionary(argv.ptr, n)));
 }
 
-/// Gets the elements of an array, a tuple or an indexed abstract from a slice
-/// of `Value`.
+/// Gets the elements of an array, a vector, a tuple or an indexed abstract from
+/// a slice of `Value`.
 ///
 /// `argv` is named as such because this function is typically used to
 /// get the unwrapped value at index `n` in an argument list.
@@ -1564,7 +1565,7 @@ pub fn toDictionary(v: Value) Error!?Dictionary {
     return dictionaryOf(out);
 }
 
-/// Returns the elements of an array, a tuple or an indexed abstract.
+/// Returns the elements of an array, a vector, a tuple or an indexed abstract.
 ///
 /// `v` is a value read out of a view rather than an argument slot, such as an
 /// element of a tuple.
@@ -1744,7 +1745,7 @@ fn dictionaryOf(view: abi.Dictionary) Dictionary {
 /// Builds an `Indexed` from the `abi.Indexed` the runtime gives.
 ///
 /// An array's or a tuple's storage is the one run. A null `items` is an empty
-/// value or an abstract, and either starts with no run.
+/// value, a vector or an abstract, and each starts with no run.
 fn indexedOf(view: abi.Indexed) Indexed {
     const run: []const Value = if (view.items) |p| p[0..view.len] else &.{};
     return .{ .len = view.len, .value = view.value, .run = run };

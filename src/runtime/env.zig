@@ -874,8 +874,8 @@ fn cfunIsDictionary(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(args_core.checkdictionary(argv[0]));
 }
 
-/// `(indexed? x)`: an array, a tuple, or an abstract whose contents are
-/// elements.
+/// `(indexed? x)`: an array, a vector, a tuple, or an abstract whose contents
+/// are elements.
 fn cfunIsIndexed(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(args_core.checkindexed(argv[0]));
@@ -1342,7 +1342,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("int?", &cfunCheckInt, @src(), "(int? x)", "Check if x can be exactly represented as a 32 bit signed two's complement integer."),
         corefn.reg("nat?", &cfunCheckNat, @src(), "(nat? x)", "Check if x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
         corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).cfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
-        corefn.reg("indexed?", &cfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a tuple, or an abstract type that implements the indexed protocol."),
+        corefn.reg("indexed?", &cfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
         corefn.reg("dictionary?", &cfunIsDictionary, @src(), "(dictionary? x)", "Check if x is a table, a struct, or an abstract type that implements the dictionary protocol."),
         corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).cfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
         corefn.reg("slice", &cfunSlice, @src(), "(slice x &opt start end)", "Extract a sub-range of an indexed data structure or byte sequence."),
@@ -1395,7 +1395,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     try math.libMath(env);
     arrays.lib(env);
     tuples.lib(env);
-    try vectors.lib(env);
+    vectors.lib(env);
     try maps.lib(env);
     try transients.lib(env);
     buffers.lib(env);

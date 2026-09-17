@@ -378,7 +378,7 @@
 (assert (= 2 (size @[1 2])) "of an array")
 (assert (= 1 (size @{:a 1})) "of a table")
 (assert (= 6 (size k)) "and of an abstract with a length slot")
-(assert (= "expected buffer, string, array, table, struct, symbol, keyword or tuple, got 3"
+(assert (= "expected buffer, string, array, vector, table, struct, symbol, keyword or tuple, got 3"
            (refusal size 3))
         "length refuses a number with the runtime's own message")
 

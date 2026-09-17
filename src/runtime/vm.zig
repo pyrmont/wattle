@@ -228,7 +228,7 @@ const Interp = struct {
         return try self.raisef("expected %T, got %v", .{ repr.TagSet.one(t), x });
     }
 
-    /// The same for a set of tags. A set that includes both array and tuple
+    /// The same for a set of tags. A set that includes array, vector and tuple
     /// also passes an abstract whose contents are elements, and a set that
     /// includes both table and struct one whose contents are pairs. The
     /// refusal of either names `indexed value` or `dictionary value`.
@@ -655,9 +655,9 @@ pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
 /// what kind of thing it turned out to be.
 ///
 /// The abstract arm calls `invokeIndexed` itself rather than falling through
-/// into the six indexable types beside it, because Zig has no fallthrough. The
-/// order it keeps is that the type's own `call` callback is consulted first,
-/// and only its absence reaches the arity check.
+/// into the seven indexable types beside it, because Zig has no fallthrough.
+/// The order it keeps is that the type's own `call` callback is consulted
+/// first, and only its absence reaches the arity check.
 ///
 /// The default arm is the one that reverses the operands: calling a keyword
 /// looks the keyword up in its argument, which is what makes `(:key struct)`
@@ -680,6 +680,7 @@ pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Val
         repr.Tag.table,
         repr.Tag.@"struct",
         repr.Tag.array,
+        repr.Tag.vector,
         repr.Tag.tuple,
         => return try invokeIndexed(method, argv, true),
         else => return try invokeIndexed(method, argv, false),

@@ -137,7 +137,7 @@ pub fn persistent(t: *Transient) repr.Value {
         .ended => unreachable,
         .map => |*m| wrap.fromAbstract(maps.persistent(m, .map)),
         .set => |*s| wrap.fromAbstract(maps.persistent(s, .set)),
-        .vector => |*v| wrap.fromAbstract(vectors.persistent(v)),
+        .vector => |*v| wrap.fromVector(vectors.persistent(v)),
     };
     t.* = .ended;
     return result;
@@ -229,7 +229,7 @@ fn cfunTransient(argv: []repr.Value) raise.Error!repr.Value {
     if (vectors.toVector(argv[0])) |v| return wrap.fromAbstract(fromVector(v));
     if (maps.toTree(argv[0], .map)) |m| return wrap.fromAbstract(fromTree(m, .map));
     if (maps.toTree(argv[0], .set)) |s| return wrap.fromAbstract(fromTree(s, .set));
-    return pp_format.panicf("bad slot #0, expected core/vector, core/map or core/set, got %v", .{argv[0]});
+    return pp_format.panicf("bad slot #0, expected vector, core/map or core/set, got %v", .{argv[0]});
 }
 
 /// The transient in the first argument, refused where `persistent!` has ended

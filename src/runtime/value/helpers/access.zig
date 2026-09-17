@@ -61,6 +61,7 @@ const tables = @import("../tables.zig");
 const tuples = @import("../tuples.zig");
 const utils = @import("../../utils.zig");
 const value = @import("../../value.zig");
+const vectors = @import("../vectors.zig");
 const vm_entry = @import("../../vm/entry.zig");
 const vm_state = @import("../../vm/state.zig");
 const wrap = @import("wrap.zig");
@@ -117,6 +118,7 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
                 return tup[utils.asSize(index)];
             }
         },
+        repr.Tag.vector => return vectors.lookup(wrap.toVector(ds), key) orelse wrap.fromNil(),
         repr.Tag.table => {
             return tables.get(wrap.toTable(ds), key);
         },
@@ -180,6 +182,14 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
                 val = wrap.toTuple(ds)[utils.asSize(index)];
             }
         },
+        repr.Tag.vector => {
+            const v = wrap.toVector(ds);
+            if (index >= v.count) {
+                val = wrap.fromNil();
+            } else {
+                val = vectors.at(v, utils.asSize(index));
+            }
+        },
         repr.Tag.table => val = tables.get(wrap.toTable(ds), wrap.fromInteger(index)),
         repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), wrap.fromInteger(index)),
         repr.Tag.abstract => {
@@ -212,7 +222,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
 /// The two dictionary types go through `structs.get` and `tables.get`,
 /// which means a key that is simply absent gives nil rather than panicking:
 /// the panic here is about keys that are wrong for the container rather than
-/// keys that are missing from it. For the four sequence types the key must be
+/// keys that are missing from it. For the five sequence types the key must be
 /// an integer in range, which is `getterCheckInt`.
 ///
 /// An abstract type is the one place where a missing key does panic, because
@@ -234,6 +244,10 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
             const tuple = wrap.toTuple(ds);
             const len = tuples.head(tuple).length;
             val = tuple[utils.asSize(try getterCheckInt(ds, key, @intCast(len)))];
+        },
+        repr.Tag.vector => {
+            const v = wrap.toVector(ds);
+            val = vectors.at(v, utils.asSize(try getterCheckInt(ds, key, @intCast(v.count))));
         },
         repr.Tag.buffer => {
             const buffer = wrap.toBuffer(ds);
@@ -272,7 +286,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
 
 /// Returns a value's length as a machine integer.
 ///
-/// `x` is the value. Six of the seven built-in cases read a count that is
+/// `x` is the value. Seven of the eight built-in cases read a count that is
 /// already an `i32`. The abstract case is the one that can fail: its `length`
 /// callback returns a `usize`, which is rejected when it exceeds `INT32_MAX`,
 /// and a type without the callback has no length. It is not asked for a
@@ -292,6 +306,7 @@ pub fn length(x: repr.Value) raise.Error!i32 {
         repr.Tag.array => return @intCast(wrap.toArray(x).count),
         repr.Tag.buffer => return @intCast(wrap.toBuffer(x).count),
         repr.Tag.tuple => return @intCast(tuples.head(wrap.toTuple(x)).length),
+        repr.Tag.vector => return @intCast(wrap.toVector(x).count),
         repr.Tag.@"struct" => return @intCast(structs.head(wrap.toStruct(x)).length),
         repr.Tag.table => return @intCast(wrap.toTable(x).count),
         repr.Tag.abstract => {
@@ -327,6 +342,7 @@ pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
         repr.Tag.array => return wrap.fromInteger(@intCast(wrap.toArray(x).count)),
         repr.Tag.buffer => return wrap.fromInteger(@intCast(wrap.toBuffer(x).count)),
         repr.Tag.tuple => return wrap.fromInteger(@intCast(tuples.head(wrap.toTuple(x)).length)),
+        repr.Tag.vector => return wrap.fromInteger(@intCast(wrap.toVector(x).count)),
         repr.Tag.@"struct" => return wrap.fromInteger(@intCast(structs.head(wrap.toStruct(x)).length)),
         repr.Tag.table => return wrap.fromInteger(@intCast(wrap.toTable(x).count)),
         repr.Tag.abstract => {
@@ -395,7 +411,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
                 if (!repr.checkType(kv[0].key, repr.Tag.nil)) return kv[0].key;
             }
         },
-        repr.Tag.string, repr.Tag.symbol, repr.Tag.buffer, repr.Tag.array, repr.Tag.tuple => {
+        repr.Tag.string, repr.Tag.symbol, repr.Tag.buffer, repr.Tag.array, repr.Tag.tuple, repr.Tag.vector => {
             var i: i32 = undefined;
             if (repr.checkType(key, repr.Tag.nil)) {
                 i = 0;
@@ -415,6 +431,8 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
                 @as(i32, @intCast(wrap.toArray(ds).count))
             else if (t == repr.Tag.tuple)
                 @intCast(tuples.head(wrap.toTuple(ds)).length)
+            else if (t == repr.Tag.vector)
+                @intCast(wrap.toVector(ds).count)
             else
                 @intCast(strings.head(wrap.toString(ds)).length);
             if (i < len and i >= 0) {

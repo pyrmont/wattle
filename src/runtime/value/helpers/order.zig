@@ -99,8 +99,8 @@ pub const TraversalNode = struct {
 };
 
 /// Which of the collections `equals` and `compare` walk two abstracts as:
-/// two vectors, two maps or two sets, or neither.
-const Walked = enum { vector, tree, none };
+/// two maps or two sets, or neither.
+const Walked = enum { tree, none };
 
 // ==========================================================================
 // Public functions
@@ -172,9 +172,6 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
                 const xx = wrap.toAbstract(x);
                 const yy = wrap.toAbstract(y);
                 switch (walkedTogether(xx, yy)) {
-                    // Two vectors are walked element by element, as two
-                    // tuples are, and then ordered by length.
-                    .vector => pushTraversalNode(stack, abi.abstractHead(xx), abi.abstractHead(yy), 1),
                     // Two maps or two sets order by count and hash, as two
                     // structs order by capacity and hash, and then their
                     // entries are walked in order.
@@ -192,6 +189,15 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
                         if (diff != 0) return diff;
                     },
                 }
+            },
+            repr.Tag.vector => {
+                // Walked element by element, as two tuples are, and then
+                // ordered by length. One vector against itself settles here
+                // rather than walking, which is what the abstract's identity
+                // check gave before the tag.
+                const v1 = wrap.toVector(x);
+                const v2 = wrap.toVector(y);
+                if (v1 != v2) pushTraversalNode(stack, vectorHead(v1), vectorHead(v2), 1);
             },
             repr.Tag.tuple => {
                 const lhs = wrap.toTuple(x);
@@ -281,14 +287,6 @@ pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
                 const xx = wrap.toAbstract(x);
                 const yy = wrap.toAbstract(y);
                 switch (walkedTogether(xx, yy)) {
-                    // Two vectors are walked element by element, as two
-                    // tuples are, once their lengths and hashes are equal.
-                    .vector => {
-                        const hx = abi.abstractHead(xx);
-                        const hy = abi.abstractHead(yy);
-                        if (!vectors.mayEqual(vectors.ofHead(&hx.gc), vectors.ofHead(&hy.gc))) return false;
-                        pushTraversalNode(stack, hx, hy, 0);
-                    },
                     // Two maps or two sets are walked entry by entry in order
                     // once their counts and hashes are equal, since equal
                     // entries are in one order.
@@ -299,6 +297,16 @@ pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
                         pushTraversalNode(stack, hx, hy, 0);
                     },
                     .none => if (compareAbstract(xx, yy) != 0) return false,
+                }
+            },
+            repr.Tag.vector => {
+                // Walked element by element, as two tuples are, once their
+                // lengths and hashes are equal.
+                const v1 = wrap.toVector(x);
+                const v2 = wrap.toVector(y);
+                if (v1 != v2) {
+                    if (!vectors.mayEqual(v1, v2)) return false;
+                    pushTraversalNode(stack, vectorHead(v1), vectorHead(v2), 0);
                 }
             },
             repr.Tag.tuple => {
@@ -357,6 +365,7 @@ pub fn hash(x: repr.Value) i32 {
             h = @bitCast(@as(u32, @bitCast(h)) +% inc);
         },
         repr.Tag.@"struct" => h = structs.head(wrap.toStruct(x)).hash,
+        repr.Tag.vector => h = vectors.hash(wrap.toVector(x)),
         repr.Tag.number => {
             var d = wrap.toNumber(x);
             d += 0.0; // normalize negative zero
@@ -519,7 +528,7 @@ inline fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
         const sother: *const structs.StructHead = @ptrCast(@alignCast(other));
         if (gc_alloc.memoryTypeOf(self) == .abstract and isTree(self)) {
             if (treeFrameNext(stack, node, x, y)) return 0;
-        } else if (gc_alloc.memoryTypeOf(self) == .abstract) {
+        } else if (gc_alloc.memoryTypeOf(self) == .vector) {
             // A vector node: index is the element to compare next, as for a
             // tuple.
             const vself = vectors.ofHead(self);
@@ -589,6 +598,12 @@ inline fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
     return 2;
 }
 
+/// The collector header of the block a vector's payload is in, which is what a
+/// traversal frame holds.
+inline fn vectorHead(v: *const vectors.Vector) *vectors.Head {
+    return @constCast(@as(*const vectors.Head, @alignCast(@fieldParentPtr("vector", v))));
+}
+
 /// Whether the abstract whose header is `head` is a map or a set.
 inline fn isTree(head: *const abi.GCObject) bool {
     const t = abstractHeadOf(head).type;
@@ -623,13 +638,12 @@ noinline fn treeFrameNext(stack: *Traversal, node: [*]TraversalNode, x: *repr.Va
     return true;
 }
 
-/// How `equals` and `compare` treat two distinct abstracts: walked as two
-/// vectors, walked as two maps or two sets, or passed to `compareAbstract`.
+/// How `equals` and `compare` treat two distinct abstracts: walked as two maps
+/// or two sets, or passed to `compareAbstract`.
 inline fn walkedTogether(xx: abstracts.Abstract, yy: abstracts.Abstract) Walked {
     if (xx == yy) return .none;
     const xt = abi.abstractHead(xx).type;
     if (xt != abi.abstractHead(yy).type) return .none;
-    if (xt == &vectors.vector_type) return .vector;
     if (xt == &maps.map_type or xt == &maps.set_type) return .tree;
     return .none;
 }

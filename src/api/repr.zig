@@ -173,9 +173,9 @@ pub const Nanbox32Tagged = extern struct {
 ///
 /// The order is Wattle's. After the three constants, each mutable built-in
 /// comes before its immutable one: buffer and string, array and vector, table
-/// and map. `unused` is the vector's slot and `struct` the map's until the two
-/// take them. A keyword is a symbol, and its kind is on the interned object
-/// rather than in the tag: `value/symbols.zig` has how.
+/// and map. `struct` is the map's slot until the map takes it. A keyword is a
+/// symbol, and its kind is on the interned object rather than in the tag:
+/// `value/symbols.zig` has how.
 ///
 /// A four-bit enum rather than a bare integer, so that a `switch` omitting a
 /// case does not compile and the error names the value.
@@ -186,7 +186,7 @@ pub const Tag = enum(u4) {
     buffer,
     string,
     array,
-    unused,
+    vector,
     table,
     @"struct",
     symbol,
@@ -217,7 +217,7 @@ pub const TagSet = packed struct(u16) {
     buffer: bool = false,
     string: bool = false,
     array: bool = false,
-    unused: bool = false,
+    vector: bool = false,
     table: bool = false,
     @"struct": bool = false,
     symbol: bool = false,
@@ -233,7 +233,7 @@ pub const TagSet = packed struct(u16) {
 
     /// The five named unions, which a message or a check names directly.
     pub const bytes = of(&.{ .string, .symbol, .buffer });
-    pub const indexed = of(&.{ .array, .tuple });
+    pub const indexed = of(&.{ .array, .vector, .tuple });
     pub const dictionary = of(&.{ .table, .@"struct" });
     pub const lengthable = bytes.with(indexed).with(dictionary);
     pub const callable = of(&.{ .function, .cfunction, .abstract }).with(lengthable);
@@ -623,7 +623,7 @@ comptime {
     const expected = .{
         .{ Tag.number, 0 },    .{ Tag.nil, 1 },        .{ Tag.boolean, 2 },
         .{ Tag.buffer, 3 },    .{ Tag.string, 4 },     .{ Tag.array, 5 },
-        .{ Tag.unused, 6 },    .{ Tag.table, 7 },      .{ Tag.@"struct", 8 },
+        .{ Tag.vector, 6 },    .{ Tag.table, 7 },      .{ Tag.@"struct", 8 },
         .{ Tag.symbol, 9 },    .{ Tag.tuple, 10 },     .{ Tag.fiber, 11 },
         .{ Tag.function, 12 }, .{ Tag.cfunction, 13 }, .{ Tag.abstract, 14 },
         .{ Tag.pointer, 15 },
@@ -648,7 +648,7 @@ comptime {
     std.debug.assert(TagSet.one(.buffer).bits() == 0x0008);
     std.debug.assert(TagSet.one(.string).bits() == 0x0010);
     std.debug.assert(TagSet.one(.array).bits() == 0x0020);
-    std.debug.assert(TagSet.one(.unused).bits() == 0x0040);
+    std.debug.assert(TagSet.one(.vector).bits() == 0x0040);
     std.debug.assert(TagSet.one(.table).bits() == 0x0080);
     std.debug.assert(TagSet.one(.@"struct").bits() == 0x0100);
     std.debug.assert(TagSet.one(.symbol).bits() == 0x0200);
@@ -659,10 +659,10 @@ comptime {
     std.debug.assert(TagSet.one(.abstract).bits() == 0x4000);
     std.debug.assert(TagSet.one(.pointer).bits() == 0x8000);
     std.debug.assert(TagSet.bytes.bits() == 0x0218);
-    std.debug.assert(TagSet.indexed.bits() == 0x0420);
+    std.debug.assert(TagSet.indexed.bits() == 0x0460);
     std.debug.assert(TagSet.dictionary.bits() == 0x0180);
-    std.debug.assert(TagSet.lengthable.bits() == 0x07B8);
-    std.debug.assert(TagSet.callable.bits() == 0x77B8);
+    std.debug.assert(TagSet.lengthable.bits() == 0x07F8);
+    std.debug.assert(TagSet.callable.bits() == 0x77F8);
     // A named bit is its own field, so the struct and the shift agree only
     // if the two declaration orders do.
     for (0..tag_count) |i| {

@@ -128,7 +128,7 @@ var huge_value: repr.Value = undefined;
 /// faked, and Zig refusing the literal is what forces the choice.
 const intmax_int64_fits_in_a_length = std.math.maxInt(usize) >= 9007199254740992;
 
-const not_lengthable = "expected buffer, string, array, table, struct, " ++
+const not_lengthable = "expected buffer, string, array, vector, table, struct, " ++
     "symbol, keyword or tuple, got ";
 
 var slots_value: repr.Value = undefined;

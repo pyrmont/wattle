@@ -90,6 +90,7 @@ pub const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const vm_state = @import("vm/state.zig");
 const wrap = @import("value/helpers/wrap.zig");
 
@@ -284,9 +285,10 @@ pub const CBytes = enum { copy_buffer, copy_view, terminate, view };
 /// The elements of an indexed value, read one run at a time. `chunks` returns
 /// a `Chunks`.
 ///
-/// An array or a tuple is one run. An abstract is as many runs as its `chunk`
-/// callback gives, and `next` asks the callback for the run that holds the
-/// first element not yet returned.
+/// An array or a tuple is one run. A vector is one run per leaf, read with no
+/// callback. An abstract is as many runs as its `chunk` callback gives, and
+/// `next` asks the callback for the run that holds the first element not yet
+/// returned.
 ///
 /// A run stays valid until the next call that can allocate or run Janet code,
 /// or until the next `next` on the same value.
@@ -312,6 +314,7 @@ pub const Chunks = struct {
     /// Where the elements come from.
     pub const Source = union(enum) {
         contiguous: []const repr.Value,
+        vector: *const vectors.Vector,
         abstract: struct { payload: *anyopaque, at: *const abi.AbstractType },
     };
 
@@ -331,19 +334,23 @@ pub const Chunks = struct {
                 self.index = self.limit;
                 return run;
             },
-            .abstract => |a| {
-                const run = try takeChunk(a.payload, a.at, self.index, self.len);
-                // Clipped to the window at both ends. A run reaching past
-                // `limit` is a correct answer from a type whose runs are
-                // longer than what was asked for, which is every type worth
-                // having, so it is cut rather than refused.
-                const from = self.index - run.start;
-                const to = @min(run.len, self.limit - run.start);
-                const elements = run.items.?[from..to];
-                self.index = run.start + to;
-                return elements;
-            },
+            .vector => |v| return self.clip(vectors.chunk(v, self.index)),
+            .abstract => |a| return self.clip(try takeChunk(a.payload, a.at, self.index, self.len)),
         }
+    }
+
+    /// Returns the part of `run` inside the window, and moves past it.
+    ///
+    /// `run` holds `index`. It is clipped at both ends: a run reaching past
+    /// `limit` is a correct answer from a type whose runs are longer than
+    /// what was asked for, which is every type worth having, so it is cut
+    /// rather than refused.
+    inline fn clip(self: *Chunks, run: abi.Chunk) []const repr.Value {
+        const from = self.index - run.start;
+        const to = @min(run.len, self.limit - run.start);
+        const elements = run.items.?[from..to];
+        self.index = run.start + to;
+        return elements;
     }
 
     /// Narrows the iterator to the half-open range `[from, to)`.
@@ -524,7 +531,7 @@ pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 el
 /// ```
 pub const Keyvals = struct {
     /// Where the values come from.
-    source: Chunks.Source,
+    source: Source,
     /// The number of pairs, empty slots not counted.
     count: usize,
     /// The number of values: twice the slots of a table or a struct, or twice
@@ -534,6 +541,13 @@ pub const Keyvals = struct {
     index: usize = 0,
     /// What `next` has not yet returned of the run it read most recently.
     rest: []const repr.Value = &.{},
+
+    /// Where the values come from: a table's or a struct's slots, or an
+    /// abstract's runs.
+    pub const Source = union(enum) {
+        contiguous: []const repr.Value,
+        abstract: struct { payload: *anyopaque, at: *const abi.AbstractType },
+    };
 
     /// Returns the next pair that is not an empty slot, or null when every
     /// pair has been returned.
@@ -867,7 +881,7 @@ pub fn argIndexed(
         const tuple = wrap.toTuple(x);
         return tuple[0..tuples.head(tuple).length];
     }
-    fault.* = .{ .wrong_type = .{ .slot = n, .expected = repr.TagSet.indexed } };
+    fault.* = .{ .wrong_type = .{ .slot = n, .expected = repr.TagSet.of(&.{ .array, .tuple }) } };
     return null;
 }
 
@@ -1053,14 +1067,12 @@ pub fn checkfloat(x: repr.Value) bool {
     return dval == back;
 }
 
-/// Whether `x` is an array, a tuple or an abstract whose contents are
-/// elements.
+/// Whether `x` is an array, a vector, a tuple or an abstract whose contents
+/// are elements.
 ///
 /// It reads the tag and, for an abstract, its type, and calls no callback.
 pub fn checkindexed(x: repr.Value) bool {
-    if (repr.checkTypes(x, repr.TagSet.indexed)) return true;
-    if (!repr.checkType(x, repr.Tag.abstract)) return false;
-    return abi.abstractHead(wrap.toAbstract(x)).type.contents == .elements;
+    return repr.checkTypes(x, repr.TagSet.indexed) or checkindexedAbstract(x);
 }
 
 /// Whether `x` is a double exactly representable as an `i32`.
@@ -1140,16 +1152,20 @@ pub fn checkuint8(x: repr.Value) bool {
     return checkNumber(u8, x);
 }
 
-/// Returns the elements of an array, a tuple or an abstract whose contents
-/// are elements, read one run at a time.
+/// Returns the elements of an array, a tuple, a vector or an abstract whose
+/// contents are elements, read one run at a time.
 ///
-/// `x` is the value. This function returns null if `x` is none of the three.
+/// `x` is the value. This function returns null if `x` is none of the four.
 /// It raises if an abstract's `length` callback raises.
 ///
 /// See `Chunks` for how long a run stays valid.
 pub fn chunks(x: repr.Value) raise.Error!?Chunks {
     if (items(x)) |elements| {
         return .{ .source = .{ .contiguous = elements }, .len = elements.len, .limit = elements.len };
+    }
+    if (repr.checkType(x, repr.Tag.vector)) {
+        const v = wrap.toVector(x);
+        return .{ .source = .{ .vector = v }, .len = v.count, .limit = v.count };
     }
     if (!repr.checkType(x, repr.Tag.abstract)) return null;
     const abst = wrap.toAbstract(x);
@@ -1163,14 +1179,14 @@ pub fn chunks(x: repr.Value) raise.Error!?Chunks {
     };
 }
 
-/// What `x` holds: `elements` for an array, a tuple or an abstract that
-/// declares them, `pairs` for a table, a struct or an abstract that declares
+/// What `x` holds: `elements` for an array, a vector, a tuple or an abstract
+/// that declares them, `pairs` for a table, a struct or an abstract that declares
 /// them, and `none` for everything else.
 ///
 /// It reads the tag and, for an abstract, its type, and calls no callback.
 pub fn contentsOf(x: repr.Value) abi.Contents {
     return switch (repr.typeOf(x)) {
-        .array, .tuple => .elements,
+        .array, .vector, .tuple => .elements,
         .table, .@"struct" => .pairs,
         .abstract => abi.abstractHead(wrap.toAbstract(x)).type.contents,
         else => .none,
@@ -1332,9 +1348,9 @@ pub fn gather(x: repr.Value) raise.Error!?Gathered {
     var source = (try chunks(x)) orelse return null;
     switch (source.source) {
         // Unreachable: `items` above answers for every contiguous
-        // value, so `chunks` reaching here has taken the abstract arm.
+        // value, so `chunks` reaching here has taken another arm.
         .contiguous => |elements| return .{ .items = elements, .copied = false },
-        .abstract => {
+        .vector, .abstract => {
             // Allocated at the length rather than grown into, the count being
             // known before the first run is taken.
             const block = gc_alloc.scratch_heap.alloc(repr.Value, source.len) catch
@@ -1514,23 +1530,22 @@ pub fn halfRange(argv: []const repr.Value, n: usize, length: i32, which: [*:0]co
     return argHalfrange(argv, n, length, which, &fault) orelse raiseFault(argv, fault);
 }
 
-/// The run of an indexed abstract that holds `index`.
+/// The run of a vector or an indexed abstract that holds `index`.
 ///
-/// `x` is the abstract, `index` the element asked for and `len` the length it
+/// `x` is the value, `index` the element asked for and `len` the length it
 /// reported. The run is whole rather than cut at `index`, so its `start` may
 /// be below `index`.
 ///
-/// This function raises if `x` is not an abstract whose contents are elements,
-/// if `index` is not below `len`, or where `Chunks.next` raises for the run.
+/// This function raises if `x` is neither a vector nor an abstract whose
+/// contents are elements, if `index` is not below `len`, or where
+/// `Chunks.next` raises for the run.
 ///
 /// See `Chunks` for how long a run stays valid.
 pub fn indexedChunk(x: repr.Value, index: usize, len: usize) raise.Error!abi.Chunk {
-    if (!repr.checkType(x, repr.Tag.abstract)) {
-        return pp_format.panicf("expected indexed abstract, got %v", .{x});
+    const vector = repr.checkType(x, repr.Tag.vector);
+    if (!vector and !checkindexedAbstract(x)) {
+        return pp_format.panicf("expected vector or indexed abstract, got %v", .{x});
     }
-    const abst = wrap.toAbstract(x);
-    const at = abi.abstractHead(abst).type;
-    if (at.contents != .elements) return pp_format.panicf("expected indexed abstract, got %v", .{x});
     if (index >= len) {
         return pp_format.panicf("index %u is past the end of %t of length %u", .{
             @as(u64, index),
@@ -1538,7 +1553,15 @@ pub fn indexedChunk(x: repr.Value, index: usize, len: usize) raise.Error!abi.Chu
             @as(u64, len),
         });
     }
-    return takeChunk(abst, at, index, len);
+    if (vector) {
+        const v = wrap.toVector(x);
+        // A length the vector does not have is refused as `takeChunk` refuses
+        // a run past it.
+        if (len > v.count) return pp_format.panicf("chunk of %t does not hold index %u", .{ x, @as(u64, index) });
+        return vectors.chunk(v, index);
+    }
+    const abst = wrap.toAbstract(x);
+    return takeChunk(abst, abi.abstractHead(abst).type, index, len);
 }
 
 /// `indexedChunk`, published.
@@ -1654,7 +1677,7 @@ pub fn panicDictionary(x: repr.Value, n: i32, also: repr.TagSet) raise.Error {
 ///
 /// `x` is the value in slot `n`, and `also` is the other types the site
 /// accepts, empty where it reads an indexed value alone. The refusal names
-/// `indexed value` where `panicType` would name array and tuple.
+/// `indexed value` where `panicType` would name array, vector and tuple.
 pub fn panicIndexed(x: repr.Value, n: i32, also: repr.TagSet) raise.Error {
     return pp_format.panicf("bad slot #%d, expected %K, got %v", .{ n, also.with(repr.TagSet.indexed), x });
 }
@@ -1764,6 +1787,12 @@ fn checkRange(comptime T: type, dval: f64) bool {
     return dval == back;
 }
 
+/// Whether `x` is an abstract whose contents are elements.
+fn checkindexedAbstract(x: repr.Value) bool {
+    if (!repr.checkType(x, repr.Tag.abstract)) return false;
+    return abi.abstractHead(wrap.toAbstract(x)).type.contents == .elements;
+}
+
 /// The dictionary at `n` as the struct the boundary accepts.
 ///
 /// The published `getdictionary`. It raises `panicDictionary`'s refusal for
@@ -1811,16 +1840,16 @@ fn indexedAbi(argv: []const repr.Value, n: usize) raise.Error!abi.Indexed {
 
 /// An indexed value as the boundary gives it to a module, or nothing.
 ///
-/// An array's or a tuple's elements are its own storage. An abstract's are
-/// left to `indexedChunk`, so `items` is null and `len` is what its `length`
-/// callback reported.
+/// An array's or a tuple's elements are its own storage. A vector's and an
+/// abstract's are left to `indexedChunk`, so `items` is null and `len` is the
+/// vector's count or what the abstract's `length` callback reported.
 ///
 /// This function raises if an abstract's `length` callback raises.
 fn indexedOf(x: repr.Value) raise.Error!?abi.Indexed {
     const it = (try chunks(x)) orelse return null;
     return switch (it.source) {
         .contiguous => |elements| .{ .items = elements.ptr, .len = elements.len, .value = x },
-        .abstract => .{ .items = null, .len = it.len, .value = x },
+        .vector, .abstract => .{ .items = null, .len = it.len, .value = x },
     };
 }
 

@@ -307,13 +307,13 @@ pub fn weak(capacity: usize) *Array {
 /// reservation is also what can move a run: concatenating an array onto
 /// itself makes the array both the source and the destination, and the growth
 /// may move the payload the run points into, so the view is taken again after
-/// it. An abstract's runs come from its own payload, which the growth does
-/// not touch.
+/// it. A vector's and an abstract's runs come from their own nodes and
+/// payloads, which the growth does not touch.
 fn appendIndexed(array: *Array, x: repr.Value, it: *args_core.Chunks) raise.Error!void {
     if (array.count +| it.len > std.math.maxInt(i32)) return raise.panic("array overflow");
     const aliased = switch (it.source) {
         .contiguous => |vals| array.data == vals.ptr,
-        .abstract => false,
+        .vector, .abstract => false,
     };
     ensure(array, array.count + it.len, 2);
     if (aliased) it.source = .{ .contiguous = args_core.items(x).? };

@@ -587,9 +587,9 @@ inline fn isDigit(byte: u8) bool {
 }
 
 /// `%K`. Renders a type set a site reading through the indexed or the
-/// dictionary protocol accepts, as `pushtypes` does, with array and tuple named
-/// together as `indexed value` and table and struct as `dictionary value`,
-/// placed last in that order.
+/// dictionary protocol accepts, as `pushtypes` does, with array, vector and
+/// tuple named together as `indexed value` and table and struct as
+/// `dictionary value`, placed last in that order.
 ///
 /// A composite is named only where the set has both of its types. A tag set
 /// cannot name an abstract type whose contents are elements or pairs, which
