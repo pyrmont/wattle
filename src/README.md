@@ -303,7 +303,7 @@ targets over their corpora, the module-error fixtures, the CLI checks and the
 34 Janet suites. On a native build it also runs `quickbin`.
 
 `test/runtime` prints `All N tests passed.` Add `--fuzz` to `zig build fuzz`
-for a campaign. `quickbin` builds `examples/quickbin/main.janet` with
+for a campaign. `quickbin` builds `examples/quickbin/main.wattle` with
 `examples/digest` linked in.
 
 No header is installed.
@@ -370,7 +370,7 @@ build options are, and only their bodies fail, so `compwhen (dyn 'os/realpath)`
 sees a live binding and compiles the guarded code anyway.
 
 Guard regions rather than skipping a suite. A suite that does not run reports
-`0 of 0`, which looks the same as a pass. `suite-ev.janet` guards its network
+`0 of 0`, which looks the same as a pass. `suite-ev.wattle` guards its network
 and subprocess regions separately, so its channel, fiber and deadline tests
 still run in both reduced configurations. Where a whole suite depends on the
 feature, it exits immediately after `start-suite` with `(compwhen (not (dyn
@@ -379,7 +379,7 @@ runs a file one top-level form at a time.
 
 `-Dreduced-os=true` is a known gap and is deliberately not guarded. It leaves
 only `os/exit`, `os/which`, `os/arch` and `os/compiler`, which breaks
-`test/helper.janet` itself, so every suite fails before reaching its own code.
+`test/helper.wattle` itself, so every suite fails before reaching its own code.
 Guarding it would mean skipping `suite-os` entirely along with much of
 `suite-ev` and `suite-bundle`, and the run would pass while testing much less
 than it appears to. Revisit it only with a plan for what the suites should

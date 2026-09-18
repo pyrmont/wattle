@@ -426,12 +426,12 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // copy, and its previous contents are dropped. The last line has no
     // newline, so this also covers the EOF exit.
     expect(try doString(
-        "(let [b @\"seed\"] [(= b (getline \"P>\" b)) b])",
+        "(let [b !\"seed\"] [(= b (getline \"P>\" b)) b])",
         "contract",
         &result,
     ) == 0);
     {
-        const pair = wrap.toTuple(result);
+        const pair = harness.elems(result);
         const b = wrap.toBuffer(pair[1]);
         expect(repr.truthy(pair[0]));
         expect(b.count == 6);
@@ -505,11 +505,11 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // `getline` over this one and honours the env, and the core reader accepts
     // the argument and ignores it.
     c.rewind(in);
-    expect(try doString("(getline \"\" @\"\" :not-a-table)", "contract", &result) == 0);
+    expect(try doString("(getline \"\" !\"\" :not-a-table)", "contract", &result) == 0);
     expect(wrap.toBuffer(result).count == 11);
     // A fourth is a plain arity error.
     errReset();
-    expect(try doString("(getline \"\" @\"\" :a :b)", "contract", &result) ==
+    expect(try doString("(getline \"\" !\"\" :a :b)", "contract", &result) ==
         constants.JANET_DO_ERROR_RUNTIME);
 
     tables.put(test_env, value.fromBytes("in", .keyword), wrap.fromNil());

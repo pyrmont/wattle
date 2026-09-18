@@ -57,7 +57,6 @@ const repr = @import("repr");
 const subsystems = @import("subsystems");
 const symbols = @import("subsystems").value.symbols;
 const tables = @import("subsystems").value.tables;
-const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
@@ -294,9 +293,9 @@ fn thePublishedEntryPointDefinesAndRegisters() void {
 
     const entry = tables.get(env, value.fromBytes("three", .symbol));
     const map = tables.get(wrap.toTable(entry), value.fromBytes("source-map", .keyword));
-    expect(harness.isType(map, repr.Tag.tuple));
-    const tup = wrap.toTuple(map);
-    expect(utils.tupleHead(tup).length == 3);
+    expect(harness.isIndexed(map));
+    const tup = harness.elems(map);
+    expect(tup.len == 3);
     expect(harness.stringValueIs(tup[0], "probe.c"));
     expect(harness.integerIs(tup[1], 42));
     expect(harness.integerIs(tup[2], 1));

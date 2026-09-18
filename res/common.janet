@@ -32,7 +32,7 @@
 # A hung build is not one process. `zig build test` starts compiler workers and
 # a janet running the suites, so killing the shell leaves the interesting part
 # alive -- and Phase 10 Part 16 watched a timed-out `zig build test` keep a
-# parked `suite-ev.janet` running for forty-seven minutes, competing for the
+# parked `suite-ev.wattle` running for forty-seven minutes, competing for the
 # machine and for the `unique.txt` every matrix entry creates in the working
 # directory. A timeout that leaves the thing it timed out running poisons every
 # entry after it.

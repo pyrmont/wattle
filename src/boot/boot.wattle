@@ -1,4 +1,4 @@
-; The core janet library
+; The core wattle library
 ; Copyright 2026 © Calvin Rose
 
 ;;;
@@ -21,7 +21,9 @@
       (fn recur [i]
         (def {i ith} more)
         (def t (type ith))
-        (if (= t :tuple)
+        ; A parameter list is a vector in Wattle and a tuple in a syntax tree
+        ; built by hand. `or` is not defined this early in the bootstrap.
+        (if (in {:tuple true :vector true} t)
           i
           (do
             (if (= t :string)
@@ -108,6 +110,7 @@
 (defn table? "Check if x is a table." [x] (= (type x) :table))
 (defn map? "Check if x is a map." [x] (= (type x) :map))
 (defn array? "Check if x is an array." [x] (= (type x) :array))
+(defn vector? "Check if x is a vector." [x] (= (type x) :vector))
 (defn tuple? "Check if x is a tuple." [x] (= (type x) :tuple))
 (defn boolean? "Check if x is a boolean." [x] (= (type x) :boolean))
 (defn truthy? "Check if x is truthy." [x] (if x true false))
@@ -316,9 +319,9 @@
     (set ret (if (= i (- len 1))
                v
                (if (idempotent? v)
-                 ['if v ret v]
+                 (tuple 'if v ret v)
                  (do (def s (gensym))
-                   ['if ['def s v] ret s])))))
+                   (tuple 'if (tuple 'def s v) ret s))))))
   ret)
 
 (defmacro or
@@ -366,7 +369,7 @@
   (def len (length syms))
   (def accum ![])
   (while (< i len)
-    (array/push accum (in syms i) [gensym])
+    (array/push accum (in syms i) (tuple gensym))
     (++ i))
   `(let (~|accum) ~|body))
 
@@ -441,7 +444,7 @@
   [[binding ctor dtor] & body]
   `(do
      (def ~binding ~ctor)
-     ~(defer-impl :with [(or dtor :close) binding] body)))
+     ~(defer-impl :with (tuple (or dtor :close) binding) body)))
 
 ; declare ahead of time
 (var- macexvar nil)
@@ -473,7 +476,7 @@
   nil without evaluating the body. Otherwise, the same as `with`."""
   [[binding ctor dtor] & body]
   `(as-macro ~if-let [~binding ~ctor]
-     ~(defer-impl :when-with [(or dtor :close) binding] body)))
+     ~(defer-impl :when-with (tuple (or dtor :close) binding) body)))
 
 (defmacro if-with
   """Similar to `with`, but if binding is false or nil, evaluates
@@ -481,7 +484,7 @@
   `ctor` is bound to binding."""
   [[binding ctor dtor] truthy &opt falsey]
   `(as-macro ~if-let [~binding ~ctor]
-     ~(defer-impl :if-with [(or dtor :close) binding] [truthy])
+     ~(defer-impl :if-with (tuple (or dtor :close) binding) [truthy])
      ~falsey))
 
 (defn- for-var-template
@@ -1238,6 +1241,18 @@
     (set k (next ind k)))
   ret)
 
+(defn- vector-slice
+  """
+  The indexed slice `take` and `drop` want: a vector, whatever the value is.
+
+  `slice` prefers bytes where a value is both bytes and indexed, which is
+  right for `slice` and wrong here, since the branch has already chosen
+  indexed. `tuple/slice` reads any indexed value and `vec` gives the sequence
+  a vector rather than the call form.
+  """
+  [ind start &opt end]
+  (vec (tuple/slice ind start end)))
+
 (defn- take-n-slice
   [f n ind]
   (def len (length ind))
@@ -1251,7 +1266,7 @@
   respectively. If `n` is negative, takes the last `n` elements instead."""
   [n ind]
   (cond
-    (indexed? ind) (take-n-slice tuple/slice n ind)
+    (indexed? ind) (take-n-slice vector-slice n ind)
     (bytes? ind) (take-n-slice string/slice n ind)
     (dictionary? ind) (do
                         (var left n)
@@ -1275,7 +1290,7 @@
   "Same as `(take-while (complement pred) ind)`."
   [pred ind]
   (cond
-    (indexed? ind) (take-until-slice tuple/slice pred ind)
+    (indexed? ind) (take-until-slice vector-slice pred ind)
     (bytes? ind) (take-until-slice string/slice pred ind)
     (dictionary? ind) (tabseq [[i x] :pairs ind :until (pred x)] i x)
     (seq [x :in ind :until (pred x)] x)))
@@ -1306,7 +1321,7 @@
   instance, respectively. If `n` is negative, drops the last `n` elements instead."""
   [n ind]
   (cond
-    (indexed? ind) (drop-n-slice tuple/slice n ind)
+    (indexed? ind) (drop-n-slice vector-slice n ind)
     (bytes? ind) (drop-n-slice string/slice n ind)
     (map? ind) (drop-n-dict map/to-table n ind)
     (table? ind) (drop-n-dict table/clone n ind)
@@ -1333,7 +1348,7 @@
   "Same as `(drop-while (complement pred) ind)`."
   [pred ind]
   (cond
-    (indexed? ind) (drop-until-slice tuple/slice pred ind)
+    (indexed? ind) (drop-until-slice vector-slice pred ind)
     (bytes? ind) (drop-until-slice string/slice pred ind)
     (map? ind) (drop-until-dict map/to-table pred ind)
     (table? ind) (drop-until-dict table/clone pred ind)
@@ -1353,12 +1368,12 @@
     (def ret ![])
     (each f funs
       (array/push ret (f |args)))
-    (tuple/slice ret 0)))
+    (vec ret)))
 
 (defmacro juxt
   "Macro form of `juxt*`. Same behavior but more efficient."
   [& funs]
-  (def parts !['tuple])
+  (def parts !['vector])
   (def $args (gensym))
   (each f funs
     (array/push parts (tuple apply f $args)))
@@ -1521,6 +1536,7 @@
     :table (walk-dict f form)
     :map (table/to-map (walk-dict f form))
     :array (walk-ind f form)
+    :vector (vector |(walk-ind f form))
     :tuple (keep-syntax! form (walk-ind f form))
     form))
 
@@ -1583,9 +1599,9 @@
   (def len (length vars))
   (unless (even? len) (error "expected even number of argument to vars"))
   (def temp (seq [i :range [0 len 2]] (gensym)))
-  (def saveold (seq [i :range [0 len 2]] ['def (temp (/ i 2)) (vars i)]))
-  (def setnew (seq [i :range [0 len 2]] ['set (vars i) (vars (+ i 1))]))
-  (def restoreold (seq [i :range [0 len 2]] ['set (vars i) (temp (/ i 2))]))
+  (def saveold (seq [i :range [0 len 2]] (tuple 'def (temp (/ i 2)) (vars i))))
+  (def setnew (seq [i :range [0 len 2]] (tuple 'set (vars i) (vars (+ i 1)))))
+  (def restoreold (seq [i :range [0 len 2]] (tuple 'set (vars i) (temp (/ i 2)))))
   (with-syms [ret f s]
     `(do
        ~|saveold
@@ -1889,7 +1905,7 @@
 
 (defn kvs
   """Takes a table or map and returns a new array of key value pairs
-  like `@[k v k v ...]`."""
+  like `![k v k v ...]`."""
   [dict]
   (def ret ![])
   (loop [k :keys dict] (array/push ret k (in dict k)))
@@ -1945,9 +1961,9 @@
   of size `n`. Returns a new array."""
   [n ind]
   (cond
-    (indexed? ind) (partition-slice tuple/slice n ind)
+    (indexed? ind) (partition-slice vector-slice n ind)
     (bytes? ind) (partition-slice string/slice n ind)
-    (partition-slice tuple/slice n (values ind))))
+    (partition-slice vector-slice n (values ind))))
 
 ;;;
 ;;;
@@ -2040,7 +2056,7 @@
   ; Keep an array for accumulating the compilation output
   (def x-sym (if (idempotent? x) x (gensym)))
   (def accum ![])
-  (if (not= x x-sym) (array/push accum ['def x-sym x]))
+  (if (not= x x-sym) (array/push accum (tuple 'def x-sym x)))
 
   ; Table of gensyms
   (def symbols !{[nil nil] x-sym})
@@ -2055,7 +2071,7 @@
     (or (get symbols symbol-key)
         (let [s (gensym)]
           (put symbols symbol-key s)
-          (emit ['def s [get parent-sym key]])
+          (emit (tuple 'def s (tuple get parent-sym key)))
           s)))
 
   (defn get-length-sym
@@ -2063,7 +2079,8 @@
     (or (get length-symbols parent-sym)
         (let [s (gensym)]
           (put length-symbols parent-sym s)
-          (emit ['def s ['if [indexed? parent-sym] [length parent-sym]]])
+          (emit (tuple 'def s (tuple 'if (tuple indexed? parent-sym)
+                                  (tuple length parent-sym))))
           s)))
 
   (defn visit-pattern-1
@@ -2071,7 +2088,8 @@
     (if (= pattern '_) (break))
     (def s (get-sym parent-sym key))
     (def t (type pattern))
-    (def isarr (or (= t :array) (and (= t :tuple) (= (tuple/type pattern) :brackets))))
+    (def isarr (or (= t :array) (= t :vector)
+                   (and (= t :tuple) (= (tuple/type pattern) :brackets))))
     (cond
 
       ; match local binding
@@ -2103,7 +2121,7 @@
             (when (not= (type (pattern (inc i))) :symbol)
               (errorf "expected symbol following & in pattern, found %q" (pattern (inc i))))
 
-            (put b2g (pattern (inc i)) ![[slice s i]])
+            (put b2g (pattern (inc i)) ![(tuple slice s i)])
             (break))
           (when (= sub-pattern '$)
             (when (not= (length pattern) (inc i))
@@ -2126,19 +2144,21 @@
     (if (= pattern '_) (break))
     (def s (get-sym parent-sym key))
     (def t (type pattern))
-    (def isarr (or (= t :array) (and (= t :tuple) (= (tuple/type pattern) :brackets))))
+    (def isarr (or (= t :array) (= t :vector)
+                   (and (= t :tuple) (= (tuple/type pattern) :brackets))))
     (when isarr
       (array/push anda (get-length-sym s))
       (def amp-index (find-index (fn [x] (= x '&)) pattern))
       (def dollar-index (find-index (fn [x] (= x '$)) pattern))
       (def pattern-len (or dollar-index amp-index (length pattern)))
-      (array/push anda [(if dollar-index = <=) pattern-len (get-length-sym s)]))
+      (array/push anda
+                  (tuple (if dollar-index = <=) pattern-len (get-length-sym s))))
     (cond
 
       ; match data structure template
       (or (= t :map) (= t :table))
       (eachp [i sub-pattern] pattern
-        (array/push anda [not= nil (get-sym s i)])
+        (array/push anda (tuple not= nil (get-sym s i)))
         (visit-pattern-2 anda gun preds s i sub-pattern))
 
       isarr
@@ -2153,7 +2173,7 @@
 
       ; match quoted literal
       (and (= t :tuple) (= 2 (length pattern)) (= 'quote (pattern 0)))
-      (array/push anda ['= s pattern])
+      (array/push anda (tuple '= s pattern))
 
       ; match global unification
       (and (= t :tuple) (= 2 (length pattern)) (= 'unquote (pattern 0)))
@@ -2168,7 +2188,7 @@
         (visit-pattern-2 anda gun preds parent-sym key (pattern 0)))
 
       ; match literal
-      (array/push anda ['= s pattern])))
+      (array/push anda (tuple '= s pattern))))
 
   ; Compile the patterns
   (each [pattern expression] patterns
@@ -2182,15 +2202,16 @@
     (def unify ![])
     (each syms b2g
       (when (< 1 (length syms))
-        (array/push unify [= |syms])))
+        (array/push unify (tuple = |syms))))
     ; Global unification
     (eachp [binding syms] gun
-      (array/push unify [= binding |syms]))
+      (array/push unify (tuple = binding |syms)))
     (sort unify)
     (array/concat anda unify)
     ; Final binding
-    (def defs (seq [[k v] :in (sort (pairs b2g))] ['def k (first v)]))
-    (def unused-defs (seq [[k v] :in (sort (pairs b2g))] ['def k :unused (first v)]))
+    (def defs (seq [[k v] :in (sort (pairs b2g))] (tuple 'def k (first v))))
+    (def unused-defs
+      (seq [[k v] :in (sort (pairs b2g))] (tuple 'def k :unused (first v))))
     ; Predicates
     (unless (empty? preds)
       (def pred-join `(do ~|unused-defs (and ~|preds)))
@@ -2198,7 +2219,8 @@
     ; Use `unused-defs` instead of `defs` when we have predicates to avoid unused binding lint
     ; e.g. (match x (n (even? n)) :yes :no) should not warn on unused binding `n`.
     ; This is unfortunately not perfect since one programmer written binding is expanded for use in multiple places.
-    (emit-branch (tuple/slice anda) ['do |(if (next preds) unused-defs defs) expression]))
+    (emit-branch (tuple/slice anda)
+                 (tuple 'do |(if (next preds) unused-defs defs) expression)))
 
   ; Expand branches
   (def stack ![else])
@@ -2245,6 +2267,7 @@
   (defn expand-bindings [x]
     (case (type x)
       :array (map expand-bindings x)
+      :vector (vector |(map expand-bindings x))
       :tuple (keep-syntax! x (map expand-bindings x))
       :table (dotable x expand-bindings)
       :map (table/to-map (dotable x expand-bindings))
@@ -2283,6 +2306,7 @@
                    (if (= 'unquote x0)
                      (tuple x0 (recur (get x 1)))
                      (tuple/slice (map qq x)))))
+        :vector (vector |(map qq x))
         :array (map qq x)
         :table (table |(map qq (kvs x)))
         :map (hash-map |(map qq (kvs x)))
@@ -2319,6 +2343,7 @@
       :tuple (if (= (tuple/type x) :brackets)
                (tuple/brackets |(map recur x))
                (dotup x))
+      :vector (vector |(map recur x))
       :array (map recur x)
       :map (table/to-map (dotable x recur))
       :table (dotable x recur)
@@ -2364,7 +2389,12 @@
   [x]
   (def tx (type x))
   (cond
-    (or (= tx :array) (= tx :tuple))
+    ; An array's immutable counterpart is a vector, as a table's is a map and
+    ; a buffer's is a string. A tuple is already immutable and stays one.
+    (or (= tx :array) (= tx :vector))
+    (vec (map freeze x))
+
+    (= tx :tuple)
     (tuple/slice (map freeze x))
 
     (or (= tx :table) (= tx :map))
@@ -2393,6 +2423,7 @@
   [ds]
   (case (type ds)
     :array (walk-ind thaw ds)
+    :vector (walk-ind thaw ds)
     :tuple (walk-ind thaw ds)
     :table (walk-dict thaw (table/proto-flatten ds))
     :map (walk-dict thaw ds)
@@ -2406,6 +2437,7 @@
   [ds]
   (case (type ds)
     :array (walk-ind thaw-keep-keys ds)
+    :vector (walk-ind thaw-keep-keys ds)
     :tuple (walk-ind thaw-keep-keys ds)
     :table (walk-dict-values thaw-keep-keys (table/proto-flatten ds))
     :map (walk-dict-values thaw-keep-keys ds)
@@ -2420,7 +2452,7 @@
   (or
     (not= tx (type y))
     (cond
-      (or (= tx :tuple) (= tx :array))
+      (or (= tx :tuple) (= tx :array) (= tx :vector))
       (or (not= (length x) (length y))
           (do
             (var ret false)
@@ -2539,7 +2571,9 @@
   (def expanded (macex arg on-binding))
   (def name-splice (if name [name] [:short-fn]))
   (def fn-args (seq [i :range [0 (+ 1 max-param-seen)]] (symbol prefix '$ i)))
-  `(fn ~|name-splice [~|fn-args ~|(if vararg ['& (symbol prefix '$&)] [])] ~expanded))
+  `(fn ~|name-splice
+     [~|fn-args ~|(if vararg (tuple '& (symbol prefix '$&)) [])]
+     ~expanded))
 
 ;;;
 ;;;
@@ -3055,10 +3089,10 @@
   mp)
 
 (module/add-paths ":native:" :native)
-(module/add-paths "/init.janet" :source)
-(module/add-paths ".janet" :source)
+(module/add-paths "/init.wattle" :source)
+(module/add-paths ".wattle" :source)
 (module/add-paths ".jimage" :image)
-(module/add-file-extension ".janet" :source)
+(module/add-file-extension ".wattle" :source)
 (module/add-file-extension ".jimage" :source)
 ; These obviously won't work on all platforms, but if a user explicitly
 ; tries to import them, we may as well try. `.dylib` is what macOS names a
@@ -4157,7 +4191,7 @@
               :map-symbols map-symbols}))
 
   (defmacro ffi/defbind-alias :flycheck
-    "Generate bindings for native functions in a convenient manner.     Similar to defbind but allows for the janet function name to be     different than the FFI function."
+    "Generate bindings for native functions in a convenient manner.     Similar to defbind but allows for the wattle function name to be     different than the FFI function."
     [name alias ret-type & body]
     (def real-ret-type (eval ret-type))
     (def meta (slice body 0 -2))
@@ -4245,7 +4279,7 @@
     (tuple? src)
     (if (= (tuple/type src) :brackets)
       (all no-side-effects src))
-    (array? src)
+    (or (array? src) (vector? src))
     (all no-side-effects src)
     (dictionary? src)
     (and (all no-side-effects (keys src))
@@ -4327,7 +4361,7 @@
     files)
 
   (defn- rmrf
-    "rm -rf in janet"
+    "rm -rf in wattle"
     [x]
     (case (os/lstat x :mode)
       nil nil
@@ -4407,7 +4441,7 @@
             (def pfx "could not find module @syspath/bundle/")
             (def msg (if (and (string? e)
                               (string/has-prefix? pfx e))
-                       "bundle must contain bundle.janet or bundle/init.janet"
+                       "bundle must contain bundle.wattle or bundle/init.wattle"
                        e))
             (propagate msg f))))))
 
@@ -4538,8 +4572,8 @@
     (assertf (not (fexists (get-manifest-filename bundle-name)))
              "bundle %v is already installed" bundle-name)
     ; Check bscript
-    (def bscript-src1 (string path s "bundle" s "init.janet"))
-    (def bscript-src2 (string path s "bundle.janet"))
+    (def bscript-src1 (string path s "bundle" s "init.wattle"))
+    (def bscript-src2 (string path s "bundle.wattle"))
     (def bscript-src (cond
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
@@ -4551,7 +4585,7 @@
       (copyfile infofile-src2 (bundle-file bundle-name "info.jdn")))
     ; Copy aliased bscript
     (when (fexists bscript-src2)
-      (copyfile bscript-src2 (bundle-file bundle-name "init.janet")))
+      (copyfile bscript-src2 (bundle-file bundle-name "init.wattle")))
     ; Copy some files into the new location unconditionally
     (def implicit-sources (string path s "bundle"))
     (when (= :directory (os/stat implicit-sources :mode))
@@ -4606,7 +4640,7 @@
     (assertf (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
     (def s (sep))
     (os/mkdir (string dest-dir s "bundle"))
-    (def install-hook (string dest-dir s "bundle" s "init.janet"))
+    (def install-hook (string dest-dir s "bundle" s "init.wattle"))
     (edefer (rmrf dest-dir) ; don't leave garbage on failure
       (def install-source ![])
       (def syspath (bundle-rpath (dyn *syspath*)))
@@ -4885,16 +4919,16 @@
                --help (-h)             : Show this help
                --version (-v)          : Print the version string
                --stdin (-s)            : Use raw stdin instead of getline like functionality
-               --eval (-e) code        : Execute a string of janet
+               --eval (-e) code        : Execute a string of wattle
                --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
                --debug (-d)            : Set the debug flag in the REPL
                --repl (-r)             : Enter the REPL after running all scripts
-               --noprofile (-R)        : Disables loading profile.janet when WATTLE_PROFILE is present
+               --noprofile (-R)        : Disables loading profile.wattle when WATTLE_PROFILE is present
                --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
                --quiet (-q)            : Hide logo (quiet)
                --flycheck (-k)         : Compile scripts but do not execute (flycheck)
                --syspath (-m) syspath  : Set system path for loading global modules
-               --compile (-c) source output : Compile janet source code into an image
+               --compile (-c) source output : Compile wattle source code into an image
                --image (-i)            : Load the script argument as an image file instead of source code
                --nocolor (-n)          : Disable ANSI color output in the REPL
                --color (-N)            : Enable ANSI color output in the REPL
@@ -4928,7 +4962,7 @@
              (if (< (+ i 2) (length args))
                (in args (+ i 2))
                (string
-                 (if (string/has-suffix? ".janet" path) (string/slice path 0 -7) path)
+                 (if (string/has-suffix? ".wattle" path) (string/slice path 0 -8) path)
                  ".jimage")))
            (spit output-path (make-image e))
            (set no-file false)
@@ -5021,8 +5055,8 @@
         (def getter (if raw-stdin getstdin getline))
         (defn getchunk [buf p]
           (getter (getprompt p) buf env))
-        (when-let [profile.janet (dyn *profilepath*)]
-          (dofile profile.janet :exit true :env env)
+        (when-let [profile-source (dyn *profilepath*)]
+          (dofile profile-source :exit true :env env)
           (put env *current-file* nil))
         (repl getchunk nil env)))))
 

@@ -767,12 +767,12 @@ fn theCoreFunctions() void {
         \\(assert (= "invalid flag +, expected w, a, or r" (why (keyword "+"))))
         \\(assert (= "invalid flag q, expected +, b, or n" (why :rq)))
         \\(assert (= "invalid flag q, expected +, b, or n" (why :r+q)))
-        \\# A repeat gets its own message: naming `+` among the flags expected
-        \\# while refusing a `+` would be no diagnosis at all.
+        \\; A repeat gets its own message: naming `+` among the flags expected
+        \\; while refusing a `+` would be no diagnosis at all.
         \\(assert (= "repeated flag + in file mode" (why :r++)))
         \\(assert (= "repeated flag b in file mode" (why :rbb)))
         \\(assert (= "repeated flag n in file mode" (why :rnn)))
-        \\# Across intervening flags, not only next to itself.
+        \\; Across intervening flags, not only next to itself.
         \\(assert (= "repeated flag b in file mode" (why :rbnb)))
     );
 
@@ -810,7 +810,7 @@ fn theCoreFunctions() void {
         \\(assert (= "x" (string (slurp "wattle-io-core-public-9d24"))))
         \\(assert (= "invalid flag z, expected w, a, or r"
         \\           (last (protect (file/open "wattle-io-core-public-9d24" :zzz 0)))))
-        \\# The read mode is still the default when no mode is given at all.
+        \\; The read mode is still the default when no mode is given at all.
         \\(def f (file/open "wattle-io-core-public-9d24"))
         \\(assert (= "x" (string (file/read f :all))))
         \\(file/close f)

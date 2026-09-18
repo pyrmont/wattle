@@ -79,7 +79,6 @@ const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
-const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vm_entry = subsystems.vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -489,7 +488,7 @@ const cfuns = [_]abi.Reg{
 /// it as a method, and `vm.methodInvoke` calls `call` for a Janet function.
 fn aSignalTheLoopReturnsIsCoerced() void {
     const resumed = vm_entry.pcall(
-        evalfn("(fn [] (def t @{:+ (fn [self other] (yield 5))}) (+ t 1))"),
+        evalfn("(fn [] (def t !{:+ (fn [self other] (yield 5))}) (+ t 1))"),
         &.{},
         null,
     );
@@ -503,10 +502,10 @@ fn aSignalTheLoopReturnsIsCoerced() void {
 /// addresses.
 fn aTracedCall() void {
     const named = eval(
-        "(do (def buf @\"\")" ++
+        "(do (def buf !\"\")" ++
             "    (defn adder [self other] 5)" ++
             "    (trace adder)" ++
-            "    (def t @{:+ adder})" ++
+            "    (def t !{:+ adder})" ++
             "    (with-dyns [:err buf] (+ t 1))" ++
             "    (string buf))",
     );
@@ -521,8 +520,8 @@ fn aTracedCall() void {
     expect(line[length - 2] == ')');
 
     const anon = eval(
-        "(do (def buf @\"\")" ++
-            "    (def t @{:+ (trace (fn [self other] 5))})" ++
+        "(do (def buf !\"\")" ++
+            "    (def t !{:+ (trace (fn [self other] 5))})" ++
             "    (with-dyns [:err buf] (+ t 1))" ++
             "    (string buf))",
     );
@@ -540,16 +539,16 @@ fn aTracedCall() void {
 /// through `call`, in the same `with-dyns` body, untraced and then traced.
 fn theDepthACallRunsAt() void {
     const depths = eval(
-        "(do (def buf @\"\")" ++
+        "(do (def buf !\"\")" ++
             "    (defn probe-depth [self other] (vmentry/depth))" ++
-            "    (def t @{:+ probe-depth})" ++
+            "    (def t !{:+ probe-depth})" ++
             "    (def plain (with-dyns [:err buf] [(vmentry/depth) (+ t 1)]))" ++
             "    (trace probe-depth)" ++
             "    (def traced (with-dyns [:err buf] [(vmentry/depth) (+ t 1)]))" ++
-            "    [;plain ;traced])",
+            "    [|plain |traced])",
     );
-    const four = wrap.toTuple(depths);
-    expect(tuples.head(four).length == 4);
+    const four = harness.elems(depths);
+    expect(four.len == 4);
     expect(harness.integerIs(four[1], wrap.toInteger(four[0]) + 1));
     expect(harness.integerIs(four[3], wrap.toInteger(four[2]) + 1));
 }

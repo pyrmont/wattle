@@ -79,7 +79,6 @@ const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const stream = subsystems.ev_stream;
 const subsystems = @import("subsystems");
-const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -699,7 +698,7 @@ fn theThreadedReplyTags() void {
 /// imposes rather than the wall clock: they come back in order.
 fn theOrderedTimeouts() void {
     const out = doString(
-        \\(def log @[])
+        \\(def log ![])
         \\(defn t [n d] (ev/go (fn [] (ev/sleep d) (array/push log n))))
         \\(t :c 0.03) (t :a 0.01) (t :b 0.02)
         \\(ev/sleep 0.06)
@@ -745,7 +744,7 @@ fn theTwoTimeoutConstructors() void {
     );
 
     const out = doString(
-        \\(def results @[])
+        \\(def results ![])
         \\(ev/go (fn []
         \\  (test/add-timeout 0.01 false)
         \\  (array/push results [:nil (ev/take (ev/chan 0))])))
@@ -758,14 +757,14 @@ fn theTwoTimeoutConstructors() void {
     const results = wrap.toArray(out);
     expect(results.count == 2);
     for (0..@intCast(results.count)) |i| {
-        const row = wrap.toTuple(results.slice()[i]);
+        const row = harness.elems(results.slice()[i]);
         if (harness.keywordIs(row[0], "nil")) {
             // `addtimeout_nil` resumes with nil rather than raising.
             expect(harness.isType(row[1], repr.Tag.nil));
         } else {
             // `addtimeout` cancels the fiber, so `protect` reports a failure
             // with the message the loop supplies.
-            const pair = wrap.toTuple(row[1]);
+            const pair = harness.elems(row[1]);
             expect(harness.isType(pair[0], repr.Tag.boolean));
             expect(!wrap.toBoolean(pair[0]));
             expect(payloadIs(pair[1], "timeout"));
@@ -808,9 +807,9 @@ fn theCancelOfANonTask() void {
     // stderr, and the fiber's last value is what the cancel passed.
     var event = wrap.fromNil();
     expect(try_(channel.channelTake(sup, &event)));
-    expect(harness.isType(event, repr.Tag.tuple));
-    const tup = wrap.toTuple(event);
-    expect(tuples.head(tup).length == 3);
+    expect(harness.isIndexed(event));
+    const tup = harness.elems(event);
+    expect(tup.len == 3);
     expect(harness.keywordIs(tup[0], "error"));
     expect(wrap.toFiber(tup[1]) == fiber);
     expect(harness.isType(tup[2], repr.Tag.nil));
@@ -830,7 +829,7 @@ fn theWakeAnswers() void {
     const out = doString("[(fiber/new (fn [x] x) :e) (fiber/new (fn [x] x) :e)]");
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const cancelled = wrap.toFiber(tup[0]);
 
     // The supervisor takes the cancelled fiber's error, which would otherwise
@@ -855,14 +854,14 @@ fn theWakeAnswers() void {
 /// `ev.schedule` appends. Nothing in Janet chooses between them.
 fn theScheduleSoonOrder() void {
     const out = doString(
-        \\(def log @[])
+        \\(def log ![])
         \\(def a (fiber/new (fn [] (array/push log :a))))
         \\(def b (fiber/new (fn [] (array/push log :b))))
         \\[log a b]
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const log = wrap.toArray(tup[0]);
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
@@ -876,14 +875,14 @@ fn theScheduleSoonOrder() void {
 
 fn theScheduleSignalOrder() void {
     const out = doString(
-        \\(def log @[])
+        \\(def log ![])
         \\(def a (fiber/new (fn [] (array/push log :a)) :e))
         \\(def b (fiber/new (fn [] (array/push log :b)) :e))
         \\[log a b]
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const log = wrap.toArray(tup[0]);
 
     // `scheduleSignal` appends where `scheduleSoon` prepends, and nothing in
@@ -902,7 +901,7 @@ fn theScheduleSignalOrder() void {
 /// same. Three appends in a row can.
 fn theScheduleSignalIsFifo() void {
     const out = doString(
-        \\(def log @[])
+        \\(def log ![])
         \\(def a (fiber/new (fn [] (array/push log :a)) :e))
         \\(def b (fiber/new (fn [] (array/push log :b)) :e))
         \\(def c (fiber/new (fn [] (array/push log :c)) :e))
@@ -910,7 +909,7 @@ fn theScheduleSignalIsFifo() void {
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const log = wrap.toArray(tup[0]);
 
     for (1..4) |i| {
@@ -941,7 +940,7 @@ fn theMarkedTaskValues() void {
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const chan = try_(channel.getChannel(tup[0..1], 0)).?;
     const f = wrap.toFiber(tup[1]);
 
@@ -975,7 +974,7 @@ fn theLoopWaitsForASleepingTask() void {
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const chan = try_(channel.getChannel(tup[0..1], 0)).?;
 
     ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
@@ -1002,7 +1001,7 @@ fn theCancelAppends() void {
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const tup = wrap.toTuple(out);
+    const tup = harness.elems(out);
     const chan = try_(channel.getChannel(tup[0..1], 0)).?;
     const a = wrap.toFiber(tup[1]);
     const b = wrap.toFiber(tup[2]);
@@ -1022,8 +1021,8 @@ fn theCancelAppends() void {
     // The task queued before the cancel runs first: the cancel appended.
     expect(harness.keywordIs(first, "a"));
     // And b ran once, as an error, rather than twice or as a sleep.
-    expect(harness.isType(second, repr.Tag.tuple));
-    expect(harness.keywordIs(wrap.toTuple(second)[0], "error"));
+    expect(harness.isIndexed(second));
+    expect(harness.keywordIs(harness.elems(second)[0], "error"));
     expect(!try_(channel.channelTake(chan, &first)));
 }
 

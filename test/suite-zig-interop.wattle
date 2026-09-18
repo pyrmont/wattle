@@ -41,7 +41,7 @@
 ; stderr, and leaves the buffer empty at the end of input.
 (compwhen (dyn 'os/spawn)
   (def child
-    """(def b @"old")
+    """(def b !"old")
      (def r (getline "p> " b))
      (prin (if (= r b) "same" "other") "|" b)
      (prin "|" (getline "q> "))

@@ -67,7 +67,7 @@ Options
 
 - **-c**, **--compile** _source_ [_output_]:
   Load the module at _source_ and write an image of its environment to
-  _output_. If _output_ is omitted, it is _source_ with ``.janet`` replaced by
+  _output_. If _output_ is omitted, it is _source_ with ``.wattle`` replaced by
   ``.jimage``.
 
 - **-k**, **--flycheck**:
@@ -186,7 +186,7 @@ $ wattle
 Run a script with two arguments:
 
 ````
-$ wattle hello.janet Alice Bob
+$ wattle hello.wattle Alice Bob
 ````
 
 Evaluate an expression and print its result:
@@ -198,14 +198,14 @@ $ wattle -e '(print (+ 1 2 3))'
 Compile a program into an image and run the image:
 
 ````
-$ wattle -c hello.janet hello.jimage
+$ wattle -c hello.wattle hello.jimage
 $ wattle -i hello.jimage Alice
 ````
 
 Check a script for compile errors without running it:
 
 ````
-$ wattle -k hello.janet
+$ wattle -k hello.wattle
 ````
 
 SEE ALSO

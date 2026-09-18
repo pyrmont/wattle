@@ -180,7 +180,7 @@ fn sleepingAdvancesTheMonotonicClock() void {
 /// `os/clock` takes a source and a format, and the combinations are what the
 /// suites do not cover. Written in Janet rather than in Zig because each of
 /// these is one assertion about a returned value's shape, which Janet says in
-/// a quarter of the space, and because `:tuple` returns a tuple of two
+/// a quarter of the space, and because `:vector` returns a vector of two
 /// numbers whose second field is a nanosecond remainder, which is far easier
 /// to state as a predicate than to unwrap.
 fn theSourcesAndFormats() void {
@@ -202,8 +202,8 @@ fn theSourcesAndFormats() void {
     eval(
         \\(def whole (os/clock :realtime :int))
         \\(assert (= whole (math/floor whole)))
-        \\(def parts (os/clock :monotonic :tuple))
-        \\(assert (tuple? parts))
+        \\(def parts (os/clock :monotonic :vector))
+        \\(assert (vector? parts))
         \\(assert (= 2 (length parts)))
         \\(assert (= (parts 0) (math/floor (parts 0))))
         \\(assert (>= (parts 1) 0))

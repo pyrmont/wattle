@@ -1,0 +1,41 @@
+; Copyright (c) 2026 Calvin Rose
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to
+; deal in the Software without restriction, including without limitation the
+; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+; sell copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; The assembler and disassembler are absent from a build without
+; JANET_ASSEMBLER, and an absent binding is a compile error rather than a
+; runtime one. Janet compiles and runs a file one top-level form at a time, so
+; leaving here keeps the rest of the suite from reaching the compiler at all.
+(compwhen (not (dyn 'asm))
+  (end-suite)
+  (os/exit 0))
+
+(def allocation-shape
+  (disasm
+    (fn [a b c]
+      (let [x (+ a b)
+            y (* b c)]
+        (if (> x y) [x y] [y x])))))
+
+(assert (= 7 (in allocation-shape :slotcount))
+        "compiler register slot count")
+(assert
+  (deep=
+    !['[add 3 0 1] '[movn 4 3] '[mul 3 1 2] '[movn 5 3]
+      '[gt 3 4 5] '[jmpno 3 4] '[push2 4 5] '[mkvec 6]
+      '[ret 6] '[push2 5 4] '[mkvec 6] '[ret 6]]
+    (in allocation-shape :bytecode))
+  "compiler register allocation bytecode")
+
+(end-suite)

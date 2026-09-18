@@ -132,7 +132,7 @@ fn aBufferPrintedIntoItself() !void {
     // buffer as it was rather than as it is after the marker. Pushing first
     // would make the marker part of its own escaped content, which is
     // `a\nb@"a\\nb@"`, with a trailing `@` inside the quotes.
-    checkBuffer(d, "a\nb@\"a\\nb\"");
+    checkBuffer(d, "a\nb!\"a\\nb\"");
 }
 
 /// Every escape the table has, in one string, plus the two boundaries of the
@@ -225,7 +225,7 @@ fn theTwoWrappersDifferWhereTheyShould() void {
     const b: *buffers.Buffer = buffers.new(4);
     _ = buffers.pushCstringAbi(b, "raw");
     checkString(describe.toString(wrap.fromBuffer(b)), "raw");
-    checkString(describe.description(wrap.fromBuffer(b)), "@\"raw\"");
+    checkString(describe.description(wrap.fromBuffer(b)), "!\"raw\"");
 
     // A symbol is returned as it stands, without a copy: the identity is the
     // point, since symbols are interned.

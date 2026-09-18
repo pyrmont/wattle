@@ -221,7 +221,7 @@
    "movopt" "remove_noops" "vectors" "asm_encode" "asm_decode" "disasm"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
-# `zig build test` whose `suite-ev.janet` parked in `kevent` with an empty
+# `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty
 # kqueue: the pool had nothing to time it out, `as_completed` never saw it, and
 # the run produced no output at all because the log is written at the end. A
 # hang is now a FAIL for that entry and the rest of the matrix continues.
@@ -235,9 +235,9 @@
 # Only one entry may *run* the Janet suites at a time.
 #
 # Phase 10 Part 16 traced a wedged matrix to this and found three shared
-# fixtures, not one: `suite-ev.janet` binds a fixed port 8761,
-# `suite-net.janet` binds a fixed `/tmp/wattle-suite-net.sock`, and
-# `suite-ev.janet` and `suite-bundle.janet` create `unique.txt` and
+# fixtures, not one: `suite-ev.wattle` binds a fixed port 8761,
+# `suite-net.wattle` binds a fixed `/tmp/wattle-suite-net.sock`, and
+# `suite-ev.wattle` and `suite-bundle.wattle` create `unique.txt` and
 # `tempdir123` **in the repository working directory**, which every concurrent
 # entry shares. Two overlapping `full` entries therefore cross-connect: usually
 # one of them fails in `net/read`, and occasionally one parks in `kevent` and
@@ -403,7 +403,7 @@
       (when (= (j :kind) "full")
         # A hang here is retried once, and the retry's verdict is reported
         # as FLAKY rather than as PASS. Phase 10 Part 16 found a rare park
-        # in `suite-ev.janet` -- `kevent` with an empty kqueue, twice in
+        # in `suite-ev.wattle` -- `kevent` with an empty kqueue, twice in
         # about a hundred runs -- that is nothing to do with the selector
         # under test. Retrying keeps one such park from costing a whole
         # matrix; naming it FLAKY keeps the retry from hiding it.
@@ -534,7 +534,7 @@
     # a harness gap that had simply never been selected for.
     #
     # **A `full` entry since Phase 16 Part 4.** It was `contracts` because the
-    # suites could not run at all here -- `test/helper.janet` named `os/getenv`
+    # suites could not run at all here -- `test/helper.wattle` named `os/getenv`
     # and an unknown symbol is a compile error, so every suite refused to load.
     # The harness asks `compif` now and `build.zig` does not schedule the seven
     # suites whose fixtures need the OS, so the other 28 run.

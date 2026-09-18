@@ -787,7 +787,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
     // Check the cache. A tuple gets only the local cache: in a different
     // grammar the same tuple can compile to a different rule, because
     // `(+ :a :b)` depends on whatever `:a` and `:b` are bound to there.
-    const check = if (repr.checkType(peg, repr.Tag.tuple))
+    const check = if (repr.checkType(peg, repr.Tag.tuple) or repr.checkType(peg, repr.Tag.vector))
         tables.rawget(grammar, peg)
     else
         tables.get(grammar, peg);
@@ -814,7 +814,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
     if (!copied_grammar) {
         var which_grammar = grammar;
         // A primitive pattern goes in the global cache, the root grammar table.
-        if (!repr.checkType(peg, repr.Tag.tuple)) {
+        if (!repr.checkType(peg, repr.Tag.tuple) and !repr.checkType(peg, repr.Tag.vector)) {
             while (which_grammar.proto) |proto| which_grammar = proto;
         }
         tables.put(which_grammar, peg, wrap.fromNumber(@floatFromInt(rule)));
@@ -858,21 +858,26 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
             if (!copied_grammar) return pegPanic(b, "unexpected peg source");
             rule = try pegGrammar(b, peg, grammar);
         },
-        repr.Tag.tuple => {
-            const tup = wrap.toTuple(peg);
-            const len = tuples.head(tup).length;
-            if (len == 0) return pegPanic(b, "tuple in grammar must have non-zero length");
+        // A vector and a tuple are one combinator here. A grammar is written
+        // quoted, so `[ ]` inside one is a vector where `( )` is a tuple, and
+        // `'(* [2 "a"] "b")` has to read the same as `'(* (2 "a") "b")`.
+        repr.Tag.tuple, repr.Tag.vector => {
+            var gathered = (try args_core.gather(peg)) orelse
+                return pegPanic(b, "unexpected peg source");
+            defer gathered.free();
+            const tup = gathered.items;
+            if (tup.len == 0) return pegPanic(b, "tuple in grammar must have non-zero length");
             if (args_core.checkint(tup[0])) {
                 const n = wrap.toInteger(tup[0]);
                 if (n < 0) return pegPanicf(b, "expected non-negative integer, got %d", .{n});
-                try specRepeat(b, tup[0..@intCast(len)]);
+                try specRepeat(b, tup);
             } else if (!wrap.isSymbol(tup[0])) {
                 return pegPanicf(b, "expected grammar command, found %v", .{tup[0]});
             } else {
                 const sym = wrap.toSymbol(tup[0]);
                 const special = findSpecial(sym) orelse
                     return pegPanicf(b, "unknown special %S", .{sym});
-                try special(b, tup[1..@intCast(len)]);
+                try special(b, tup[1..]);
             }
         },
         else => return pegPanic(b, "unexpected peg source"),

@@ -32,9 +32,9 @@ const raise = @import("../api/raise.zig");
 const registry = @import("registry.zig");
 const repr = @import("repr");
 const tables = @import("value/tables.zig");
-const tuples = @import("value/tuples.zig");
 const vm_state = @import("vm/state.zig");
 const wrap = @import("value/helpers/wrap.zig");
+const vectors = @import("value/vectors.zig");
 
 // ==========================================================================
 // Constants
@@ -363,15 +363,16 @@ pub fn rngU32(rng: *Rng) u32 {
 // Private functions
 // ==========================================================================
 
-/// `(math/frexp x)`, as a tuple of the mantissa and the exponent.
+/// `(math/frexp x)`, as a vector of the mantissa and the exponent.
 fn cfunFrexp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     var exp: c_int = undefined;
     const mantissa = c.frexp(try args_core.getNumber(argv, 0), &exp);
-    const result = tuples.begin(2);
-    result[0] = wrap.fromNumber(mantissa);
-    result[1] = wrap.fromNumber(@floatFromInt(exp));
-    return wrap.fromTuple(tuples.end(result));
+    const pair = [2]repr.Value{
+        wrap.fromNumber(mantissa),
+        wrap.fromNumber(@floatFromInt(exp)),
+    };
+    return wrap.fromVector(vectors.fromSlice(&pair));
 }
 
 /// `(math/gcd x y)`.

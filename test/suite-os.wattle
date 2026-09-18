@@ -123,7 +123,7 @@
 
 (assert-no-error "realtime clock double output" (os/clock nil :double))
 (assert-no-error "realtime clock int output" (os/clock nil :int))
-(assert-no-error "realtime clock tuple output" (os/clock nil :tuple))
+(assert-no-error "realtime clock vector output" (os/clock nil :vector))
 
 (assert-error "invalid clock" (os/clock :a))
 (assert-error "invalid output" (os/clock :realtime :b))

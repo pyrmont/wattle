@@ -1,0 +1,103 @@
+; The sample native module, loaded and exercised.
+;
+; `zig build test` runs this with the built module's path as its argument,
+; which is what makes "a sample module compiles and loads" a check rather than
+; a claim. `numarray_tests.janet` beside it is the original, which prints and
+; asserts nothing and expects the module at a fixed path.
+
+(def module-path (get (dyn *args*) 1))
+(def env !{})
+(native module-path env)
+
+; `cfuns` passes the prefix to the *registry*, for stack traces, and leaves
+; the binding unprefixed -- which is what the C original did too. An
+; `(import ...)` is what puts `numarray/` in front of it.
+(def new ((env 'new) :value))
+(def sum ((env 'sum) :value))
+
+(def a (new 30))
+
+; A fresh array is zeroed, and reads through the `get` callback.
+(assert (= 0 (a 20)) "a new numarray reads as zero")
+(assert (= 30 (:length a)) "length answers the size it was made with")
+
+; `put` and `get` round-trip a number.
+(put a 5 3.14)
+(assert (= 3.14 (a 5)) "put then get")
+(set (a 5) 100)
+(assert (= 100 (a 5)) "set then get")
+
+; A method reached by keyword, which is the `get` callback's other arm.
+(:scale a 2)
+(assert (= 200 (a 5)) "scale multiplied in place")
+(assert (= 200 (sum a)) "sum over the whole array")
+
+; The refusals the typed callbacks state. `put` may raise and its Zig
+; signature says so; a finalizer may not, and its signature says that too.
+(defn refuses [f message]
+  (def [ok err] (protect (f)))
+  (assert (not ok) (string "expected a refusal: " message))
+  (assert (= message err) (string "expected " message ", got " err)))
+
+(refuses (fn [] (put a :nope 1)) "expected integer key")
+(refuses (fn [] (put a 1 "x")) "expected number value")
+; A keyword that is not a method is not the callback's refusal: `get` answers
+; 0 and the *runtime* raises, exactly as the C original did.
+(def [ok err] (protect (a :not-a-method)))
+(assert (not ok) "an unknown method is a refusal")
+(assert (string/find "not found" err) (string "expected a lookup failure, got " err))
+
+; An index past the end is `get` answering 0, which the runtime turns into
+; the same lookup failure. The callback does not raise; it declines.
+(def [in-range err2] (protect (a 1000)))
+(assert (not in-range) "an index past the end is a lookup failure")
+(assert (string/find "not found" err2) (string "expected a lookup failure, got " err2))
+
+; A negative index is out of range rather than element zero. The C original
+; got this from `(size_t) -1` being enormous; here it is written out, and the
+; behaviour a program sees is the same.
+(def [neg-ok neg-err] (protect (a -1)))
+(assert (not neg-ok) "a negative index is a lookup failure")
+(assert (string/find "not found" neg-err)
+        (string "expected a lookup failure, got " neg-err))
+
+(def before (a 0))
+(put a -1 999)
+(assert (= before (a 0)) "a negative put writes nothing, and not element zero")
+
+; A negative size is refused. The C original asked for about 147 exabytes and
+; died in the out-of-memory exit; the module says what happened instead.
+(refuses (fn [] (new -1)) "expected a non-negative size")
+
+; `tostring` renders through the `*Render` capability the runtime hands the
+; callback. `(string x)` is the callback's bytes exactly; `(describe x)` is the
+; same bytes with the `<numarray ...>` the runtime writes around them.
+(def small (new 3))
+(put small 0 1)
+(put small 1 2.5)
+(assert (= "[1 2.5 0]" (string small)) "tostring renders the elements")
+(assert (= "<numarray [1 2.5 0]>" (describe small))
+        (string "expected the described form, got " (describe small)))
+
+; `marshal` and `unmarshal` round-trip through the two capabilities. The type
+; has to be registered for this to work at all -- an abstract carries its
+; type's *name* on the wire -- and `defs` is where the module does that.
+(def round (unmarshal (marshal small)))
+(assert (= "[1 2.5 0]" (string round)) "the elements survived a round trip")
+(assert (= 3 (:length round)) "so did the length")
+(assert (not= round small) "and it is a new array, not the same one")
+
+; A truncated stream is refused rather than read past, and by the callback's
+; own bound rather than by running off the end: twelve bytes is past the
+; abstract's framing and its type name, so the count has been read and the
+; elements have not. `numArrayUnmarshal` refuses before it allocates for them.
+(def truncated (buffer/slice (marshal (new 200)) 0 12))
+(refuses (fn [] (unmarshal truncated)) "numarray is longer than the stream")
+
+; Zero is a size, not an error: an empty array reads as a miss everywhere.
+(def empty-array (new 0))
+(assert (= 0 (:length empty-array)) "zero is a legal size")
+(def [empty-ok _] (protect (empty-array 0)))
+(assert (not empty-ok) "every index of an empty array is a miss")
+
+(print "numarray example ok")

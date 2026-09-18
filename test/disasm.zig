@@ -40,9 +40,9 @@ const harness = @import("harness.zig");
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const symbols = @import("subsystems").value.symbols;
-const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vectors = @import("subsystems").value.vectors;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -62,16 +62,31 @@ fn theScalarFields(result: repr.Value) raise.Error!void {
     expect(harness.stringValueIs(try harness.entry(result, "name"), "sample"));
 }
 
+/// One disassembled row's elements, copied out of the vector it is.
+///
+/// A row -- an instruction, a source mapping, a symbol entry -- is a vector,
+/// which is what `[ ]` spells and what the assembler reads back. Each call
+/// replaces what the last one left.
+var row_fields: [8]repr.Value = undefined;
+
+fn row(val: repr.Value) []const repr.Value {
+    expect(repr.checkType(val, repr.Tag.vector));
+    const v = wrap.toVector(val);
+    var index: usize = 0;
+    while (index < v.count) : (index += 1) row_fields[index] = vectors.at(v, index);
+    return row_fields[0..v.count];
+}
+
 fn theBytecode(result: repr.Value) raise.Error!void {
     const array = wrap.toArray(try harness.entry(result, "bytecode"));
     expect(array.count == 2);
 
-    const noop = wrap.toTuple(array.slice()[0]);
-    expect(tuples.head(noop).length == 1);
+    const noop = row(array.slice()[0]);
+    expect(noop.len == 1);
     expect(harness.symbolIs(noop[0], "noop"));
 
     // Decoded rather than copied: -7 was `0xFFF9` in the word.
-    const ldi = wrap.toTuple(array.slice()[1]);
+    const ldi = row(array.slice()[1]);
     expect(harness.integerIs(ldi[1], 2));
     expect(harness.integerIs(ldi[2], -7));
 }
@@ -86,7 +101,7 @@ fn theConstants(result: repr.Value, expected: []const repr.Value) raise.Error!vo
 fn theSourceMap(result: repr.Value) raise.Error!void {
     const array = wrap.toArray(try harness.entry(result, "sourcemap"));
     expect(array.count == 2);
-    const second = wrap.toTuple(array.slice()[1]);
+    const second = row(array.slice()[1]);
     expect(harness.integerIs(second[0], 8));
     expect(harness.integerIs(second[1], 13));
 }
@@ -103,14 +118,14 @@ fn theSymbolMap(result: repr.Value) raise.Error!void {
     expect(array.count == 2);
 
     // An ordinary local: birth, death, slot, name.
-    const local = wrap.toTuple(array.slice()[0]);
+    const local = row(array.slice()[0]);
     expect(harness.integerIs(local[0], 0));
     expect(harness.integerIs(local[1], 2));
     expect(harness.integerIs(local[2], 3));
     expect(harness.symbolIs(local[3], "local"));
 
     // The sentinel row, rendered as a keyword in the first position.
-    const upvalue = wrap.toTuple(array.slice()[1]);
+    const upvalue = row(array.slice()[1]);
     expect(harness.keywordIs(upvalue[0], "upvalue"));
 }
 

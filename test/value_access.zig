@@ -483,7 +483,7 @@ fn nextResumesAFiber() void {
         " (next f 0)   (in f 0)" ++
         " (next f 0)   (fiber/status f)" ++
         " (next f 0)]");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(harness.equals(v[0], intv(0)));
     expect(harness.equals(v[1], kw("a")));
     expect(harness.equals(v[2], intv(0)));
@@ -501,7 +501,7 @@ fn nextResumesAFiber() void {
 fn theNextEntryPointOnAFiber() void {
     const r = run_("(def f (fiber/new (fn [] (yield :a) :done)))" ++
         "[(va/next f nil) (in f 0) (va/next f 0) (va/next f 0)]");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(harness.equals(v[0], intv(0)));
     expect(harness.equals(v[1], kw("a")));
     expect(isNil(v[2]));
@@ -542,7 +542,7 @@ fn nextOnAnUnresumableFiber() void {
         "  (fiber/status errd)  (next errd nil)" ++
         "  (fiber/status alive) (next alive nil)" ++
         "  (fiber/status user)  (next user nil)])");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(harness.equals(v[0], kw("dead")));
     expect(isNil(v[1]));
     expect(harness.equals(v[2], kw("error")));
@@ -565,7 +565,7 @@ fn nextOnTheOtherFinishedStatuses() void {
         "  (fiber/status u0) (next u0 nil)" ++
         "  (fiber/status u1) (next u1 nil)" ++
         "  (fiber/status u2) (next u2 nil)])");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(harness.equals(v[0], kw("error")));
     expect(harness.equals(v[2], kw("user0")));
     expect(harness.equals(v[4], kw("user1")));
@@ -580,7 +580,7 @@ fn nextOverAFiberThatStopsOnASignal() void {
         " (defn signalling [n] (next (fiber/new (fn [] (signal n :s)) (keyword n)) nil))" ++
         " [(next (fiber/new (fn [] (error :x)) :e) nil)" ++
         "  (signalling 0) (signalling 1) (signalling 2) (signalling 3) (signalling 4)])");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     for (0..6) |i| expect(isNil(v[i]));
 }
 
@@ -595,7 +595,7 @@ fn theInterpreterFlagChoosesTheErrorPolicy() void {
         "(def viacapi (fiber/new (fn [] (va/next (mk) nil)) :5e))" ++
         "[(resume viaint)  (fiber/status viaint)" ++
         " (resume viacapi) (fiber/status viacapi)]");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(harness.equals(v[0], kw("sig")));
     expect(harness.equals(v[1], kw("user5")));
     expect(harness.equals(v[2], kw("sig")));
@@ -607,7 +607,7 @@ fn theChildSlotIsCleared() void {
         "(def bad (fiber/new (fn [] (error :boom))))" ++
         "[(va/next-child-cleared ok nil)" ++
         " (va/next-child-cleared-on-panic bad nil)]");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(repr.truthy(v[0])); // child not cleared after a successful resume
     expect(harness.isType(v[1], repr.Tag.boolean)); // the failing resume did not panic
     expect(repr.truthy(v[1])); // child not cleared before the panic
@@ -620,7 +620,7 @@ fn theChildSlotIsCleared() void {
 /// itself.
 fn theResumedFiberJoinsTheLineage() void {
     const r = run_("(do" ++
-        " (def log @[])" ++
+        " (def log ![])" ++
         " (var outer nil)" ++
         " (def child (fiber/new (fn []" ++
         "   (array/push log (length (debug/lineage outer)))" ++
@@ -732,12 +732,12 @@ fn inOnAFiber() void {
     const r = run_("(def f (fiber/new (fn [] (yield :a) :done)))" ++
         "(next f nil)" ++
         "[(in f 0) (get f 0) (get f 1) (protect (in f 1))]");
-    const v = wrap.toTuple(r);
+    const v = harness.elems(r);
     expect(harness.equals(v[0], kw("a")));
     expect(harness.equals(v[1], kw("a")));
     expect(isNil(v[2]));
     // `protect` returns [false message] for a caught error.
-    const p = wrap.toTuple(v[3]);
+    const p = harness.elems(v[3]);
     expect(!repr.truthy(p[0]));
     expect(harness.equals(p[1], value.fromBytes("expected key 0, got 1", .string)));
 }
@@ -1152,21 +1152,21 @@ fn putOnANonWritablePanics() void {
 
 fn fromJanet() void {
     const out = run_(
-        "[(do (var n 0) (each x @{:a 1 :b 2 :c 3} (+= n x)) n) " ++
+        "[(do (var n 0) (each x !{:a 1 :b 2 :c 3} (+= n x)) n) " ++
             " (do (var n 0) (eachk k [:a :b :c] (+= n k)) n) " ++
             " (length \"abc\") " ++
-            " (length @{:a 1}) " ++
+            " (length !{:a 1}) " ++
             " (in [10 20 30] 1) " ++
             " (get [10 20 30] 9) " ++
             " (get \"abc\" :x) " ++
             " (protect (in [10 20 30] 9)) " ++
-            " (do (def a @[1]) (put a 3 :x) a) " ++
-            " (do (def b @\"A\") (put b 3 66) b) " ++
-            " (keys @{:a 1 :b 2}) " ++
+            " (do (def a ![1]) (put a 3 :x) a) " ++
+            " (do (def b !\"A\") (put b 3 66) b) " ++
+            " (keys !{:a 1 :b 2}) " ++
             " (values {:a 1}) " ++
-            " (do (def s (table/setproto @{:own 1} @{:up 2})) [(in s :up) (keys s)])]",
+            " (do (def s (table/setproto !{:own 1} !{:up 2})) [(in s :up) (keys s)])]",
     );
-    const v = wrap.toTuple(out);
+    const v = harness.elems(out);
     expect(wrap.toInteger(v[0]) == 6);
     expect(wrap.toInteger(v[1]) == 3);
     expect(wrap.toInteger(v[2]) == 3);
@@ -1175,9 +1175,9 @@ fn fromJanet() void {
     expect(isNil(v[5]));
     expect(isNil(v[6]));
     {
-        const p = wrap.toTuple(v[7]);
+        const p = harness.elems(v[7]);
         expect(!repr.truthy(p[0]));
-        expect(harness.equals(p[1], value.fromBytes("expected integer key for tuple in range [0, 3), got 9", .string)));
+        expect(harness.equals(p[1], value.fromBytes("expected integer key for vector in range [0, 3), got 9", .string)));
     }
     {
         const a = wrap.toArray(v[8]);
@@ -1194,7 +1194,7 @@ fn fromJanet() void {
     expect(wrap.toArray(v[10]).count == 2);
     expect(wrap.toArray(v[11]).count == 1);
     {
-        const pair = wrap.toTuple(v[12]);
+        const pair = harness.elems(v[12]);
         // The prototype's key reads through `in` and does not appear in `keys`,
         // which walks with `next`.
         expect(wrap.toInteger(pair[0]) == 2);

@@ -75,7 +75,6 @@ const raise = @import("subsystems").raise;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
 const subsystems = @import("subsystems");
-const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
@@ -173,9 +172,9 @@ fn unpack(address: repr.Value) repr.Value {
 }
 
 fn tupleIs2(val: repr.Value, host: []const u8, port: i32) bool {
-    if (!harness.isType(val, repr.Tag.tuple)) return false;
-    const t = wrap.toTuple(val);
-    if (tuples.head(t).length != 2) return false;
+    if (!harness.isIndexed(val)) return false;
+    const t = harness.elems(val);
+    if (t.len != 2) return false;
     if (!harness.isType(t[0], repr.Tag.string)) return false;
     const text = wrap.toString(t[0]);
     const length: usize = strings.head(text).length;
@@ -184,9 +183,9 @@ fn tupleIs2(val: repr.Value, host: []const u8, port: i32) bool {
 }
 
 fn tupleIs1(val: repr.Value, path: []const u8) bool {
-    if (!harness.isType(val, repr.Tag.tuple)) return false;
-    const t = wrap.toTuple(val);
-    if (tuples.head(t).length != 1) return false;
+    if (!harness.isIndexed(val)) return false;
+    const t = harness.elems(val);
+    if (t.len != 1) return false;
     if (!harness.isType(t[0], repr.Tag.string)) return false;
     const text = wrap.toString(t[0]);
     const length: usize = strings.head(text).length;
@@ -194,9 +193,9 @@ fn tupleIs1(val: repr.Value, path: []const u8) bool {
 }
 
 fn pathLength(val: repr.Value) usize {
-    expect(harness.isType(val, repr.Tag.tuple));
-    const t = wrap.toTuple(val);
-    expect(tuples.head(t).length == 1);
+    expect(harness.isIndexed(val));
+    const t = harness.elems(val);
+    expect(t.len == 1);
     return @intCast(strings.head(wrap.toString(t[0])).length);
 }
 
@@ -441,9 +440,9 @@ fn theStreamFaults() void {
     {
         var argv = [_]repr.Value{listener};
         const name = callCore("net/localname", &argv);
-        expect(harness.isType(name, repr.Tag.tuple));
-        const t = wrap.toTuple(name);
-        expect(tuples.head(t).length == 2);
+        expect(harness.isIndexed(name));
+        const t = harness.elems(name);
+        expect(t.len == 2);
         expect(harness.stringIs(wrap.toString(t[0]), "127.0.0.1"));
         expect(args_core.checkint(t[1]) and wrap.toInteger(t[1]) > 0);
     }

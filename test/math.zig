@@ -47,6 +47,7 @@ const math = @import("subsystems").math;
 const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vectors = @import("subsystems").value.vectors;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -238,11 +239,11 @@ fn theGcdAndLcm() !void {
 
 fn theRngInt() void {
     // A zero bound short-circuits before drawing.
-    const zeroes = wrap.toTuple(eval(
+    const zeroes = wrap.toVector(eval(
         "(let [r (math/rng 5)] [(math/rng-int r 0) (math/rng-int r 0)])",
     ));
-    expect(wrap.toNumber(zeroes[0]) == 0.0);
-    expect(wrap.toNumber(zeroes[1]) == 0.0);
+    expect(wrap.toNumber(vectors.at(zeroes, 0)) == 0.0);
+    expect(wrap.toNumber(vectors.at(zeroes, 1)) == 0.0);
 
     // Without a bound the draw is a 31-bit word: the top bit is discarded.
     expect(wrap.toNumber(eval("(let [r (math/rng 0)] (math/rng-int r))")) ==
@@ -251,18 +252,18 @@ fn theRngInt() void {
     // A bound of 1 always yields 0, and consumes exactly one word per call
     // because every draw falls inside the acceptance window, which the third
     // element proves by being the *third* word of the sequence.
-    const bounded = wrap.toTuple(eval(
+    const bounded = wrap.toVector(eval(
         "(let [r (math/rng 0)] [(math/rng-int r 1) (math/rng-int r 1) (math/rng-int r)])",
     ));
-    expect(wrap.toNumber(bounded[0]) == 0.0);
-    expect(wrap.toNumber(bounded[1]) == 0.0);
-    expect(wrap.toNumber(bounded[2]) ==
+    expect(wrap.toNumber(vectors.at(bounded, 0)) == 0.0);
+    expect(wrap.toNumber(vectors.at(bounded, 1)) == 0.0);
+    expect(wrap.toNumber(vectors.at(bounded, 2)) ==
         @as(f64, @floatFromInt(from_zero[2] >> 1)));
 
     // Bounds are respected, and a fixed seed gives a fixed sequence.
     truthy(
         \\(let [r (math/rng 42)]
-        \\  (all |(and (>= $ 0) (< $ 10)) (seq [_ :range [0 500]] (math/rng-int r 10))))
+        \\  (all #(and (>= $ 0) (< $ 10)) (seq [_ :range [0 500]] (math/rng-int r 10))))
     );
     truthy(
         \\(deep= (seq [_ :range [0 20]] (math/rng-int (math/rng 3) 1000))
@@ -294,7 +295,7 @@ fn theRngBuffer() void {
     );
 
     // Every length from 0 to 16 produces exactly that many bytes.
-    truthy("(all |(= $ (length (math/rng-buffer (math/rng 1) $))) (range 17))");
+    truthy("(all #(= $ (length (math/rng-buffer (math/rng 1) $))) (range 17))");
 }
 
 /// The state survives marshalling exactly, which is what makes every vector

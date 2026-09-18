@@ -31,8 +31,9 @@ const inttypes = @import("../value/ints.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
-const tuples = @import("../value/tuples.zig");
 const value = @import("../value.zig");
+const fatal = @import("../fatal.zig");
+const vectors = @import("../value/vectors.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
 // ==========================================================================
@@ -98,13 +99,17 @@ pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Error!repr.Value
     return switch (ty.prim) {
         .void => wrap.fromNil(),
         .@"struct" => blk: {
+            // A struct read back is data, so it is a vector: `[ ]` is what
+            // the type spelling and the value written to it both use.
             const st = ty.st.?;
             const members = Struct.fields(st);
-            const tup = tuples.begin(@intCast(st.field_count));
+            const block = gc_alloc.scratch_heap.alloc(repr.Value, st.field_count) catch
+                fatal.outOfMemory();
+            defer gc_alloc.scratch_heap.free(block);
             for (members[0..st.field_count], 0..) |member, i| {
-                tup[i] = try readOne(from + member.offset, member.type, recur - 1);
+                block[i] = try readOne(from + member.offset, member.type, recur - 1);
             }
-            break :blk wrap.fromTuple(tuples.end(tup));
+            break :blk wrap.fromVector(vectors.fromSlice(block));
         },
         .double => wrap.fromNumber(get(f64, from)),
         .float => wrap.fromNumber(get(f32, from)),

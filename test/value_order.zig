@@ -1062,7 +1062,7 @@ fn fromJanet() void {
     var out: repr.Value = undefined;
     const src =
         "[(= [1 2] [1 2]) " ++
-        " (= [1 2] (tuple 1 2)) " ++
+        " (= [1 2] (vector 1 2)) " ++
         " (= (hash 'tie) (hash \"tie\")) " ++
         " (= 'tie \"tie\") " ++
         " (compare [1 2] [1 2 3]) " ++
@@ -1074,7 +1074,7 @@ fn fromJanet() void {
         " (= (do (var t nil) (for i 0 5000 (set t [i t])) t) " ++
         "    (do (var t nil) (for i 0 5000 (set t [i t])) t))]";
     expect(core_env.dostring(harness.coreEnv(), src, "value_order", &out) == 0);
-    const r = wrap.toTuple(out);
+    const r = harness.elems(out);
     expect(repr.truthy(r[0]));
     expect(repr.truthy(r[1]));
     expect(repr.truthy(r[2]));

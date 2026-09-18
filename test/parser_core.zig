@@ -1,11 +1,16 @@
 //! Behavioral contract for the incremental parser.
 //!
-//! Janet's parser is a byte-at-a-time state machine, and the suites reach it
-//! only through `parse` and the REPL, which feed it whole strings and read
-//! whole values. What they cannot see is the
-//! machine between bytes: the state stack growing, a clone diverging from its
-//! original, an error being *read* and thereby cleared, a partial string
-//! sitting in `buf`. Those are the states this file drives directly.
+//! Janet's parser is a byte-at-a-time state machine, and this file drives it
+//! directly: the state stack growing, a clone diverging from its original, an
+//! error being *read* and thereby cleared, a partial string sitting in `buf`.
+//!
+//! ## The dialect is named, because Janet's parser is no longer the default
+//!
+//! `parserInit` reads Wattle. Janet's parser is reached by
+//! `parserInitDialect(&parser, .janet)` and by nothing else in the tree but
+//! `parser_wattle.zig`'s oracle, and no source loads through it. It goes with
+//! bracket tuples; `test/suite-parse.wattle` is Wattle's parse suite and
+//! covers the `parser/*` bindings over the parser a program actually gets.
 //!
 //! ## The checked pair is called rather than the abis
 //!
@@ -74,7 +79,7 @@ fn errorIs(parser: *parser_core.Parser, expected: []const u8) bool {
 /// into a freshly grown allocation.
 fn theFreshParser() !void {
     var parser: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     defer parser_core.parserDeinit(&parser);
 
     expect(statusOf(&parser) == parser_core.ParserStatus.root);
@@ -89,7 +94,7 @@ fn theFreshParser() !void {
 fn aCloneOwnsItsOwnQueue() !void {
     var parser: parser_core.Parser = undefined;
     var clone: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
 
     try consume(&parser, "1 2");
     try parser_core.eofChecked(&parser);
@@ -126,7 +131,7 @@ fn aCloneOwnsItsOwnQueue() !void {
 /// pair, and the two Unicode forms, which are encoded as UTF-8.
 fn theStringEscapes() !void {
     var parser: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, "\"a\\n\\x42\\u03bb\\U01f600\" ");
@@ -143,12 +148,12 @@ fn theStringEscapes() !void {
 fn theOtherLiterals() !void {
     var parser: parser_core.Parser = undefined;
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "`hello` ");
     expect(harness.stringValueIs(parser_core.parserProduce(&parser), "hello"));
     parser_core.parserDeinit(&parser);
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "@\"abc\" ");
     const val = parser_core.parserProduce(&parser);
     expect(harness.isType(val, repr.Tag.buffer));
@@ -164,7 +169,7 @@ fn aCloneOwnsItsOwnBuffer() !void {
     var parser: parser_core.Parser = undefined;
     var clone: parser_core.Parser = undefined;
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "\"abc");
     expect(parser.buf.items.len == 3);
 
@@ -186,7 +191,7 @@ fn aCloneOwnsItsOwnBuffer() !void {
 /// the order it was built.
 fn theStateStackGrows() !void {
     var parser: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, "((((1)))) ");
@@ -204,7 +209,7 @@ fn theStateStackGrows() !void {
 /// the tuple it builds is where the source mapping lives.
 fn theQuoteShorthand() !void {
     var parser: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, "'x ");
@@ -220,7 +225,7 @@ fn theQuoteShorthand() !void {
 /// `flush` abandons whatever is half-parsed and returns the machine to root.
 fn theFlush() !void {
     var parser: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, "(");
@@ -234,7 +239,7 @@ fn theFlush() !void {
 fn theParseErrors() !void {
     var parser: parser_core.Parser = undefined;
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "\"\\q");
     expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "invalid string escape sequence"));
@@ -243,7 +248,7 @@ fn theParseErrors() !void {
     // Reading the error clears it and flushes the parser, so the status goes
     // back to root and a second read gives nothing. The message names where
     // the unclosed form opened, so it is matched by prefix rather than whole.
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, ")");
     expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     const message = errorOf(&parser) orelse unreachable;
@@ -252,7 +257,7 @@ fn theParseErrors() !void {
     expect(errorOf(&parser) == null);
     parser_core.parserDeinit(&parser);
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "12abc ");
     expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "symbol literal cannot start with a digit"));
@@ -260,14 +265,14 @@ fn theParseErrors() !void {
 
     // A lone continuation byte is invalid UTF-8, and the message names which
     // of the two token kinds was being read.
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try parser_core.consumeChecked(&parser, 0xC2);
     try parser_core.consumeChecked(&parser, ' ');
     expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
     expect(errorIs(&parser, "invalid utf-8 in symbol"));
     parser_core.parserDeinit(&parser);
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try parser_core.consumeChecked(&parser, ':');
     try parser_core.consumeChecked(&parser, 0xC2);
     try parser_core.consumeChecked(&parser, ' ');
@@ -279,7 +284,7 @@ fn theParseErrors() !void {
 /// The five atoms the root state recognises without a delimiter.
 fn theAtoms() !void {
     var parser: parser_core.Parser = undefined;
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     defer parser_core.parserDeinit(&parser);
 
     try consume(&parser, ":key nil false true symbol ");
@@ -308,7 +313,7 @@ fn theAtoms() !void {
 fn aFinishedParserRefusesMore() !void {
     var parser: parser_core.Parser = undefined;
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "1");
     try parser_core.eofChecked(&parser);
     expect(statusOf(&parser) == parser_core.ParserStatus.dead);
@@ -322,7 +327,7 @@ fn aFinishedParserRefusesMore() !void {
     expect(twice.says("parser is dead, cannot consume"));
     parser_core.parserDeinit(&parser);
 
-    parser_core.parserInit(&parser);
+    parser_core.parserInitDialect(&parser, .janet);
     try consume(&parser, "\"\\q");
     expect(statusOf(&parser) == parser_core.ParserStatus.@"error");
 

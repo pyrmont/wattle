@@ -43,10 +43,10 @@
 ; bbcfaf128
 (def buftemp !"abcd")
 (assert (= (string (buffer/format buftemp "---%p---" buftemp))
-           """abcd---@"abcd"---""") "buffer/format on self 1")
+           """abcd---!"abcd"---""") "buffer/format on self 1")
 (def buftemp2 !"abcd")
 (assert (= (string (buffer/format buftemp2 "---%p %p---" buftemp2 buftemp2))
-           """abcd---@"abcd" @"abcd"---""") "buffer/format on self 2")
+           """abcd---!"abcd" !"abcd"---""") "buffer/format on self 2")
 
 ; 5c364e0
 (defn check-jdn [x]
@@ -62,18 +62,18 @@
 (check-jdn !"a buffer")
 
 ; Issue 1737
-(assert (deep= "@[]" (string/format "%M" ![])))
-(assert (deep= " @[]" (string/format " %M" ![])))
-(assert (deep= "  @[]" (string/format "  %M" ![])))
-(assert (deep= "   @[]" (string/format "   %M" ![])))
-(assert (deep= "    @[]" (string/format "    %M" ![])))
-(assert (deep= "     @[]" (string/format "     %M" ![])))
-(assert (deep= "@[1]" (string/format "%m" ![1])))
-(assert (deep= " @[2]" (string/format " %m" ![2])))
-(assert (deep= "  @[3]" (string/format "  %m" ![3])))
-(assert (deep= "   @[4]" (string/format "   %m" ![4])))
-(assert (deep= "    @[5]" (string/format "    %m" ![5])))
-(assert (deep= "     @[6]" (string/format "     %m" ![6])))
+(assert (deep= "![]" (string/format "%M" ![])))
+(assert (deep= " ![]" (string/format " %M" ![])))
+(assert (deep= "  ![]" (string/format "  %M" ![])))
+(assert (deep= "   ![]" (string/format "   %M" ![])))
+(assert (deep= "    ![]" (string/format "    %M" ![])))
+(assert (deep= "     ![]" (string/format "     %M" ![])))
+(assert (deep= "![1]" (string/format "%m" ![1])))
+(assert (deep= " ![2]" (string/format " %m" ![2])))
+(assert (deep= "  ![3]" (string/format "  %m" ![3])))
+(assert (deep= "   ![4]" (string/format "   %m" ![4])))
+(assert (deep= "    ![5]" (string/format "    %m" ![5])))
+(assert (deep= "     ![6]" (string/format "     %m" ![6])))
 
 ; Test multiline pretty specifiers
 (let [tup [:keyword "string" !"buffer"]
@@ -83,13 +83,13 @@
   (set (tab tup) tab)
   (assert (= (string/format "%67m" {tup ![tup tab] 'symbol tup})
           """
-{symbol (:keyword "string" @"buffer")
- (:keyword
+{[:keyword
   "string"
-  @"buffer") @[(:keyword "string" @"buffer")
-               @{true @Foo{:bar (:keyword "string" @"buffer")
+  !"buffer"] ![[:keyword "string" !"buffer"]
+               !{true !Foo{:bar [:keyword "string" !"buffer"]
                            :baz 42}
-                 (:keyword "string" @"buffer") <cycle 2>}]}"""))
+                 [:keyword "string" !"buffer"] <cycle 2>}]
+ symbol [:keyword "string" !"buffer"]}"""))
   (assert (= (string/format "%67p" {(freeze (zipcoll (range 42)
                                                      (range -42 0))) tab})
              """
@@ -123,8 +123,8 @@
   27 -15
   28 -14
   29 -13
-  ...} @{true @Foo{:bar (:keyword "string" @"buffer") :baz 42}
-         (:keyword "string" @"buffer") <cycle 1>}}""")))
+  ...} !{true !Foo{:bar [:keyword "string" !"buffer"] :baz 42}
+         [:keyword "string" !"buffer"] <cycle 1>}}""")))
 
 ; Issue 1737
 ; The (??) debug pattern is a peg feature, absent without JANET_PEG.
@@ -135,14 +135,14 @@
   (assert (deep= """
                  ?? at [a] (index 0)
                  stack [1]:
-                   [0]: @[]
+                   [0]: ![]
 
                  """
                  (string capture-buf))))
 
 (assert (=
          (string/format "?? at [bc] (index 2)\nstack [5]:\n  [0]: %m\n  [1]: %m\n  [2]: %m\n  [3]: %m\n  [4]: %m\n" "a" 1 true {} ![])
-         "?? at [bc] (index 2)\nstack [5]:\n  [0]: \"a\"\n  [1]: 1\n  [2]: true\n  [3]: {}\n  [4]: @[]\n")
+         "?? at [bc] (index 2)\nstack [5]:\n  [0]: \"a\"\n  [1]: 1\n  [2]: true\n  [3]: {}\n  [4]: ![]\n")
         "pretty format should not eat explicit newlines")
 
 ; Phase 20 batch 2d found these unmeasured. Each block names what it pins.
@@ -232,9 +232,9 @@
 ; A precision on `%j` is the depth budget, and it is read as a decimal number
 ; from a three-byte field. A precision of one is one level, not the default.
 (assert-error "could not print to jdn format" (string/format "%.1j" [[1]]))
-(assert (= "(((1)))" (string/format "%.10j" [[[1]]]))
+(assert (= "[[[1]]]" (string/format "%.10j" [[[1]]]))
         "a two-digit precision is read as both its digits")
-(assert (= "(1)" (string/format "%.2j" [1])) "and a small one bounds the depth")
+(assert (= "[1]" (string/format "%.2j" [1])) "and a small one bounds the depth")
 
 ; `%%` is one literal per cent sign and consumes nothing after it.
 (assert (= "%x" (string/format "%%x")) "%% writes one per cent and no more")
@@ -244,19 +244,19 @@
 ; than by a property: `%p` breaks and indents, `%q` collapses every break to
 ; one space, and `%P` writes colour escapes around each value. Each is a
 ; separate flag on the same walk, and the walk measures its own columns.
-(assert (= "@[@[1 2]\n  @[3 4]]" (string/format "%p" ![![1 2] ![3 4]]))
+(assert (= "![![1 2]\n  ![3 4]]" (string/format "%p" ![![1 2] ![3 4]]))
         "%p breaks a nested collection and indents the continuation")
-(assert (= "@[@[1 2] @[3 4]]" (string/format "%q" ![![1 2] ![3 4]]))
+(assert (= "![![1 2] ![3 4]]" (string/format "%q" ![![1 2] ![3 4]]))
         "%q writes the same collection on one line")
-(assert (= "@[\e[32m1\e[0m \e[35m\"a\"\e[0m]" (string/format "%P" ![1 "a"]))
+(assert (= "![\e[32m1\e[0m \e[35m\"a\"\e[0m]" (string/format "%P" ![1 "a"]))
         "%P wraps each value in its own colour")
-(assert (= "@{}" (string/format "%p" !{})) "an empty dictionary needs no break at all")
+(assert (= "!{}" (string/format "%p" !{})) "an empty dictionary needs no break at all")
 
 ; A buffer printed into itself is copied first, so the text being appended is
 ; what the buffer held rather than what it is holding as the append proceeds.
 (do
   (def b !"a")
   (buffer/format b "%v" b)
-  (assert (= "a@\"a\"" (string b)) "a buffer formatted into itself reads its old contents"))
+  (assert (= "a!\"a\"" (string b)) "a buffer formatted into itself reads its old contents"))
 
 (end-suite)

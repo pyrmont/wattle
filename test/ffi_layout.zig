@@ -200,7 +200,7 @@ fn typeExtents() void {
     expect(extent(0, -1) == 0);
     expect(extent(3, -7) == 3);
 
-    // `@[type]` with no count decodes to a count of zero, which is a real zero
+    // `![type]` with no count decodes to a count of zero, which is a real zero
     // rather than a missing one.
     expect(extent(8, 0) == 0);
 

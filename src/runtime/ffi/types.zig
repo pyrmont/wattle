@@ -454,7 +454,7 @@ pub fn decodeType(x: repr.Value) raise.Error!Type {
     const els = gathered.items;
     if (repr.checkType(x, repr.Tag.array)) {
         if (els.len != 2 and els.len != 1) {
-            return pp_format.panicf("array type must be of form @[type count], got %v", .{x});
+            return pp_format.panicf("array type must be of form ![type count], got %v", .{x});
         }
         ret = try decodeType(els[0]);
         // A nested array type is refused rather than flattened. A `Type` has
@@ -465,7 +465,7 @@ pub fn decodeType(x: repr.Value) raise.Error!Type {
         // arrays, which the message names.
         if (ret.array_count >= 0) {
             return pp_format.panicf(
-                "nested array type %v; use a struct of the inner arrays, as in @[[:u8 :u8 :u8 :u8] 3]",
+                "nested array type %v; use a struct of the inner arrays, as in ![[:u8 :u8 :u8 :u8] 3]",
                 .{x},
             );
         }

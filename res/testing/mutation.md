@@ -92,7 +92,7 @@ defect was that `ev/stream.zig` and `ev/backend.zig` had never run to
 completion, and `--all` sweeps them first for that reason. A build that fails
 is read rather than counted: the compiler refusing the mutation is
 `uncompilable`, and the image generator refusing it is `bootstrap: <reason>`
-and a catch, because the generator parses `boot.janet` and runs
+and a catch, because the generator parses `boot.wattle` and runs
 `boot/boot_tests.zig` and so is a test layer like any other. A build that
 exceeds its bound is built a second time before it is called a hang, because a
 build that follows a runaway generator can be starved past the bound without
@@ -360,9 +360,9 @@ create files in the working tree and delete them again when they pass. A mutant
 that makes one *fail* leaves the file behind, and every mutant after it then
 fails the same suite for a reason unrelated to its own mutation. Phase 10 Part
 12 lost a whole phase to this: a mutated `os/open` mode created `unique.txt`
-with permissions 0000, `test/suite-ev.janet` could never reopen it, and
+with permissions 0000, `test/suite-ev.wattle` could never reopen it, and
 **fifty-seven of seventy-four mutants were recorded as caught by
-`suite-ev.janet (fail)`**. `mutate.janet` now clears a `debris` list before every
+`suite-ev.wattle (fail)`**. `mutate.janet` now clears a `debris` list before every
 judged run. What gave it away was the attribution column -- a file-writing
 suite has no business catching mutations in a permission parser -- which is
 Part 8's "label the catcher" rule paying for itself a second time. **Read the

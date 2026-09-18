@@ -9,7 +9,7 @@ set -e
 base=$1
 cand=$2
 rounds=${3:-5}
-script="$(dirname "$0")/bench.janet"
+script="$(dirname "$0")/bench.wattle"
 
 round=1
 while [ "$round" -le "$rounds" ]; do

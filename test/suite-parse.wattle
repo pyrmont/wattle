@@ -51,7 +51,10 @@
   ;
   ; 7aa4241
   (defn reindent
-    "Reindent the contents of a longstring as the Janet parser would.    This include removing leading and trailing newlines."
+    """
+    Reindent the contents of a raw string as the parser would.
+    This includes removing leading and trailing newlines.
+    """
     [text indent]
 
     ; Detect minimum indent
@@ -82,13 +85,16 @@
     (string/slice str (case first-eol :crlf 2 :lf 1 0) (case last-eol :crlf -3 :lf -2)))
 
   (defn reindent-reference
-    "Same as reindent but use parser functionality. Useful for    validating conformance."
+    """
+    Same as reindent but use parser functionality. Useful for
+    validating conformance.
+    """
     [text indent]
     (if (empty? text) (break text))
     (def source-code
-      (string (string/repeat " " indent) "``````"
+      (string (string/repeat " " indent) "\"\"\"\"\"\""
               text
-              "``````"))
+              "\"\"\"\"\"\""))
     (parse source-code))
 
   (var indent-counter 0)
@@ -129,14 +135,27 @@
   (check-indent "\r\n    Hello, world!\r\n   dedented text\r\n    " 4)
   (check-indent "\r\n    Hello, world!\r\n    indented text\r\n    " 4))
 
-; Symbols with @ character
+; `@` and `^` are reserved at the head of a form
 ; d68eae9
-(def @ 1)
-(assert (= @ 1) "@ symbol")
-(def @-- 2)
-(assert (= @-- 2) "@-- symbol")
-(def @hey 3)
-(assert (= @hey 3) "@hey symbol")
+;
+; Janet read `@`, `@--` and `@hey` as symbols. Wattle holds both characters
+; free for a syntactic meaning not yet chosen, and a parse error is the
+; cheapest way to hold one. Inside a symbol each is an ordinary character.
+(defn parse-refusal [input]
+  (def p (parser/new))
+  (parser/consume p input)
+  (parser/error p))
+
+(assert (= "@ is reserved" (parse-refusal "@")) "@ alone is refused")
+(assert (= "@ is reserved" (parse-refusal "@hey")) "@ before a word is refused")
+(assert (= "@ is reserved" (parse-refusal "(@ x)")) "@ at the head of a form")
+(assert (= "^ is reserved" (parse-refusal "^")) "^ alone is refused")
+(assert (= "^ is reserved" (parse-refusal "^foo")) "^ before a word is refused")
+
+(assert (= 'foo@bar (parse "foo@bar")) "@ inside a symbol")
+(assert (= 'a^b (parse "a^b")) "^ inside a symbol")
+(assert (= 'assoc! (parse "assoc!")) "! at the end of a symbol")
+(assert (= '! (parse "!")) "a bare ! is a symbol")
 
 ; Parser clone
 ; 43520ac67
@@ -194,21 +213,31 @@
   (parser/eof p)
   (def msg (string/format fmt delim))
   (assert (= (parser/error p) msg) "delimiter error"))
-(each c [ "(" "{" "[" "\"" "``" ]
+(each c ["(" "{" "[" "\"" "\"\"\""]
   (test-error c "unexpected end of source, %s opened at line 1, column 1"))
+; A mutable container's delimiter is the one after the `!`, so it opens a
+; column later and the message names the delimiter rather than the pair.
+(each c ["!(" "![" "!{" "!\""]
+  (def p (parser/new))
+  (parser/consume p c)
+  (parser/eof p)
+  (assert (= (parser/error p)
+             (string/format "unexpected end of source, %s opened at line 1, column 2"
+                            (string/slice c 1)))
+          "mutable delimiter error"))
 
 ; parser/insert
 (def p (parser/new))
 (parser/consume p "(")
 (parser/insert p "hello")
 (parser/consume p ")")
-(assert (= (parser/produce p) ["hello"]))
+(assert (= (parser/produce p) '("hello")))
 
 (def p4 (parser/new))
 (parser/consume p4 """("hel""")
 (parser/insert p4 """lo""")
 (parser/consume p4 "\")")
-(assert (= (parser/produce p4) ["hello"]))
+(assert (= (parser/produce p4) '("hello")))
 
 ; Hex floats
 (assert (= math/pi +0x1.921fb54442d18p+0001))
@@ -230,14 +259,15 @@
 (assert (= "([{\"" (parser/state pd :delimiters)) "delimiters")
 (assert (= "([{\"" (parser/state pd :delimiters)) "delimiters again")
 (def pl (parser/new))
-(parser/consume pl "```abc")
-(assert (= "```" (parser/state pl :delimiters)) "long-string delimiters count backticks")
+(parser/consume pl "\"\"\"abc")
+(assert (= "\"\"\"" (parser/state pl :delimiters))
+        "raw-string delimiters count quotes")
 
 ; :frames, innermost last, with the arguments each container has collected.
 (def pf (parser/new))
 (parser/consume pf """(1 2 [3""")
 (def frames (parser/state pf :frames))
-(assert (deep= ![:root :tuple :tuple :token] (map #(get $ :type) frames)) "frame types")
+(assert (deep= ![:root :tuple :vector :token] (map #(get $ :type) frames)) "frame types")
 (assert (deep= ![1 2] (get (get frames 1) :args)) "frame arguments")
 (assert (= 1 (get (last frames) :line)) "frame line")
 
@@ -249,7 +279,7 @@
 (parser/consume pt "sym")
 (assert (= :token (get (last (parser/state pt :frames)) :type)) "token frame")
 (def pc (parser/new))
-(parser/consume pc "# note")
+(parser/consume pc "; note")
 (assert (= :comment (get (last (parser/state pc :frames)) :type)) "comment frame")
 
 ; Reader macros name themselves.
@@ -258,12 +288,20 @@
   (parser/consume rp text)
   (get (last (parser/state rp :frames)) :type))
 (assert (= :quote (reader-frame-type "'")) "quote frame")
-(assert (= :unquote (reader-frame-type ",")) "unquote frame")
-(assert (= :splice (reader-frame-type ";")) "splice frame")
-(assert (= :quasiquote (reader-frame-type "~")) "quasiquote frame")
-(assert (= :at (reader-frame-type "@")) "at frame")
-; The short-fn prefix has no name of its own and takes the generic one.
-(assert (= (keyword "<reader>") (reader-frame-type "|")) "short-fn frame")
+(assert (= :unquote (reader-frame-type "~")) "unquote frame")
+(assert (= :splice (reader-frame-type "|")) "splice frame")
+(assert (= :quasiquote (reader-frame-type "`")) "quasiquote frame")
+; `!` resolves by lookahead, so its state is named for the character rather
+; than for a form: it may still become a symbol.
+(assert (= :bang (reader-frame-type "!")) "bang frame")
+; The dispatch forms name what they open.
+(assert (= :set (reader-frame-type "#{")) "set frame")
+(defn frame-types [text]
+  (def rp (parser/new))
+  (parser/consume rp text)
+  (map #(get $ :type) (parser/state rp :frames)))
+(assert (deep= ![:root :short-fn :tuple] (frame-types "#("))
+        "short-fn frame opens a reader macro and a container")
 
 ; A keyless call gives both, and an unknown key is an error.
 (assert (deep= ![:delimiters :frames] (sorted (keys (parser/state pd)))) "state keys")
@@ -296,7 +334,7 @@
 ; parser/consume's optional start index, and its return value.
 (def po (parser/new))
 (assert (= 3 (parser/consume po "xxx(1)" 3)) "consume from an offset")
-(assert (= [1] (parser/produce po)) "and parses from there")
+(assert (= '(1) (parser/produce po)) "and parses from there")
 (assert-error "invalid offset 9 out of range [0,3]" (parser/consume (parser/new) "abc" 9))
 (assert-error "invalid offset -1 out of range [0,3]" (parser/consume (parser/new) "abc" -1))
 ; A parse error stops the loop, and the count includes the byte that stopped it.
@@ -306,7 +344,7 @@
 ; parser/byte takes the low eight bits.
 (def pb (parser/new))
 (each b [40 49 41] (parser/byte pb b))
-(assert (= [1] (parser/produce pb)) "byte stream")
+(assert (= '(1) (parser/produce pb)) "byte stream")
 
 ; parser/produce with a wrapper, for source mapping.
 (def pv (parser/new))
@@ -345,14 +383,14 @@
 (assert (= 'tok (parser/produce pi2)) "insert terminates a token")
 (assert (= :after (parser/produce pi2)) "and queues the inserted value")
 (def pi3 (parser/new))
-(parser/consume pi3 "@")
+(parser/consume pi3 "!")
 (assert-error "cannot insert value into parser" (parser/insert pi3 1))
 
 ; The methods on the abstract type reach the same functions.
 (def pmeth (parser/new))
 (:consume pmeth "(9)")
 (assert (:has-more pmeth) "method has-more")
-(assert (= [9] (:produce pmeth)) "method produce")
+(assert (= '(9) (:produce pmeth)) "method produce")
 (assert (= :root (:status pmeth)) "method status")
 (assert (= "core/parser" (string (type pmeth))) "abstract type name")
 
@@ -362,8 +400,8 @@
 (def pc2 (parser/clone pc1))
 (parser/consume pc2 " 3)")
 (parser/consume pc1 ")")
-(assert (= [1 2 3] (parser/produce pc2)) "clone continues independently")
-(assert (= [1 2] (parser/produce pc1)) "original is unaffected")
+(assert (= '(1 2 3) (parser/produce pc2)) "clone continues independently")
+(assert (= '(1 2) (parser/produce pc1)) "original is unaffected")
 
 ; The two delimiter mismatch messages.
 (def pmm (parser/new))
@@ -412,7 +450,7 @@
 
 ; A buffer literal's frame says buffer, not string.
 (def pbl (parser/new))
-(parser/consume pbl "@\"ab")
+(parser/consume pbl "!\"ab")
 (assert (= :buffer (get (last (parser/state pbl :frames)) :type)) "buffer frame")
 
 ; parser/insert terminates a token with a space and un-counts it, so the column
@@ -452,41 +490,41 @@
   (parser/consume psr input)
   (parser/error psr))
 
-; The `@` constructors. `@[` and `@{` are covered above; the other two are the
+; The `!` constructors. `![` and `!{` are covered above; the other two are the
 ; ones nothing reached.
-(assert (= :array (type !(1 2 3))) "@(...) makes an array")
-(assert (deep= ![1 2 3] !(1 2 3)) "@(...) holds what it was given")
-(assert (= :buffer (type !"""hi""")) "@`...` makes a buffer")
-(assert (deep= !"hi" !"""hi""") "@`...` holds what it was given")
-; The `@` long string is a long string as well as a buffer, so it reindents
-; and it reports itself as one to parser/state. Being a buffer does not say so.
-(assert (deep= !" hi\n " (parse (string "    @" "``" "\n      hi\n      " "``")))
-        "@`...` is reindented the way a long string is")
+(assert (= :array (type !(1 2 3))) "!(...) makes an array")
+(assert (deep= ![1 2 3] !(1 2 3)) "!(...) holds what it was given")
+(assert (= :buffer (type !"""hi""")) "!\"\"\"...\"\"\" makes a buffer")
+(assert (deep= !"hi" !"""hi""") "and holds what it was given")
+; A raw buffer is a raw string as well as a buffer, so it reindents and it
+; reports itself as a string to parser/state. Being a buffer does not say so.
+(assert (deep= !" hi\n " (parse (string "    !" "\"\"\"" "\n      hi\n      " "\"\"\"")))
+        "a raw buffer is reindented the way a raw string is")
 (do
   (def psr (parser/new))
-  (parser/consume psr "@``ab")
+  (parser/consume psr "!\"\"\"ab")
   (assert (= :buffer ((last ((parser/state psr) :frames)) :type))
-          "and an open one reports as a buffer rather than as an at-sign"))
+          "and an open one reports as a buffer rather than as a bang"))
 
 ; The frames parser/state reports. Their type names and their buffers come
 ; from flags the constructors above set, and nothing asked for them.
 (do
   (def psr (parser/new))
-  (parser/consume psr "@he")
+  (parser/consume psr "!he")
   (def frame (last ((parser/state psr) :frames)))
-  (assert (= :token (frame :type)) "a token begun with @ reports as a token")
-  (assert (= "@he" (frame :buffer)) "and carries what has been read of it"))
+  (assert (= :token (frame :type)) "a token begun with ! reports as a token")
+  (assert (= "!he" (frame :buffer)) "and carries what has been read of it"))
 (do
   (def psr (parser/new))
-  (parser/consume psr "# comm")
+  (parser/consume psr "; comm")
   (def frame (last ((parser/state psr) :frames)))
   (assert (= :comment (frame :type)) "a comment reports as a comment")
-  (assert (= " comm" (frame :buffer)) "and its buffer excludes the # itself"))
+  (assert (= " comm" (frame :buffer)) "and its buffer excludes the ; itself"))
 (do
   (def psr (parser/new))
-  (parser/consume psr "(1 ``ab")
+  (parser/consume psr "(1 \"\"\"ab")
   (def state-frames ((parser/state psr) :frames))
-  (assert (= :string ((last state-frames) :type)) "a long string reports as a string")
+  (assert (= :string ((last state-frames) :type)) "a raw string reports as a string")
   (assert (deep= ![1] ((get state-frames 1) :args))
           "and the container below it still reports its own arguments"))
 
@@ -524,10 +562,10 @@
 ; the comment is in, and one inserted at the top level is produced on its own.
 (do
   (def psr (parser/new))
-  (parser/consume psr "(1 # note")
+  (parser/consume psr "(1 ; note")
   (parser/insert psr 42)
   (parser/consume psr "\n)")
-  (assert (= [1 42] (parser/produce psr)) "insert inside a comment reaches the container"))
+  (assert (= '(1 42) (parser/produce psr)) "insert inside a comment reaches the container"))
 (do
   (def psr (parser/new))
   (parser/insert psr 5)
@@ -545,8 +583,8 @@
 ; Long strings. The reindentation drops the indentation the string opened at,
 ; and it handles a carriage-return newline as one line ending rather than two.
 (do
-  (def tick "`")
-  (defn at-col [pad inner] (parse (string pad tick tick inner tick tick)))
+  (def q "\"")
+  (defn at-col [pad inner] (parse (string pad q q q inner q q q)))
   (assert (= "  hi\n  " (at-col "    " "\n      hi\n      "))
           "an indented long string is reindented")
   (assert (= "  hi\r\n  " (at-col "    " "\r\n      hi\r\n      "))
@@ -583,17 +621,18 @@
           "and a carriage return with nothing after it is left alone")
   ; A one-character long string whose character is a carriage return: the
   ; leading-newline test reads two bytes and there is only one.
-  (assert (= "\r" (parse (string tick "\r" tick)))
-          "a long string of one carriage return is left as it is")
-  (assert (= "" (parse (string tick "\n" tick)))
+  (assert (= "\r" (parse (string q q q "\r" q q q)))
+          "a raw string of one carriage return is left as it is")
+  (assert (= "" (parse (string q q q "\n" q q q)))
           "and one of a single newline is emptied by the leading-newline rule"))
 
-; The backtick run that ends a long string has to be as long as the one that
-; began it, and a shorter run is text.
+; The quote run that ends a raw string has to be as long as the one that began
+; it, and a shorter run is text. Three is the shortest opener, so the shorter
+; runs inside are one and two.
 (do
-  (assert (= "a`b" (parse "``a`b``")) "a shorter backtick run inside a long string is text")
-  (assert (= "a``b" (parse "```a``b```")) "however long the run is")
-  (assert (= "a" (parse "``a``")) "and the matching run ends the string"))
+  (assert (= "a\"b" (parse "\"\"\"a\"b\"\"\"")) "a shorter quote run inside a raw string is text")
+  (assert (= "a\"\"b" (parse "\"\"\"\"a\"\"b\"\"\"\"")) "however long the run is")
+  (assert (= "a" (parse "\"\"\"a\"\"\"")) "and the matching run ends the string"))
 
 ; The escapes. A hex digit is one of three ranges, a codepoint has a ceiling,
 ; and the width a codepoint is written in has three boundaries.
@@ -611,9 +650,13 @@
 (assert (= 3 (length "\uffff")) "a codepoint at the three-byte boundary takes three")
 (assert (= 4 (length "\U010000")) "and one just above it takes four")
 
-; A raw line ending inside a quoted string is dropped rather than kept.
-(assert (= "ab" (parse "\"a\nb\"")) "a newline inside a quoted string is dropped")
-(assert (= "ab" (parse "\"a\rb\"")) "and so is a carriage return")
+; A quoted string is one line: `"""` is how a string spans lines, so nothing
+; is left for Janet's quiet behaviour to serve.
+(assert (= "newline in string" (parse-error-of "\"a\nb\""))
+        "a newline inside a quoted string is refused")
+(assert (= "newline in string" (parse-error-of "\"a\rb\""))
+        "and so is a carriage return")
+(assert (= "a\nb" (parse "\"\"\"a\nb\"\"\"")) "a raw string takes both")
 
 ; The number scanner's radix and exponent bounds, which the parser reaches
 ; through every numeric literal.

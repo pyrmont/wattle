@@ -34,7 +34,7 @@
 
 ; Testing here is stateful since we are manipulating the filesystem.
 
-; Copy since not exposed in boot.janet
+; Copy since not exposed in boot.wattle
 (defn- bundle-rpath
   [path]
   (string/replace-all "\\" "/" (os/realpath path)))
@@ -128,7 +128,7 @@
 
 ; Try installing a bundle that is missing bundle script
 (assert-error-value "bundle missing bundle script"
-                    "bundle must contain bundle.janet or bundle/init.janet"
+                    "bundle must contain bundle.wattle or bundle/init.wattle"
                     (bundle/install "./examples/sample-bad-bundle1"))
 (assert (= 0 (length (bundle/list))) "check failure 0")
 (assert (= 0 (length (bundle/topolist))) "check failure 1")

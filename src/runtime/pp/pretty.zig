@@ -46,6 +46,7 @@ const strings = @import("../value/strings.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
+const vectors = @import("../value/vectors.zig");
 const value = @import("../value.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
@@ -492,10 +493,28 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             }
             try S.pushByte(if (bracketed) ']' else ')');
         },
+        repr.Tag.vector => {
+            // `[ ]` is a vector in Wattle's syntax, and a bracketed tuple in
+            // Janet's. Both spell themselves this way until the bracket goes
+            // with Janet's parser, and each reads back as itself under the
+            // parser it was written for.
+            const v = wrap.toVector(x);
+            try S.pushByte('[');
+            var index: usize = 0;
+            while (index < v.count) {
+                const run = vectors.chunk(v, index);
+                for (run.items.?[0..run.len]) |item| {
+                    try if (index != 0) S.pushByte(' ');
+                    if (try printJdnOne(S, item, depth - 1)) return true;
+                    index += 1;
+                }
+            }
+            try S.pushByte(']');
+        },
         repr.Tag.array => {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const a = wrap.toArray(x);
-            try S.pushCstring("@[");
+            try S.pushCstring("![");
             for (0..a.count) |i| {
                 try if (i != 0) S.pushByte(' ');
                 if (try printJdnOne(S, a.slice()[i], depth - 1)) return true;
@@ -505,7 +524,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
         repr.Tag.table => {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const tab = wrap.toTable(x);
-            try S.pushCstring("@{");
+            try S.pushCstring("!{");
             if (try printJdnKvs(S, tab.slots(), depth)) return true;
             try S.pushByte('}');
         },
@@ -544,7 +563,7 @@ fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Error!void {
     if (repr.checkType(x, repr.Tag.table)) {
         const t = wrap.toTable(x);
         S.align_col += 1;
-        try S.pushCstring("@");
+        try S.pushCstring("!");
         if (t.proto) |proto| {
             try pushClassName(S, tables.get(proto, value.fromBytes("_name", .keyword)));
         }
@@ -652,11 +671,17 @@ fn prettyEntry(S: *Pretty, kv: tables.Keyval) raise.Error!void {
 /// An array or a tuple.
 fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Error!void {
     const isarray = repr.checkType(x, repr.Tag.array);
-    const arr = args_core.items(x).?;
-    const bracketed = !isarray and tuples.isBracketed(tuples.head(arr.ptr));
+    const isvector = repr.checkType(x, repr.Tag.vector);
+    // A vector's elements are leaves of a trie rather than one block, so they
+    // are gathered; an array's and a tuple's are the value's own storage.
+    var gathered: ?args_core.Gathered = if (isvector) (try args_core.gather(x)).? else null;
+    defer if (gathered) |*g| g.free();
+    const arr = if (gathered) |g| g.items else args_core.items(x).?;
+    const bracketed = !isarray and !isvector and
+        tuples.isBracketed(tuples.head(arr.ptr));
 
-    const opener: [*:0]const u8 = if (isarray) "@[" else if (bracketed) "[" else "(";
-    const closer: u8 = if (isarray or bracketed) ']' else ')';
+    const opener: [*:0]const u8 = if (isarray) "![" else if (isvector or bracketed) "[" else "(";
+    const closer: u8 = if (isarray or isvector or bracketed) ']' else ')';
     try S.pushCstring(opener);
     S.align_col += @intCast(std.mem.len(opener));
     const align_col = S.align_col;
@@ -701,7 +726,7 @@ fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Error!void {
         // escape only what was there when printing started, so that the loop
         // does not chase its own output.
         try buffers.ensure(S.buffer, S.buffer.count + S.bufstartlen * 4 + 3, 1);
-        try S.pushByte('@');
+        try S.pushByte('!');
         // `try`, not an abi. Through a `raise.toAbi` wrapper a raise inside
         // the escape becomes a report nobody consumes: the blank width is used
         // and the outstanding report kills the process at the next scope
@@ -739,7 +764,7 @@ fn prettyOne(S: *Pretty, x: repr.Value) raise.Error!void {
     }
 
     switch (repr.typeOf(x)) {
-        repr.Tag.array, repr.Tag.tuple => try prettyIndexed(S, x),
+        repr.Tag.array, repr.Tag.tuple, repr.Tag.vector => try prettyIndexed(S, x),
         repr.Tag.map, repr.Tag.table => try prettyDictionary(S, x),
         else => try prettyLeaf(S, x),
     }

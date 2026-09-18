@@ -39,9 +39,9 @@ const repr = @import("repr");
 const stdio = @import("stdio.zig");
 const strings = @import("value/strings.zig");
 const tables = @import("value/tables.zig");
-const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const vm_state = @import("vm/state.zig");
 const wrap = @import("value/helpers/wrap.zig");
@@ -507,7 +507,7 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Error!repr.Value {
             value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
             wrap.fromInteger(net_abi.ntohs(sai.sin_port)),
         };
-        return wrap.fromTuple(tuples.newFrom(&pair));
+        return wrap.fromVector(vectors.fromSlice(&pair));
     }
 
     if (has_ipv6) {
@@ -520,7 +520,7 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Error!repr.Value {
                 value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
                 wrap.fromInteger(net_abi.ntohs(sai6.sin6_port)),
             };
-            return wrap.fromTuple(tuples.newFrom(&pair));
+            return wrap.fromVector(vectors.fromSlice(&pair));
         }
     }
 
@@ -538,7 +538,7 @@ pub fn soGetName(sa_any: ?*const anyopaque) raise.Error!repr.Value {
             } else {
                 pathname = value.fromBytes(std.mem.sliceTo(&sun.sun_path, 0), .string);
             }
-            return wrap.fromTuple(tuples.newFrom(@as(*const [1]repr.Value, &pathname)));
+            return wrap.fromVector(vectors.fromSlice(@as(*const [1]repr.Value, &pathname)));
         }
     }
 

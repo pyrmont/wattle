@@ -404,23 +404,23 @@ fn theRaises() void {
     argv[0] = harness.wrapInteger(7);
     expectRaise(ffi_size, .{argv[0..1]}, "bad native type 7");
 
-    argv[0] = eval("@[:int32 1 2]");
-    expectRaisePrefix(ffi_size, .{argv[0..1]}, "array type must be of form @[type count], got ");
+    argv[0] = eval("![:int32 1 2]");
+    expectRaisePrefix(ffi_size, .{argv[0..1]}, "array type must be of form ![type count], got ");
 
     // A nested array type is refused rather than flattened. A type has room
     // for one array count, so assigning the outer one over the inner leaves
-    // `@[@[:u8 4] 3]` three bytes wide rather than twelve, a quarter of the
+    // `![![:u8 4] 3]` three bytes wide rather than twelve, a quarter of the
     // size the expression names, and as a struct field that moves every later
     // field's offset. The message names the spelling that works.
-    argv[0] = eval("@[:u8 4]");
+    argv[0] = eval("![:u8 4]");
     expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 4);
-    argv[0] = eval("@[@[:u8 4] 3]");
+    argv[0] = eval("![![:u8 4] 3]");
     expectRaisePrefix(ffi_size, .{argv[0..1]}, "nested array type ");
     // The struct of inner arrays is the working spelling, and it is twelve.
-    argv[0] = eval("@[[:u8 :u8 :u8 :u8] 3]");
+    argv[0] = eval("![[:u8 :u8 :u8 :u8] 3]");
     expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 12);
     // An inner array of count zero is an array too.
-    argv[0] = eval("@[@[:u8] 3]");
+    argv[0] = eval("![![:u8] 3]");
     expectRaisePrefix(ffi_size, .{argv[0..1]}, "nested array type ");
 
     // `:none` has no trampoline, and naming it is refused rather than read as
@@ -499,7 +499,7 @@ fn theRaises() void {
     argv[1] = eval("[1 2 3]");
     expectRaise(ffi_write, .{argv[0..2]}, "wrong number of fields in struct, expected 2, got 3");
 
-    argv[0] = eval("@[:int32 3]");
+    argv[0] = eval("![:int32 3]");
     argv[1] = eval("[1 2]");
     expectRaise(ffi_write, .{argv[0..2]}, "bad array length, expected 3, got 2");
 
@@ -649,9 +649,9 @@ fn homogeneousFloatAggregates() void {
             wrap.fromNumber(1.5),
         };
         const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
-        expect(harness.isType(answer, repr.Tag.tuple));
-        const built = wrap.toTuple(answer);
-        expect(tuples.head(built).length == 2);
+        expect(harness.isIndexed(answer));
+        const built = harness.elems(answer);
+        expect(built.len == 2);
         expect(wrap.toNumber(built[0]) == 1.5);
         expect(wrap.toNumber(built[1]) == 2.5);
     }
@@ -880,14 +880,14 @@ fn aVectorPairWithOneRegisterLeft() void {
     if (!supports("sysv64")) return;
     const ffi_call_fn = harness.core("ffi/call");
     const out = eval(
-        \\[(ffi/signature :sysv64 :double ;(array/new-filled 6 :double) [:double :double])
-        \\ (ffi/signature :sysv64 :double ;(array/new-filled 7 :double) [:double :double])
+        \\[(ffi/signature :sysv64 :double |(array/new-filled 6 :double) [:double :double])
+        \\ (ffi/signature :sysv64 :double |(array/new-filled 7 :double) [:double :double])
         \\ [7 8]
         \\ [8 9]]
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const parts = wrap.toTuple(out);
+    const parts = harness.elems(out);
 
     var args: [10]repr.Value = undefined;
     for (args[2..9], 1..) |*a, n| a.* = wrap.fromNumber(@floatFromInt(n));
@@ -961,15 +961,15 @@ fn theAapcs64ReturnBound() void {
     var argv: [3]repr.Value = undefined;
     argv[0] = value.fromBytes("aapcs64", .keyword);
 
-    argv[1] = eval("[@[:u8 24]]");
+    argv[1] = eval("[![:u8 24]]");
     const narrow = signature(argv[0..2]) catch @panic("ffi_core: a 24-byte return was refused");
     expect(harness.isType(narrow, repr.Tag.abstract));
 
-    argv[1] = eval("[@[:u8 128]]");
+    argv[1] = eval("[![:u8 128]]");
     const widest = signature(argv[0..2]) catch @panic("ffi_core: a 128-byte return was refused");
     expect(harness.isType(widest, repr.Tag.abstract));
 
-    argv[1] = eval("[@[:u8 129]]");
+    argv[1] = eval("[![:u8 129]]");
     argv[2] = value.fromBytes("nonesuch", .keyword);
     expectRaise(signature, .{argv[0..3]}, "return value bigger than supported");
 }
@@ -1001,14 +1001,14 @@ fn theFrameIsScratchOnlyPastTheInlineSize() void {
     const ffi_call_fn = harness.core("ffi/call");
     const out = eval(
         \\(do
-        \\  (def big (ffi/struct ;(array/new-filled 8 :u64)))
-        \\  [(ffi/signature :aapcs64 :double ;(array/new-filled 8 big))
-        \\   (ffi/signature :aapcs64 :double ;(array/new-filled 9 big))
-        \\   (tuple ;(range 1 9))])
+        \\  (def big (ffi/struct |(array/new-filled 8 :u64)))
+        \\  [(ffi/signature :aapcs64 :double |(array/new-filled 8 big))
+        \\   (ffi/signature :aapcs64 :double |(array/new-filled 9 big))
+        \\   (tuple |(range 1 9))])
     );
     gc_alloc.gcroot(out);
     defer _ = gc_alloc.gcunroot(out);
-    const parts = wrap.toTuple(out);
+    const parts = harness.elems(out);
 
     var args: [11]repr.Value = undefined;
     for (args[2..]) |*a| a.* = parts[2];
@@ -1034,7 +1034,7 @@ fn theFrameIsScratchOnlyPastTheInlineSize() void {
 /// eighteen follow at 32 bytes each. The ceiling is the top rung, 128.
 fn aSignatureOf72StackWordsIsDescribed() void {
     if (!supports("aapcs64") or !builtin.os.tag.isDarwin()) return;
-    const sigv = eval("(ffi/signature :aapcs64 :void ;(array/new-filled 20 [:double :double :double :double]))");
+    const sigv = eval("(ffi/signature :aapcs64 :void |(array/new-filled 20 [:double :double :double :double]))");
     const sig: *ffi_types.Signature = @ptrCast(@alignCast(wrap.toAbstract(sigv)));
     expect(sig.arg_stack_words == 72);
 }
@@ -1043,7 +1043,7 @@ fn aSignatureOf72StackWordsIsDescribed() void {
 /// the `:s8` behind it arrives in the first.
 fn aZeroCountArrayArgumentWritesNothing() void {
     if (!supports("aapcs64")) return;
-    const sig = eval("(ffi/signature :aapcs64 :double @[:u8 0] :s8)");
+    const sig = eval("(ffi/signature :aapcs64 :double ![:u8 0] :s8)");
     var args = [_]repr.Value{
         wrap.fromPointer(@ptrCast(@constCast(&asS8))),
         sig,

@@ -3,7 +3,7 @@
 //! `build.zig` roots an executable named `wattle-boot` at this file and runs it
 //! to produce the core image. `main` initialises a runtime, runs the five
 //! smoke tests in `boot_tests.zig`, builds the environment
-//! `src/boot/boot.janet` compiles against, and runs that script. The script
+//! `src/boot/boot.wattle` compiles against, and runs that script. The script
 //! writes the image to the path `build.zig` passes after `image-out` in
 //! `boot/args`.
 //!
@@ -62,13 +62,13 @@ pub fn main(init: std.process.Init) !u8 {
 
     const env = env_core.coreEnv(null) catch fail("Could not build the core environment\n", .{});
 
-    // `boot/args`, which `boot.janet` reads.
+    // `boot/args`, which `boot.wattle` reads.
     const arg_array = arrays.new(@intCast(arguments.len));
     for (arguments) |a| arrays.push(arg_array, value.fromBytes(a, .string)) catch
         fail("Could not build boot/args\n", .{});
     registry.def(env, "boot/args", wrap.fromArray(arg_array), "Command line arguments.");
 
-    // The build options `boot.janet` configures the image from. They are
+    // The build options `boot.wattle` configures the image from. They are
     // `config` fields rather than macros: `build.zig` is the one derivation.
     const opts = tables.new(0);
     if (!config.docstrings)
@@ -80,7 +80,7 @@ pub fn main(init: std.process.Init) !u8 {
     // Without sourcemaps the script is compiled anonymously, which is what
     // leaves this machine's paths out of the generated image.
     const boot_filename: ?[*:0]const u8 =
-        if (!config.sourcemaps) null else "boot.janet";
+        if (!config.sourcemaps) null else "boot.wattle";
 
     if (arguments.len < 2) fail("Usage: wattle-boot <directory> [...]\n", .{});
     if (changeDirectory(arguments[1].ptr) != 0)
@@ -90,10 +90,10 @@ pub fn main(init: std.process.Init) !u8 {
     // provides. `cli.zig` takes the same `Io` and passes it to `interop.zig`.
     const source = std.Io.Dir.cwd().readFileAlloc(
         init.io,
-        "src/boot/boot.janet",
+        "src/boot/boot.wattle",
         allocator,
         .limited(1 << 24),
-    ) catch fail("Could not read src/boot/boot.janet\n", .{});
+    ) catch fail("Could not read src/boot/boot.wattle\n", .{});
 
     // The result value is kept so that `reportBootFailure` can say what the
     // script failed on.

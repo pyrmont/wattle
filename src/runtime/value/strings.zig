@@ -66,7 +66,7 @@ const registry = @import("../registry.zig");
 const repr = @import("repr");
 const symbols = @import("symbols.zig");
 const tables = @import("tables.zig");
-const tuples = @import("tuples.zig");
+const vectors = @import("vectors.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const wrap = @import("helpers/wrap.zig");
@@ -405,13 +405,15 @@ fn cfunStringAsciiupper(argv: []repr.Value) raise.Error!repr.Value {
     return try mapCase(97, 122, -32, argv);
 }
 
-/// `string/bytes`: a tuple of the byte values.
+/// `string/bytes`: a vector of the byte values.
 fn cfunStringBytes(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
-    const tup = tuples.begin(@intCast(view.len));
-    for (0..view.len) |i| tup[i] = wrap.fromInteger(view.bytes.?[i]);
-    return wrap.fromTuple(tuples.end(tup));
+    const block = gc_alloc.scratch_heap.alloc(repr.Value, view.len) catch
+        fatal.outOfMemory();
+    defer gc_alloc.scratch_heap.free(block);
+    for (0..view.len) |i| block[i] = wrap.fromInteger(view.bytes.?[i]);
+    return wrap.fromVector(vectors.fromSlice(block));
 }
 
 /// `string/check-set`: whether every byte of a string appears in a set.

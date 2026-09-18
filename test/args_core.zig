@@ -553,7 +553,7 @@ fn theByteAndCstringShapes() raise.Error!void {
         expect(args.argCbytes(slots(&one), 0) == .terminate);
     }
 
-    refuses(args.getCString, .{ a, 1 }, "bad slot #1, expected string, got @\"buf\"");
+    refuses(args.getCString, .{ a, 1 }, "bad slot #1, expected string, got !\"buf\"");
     refuses(args.getCString, .{ a, 3 }, "bad slot #3, expected string, got nil");
     refuses(
         args.getCBytes,

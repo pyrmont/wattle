@@ -40,8 +40,8 @@ const disasm = @import("subsystems").disasm;
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const repr = @import("repr");
-const tuples = @import("subsystems").value.tuples;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vectors = @import("subsystems").value.vectors;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -49,13 +49,23 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 
 /// Decode, and assert the instruction is the named one with `length` fields.
-fn decoded(instruction: u32, length: i32, name: [*:0]const u8) [*]const repr.Value {
+///
+/// A decoded instruction is a vector, which `[ ]` is the spelling of and which
+/// the assembler reads back. The elements are copied into `fields` so that a
+/// case can index them; each call replaces what the last one left.
+var fields: [8]repr.Value = undefined;
+
+fn decoded(instruction: u32, length: i32, name: [*:0]const u8) []const repr.Value {
     const val = disasm.asmDecodeInstruction(instruction);
-    expect(harness.isType(val, repr.Tag.tuple));
-    const tuple = wrap.toTuple(val);
-    expect(tuples.head(tuple).length == length);
-    expect(harness.symbolIs(tuple[0], name));
-    return tuple;
+    expect(harness.isType(val, repr.Tag.vector));
+    const v = wrap.toVector(val);
+    expect(v.count == length);
+    var index: usize = 0;
+    while (index < v.count) : (index += 1) {
+        fields[index] = vectors.at(v, index);
+    }
+    expect(harness.symbolIs(fields[0], name));
+    return fields[0..@intCast(length)];
 }
 
 fn anUnknownOpcodeStaysANumber() void {
@@ -67,8 +77,7 @@ fn anUnknownOpcodeStaysANumber() void {
 
 fn theOperandShapes() void {
     // No operands.
-    const noop = decoded(harness.op(constants.Opcode.noop), 1, "noop");
-    expect((harness.gcBits(tuples.head(noop).gc.flags) & constants.JANET_TUPLE_FLAG_BRACKETCTOR) == 0);
+    _ = decoded(harness.op(constants.Opcode.noop), 1, "noop");
 
     // One unsigned 24-bit field.
     const err = decoded(harness.op(constants.Opcode.@"error") | (@as(u32, 0x123456) << 8), 2, "err");
@@ -119,12 +128,16 @@ fn theSignedAndUnsignedImmediatesAgreeOnNothing() void {
     expect(harness.integerIs(sruim[3], 253));
 }
 
-/// Bit 7 is the breakpoint flag rather than part of the opcode, and it is
-/// reported out of band: the tuple is still `(noop)`, and the flag rides on
-/// the tuple itself.
+/// Bit 7 is the breakpoint flag rather than part of the opcode, so a word
+/// carrying one decodes to the same instruction as one without it.
+///
+/// Janet reported the flag out of band by marking the instruction tuple
+/// bracketed. A decoded instruction is a vector and has no such flag, and
+/// nothing read it back: `asm` never restored a breakpoint from it, so what
+/// is lost is a one-way diagnostic. What replaces it is open.
 fn aBreakpointIsAFlagRatherThanAnOperand() void {
-    const tuple = decoded(harness.op(constants.Opcode.noop) | @as(u32, 0x80), 1, "noop");
-    expect((harness.gcBits(tuples.head(tuple).gc.flags) & constants.JANET_TUPLE_FLAG_BRACKETCTOR) != 0);
+    const with_break = decoded(harness.op(constants.Opcode.noop) | @as(u32, 0x80), 1, "noop");
+    expect(harness.symbolIs(with_break[0], "noop"));
 }
 
 // ==========================================================================

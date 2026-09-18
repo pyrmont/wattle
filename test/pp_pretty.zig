@@ -116,10 +116,10 @@ fn prettyWidth(b: *buffers.Buffer, width: u32, flags: c_int, x: repr.Value) !voi
 /// hand, so this branch runs nowhere but here.
 fn aNullBufferIsAllocated() !void {
     const b = try pretty.prettyBuffer(null, guard, 80, .{}, eval("[1 2 3]"), 0, 0);
-    checkBuffer(b, "(1 2 3)");
+    checkBuffer(b, "[1 2 3]");
 
     const j = try pretty.jdn(null, guard, eval("[1 2 3]"), 0, 0);
-    checkBuffer(j, "(1 2 3)");
+    checkBuffer(j, "[1 2 3]");
 }
 
 /// The barrier is what stops the reflow from rewriting text the caller had
@@ -129,7 +129,7 @@ fn aNullBufferIsAllocated() !void {
 fn theBarrierProtectsEarlierText() !void {
     const b = buffer(64);
     const preamble = "one\n  two\n  three)";
-    const val = eval("@[@[1 2] @[3 4]]");
+    const val = eval("![![1 2] ![3 4]]");
 
     _ = buffers.pushCstringAbi(b, preamble);
     try prettyWidth(b, 12, 0, val);
@@ -154,21 +154,21 @@ fn theBarrierProtectsEarlierText() !void {
 /// at the inner level's indentation and the walk stops at the first newline
 /// indented less than that.
 fn theWidthDecidesTheWrapping() !void {
-    const val = eval("@[1 2 3 4 5]");
+    const val = eval("![1 2 3 4 5]");
     const narrow = buffer(64);
     const wide = buffer(64);
 
     try prettyWidth(narrow, 12, 0, val);
     try prettyWidth(wide, 16, 0, val);
 
-    checkBuffer(narrow, "@[1\n  2\n  3\n  4\n  5]");
-    checkBuffer(wide, "@[1 2 3 4 5]");
+    checkBuffer(narrow, "![1\n  2\n  3\n  4\n  5]");
+    checkBuffer(wide, "![1 2 3 4 5]");
 }
 
 fn oneLineNeverWraps() !void {
     const b = buffer(64);
-    try prettyWidth(b, 4, constants.JANET_PRETTY_ONELINE, eval("@[@[1 2] @[3 4]]"));
-    checkBuffer(b, "@[@[1 2] @[3 4]]");
+    try prettyWidth(b, 4, constants.JANET_PRETTY_ONELINE, eval("![![1 2] ![3 4]]"));
+    checkBuffer(b, "![![1 2] ![3 4]]");
 }
 
 /// Nesting is the case the reflow does *not* reach, asserted so that a change
@@ -176,8 +176,8 @@ fn oneLineNeverWraps() !void {
 /// output.
 fn nestingBlocksTheReflow() !void {
     const b = buffer(64);
-    try prettyWidth(b, 99, 0, eval("@[@[1 2] @[3 4]]"));
-    checkBuffer(b, "@[@[1 2]\n  @[3 4]]");
+    try prettyWidth(b, 99, 0, eval("![![1 2] ![3 4]]"));
+    checkBuffer(b, "![![1 2]\n  ![3 4]]");
 }
 
 /// Colour escapes occupy no columns, and the backtracker steps over them
@@ -185,7 +185,7 @@ fn nestingBlocksTheReflow() !void {
 /// must therefore wrap the same way with and without colour, which is the one
 /// observable consequence of two comparisons nothing else covers.
 fn colourCostsNoColumns() !void {
-    const val = eval("@[1 2 3 4 5]");
+    const val = eval("![1 2 3 4 5]");
     const plain = buffer(64);
     const colored = buffer(64);
 
@@ -211,24 +211,24 @@ fn colourCostsNoColumns() !void {
 /// once; every cycle in the Janet suites is `<cycle 0>`.
 fn aTwoDigitCycleId() !void {
     const outer = eval(
-        \\(def as (seq [i :range [0 13]] @[]))
+        \\(def as (seq [i :range [0 13]] ![]))
         \\(loop [i :range [0 12]] (array/push (as i) (as (+ i 1))))
         \\(array/push (last as) (last as))
         \\(as 0)
     );
     const b = buffer(64);
     try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, outer);
-    checkBuffer(b, "@[@[@[@[@[@[@[@[@[@[@[@[@[<cycle 12>]]]]]]]]]]]]]");
+    checkBuffer(b, "![![![![![![![![![![![![![<cycle 12>]]]]]]]]]]]]]");
 }
 
 /// A value seen twice without a cycle is printed twice, not marked. The `seen`
 /// table is emptied on the way back out of every subtree, and a version that
 /// left entries behind would turn a repeated sibling into a cycle marker.
 fn aRepeatThatIsNotACycle() !void {
-    const pair = eval("(def inner @[1 2]) @[inner inner]");
+    const pair = eval("(def inner ![1 2]) ![inner inner]");
     const b = buffer(64);
     try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, pair);
-    checkBuffer(b, "@[@[1 2] @[1 2]]");
+    checkBuffer(b, "![![1 2] ![1 2]]");
 }
 
 /// An indexed value longer than the limit prints three from each end with an
@@ -247,7 +247,7 @@ fn theArrayTruncationBoundary() !void {
     expect(endsWith(at_limit, " 157 158 159]"));
 
     // 161 elements: three, an elision, three.
-    checkBuffer(over, "@[0 1 2 ... 158 159 160]");
+    checkBuffer(over, "![0 1 2 ... 158 159 160]");
 }
 
 /// The same boundary for a dictionary, where the limit is 30 rather than 160
@@ -284,14 +284,14 @@ fn keysAreSortedBelowTheLimit() !void {
 
     try prettyWidth(forward, 99, flags, eval("(tabseq [i :range [0 40]] i i)"));
     try prettyWidth(backward, 99, flags, eval(
-        "(let [t @{}] (var i 39) (while (>= i 0) (put t i i) (-- i)) t)",
+        "(let [t !{}] (var i 39) (while (>= i 0) (put t i i) (-- i)) t)",
     ));
 
     expect(forward.count == backward.count);
     const count: usize = @intCast(forward.count);
     expect(std.mem.eql(u8, forward.slice()[0..count], backward.slice()[0..count]));
     // Sorted, so the first entry is the smallest key.
-    expect(std.mem.eql(u8, forward.slice()[0..6], "@{0 0 "));
+    expect(std.mem.eql(u8, forward.slice()[0..6], "!{0 0 "));
 }
 
 /// Every level of a nested dictionary sorts its own keys, taking its slice of
@@ -307,24 +307,24 @@ fn nestedDictionariesShareTheKeySortScratch() !void {
 
     const t = buffer(4096);
     try prettyWidth(t, 99, constants.JANET_PRETTY_ONELINE, eval(
-        "@{:a @{:x 1 :y 2 :z 3} :b @{:x 4 :y 5 :z 6} :c @{:x 7 :y 8 :z 9}}",
+        "!{:a !{:x 1 :y 2 :z 3} :b !{:x 4 :y 5 :z 6} :c !{:x 7 :y 8 :z 9}}",
     ));
-    checkBuffer(t, "@{:a @{:x 1 :y 2 :z 3} :b @{:x 4 :y 5 :z 6} :c @{:x 7 :y 8 :z 9}}");
+    checkBuffer(t, "!{:a !{:x 1 :y 2 :z 3} :b !{:x 4 :y 5 :z 6} :c !{:x 7 :y 8 :z 9}}");
 }
 
 fn theDepthLimit() !void {
     const b = buffer(64);
     var argv = [1]repr.Value{eval("[1 [2 [3 [4]]]]")};
     try format.bufferFormat(b, "%.2q", 0, argv[0..1]);
-    checkBuffer(b, "(1 (...))");
+    checkBuffer(b, "[1 [...]]");
 }
 
 fn whatJdnRefuses() !void {
     // One key, because JDN walks a dictionary in storage order rather than
     // sorted order and two would pin the hash layout rather than the writer.
     const b = buffer(64);
-    _ = try pretty.jdn(b, guard, eval("{:a [1 @[2 \"x\"] 1.5]}"), 0, 0);
-    checkBuffer(b, "{:a (1 @[2 \"x\"] 1.5)}");
+    _ = try pretty.jdn(b, guard, eval("{:a [1 ![2 \"x\"] 1.5]}"), 0, 0);
+    checkBuffer(b, "{:a [1 ![2 \"x\"] 1.5]}");
 
     for ([_][*:0]const u8{
         "print", // a cfunction has no JDN form

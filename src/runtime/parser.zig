@@ -512,10 +512,10 @@ pub fn parserHasMore(parser: *Parser) bool {
     return parser.pending != 0;
 }
 
-/// `parserInitDialect` reading Janet, which is what every caller but the
-/// contracts wants.
+/// `parserInitDialect` reading Wattle, which is the language and what every
+/// caller but `test/parser_core.zig` wants.
 pub fn parserInit(parser: *Parser) void {
-    parserInitDialect(parser, .janet);
+    parserInitDialect(parser, .wattle);
 }
 
 /// Starts a parser at line 1, column 0, with the root state on the stack.
@@ -1226,10 +1226,11 @@ fn cfunParserWhere(argv: []repr.Value) raise.Error!repr.Value {
         if (column < 0) return pp_format.panicf("invalid column number %d", .{column});
         parser.column = @intCast(column);
     }
-    const tuple = tuples.begin(2);
-    tuple[0] = wrap.fromInteger(@intCast(parser.line));
-    tuple[1] = wrap.fromInteger(@intCast(parser.column));
-    return wrap.fromTuple(tuples.end(tuple));
+    const pair = [2]repr.Value{
+        wrap.fromInteger(@intCast(parser.line)),
+        wrap.fromInteger(@intCast(parser.column)),
+    };
+    return wrap.fromVector(vectors.fromSlice(&pair));
 }
 
 /// A parser that has hit EOF, or that is sitting on an unread error, cannot be

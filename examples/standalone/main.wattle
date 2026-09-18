@@ -1,0 +1,8 @@
+; The program inside the executable `build.zig` makes. `greet` is linked in,
+; so the import needs no file, and the image names `greet/hello` rather than
+; containing it.
+
+(import greet)
+
+(defn main [& args]
+  (print (type (greet/hello))))

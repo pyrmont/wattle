@@ -202,11 +202,11 @@ fn singleNesting() void {
         \\(gcsetinterval 1024)
         \\(def cb
         \\  (do
-        \\    (def captured @{:key "value" :nested @[1 2 3 4 5]})
+        \\    (def captured !{:key "value" :nested ![1 2 3 4 5]})
         \\    (fn []
         \\      (var result nil)
         \\      (for i 0 500
-        \\        (def t @{:i i :s (string "iter-" i) :arr @[i (+ i 1) (+ i 2)]})
+        \\        (def t !{:i i :s (string "iter-" i) :arr ![i (+ i 1) (+ i 2)]})
         \\        (set result (get captured :key)))
         \\      result)))
         \\(for round 0 200
@@ -229,23 +229,23 @@ fn deepNesting() void {
         \\(gcsetinterval 1024)
         \\(def inner-cb
         \\  (do
-        \\    (def captured @{:key "deep" :nested @[10 20 30]})
+        \\    (def captured !{:key "deep" :nested ![10 20 30]})
         \\    (fn []
         \\      (var result nil)
         \\      (for i 0 500
-        \\        (def t @{:i i :s (string "iter-" i) :arr @[i (+ i 1) (+ i 2)]})
+        \\        (def t !{:i i :s (string "iter-" i) :arr ![i (+ i 1) (+ i 2)]})
         \\        (set result (get captured :key)))
         \\      result)))
         \\
         \\(def outer-cb
         \\  (do
-        \\    (def state @{:count 0 :data @["a" "b" "c" "d" "e"]})
+        \\    (def state !{:count 0 :data !["a" "b" "c" "d" "e"]})
         \\    (fn []
-        \\      # Runs on F2. Calling gcpcall/call here creates F3, and F2 stops
-        \\      # being vm.fiber without ever having been root_fiber.
+        \\      ; Runs on F2. Calling gcpcall/call here creates F3, and F2 stops
+        \\      ; being vm.fiber without ever having been root_fiber.
         \\      (def inner-result (gcpcall/call inner-cb))
-        \\      # If F2 was collected during F3's execution, `state` is read
-        \\      # through freed memory here.
+        \\      ; If F2 was collected during F3's execution, `state` is read
+        \\      ; through freed memory here.
         \\      (put state :count (+ (state :count) 1))
         \\      (string inner-result "-" (state :count)))))
         \\

@@ -54,7 +54,7 @@ const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const signal = @import("../signal.zig");
 const tables = @import("tables.zig");
-const tuples = @import("tuples.zig");
+const vectors = @import("vectors.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const vm_state = @import("../vm/state.zig");
@@ -828,10 +828,12 @@ fn fillVarargs(fiber: *Fiber, func: *functions.Function, slot: i32, count: i32) 
         dataAt(fiber, slot)[0..@intCast(count)]
     else
         &.{};
+    // `& rest` binds a vector, as the destructuring `& rest` does: what it
+    // collects is data, and the vector is Wattle's immutable sequence.
     dataAt(fiber, slot)[0] = if (maparg)
         makeMapN(values)
     else
-        wrap.fromTuple(tuples.newFrom(values));
+        wrap.fromVector(vectors.fromSlice(values));
 }
 
 /// Everything a frame push does up to the point where a variadic tail's value

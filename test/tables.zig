@@ -663,14 +663,14 @@ fn fromJanet() void {
     const source =
         \\[(= {1 2 3 4} {3 4 1 2})
         \\ (= (hash {1 2 3 4}) (hash {3 4 1 2}))
-        \\ (do (def t @{:a 1}) (put t :a nil) (length t))
-        \\ (do (def t @{:a 1}) (table/setproto t @{:b 2}) (get t :b))
-        \\ (table/proto-flatten (table/setproto @{:a 1} @{:a 2 :b 3}))
-        \\ (length (table/to-map (do (def t @{:a 1 :b 2}) (put t :a nil) t)))
-        \\ (do (def t @{:a 1}) (table/clear t) (length t))]
+        \\ (do (def t !{:a 1}) (put t :a nil) (length t))
+        \\ (do (def t !{:a 1}) (table/setproto t !{:b 2}) (get t :b))
+        \\ (table/proto-flatten (table/setproto !{:a 1} !{:a 2 :b 3}))
+        \\ (length (table/to-map (do (def t !{:a 1 :b 2}) (put t :a nil) t)))
+        \\ (do (def t !{:a 1}) (table/clear t) (length t))]
     ;
     expect(core_env.dostring(harness.coreEnv(), source, "tables", &out) == 0);
-    const r = wrap.toTuple(out);
+    const r = harness.elems(out);
     expect(repr.truthy(r[0]));
     expect(repr.truthy(r[1]));
     expect(harness.integerIs(r[2], 0));

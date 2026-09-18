@@ -1,0 +1,8 @@
+; The program inside the single-file executable. `(import digest)` resolves
+; to the module linked into the binary, and the image this file becomes
+; names `digest/sha256` rather than containing it.
+
+(import digest)
+
+(defn main [& args]
+  (print (digest/sha256 "abc")))

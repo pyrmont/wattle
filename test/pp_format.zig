@@ -434,7 +434,7 @@ fn anOversizedItemIsRefused() void {
 }
 
 fn theTwoLoopsAgreeWhereTheyOverlap() void {
-    var slot = [_]repr.Value{eval("@{:a [1 2 3] :b \"x\"}")};
+    var slot = [_]repr.Value{eval("!{:a [1 2 3] :b \"x\"}")};
 
     inline for (.{ "%q", "%j", "%t", "%V" }) |spelling| {
         checkString(
@@ -459,7 +459,7 @@ fn theTwoLoopsAgreeWhereTheyOverlap() void {
 /// the decoding is by character rather than by table. Each flag is asserted
 /// through the one spelling that sets it alone.
 fn theEightPrettySpellings() void {
-    const val = eval("@[1 2 3 4 5]");
+    const val = eval("![1 2 3 4 5]");
 
     const has = struct {
         fn scalar(s: strings.String, needle: u8) bool {
@@ -498,7 +498,7 @@ fn theEightPrettySpellings() void {
     // from an argument.
     checkString(
         fmt.formatc("%.2q", .{eval("[1 [2 [3]]]")}) catch @panic("raised"),
-        "(1 (...))",
+        "[1 [...]]",
     );
 }
 
@@ -509,7 +509,7 @@ fn theEightPrettySpellings() void {
 fn aPrettyConversionAfterOtherText() void {
     const b = buffers.new(64);
     _ = buffers.pushCstringAbi(b, "prefix)\n");
-    _ = fmt.formatb(b, "%12p", .{eval("@[1 2 3 4 5]")}) catch @panic("raised");
+    _ = fmt.formatb(b, "%12p", .{eval("![1 2 3 4 5]")}) catch @panic("raised");
     // The prefix, its newline and its bracket are all still there.
     expect(std.mem.eql(u8, b.slice()[0..8], "prefix)\n"));
 }

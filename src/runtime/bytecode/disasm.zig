@@ -20,9 +20,9 @@ const maps = @import("../value/maps.zig");
 const repr = @import("repr");
 const strings = @import("../value/strings.zig");
 const symbols = @import("../value/symbols.zig");
-const tuples = @import("../value/tuples.zig");
 const verify = @import("verify.zig");
 const vm_state = @import("../vm/state.zig");
+const vectors = @import("../value/vectors.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
 // ==========================================================================
@@ -107,10 +107,7 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
         }),
     };
 
-    if (instruction & 0x80 != 0) {
-        asmMarkBracketed(result);
-    }
-    return asmWrapTuple(result);
+    return asmWrapVector(result);
 }
 
 /// The whole disassembly, as a struct of every field.
@@ -162,12 +159,6 @@ fn argument(instruction: u32, byte: u5, mask: u32) i32 {
     return @intCast((instruction >> (byte * 8)) & mask);
 }
 
-/// Marks a decoded instruction bracketed, which is what makes it print as
-/// `[...]` rather than `(...)`.
-inline fn asmMarkBracketed(val: tuples.Tuple) void {
-    tuples.setBracketed(tuples.head(val));
-}
-
 /// The instruction name for an encoded word, or null for an opcode the table
 /// has no row for.
 ///
@@ -187,9 +178,9 @@ inline fn asmWrapSymbol(val: [*:0]const u8) repr.Value {
     return wrap.fromSymbol(symbols.csymbol(val));
 }
 
-/// A decoded instruction's tuple, as a value.
-inline fn asmWrapTuple(val: tuples.Tuple) repr.Value {
-    return wrap.fromTuple(val);
+/// A decoded instruction's vector, as a value.
+inline fn asmWrapVector(val: *vectors.Vector) repr.Value {
+    return wrap.fromVector(val);
 }
 
 /// The eight wraps the field walk is built from, named locally so that each
@@ -218,8 +209,8 @@ inline fn disasmWrapSymbol(val: strings.Symbol) repr.Value {
     return wrap.fromSymbol(val);
 }
 
-inline fn disasmWrapTuple(val: tuples.Tuple) repr.Value {
-    return wrap.fromTuple(val);
+inline fn disasmWrapVector(val: *vectors.Vector) repr.Value {
+    return wrap.fromVector(val);
 }
 
 /// Every field of `definition`, as a map keyed by keyword. A subdefinition
@@ -289,38 +280,37 @@ fn disassembleEnvironments(definition: *functions.FuncDef) repr.Value {
     return disasmWrapArray(result);
 }
 
-/// `definition`'s source map, as an array of `(line column)` tuples, or nil
+/// `definition`'s source map, as an array of `[line column]` vectors, or nil
 /// where it has none.
 fn disassembleSourceMap(definition: *functions.FuncDef) repr.Value {
     if (definition.sourcemap == null) return wrapNil();
     const result = arrays.new(definition.bytecode_length);
     for (definition.sourceMappings(), 0..) |mapping, index| {
-        const tuple = tuples.begin(2);
-        tuple[0] = wrap.fromInteger(mapping.line);
-        tuple[1] = wrap.fromInteger(mapping.column);
-        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
+        const pair = [2]repr.Value{
+            wrap.fromInteger(mapping.line),
+            wrap.fromInteger(mapping.column),
+        };
+        result.reserved()[index] = disasmWrapVector(vectors.fromSlice(&pair));
     }
     result.count = definition.bytecode_length;
     return disasmWrapArray(result);
 }
 
 /// `definition`'s symbol map, as an array of
-/// `(birth death slot symbol)` tuples, or nil where it has none. An upvalue
+/// `[birth death slot symbol]` vectors, or nil where it has none. An upvalue
 /// entry has the keyword `:upvalue` in place of its birth position.
 fn disassembleSymbolMap(definition: *functions.FuncDef) repr.Value {
     if (definition.symbolmap == null) return wrapNil();
     const result = arrays.new(definition.symbolmap_length);
     const upvalue = disasmKeyword("upvalue");
     for (definition.symbols(), 0..) |mapping, index| {
-        const tuple = tuples.begin(4);
-        tuple[0] = if (mapping.birth_pc == std_max_u32)
-            upvalue
-        else
-            wrapUnsigned(mapping.birth_pc);
-        tuple[1] = wrapUnsigned(mapping.death_pc);
-        tuple[2] = wrapUnsigned(mapping.slot_index);
-        tuple[3] = disasmWrapSymbol(mapping.symbol.?);
-        result.reserved()[index] = disasmWrapTuple(tuples.end(tuple));
+        const quad = [4]repr.Value{
+            if (mapping.birth_pc == std_max_u32) upvalue else wrapUnsigned(mapping.birth_pc),
+            wrapUnsigned(mapping.death_pc),
+            wrapUnsigned(mapping.slot_index),
+            disasmWrapSymbol(mapping.symbol.?),
+        };
+        result.reserved()[index] = disasmWrapVector(vectors.fromSlice(&quad));
     }
     result.count = definition.symbolmap_length;
     return disasmWrapArray(result);
@@ -331,11 +321,12 @@ fn integer(val: i32) repr.Value {
     return wrap.fromInteger(val);
 }
 
-/// A tuple of `values`, closed.
-fn makeTuple(values: []const repr.Value) tuples.Tuple {
-    const tuple = tuples.begin(@intCast(values.len));
-    for (values, 0..) |val, index| tuple[index] = val;
-    return tuples.end(tuple);
+/// A vector of `values`.
+///
+/// A disassembled instruction is data and is spelled `[ ]`, which is what the
+/// assembler reads one back from.
+fn makeTuple(values: []const repr.Value) *vectors.Vector {
+    return vectors.fromSlice(values);
 }
 
 /// A signed instruction field, as an arithmetic right shift of the word

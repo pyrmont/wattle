@@ -14,12 +14,12 @@ language, written in [Zig](https://ziglang.org). Janet is a language for system
 scripting and expressive automation. It has more built-in functionality and a
 richer core language than Lua, but is smaller than GNU Guile or Python.
 
-Wattle runs Janet source identically to the [C
-implementation](https://github.com/janet-lang/janet). What differs is the
-runtime underneath, how it is built, and how native modules are written. Wattle
-is also the base for a dialect of its own: `.wattle` source, with the syntax of
-[Claret](https://github.com/pyrmont/claret), is planned to run beside `.janet`
-source on the same virtual machine.
+Wattle is its own language. It began as a runtime for
+[Janet](https://github.com/janet-lang/janet) and keeps Janet's virtual machine,
+compiler and core library, but it reads a syntax of its own, taken from
+[Claret](https://github.com/pyrmont/claret): source is `.wattle`, `[a b]` is a
+vector, `{:a 1}` is a map, `;` opens a comment and `!` opens a mutable
+container. `.janet` source is not loaded.
 
 There is a REPL for trying out the language, as well as the ability to run
 script files. Try Janet in your browser at <https://janet-lang.org>.
@@ -199,7 +199,7 @@ everything it reads have to be in this tree.  The default `syspath` is
 <host-dir>::/usr/local/lib/wattle` — or `WATTLE_PATH` set to a directory that is:
 
 ```sh
-wasmtime run --dir . --env WATTLE_PATH=./lib zig-out/bin/wattle.wasm script.janet
+wasmtime run --dir . --env WATTLE_PATH=./lib zig-out/bin/wattle.wasm script.wattle
 ```
 
 `zig build examples/web` builds `examples/web/`, Wattle in a web page: the runtime as a
@@ -227,7 +227,7 @@ system and run it. However, for a fuller setup, please see the
 
 A REPL is launched when the binary is invoked with no arguments. Pass the `-h`
 flag to display the usage information. Individual scripts can be run with
-`./wattle myscript.janet`.
+`./wattle myscript.wattle`.
 
 If you are looking to explore, you can print a list of all available macros,
 functions, and constants by entering the command `(all-bindings)` into the
@@ -252,7 +252,7 @@ Options are:
   --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
   --debug (-d)            : Set the debug flag in the REPL
   --repl (-r)             : Enter the REPL after running all scripts
-  --noprofile (-R)        : Disables loading profile.janet when WATTLE_PROFILE is present
+  --noprofile (-R)        : Disables loading profile.wattle when WATTLE_PROFILE is present
   --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
   --quiet (-q)            : Hide logo (quiet)
   --flycheck (-k)         : Compile scripts but do not execute (flycheck)

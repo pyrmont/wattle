@@ -366,9 +366,9 @@ fn theCoreFunctions() void {
         \\(assert (> (os/getpid) 0))
         \\(assert (boolean? (os/shell)))
         \\(assert (= 0 (os/shell "exit 0")))
-        \\# The answer is `system`'s wait status rather than the exit code,
-        \\# which is what "pass a command string directly to the system shell"
-        \\# means and is unchanged by the fix.
+        \\; The answer is `system`'s wait status rather than the exit code,
+        \\; which is what "pass a command string directly to the system shell"
+        \\; means and is unchanged by the fix.
         \\(assert (= 768 (os/shell "exit 3")))
     );
 }

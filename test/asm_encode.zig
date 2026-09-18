@@ -237,7 +237,7 @@ fn theRefusals() void {
         "'{:bytecode [(retn)] :sourcemap []}",
         "sourcemap must have the same length as the bytecode",
     );
-    refused("'{:bytecode [(retn)] :sourcemap [:bad]}", "expected tuple");
+    refused("'{:bytecode [(retn)] :sourcemap [:bad]}", "expected tuple or vector");
     refused(
         "'{:arity 1 :bytecode [(retn)] :symbolmap [[0 1 0 :bad]]}",
         "expected symbol",

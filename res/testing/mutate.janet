@@ -78,7 +78,7 @@
 # ## The judge escalates, because most mutants die cheaply
 #
 # A default `zig build` does not reach every half of every subsystem.
-# `janet_native`'s success path is reached only by `test/zig-native.janet`,
+# `janet_native`'s success path is reached only by `test/zig-native.wattle`,
 # which `build.zig` hangs off the *test* step: `test_step.dependOn` at the run
 # artifact, not the install step. So a mutant is put through as little as will
 # kill it:
@@ -235,8 +235,8 @@
 #
 # Phase 10 Part 12 lost a whole phase to this and it was invisible in the log:
 # a mutated `os/open` mode created `unique.txt` with permissions 0000, so
-# `test/suite-ev.janet` could not reopen it, and fifty-seven of seventy-four
-# mutants were recorded as caught by `suite-ev.janet (fail)`. The attribution
+# `test/suite-ev.wattle` could not reopen it, and fifty-seven of seventy-four
+# mutants were recorded as caught by `suite-ev.wattle (fail)`. The attribution
 # column is what gave it away -- a file-writing suite has no business catching
 # mutations in a permission parser -- which is Part 8's rule about labelling
 # the catcher paying for itself a second time.
@@ -245,7 +245,7 @@
 # anything else is cleared too.
 # Re-derived by grepping every suite for the paths it creates, because every
 # suite now runs for every mutant rather than three of them. `tmp_dir_*` is
-# `helper.janet`'s `randdir`, which `suite-bundle`, `suite-ev2` and
+# `helper.wattle`'s `randdir`, which `suite-bundle`, `suite-ev2` and
 # `suite-filewatch` build their trees under, so the `file1.txt` kind of leaf
 # goes with its directory. `wattle-suite-*` covers `suite-io`,
 # `suite-filewatch` and `suite-net`.
@@ -658,7 +658,7 @@
 # builds rather than assumed: `scan.zig` line 127 `-= 1` made `-= 2`, which
 # panics inside `boot_tests.zig`'s own number tests; `parser.zig` line 134's
 # `container` default flipped, which makes the generator fail to parse
-# `boot.janet`; and `ev.zig` line 143's `windows` comparison inverted, which is
+# `boot.wattle`; and `ev.zig` line 143's `windows` comparison inverted, which is
 # a real compile error and prints no bare ` failure` line at all.
 #
 # Phase 20 batch 2c is why this exists. `parser.zig` and `scan.zig` are what

@@ -54,14 +54,19 @@
 (assert (= var-b "hello") "regression 1")
 
 ; d28925fda
-(assert (= (string '()) (string [])) "empty bracket tuple literal")
+(assert (= '() (tuple)) "empty tuple literal")
+(assert (= [] (vector)) "empty vector literal")
 
-; Bracket tuple issue
+; A vector is never a call
 ; 340a6c4
+;
+; `[ ]` was a bracket tuple and is a vector; what it never was, and still is
+; not, is a form the compiler dispatches on. Its head is evaluated like every
+; other element.
 (let [do 3]
-  (assert (= [3 1 2 3] [do 1 2 3]) "bracket tuples are never special forms"))
-(assert (= `(~defn 1 2 3) [defn 1 2 3]) "bracket tuples are never macros")
-(assert (= `(~+ 1 2 3) [+ 1 2 3]) "bracket tuples are never function calls")
+  (assert (= [3 1 2 3] [do 1 2 3]) "a vector is never a special form"))
+(assert (= (vector defn 1 2 3) [defn 1 2 3]) "a vector is never a macro call")
+(assert (= (vector + 1 2 3) [+ 1 2 3]) "a vector is never a function call")
 
 ; Crash issue #1174 - bad debug info
 ; e97299f
@@ -256,14 +261,14 @@
 (parser/eof pos-parser)
 (def pos-lints ![])
 (compile (parser/produce pos-parser) (curenv) "lint-src" pos-lints)
-(assert (deep= [:strict 7 3 "binding pos-probe is unused"] (tuple |(first pos-lints)))
+(assert (deep= [:strict 7 3 "binding pos-probe is unused"] (vec (first pos-lints)))
         "lint line and column, in that order")
 
 ; A form built at runtime carries no source map at all, and the lint records
 ; nil rather than the -1 the mapping actually holds.
 (def unmapped-lints (lints-of (tuple 'do (tuple 'def 'unmapped-unused 1) 2)))
 (assert (deep= [:strict nil nil "binding unmapped-unused is unused"]
-               (tuple |(first unmapped-lints)))
+               (vec (first unmapped-lints)))
         "an absent source mapping is nil, not -1")
 
 ; The unused-binding lint is filed from two places -- when a named slot goes
@@ -429,7 +434,7 @@
         "a pattern longer than its value")
 
 ; `(unquote)` with nothing to unquote is a one-element tuple and quotes as one.
-(assert (deep= ['unquote] (eval '(quasiquote (unquote))))
+(assert (deep= '(unquote) (eval '(quasiquote (unquote))))
         "an unquote with no operand")
 
 ; Metadata that is not a keyword, string or struct names the binding it was

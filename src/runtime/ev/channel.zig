@@ -39,9 +39,9 @@ const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const tables = @import("../value/tables.zig");
-const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
+const vectors = @import("../value/vectors.zig");
 const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
@@ -228,7 +228,7 @@ pub fn makeSupervisorEvent(name: [*:0]const u8, fiber: *fibers.Fiber, threaded: 
         tables.get(env, value.fromBytes("task-id", .keyword))
     else
         wrap.fromNil();
-    return wrap.fromTuple(tuples.newFrom(&tup));
+    return wrap.fromVector(vectors.fromSlice(&tup));
 }
 
 /// The channel at slot `n`, or `dflt` where the slot is absent or nil.
@@ -581,29 +581,22 @@ fn lock(chan: *Channel) void {
     os_locks.mutexLock(@ptrCast(&chan.lock));
 }
 
-/// The `[:close ch]` tuple a blocked fiber receives when the channel closes.
+/// The `[:close ch]` vector a blocked fiber receives when the channel closes.
 fn makeCloseResult(chan: *Channel) repr.Value {
-    const tup = tuples.begin(2);
-    tup[0] = value.fromBytes("close", .keyword);
-    tup[1] = wrapChannel(chan);
-    return wrap.fromTuple(tuples.end(tup));
+    const pair = [2]repr.Value{ value.fromBytes("close", .keyword), wrapChannel(chan) };
+    return wrap.fromVector(vectors.fromSlice(&pair));
 }
 
-/// The `[:read ch value]` tuple a blocked reader receives.
+/// The `[:read ch value]` vector a blocked reader receives.
 fn makeReadResult(chan: *Channel, x: repr.Value) repr.Value {
-    const tup = tuples.begin(3);
-    tup[0] = value.fromBytes("take", .keyword);
-    tup[1] = wrapChannel(chan);
-    tup[2] = x;
-    return wrap.fromTuple(tuples.end(tup));
+    const triple = [3]repr.Value{ value.fromBytes("take", .keyword), wrapChannel(chan), x };
+    return wrap.fromVector(vectors.fromSlice(&triple));
 }
 
-/// The `[:write ch]` tuple a blocked writer receives.
+/// The `[:write ch]` vector a blocked writer receives.
 fn makeWriteResult(chan: *Channel) repr.Value {
-    const tup = tuples.begin(2);
-    tup[0] = value.fromBytes("give", .keyword);
-    tup[1] = wrapChannel(chan);
-    return wrap.fromTuple(tuples.end(tup));
+    const pair = [2]repr.Value{ value.fromBytes("give", .keyword), wrapChannel(chan) };
+    return wrap.fromVector(vectors.fromSlice(&pair));
 }
 
 /// Traces the fibers in one pending queue.

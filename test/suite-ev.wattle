@@ -285,7 +285,7 @@
 (set fiber
   (ev/spawn
     (set result (protect (ev/sleep 10)))
-    (assert (= result '(false "boop")) "ev/cancel 1")))
+    (assert (= result [false "boop"]) "ev/cancel 1")))
 (ev/sleep 0)
 (ev/cancel fiber "boop")
 
@@ -845,7 +845,7 @@
   (ev/go (fn [x] (ev/give out [:unary x])) :seed)
   (ev/sleep 0.02)
   (def got !{})
-  (repeat 2 (let [m (ev/take out)] (put got (if (tuple? m) (first m) m) m)))
+  (repeat 2 (let [m (ev/take out)] (put got (if (indexed? m) (first m) m) m)))
   (assert (got :nullary) "a nullary task ran")
   (assert (= [:unary :seed] (got :unary)) "a unary task was passed the value")
   (assert-error-value "a binary task function is refused"
@@ -1257,7 +1257,7 @@
   (while (and (empty? marks) (< tries 400))
     (ev/sleep 0.01)
     (set tries (+ tries 1)))
-  (assert (= [:wrote] (tuple |marks)) "the parked write finished after a collection")
+  (assert (= [:wrote] (vec marks)) "the parked write finished after a collection")
   (assert (= (length payload) (length got)) "and every byte of it arrived")
   (:close r)
   (:close w))
@@ -1278,13 +1278,13 @@
       (assert (empty? marks) "both directions of the socket are parked")
       (ev/write peer "!")
       (ev/sleep 0.1)
-      (assert (= [:read] (tuple |marks)) "the read finished and the write is still parked")
+      (assert (= [:read] (vec marks)) "the read finished and the write is still parked")
       (ev/go (fn [] (protect (ev/chunk peer (length payload) !""))))
       (var tries 0)
       (while (and (< (length marks) 2) (< tries 400))
         (ev/sleep 0.01)
         (set tries (+ tries 1)))
-      (assert (= [:read :wrote] (tuple |marks))
+      (assert (= [:read :wrote] (vec marks))
               "the parked write survived the read's completion on the same stream")
       (:close peer)
       (:close conn))))

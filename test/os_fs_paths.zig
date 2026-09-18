@@ -354,7 +354,7 @@ fn theCoreFunctions() void {
         \\(assert (array? entries))
         \\(assert (= 1 (length entries)))
         \\(assert (= "file" (first entries)))
-        \\(def supplied @[:kept])
+        \\(def supplied ![:kept])
         \\(def same (os/dir "wattle-os-paths-public-4f70" supplied))
         \\(assert (= same supplied))
         \\(assert (= 2 (length supplied)))
@@ -402,7 +402,7 @@ fn theCoreFunctions() void {
     // A time outside `time_t` is refused, at either bound and in either
     // argument. 2^63 and its negation are the bounds as doubles.
     eval(
-        \\(defn refused [& args] (in (protect (os/touch ;args)) 1))
+        \\(defn refused [& args] (in (protect (os/touch |args)) 1))
         \\(def f "wattle-os-paths-public-4f70/file")
         \\(def edge (math/pow 2 63))
         \\(assert (= "invalid argument to touch" (refused f edge)))

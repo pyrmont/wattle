@@ -562,6 +562,22 @@
 (assert (:match peg5 "abcabcabcac") "repeat alias 2")
 (assert (not (:match peg5 "abcabc")) "repeat alias 3")
 
+; A vector and a tuple are one combinator. A grammar is written quoted, so
+; `[ ]` inside one is a vector where `( )` is a tuple, and the two spellings
+; have to compile to the same rule. The literal above reaches `peg/compile` as
+; a vector as well, but only because each of its elements evaluates to itself.
+(assert (deep= (peg/match '(* (2 "a") "b") "aab")
+               (peg/match '(* [2 "a"] "b") "aab"))
+        "a vector combinator reads as its tuple does")
+(assert (deep= (peg/match '(* (<- "a") (<- "b")) "ab")
+               (peg/match '(* [<- "a"] [<- "b"]) "ab"))
+        "including one whose head is a symbol")
+(assert (nil? (peg/match '(* [2 "a"] "b") "ab"))
+        "and it refuses what the tuple refuses")
+(assert (deep= (peg/match '{:main [* :a "b"] :a "a"} "ab")
+               (peg/match '{:main (* :a "b") :a "a"} "ab"))
+        "a rule of a grammar may be a vector")
+
 ; Peg find and find-all
 ; c26f57362
 (def p "/usr/local/bin/janet")
@@ -958,7 +974,7 @@
     "\r" ""
     """
     ?? at [ndkajsnd] (index 4)
-    accumulate buffer: @"j"
+    accumulate buffer: !"j"
     stack [2]:
       [0]: "a"
       [1]: "ks"
@@ -967,7 +983,7 @@
       [1] tag=0: "ks"
       [2] tag=0: "j"
     ?? at [snd] (index 9)
-    accumulate buffer: @"jndkajnd"
+    accumulate buffer: !"jndkajnd"
     stack [2]:
       [0]: "a"
       [1]: "ks"

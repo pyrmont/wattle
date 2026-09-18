@@ -66,12 +66,12 @@ const repr = @import("repr");
 const stdio = @import("../stdio.zig");
 const strings = @import("../value/strings.zig");
 const tables = @import("../value/tables.zig");
-const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const vm_lifecycle = @import("../vm/lifecycle.zig");
 const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
+const vectors = @import("../value/vectors.zig");
 
 /// `os/abi.zig`'s translation, which is where `pid_t`, the spawn file actions
 /// and the signal types come from.
@@ -725,7 +725,7 @@ fn cfunPipe(argv: []repr.Value) raise.Error!repr.Value {
     const reader = try ev_stream.makeStream(fds[0], if (flags & 2 != 0) 0 else stream_readable, null);
     const writer = try ev_stream.makeStream(fds[1], if (flags & 1 != 0) 0 else stream_writable, null);
     var tup = [2]repr.Value{ wrap.fromAbstract(reader), wrap.fromAbstract(writer) };
-    return wrap.fromTuple(tuples.newFrom(&tup));
+    return wrap.fromVector(vectors.fromSlice(&tup));
 }
 
 /// `(os/posix-chroot path)`.

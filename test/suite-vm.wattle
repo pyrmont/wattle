@@ -112,10 +112,13 @@
 (assert (< 100 1e23) "greater than immediate 1")
 (assert (< 1000 1e23) "greater than immediate 2")
 
-; Quasiquote bracketed tuples
+; Quasiquote over a vector
 ; e239980da
-(assert (= (tuple/type `[1 2 3]) (tuple/type '[1 2 3]))
-        "quasiquote bracket tuples")
+;
+; `[ ]` is a vector, so what a quasiquote rebuilds is one. The bracketed
+; tuple this pinned has no spelling left.
+(assert (= :vector (type `[1 2 3])) "quasiquote rebuilds a vector")
+(assert (= `[1 2 3] '[1 2 3]) "and gives what the quote gives")
 
 ; Regression #638
 ; c68264802

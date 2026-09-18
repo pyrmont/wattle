@@ -59,7 +59,7 @@ load and takes the whole file with it — there is no per-case skip to reach for
 `needs_os = true` is not scheduled under `-Dreduced-os=true`. Seven of the 35
 are marked, which is why the `reduced os` entry became a `full` job at Phase 16
 Part 4 after years as a `contracts` one — until then every suite there failed
-to compile on `test/helper.janet`'s first line.
+to compile on `test/helper.wattle`'s first line.
 
 **Two more, from Phase 11 Part 20, and the preflight catches neither.**
 
@@ -178,7 +178,7 @@ other worker can only build meanwhile; when the lock finally releases the
 queued test steps bunch. Phase 10 Part 17e watched a run with **three** parks
 produce two FAILs -- `call trampoline` and `value-wrap=c`, both on
 `error: deadline expired`, which is a wall-clock assertion in
-`suite-ev.janet` -- that had passed cleanly in a run with one park an hour
+`suite-ev.wattle` -- that had passed cleanly in a run with one park an hour
 earlier, and passed again in sixteen seconds each when re-run on a quiet
 machine.
 
@@ -209,7 +209,7 @@ FLAKY.
 the 300-second hang bound; a suite assertion that fails *fast* is a plain FAIL
 and raises no FLAKY at all. That part's matrix reported one FAIL and zero
 FLAKYs -- `vm-entry=c` on `error: deadline expired` -- and the entry passed four
-times out of four when re-run alone. `deadline expired` is `suite-ev.janet`
+times out of four when re-run alone. `deadline expired` is `suite-ev.wattle`
 asserting against a wall clock, so it belongs to the same family as the FLAKYs
 whatever the count says.
 
@@ -231,7 +231,7 @@ whole run is void.
 the 53-entry matrix three times and saw it three times, on a *different* entry
 each run -- `vm-entry=c`, `registry=c`, `call trampoline` -- with zero FLAKYs
 each time. Every one passed four times out of four when re-run alone. It is
-`suite-ev.janet` asserting against a wall clock while two entries compete at
+`suite-ev.wattle` asserting against a wall clock while two entries compete at
 `-j2`, and it attaches to whichever entry happens to be running, which is
 exactly why it reads as a finding about that entry.
 
@@ -284,7 +284,7 @@ back clean, which is not what a broken raise protocol looks like.
 **Every command in an entry is bounded, and results print as they land.**
 Added in Phase 10 Part 16, which lost thirty-six minutes to neither: a
 `zig build test` in the *default* configuration parked in `kevent` with an
-empty kqueue -- `suite-ev.janet` waiting on a task nothing could complete --
+empty kqueue -- `suite-ev.wattle` waiting on a task nothing could complete --
 and because `as_completed` had nothing to time it out and the log was written
 only at the end, the run produced no output at all. A hang is now a FAIL for
 that entry, at 900 seconds for a build and 300 for anything else, and every
@@ -293,8 +293,8 @@ matrix that is working.**
 
 **Only one entry runs the Janet suites at a time, and that is not an
 optimisation.** The suites share three fixtures with every other concurrent
-run: `suite-ev.janet` binds a fixed port 8761, `suite-net.janet` binds a fixed
-`/tmp/wattle-suite-net.sock`, and `suite-ev.janet` and `suite-bundle.janet`
+run: `suite-ev.wattle` binds a fixed port 8761, `suite-net.wattle` binds a fixed
+`/tmp/wattle-suite-net.sock`, and `suite-ev.wattle` and `suite-bundle.wattle`
 create `unique.txt` and `tempdir123` **in the repository working directory**.
 Two overlapping `full` entries therefore cross-connect. Usually one fails in
 `net/read`; occasionally one parks in `kevent` and never returns, which is the
@@ -355,8 +355,8 @@ it does not cancel this.
 **For a short-workload corpus, measure each binary alone instead.** Seven runs
 of each, minimum per workload, compared afterwards:
 
-    for i in $(seq 7); do ./base/janet bench.janet; done | ...min per workload
-    for i in $(seq 7); do ./cand/janet bench.janet; done | ...min per workload
+    for i in $(seq 7); do ./base/janet bench.wattle; done | ...min per workload
+    for i in $(seq 7); do ./cand/janet bench.wattle; done | ...min per workload
 
 That is what settled 17b: `threearg` read +5.3% and +6.4% interleaved and
 **+0.0% alone** -- 57.087ms against 57.090ms, three microseconds apart.
@@ -368,11 +368,11 @@ argv and environment block, and `pegmatch` is bimodal in that alignment: about
 one environment size in twelve is ~48% slower, and both the baseline and the
 candidate hit it once across twelve sizes.
 
-    $ ./janet res/bench/interpreter/bench.janet | grep pegmatch          # zsh
+    $ ./janet res/bench/interpreter/bench.wattle | grep pegmatch          # zsh
     pegmatch 0.038912
-    $ bash -c './janet res/bench/interpreter/bench.janet' | grep pegmatch
+    $ bash -c './janet res/bench/interpreter/bench.wattle' | grep pegmatch
     pegmatch 0.057662
-    $ PAD= bash -c './janet res/bench/interpreter/bench.janet' | grep pegmatch
+    $ PAD= bash -c './janet res/bench/interpreter/bench.wattle' | grep pegmatch
     pegmatch 0.039423
 
 One empty environment variable, 48%. **This is not noise and no amount of
@@ -381,8 +381,8 @@ shell, so it survives the minimum over any number of runs, it survives
 interleaving, and it survived the "measure each binary alone" recipe above --
 which reported it twice, at +48.4% and +47.8%, stable to three digits.
 
-    ./res/bench/layout.sh ./base/janet res/bench/interpreter/bench.janet 12
-    ./res/bench/layout.sh ./cand/janet res/bench/interpreter/bench.janet 12
+    ./res/bench/layout.sh ./base/janet res/bench/interpreter/bench.wattle 12
+    ./res/bench/layout.sh ./cand/janet res/bench/interpreter/bench.wattle 12
 
 That varies the environment across twelve sizes and takes the minimum per
 workload. With it the control returned to +0.8%, -0.0%, -0.6% across three

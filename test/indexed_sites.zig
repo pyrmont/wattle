@@ -159,9 +159,9 @@ fn tupleJoinReadsAnIndexedAbstract() void {
     const env = harness.coreEnv();
     registry.cfuns(env, null, &cfuns);
     const source =
-        \\(def failures @[])
+        \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
-        \\(defn- refusal [f & a] (let [[ok r] (protect (f ;a))] (unless ok r)))
+        \\(defn- refusal [f & a] (let [[ok r] (protect (f |a))] (unless ok r)))
         \\(def v (sites/join 9))
         \\(def oracle [0 10 20 30 40 50 60 70 80])
         \\(check "one abstract" (= (tuple/join v) (tuple/join oracle)))
@@ -170,7 +170,7 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         \\          (tuple/join oracle oracle)))
         \\(check "mixed with tuples"
         \\       (= (tuple/join [:a] v [:b]) (tuple/join [:a] oracle [:b])))
-        \\(check "no arguments is the empty tuple" (= [] (tuple/join)))
+        \\(check "no arguments is the empty tuple" (= '() (tuple/join)))
         \\(check "what is not indexed is still refused"
         \\       (= "expected indexed type for argument 0, got 5"
         \\          (refusal tuple/join 5)))
@@ -178,8 +178,8 @@ fn tupleJoinReadsAnIndexedAbstract() void {
         \\       (= "expected indexed type for argument 2, got 5"
         \\          (refusal tuple/join [:a] v 5)))
         \\(check "more arguments than fit on the stack"
-        \\       (= (tuple/join ;(map (fn [_] oracle) (range 12)))
-        \\          (tuple/join ;(map (fn [i] (if (even? i) (sites/join 9) oracle))
+        \\       (= (tuple/join |(map (fn [_] oracle) (range 12)))
+        \\          (tuple/join |(map (fn [i] (if (even? i) (sites/join 9) oracle))
         \\                            (range 12)))))
         \\failures
     ;
@@ -204,9 +204,9 @@ fn sliceReadsAWindowOfAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const source =
-        \\(def failures @[])
+        \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
-        \\(defn- refusal [f & a] (let [r (protect (f ;a))] (get r 1)))
+        \\(defn- refusal [f & a] (let [r (protect (f |a))] (get r 1)))
         \\(def v (sites/join 9))
         \\(def oracle [0 10 20 30 40 50 60 70 80])
         \\(check "a window cut at both ends"
@@ -257,8 +257,8 @@ fn joinAndSelectReadAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const select =
-        \\# `ev/select` takes a write clause as two elements. Given in two runs
-        \\# of one, both have to reach the gather.
+        \\; `ev/select` takes a write clause as two elements. Given in two runs
+        \\; of one, both have to reach the gather.
         \\(def ch (ev/chan 1))
         \\(def result (ev/select (sites/held 1 ch :v)))
         \\(check "ev/select reads a write clause given in two runs"
@@ -270,9 +270,9 @@ fn joinAndSelectReadAnIndexedAbstract() void {
 
     var buffer: [2048]u8 = undefined;
     const source = std.fmt.bufPrintZ(&buffer,
-        \\(def failures @[])
+        \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
-        \\(defn- refusal [f & a] (let [r (protect (f ;a))] (get r 1)))
+        \\(defn- refusal [f & a] (let [r (protect (f |a))] (get r 1)))
         \\(def oracle ["ab" "cd" "ef"])
         \\(check "string/join over runs of two"
         \\       (= (string/join (sites/held 2 "ab" "cd" "ef")) (string/join oracle)))
@@ -285,8 +285,8 @@ fn joinAndSelectReadAnIndexedAbstract() void {
         \\(check "a part that is not a byte sequence is named by its index"
         \\       (= (refusal string/join (sites/held 2 "ab" "cd" 5))
         \\          (refusal string/join ["ab" "cd" 5])))
-        \\# The strings are built rather than written as literals, so nothing
-        \\# but the abstract's payload points at them.
+        \\; The strings are built rather than written as literals, so nothing
+        \\; but the abstract's payload points at them.
         \\(def held (sites/held 2 (string "x" "y") (string "z" "w")))
         \\(gccollect)
         \\(check "the values an abstract holds survive a collection"
@@ -322,25 +322,25 @@ fn theGatheringSitesReadAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const ffi =
-        \\# A held abstract is neither an array nor a tuple, so it decodes as a
-        \\# struct type, which is the arm a tuple takes.
+        \\; A held abstract is neither an array nor a tuple, so it decodes as a
+        \\; struct type, which is the arm a tuple takes.
         \\(check "a struct type given as an abstract"
         \\       (= (ffi/size [:u8 :u16]) (ffi/size (sites/held 1 :u8 :u16))))
-        \\(def from-abstract @"")
-        \\(def from-tuple @"")
+        \\(def from-abstract !"")
+        \\(def from-tuple !"")
         \\(ffi/write [:u8 :u16] (sites/held 1 1 2) from-abstract)
         \\(ffi/write [:u8 :u16] [1 2] from-tuple)
         \\(check "a struct written from an abstract"
         \\       (= (string from-abstract) (string from-tuple)))
-        \\(def arr-abstract @"")
-        \\(def arr-array @"")
-        \\(ffi/write @[:u8 3] (sites/held 2 1 2 3) arr-abstract)
-        \\(ffi/write @[:u8 3] @[1 2 3] arr-array)
+        \\(def arr-abstract !"")
+        \\(def arr-array !"")
+        \\(ffi/write ![:u8 3] (sites/held 2 1 2 3) arr-abstract)
+        \\(ffi/write ![:u8 3] ![1 2 3] arr-array)
         \\(check "an array written from an abstract in two runs"
         \\       (= (string arr-abstract) (string arr-array)))
         \\(check "and a wrong count is still refused"
         \\       (string/has-prefix? "bad array length"
-        \\                           (let [r (protect (ffi/write @[:u8 3] (sites/held 2 1 2)))] (get r 1))))
+        \\                           (let [r (protect (ffi/write ![:u8 3] (sites/held 2 1 2)))] (get r 1))))
     ;
     const execute =
         \\(check "os/execute takes its arguments from an abstract"
@@ -355,7 +355,7 @@ fn theGatheringSitesReadAnIndexedAbstract() void {
 
     var buffer: [2048]u8 = undefined;
     const source = std.fmt.bufPrintZ(&buffer,
-        \\(def failures @[])
+        \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
         \\{[ffi]s}
         \\{[exec]s}
@@ -384,31 +384,31 @@ fn aPegSpliceReadsAnIndexedAbstract() void {
     const env = harness.coreEnv();
     if (harness.coreOptional("peg/match") == null) return;
     const source =
-        \\(def failures @[])
+        \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
-        \\# The expected captures are written out rather than taken from a
-        \\# tuple beside them: a tuple reaches the same converted code, so an
-        \\# oracle built that way moves whenever the subject does.
+        \\; The expected captures are written out rather than taken from a
+        \\; tuple beside them: a tuple reaches the same converted code, so an
+        \\; oracle built that way moves whenever the subject does.
         \\(check "a cms splicing an abstract in runs of two"
-        \\       (deep= @[:p :q :r]
-        \\              (peg/match ~(cms "a" ,(fn [& _] (sites/held 2 :p :q :r))) "a")))
+        \\       (deep= ![:p :q :r]
+        \\              (peg/match `(cms "a" ~(fn [& _] (sites/held 2 :p :q :r))) "a")))
         \\(check "runs of one reach the same captures"
-        \\       (deep= @[:p :q :r]
-        \\              (peg/match ~(cms "a" ,(fn [& _] (sites/held 1 :p :q :r))) "a")))
+        \\       (deep= ![:p :q :r]
+        \\              (peg/match `(cms "a" ~(fn [& _] (sites/held 1 :p :q :r))) "a")))
         \\(check "and a tuple still reaches them too"
-        \\       (deep= @[:p :q :r]
-        \\              (peg/match ~(cms "a" ,(fn [& _] [:p :q :r])) "a")))
+        \\       (deep= ![:p :q :r]
+        \\              (peg/match `(cms "a" ~(fn [& _] [:p :q :r])) "a")))
         \\(check "an empty abstract splices nothing"
-        \\       (deep= @[] (peg/match ~(cms "a" ,(fn [& _] (sites/held 1))) "a")))
-        \\# A value that is not indexed is one capture, which is the arm the
-        \\# conversion leaves alone.
+        \\       (deep= ![] (peg/match `(cms "a" ~(fn [& _] (sites/held 1))) "a")))
+        \\; A value that is not indexed is one capture, which is the arm the
+        \\; conversion leaves alone.
         \\(check "a value that is not indexed is a single capture"
-        \\       (deep= @[:solo] (peg/match ~(cms "a" ,(fn [& _] :solo)) "a")))
-        \\# Enough elements to grow the capture array part way through, which is
-        \\# what a borrowed run would not survive.
+        \\       (deep= ![:solo] (peg/match `(cms "a" ~(fn [& _] :solo)) "a")))
+        \\; Enough elements to grow the capture array part way through, which is
+        \\; what a borrowed run would not survive.
         \\(check "a splice long enough to grow the captures"
-        \\       (deep= @[1 2 3 4 5 6 7 8]
-        \\              (peg/match ~(cms "a" ,(fn [& _] (sites/held 2 1 2 3 4 5 6 7 8))) "a")))
+        \\       (deep= ![1 2 3 4 5 6 7 8]
+        \\              (peg/match `(cms "a" ~(fn [& _] (sites/held 2 1 2 3 4 5 6 7 8))) "a")))
         \\failures
     ;
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);

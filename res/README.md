@@ -139,6 +139,11 @@ Chores, run occasionally and by hand: `tm_lang_gen.janet` emits the TextMate
 grammar, `removecr.janet` strips carriage returns, and
 `janet-to-wattle.janet` rewrites Janet source as Wattle source.
 
+**The instruments here stay Janet.** They run on whatever `janet` is on the
+PATH, never on the build under test, and nothing here is loaded by Wattle, so
+the parser swap does not reach them. `bench/`'s corpora are the exception: the
+wattle binary runs those, and they are `.wattle`.
+
 `janet-to-wattle.janet FILE.janet ...` writes the `.wattle` file beside each
 and reports every site it changed in a way a reader should look at; `--dry-run`
 reports without writing, and the exit status is non-zero where a site had no

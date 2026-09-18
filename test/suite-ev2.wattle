@@ -58,7 +58,7 @@
   (ev/sleep 0.05)
   (ev/give thread-channel :item)
   (ev/sleep 0.15)
-  (assert (deep= '(:error "deadline expired" nil) (ev/take super)) "deadline expirataion"))
+  (assert (deep= [:error "deadline expired" nil] (ev/take super)) "deadline expirataion"))
 
 ; Another variant
 (def thread-channel :shadow (ev/thread-chan 100))
@@ -71,7 +71,7 @@
 (ev/thread worker nil :n super)
 (ev/give thread-channel :deadline)
 (ev/sleep 0.2)
-(assert (deep= '(:error "deadline expired" nil) (ev/take super)) "deadline expirataion")
+(assert (deep= [:error "deadline expired" nil] (ev/take super)) "deadline expirataion")
 
 ; Issue #1705 - ev select
 (def supervisor (ev/chan 10))

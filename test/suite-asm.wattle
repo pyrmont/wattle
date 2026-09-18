@@ -78,12 +78,12 @@
 ; assembler stored a null funcdef instead of failing.
 (assert-error "nested assembly failure propagates"
               (asm {:arity 0
-                    :bytecode ['(ret 0)]
-                    :defs [{:arity 0 :bytecode ['(bogus-op 0)]}]}))
+                    :bytecode ['[ret 0]]
+                    :defs [{:arity 0 :bytecode ['[bogus-op 0]]}]}))
 
 (let [[ok err] (protect (asm {:arity 0
-                              :bytecode ['(ret 0)]
-                              :defs [{:arity 0 :bytecode ['(bogus-op 0)]}]}))]
+                              :bytecode ['[ret 0]]
+                              :defs [{:arity 0 :bytecode ['[bogus-op 0]]}]}))]
   (assert (not ok) "nested assembly failure is an error")
   (assert (string/find "bogus-op" (string err))
           "nested assembly failure names the child's instruction"))
@@ -127,54 +127,54 @@
 
 ; One argument and two, both folded.
 (check-bytecode (fn [t] (next t))
-                !['(ldn 2) '(next 1 0 2) '(ret 1)]
+                !['[ldn 2] '[next 1 0 2] '[ret 1]]
                 "next of one argument folds")
 (check-bytecode (fn [t k] (next t k))
-                !['(next 2 0 1) '(ret 2)]
+                !['[next 2 0 1] '[ret 2]]
                 "next of two arguments folds")
 
 ; Two arguments and three, both folded, the third supplying the default.
 (check-bytecode (fn [t k] (get t k))
-                !['(get 2 0 1) '(ret 2)]
+                !['[get 2 0 1] '[ret 2]]
                 "get of two arguments folds")
 (check-bytecode (fn [t k d] (get t k d))
-                !['(get 3 0 1) '(jmpnn 3 2) '(movn 3 2) '(ret 3)]
+                !['[get 3 0 1] '[jmpnn 3 2] '[movn 3 2] '[ret 3]]
                 "get of three arguments folds")
 
 ; Exactly three, exactly one, and two or more.
 (check-bytecode (fn [t k v] (put t k v))
-                !['(movn 3 0) '(put 3 1 2) '(ret 3)]
+                !['[movn 3 0] '[put 3 1 2] '[ret 3]]
                 "put of three arguments folds")
 (check-bytecode (fn [x] (yield x))
-                !['(sig 1 0 3) '(ret 1)]
+                !['[sig 1 0 3] '[ret 1]]
                 "yield of one argument folds")
 (check-bytecode (fn [f a] (apply f a))
-                !['(pusha 1) '(tcall 0)]
+                !['[pusha 1] '[tcall 0]]
                 "apply of two arguments folds")
 
 ; An integer operand becomes an immediate while it fits in eight signed bits,
 ; and is loaded into a register once it does not. Both ends of the range.
 (check-bytecode (fn [x] (+ x -128))
-                !['(addim 1 0 -128) '(ret 1)]
+                !['[addim 1 0 -128] '[ret 1]]
                 "the low end of the immediate range")
 (check-bytecode (fn [x] (+ x -129))
-                !['(ldi 2 -129) '(add 1 0 2) '(ret 1)]
+                !['[ldi 2 -129] '[add 1 0 2] '[ret 1]]
                 "one below the immediate range")
 (check-bytecode (fn [x] (+ x 127))
-                !['(addim 1 0 127) '(ret 1)]
+                !['[addim 1 0 127] '[ret 1]]
                 "the high end of the immediate range")
 (check-bytecode (fn [x] (+ x 128))
-                !['(ldi 2 128) '(add 1 0 2) '(ret 1)]
+                !['[ldi 2 128] '[add 1 0 2] '[ret 1]]
                 "one above the immediate range")
 
 ; The last form of a function body is a tail call, and so is a call the
 ; argument splice sends through the optimizer. Neither is followed by a
 ; return, which is what says the tail path was taken.
 (check-bytecode (fn [g] (g 1))
-                !['(ldi 1 1) '(push 1) '(tcall 0)]
+                !['[ldi 1 1] '[push 1] '[tcall 0]]
                 "the last body form is a tail call")
 (check-bytecode (fn [f a] (f a |[]))
-                !['(push 1) '(ldc 2 0) '(pusha 2) '(tcall 0)]
+                !['[push 1] '[ldc 2 0] '[pusha 2] '[tcall 0]]
                 "a spliced call in tail position")
 
 ; A form whose value nothing reads is compiled for its effect and given no
@@ -182,57 +182,57 @@
 ; which is one of the forms that reads the flag: dropped it copies neither
 ; arm anywhere, and kept it copies both into one register.
 (check-bytecode (fn [g x] (do (if x (g x) (g 1)) x))
-                !['(jmpno 1 4) '(push 1) '(call 2 0) '(jmp 4) '(ldi 2 1) '(push 2)
-                  '(call 2 0) '(ret 1)]
+                !['[jmpno 1 4] '[push 1] '[call 2 0] '[jmp 4] '[ldi 2 1] '[push 2]
+                  '[call 2 0] '[ret 1]]
                 "a dropped if in a do copies neither arm")
 (check-bytecode (fn [g x] (while x (if x (g x) (g 1))) nil)
-                !['(jmpno 1 9) '(jmpno 1 4) '(push 1) '(call 2 0) '(jmp 4) '(ldi 2 1)
-                  '(push 2) '(call 2 0) '(jmp -8) '(retn)]
+                !['[jmpno 1 9] '[jmpno 1 4] '[push 1] '[call 2 0] '[jmp 4] '[ldi 2 1]
+                  '[push 2] '[call 2 0] '[jmp -8] '[retn]]
                 "a dropped if in a while body")
 (check-bytecode (fn [g x] (while x (break (if x (g x) (g 1)))) nil)
-                !['(jmpno 1 10) '(jmpno 1 4) '(push 1) '(call 2 0) '(jmp 4) '(ldi 2 1)
-                  '(push 2) '(call 2 0) '(jmp 2) '(jmp -9) '(retn)]
+                !['[jmpno 1 10] '[jmpno 1 4] '[push 1] '[call 2 0] '[jmp 4] '[ldi 2 1]
+                  '[push 2] '[call 2 0] '[jmp 2] '[jmp -9] '[retn]]
                 "a dropped if under a break")
 
 ; A form whose value nothing reads is compiled for its effect and given no
 ; target. The four places that happens are a body, a `do`, a while body and
 ; the argument to `break`.
 (check-bytecode (fn [g a] (g a) (g a))
-                !['(push 1) '(call 2 0) '(push 1) '(tcall 0)]
+                !['[push 1] '[call 2 0] '[push 1] '[tcall 0]]
                 "a body form before the last is dropped")
 (check-bytecode (fn [g x] (do (g x) (g x) x))
-                !['(push 1) '(call 2 0) '(push 1) '(call 2 0) '(ret 1)]
+                !['[push 1] '[call 2 0] '[push 1] '[call 2 0] '[ret 1]]
                 "a do form before the last is dropped")
 (check-bytecode (fn [g x] (while x (g x) (g x)) nil)
-                !['(jmpno 1 6) '(push 1) '(call 2 0) '(push 1) '(call 2 0) '(jmp -5) '(retn)]
+                !['[jmpno 1 6] '[push 1] '[call 2 0] '[push 1] '[call 2 0] '[jmp -5] '[retn]]
                 "a while body drops each form")
 (check-bytecode (fn [g x] (while x (break (g x))) nil)
-                !['(jmpno 1 5) '(push 1) '(call 2 0) '(jmp 2) '(jmp -4) '(retn)]
+                !['[jmpno 1 5] '[push 1] '[call 2 0] '[jmp 2] '[jmp -4] '[retn]]
                 "a break drops its argument")
 
 ; A destructuring binding indexes the value once per leaf and releases the
 ; register it read into as soon as the leaf is bound, so the shape below is
 ; also the count of registers the binding costs.
 (check-bytecode (fn [xs] (def [a b] xs) a)
-                !['(geti 1 0 0) '(movn 2 1) '(geti 1 0 1) '(ret 2)]
+                !['[geti 1 0 0] '[movn 2 1] '[geti 1 0 1] '[ret 2]]
                 "a destructuring of a value binds each element in turn")
 (check-bytecode (fn [s] (def {:k v} s) v)
-                !['(ldc 2 0) '(in 1 0 2) '(movn 2 1) '(ret 2)]
+                !['[ldc 2 0] '[in 1 0 2] '[movn 2 1] '[ret 2]]
                 "a destructuring of a dictionary")
 (check-bytecode (fn [xs] (def [[a b] c] xs) a)
-                !['(geti 1 0 0) '(geti 2 1 0) '(movn 3 2) '(geti 2 1 1) '(geti 1 0 1)
-                  '(movn 2 1) '(ret 3)]
+                !['[geti 1 0 0] '[geti 2 1 0] '[movn 3 2] '[geti 2 1 1] '[geti 1 0 1]
+                  '[movn 2 1] '[ret 3]]
                 "a nested destructuring")
 (check-bytecode (fn [xs] (def [a & r] xs) r)
-                !['(geti 1 0 0) '(ldi 3 1) '(len 5 0) '(lt 4 3 5) '(jmpno 4 5) '(get 4 0 3)
-                  '(push 4) '(addim 3 3 1) '(jmp -5) '(mktup 1) '(movn 3 1) '(ret 3)]
+                !['[geti 1 0 0] '[ldi 3 1] '[len 5 0] '[lt 4 3 5] '[jmpno 4 5] '[get 4 0 3]
+                  '[push 4] '[addim 3 3 1] '[jmp -5] '[mkvec 1] '[movn 3 1] '[ret 3]]
                 "a destructuring with a rest parameter")
 
 ; Where both sides are written out and nothing reads the result, the pattern
 ; is matched against the form list rather than against a value, so the value
 ; is never built.
 (check-bytecode (fn [c d] (def [a b] [c d]) nil)
-                !['(retn)]
+                !['[retn]]
                 "a dropped destructuring of two literals builds nothing")
 
 ; A function compiled with no source name carries no source map, which is

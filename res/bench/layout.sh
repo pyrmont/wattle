@@ -4,7 +4,7 @@
 #
 # Development instrument in `res/`.
 #
-#     ./res/bench/layout.sh ./zig-out/bin/wattle res/bench/interpreter/bench.janet 12
+#     ./res/bench/layout.sh ./zig-out/bin/wattle res/bench/interpreter/bench.wattle 12
 #
 # ## Why this exists
 #
@@ -25,11 +25,11 @@
 #
 # The cheapest demonstration, if you ever need to convince yourself again:
 #
-#     $ ./zig-out/bin/wattle res/bench/interpreter/bench.janet | grep pegmatch    # zsh
+#     $ ./zig-out/bin/wattle res/bench/interpreter/bench.wattle | grep pegmatch    # zsh
 #     pegmatch 0.038912
-#     $ bash -c './zig-out/bin/wattle res/bench/interpreter/bench.janet' | grep pegmatch
+#     $ bash -c './zig-out/bin/wattle res/bench/interpreter/bench.wattle' | grep pegmatch
 #     pegmatch 0.057662
-#     $ PAD= bash -c './zig-out/bin/wattle res/bench/interpreter/bench.janet' | grep pegmatch
+#     $ PAD= bash -c './zig-out/bin/wattle res/bench/interpreter/bench.wattle' | grep pegmatch
 #     pegmatch 0.039423
 #
 # One empty environment variable, 48%. Nothing about the code changed.
@@ -71,7 +71,7 @@ script=$2
 runs=${3:-12}
 
 if [ -z "$bin" ] || [ -z "$script" ]; then
-    echo "usage: res/bench/layout.sh <binary> <bench.janet> [layouts]" >&2
+    echo "usage: res/bench/layout.sh <binary> <bench.wattle> [layouts]" >&2
     exit 2
 fi
 

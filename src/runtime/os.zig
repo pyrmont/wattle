@@ -48,11 +48,11 @@ const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const stdio = @import("stdio.zig");
 const tables = @import("value/tables.zig");
-const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
 const vm_lifecycle = @import("vm/lifecycle.zig");
 const wrap = @import("value/helpers/wrap.zig");
+const vectors = @import("value/vectors.zig");
 
 /// `os/abi.zig`'s translation, which is where the `LC_*` constants come from.
 const h = oa.h;
@@ -445,14 +445,14 @@ fn cfunClock(argv: []repr.Value) raise.Error!repr.Value {
         if (utils.cstrcmp(wanted, "double") != 0) {
             if (utils.cstrcmp(wanted, "int") == 0) {
                 return wrap.fromNumber(@floatFromInt(sec));
-            } else if (utils.cstrcmp(wanted, "tuple") == 0) {
+            } else if (utils.cstrcmp(wanted, "vector") == 0) {
                 var tup = [2]repr.Value{
                     wrap.fromNumber(@floatFromInt(sec)),
                     wrap.fromNumber(@floatFromInt(nsec)),
                 };
-                return wrap.fromTuple(tuples.newFrom(&tup));
+                return wrap.fromVector(vectors.fromSlice(&tup));
             }
-            return pp_format.panicf("expected :double, :int, or :tuple, got %v", .{argv[1]});
+            return pp_format.panicf("expected :double, :int, or :vector, got %v", .{argv[1]});
         }
     }
     const dtime = @as(f64, @floatFromInt(sec)) + (@as(f64, @floatFromInt(nsec)) / 1e9);
@@ -670,7 +670,7 @@ fn hrtimeEntries() []const corefn.Entry {
             "The `format` argument selects the type of output, when not specified the default is `:double`:\n" ++
             "- :double: Return the number of seconds + fractional seconds as a double\n" ++
             "- :int: Return the number of seconds as an integer\n" ++
-            "- :tuple: Return a 2 integer tuple [seconds, nanoseconds]\n"),
+            "- :vector: Return a 2 integer vector [seconds, nanoseconds]\n"),
     };
     return &list;
 }

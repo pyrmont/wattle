@@ -241,7 +241,7 @@ fn theCoreFunctions() void {
     // A supplied table is filled and returned: the same table, with its
     // existing entry intact, so the length is sixteen.
     eval(
-        \\(def tab @{:seed true})
+        \\(def tab !{:seed true})
         \\(assert (= tab (os/stat "wattle-os-stat-4d71/file" tab)))
         \\(assert (= 16 (length tab)))
         \\(assert (= :file (tab :mode)))

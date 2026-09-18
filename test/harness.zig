@@ -65,6 +65,8 @@ const value = @import("subsystems").value;
 const vm_entry = @import("subsystems").vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const vm_state = @import("subsystems").vm_state;
+const vectors = @import("subsystems").value.vectors;
+const args_core = @import("subsystems").args;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -349,6 +351,34 @@ pub inline fn equals(left: repr.Value, right: repr.Value) bool {
 /// A struct's field by keyword name. Every contract that reads a structure the
 /// runtime built spells this, and spelling it once keeps the `ckeywordv` out
 /// of the assertions.
+/// Any indexed value's elements as one block, for a contract that indexes
+/// them by position.
+///
+/// A tuple's and an array's elements are the value's own storage; a vector's
+/// are leaves of a trie and are copied into one of four rotating buffers, so
+/// four results may be held at once and a fifth call replaces the first. It
+/// exists because `[ ]` is a vector: a contract that read `wrap.toTuple` over
+/// evaluated source reads this instead.
+var elems_buffers: [4][32]repr.Value = undefined;
+var elems_next: usize = 0;
+
+pub fn elems(val: repr.Value) []const repr.Value {
+    if (args_core.items(val)) |block| return block;
+    const v = wrap.toVector(val);
+    const slot = &elems_buffers[elems_next];
+    elems_next = (elems_next + 1) % elems_buffers.len;
+    var index: usize = 0;
+    while (index < v.count) : (index += 1) slot[index] = vectors.at(v, index);
+    return slot[0..v.count];
+}
+
+/// Whether `val` is a tuple, a vector or an array.
+pub fn isIndexed(val: repr.Value) bool {
+    return repr.checkType(val, repr.Tag.tuple) or
+        repr.checkType(val, repr.Tag.vector) or
+        repr.checkType(val, repr.Tag.array);
+}
+
 pub fn field(m: *const maps.Tree, name: [*:0]const u8) repr.Value {
     return maps.lookup(m, value.fromBytes(std.mem.span(name), .keyword));
 }

@@ -390,7 +390,7 @@ fn anUnconvertibleOperandRefusesCatchably() void {
         "(fn [] (+ (int/s64 1) {}))",
         "(fn [] (+ (int/s64 1) \"x\"))",
         "(fn [] (* (int/u64 2) [1]))",
-        "(fn [] (- (int/s64 1) @{}))",
+        "(fn [] (- (int/s64 1) !{}))",
         // The `r`-prefixed methods, which the fallback reaches when the boxed
         // integer is the right operand.
         "(fn [] (+ {} (int/s64 1)))",

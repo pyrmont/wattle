@@ -1,6 +1,6 @@
 //! Behavioral contract for the `os/` cfunction surface.
 //!
-//! `test/suite-os.janet` has fifty-eight assertions and every one of them is
+//! `test/suite-os.wattle` has fifty-eight assertions and every one of them is
 //! about what an `os/` function returns. Four things about this subsystem are
 //! invisible from there, and they are what this file is for.
 //!
@@ -62,7 +62,6 @@ const strings = @import("subsystems").value.strings;
 const maps = @import("subsystems").value.maps;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
-const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -316,9 +315,9 @@ fn theRegistration() void {
         // to record. The matrix has that entry.
         if (!no_sourcemaps) {
             const smap = bindingField(env, name, "source-map");
-            expect(harness.isType(smap, repr.Tag.tuple));
-            const tuple = wrap.toTuple(smap);
-            expect(tuples.head(tuple).length >= 2);
+            expect(harness.isIndexed(smap));
+            const tuple = harness.elems(smap);
+            expect(tuple.len >= 2);
             expect(harness.isType(tuple[0], repr.Tag.string));
             expect(args_core.checkint(tuple[1]));
 
@@ -374,7 +373,7 @@ fn theRegistration() void {
     }
 }
 
-/// The calendar's three functions, which `suite-os.janet` asserts nothing
+/// The calendar's three functions, which `suite-os.wattle` asserts nothing
 /// about. Fixed timestamps rather than the current time, because the current
 /// time agrees
 /// with itself whatever it computes.
@@ -395,7 +394,7 @@ fn theCalendar() void {
         \\(assert (= 1600000000 (os/mktime d2)))
         \\(assert (= 0 (os/mktime {:year 1970 :month 0 :month-day 0})))
         \\(assert (= 86400 (os/mktime {:year 1970 :month 0 :month-day 1})))
-        \\(assert (= 0 (os/mktime @{:year 1970 :month 0 :month-day 0})))
+        \\(assert (= 0 (os/mktime !{:year 1970 :month 0 :month-day 0})))
         \\(assert (not (first (protect (os/mktime 5)))))
         \\(assert (not (first (protect (os/mktime {:year "x"})))))
         \\(assert (= "1970-01-01T00:00:00" (os/strftime "%Y-%m-%dT%H:%M:%S" 0)))
@@ -427,7 +426,7 @@ fn thePermissions() void {
 }
 
 /// `os/clock`'s three sources and three formats are nine combinations, of
-/// which `suite-os.janet` exercises none: a clock cannot be pinned to a value,
+/// which `suite-os.wattle` exercises none: a clock cannot be pinned to a value,
 /// so the assertions are about the relationships between the formats instead.
 fn theClock() void {
     const env: *tables.Table = harness.coreEnv();
@@ -435,7 +434,7 @@ fn theClock() void {
         \\(each source [:realtime :monotonic :cputime]
         \\  (def d (os/clock source))
         \\  (def i (os/clock source :int))
-        \\  (def t (os/clock source :tuple))
+        \\  (def t (os/clock source :vector))
         \\  (assert (number? d))
         \\  (assert (= i (math/floor i)))
         \\  (assert (= 2 (length t)))
@@ -447,7 +446,7 @@ fn theClock() void {
         \\(assert (> (os/clock :monotonic) before))
         \\(assert (= "expected :realtime, :monotonic, or :cputime, got :bogus"
         \\           (in (protect (os/clock :bogus)) 1)))
-        \\(assert (= "expected :double, :int, or :tuple, got :bogus"
+        \\(assert (= "expected :double, :int, or :vector, got :bogus"
         \\           (in (protect (os/clock :realtime :bogus)) 1)))
     );
 }
@@ -490,13 +489,13 @@ fn thePlatform() void {
         \\(assert (keyword? (os/which false)))
         \\(assert (not (first (protect (os/which "linux")))))
         \\(assert (or (nil? (os/cpu-count)) (pos? (os/cpu-count))))
-        \\# The argument is a fallback, so the answer is the count where there is
-        \\# one and the fallback where there is not -- and `(os/cpu-count)` with
-        \\# no argument is exactly the test for which. `(= 7 (os/cpu-count 7))`
-        \\# asserts the fallback as though it were the answer: true on macOS,
-        \\# where the count has no arm at all and comes back -1, and false in a
-        \\# Linux container, where the count is real. The form below holds on
-        \\# both hosts and is the stronger claim on each.
+        \\; The argument is a fallback, so the answer is the count where there is
+        \\; one and the fallback where there is not -- and `(os/cpu-count)` with
+        \\; no argument is exactly the test for which. `(= 7 (os/cpu-count 7))`
+        \\; asserts the fallback as though it were the answer: true on macOS,
+        \\; where the count has no arm at all and comes back -1, and false in a
+        \\; Linux container, where the count is real. The form below holds on
+        \\; both hosts and is the stronger claim on each.
         \\(assert (= (os/cpu-count 7) (or (os/cpu-count) 7)))
     );
 }
@@ -515,55 +514,55 @@ fn theOptionalArguments() void {
         \\(assert (number? ((os/date) :year)))
         \\(assert (= (os/date) (os/date nil)))
         \\(assert (= (os/date 0) (os/date 0 nil)))
-        \\# `(os/date t)` renders UTC and `(os/date t true)` renders local, so the
-        \\# two differ only where the host's zone is not UTC. Asserting
-        \\# `(not= ...)` unconditionally is a claim about the developer's machine
-        \\# wearing the shape of a claim about the argument: it fails in a
-        \\# container, where the zone *is* UTC and the two coincide. Both forms
-        \\# below are portable and each is the stronger claim.
-        \\#
-        \\# The no-flag branch, pinned absolutely: epoch zero is
-        \\# 1970-01-01T00:00:00 UTC on every host there is.
+        \\; `(os/date t)` renders UTC and `(os/date t true)` renders local, so the
+        \\; two differ only where the host's zone is not UTC. Asserting
+        \\; `(not= ...)` unconditionally is a claim about the developer's machine
+        \\; wearing the shape of a claim about the argument: it fails in a
+        \\; container, where the zone *is* UTC and the two coincide. Both forms
+        \\; below are portable and each is the stronger claim.
+        \\;
+        \\; The no-flag branch, pinned absolutely: epoch zero is
+        \\; 1970-01-01T00:00:00 UTC on every host there is.
         \\(def epoch (os/date 0))
         \\(assert (= [1970 0 0 0 0 0]
         \\           [(epoch :year) (epoch :month) (epoch :month-day)
         \\            (epoch :hours) (epoch :minutes) (epoch :seconds)]))
-        \\# The flag branch, cross-checked against the other renderer rather than
-        \\# against itself: `os/strftime` reads the zone from the same place and
-        \\# takes the same optional argument, so agreeing is a real claim on a
-        \\# UTC host and on any other.
+        \\; The flag branch, cross-checked against the other renderer rather than
+        \\; against itself: `os/strftime` reads the zone from the same place and
+        \\; takes the same optional argument, so agreeing is a real claim on a
+        \\; UTC host and on any other.
         \\(assert (= (scan-number (os/strftime "%H" 0 true)) ((os/date 0 true) :hours)))
         \\(assert (= (scan-number (os/strftime "%H" 0)) (epoch :hours)))
         \\(assert (string? (os/strftime "%Y")))
         \\(assert (= (os/strftime "%Y" 0) (os/strftime "%Y" 0 nil)))
         \\(def base {:year 1970 :month 0 :month-day 0})
-        \\# The `:dst` slot is observable only in a zone that *has* a daylight
-        \\# rule. `(not= ...)` against whatever zone the host happened to be in
-        \\# is a claim about the developer's machine: it passes in JST and fails
-        \\# in a container, where the zone is UTC and forcing DST changes
-        \\# nothing.
-        \\#
-        \\# A POSIX TZ string supplies the rule without tzdata, so it is the same
-        \\# zone on every host -- Alpine ships no zoneinfo and musl parses the
-        \\# string natively, as does Darwin. That makes the difference exactly
-        \\# one hour rather than merely non-zero, which is the stronger claim and
-        \\# the one the slot is actually for.
-        \\#
-        \\# WASI is where that argument runs out: it has no time zones and no
-        \\# `tzset`, local time is UTC, and `TZ` names nothing. The slot is not
-        \\# observable there at all.
+        \\; The `:dst` slot is observable only in a zone that *has* a daylight
+        \\; rule. `(not= ...)` against whatever zone the host happened to be in
+        \\; is a claim about the developer's machine: it passes in JST and fails
+        \\; in a container, where the zone is UTC and forcing DST changes
+        \\; nothing.
+        \\;
+        \\; A POSIX TZ string supplies the rule without tzdata, so it is the same
+        \\; zone on every host -- Alpine ships no zoneinfo and musl parses the
+        \\; string natively, as does Darwin. That makes the difference exactly
+        \\; one hour rather than merely non-zero, which is the stronger claim and
+        \\; the one the slot is actually for.
+        \\;
+        \\; WASI is where that argument runs out: it has no time zones and no
+        \\; `tzset`, local time is UTC, and `TZ` names nothing. The slot is not
+        \\; observable there at all.
         \\(unless (= :wasi (os/which))
         \\  (def saved-tz (os/getenv "TZ"))
         \\  (os/setenv "TZ" "EST5EDT,M3.2.0,M11.1.0")
         \\  (assert (= 3600 (- (os/mktime (merge base {:dst false}) true)
         \\                     (os/mktime (merge base {:dst true}) true))))
-        \\  (assert (= 3600 (- (os/mktime (hash-map ;(kvs base) :dst false) true)
-        \\                     (os/mktime (hash-map ;(kvs base) :dst true) true))))
+        \\  (assert (= 3600 (- (os/mktime (hash-map |(kvs base) :dst false) true)
+        \\                     (os/mktime (hash-map |(kvs base) :dst true) true))))
         \\  (assert (= (os/mktime base true)
         \\             (os/mktime (merge base {:dst false}) true)))
-        \\  (assert (= (os/mktime base true) (os/mktime (merge-into @{} base) true)))
+        \\  (assert (= (os/mktime base true) (os/mktime (merge-into !{} base) true)))
         \\  (assert (= (os/mktime (merge base {:dst true}) true)
-        \\             (os/mktime (hash-map ;(kvs base) :dst true) true)))
+        \\             (os/mktime (hash-map |(kvs base) :dst true) true)))
         \\  (if saved-tz (os/setenv "TZ" saved-tz) (os/setenv "TZ")))
         \\(assert (= (os/mktime base) (os/mktime base nil)))
         \\(assert (= "expected positive integer" (in (protect (os/cryptorand -1)) 1)))
@@ -572,7 +571,7 @@ fn theOptionalArguments() void {
     if (!no_cryptorand) {
         harness.inFiber(env,
             \\(assert (= 4 (length (os/cryptorand 4))))
-            \\(def b @"XY")
+            \\(def b !"XY")
             \\(assert (= b (os/cryptorand 4 b)))
             \\(assert (= 6 (length b)))
             \\(assert (= "XY" (string (buffer/slice b 0 2))))
@@ -717,12 +716,12 @@ fn theLinks() void {
         \\(os/link (p "tgt") (p "h2"))
         \\(assert (= :file (os/lstat (p "h2") :mode)))
         \\(assert (= 3 (os/stat (p "tgt") :nlink)))
-        \\# A symbolic link stores its target as given and resolves it from the
-        \\# link's own directory, so the target has to be one the link can
-        \\# follow. Every host here but WASI reaches the scratch directory by an
-        \\# absolute path, which resolves from anywhere; a WASI host refuses an
-        \\# absolute target outright, it being a path out of the directory it
-        \\# mapped in, so there the target is the name beside the link.
+        \\; A symbolic link stores its target as given and resolves it from the
+        \\; link's own directory, so the target has to be one the link can
+        \\; follow. Every host here but WASI reaches the scratch directory by an
+        \\; absolute path, which resolves from anywhere; a WASI host refuses an
+        \\; absolute target outright, it being a path out of the directory it
+        \\; mapped in, so there the target is the name beside the link.
         \\(def target (if (= :wasi (os/which)) "tgt" (p "tgt")))
         \\(os/link target (p "s") true)
         \\(assert (= :link (os/lstat (p "s") :mode)))
@@ -776,18 +775,18 @@ fn theProcessType() void {
     const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(def null (file/open "/dev/null" :w))
-        \\# `/usr/bin/true` stood here and at one site below. Alpine is busybox
-        \\# and puts it at `/bin/true`, so both spawns died with ENOENT the first
-        \\# time this contract ran off macOS.
-        \\# `/bin/sh` is already this file's dependency a dozen lines down and is
-        \\# the one path every POSIX host agrees on.
+        \\; `/usr/bin/true` stood here and at one site below. Alpine is busybox
+        \\; and puts it at `/bin/true`, so both spawns died with ENOENT the first
+        \\; time this contract ran off macOS.
+        \\; `/bin/sh` is already this file's dependency a dozen lines down and is
+        \\; the one path every POSIX host agrees on.
         \\(def p (os/spawn ["/bin/sh" "-c" "exit 0"] :p {:out null :err null}))
         \\(def at (type p))
         \\(assert (= :core/process at))
         \\(assert (= 0 (os/proc-wait p)))
         \\(assert (not (first (protect (marshal p)))))
         \\(assert (string/has-prefix? "<core/process " (string p)))
-        \\(assert (deep= @[:wait :kill :close :in :out :err] (keys p)))
+        \\(assert (deep= ![:wait :kill :close :in :out :err] (keys p)))
         \\(file/close null)
     );
 }
@@ -828,9 +827,9 @@ fn theSignalTable() void {
         \\(assert (= "undefined signal :nosuchsignal"
         \\           (in (protect (os/proc-kill p false :nosuchsignal)) 1)))
         \\(assert (>= (os/proc-kill p true) 128))
-        \\# `:vtalrm` is the spelling the table carries -- the signal's own
-        \\# name with the `SIG` dropped -- and the transposition is not an
-        \\# alias for it.
+        \\; `:vtalrm` is the spelling the table carries -- the signal's own
+        \\; name with the `SIG` dropped -- and the transposition is not an
+        \\; alias for it.
         \\(def q (sleeper))
         \\(assert (= "undefined signal :vtlarm"
         \\           (in (protect (os/proc-kill q false :vtlarm)) 1)))
@@ -930,13 +929,13 @@ fn theSigaction() void {
         \\(os/sigaction :usr2)
         \\(assert (= "undefined signal :nosuchsignal"
         \\           (in (protect (os/sigaction :nosuchsignal (fn [] nil))) 1)))
-        \\# A handler is entered with no arguments, so one that cannot accept
-        \\# zero can never run: no fiber can be built for it. The refusal is at
-        \\# registration, where the caller can still act on it.
+        \\; A handler is entered with no arguments, so one that cannot accept
+        \\; zero can never run: no fiber can be built for it. The refusal is at
+        \\; registration, where the caller can still act on it.
         \\(assert (string/has-prefix?
         \\           "signal handler must accept zero arguments"
         \\           (in (protect (os/sigaction :usr1 (fn [x] nil))) 1)))
-        \\# A handler with an optional parameter still accepts zero.
+        \\; A handler with an optional parameter still accepts zero.
         \\(os/sigaction :usr1 (fn [&opt x] nil))
         \\(os/sigaction :usr1 nil)
     );
@@ -970,7 +969,7 @@ fn theTrampolines() void {
     if (!harness.has_ev) return;
     const env: *tables.Table = harness.coreEnv();
     const vm = harness.vm();
-    harness.inFiber(env, "(defglobal 'trampoline-hits @[nil nil])");
+    harness.inFiber(env, "(defglobal 'trampoline-hits ![nil nil])");
     harness.inFiber(env,
         \\(os/sigaction :usr1 (fn [] (set (trampoline-hits 0) :plain)))
         \\(os/sigaction :usr2 (fn [] (set (trampoline-hits 1) :interrupting)) true)

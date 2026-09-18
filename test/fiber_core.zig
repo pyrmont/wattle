@@ -48,7 +48,6 @@ const options = @import("options");
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
-const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_entry = @import("subsystems").vm_entry;
@@ -232,16 +231,16 @@ fn theFuncframeVarargs(rest: *functions.Function) void {
 
     var fiber = rootedFiber(rest, args[0..3]);
     var tail = slot(fiber, fiber.frame + rest.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.tuple));
-    const tuple = wrap.toTuple(tail);
-    expect(tuples.head(tuple).length == 2);
+    expect(harness.isIndexed(tail));
+    const tuple = harness.elems(tail);
+    expect(tuple.len == 2);
     expect(harness.integerIs(tuple[0], 2));
     expect(harness.integerIs(tuple[1], 3));
 
     fiber = rootedFiber(rest, args[0..1]);
     tail = slot(fiber, fiber.frame + rest.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(tail)).length == 0);
+    expect(harness.isIndexed(tail));
+    expect(harness.elems(tail).len == 0);
 }
 
 /// `&keys` sets the funcdef's `maparg` flag, and the tail is built with
@@ -350,9 +349,9 @@ fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) 
 
     expect(harness.integerIs(slot(fiber, base), 7));
     var tail = slot(fiber, base + rest.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.tuple));
-    const tuple = wrap.toTuple(tail);
-    expect(tuples.head(tuple).length == 2);
+    expect(harness.isIndexed(tail));
+    const tuple = harness.elems(tail);
+    expect(tuple.len == 2);
     expect(harness.integerIs(tuple[0], 8));
     expect(harness.integerIs(tuple[1], 9));
 
@@ -364,8 +363,8 @@ fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) 
     expect(!std.meta.isError(fibers.funcframeTail(fiber, rest)));
     expect(harness.integerIs(slot(fiber, base), 5));
     tail = slot(fiber, base + rest.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(tail)).length == 0);
+    expect(harness.isIndexed(tail));
+    expect(harness.elems(tail).len == 0);
 }
 
 fn aCfunction(argv: []repr.Value) raise.Error!repr.Value {
@@ -563,8 +562,8 @@ fn aTailCallAtTheCapacityGrowsForItsTail(add: *functions.Function, rest: *functi
     expect(fiber.capacity > tuplehead);
     expect(harness.integerIs(slot(fiber, base), 5));
     const tail = slot(fiber, base + arity);
-    expect(harness.isType(tail, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(tail)).length == 0);
+    expect(harness.isIndexed(tail));
+    expect(harness.elems(tail).len == 0);
 }
 
 /// A run that begins at the stack's first slot is on the stack, so a push that
@@ -678,7 +677,7 @@ fn release(memory: [*]u8, bytes: usize) void {
 /// `runVm`'s frame as a returned error, crosses the loop, and arrives at
 /// `vm_entry.pcall` as a signal.
 fn anOverflowThroughTheInterpreter() void {
-    const splice = compileFunction("(fn [f xs] (f ;xs))");
+    const splice = compileFunction("(fn [f xs] (f |xs))");
     const identity = compileFunction("(fn [& xs] xs)");
     const arr = arrays.new(4);
     const args = [_]repr.Value{ wrap.fromFunction(identity), wrap.fromArray(arr) };
@@ -699,8 +698,8 @@ fn anOverflowThroughTheInterpreter() void {
     arr.slice()[1] = harness.wrapInteger(12);
     resumed = vm_entry.pcall(splice, &args, null);
     expect(resumed.signal == abi.Signal.ok);
-    expect(harness.isType(resumed.value, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(resumed.value)).length == 2);
+    expect(harness.isIndexed(resumed.value));
+    expect(harness.elems(resumed.value).len == 2);
 }
 
 /// `functions.envValid` exists for unmarshalled environments, which record

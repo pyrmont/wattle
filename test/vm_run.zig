@@ -71,7 +71,6 @@ const repr = @import("repr");
 const signal_core = @import("subsystems").signal;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
-const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vm_entry = subsystems.vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -156,7 +155,7 @@ fn expectErrorEither(source: []const u8, message: [*:0]const u8, other: [*:0]con
 }
 
 /// Compares pretty-printed forms rather than values, because `order.equals` on
-/// a mutable collection compares identity: two separately built `@[1 2 3]`s are
+/// a mutable collection compares identity: two separately built `![1 2 3]`s are
 /// not equal, and most of what the loop constructs is mutable.
 fn expectEqual(source: []const u8, expected: []const u8) void {
     var buffer: [2048]u8 = undefined;
@@ -268,18 +267,18 @@ fn aBitwiseRightOperandOutOfRange() void {
 /// the right. `vm_calls` owns the fallback; what is asserted here is that the
 /// loop reaches it from both the register and the immediate forms.
 fn theOperatorFallbacks() void {
-    expectEqual("(do (def t @{:+ (fn [self o] [:plus o])}) (+ t 1))", "[:plus 1]");
-    expectEqual("(do (def t @{:r+ (fn [self o] [:rplus o])}) (+ 1 t))", "[:rplus 1]");
-    expectEqual("(do (def t @{:& (fn [self o] :and)}) (band t 1))", ":and");
+    expectEqual("(do (def t !{:+ (fn [self o] [:plus o])}) (+ t 1))", "[:plus 1]");
+    expectEqual("(do (def t !{:r+ (fn [self o] [:rplus o])}) (+ 1 t))", "[:rplus 1]");
+    expectEqual("(do (def t !{:& (fn [self o] :and)}) (band t 1))", ":and");
     // `:~` is not a keyword literal: the reader takes `~` for the quasiquote
     // shorthand and leaves the empty keyword behind.
-    expectEqual("(do (def t @{(keyword \"~\") (fn [self] :not)}) (bnot t))", ":not");
+    expectEqual("(do (def t !{(keyword \"~\") (fn [self] :not)}) (bnot t))", ":not");
     // Both shift-right opcodes fall back to the same method name, because C
     // stringified the operator and the signed and unsigned forms share it.
-    expectEqual("(do (def t @{:>> (fn [self o] :shr)}) (brshift t 1))", ":shr");
-    expectEqual("(do (def t @{:>> (fn [self o] :shr)}) (brushift t 1))", ":shr");
+    expectEqual("(do (def t !{:>> (fn [self o] :shr)}) (brshift t 1))", ":shr");
+    expectEqual("(do (def t !{:>> (fn [self o] :shr)}) (brushift t 1))", ":shr");
     // The immediate forms reach `mcall` rather than `binopCall`.
-    expectEqual("(do (def t @{:+ (fn [self o] [:plus o])})    (defn f [x] (+ x 3)) (f t))", "[:plus 3]");
+    expectEqual("(do (def t !{:+ (fn [self o] [:plus o])})    (defn f [x] (+ x 3)) (f t))", "[:plus 3]");
     expectError("(do (defn f [x] (+ x 3)) (f :kw))", "could not find method :+ for :kw");
 }
 
@@ -327,24 +326,24 @@ fn theCallArityMessage() void {
 }
 
 fn callingACfunction() void {
-    expectEqual("(+ (length @[1 2 3]) 0)", "3");
+    expectEqual("(+ (length ![1 2 3]) 0)", "3");
     // In tail position, which pops two frames rather than one.
-    expectEqual("(do (defn f [] (length @[1 2])) (f))", "2");
+    expectEqual("(do (defn f [] (length ![1 2])) (f))", "2");
 }
 
 /// A callee that is neither a function nor a cfunction goes to `callNonfn`,
 /// which is `vm_calls`'; what is asserted here is that both call opcodes reach
 /// it and place the result.
 fn callingANonFunction() void {
-    expectEqual("(do (def t @{:a 1}) (t :a))", "1");
-    expectEqual("(do (def t @{:a 1}) (defn f [] (t :a)) (f))", "1");
+    expectEqual("(do (def t !{:a 1}) (t :a))", "1");
+    expectEqual("(do (def t !{:a 1}) (defn f [] (t :a)) (f))", "1");
     // A keyword callee is a method *name* rather than a key: `JOP_CALL`
     // resolves it against the receiver and then calls whatever it named, with
-    // the receiver as the first argument. `(:a @{:a 2})` is consequently nil
+    // the receiver as the first argument. `(:a !{:a 2})` is consequently nil
     // and not 2: it finds 2 and calls it, and calling a number indexes the
     // receiver by it.
-    expectEqual("(:a @{:a 2})", "nil");
-    expectEqual("(do (def t @{:go (fn [self x] [:went x])}) (:go t 7))", "[:went 7]");
+    expectEqual("(:a !{:a 2})", "nil");
+    expectEqual("(do (def t !{:go (fn [self x] [:went x])}) (:go t 7))", "[:went 7]");
     // A keyword receiver rather than a table or a map, because `%v` renders
     // both of those by address and an address cannot be compared.
     expectError("(:nope :recv)", "unknown method :nope invoked on :recv");
@@ -424,7 +423,7 @@ fn theTypeAssertions() void {
         expectEqual("((asm '{:arity 1 :bytecode [(tchck 0 :number) (ldi 1 7) (ret 1)]}) 1)", "7");
     }
     // JOP_PUSH_ARRAY, which is the splice operator.
-    expectError("(do (defn f [& xs] xs) (f ;5))", "expected indexed value, got 5");
+    expectError("(do (defn f [& xs] xs) (f |5))", "expected indexed value, got 5");
 }
 
 /// Numbers handed out in runs of three from one buffer the callback overwrites
@@ -432,7 +431,7 @@ fn theTypeAssertions() void {
 ///
 /// The buffer is what this fixture is for. A reader holding two runs of one
 /// value at once reads the poison rather than the elements it asked for, so
-/// `(f ;v ;v)` fails here and would pass against a type that hands out its own
+/// `(f |v |v)` fails here and would pass against a type that hands out its own
 /// storage. The elements are numbers, so nothing in the buffer has to be
 /// marked.
 const Runs = struct {
@@ -485,22 +484,22 @@ fn cfunRuns(argv: []repr.Value) raise.Error!repr.Value {
 /// rather than between two of them.
 fn spliceReadsAnIndexedAbstract() void {
     const f = "(defn f [& xs] xs) ";
-    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 10)))", "(do " ++ f ++ "(f ;[0 10 20 30 40 50 60 70 80 90]))");
-    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 9)))", "(do " ++ f ++ "(f ;[0 10 20 30 40 50 60 70 80]))");
-    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 2)))", "(do " ++ f ++ "(f ;[0 10]))");
-    expectEqual("(do " ++ f ++ "(f ;(vmrun/runs 0)))", "(do " ++ f ++ "(f ;[]))");
+    expectEqual("(do " ++ f ++ "(f |(vmrun/runs 10)))", "(do " ++ f ++ "(f |[0 10 20 30 40 50 60 70 80 90]))");
+    expectEqual("(do " ++ f ++ "(f |(vmrun/runs 9)))", "(do " ++ f ++ "(f |[0 10 20 30 40 50 60 70 80]))");
+    expectEqual("(do " ++ f ++ "(f |(vmrun/runs 2)))", "(do " ++ f ++ "(f |[0 10]))");
+    expectEqual("(do " ++ f ++ "(f |(vmrun/runs 0)))", "(do " ++ f ++ "(f |[]))");
     // Pushes before and after the splice keep their places.
-    expectEqual("(do " ++ f ++ "(f :a ;(vmrun/runs 4) :b))", "(do " ++ f ++ "(f :a ;[0 10 20 30] :b))");
+    expectEqual("(do " ++ f ++ "(f :a |(vmrun/runs 4) :b))", "(do " ++ f ++ "(f :a |[0 10 20 30] :b))");
     // One value spliced twice, which is what the reused buffer is here for.
     expectEqual(
-        "(do " ++ f ++ "(def v (vmrun/runs 4)) (f ;v ;v))",
-        "(do " ++ f ++ "(f ;[0 10 20 30] ;[0 10 20 30]))",
+        "(do " ++ f ++ "(def v (vmrun/runs 4)) (f |v |v))",
+        "(do " ++ f ++ "(f |[0 10 20 30] |[0 10 20 30]))",
     );
     // `apply` reaches the same opcode with its last argument.
     expectEqual("(apply + (vmrun/runs 10))", "450");
     expectEqual("(apply + 5 (vmrun/runs 4))", "65");
     // A splice long enough to grow the fiber's stack.
-    expectEqual("(apply + (vmrun/runs 1000))", "(apply + (map |(* $ 10) (range 1000)))");
+    expectEqual("(apply + (vmrun/runs 1000))", "(apply + (map #(* $ 10) (range 1000)))");
 }
 
 /// A type check whose set includes both array and tuple passes an abstract
@@ -526,13 +525,14 @@ fn theBootFunctionsReadAnIndexedAbstract() void {
     expectEqual("(indexed? (vmrun/runs 2))", "true");
     expectEqual("(indexed? 5)", "false");
     expectEqual("(indexed? \"ab\")", "false");
-    expectEqual("(take 2 (vmrun/runs 5))", "'(0 10)");
-    expectEqual("(take -2 (vmrun/runs 5))", "'(30 40)");
-    expectEqual("(drop 3 (vmrun/runs 5))", "'(30 40)");
-    expectEqual("(take-while |(< $ 25) (vmrun/runs 5))", "'(0 10 20)");
-    expectEqual("(drop-until |(> $ 25) (vmrun/runs 5))", "'(30 40)");
-    expectEqual("(partition 2 (vmrun/runs 5))", "@['(0 10) '(20 30) '(40)]");
-    expectEqual("(flatten [1 (vmrun/runs 4) 2])", "@[1 0 10 20 30 2]");
+    // `take`, `drop` and their kin go through `slice`, which gives a vector.
+    expectEqual("(take 2 (vmrun/runs 5))", "[0 10]");
+    expectEqual("(take -2 (vmrun/runs 5))", "[30 40]");
+    expectEqual("(drop 3 (vmrun/runs 5))", "[30 40]");
+    expectEqual("(take-while #(< $ 25) (vmrun/runs 5))", "[0 10 20]");
+    expectEqual("(drop-until #(> $ 25) (vmrun/runs 5))", "[30 40]");
+    expectEqual("(partition 2 (vmrun/runs 5))", "![[0 10] [20 30] [40]]");
+    expectEqual("(flatten [1 (vmrun/runs 4) 2])", "![1 0 10 20 30 2]");
     expectEqual("(match (vmrun/runs 2) [a b] (+ a b) _ :no)", "10");
     expectEqual("(match (vmrun/runs 3) [a b] (+ a b) _ :no)", "10");
 }
@@ -559,29 +559,30 @@ fn getAndNextAreDerivedFromTheRuns() void {
     expectEqual("(next (vmrun/runs 2) 1)", "nil");
     expectEqual("(next (vmrun/runs 0) nil)", "nil");
     expectEqual("(next (vmrun/runs 2) :x)", "nil");
-    expectEqual("(keys (vmrun/runs 4))", "@[0 1 2 3]");
-    expectEqual("(map inc (vmrun/runs 4))", "@[1 11 21 31]");
+    expectEqual("(keys (vmrun/runs 4))", "![0 1 2 3]");
+    expectEqual("(map inc (vmrun/runs 4))", "![1 11 21 31]");
     expectEqual("(do (var acc 0) (each x (vmrun/runs 7) (+= acc x)) acc)", "210");
     // Two readers of one value, each copying an element out before the other
     // reads, which the reused buffer would expose otherwise.
-    expectEqual("(do (def v (vmrun/runs 7)) (map + v v))", "@[0 20 40 60 80 100 120]");
+    expectEqual("(do (def v (vmrun/runs 7)) (map + v v))", "![0 20 40 60 80 100 120]");
 }
 
 fn theCollectionConstructors() void {
-    expectEqual("@[1 2 3]", "@[1 2 3]");
+    expectEqual("![1 2 3]", "![1 2 3]");
     expectEqual("[1 2 3]", "[1 2 3]");
-    expectEqual("@{:a 1}", "@{:a 1}");
+    expectEqual("!{:a 1}", "!{:a 1}");
     expectEqual("{:a 1}", "{:a 1}");
     expectEqual("(string \"a\" 1 :b)", "\"a1b\"");
-    expectEqual("(buffer \"a\" 1 :b)", "@\"a1b\"");
-    // A bracket tuple has a flag the round tuple does not, set inside the
-    // opcode the two share.
+    expectEqual("(buffer \"a\" 1 :b)", "!\"a1b\"");
+    // No source spells a bracket tuple, so every tuple is a parenthesised one
+    // and `[ ]` builds a vector through its own opcode. `mkbtp` is reachable
+    // from the assembler alone and goes with Janet's parser.
     expectEqual("(tuple/type '(1 2))", ":parens");
-    expectEqual("(tuple/type '[1 2])", ":brackets");
+    expectEqual("(type '[1 2])", ":vector");
     if (has_assembler) {
         expectEqual(
-            "(tuple/type ((asm '{:arity 0 :constants [1]  :bytecode [(ldc 0 0) (push 0) (mkbtp 1) (ret 1)]})))",
-            ":brackets",
+            "(type ((asm '{:arity 0 :constants [1]  :bytecode [(ldc 0 0) (push 0) (mkvec 1) (ret 1)]})))",
+            ":vector",
         );
         expectEqual(
             "(tuple/type ((asm '{:arity 0 :constants [1]  :bytecode [(ldc 0 0) (push 0) (mktup 1) (ret 1)]})))",
@@ -632,8 +633,8 @@ fn theErrorOpcode() void {
     const fiberv = eval("(fiber/new (fn [] (error [1 2])) :e)");
     const resumed = resumeFiber(fiberv, wrap.fromNil());
     expect(resumed.signal == abi.Signal.@"error");
-    expect(harness.isType(resumed.value, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(resumed.value)).length == 2);
+    expect(harness.isIndexed(resumed.value));
+    expect(harness.elems(resumed.value).len == 2);
 }
 
 /// `JOP_PROPAGATE` hands a child's status upward as the parent's signal, and
@@ -680,9 +681,9 @@ fn aResumedFiberReceivesItsValue() void {
 
     resumed = resumeFiber(fiberv, value.fromBytes("second", .keyword));
     expect(resumed.signal == abi.Signal.ok);
-    expect(harness.isType(resumed.value, repr.Tag.tuple));
-    expect(harness.keywordIs(wrap.toTuple(resumed.value)[0], "first"));
-    expect(harness.keywordIs(wrap.toTuple(resumed.value)[1], "second"));
+    expect(harness.isIndexed(resumed.value));
+    expect(harness.keywordIs(harness.elems(resumed.value)[0], "first"));
+    expect(harness.keywordIs(harness.elems(resumed.value)[1], "second"));
 }
 
 /// A fiber that has not started yet takes its resume value as its first
@@ -692,16 +693,16 @@ fn aNewFiberReceivesItsValueAsAnArgument() void {
     const fiberv = eval("(fiber/new (fn [x] [:got x]) :y)");
     const resumed = resumeFiber(fiberv, value.fromBytes("in", .keyword));
     expect(resumed.signal == abi.Signal.ok);
-    expect(harness.keywordIs(wrap.toTuple(resumed.value)[1], "in"));
+    expect(harness.keywordIs(harness.elems(resumed.value)[1], "in"));
 
     // With no fixed parameter and a rest parameter, the value is the one
     // element of the rest tuple. Arity zero is the edge between the two arms.
     const variadic = eval("(fiber/new (fn [& xs] xs) :y)");
     const rest = resumeFiber(variadic, value.fromBytes("in", .keyword));
     expect(rest.signal == abi.Signal.ok);
-    expect(harness.isType(rest.value, repr.Tag.tuple));
-    expect(tuples.head(wrap.toTuple(rest.value)).length == 1);
-    expect(harness.keywordIs(wrap.toTuple(rest.value)[0], "in"));
+    expect(harness.isIndexed(rest.value));
+    expect(harness.elems(rest.value).len == 1);
+    expect(harness.keywordIs(harness.elems(rest.value)[0], "in"));
 }
 
 /// After a raise the fiber has `FiberFlags.did_raise` set, which the head of
@@ -816,13 +817,13 @@ fn theRemainingOpcodes() void {
     // Self reference, which is how a named function calls itself.
     expectEqual("(do (defn fact [n] (if (< n 2) 1 (* n (fact (- n 1))))) (fact 5))", "120");
     // Keyed and indexed access, and their in-place writers.
-    expectEqual("(do (def t @{:a 1}) [(get t :a) (get t :b) (in [10 20] 1)])", "[1 nil 20]");
-    expectEqual("(do (def a @[1 2]) (put a 0 :x) a)", "@[:x 2]");
-    expectEqual("(do (def t @{}) (put t :k :v) t)", "@{:k :v}");
+    expectEqual("(do (def t !{:a 1}) [(get t :a) (get t :b) (in [10 20] 1)])", "[1 nil 20]");
+    expectEqual("(do (def a ![1 2]) (put a 0 :x) a)", "![:x 2]");
+    expectEqual("(do (def t !{}) (put t :k :v) t)", "!{:k :v}");
     expectEqual("(length \"abcd\")", "4");
     // `next`, which restores all three registers rather than just the stack.
-    expectEqual("(do (def t @{:a 1}) (next t nil))", ":a");
-    expectEqual("(seq [[k v] :pairs {:a 1}] [k v])", "@[[:a 1]]");
+    expectEqual("(do (def t !{:a 1}) (next t nil))", ":a");
+    expectEqual("(seq [[k v] :pairs {:a 1}] [k v])", "![[:a 1]]");
     // `next` over a fiber resumes it, and the opcode asks for the
     // interpreter's handling of a signal the child's mask does not catch:
     // re-signalled, so an escaping yield stays a yield. Called from C it would

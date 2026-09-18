@@ -750,17 +750,17 @@ fn fromJanet() void {
         \\      g2 (gensym)
         \\      t (tuple 1 2 3)]
         \\  [s (length s) (= y (symbol "symb")) (not= g1 g2)
-        \\   (= t [1 2 3]) (= (hash [1 2 3]) (hash t)) (tuple/slice t 1)])
+        \\   (= t '(1 2 3)) (= (hash '(1 2 3)) (hash t)) (tuple/slice t 1)])
     ;
     expect(core_env.dostring(env, source, "string-symbol-test", &out) == 0);
-    const r = wrap.toTuple(out);
+    const r = harness.elems(out);
     expect(harness.stringValueIs(r[0], "abcd"));
     expect(harness.integerIs(r[1], 4));
     expect(repr.truthy(r[2]));
     expect(repr.truthy(r[3]));
     expect(repr.truthy(r[4]));
     expect(repr.truthy(r[5]));
-    expect(tuples.head(wrap.toTuple(r[6])).length == 2);
+    expect(harness.elems(r[6]).len == 2);
 }
 
 /// Every core cfunction is registered with the file and line it was declared

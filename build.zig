@@ -37,43 +37,43 @@ const Suite = struct {
 };
 
 const test_suites = &[_]Suite{
-    .{ .path = "test/suite-array.janet" },
-    .{ .path = "test/suite-asm.janet" },
-    .{ .path = "test/suite-boot.janet" },
-    .{ .path = "test/suite-buffer.janet" },
-    .{ .path = "test/suite-bundle.janet", .needs_os = true },
-    .{ .path = "test/suite-capi.janet" },
-    .{ .path = "test/suite-cfuns.janet" },
-    .{ .path = "test/suite-compile.janet" },
-    .{ .path = "test/suite-corelib.janet" },
-    .{ .path = "test/suite-debug.janet" },
-    .{ .path = "test/suite-ev.janet", .needs_os = true },
-    .{ .path = "test/suite-ev2.janet", .needs_os = true },
-    .{ .path = "test/suite-ffi.janet" },
-    .{ .path = "test/suite-filewatch.janet", .needs_os = true },
-    .{ .path = "test/suite-inttypes.janet" },
-    .{ .path = "test/suite-io.janet", .needs_os = true },
-    .{ .path = "test/suite-map.janet" },
-    .{ .path = "test/suite-map-literal.janet" },
-    .{ .path = "test/suite-marsh.janet" },
-    .{ .path = "test/suite-math.janet" },
-    .{ .path = "test/suite-net.janet", .needs_os = true },
-    .{ .path = "test/suite-os.janet", .needs_os = true },
-    .{ .path = "test/suite-parse.janet" },
-    .{ .path = "test/suite-peg.janet" },
-    .{ .path = "test/suite-pp.janet" },
-    .{ .path = "test/suite-specials.janet" },
-    .{ .path = "test/suite-string.janet" },
-    .{ .path = "test/suite-strtod.janet" },
-    .{ .path = "test/suite-symcache.janet" },
-    .{ .path = "test/suite-table.janet" },
-    .{ .path = "test/suite-tuple.janet" },
-    .{ .path = "test/suite-unknown.janet" },
-    .{ .path = "test/suite-value.janet" },
-    .{ .path = "test/suite-vector.janet" },
-    .{ .path = "test/suite-vm.janet" },
-    .{ .path = "test/suite-zig-interop.janet" },
-    .{ .path = "test/regalloc-bytecode.janet" },
+    .{ .path = "test/suite-array.wattle" },
+    .{ .path = "test/suite-asm.wattle" },
+    .{ .path = "test/suite-boot.wattle" },
+    .{ .path = "test/suite-buffer.wattle" },
+    .{ .path = "test/suite-bundle.wattle", .needs_os = true },
+    .{ .path = "test/suite-capi.wattle" },
+    .{ .path = "test/suite-cfuns.wattle" },
+    .{ .path = "test/suite-compile.wattle" },
+    .{ .path = "test/suite-corelib.wattle" },
+    .{ .path = "test/suite-debug.wattle" },
+    .{ .path = "test/suite-ev.wattle", .needs_os = true },
+    .{ .path = "test/suite-ev2.wattle", .needs_os = true },
+    .{ .path = "test/suite-ffi.wattle" },
+    .{ .path = "test/suite-filewatch.wattle", .needs_os = true },
+    .{ .path = "test/suite-inttypes.wattle" },
+    .{ .path = "test/suite-io.wattle", .needs_os = true },
+    .{ .path = "test/suite-map.wattle" },
+    .{ .path = "test/suite-map-literal.wattle" },
+    .{ .path = "test/suite-marsh.wattle" },
+    .{ .path = "test/suite-math.wattle" },
+    .{ .path = "test/suite-net.wattle", .needs_os = true },
+    .{ .path = "test/suite-os.wattle", .needs_os = true },
+    .{ .path = "test/suite-parse.wattle" },
+    .{ .path = "test/suite-peg.wattle" },
+    .{ .path = "test/suite-pp.wattle" },
+    .{ .path = "test/suite-specials.wattle" },
+    .{ .path = "test/suite-string.wattle" },
+    .{ .path = "test/suite-strtod.wattle" },
+    .{ .path = "test/suite-symcache.wattle" },
+    .{ .path = "test/suite-table.wattle" },
+    .{ .path = "test/suite-tuple.wattle" },
+    .{ .path = "test/suite-unknown.wattle" },
+    .{ .path = "test/suite-value.wattle" },
+    .{ .path = "test/suite-vector.wattle" },
+    .{ .path = "test/suite-vm.wattle" },
+    .{ .path = "test/suite-zig-interop.wattle" },
+    .{ .path = "test/regalloc-bytecode.wattle" },
 };
 
 // **This file compiles no C and holds no C flags.** Neither `src/` nor `test/`
@@ -339,7 +339,7 @@ pub const QuickbinOptions = struct {
 /// const exe = wattle.quickbin(
 ///     b.dependency("wattle", .{ .target = target, .optimize = optimize }),
 ///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug }),
-///     .{ .name = "hello", .source = b.path("main.janet"), .target = target, .optimize = optimize,
+///     .{ .name = "hello", .source = b.path("main.wattle"), .target = target, .optimize = optimize,
 ///        .natives = &.{.{ .name = "greet", .root = b.path("greet.zig") }} },
 /// );
 /// b.installArtifact(exe);
@@ -554,7 +554,7 @@ pub fn build(b: *std.Build) void {
     // `ReleaseSafe` client **92**, with `janet_cfuns_ext` and `janet_abstract`
     // among the six hundred that go. So a module has only ever been able to
     // reach whatever the interpreter happened to reference, and the old
-    // `test/zig-native.janet` fixture passed because its four names were in
+    // `test/zig-native.wattle` fixture passed because its four names were in
     // that accidental set. The shared library is unaffected — 690 in every
     // mode — because nothing dead-strips an exported symbol there.
     //
@@ -659,7 +659,7 @@ pub fn build(b: *std.Build) void {
     );
     installTest(b, options, digest_module);
 
-    // `examples/quickbin`, the worked example of `quickbin`: `main.janet` with
+    // `examples/quickbin`, the worked example of `quickbin`: `main.wattle` with
     // `examples/digest` linked into one executable. The image is made by
     // `client` on a native build with dynamic modules, and otherwise by a host
     // client built from the target's configuration with dynamic modules on.
@@ -672,7 +672,7 @@ pub fn build(b: *std.Build) void {
         if (target.query.isNative() and config.dynamic_modules) built else hostBuilt(b, options, target, boot_host, image_source),
         .{
             .name = "quickbin",
-            .source = b.path("examples/quickbin/main.janet"),
+            .source = b.path("examples/quickbin/main.wattle"),
             .natives = &.{.{ .name = "digest", .root = b.path("examples/digest/digest.zig") }},
             .target = target,
             .optimize = optimize,
@@ -1214,7 +1214,7 @@ pub fn build(b: *std.Build) void {
     if (config.dynamic_modules and target.result.os.tag != .windows and !options.sanitize_thread) {
         const run_native_test = b.addRunArtifact(client);
         run_native_test.setCwd(b.path("."));
-        run_native_test.addArg("test/zig-native.janet");
+        run_native_test.addArg("test/zig-native.wattle");
         run_native_test.addFileArg(native_module.getEmittedBin());
         for (zig_side) |step| run_native_test.step.dependOn(step);
         test_step.dependOn(&run_native_test.step);
@@ -1225,7 +1225,7 @@ pub fn build(b: *std.Build) void {
         // step rather than a sentence.
         const run_numarray = b.addRunArtifact(client);
         run_numarray.setCwd(b.path("."));
-        run_numarray.addArg("examples/numarray/test/numarray.janet");
+        run_numarray.addArg("examples/numarray/test/numarray.wattle");
         run_numarray.addFileArg(numarray_module.getEmittedBin());
         for (zig_side) |step| run_numarray.step.dependOn(step);
         test_step.dependOn(&run_numarray.step);
@@ -1233,17 +1233,17 @@ pub fn build(b: *std.Build) void {
         // The views' worked example, loaded the same way.
         const run_url = b.addRunArtifact(client);
         run_url.setCwd(b.path("."));
-        run_url.addArg("examples/url/test/url.janet");
+        run_url.addArg("examples/url/test/url.wattle");
         run_url.addFileArg(url_module.getEmittedBin());
         for (zig_side) |step| run_url.step.dependOn(step);
         test_step.dependOn(&run_url.step);
 
         // The event loop's worked example. Its test file skips its own body in
-        // a build with no loop, exactly as `test/zig-native.janet` does, so it
+        // a build with no loop, exactly as `test/zig-native.wattle` does, so it
         // is scheduled on the same condition as the other two.
         const run_digest = b.addRunArtifact(client);
         run_digest.setCwd(b.path("."));
-        run_digest.addArg("examples/digest/test/digest.janet");
+        run_digest.addArg("examples/digest/test/digest.wattle");
         run_digest.addFileArg(digest_module.getEmittedBin());
         for (zig_side) |step| run_digest.step.dependOn(step);
         test_step.dependOn(&run_digest.step);
@@ -1251,7 +1251,7 @@ pub fn build(b: *std.Build) void {
         // The three refusals, in the order the loader compares the fields.
         const run_refused = b.addRunArtifact(client);
         run_refused.setCwd(b.path("."));
-        run_refused.addArg("test/zig-native-refused.janet");
+        run_refused.addArg("test/zig-native-refused.wattle");
         run_refused.addFileArg(wrong_bits_module.getEmittedBin());
         run_refused.addFileArg(wrong_zig_module.getEmittedBin());
         run_refused.addFileArg(wrong_api_module.getEmittedBin());
@@ -1401,7 +1401,7 @@ fn coreImage(
     generate_image.addArgs(&.{ "WATTLE_PATH", "/usr/local/lib/wattle" });
     generate_image.addArg("image-out");
     const image = generate_image.addOutputFileArg("wattle-image.bin");
-    generate_image.addFileInput(b.path("src/boot/boot.janet"));
+    generate_image.addFileInput(b.path("src/boot/boot.wattle"));
     return image;
 }
 
@@ -1477,7 +1477,7 @@ fn quickbinExecutable(
     module.addImport("constants", graph.constants);
     module.addImport("config", graph.config);
 
-    // `preload.janet` sits beside a copy of each host library, so it finds
+    // `preload.wattle` sits beside a copy of each host library, so it finds
     // them from its own path.
     const preload_files = hb.addWriteFiles();
     var preload: std.ArrayList(u8) = .empty;
@@ -1486,7 +1486,7 @@ fn quickbinExecutable(
     preload.appendSlice(gpa,
         \\(def dir
         \\  (let [path (dyn *current-file*)]
-        \\    (string/slice path 0 (- (length path) (length "preload.janet")))))
+        \\    (string/slice path 0 (- (length path) (length "preload.wattle")))))
         \\
     ) catch @panic("OOM");
     table.appendSlice(gpa,
@@ -1550,7 +1550,7 @@ fn quickbinExecutable(
     const make_image = hb.addRunArtifact(host_side.client);
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
     make_image.addArg("-l");
-    make_image.addFileArg(preload_files.add("preload.janet", preload.items));
+    make_image.addFileArg(preload_files.add("preload.wattle", preload.items));
     make_image.addArg("-c");
     make_image.addFileArg(opts.source);
     const image = make_image.addOutputFileArg(b.fmt("{s}.jimage", .{opts.name}));
@@ -1796,7 +1796,7 @@ fn addCliChecks(
 
         const file = b.addRunArtifact(client);
         file.setCwd(b.path("."));
-        file.addArg("test/zig-cli-input.janet");
+        file.addArg("test/zig-cli-input.wattle");
         file.expectStdOutEqual("file-ok");
         test_step.dependOn(&file.step);
 
@@ -2188,11 +2188,11 @@ fn applyLinkage(exe: *std.Build.Step.Compile, options: BuildOptions, target: std
 
 /// The image generator's configuration: the target's features, on the host.
 ///
-/// The generator evaluates `boot.janet` and marshals the environment it
+/// The generator evaluates `boot.wattle` and marshals the environment it
 /// builds, so its features decide which bindings the image holds. Every
 /// field therefore comes from `janetConfig(options, target)`: a feature the
 /// target turns off, such as the event loop, FFI and networking under
-/// Emscripten, is off in the generator too, and `boot.janet`'s `compwhen`
+/// Emscripten, is off in the generator too, and `boot.wattle`'s `compwhen`
 /// blocks see what the runtime will have.
 ///
 /// Six fields describe the machine the generator runs on, and come from

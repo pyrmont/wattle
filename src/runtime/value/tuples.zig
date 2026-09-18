@@ -49,6 +49,7 @@ const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const tables = @import("tables.zig");
 const value = @import("../value.zig");
+const vectors = @import("vectors.zig");
 const wrap = @import("helpers/wrap.zig");
 
 // ==========================================================================
@@ -265,11 +266,11 @@ fn cfunTupleSlice(argv: []repr.Value) raise.Error!repr.Value {
 fn cfunTupleSourcemap(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const tup = try args_core.getTuple(argv, 0);
-    var contents: [2]repr.Value = .{
+    const pair = [2]repr.Value{
         wrap.fromInteger(head(tup).sm_line),
         wrap.fromInteger(head(tup).sm_column),
     };
-    return wrap.fromTuple(newFrom(&contents));
+    return wrap.fromVector(vectors.fromSlice(&pair));
 }
 
 fn cfunTupleType(argv: []repr.Value) raise.Error!repr.Value {

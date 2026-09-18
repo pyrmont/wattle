@@ -240,7 +240,8 @@ fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Error!v
         // underneath the loop that is reading it.
         try buffers.ensure(source, source.count + 5 * source.count + 3, 1);
     }
-    try buffers.pushU8(buffer, '@');
+    // `!` is what Wattle's parser reads a buffer from, where Janet read `@`.
+    try buffers.pushU8(buffer, '!');
     _ = try escapeString(buffer, source.slice()[0..count]);
 }
 

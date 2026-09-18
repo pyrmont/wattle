@@ -1032,7 +1032,30 @@ fn cfunSignal(argv: []repr.Value) raise.Error!repr.Value {
     return pp_format.panicf("unknown signal %v", .{argv[0]});
 }
 
+/// A vector of the `length` values `it` yields, as `tuples.newFromChunks`
+/// builds a tuple from the same source.
+///
+/// A vector is built from one block and a chunked source is not one, so the
+/// runs are copied into scratch first. This sits here rather than in
+/// `value/vectors.zig` because that file is below `args.zig` and must not
+/// import it.
+fn vectorFromChunks(it: *args_core.Chunks, length: usize) raise.Error!*vectors.Vector {
+    const block = gc_alloc.scratch_heap.alloc(repr.Value, length) catch
+        fatal.outOfMemory();
+    defer gc_alloc.scratch_heap.free(block);
+    var written: usize = 0;
+    while (try it.next()) |run| {
+        @memcpy(block[written..][0..run.len], run);
+        written += run.len;
+    }
+    std.debug.assert(written == length);
+    return vectors.fromSlice(block);
+}
+
 /// `(slice x &opt start end)`.
+///
+/// An indexed value gives a vector, which is Wattle's immutable sequence; a
+/// tuple is the call form and is what `tuple/slice` gives.
 fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
     // Read through `argSlot`, because `getSlice` is what checks the arity and
     // it runs after this: `(slice)` reaches here with no argument at all.
@@ -1045,7 +1068,7 @@ fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
         const range = try args_core.getSlice(argv);
         source.window(@intCast(range.start), @intCast(range.end));
         const length: usize = @intCast(range.end - range.start);
-        return wrap.fromTuple(try tuples.newFromChunks(&source, length));
+        return wrap.fromVector(try vectorFromChunks(&source, length));
     }
     // The message is the fault layer's and has no spelling on this side.
     return args_core.panicIndexed(x, 0, repr.TagSet.bytes);

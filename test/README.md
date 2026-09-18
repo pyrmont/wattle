@@ -8,7 +8,7 @@ The layers, what each is for, and what a change owes before it is believed.
 
 Six layers, and a change is believed when the layers it touches pass:
 
-- The Janet suites, `test/suite-*.janet`, run by `zig build test`. What a Janet
+- The Janet suites, `test/suite-*.wattle`, run by `zig build test`. What a Janet
   program can observe, asserted the way a Janet program would.
 - The contracts, `test/*.zig`, one per subject, run by the driver `zig build`
   installs. What no Janet program can reach: an argument fault's exact message,
@@ -53,7 +53,7 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
                 --exclude=.git -cf - . |
       tar -C /work -xf -
     cd /work
-    ...then run every /xb/test/wattle-*-test and every test/suite-*.janet
+    ...then run every /xb/test/wattle-*-test and every test/suite-*.wattle
        with /xb/bin/wattle...'
 
 rm -rf xbuild/arm
@@ -80,7 +80,7 @@ podman run --rm --platform linux/arm64 --tmpfs /work:size=256m \
                sed "s/.*\"\(.*\)\"/\1/"); do
       /xb/test/wattle-contract-test $c || echo "FAIL $c"
     done
-    for s in test/suite-*.janet; do /xb/bin/wattle $s || echo "FAIL $s"; done'
+    for s in test/suite-*.wattle; do /xb/bin/wattle $s || echo "FAIL $s"; done'
 
 rm -rf xbuild/gnu /tmp/wattle-xc-gnu
 ```
@@ -262,7 +262,7 @@ identical to a test that passed.
 
 No suite fails on Linux. One assertion is skipped there, on both libcs:
 
-- `suite-io.janet:246`, one assertion of 88. It asserts that `file/open` with a
+- `suite-io.wattle:246`, one assertion of 88. It asserts that `file/open` with a
   buffer size of `2^53 - 1` raises `failed to set buffer size for file`. The
   runtime passes `setvbuf` the size and no buffer. Darwin's `setvbuf` refuses a
   size it cannot allocate. glibc's and musl's ignore the size when handed no
@@ -277,7 +277,7 @@ returned 0 from `setvbuf(f, NULL, _IOFBF, size)` for every size up to
 `SIZE_MAX`, and the buffer in place stayed at 4,096 and 1,024 bytes. musl's
 `setvbuf.c` uses a buffer only when one is passed.
 
-`suite-filewatch.janet` was listed here too, failing six assertions of 79 on
+`suite-filewatch.wattle` was listed here too, failing six assertions of 79 on
 Linux. Those failures were the suite's, not inotify's or the container's. The
 probe watcher shared its channel with the event subtests. Removing its watch
 queued an `:ignored` event, the next `filewatch/listen` posted it to the
@@ -337,7 +337,7 @@ Five limitations constrain this, none of which are Janet defects:
    library and the other six build fixtures with the filesystem, the environment
    or a subprocess.
 
-   `test/helper.janet` asks `compif` for `os/getenv` and `os/clock` for the same
+   `test/helper.wattle` asks `compif` for `os/getenv` and `os/clock` for the same
    reason, and its `rmrf` raises rather than reporting a clean removal where
    there is no filesystem to remove from. The matrix's `reduced os` entry is a
    `full` job because of this; it was a `contracts` job while every suite there

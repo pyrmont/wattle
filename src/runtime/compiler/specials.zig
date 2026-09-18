@@ -421,7 +421,9 @@ fn compileRestDestructure(compiler: *compiler_primitives.Compiler, rhs: compiler
     compiler_primitives.freeslot(compiler, argument_index);
     compiler_primitives.freeslot(compiler, argument);
     compiler_primitives.freeslot(compiler, length);
-    _ = emit_core.emitSlot(compiler, constants.Opcode.make_tuple, target, 1);
+    // `& rest` binds a vector: what it collects is data, and the vector is
+    // Wattle's immutable sequence where a tuple is the call form.
+    _ = emit_core.emitSlot(compiler, constants.Opcode.make_vector, target, 1);
 }
 
 /// Compiles a run of forms, dropping every result but the last.

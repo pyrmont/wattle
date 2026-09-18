@@ -21,10 +21,12 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
-(assert (= [1 2 3] (tuple/join [1] [2] [3])) "tuple/join 1")
-(assert (= [] (tuple/join)) "tuple/join 2")
-(assert (= [:a :b :c] (tuple/join ![:a :b] [] [:c])) "tuple/join 3")
-(assert (= ["abc123" "def456"] (tuple/join ["abc123" "def456"])) "tuple/join 4")
+; `tuple/join` gives a tuple, which `[ ]` no longer spells; its arguments may
+; be any indexed value, vectors included.
+(assert (= '(1 2 3) (tuple/join [1] [2] [3])) "tuple/join 1")
+(assert (= '() (tuple/join)) "tuple/join 2")
+(assert (= '(:a :b :c) (tuple/join ![:a :b] [] [:c])) "tuple/join 3")
+(assert (= '("abc123" "def456") (tuple/join ["abc123" "def456"])) "tuple/join 4")
 
 (end-suite)
 

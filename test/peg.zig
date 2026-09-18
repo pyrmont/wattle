@@ -249,7 +249,7 @@ fn everySpecialEmitsItsInstruction() void {
     bytecodeIs("\"abc\"", &.{ op(constants.PegRule.literal), 3, 0x00636261 });
     bytecodeIs("\"abcde\"", &.{ op(constants.PegRule.literal), 5, 0x64636261, 0x00000065 });
     bytecodeIs("\"\"", &.{ op(constants.PegRule.literal), 0 });
-    bytecodeIs("@\"ab\"", &.{ op(constants.PegRule.literal), 2, 0x00006261 });
+    bytecodeIs("!\"ab\"", &.{ op(constants.PegRule.literal), 2, 0x00006261 });
 
     // A single range is its own opcode; two or more compile to a set.
     bytecodeIs("'(range \"az\")", &.{ op(constants.PegRule.range), 0x007A0061 });
@@ -313,8 +313,8 @@ fn everySpecialEmitsItsInstruction() void {
     bytecodeIs("'(til 1 2)", &.{ op(constants.PegRule.til), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
     bytecodeIs("'(split 1 2)", &.{ op(constants.PegRule.split), 3, 5, op(constants.PegRule.nchar), 1, op(constants.PegRule.nchar), 2 });
     bytecodeIs("'(/ 1 :x)", &.{ op(constants.PegRule.replace), 4, 0, 0, op(constants.PegRule.nchar), 1 });
-    bytecodeIs("~(cmt 1 ,identity)", &.{ op(constants.PegRule.matchtime), 4, 0, 0, op(constants.PegRule.nchar), 1 });
-    bytecodeIs("~(cms 1 ,identity)", &.{ op(constants.PegRule.matchsplice), 4, 0, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("`(cmt 1 ~identity)", &.{ op(constants.PegRule.matchtime), 4, 0, 0, op(constants.PegRule.nchar), 1 });
+    bytecodeIs("`(cms 1 ~identity)", &.{ op(constants.PegRule.matchsplice), 4, 0, 0, op(constants.PegRule.nchar), 1 });
 
     // The width and the two flag bits share one operand word.
     bytecodeIs("'(uint 4)", &.{ op(constants.PegRule.readint), 0x04, 0 });
@@ -382,7 +382,7 @@ fn grammarErrorsNameTheForm() void {
     expect(grammarError("'(\"a\")").endsWith(", expected grammar command, found \"a\""));
     expect(grammarError(":nope").endsWith(", unknown rule"));
     expect(grammarError("{:notmain 1}").endsWith(", grammar requires :main rule"));
-    expect(grammarError("@{:notmain 1}").endsWith(", grammar requires :main rule"));
+    expect(grammarError("!{:notmain 1}").endsWith(", grammar requires :main rule"));
     expect(grammarError("print").endsWith(", unexpected peg source"));
 
     expect(grammarError("'(! 1 2)").endsWith(", expected 1 argument, got 2"));
@@ -407,7 +407,7 @@ fn grammarErrorsNameTheForm() void {
 
     // Two hundred and fifty-five tags fit in the byte the tag stack uses; the
     // two hundred and fifty-sixth does not.
-    expect(grammarError("(tuple '* ;(map (fn [i] ~(<- 1 ,(keyword \"t\" i))) (range 256)))")
+    expect(grammarError("(tuple '* |(map (fn [i] `(<- 1 ~(keyword \"t\" i))) (range 256)))")
         .endsWith(", too many tags - up to 255 tags are supported per peg"));
 
     // `(constant)` is spelled out whole rather than left to `endsWith`,
@@ -418,7 +418,7 @@ fn grammarErrorsNameTheForm() void {
 
 /// The `[status message]` pair a `(protect ...)` produced.
 fn protectedResult(val: repr.Value) struct { ok: bool, message: repr.Value } {
-    const pair = wrap.toTuple(val);
+    const pair = harness.elems(val);
     return .{ .ok = wrap.toBoolean(pair[0]), .message = pair[1] };
 }
 
@@ -433,7 +433,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
     // A keyword chain that resolves through more than the guard allows.
     // `pegCompile1` walks this in a loop rather than by recursing.
     const chained = protectedResult(evaluate(
-        \\(do (def g @{})
+        \\(do (def g !{})
         \\    (loop [i :range [0 1100]] (put g (keyword "r" i) (keyword "r" (+ i 1))))
         \\    (put g :main :r0)
         \\    (put g (keyword "r" 1100) 1)
@@ -451,7 +451,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
     // real recursion through `pegCompile1`.
     const nested = protectedResult(evaluate(
         \\(do (var p 1)
-        \\    (loop [_ :range [0 1100]] (set p ~(! ,p)))
+        \\    (loop [_ :range [0 1100]] (set p `(! ~p)))
         \\    (protect (peg/compile p)))
     ));
     expect(!nested.ok);
@@ -468,7 +468,7 @@ fn theCompilerBoundsBothOfItsRecursions() void {
     // recursion guard, which a wasm build lowers.
     const just_inside = protectedResult(evaluate(std.fmt.comptimePrint(
         \\(do (var p 1)
-        \\    (loop [_ :range [0 {d}]] (set p ~(! ,p)))
+        \\    (loop [_ :range [0 {d}]] (set p `(! ~p)))
         \\    (protect (peg/compile p)))
     , .{config.recursion_guard - 2})));
     expect(just_inside.ok);

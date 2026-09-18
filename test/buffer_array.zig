@@ -73,6 +73,7 @@ const tables = @import("subsystems").value.tables;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
+const vectors = @import("subsystems").value.vectors;
 const wrap = @import("subsystems").value.wrap;
 
 // ==========================================================================
@@ -783,13 +784,13 @@ fn fromJanet() void {
         \\  [(length b) (string b) (length a) (array/pop a) (array/peek a)])
     ;
     expect(core_env.dostring(env, source, "buffer-array-test", &out) == 0);
-    expect(harness.isType(out, repr.Tag.tuple));
-    const t = wrap.toTuple(out);
-    expect(harness.integerIs(t[0], 3));
-    expect(harness.stringValueIs(t[1], "abc"));
-    expect(harness.integerIs(t[2], 2));
-    expect(harness.integerIs(t[3], 2));
-    expect(harness.integerIs(t[4], 1));
+    expect(harness.isType(out, repr.Tag.vector));
+    const t = wrap.toVector(out);
+    expect(harness.integerIs(vectors.at(t, 0), 3));
+    expect(harness.stringValueIs(vectors.at(t, 1), "abc"));
+    expect(harness.integerIs(vectors.at(t, 2), 2));
+    expect(harness.integerIs(vectors.at(t, 3), 2));
+    expect(harness.integerIs(vectors.at(t, 4), 1));
 }
 
 /// Numbers handed out in runs of three from one buffer the callback overwrites
@@ -797,7 +798,7 @@ fn fromJanet() void {
 ///
 /// The buffer is what this fixture is for. A reader holding two runs of one
 /// value at once reads the poison rather than the elements it asked for, so
-/// `(array/concat @[] v v)` fails here and would pass against a type that
+/// `(array/concat ![] v v)` fails here and would pass against a type that
 /// hands out its own storage. The elements are numbers, so nothing in the
 /// buffer has to be marked.
 const Runs = struct {
@@ -862,27 +863,27 @@ fn concatReadsAnIndexedAbstract() void {
     const env = harness.coreEnv();
     registry.cfuns(env, null, &cfuns);
     const source =
-        \\(def failures @[])
+        \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))
         \\(def v (bufarr/runs 10))
         \\(def oracle [0 10 20 30 40 50 60 70 80 90])
         \\(check "concat element by element"
-        \\       (deep= (array/concat @[] v) (array/concat @[] oracle)))
+        \\       (deep= (array/concat ![] v) (array/concat ![] oracle)))
         \\(check "concat twice from one value"
-        \\       (deep= (array/concat @[] v v) (array/concat @[] oracle oracle)))
+        \\       (deep= (array/concat ![] v v) (array/concat ![] oracle oracle)))
         \\(check "join twice from one value"
-        \\       (deep= (array/join @[] v v) (array/join @[] oracle oracle)))
+        \\       (deep= (array/join ![] v v) (array/join ![] oracle oracle)))
         \\(check "a part that is not indexed is one element"
-        \\       (deep= (array/concat @[1] v 2 v) (array/concat @[1] oracle 2 oracle)))
+        \\       (deep= (array/concat ![1] v 2 v) (array/concat ![1] oracle 2 oracle)))
         \\(check "an empty abstract appends nothing"
-        \\       (deep= (array/concat @[:a] (bufarr/runs 0)) @[:a]))
+        \\       (deep= (array/concat ![:a] (bufarr/runs 0)) ![:a]))
         \\(check "a growth mid-copy keeps every element"
-        \\       (= 1000 (length (array/concat @[] (bufarr/runs 1000)))))
+        \\       (= 1000 (length (array/concat ![] (bufarr/runs 1000)))))
         \\(check "an array concatenated onto itself"
-        \\       (let [a @[1 2 3]] (array/concat a a) (deep= a @[1 2 3 1 2 3])))
+        \\       (let [a ![1 2 3]] (array/concat a a) (deep= a ![1 2 3 1 2 3])))
         \\(check "join still refuses what is not indexed"
         \\       (= "expected indexed type for argument 1, got 5"
-        \\          (let [[ok r] (protect (array/join @[] 5))] r)))
+        \\          (let [[ok r] (protect (array/join ![] 5))] r)))
         \\failures
     ;
     expect(core_env.dostring(env, source, "buffer-array-test", &out) == 0);

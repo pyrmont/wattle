@@ -563,16 +563,17 @@ fn theWholeCompilations() void {
         "specials-core-test",
         &output,
     ) == 0);
-    expect(harness.isType(output, repr.Tag.tuple));
+    // `[ ]` is a vector, and `& rest` binds one.
+    expect(harness.isType(output, repr.Tag.vector));
     {
-        const result = wrap.toTuple(output);
-        expect(tuples.head(result).length == 3);
-        expect(harness.integerIs(result[0], 5));
-        expect(harness.integerIs(result[1], 2));
-        const rest = wrap.toTuple(result[2]);
-        expect(tuples.head(rest).length == 2);
-        expect(harness.integerIs(rest[0], 3));
-        expect(harness.integerIs(rest[1], 4));
+        const result = wrap.toVector(output);
+        expect(result.count == 3);
+        expect(harness.integerIs(vectors.at(result, 0), 5));
+        expect(harness.integerIs(vectors.at(result, 1), 2));
+        const rest = wrap.toVector(vectors.at(result, 2));
+        expect(rest.count == 2);
+        expect(harness.integerIs(vectors.at(rest, 0), 3));
+        expect(harness.integerIs(vectors.at(rest, 1), 4));
     }
 
     // Destructuring a struct by key.
@@ -611,26 +612,26 @@ fn theWholeCompilations() void {
         "specials-core-test",
         &output,
     ) == 0);
-    expect(harness.isType(output, repr.Tag.tuple));
+    expect(harness.isType(output, repr.Tag.vector));
     {
-        const results = wrap.toTuple(output);
-        expect(tuples.head(results).length == 5);
-        expect(harness.integerIs(results[0], 5));
+        const results = wrap.toVector(output);
+        expect(results.count == 5);
+        expect(harness.integerIs(vectors.at(results, 0), 5));
 
-        const optional = wrap.toTuple(results[1]);
-        expect(harness.integerIs(optional[0], 1));
-        expect(harness.isType(optional[1], repr.Tag.nil));
+        const optional = wrap.toVector(vectors.at(results, 1));
+        expect(harness.integerIs(vectors.at(optional, 0), 1));
+        expect(harness.isType(vectors.at(optional, 1), repr.Tag.nil));
 
-        const rest = wrap.toTuple(results[2]);
-        expect(tuples.head(rest).length == 2);
-        expect(harness.integerIs(rest[0], 2));
-        expect(harness.integerIs(rest[1], 3));
+        const rest = wrap.toVector(vectors.at(results, 2));
+        expect(rest.count == 2);
+        expect(harness.integerIs(vectors.at(rest, 0), 2));
+        expect(harness.integerIs(vectors.at(rest, 1), 3));
 
-        const named = wrap.toTuple(results[3]);
-        expect(harness.integerIs(named[0], 1));
-        expect(harness.integerIs(named[1], 2));
+        const named = wrap.toVector(vectors.at(results, 3));
+        expect(harness.integerIs(vectors.at(named, 0), 1));
+        expect(harness.integerIs(vectors.at(named, 1), 2));
 
-        expect(harness.integerIs(results[4], 3));
+        expect(harness.integerIs(vectors.at(results, 4), 3));
     }
 }
 

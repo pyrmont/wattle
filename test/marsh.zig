@@ -635,7 +635,7 @@ fn functionStreamsAndTheirBackReferences() raise.Error!void {
     _ = keep(wrap.fromBuffer(b));
     var at = onlyIndexOf(b, lb_funcenv_ref);
     var closures = keep(try unmarshalled(b, 0));
-    var back = wrap.toTuple(closures);
+    var back = harness.elems(closures);
     expect(callThunk(back[0]) == 41);
     expect(callThunk(back[1]) == 42);
     b.slice()[@intCast(at + 1)] = 0x7f;
@@ -644,12 +644,12 @@ fn functionStreamsAndTheirBackReferences() raise.Error!void {
 
     // Two instances of one `fn` share a funcdef, and only the second is a back
     // reference; the closed-over values are still written twice.
-    out = evaluate("(tuple ;(map (fn [x] (fn [] x)) [7 8]))");
+    out = evaluate("(tuple |(map (fn [x] (fn [] x)) [7 8]))");
     b = try marshalled(out, null, 0);
     _ = keep(wrap.fromBuffer(b));
     at = onlyIndexOf(b, lb_funcdef_ref);
     closures = keep(try unmarshalled(b, 0));
-    back = wrap.toTuple(closures);
+    back = harness.elems(closures);
     expect(callThunk(back[0]) == 7);
     expect(callThunk(back[1]) == 8);
     b.slice()[@intCast(at + 1)] = 0x7f;

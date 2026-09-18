@@ -22,6 +22,9 @@ const std = @import("std");
 // ==========================================================================
 
 const args_core = @import("args.zig");
+const vectors = @import("value/vectors.zig");
+const fatal = @import("fatal.zig");
+const gc_alloc = @import("gc.zig");
 const compiler_primitives = @import("compiler.zig");
 const constants = @import("constants");
 const corefn = @import("corefn.zig");
@@ -35,7 +38,6 @@ const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const strings = @import("value/strings.zig");
 const tables = @import("value/tables.zig");
-const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
 const verify = @import("bytecode/verify.zig");
@@ -210,6 +212,36 @@ pub const AssembleStatus = enum(u32) {
 /// enclosing names against, the pending failure, and the four tables the
 /// operand kinds resolve their names in. The encoder is in this file and
 /// reaches it directly.
+/// The elements of an indexed value as one block, copying a vector's runs.
+///
+/// Every reader below wants one slice. An array's and a tuple's elements are
+/// already one; a vector's are leaves of a trie, so they are gathered into
+/// scratch and the caller frees. Assembly source written in Wattle spells a
+/// list and an instruction `[ ]`, and `disasm` builds both as vectors.
+const AsmItems = struct {
+    items: []const repr.Value,
+    owned: bool,
+
+    fn free(self: AsmItems) void {
+        if (self.owned) gc_alloc.scratch_heap.free(@constCast(self.items));
+    }
+};
+
+fn asmItems(x: repr.Value) ?AsmItems {
+    if (args_core.items(x)) |elements| return .{ .items = elements, .owned = false };
+    if (!repr.checkType(x, repr.Tag.vector)) return null;
+    const v = wrap.toVector(x);
+    const block = gc_alloc.scratch_heap.alloc(repr.Value, v.count) catch
+        fatal.outOfMemory();
+    var index: usize = 0;
+    while (index < v.count) {
+        const run = vectors.chunk(v, index);
+        @memcpy(block[index..][0..run.len], run.items.?[0..run.len]);
+        index += run.len;
+    }
+    return .{ .items = block, .owned = true };
+}
+
 const Assembler = struct {
     parent: ?*Assembler,
     def: *functions.FuncDef,
@@ -329,9 +361,9 @@ pub fn argumentTable(a: *Assembler, argument_type: constants.OperandKind) ?*tabl
 /// ancestor, so `packArgument` is told the two separately.
 pub fn asmEncode(
     a: *Assembler,
-    arguments: [*]const repr.Value,
+    arguments: []const repr.Value,
 ) AsmError!u32 {
-    if (!hasLengthAtLeast(arguments, 1)) return 0;
+    if (arguments.len < 1) return 0;
     if (!wrap.isSymbol(arguments[0])) {
         return a.fail("expected symbol in assembly instruction");
     }
@@ -436,11 +468,14 @@ pub fn asmFillSourcemap(
     source: repr.Value,
 ) AsmError!void {
     const sourcemap = getFieldByName(source, "sourcemap");
-    const items = args_core.items(sourcemap) orelse unreachable;
+    var gathered_sourcemap = asmItems(sourcemap) orelse unreachable;
+    defer gathered_sourcemap.free();
+    const items = gathered_sourcemap.items;
     const definition = a.def;
     for (items, 0..) |entry, index| {
-        if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
-        const tuple = wrap.toTuple(entry);
+        var got = asmItems(entry) orelse return a.fail("expected tuple or vector");
+        defer got.free();
+        const tuple = got.items;
         if (!args_core.checkint(tuple[0])) return a.fail("expected integer");
         if (!args_core.checkint(tuple[1])) return a.fail("expected integer");
         definition.sourcemap.?[index] = .{
@@ -461,11 +496,14 @@ pub fn asmFillSymbolmap(
     source: repr.Value,
 ) AsmError!void {
     const symbolmap = getFieldByName(source, "symbolmap");
-    const items = args_core.items(symbolmap) orelse unreachable;
+    var gathered_symbolmap = asmItems(symbolmap) orelse unreachable;
+    defer gathered_symbolmap.free();
+    const items = gathered_symbolmap.items;
     const definition = a.def;
     for (items, 0..) |entry, index| {
-        if (!repr.checkType(entry, repr.Tag.tuple)) return a.fail("expected tuple");
-        const tuple = wrap.toTuple(entry);
+        var got = asmItems(entry) orelse return a.fail("expected tuple or vector");
+        defer got.free();
+        const tuple = got.items;
         const birth_pc: u32 = if (wrap.isKeyword(tuple[0]) and
             utils.cstrcmp(wrap.toKeyword(tuple[0]), "upvalue") == 0)
             maximum_u32
@@ -510,7 +548,9 @@ pub fn defAt(source: repr.Value, index: usize) repr.Value {
     if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    const items = args_core.items(definitions) orelse unreachable;
+    var gathered_definitions = asmItems(definitions) orelse unreachable;
+    defer gathered_definitions.free();
+    const items = gathered_definitions.items;
     return items[index];
 }
 
@@ -522,7 +562,9 @@ pub fn fillBytecode(
     a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    const items = args_core.items(source) orelse unreachable;
+    var gathered_source = asmItems(source) orelse unreachable;
+    defer gathered_source.free();
+    const items = gathered_source.items;
     const definition = a.def;
     a.bytecode_count = 0;
     // As in `scanBytecode`: a position in `items`, cast only where it is
@@ -530,15 +572,14 @@ pub fn fillBytecode(
     for (0..items.len) |index| {
         const instruction = items[index];
         if (wrap.isKeyword(instruction)) continue;
-        const tuple = wrap.toTuple(instruction);
+        var got = asmItems(instruction) orelse
+            return a.fail("expected assembly instruction");
+        defer got.free();
         // Set before the encode rather than after it: an indexed failure
         // downstream formats its own message, and `fail` reads `errindex` to
         // name the instruction it belongs to.
         a.errindex = @intCast(index);
-        const encoded = if (tuples.head(tuple).length == 0)
-            @as(u32, 0)
-        else
-            try asmEncode(a, tuple);
+        const encoded = try asmEncode(a, got.items);
         const count = a.bytecode_count;
         definition.bytecode.?[@intCast(count)] = encoded;
         a.bytecode_count = count + 1;
@@ -551,7 +592,9 @@ pub fn fillConstants(
     source: repr.Value,
 ) void {
     const consts = getFieldByName(source, "constants");
-    const items = args_core.items(consts) orelse unreachable;
+    var gathered_consts = asmItems(consts) orelse unreachable;
+    defer gathered_consts.free();
+    const items = gathered_consts.items;
     const definition = a.def;
     for (items, 0..) |item, index| {
         definition.constants.?[index] = item;
@@ -564,7 +607,9 @@ pub fn fillEnvironments(
     source: repr.Value,
 ) AsmError!void {
     const environments = getFieldByName(source, "environments");
-    const items = args_core.items(environments) orelse unreachable;
+    var gathered_environments = asmItems(environments) orelse unreachable;
+    defer gathered_environments.free();
+    const items = gathered_environments.items;
     const definition = a.def;
     for (items, 0..) |val, index| {
         if (!args_core.checkint(val)) return a.fail("expected integer");
@@ -694,15 +739,17 @@ pub fn parseSlots(
     source: repr.Value,
 ) AsmError!void {
     const slots_value = getFieldByName(source, "slots");
-    const items = args_core.items(slots_value) orelse return;
+    var gathered_slots = asmItems(slots_value) orelse return;
+    defer gathered_slots.free();
+    const items = gathered_slots.items;
     const slots = argumentTable(a, constants.OperandKind.slot).?;
     // `index` is a position in `items`; the cast is at the seam where it
     // becomes a Janet integer in the slot table.
     for (0..items.len) |index| {
         const val = items[index];
-        if (repr.checkType(val, repr.Tag.tuple)) {
-            const aliases = wrap.toTuple(val);
-            for (tuples.view(aliases)) |alias| {
+        if (asmItems(val)) |aliases| {
+            defer aliases.free();
+            for (aliases.items) |alias| {
                 if (!wrap.isSymbol(alias)) {
                     return a.fail("slot names must be symbols");
                 }
@@ -749,10 +796,12 @@ pub fn scanBytecode(
     a: *Assembler,
     source: repr.Value,
 ) AsmError!i32 {
-    const items = args_core.items(source) orelse {
+    var gathered_source = asmItems(source) orelse {
         a.errindex = 0;
         return a.fail("bytecode expected");
     };
+    defer gathered_source.free();
+    const items = gathered_source.items;
     const labels = argumentTable(a, constants.OperandKind.label).?;
     var bytecode_length: i32 = 0;
     // `index` is a position in `items`; `errindex` stays signed because -1 is
@@ -761,7 +810,9 @@ pub fn scanBytecode(
         const instruction = items[index];
         if (wrap.isKeyword(instruction)) {
             tables.put(labels, instruction, wrap.fromInteger(bytecode_length));
-        } else if (repr.checkType(instruction, repr.Tag.tuple)) {
+        } else if (repr.checkType(instruction, repr.Tag.tuple) or
+            repr.checkType(instruction, repr.Tag.vector))
+        {
             bytecode_length += 1;
         } else {
             a.errindex = @intCast(index);
@@ -777,7 +828,9 @@ pub fn scanConstants(
     source: repr.Value,
 ) i32 {
     const consts = getFieldByName(source, "constants");
-    const items = args_core.items(consts) orelse return 0;
+    var gathered_consts = asmItems(consts) orelse return 0;
+    defer gathered_consts.free();
+    const items = gathered_consts.items;
     return @intCast(items.len);
 }
 
@@ -788,7 +841,9 @@ pub fn scanDefs(source: repr.Value) usize {
     if (repr.checkType(definitions, repr.Tag.nil)) {
         definitions = getFieldByName(source, "defs");
     }
-    const items = args_core.items(definitions) orelse return 0;
+    var gathered_definitions = asmItems(definitions) orelse return 0;
+    defer gathered_definitions.free();
+    const items = gathered_definitions.items;
     return items.len;
 }
 
@@ -802,7 +857,9 @@ pub fn scanEnvironments(
     source: repr.Value,
 ) i32 {
     const environments = getFieldByName(source, "environments");
-    const items = args_core.items(environments) orelse return -1;
+    var gathered_environments = asmItems(environments) orelse return -1;
+    defer gathered_environments.free();
+    const items = gathered_environments.items;
     return @intCast(items.len);
 }
 
@@ -813,7 +870,9 @@ pub fn scanSourcemap(
     source: repr.Value,
 ) AsmError!i32 {
     const sourcemap = getFieldByName(source, "sourcemap");
-    const items = args_core.items(sourcemap) orelse return 0;
+    var gathered_sourcemap = asmItems(sourcemap) orelse return 0;
+    defer gathered_sourcemap.free();
+    const items = gathered_sourcemap.items;
     if (items.len != a.def.bytecode_length) {
         return a.fail("sourcemap must have the same length as the bytecode");
     }
@@ -826,7 +885,9 @@ pub fn scanSymbolmap(
     source: repr.Value,
 ) i32 {
     const symbolmap = getFieldByName(source, "symbolmap");
-    const items = args_core.items(symbolmap) orelse return 0;
+    var gathered_symbolmap = asmItems(symbolmap) orelse return 0;
+    defer gathered_symbolmap.free();
+    const items = gathered_symbolmap.items;
     return @intCast(items.len);
 }
 
@@ -1071,15 +1132,11 @@ fn getField(ds: repr.Value, key: repr.Value) repr.Value {
 // The table an operand kind resolves in, and the walk up the parent chain.
 
 /// Whether an instruction tuple has exactly `expected` elements.
-fn hasLength(arguments: [*]const repr.Value, expected: i32) bool {
-    return tuples.head(arguments).length == expected;
+fn hasLength(arguments: []const repr.Value, expected: i32) bool {
+    return arguments.len == expected;
 }
 
 /// Whether an instruction tuple has at least `minimum` elements.
-fn hasLengthAtLeast(arguments: [*]const repr.Value, minimum: i32) bool {
-    return tuples.head(arguments).length >= minimum;
-}
-
 /// A checked Janet number as an `i32`.
 fn integerValue(val: repr.Value) i32 {
     return @intFromFloat(wrap.toNumber(val));
@@ -1131,11 +1188,14 @@ fn resolveArgument(
             }
             result = @intFromFloat(number);
         },
-        repr.Tag.tuple => {
+        // A type set is written `[ ]` in Wattle and reaches here as a vector;
+        // a tuple is what a set built at run time is.
+        repr.Tag.tuple, repr.Tag.vector => {
             if (argument_type != constants.OperandKind.type) return a.failv(resolutionError(val, 0));
-            const tuple = wrap.toTuple(val);
+            var got = asmItems(val) orelse return a.failv(resolutionError(val, 0));
+            defer got.free();
             result = 0;
-            for (tuples.view(tuple)) |element| {
+            for (got.items) |element| {
                 result |= try resolveArgument(a, context, constants.OperandKind.simple_type, element);
             }
         },
