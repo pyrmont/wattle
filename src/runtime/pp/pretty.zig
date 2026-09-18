@@ -1,5 +1,5 @@
 //! Laying a structure of Janet values out on a page, and writing a value back
-//! out as WDN.
+//! out as Wattle source.
 //!
 //! `pp.zig` renders what a single value is called. This file is everything
 //! that takes more than a single value: the recursion into arrays, tuples,
@@ -8,8 +8,8 @@
 //! parent's line, the two truncation limits, and the key sort that makes a
 //! dictionary print the same way twice.
 //!
-//! `Pretty` serves both the pretty printer and the WDN writer, which share
-//! almost nothing else: WDN has no width, no colour, no alignment and no
+//! `Pretty` serves both the pretty printer and the source writer, which share
+//! almost nothing else: the source writer has no width, no colour, no alignment and no
 //! truncation, and it fails on values the pretty printer renders happily, such
 //! as a function, a fiber, an abstract, or a keyword that would not read back.
 //! The record is shared because `seen` and the buffer are common to both.
@@ -19,8 +19,8 @@
 //! grow. `tables.put` does not: a type's `hash` and `compare` are
 //! `callconv(.c) i32` with no error channel.
 //!
-//! A value with no WDN form is not a raise in the recursion. `printWdnOne`
-//! reports it upwards as a `bool` and only `wdn` turns it into a panic, so the
+//! A value with no source form is not a raise in the recursion. `printDataOne`
+//! reports it upwards as a `bool` and only `source` turns it into a panic, so the
 //! recursion needs no second error channel and the message is written once.
 
 // ==========================================================================
@@ -54,6 +54,13 @@ const wrap = @import("../value/helpers/wrap.zig");
 // ==========================================================================
 // Constants
 // ==========================================================================
+
+/// Which of the two data notations a writer is producing.
+///
+/// They agree on everything a value can be except the three mutable types:
+/// edn has no notion of those, so each becomes a namespaced tag, which is
+/// edn's own answer for a type its grammar does not cover.
+pub const Notation = enum { wattle, edn };
 
 /// The two truncation limits, and the size past which sorting a dictionary's
 /// keys is given up on.
@@ -102,7 +109,7 @@ const type_colors = [16][*:0]const u8{
 /// Two of its fields are scratch, and neither is freed on a raising path.
 /// `seen` is a scratch table, so `tables.deinit` takes the `gc.sfree` arm, but
 /// `prettyBuffer` `try`s its recursion before reaching that call, so a raise
-/// returns past it; `wdn` keeps the error union and deinitialises first, so it
+/// returns past it; `source` keeps the error union and deinitialises first, so it
 /// does free. The key-sort buffer is freed here on no path: there is no
 /// `gc.sfree` for it in this file, and its `gc.srealloc` block is the
 /// collector's from the start. Nothing is leaked either way, because
@@ -116,6 +123,10 @@ const Pretty = struct {
     flags: PrettyFlags,
     bufstartlen: usize,
     lookback_barrier: usize,
+    /// Which data notation the writer is producing. The pretty printer sets
+    /// `.wattle` and never reads it.
+    notation: Notation,
+
     keysort_buffer: ?[*]i32,
     keysort_capacity: i32,
     keysort_start: i32,
@@ -152,26 +163,60 @@ pub const PrettyFlags = packed struct(c_int) {
 // Public functions
 // ==========================================================================
 
-/// Renders `x` as WDN into `buffer`, or raises saying it cannot be.
+/// Renders `x` as Wattle source into `buffer`, or raises saying it cannot be.
 ///
-/// This is the only raise the file decides, and why `printWdnOne` reports a
-/// flag rather than raising: the message is written once, here.
-/// `pp/format.zig` imports this and `try`s it.
-///
-/// `startlen` and `lookback_barrier` are parameters rather than read from the
-/// buffer's count, because every caller reaching this through the formatter
-/// already has both.
-pub fn wdn(
+/// Whatever this writes reads back through `parse` as the same value, which is
+/// the whole of `%w`'s contract.
+pub fn source(
     buffer: ?*buffers.Buffer,
     depth: c_int,
     x: repr.Value,
     startlen: usize,
     lookback_barrier: usize,
 ) raise.Error!*buffers.Buffer {
-    var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier);
-    const failed = printWdnOne(&S, x, depth);
+    return data(buffer, depth, x, startlen, lookback_barrier, .wattle);
+}
+
+/// Renders `x` as edn into `buffer`, or raises saying it cannot be.
+///
+/// Its contract is the weaker and more portable one: what it writes is valid
+/// edn, and a reader with handlers for the three `#wattle/` tags reconstructs
+/// the value. Wattle is not that reader -- it reads no word tag -- so this
+/// does not round trip through `parse` the way `source` does, which
+/// `notes/LANGUAGE.md` records under The two notations.
+pub fn edn(
+    buffer: ?*buffers.Buffer,
+    depth: c_int,
+    x: repr.Value,
+    startlen: usize,
+    lookback_barrier: usize,
+) raise.Error!*buffers.Buffer {
+    return data(buffer, depth, x, startlen, lookback_barrier, .edn);
+}
+
+/// The body of both, which differ in three arms and a message.
+///
+/// This is the only raise the file decides, and why `printDataOne` reports a
+/// flag rather than raising: the message is written once, here.
+///
+/// `startlen` and `lookback_barrier` are parameters rather than read from the
+/// buffer's count, because every caller reaching this through the formatter
+/// already has both.
+fn data(
+    buffer: ?*buffers.Buffer,
+    depth: c_int,
+    x: repr.Value,
+    startlen: usize,
+    lookback_barrier: usize,
+    notation: Notation,
+) raise.Error!*buffers.Buffer {
+    var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier, notation);
+    const failed = printDataOne(&S, x, depth);
     tables.deinit(&S.seen);
-    if (try failed) return raise.panic("could not print to wdn format");
+    if (try failed) return raise.panic(switch (notation) {
+        .wattle => "could not print as Wattle source",
+        .edn => "could not print to edn format",
+    });
     return S.buffer;
 }
 
@@ -195,7 +240,7 @@ pub fn prettyBuffer(
     startlen: usize,
     lookback_barrier: usize,
 ) raise.Error!*buffers.Buffer {
-    var S = initState(buffer, depth, width, flags, startlen, lookback_barrier);
+    var S = initState(buffer, depth, width, flags, startlen, lookback_barrier, .wattle);
     try prettyOne(&S, x);
     backtrackNewlines(&S);
     tables.deinit(&S.seen);
@@ -298,7 +343,7 @@ fn backtrackNewlines(S: *const Pretty) void {
 
 /// Whether a symbol or keyword contains a character that stops it reading
 /// back. `sym` is the text and `issym` says which of the two it is, since a
-/// symbol may not begin with a digit. Text that fails this has no WDN form.
+/// symbol may not begin with a digit. Text that fails this has no source form.
 fn containsBadChars(sym: strings.String, issym: bool) bool {
     const len = strings.head(sym).length;
     if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
@@ -333,8 +378,9 @@ fn countDig10(start: i32) i32 {
 /// closing bracket, and anything that puts one there has gone through a
 /// container and written the field. An uninitialised read is still not a
 /// behaviour worth preserving.
-fn initState(buffer: ?*buffers.Buffer, depth: c_int, width: c_int, flags: PrettyFlags, startlen: usize, lookback_barrier: usize) Pretty {
+fn initState(buffer: ?*buffers.Buffer, depth: c_int, width: c_int, flags: PrettyFlags, startlen: usize, lookback_barrier: usize, notation: Notation) Pretty {
     var S = Pretty{
+        .notation = notation,
         .buffer = buffer orelse buffers.new(0),
         .depth = depth,
         .width = width,
@@ -389,9 +435,9 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
     return len + neg;
 }
 
-/// A dictionary's pairs, as `printWdnOne` writes them.
+/// A dictionary's pairs, as `printDataOne` writes them.
 ///
-/// The keys are sorted, as `prettyEntries` sorts them, because WDN is a
+/// The keys are sorted, as `prettyEntries` sorts them, because the source writer is a
 /// serialisation format and storage order is not reproducible: a key hashed by
 /// pointer, such as a buffer, an array, a table, a fiber or an abstract, sits
 /// in a bucket chosen by an allocation address, so the same value prints
@@ -403,7 +449,7 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
 /// nothing to truncate to here, so a quadratic sort over every entry would
 /// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
 /// so the order agrees with `%p`'s entry for entry.
-fn printWdnKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error!bool {
+fn printDataKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error!bool {
     const ks_start = S.keysort_start;
     defer S.keysort_start = ks_start;
 
@@ -453,29 +499,52 @@ fn printWdnKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error
     for (buf[0..len], 0..) |j, i| {
         const kv = &kvs[@intCast(j)];
         try if (i != 0) S.pushByte(' ');
-        if (try printWdnOne(S, kv.key, depth - 1)) return true;
+        if (try printDataOne(S, kv.key, depth - 1)) return true;
         try S.pushByte(' ');
-        if (try printWdnOne(S, kv.value, depth - 1)) return true;
+        if (try printDataOne(S, kv.value, depth - 1)) return true;
     }
     return false;
 }
 
-/// Writes `x` as WDN, recursing to `depth`.
+/// Writes `x` as Wattle source, recursing to `depth`.
 ///
-/// Failure is reported rather than raised: `true` means the value has no WDN
+/// Failure is reported rather than raised: `true` means the value has no source
 /// form, and the perimeter is what panics. Depth is a parameter here rather
-/// than a field of the record, because WDN counts down a recursion of its own,
+/// than a field of the record, because the source writer counts down a recursion of its own,
 /// separate from the pretty printer's.
-fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
+fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
     if (depth == 0) return true;
     switch (repr.typeOf(x)) {
-        repr.Tag.nil, repr.Tag.boolean, repr.Tag.buffer, repr.Tag.string => {
+        repr.Tag.nil, repr.Tag.boolean, repr.Tag.string => {
             try describe.descriptionB(S.buffer, x);
+        },
+        repr.Tag.buffer => {
+            if (S.notation == .wattle) {
+                try describe.descriptionB(S.buffer, x);
+            } else {
+                // edn has no mutable string, so the bytes go inside a tag as
+                // an ordinary edn string.
+                const tag = "#wattle/buffer ";
+                const source_buffer = wrap.toBuffer(x);
+                // `(buffer/format b "%y" b)` prints a buffer into itself, so
+                // the length is taken before anything is written and the worst
+                // case is reserved before the read, as `pp.escapeBufferB` does
+                // for the same reason. Reading the count after pushing the tag
+                // would count the tag's own bytes as content.
+                const count: usize = @intCast(source_buffer.count);
+                if (source_buffer == S.buffer) {
+                    try buffers.ensure(source_buffer, source_buffer.count + 5 * source_buffer.count + tag.len + 3, 1);
+                }
+                try S.pushCstring(tag);
+                // After `ensure` the block cannot move under the escape, so
+                // the slice taken here stays live for the whole of it.
+                _ = try describe.escapeString(S.buffer, if (source_buffer.data) |d| d[0..count] else "");
+            }
         },
         repr.Tag.number => {
             try buffers.ensure(S.buffer, S.buffer.count + bufsize, 2);
             const num = wrap.toNumber(x);
-            // Neither has a WDN spelling that reads back as itself.
+            // Neither has a source spelling that reads back as itself.
             if (std.math.isNan(num)) return true;
             if (std.math.isInf(num)) return true;
             try numscan.bufferDtostr(S.buffer, num);
@@ -489,7 +558,7 @@ fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             try S.pushByte('(');
             for (tuples.view(t), 0..) |item, i| {
                 try if (i != 0) S.pushByte(' ');
-                if (try printWdnOne(S, item, depth - 1)) return true;
+                if (try printDataOne(S, item, depth - 1)) return true;
             }
             try S.pushByte(')');
         },
@@ -505,7 +574,7 @@ fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
                 const run = vectors.chunk(v, index);
                 for (run.items.?[0..run.len]) |item| {
                     try if (index != 0) S.pushByte(' ');
-                    if (try printWdnOne(S, item, depth - 1)) return true;
+                    if (try printDataOne(S, item, depth - 1)) return true;
                     index += 1;
                 }
             }
@@ -514,25 +583,25 @@ fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
         repr.Tag.array => {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const a = wrap.toArray(x);
-            try S.pushCstring("![");
+            try S.pushCstring(if (S.notation == .wattle) "![" else "#wattle/array [");
             for (0..a.count) |i| {
                 try if (i != 0) S.pushByte(' ');
-                if (try printWdnOne(S, a.slice()[i], depth - 1)) return true;
+                if (try printDataOne(S, a.slice()[i], depth - 1)) return true;
             }
             try S.pushByte(']');
         },
         repr.Tag.table => {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const tab = wrap.toTable(x);
-            try S.pushCstring("!{");
-            if (try printWdnKvs(S, tab.slots(), depth)) return true;
+            try S.pushCstring(if (S.notation == .wattle) "!{" else "#wattle/table {");
+            if (try printDataKvs(S, tab.slots(), depth)) return true;
             try S.pushByte('}');
         },
         repr.Tag.map => {
             var pairs = args_core.gatherPairs(x).?;
             defer pairs.free();
             try S.pushByte('{');
-            if (try printWdnKvs(S, pairs.view.kvs.?[0..pairs.view.cap], depth)) return true;
+            if (try printDataKvs(S, pairs.view.kvs.?[0..pairs.view.cap], depth)) return true;
             try S.pushByte('}');
         },
         // A set is an abstract -- all sixteen tags are spoken for -- so it is
@@ -542,7 +611,7 @@ fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
         //
         // The elements need no sort. A tree's order is a function of the
         // values in it and not of the order they arrived in, so two equal sets
-        // write the same bytes without one. `printWdnKvs` sorts because it
+        // write the same bytes without one. `printDataKvs` sorts because it
         // also serves a table, whose layout does depend on insertion.
         //
         // No cycle marking either: a set is persistent and cannot contain
@@ -555,7 +624,7 @@ fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             while (!repr.checkType(element, repr.Tag.nil)) : (element = maps.nextElement(t, element)) {
                 try if (!first) S.pushByte(' ');
                 first = false;
-                if (try printWdnOne(S, element, depth - 1)) return true;
+                if (try printDataOne(S, element, depth - 1)) return true;
             }
             try S.pushByte('}');
         },

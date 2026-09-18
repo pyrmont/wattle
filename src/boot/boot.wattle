@@ -4394,7 +4394,7 @@
     (def bn (get manifest :name))
     (def manifest-name (get-manifest-filename bn))
     (def b !"")
-    (buffer/format b "%w" manifest) ; make sure it is valid wdn
+    (buffer/format b "%w" manifest) ; make sure it is valid Wattle source
     (buffer/clear b)
     (buffer/format b "%.99m\n" manifest)
     (spit manifest-name b))

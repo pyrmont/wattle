@@ -39,27 +39,37 @@
 (assert (= (string buf1) (string/repeat "1234567890" 16))
         "buffer blit against self")
 
-; Check for bugs with printing self with buffer/format
+; Formatting a buffer into itself is refused. It had three answers across the
+; conversion families and one of them, `%s`, read the byte view it had taken
+; before a push reallocated the block, so it copied freed memory. Refused on
+; 2026-09-19 rather than specified; see notes/INCREMENTS.md.
 ; bbcfaf128
 (def buftemp !"abcd")
-(assert (= (string (buffer/format buftemp "---%p---" buftemp))
-           """abcd---!"abcd"---""") "buffer/format on self 1")
-(def buftemp2 !"abcd")
-(assert (= (string (buffer/format buftemp2 "---%p %p---" buftemp2 buftemp2))
-           """abcd---!"abcd" !"abcd"---""") "buffer/format on self 2")
+(assert-error "cannot format a buffer into itself"
+              (buffer/format buftemp "---%p---" buftemp))
+(assert-error "cannot format a buffer into itself"
+              (buffer/format buftemp "---%p %p---" buftemp buftemp))
+(assert-error "cannot format a buffer into itself"
+              (buffer/format buftemp "---%s---" buftemp))
+(assert-error "cannot format a buffer into itself"
+              (buffer/format-at buftemp 0 "%w" buftemp))
+(assert (= "abcd" (string buftemp)) "and the buffer is untouched by the refusal")
+; Another buffer is not the destination, so it formats as any value does.
+(assert (= "abcd--!\"xy\"--" (string (buffer/format buftemp "--%w--" !"xy")))
+        "a different buffer is unaffected")
 
 ; 5c364e0
-(defn check-wdn [x]
-  (assert (deep= (parse (string/format "%w" x)) x) "round trip wdn"))
+(defn check-source [x]
+  (assert (deep= (parse (string/format "%w" x)) x) "round trip as source"))
 
-(check-wdn 0)
-(check-wdn nil)
-(check-wdn [])
-(check-wdn ![[] [] 1231 9.123123 -123123 0.1231231230001])
-(check-wdn -0.123123123123)
-(check-wdn 12837192371923)
-(check-wdn "a string")
-(check-wdn !"a buffer")
+(check-source 0)
+(check-source nil)
+(check-source [])
+(check-source ![[] [] 1231 9.123123 -123123 0.1231231230001])
+(check-source -0.123123123123)
+(check-source 12837192371923)
+(check-source "a string")
+(check-source !"a buffer")
 
 ; Issue 1737
 (assert (deep= "![]" (string/format "%M" ![])))
@@ -149,15 +159,15 @@
 
 ; `%w` refuses a value it cannot write as data, and the refusal has to travel
 ; out of whatever container the value was found in. Each of the five below
-; reaches a different arm of the wdn printer, and none of them was asked for.
-(assert-error "could not print to wdn format" (string/format "%w" (/ 0 0)))
-(assert-error "could not print to wdn format" (string/format "%w" print))
-(assert-error "could not print to wdn format" (string/format "%w" !{:a print}))
-(assert-error "could not print to wdn format" (string/format "%w" ![print]))
-(assert-error "could not print to wdn format" (string/format "%w" [print]))
-(assert-error "could not print to wdn format" (string/format "%w" {:a print}))
+; reaches a different arm of the source writer, and none of them was asked for.
+(assert-error "could not print as Wattle source" (string/format "%w" (/ 0 0)))
+(assert-error "could not print as Wattle source" (string/format "%w" print))
+(assert-error "could not print as Wattle source" (string/format "%w" !{:a print}))
+(assert-error "could not print as Wattle source" (string/format "%w" ![print]))
+(assert-error "could not print as Wattle source" (string/format "%w" [print]))
+(assert-error "could not print as Wattle source" (string/format "%w" {:a print}))
 
-; The wdn printer spends one frame of the build's recursion budget per level,
+; The source writer spends one frame of the build's recursion budget per level,
 ; so a level short of it is written and the budget itself is refused. Both ends
 ; are asserted, because a budget spent twice as fast still refuses the far end.
 ;
@@ -175,45 +185,45 @@
   (defn nest-tab [n] (var d !{}) (repeat n (set d !{:k d})) d)
   (def budget (if (= :wasm (os/arch)) 512 1024))
   (def within (- budget 1))
-  (assert-no-error "a level short of the budget prints an array as wdn"
+  (assert-no-error "a level short of the budget prints an array as source"
                    (string/format "%w" (nest-arr within)))
-  (assert-error "could not print to wdn format" (string/format "%w" (nest-arr budget)))
-  (assert-no-error "a level short of the budget prints a tuple as wdn"
+  (assert-error "could not print as Wattle source" (string/format "%w" (nest-arr budget)))
+  (assert-no-error "a level short of the budget prints a tuple as source"
                    (string/format "%w" (nest-tup within)))
-  (assert-error "could not print to wdn format" (string/format "%w" (nest-tup budget)))
-  (assert-no-error "a level short of the budget prints a table as wdn"
+  (assert-error "could not print as Wattle source" (string/format "%w" (nest-tup budget)))
+  (assert-no-error "a level short of the budget prints a table as source"
                    (string/format "%w" (nest-tab within)))
-  (assert-error "could not print to wdn format" (string/format "%w" (nest-tab budget))))
+  (assert-error "could not print as Wattle source" (string/format "%w" (nest-tab budget))))
 
-; A key that has no wdn form fails the dictionary, exactly as a value does.
-(assert-error "could not print to wdn format" (string/format "%w" !{print :a}))
-(assert-error "could not print to wdn format" (string/format "%w" {print :a}))
+; A key that has no source form fails the dictionary, exactly as a value does.
+(assert-error "could not print as Wattle source" (string/format "%w" !{print :a}))
+(assert-error "could not print as Wattle source" (string/format "%w" {print :a}))
 
-; A symbol that reads back as a number has no wdn form, and a keyword does,
+; A symbol that reads back as a number has no source form, and a keyword does,
 ; because a keyword may begin with a digit and a symbol may not.
-(assert-error "could not print to wdn format" (string/format "%w" (symbol "1abc")))
+(assert-error "could not print as Wattle source" (string/format "%w" (symbol "1abc")))
 ; Both ends of the digit range, which is where the two comparisons differ.
-(assert-error "could not print to wdn format" (string/format "%w" (symbol "0abc")))
-(assert-error "could not print to wdn format" (string/format "%w" (symbol "9abc")))
+(assert-error "could not print as Wattle source" (string/format "%w" (symbol "0abc")))
+(assert-error "could not print as Wattle source" (string/format "%w" (symbol "9abc")))
 (assert (= "abc" (string/format "%w" (symbol "abc"))) "an ordinary symbol has one")
 (assert (= ":1abc" (string/format "%w" (keyword "1abc"))) "and a keyword may begin with a digit")
 
 ; A set prints as its literal, `#{...}`, under both the writer and the pretty
-; printer. Before this it had no wdn form at all -- the writer refused it --
+; printer. Before this it had no source form at all -- the writer refused it --
 ; and the pretty printer showed the generic abstract form, `<core/set 1 3 2>`,
 ; so a set was the one value the parser could read and nothing could write.
 ;
 ; The elements are in the tree's order and are deliberately not sorted: that
 ; order is a function of the values, not of the order they arrived in, which
 ; the two assertions on equal sets built oppositely are here to hold.
-(check-wdn (hash-set))
-(check-wdn (hash-set 1))
-(check-wdn (hash-set 1 2 3))
-(check-wdn (hash-set :a "b" 3 4.5 true))
-(check-wdn (hash-set (hash-set 1) (hash-set 2)))
-(check-wdn (hash-set [1 2] {:a 1}))
-(check-wdn [1 (hash-set 2 3) 4])
-(check-wdn {:k (hash-set 1 2)})
+(check-source (hash-set))
+(check-source (hash-set 1))
+(check-source (hash-set 1 2 3))
+(check-source (hash-set :a "b" 3 4.5 true))
+(check-source (hash-set (hash-set 1) (hash-set 2)))
+(check-source (hash-set [1 2] {:a 1}))
+(check-source [1 (hash-set 2 3) 4])
+(check-source {:k (hash-set 1 2)})
 (assert (= "#{}" (string/format "%w" (hash-set))) "an empty set writes as one")
 (assert (= (string/format "%w" (hash-set 1 2 3))
            (string/format "%w" (hash-set 3 2 1)))
@@ -222,13 +232,35 @@
            (string/format "%p" (hash-set :d :c :b :a)))
         "and print the same, without a sort")
 (assert (= "#{1 3 2}" (string/format "%p" (hash-set 1 2 3))) "a set pretty-prints as its literal")
-(assert-error "could not print to wdn format" (string/format "%w" (hash-set print)))
-(assert-error "could not print to wdn format" (string/format "%.2w" (hash-set (hash-set 1))))
+(assert-error "could not print as Wattle source" (string/format "%w" (hash-set print)))
+(assert-error "could not print as Wattle source" (string/format "%.2w" (hash-set (hash-set 1))))
 (assert (= "#{#{1}}" (string/format "%.3w" (hash-set (hash-set 1))))
         "and a depth that reaches the element prints it")
 (assert (string/find "..." (string/format "%.2p" (hash-set (hash-set 1))))
         "the pretty printer elides past its depth rather than refusing")
 
+; `%y` writes edn, which is the other notation: the same bytes as `%w` for
+; everything edn has, and a namespaced tag for the three mutable types it does
+; not. It does not round trip through `parse` -- Wattle reads no word tag --
+; and that is the point of there being two.
+(assert (= "[1 2]" (string/format "%y" [1 2])) "a vector is edn already")
+(assert (= "{:a 1}" (string/format "%y" {:a 1})) "and so is a map")
+(assert (= "#{1 2}" (string/format "%y" (hash-set 1 2))) "and a set")
+(assert (= "(1 2)" (string/format "%y" '(1 2))) "and a tuple, as an edn list")
+(assert (= "#wattle/array [1 2]" (string/format "%y" ![1 2])) "an array is tagged")
+(assert (= "#wattle/table {:a 1}" (string/format "%y" !{:a 1})) "a table is tagged")
+(assert (= "#wattle/buffer \"b\"" (string/format "%y" !"b")) "a buffer is tagged")
+(assert (= "[#wattle/array [1] {:k #wattle/buffer \"b\"}]"
+           (string/format "%y" [![1] {:k !"b"}]))
+        "and a tag nests inside an untagged collection")
+(assert (= "#wattle/array [#{1}]" (string/format "%y" ![(hash-set 1)]))
+        "as an untagged one does inside a tag")
+; Each notation names itself when it refuses.
+(assert-error "could not print as Wattle source" (string/format "%w" print))
+(assert-error "could not print to edn format" (string/format "%y" print))
+; The depth budget is the same machinery, so it behaves as `%w` does.
+(assert (= "#wattle/array [#wattle/array [1]]" (string/format "%.3y" ![![1]])))
+(assert-error "could not print to edn format" (string/format "%.2y" ![![1]]))
 ; `%p` breaks lines and elides a long dictionary; both are defaults rather
 ; than something the caller asks for.
 (do
@@ -262,7 +294,7 @@
 
 ; A precision on `%w` is the depth budget, and it is read as a decimal number
 ; from a three-byte field. A precision of one is one level, not the default.
-(assert-error "could not print to wdn format" (string/format "%.1w" [[1]]))
+(assert-error "could not print as Wattle source" (string/format "%.1w" [[1]]))
 (assert (= "[[[1]]]" (string/format "%.10w" [[[1]]]))
         "a two-digit precision is read as both its digits")
 (assert (= "[1]" (string/format "%.2w" [1])) "and a small one bounds the depth")
@@ -283,11 +315,13 @@
         "%P wraps each value in its own colour")
 (assert (= "!{}" (string/format "%p" !{})) "an empty dictionary needs no break at all")
 
-; A buffer printed into itself is copied first, so the text being appended is
-; what the buffer held rather than what it is holding as the append proceeds.
+; This asserted that a buffer formatted into itself "reads its old contents",
+; which was never true of `%v` -- it read the live buffer, and the case passed
+; only because the format had no literal text in front of the conversion for
+; the two readings to differ over. The operation is refused now.
 (do
   (def b !"a")
-  (buffer/format b "%v" b)
-  (assert (= "a!\"a\"" (string b)) "a buffer formatted into itself reads its old contents"))
+  (assert-error "cannot format a buffer into itself" (buffer/format b "%v" b))
+  (assert (= "a" (string b)) "and the buffer is untouched"))
 
 (end-suite)

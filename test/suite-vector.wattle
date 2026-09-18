@@ -174,13 +174,13 @@
 (assert (= "[1 2 3]" (string/format "%q" v)) "format")
 (assert (= "1 2 3" (string v)) "string")
 
-; WDN spells a vector `[ ]`, which is what Wattle's parser reads one from, so
-; a vector round-trips where it had no WDN form at all.
-(assert (= "[1 2 3]" (string/format "%w" v)) "wdn")
+; The source writer spells a vector `[ ]`, which is what Wattle's parser reads one from, so
+; a vector round-trips where it had no source form at all.
+(assert (= "[1 2 3]" (string/format "%w" v)) "source")
 (assert (= "[1 [2] ![3] {:a 4}]"
            (string/format "%w" (vector 1 (vector 2) ![3] {:a 4})))
-        "wdn nested")
-(assert-error "wdn refuses a vector holding a fiber"
+        "source nested")
+(assert-error "the source writer refuses a vector holding a fiber"
               (string/format "%w" (vector (fiber/new (fn [] nil)))))
 
 ; Boot's own handling of a vector in a syntax tree

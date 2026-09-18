@@ -355,7 +355,8 @@ pub fn lib(env: *tables.Table) void {
             "- `t`: emit the type of the given value.\n" ++
             "- `v`: format with (describe x)\n" ++
             "- `V`: format with (string x)\n" ++
-            "- `w`: format to wdn (Wattle data notation).\n" ++
+            "- `w`: format to Wattle source, which reads back through parse.\n" ++
+            "- `y`: format to edn, for a reader that is not Wattle's.\n" ++
             "\n" ++
             "The following conversion specifiers are used for \"pretty-printing\", where the upper-case " ++
             "variants generate colored output. These specifiers can take a precision " ++

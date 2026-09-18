@@ -412,7 +412,7 @@ fn theRoundTrip() !void {
     };
     for (sources) |source| {
         const parsed = try only(source);
-        const printed = try pretty.wdn(null, guard, parsed, 0, 0);
+        const printed = try pretty.source(null, guard, parsed, 0, 0);
         const reparsed = try only(printed.slice());
         expect(order.equals(parsed, reparsed));
     }
@@ -584,7 +584,7 @@ fn theReaderMacros() !void {
 fn theShebang() !void {
     expect(harness.integerIs(try only("#!/usr/bin/env wattle\n7"), 7));
     // The same two bytes further in are a tag, which is not implemented.
-    expect(refusalIs("7\n#!/usr/bin/env wattle\n", "tagged literals are not implemented"));
+    expect(refusalIs("7\n#!/usr/bin/env wattle\n", "word tags are not implemented"));
 }
 
 /// `parser/state`'s two reports name Wattle's forms, not Janet's.
@@ -655,7 +655,7 @@ fn theRefusals() !void {
     expect(harness.symbolIs(try only("a@b"), "a@b"));
     expect(harness.symbolIs(try only("a^b"), "a^b"));
 
-    expect(refusalIs("#tuple [1 2]", "tagged literals are not implemented"));
+    expect(refusalIs("#tuple [1 2]", "word tags are not implemented"));
     expect(refusalIs("#,", "unknown dispatch"));
 
     // A map literal's keys are checked where they are written, as in Janet.

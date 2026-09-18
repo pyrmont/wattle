@@ -703,11 +703,12 @@ fn wattleBang(
 
 /// The consumer after a `#`.
 ///
-/// `#(` is a short function and `#!` at the first byte of a source is the
-/// shebang. `#{` and a word tag are refused by name rather than by silence:
-/// a set literal waits on the compiler arm that would evaluate its elements,
-/// and a word tag on the `core/tagged` value it reads as. Anything else is
-/// not a dispatch character at all.
+/// `#(` is a short function, `#{` a set, and `#!` at the first byte of a
+/// source is the shebang. A word tag is refused by name rather than by
+/// silence, because someone arriving from Clojure will write one: tagged
+/// forms are designed and not built, and `notes/LANGUAGE.md` records why the
+/// case for building them has gone. Anything else is not a dispatch character
+/// at all.
 fn wattleDispatch(
     parser: *Parser,
     state: *ParseState,
@@ -742,7 +743,7 @@ fn wattleDispatch(
         },
         else => {
             if (numscan.isSymbolChar(character)) {
-                parser.@"error" = "tagged literals are not implemented";
+                parser.@"error" = "word tags are not implemented";
                 return true;
             }
             parser.@"error" = "unknown dispatch";

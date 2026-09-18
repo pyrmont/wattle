@@ -518,11 +518,38 @@ fn cfunBufferFill(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
+/// Refuses a format whose destination is also one of its arguments.
+///
+/// `(buffer/format b "%s" b)` has no defensible answer: the rendering would be
+/// of the buffer *partway through the call that is writing it*, and the three
+/// conversion families disagreed about which moment that was -- `%p` and `%q`
+/// reported the buffer as at the call, `%w`, `%v` and `%y` as it stood when
+/// the conversion ran, and `%s` read the byte view it had taken before a push
+/// reallocated the block, so it copied freed memory and printed different
+/// debris on each run. Refused on 2026-09-19 rather than specified, because
+/// none of the three readings is worth keeping.
+///
+/// The check is shallow, and deliberately: it catches what a program actually
+/// writes. A buffer reachable only inside another argument, as in
+/// `(buffer/format b "%w" [b])`, still arrives at the printer, where
+/// `pp.escapeBufferB` reserves the worst case before reading and so stays
+/// safe. What is removed here is the unsafe path, `%s`, which takes its bytes
+/// directly from an argument and so cannot be reached that way.
+fn refuseSelfFormat(buffer: *Buffer, argv: []repr.Value, first: usize) raise.Error!void {
+    for (argv[first..]) |arg| {
+        if (!repr.checkType(arg, repr.Tag.buffer)) continue;
+        if (wrap.toBuffer(arg) == buffer) {
+            return raise.panic("cannot format a buffer into itself");
+        }
+    }
+}
+
 /// `buffer/format`: `pp_format.bufferFormat` appended at the end.
 fn cfunBufferFormat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const strfrmt = try args_core.getString(argv, 1);
+    try refuseSelfFormat(buffer, argv, 2);
     try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 2, argv);
     return argv[0];
 }
@@ -537,9 +564,13 @@ fn cfunBufferFormatAt(argv: []repr.Value) raise.Error!repr.Value {
     if (at > buffer.count or at < 0) {
         return pp_format.panicf("expected index at to be in range [0, %d), got %d", .{ @as(i64, @intCast(buffer.count)), at });
     }
+    const strfrmt = try args_core.getString(argv, 2);
+    // Before the truncation below, not after: a refusal must leave the buffer
+    // as it found it, and setting `count` first would leave a raised call
+    // having thrown the tail away.
+    try refuseSelfFormat(buffer, argv, 3);
     const oldcount = buffer.count;
     buffer.count = @intCast(at);
-    const strfrmt = try args_core.getString(argv, 2);
     try pp_format.bufferFormat(buffer, @ptrCast(strfrmt), 3, argv);
     if (buffer.count < oldcount) buffer.count = oldcount;
     return argv[0];

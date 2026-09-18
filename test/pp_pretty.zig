@@ -1,4 +1,4 @@
-//! Behavioral contract for the pretty printer and the WDN writer.
+//! Behavioral contract for the pretty printer and the source writer.
 //!
 //! ## Why this exists rather than leaning on the Janet suites
 //!
@@ -10,7 +10,7 @@
 //! *into text that is already there* behaves differently from printing into an
 //! empty buffer.
 //!
-//! `pretty.wdn` raises and this file `try`s it, so there is no abi to test
+//! `pretty.source` raises and this file `try`s it, so there is no abi to test
 //! beside it. A refusal is a value here, and `Raise.says` checks the message
 //! at the site that expected it.
 
@@ -118,7 +118,7 @@ fn aNullBufferIsAllocated() !void {
     const b = try pretty.prettyBuffer(null, guard, 80, .{}, eval("[1 2 3]"), 0, 0);
     checkBuffer(b, "[1 2 3]");
 
-    const j = try pretty.wdn(null, guard, eval("[1 2 3]"), 0, 0);
+    const j = try pretty.source(null, guard, eval("[1 2 3]"), 0, 0);
     checkBuffer(j, "[1 2 3]");
 }
 
@@ -320,32 +320,32 @@ fn theDepthLimit() !void {
 }
 
 fn whatJdnRefuses() !void {
-    // One key, because WDN walks a dictionary in storage order rather than
+    // One key, because the source writer walks a dictionary in storage order rather than
     // sorted order and two would pin the hash layout rather than the writer.
     const b = buffer(64);
-    _ = try pretty.wdn(b, guard, eval("{:a [1 ![2 \"x\"] 1.5]}"), 0, 0);
+    _ = try pretty.source(b, guard, eval("{:a [1 ![2 \"x\"] 1.5]}"), 0, 0);
     checkBuffer(b, "{:a [1 ![2 \"x\"] 1.5]}");
 
     for ([_][*:0]const u8{
-        "print", // a cfunction has no WDN form
+        "print", // a cfunction has no source form
         "(keyword \"a b\")", // nor a keyword whose text would not lex
         "math/inf", // nor infinity
     }) |source| {
         const val = eval(source);
-        const r = harness.raised(pretty.wdn, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
+        const r = harness.raised(pretty.source, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
         expect(r.signal == abi.Signal.@"error");
-        expect(r.says("could not print to wdn format"));
+        expect(r.says("could not print as Wattle source"));
     }
 }
 
-fn wdnTreatsSymbolsAndKeywordsDifferently() !void {
+fn sourceTreatsSymbolsAndKeywordsDifferently() !void {
     const b = buffer(64);
-    _ = try pretty.wdn(b, guard, eval("(keyword \"1abc\")"), 0, 0);
+    _ = try pretty.source(b, guard, eval("(keyword \"1abc\")"), 0, 0);
     checkBuffer(b, ":1abc");
 
     const symbol = eval("(symbol \"1abc\")");
     expect(harness.raised(
-        pretty.wdn,
+        pretty.source,
         .{ buffer(16), guard, symbol, @as(i32, 0), @as(i32, 0) },
     ) != null);
 }
@@ -369,7 +369,7 @@ fn body() !void {
     try nestedDictionariesShareTheKeySortScratch();
     try theDepthLimit();
     try whatJdnRefuses();
-    try wdnTreatsSymbolsAndKeywordsDifferently();
+    try sourceTreatsSymbolsAndKeywordsDifferently();
 }
 
 pub fn run() void {

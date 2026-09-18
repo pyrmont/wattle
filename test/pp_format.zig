@@ -316,12 +316,12 @@ fn theRefusals() void {
 
     // `%w` is the one conversion that can refuse the value it was given, and it
     // must refuse it through both loops. Without this, a `%w` that
-    // pretty-printed instead of writing WDN would pass every other assertion
+    // pretty-printed instead of writing source would pass every other assertion
     // here: the two spellings agree on the values that have both forms, and
     // disagree only on the values that have one.
     var fn_slot = [_]repr.Value{eval("print")};
-    expectRaise("could not print to wdn format", fmt.formatc, .{ "%w", .{fn_slot[0]} });
-    expectRaise("could not print to wdn format", formatted, .{ "%w", fn_slot[0..] });
+    expectRaise("could not print as Wattle source", fmt.formatc, .{ "%w", .{fn_slot[0]} });
+    expectRaise("could not print as Wattle source", formatted, .{ "%w", fn_slot[0..] });
 }
 
 /// `%w` sorts a dictionary's keys, so the same value writes the same bytes.
@@ -352,7 +352,7 @@ fn theJdnWriterSortsItsKeys() void {
     _ = tables.put(t, wrap.fromBuffer(b4), wrapInteger(4));
 
     var slot = [_]repr.Value{wrap.fromTable(t)};
-    const wdn = formatted("%w", slot[0..]) catch @panic("raised");
+    const source = formatted("%w", slot[0..]) catch @panic("raised");
 
     // The same order the pretty printer produces. That agreement is the
     // assertion and the order itself is not: two buffers order by address, so
@@ -360,14 +360,14 @@ fn theJdnWriterSortsItsKeys() void {
     // between platforms. What must not differ is that `%w` and `%q` give one
     // order rather than two that happen to agree here.
     const pretty = formatted("%q", slot[0..]) catch @panic("raised");
-    expect(std.mem.eql(u8, bytes(wdn), bytes(pretty)));
+    expect(std.mem.eql(u8, bytes(source), bytes(pretty)));
 
     // And it survives the storage order changing under it, which is the whole
     // of what "reproducible" means: rehashing moves every entry to a new
     // bucket and `%w` renders the same bytes.
     var before: [128]u8 = undefined;
-    const before_len = bytes(wdn).len;
-    @memcpy(before[0..before_len], bytes(wdn));
+    const before_len = bytes(source).len;
+    @memcpy(before[0..before_len], bytes(source));
     for (0..64) |i| {
         const filler = buffers.new(1);
         buffers.pushCstringAbi(filler, "z");
