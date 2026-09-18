@@ -117,6 +117,7 @@ const contracts: []const Contract = blk: {
     list = with(list, "compiler_primitives", @import("compiler_primitives.zig"));
     list = with(list, "specials_core", @import("specials_core.zig"));
     list = with(list, "parser_core", @import("parser_core.zig"));
+    list = with(list, "parser_wattle", @import("parser_wattle.zig"));
     list = with(list, "gc_alloc", @import("gc_alloc.zig"));
     list = with(list, "gc_mark", @import("gc_mark.zig"));
     list = with(list, "gc_sweep", @import("gc_sweep.zig"));

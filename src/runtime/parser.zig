@@ -47,6 +47,7 @@ const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
+const vectors = @import("value/vectors.zig");
 const wrap = @import("value/helpers/wrap.zig");
 
 // ==========================================================================
@@ -108,6 +109,23 @@ const state_getters = [_]StateGetter{
 /// this declaration needs nothing above `repr` in the module graph.
 pub const Consumer = *const fn (p: *Parser, state: *ParseState, c: u8) error{JanetSignal}!bool;
 
+/// Which language's syntax a parser reads.
+///
+/// The two share this file: the token scanner, the escapes, the reindentation,
+/// the state stack, the `parser/*` methods and the error fields are one
+/// implementation, and what differs is which states the root consumer pushes
+/// and what each of them closes to. A consumer is a function pointer in
+/// `ParseState`, so the dialect is read where a state is pushed and never per
+/// byte.
+///
+/// Nothing a program can write selects one. `parser/new` takes no dialect and
+/// `module/paths` has no Wattle entry: `wattle` is reachable from the
+/// converter and from the contracts until it replaces `janet` outright.
+pub const Dialect = enum(u8) {
+    janet,
+    wattle,
+};
+
 /// One frame of the state stack: the consumer reading this form, where the
 /// form opened, and two counters whose meaning is the consumer's. A container
 /// counts its elements in `argn`, a long string counts its opening backticks
@@ -142,10 +160,14 @@ pub const ParseStateFlags = packed struct(c_int) {
     at_symbol: bool = false,
     comment: bool = false,
     token: bool = false,
-    _reserved19: u1 = 0,
+    /// A `[ ]` container that closes to a vector, which is Wattle's. Janet's
+    /// `[ ]` closes to a bracketed tuple and leaves this clear.
+    vector: bool = false,
+    /// Wattle's `#`, waiting for the character that says what it opens.
+    dispatch: bool = false,
     in_string: bool = false,
     end_candidate: bool = false,
-    _reserved22: u10 = 0,
+    _reserved23: u9 = 0,
 };
 
 /// A parser: the queue of finished values, the stack of states, the scratch
@@ -165,6 +187,9 @@ pub const Parser = struct {
     /// as one question: either sets `:dead`.
     dead: bool = false,
     generated_error: bool = false,
+    /// Set once by `parserInitDialect` and never changed: a parser reads one
+    /// language for its whole life.
+    dialect: Dialect = .janet,
 };
 
 /// What `parser/status` reports, and the whole of what a parser can be in.
@@ -286,6 +311,7 @@ pub fn parserClone(source: *const Parser, destination: *Parser) void {
         .lookback = source.lookback,
         .dead = source.dead,
         .generated_error = source.generated_error,
+        .dialect = source.dialect,
     };
     // Count-many, not capacity-many: each of the three allocations is sized to
     // the count it then copies, so a clone has none of the source's spare
@@ -331,6 +357,19 @@ fn unstorableKeyIn(parser: *Parser, state: *ParseState) ?[*:0]const u8 {
             "cannot use nan as a key";
     }
     return null;
+}
+
+/// Takes `state.argn` values off the queue into a vector, which is what
+/// Wattle's `[ ]` closes to.
+pub fn parserCloseVector(
+    parser: *Parser,
+    state: *ParseState,
+) repr.Value {
+    const count: usize = @intCast(state.argn);
+    const start = parser.args.items.len - count;
+    const built = vectors.fromSlice(parser.args.items[start..]);
+    parser.args.shrinkRetainingCapacity(start);
+    return wrap.fromVector(built);
 }
 
 /// Takes `state.argn` values off the queue as alternating keys and values,
@@ -456,8 +495,14 @@ pub fn parserHasMore(parser: *Parser) bool {
     return parser.pending != 0;
 }
 
-/// Starts a parser at line 1, column 0, with the root state on the stack.
+/// `parserInitDialect` reading Janet, which is what every caller but the
+/// contracts wants.
 pub fn parserInit(parser: *Parser) void {
+    parserInitDialect(parser, .janet);
+}
+
+/// Starts a parser at line 1, column 0, with the root state on the stack.
+pub fn parserInitDialect(parser: *Parser, dialect: Dialect) void {
     parser.* = .{
         .args = .empty,
         .@"error" = null,
@@ -467,6 +512,7 @@ pub fn parserInit(parser: *Parser) void {
         .column = 0,
         .pending = 0,
         .lookback = -1,
+        .dialect = dialect,
     };
     // `Precise` because a fresh parser has just the root state, and the second
     // slot is room for one push before the first grow.
@@ -477,7 +523,7 @@ pub fn parserInit(parser: *Parser) void {
         .flags = .{ .container = true },
         .line = parser.line,
         .column = parser.column,
-        .consumer = parserRoot,
+        .consumer = rootConsumer(dialect),
     });
 }
 
@@ -505,6 +551,7 @@ pub fn parserPopState(parser: *Parser, original_value: repr.Value) void {
         }
         if (new_top.flags.reader_macro) {
             val = wrapReader(
+                parser.dialect,
                 val,
                 new_top.flags.macro_char,
                 new_top.line,
@@ -558,6 +605,269 @@ pub fn parserPushState(
         .column = parser.column,
         .consumer = consumer,
     }) catch fatal.outOfMemory();
+}
+
+/// The consumer `parserInitDialect` starts a parser's root state with.
+fn rootConsumer(dialect: Dialect) Consumer {
+    return switch (dialect) {
+        .janet => parserRoot,
+        .wattle => wattleRoot,
+    };
+}
+
+/// Wattle's consumer between forms.
+///
+/// The shape is `parserRoot`'s and the characters are not: `;` comments where
+/// `#` did, `#` dispatches, `` ` `` quasiquotes where it opened a long string,
+/// `~` unquotes where it quasiquoted, `|` splices where it made a short
+/// function, `!` opens a mutable container where `@` did, and `,` is
+/// whitespace. `@` and `^` are refused rather than read as a symbol.
+pub fn wattleRoot(
+    parser: *Parser,
+    state: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    // A prefix and its form are one unit, and the newline is what ends the
+    // line rather than what ends the buffer, so a chunk boundary may still
+    // fall between them. Without this a line ending in `'` leaves the parser
+    // pending and silent, and `parser/state`'s `:delimiters` does not report a
+    // pending prefix, so the next form read is taken as its argument.
+    if (state.flags.reader_macro and (character == '\n' or character == '\r')) {
+        try adjacencyError(parser, state);
+        return true;
+    }
+    switch (character) {
+        '\'', '`', '~', '|' => {
+            parserPushState(parser, wattleRoot, .{ .reader_macro = true, .macro_char = character });
+            return true;
+        },
+        '"' => {
+            parserPushState(parser, wattleQuoteRun, .{ .string = true });
+            return true;
+        },
+        ';' => {
+            parserPushState(parser, wattleComment, .{ .comment = true });
+            return true;
+        },
+        '#' => {
+            parserPushState(parser, wattleDispatch, .{ .dispatch = true });
+            return true;
+        },
+        '!' => {
+            parserPushState(parser, wattleBang, .{ .at_symbol = true });
+            return true;
+        },
+        // Held free for a reader meaning not yet chosen. Inside a symbol each
+        // is an ordinary character, which `parserTokenchar` decides; only a
+        // form beginning with one reaches here.
+        '@' => {
+            parser.@"error" = "@ is reserved";
+            return true;
+        },
+        '^' => {
+            parser.@"error" = "^ is reserved";
+            return true;
+        },
+        ')', ']', '}' => return closeDelimiter(parser, state, character),
+        '(' => {
+            parserPushState(parser, wattleRoot, .{ .container = true, .parens = true });
+            return true;
+        },
+        '[' => {
+            parserPushState(parser, wattleRoot, .{ .container = true, .square_brackets = true, .vector = true });
+            return true;
+        },
+        '{' => {
+            parserPushState(parser, wattleRoot, .{ .container = true, .curly_brackets = true });
+            return true;
+        },
+        else => {
+            if (character == ',' or isWhitespace(character)) return true;
+            if (!numscan.isSymbolChar(character)) {
+                parser.@"error" = "unexpected character";
+                return true;
+            }
+            parserPushState(parser, parserTokenchar, .{ .token = true });
+            return false;
+        },
+    }
+}
+
+/// `parserComment` for Wattle, which hands the newline back rather than
+/// consuming it.
+///
+/// A comment does not excuse the newline that ends it: `'; note` leaves a
+/// quote pending, and the newline has to reach the quote's state for
+/// `wattleRoot` to refuse it. At the root the re-fed newline is whitespace,
+/// which is what it would have been anyway.
+fn wattleComment(
+    parser: *Parser,
+    _: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    if (character != '\n') {
+        parserPushBuf(parser, character);
+        return true;
+    }
+    _ = parser.states.pop();
+    parser.buf.clearRetainingCapacity();
+    return false;
+}
+
+/// The refusal a prefix earns when its form does not begin on the same line,
+/// naming the prefix and where it was written.
+fn adjacencyError(parser: *Parser, state: *ParseState) raise.Error!void {
+    const text = buffers.new(40);
+    try buffers.pushCString(text, "expected a form on the same line as ");
+    try buffers.pushU8(text, state.flags.macro_char);
+    _ = try pp_format.formatb(text, ", opened at line %d, column %d", .{
+        @as(i32, @intCast(state.line)),
+        @as(i32, @intCast(state.column)),
+    });
+    parser.@"error" = @ptrCast(strings.new(text.slice()));
+    parser.generated_error = true;
+}
+
+/// The consumer after a `!`: a mutable container or a buffer where the next
+/// character opens one, and the first character of a symbol otherwise.
+///
+/// `parserAtsign`'s shape. The difference is the string arm: Wattle has one
+/// string opener and classifies it by the length of its run, so `!"` and
+/// `!"""` are one state here where Janet's `@"` and `` @` `` are two.
+fn wattleBang(
+    parser: *Parser,
+    _: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    _ = parser.states.pop();
+    switch (character) {
+        '{' => parserPushState(parser, wattleRoot, .{ .container = true, .curly_brackets = true, .at_symbol = true }),
+        '"' => parserPushState(parser, wattleQuoteRun, .{ .buffer = true, .string = true }),
+        '[' => parserPushState(parser, wattleRoot, .{ .container = true, .square_brackets = true, .at_symbol = true }),
+        '(' => parserPushState(parser, wattleRoot, .{ .container = true, .parens = true, .at_symbol = true }),
+        else => {
+            parserPushState(parser, parserTokenchar, .{ .token = true });
+            parserPushBuf(parser, '!');
+            return false;
+        },
+    }
+    return true;
+}
+
+/// The consumer after a `#`.
+///
+/// `#(` is a short function and `#!` at the first byte of a source is the
+/// shebang. `#{` and a word tag are refused by name rather than by silence:
+/// a set literal waits on the compiler arm that would evaluate its elements,
+/// and a word tag on the `core/tagged` value it reads as. Anything else is
+/// not a dispatch character at all.
+fn wattleDispatch(
+    parser: *Parser,
+    state: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    // Line 1, column 1 is the first byte of the source: `parserInitDialect`
+    // starts at column 0 and `parserConsume` counts before it dispatches. A
+    // chunk boundary cannot fall before byte zero, so this holds however the
+    // source is fed.
+    if (character == '!' and state.line == 1 and state.column == 1) {
+        _ = parser.states.pop();
+        parserPushState(parser, wattleComment, .{ .comment = true });
+        return true;
+    }
+    _ = parser.states.pop();
+    switch (character) {
+        '(' => {
+            parserPushState(parser, wattleRoot, .{ .reader_macro = true, .macro_char = '#' });
+            parserPushState(parser, wattleRoot, .{ .container = true, .parens = true });
+            return true;
+        },
+        '{' => {
+            parser.@"error" = "set literals are not implemented";
+            return true;
+        },
+        else => {
+            if (numscan.isSymbolChar(character)) {
+                parser.@"error" = "tagged literals are not implemented";
+                return true;
+            }
+            parser.@"error" = "unknown dispatch";
+            return true;
+        },
+    }
+}
+
+/// The consumer at a run of `"`, which is scanned whole before it is
+/// classified.
+///
+/// One quote opens an ordinary string, two are the empty string, and three or
+/// more open a raw string closed by a run of the same length. The run is
+/// counted in `state.argn`, as `parserLongstring` counts its backticks, and
+/// the character that ends the run is handed back to whichever consumer the
+/// count chose.
+fn wattleQuoteRun(
+    parser: *Parser,
+    state: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    if (character == '"') {
+        state.argn += 1;
+        return true;
+    }
+    // `argn` counts the quotes after the one that pushed this state.
+    switch (state.argn) {
+        0 => {
+            state.consumer = wattleStringchar;
+            return false;
+        },
+        1 => {
+            state.argn = 0;
+            _ = try finishString(parser, state);
+            return false;
+        },
+        else => {
+            // `string` and `long_string` are exclusive, as they are in Janet:
+            // `delimError` tests `string` first, so a state carrying both
+            // would name a raw string as an ordinary one. `buffer` stays.
+            state.flags.string = false;
+            state.flags.long_string = true;
+            state.flags.in_string = true;
+            state.argn += 1;
+            state.consumer = wattleLongstring;
+            return false;
+        },
+    }
+}
+
+/// `parserStringchar` for Wattle, which refuses the newline Janet drops.
+///
+/// An ordinary string is one line: `"""` is how a string spans lines, so
+/// nothing is left for the quiet behaviour to serve.
+fn wattleStringchar(
+    parser: *Parser,
+    state: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    if (character == '\\') {
+        state.consumer = parserEscape1;
+    } else if (character == '"') {
+        return try finishString(parser, state);
+    } else if (character == '\n' or character == '\r') {
+        parser.@"error" = "newline in string";
+        return true;
+    } else {
+        parserPushBuf(parser, character);
+    }
+    return true;
+}
+
+/// `longstringImpl` closed by a run of `"`.
+fn wattleLongstring(
+    parser: *Parser,
+    state: *ParseState,
+    character: u8,
+) raise.Error!bool {
+    return longstringImpl('"', parser, state, character);
 }
 
 /// The consumer between forms: whitespace is skipped, a delimiter opens or
@@ -931,6 +1241,8 @@ fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Erro
     {
         val = if (state.flags.at_symbol)
             parserCloseArray(parser, state)
+        else if (state.flags.vector)
+            parserCloseVector(parser, state)
         else
             parserCloseTuple(
                 parser,
@@ -988,8 +1300,14 @@ fn delimError(
         } else if (state.flags.string) {
             try buffers.pushU8(text, '"');
         } else if (state.flags.long_string) {
+            // The run that opened it, in the delimiter that opened it: Janet
+            // counts backticks and Wattle counts quotes.
+            const opener: u8 = switch (parser.dialect) {
+                .janet => '`',
+                .wattle => '"',
+            };
             const ticks: usize = @intCast(state.argn);
-            for (0..ticks) |_| try buffers.pushU8(text, '`');
+            for (0..ticks) |_| try buffers.pushU8(text, opener);
         }
         _ = try pp_format.formatb(text, " opened at line %d, column %d", .{ @as(i32, @intCast(state.line)), @as(i32, @intCast(state.column)) });
     }
@@ -1198,16 +1516,29 @@ fn parserGet(_: *Parser, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&methods));
 }
 
-/// The consumer inside a backtick string. The opening run of backticks is
-/// counted first and the string ends at a run of the same length; a shorter
-/// run is text.
+/// The consumer inside a backtick string, which is Janet's raw string.
 fn parserLongstring(
     parser: *Parser,
     state: *ParseState,
     character: u8,
 ) raise.Error!bool {
+    return longstringImpl('`', parser, state, character);
+}
+
+/// The consumer inside a raw string, closed by a run of `delimiter` as long as
+/// the run that opened it; a shorter run is text.
+///
+/// `state.argn` is that length and `state.counter` is how much of a candidate
+/// closing run has been read. Janet opens one with a run of `` ` `` and Wattle
+/// with a run of `"`, and the delimiter is the whole of the difference.
+fn longstringImpl(
+    comptime delimiter: u8,
+    parser: *Parser,
+    state: *ParseState,
+    character: u8,
+) raise.Error!bool {
     if (state.flags.in_string) {
-        if (character == '`') {
+        if (character == delimiter) {
             state.flags.end_candidate = true;
             state.flags.in_string = false;
             state.counter = 1;
@@ -1221,12 +1552,12 @@ fn parserLongstring(
             _ = try finishString(parser, state);
             return false;
         }
-        if (character == '`' and state.counter < state.argn) {
+        if (character == delimiter and state.counter < state.argn) {
             state.counter += 1;
             return true;
         }
         const ticks: usize = @intCast(state.counter);
-        for (0..ticks) |_| parserPushBuf(parser, '`');
+        for (0..ticks) |_| parserPushBuf(parser, delimiter);
         parserPushBuf(parser, character);
         state.counter = 0;
         state.flags.end_candidate = false;
@@ -1235,7 +1566,7 @@ fn parserLongstring(
     }
 
     state.argn += 1;
-    if (character != '`') {
+    if (character != delimiter) {
         state.flags.in_string = true;
         parserPushBuf(parser, character);
     }
@@ -1372,7 +1703,7 @@ fn wrapParseState(
     }
 
     const type_name: [*:0]const u8 = if (state.flags.parens or state.flags.square_brackets)
-        (if (state.flags.at_symbol) "array" else "tuple")
+        (if (state.flags.at_symbol) "array" else if (state.flags.vector) "vector" else "tuple")
     else if (state.flags.curly_brackets)
         (if (state.flags.at_symbol) "table" else "map")
     else if (state.flags.string or state.flags.long_string) blk: {
@@ -1384,7 +1715,9 @@ fn wrapParseState(
     } else if (state.flags.token) blk: {
         add_buffer = true;
         break :blk "token";
-    } else if (state.flags.at_symbol)
+    } else if (state.flags.dispatch)
+        "dispatch"
+    else if (state.flags.at_symbol)
         "at"
     else if (state.flags.reader_macro) switch (state.flags.macro_char) {
         '\'' => "quote",
@@ -1404,16 +1737,29 @@ fn wrapParseState(
 }
 
 /// Builds the two-element form a reader macro expands to, such as `(quote x)`
-/// for `'x`.
-fn wrapReader(original_value: repr.Value, character: c_int, line: usize, column: usize) repr.Value {
+/// for `'x` in either dialect.
+fn wrapReader(dialect: Dialect, original_value: repr.Value, character: c_int, line: usize, column: usize) repr.Value {
     const tuple = tuples.begin(2);
-    const name: [*:0]const u8 = switch (character) {
-        '\'' => "quote",
-        ',' => "unquote",
-        ';' => "splice",
-        '|' => "short-fn",
-        '~' => "quasiquote",
-        else => "<unknown>",
+    // The dialect is needed, not just the character: `~` quasiquotes in Janet
+    // and unquotes in Wattle, and `|` makes a short function in Janet and
+    // splices in Wattle.
+    const name: [*:0]const u8 = switch (dialect) {
+        .janet => switch (character) {
+            '\'' => "quote",
+            ',' => "unquote",
+            ';' => "splice",
+            '|' => "short-fn",
+            '~' => "quasiquote",
+            else => "<unknown>",
+        },
+        .wattle => switch (character) {
+            '\'' => "quote",
+            '~' => "unquote",
+            '|' => "splice",
+            '#' => "short-fn",
+            '`' => "quasiquote",
+            else => "<unknown>",
+        },
     };
     tuple[0] = wrap.fromSymbol(symbols.csymbol(name));
     tuple[1] = original_value;
