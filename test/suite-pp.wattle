@@ -198,6 +198,37 @@
 (assert (= "abc" (string/format "%w" (symbol "abc"))) "an ordinary symbol has one")
 (assert (= ":1abc" (string/format "%w" (keyword "1abc"))) "and a keyword may begin with a digit")
 
+; A set prints as its literal, `#{...}`, under both the writer and the pretty
+; printer. Before this it had no wdn form at all -- the writer refused it --
+; and the pretty printer showed the generic abstract form, `<core/set 1 3 2>`,
+; so a set was the one value the parser could read and nothing could write.
+;
+; The elements are in the tree's order and are deliberately not sorted: that
+; order is a function of the values, not of the order they arrived in, which
+; the two assertions on equal sets built oppositely are here to hold.
+(check-wdn (hash-set))
+(check-wdn (hash-set 1))
+(check-wdn (hash-set 1 2 3))
+(check-wdn (hash-set :a "b" 3 4.5 true))
+(check-wdn (hash-set (hash-set 1) (hash-set 2)))
+(check-wdn (hash-set [1 2] {:a 1}))
+(check-wdn [1 (hash-set 2 3) 4])
+(check-wdn {:k (hash-set 1 2)})
+(assert (= "#{}" (string/format "%w" (hash-set))) "an empty set writes as one")
+(assert (= (string/format "%w" (hash-set 1 2 3))
+           (string/format "%w" (hash-set 3 2 1)))
+        "two equal sets write the same bytes")
+(assert (= (string/format "%p" (hash-set :a :b :c :d))
+           (string/format "%p" (hash-set :d :c :b :a)))
+        "and print the same, without a sort")
+(assert (= "#{1 3 2}" (string/format "%p" (hash-set 1 2 3))) "a set pretty-prints as its literal")
+(assert-error "could not print to wdn format" (string/format "%w" (hash-set print)))
+(assert-error "could not print to wdn format" (string/format "%.2w" (hash-set (hash-set 1))))
+(assert (= "#{#{1}}" (string/format "%.3w" (hash-set (hash-set 1))))
+        "and a depth that reaches the element prints it")
+(assert (string/find "..." (string/format "%.2p" (hash-set (hash-set 1))))
+        "the pretty printer elides past its depth rather than refusing")
+
 ; `%p` breaks lines and elides a long dictionary; both are defaults rather
 ; than something the caller asks for.
 (do

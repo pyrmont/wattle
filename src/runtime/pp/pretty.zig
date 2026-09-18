@@ -38,6 +38,7 @@ const buffers = @import("../value/buffers.zig");
 const describe = @import("../pp.zig");
 const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
+const maps = @import("../value/maps.zig");
 const numscan = @import("../scan.zig");
 const order = @import("../value/helpers/order.zig");
 const raise = @import("../../api/raise.zig");
@@ -534,7 +535,30 @@ fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             if (try printWdnKvs(S, pairs.view.kvs.?[0..pairs.view.cap], depth)) return true;
             try S.pushByte('}');
         },
-        else => return true,
+        // A set is an abstract -- all sixteen tags are spoken for -- so it is
+        // recognised by its type pointer, the way the vector was before it had
+        // a tag of its own. `toTree` answers null for every other abstract and
+        // every other type, which is the refusal this arm replaced.
+        //
+        // The elements need no sort. A tree's order is a function of the
+        // values in it and not of the order they arrived in, so two equal sets
+        // write the same bytes without one. `printWdnKvs` sorts because it
+        // also serves a table, whose layout does depend on insertion.
+        //
+        // No cycle marking either: a set is persistent and cannot contain
+        // itself, as the map, vector and tuple arms above also rely on.
+        else => {
+            const t = maps.toTree(x, .set) orelse return true;
+            try S.pushCstring("#{");
+            var first = true;
+            var element = maps.nextElement(t, wrap.fromNil());
+            while (!repr.checkType(element, repr.Tag.nil)) : (element = maps.nextElement(t, element)) {
+                try if (!first) S.pushByte(' ');
+                first = false;
+                if (try printWdnOne(S, element, depth - 1)) return true;
+            }
+            try S.pushByte('}');
+        },
     }
     return false;
 }
@@ -762,10 +786,56 @@ fn prettyOne(S: *Pretty, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.array, repr.Tag.tuple, repr.Tag.vector => try prettyIndexed(S, x),
         repr.Tag.map, repr.Tag.table => try prettyDictionary(S, x),
-        else => try prettyLeaf(S, x),
+        // A set is an abstract, so it reaches here rather than having a tag to
+        // switch on, and without this arm it printed as `<core/set 1 3 2>` --
+        // the generic abstract form, through its `tostring`. It is a
+        // collection with a literal, so it prints as one.
+        else => if (maps.toTree(x, .set)) |t| try prettySet(S, t) else try prettyLeaf(S, x),
     }
 
     _ = tables.remove(&S.seen, x);
+}
+
+/// Renders a set as `#{...}`, the third collection shape beside
+/// `prettyIndexed` and `prettyDictionary`.
+///
+/// Those two index a contiguous slice; a set is a tree with no such slice, and
+/// gathering one would allocate. `count` gives the length up front, so one
+/// forward walk does the same truncation by comparing the running index
+/// against it, and nothing is allocated.
+///
+/// The elements are in the tree's order, which is a function of the values and
+/// not of the order they arrived in, so two equal sets print alike without a
+/// sort. `prettyDictionary` sorts because it also serves a table.
+fn prettySet(S: *Pretty, t: *maps.Tree) raise.Error!void {
+    try S.pushCstring("#{");
+    S.align_col += 2;
+    const align_col = S.align_col;
+    S.leaf_align = align_col;
+
+    S.depth -= 1;
+    if (S.depth == 0) {
+        try pushEllipsis(S);
+    } else {
+        // `array_limit` is 160, so taking three off the end cannot underflow.
+        const truncating = t.count > array_limit and !S.flags.notrunc;
+        var i: usize = 0;
+        var element = maps.nextElement(t, wrap.fromNil());
+        while (!repr.checkType(element, repr.Tag.nil)) : (element = maps.nextElement(t, element)) {
+            defer i += 1;
+            if (truncating and i == 3) {
+                try printNewline(S, align_col);
+                try pushEllipsis(S);
+            }
+            if (truncating and i >= 3 and i < t.count - 3) continue;
+            try if (i != 0) printNewline(S, align_col);
+            try prettyOne(S, element);
+        }
+    }
+    S.depth += 1;
+
+    try S.pushByte('}');
+    S.align_col += 1;
 }
 
 /// Renders the `_name` a prototype may define, which is what makes an
