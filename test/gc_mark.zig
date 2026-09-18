@@ -435,11 +435,11 @@ fn anAbstractWithoutAGcmark() void {
 /// A leaf marks every element, the last slot included, since a leaf does not
 /// record how many of its slots are in use.
 fn aVectorLeafMarksItsElements() void {
-    const leaf = vectors.newLeaf();
+    const leaf = vectors.newLeaf(vectors.width);
     const first = value.fromBytes("first leaf element", .string);
     const last = value.fromBytes("last leaf element", .string);
-    leaf.items[0] = first;
-    leaf.items[vectors.width - 1] = last;
+    vectors.items(leaf)[0] = first;
+    vectors.items(leaf)[vectors.width - 1] = last;
 
     unmark(leaf);
     unmarkValue(first);
@@ -457,10 +457,10 @@ fn aVectorLeafMarksItsElements() void {
 fn aVectorInnerNodeMarksItsChildren() void {
     const root = vectors.newInner();
     const middle = vectors.newInner();
-    const near = vectors.newLeaf();
-    const far = vectors.newLeaf();
+    const near = vectors.newLeaf(vectors.width);
+    const far = vectors.newLeaf(vectors.width);
     const element = value.fromBytes("under two inner nodes", .string);
-    far.items[0] = element;
+    vectors.items(far)[0] = element;
     root.children[0] = &near.gc;
     root.children[1] = &middle.gc;
     middle.children[vectors.width - 1] = &far.gc;
@@ -484,9 +484,9 @@ fn aVectorInnerNodeMarksItsChildren() void {
 /// after the shared leaf is marked through one parent, so marking the other
 /// parent leaves the element unmarked only if the walk stopped at the leaf.
 fn aSharedNodeIsWalkedOnce() void {
-    const leaf = vectors.newLeaf();
+    const leaf = vectors.newLeaf(vectors.width);
     const element = value.fromBytes("in a shared leaf", .string);
-    leaf.items[0] = element;
+    vectors.items(leaf)[0] = element;
     const a = vectors.newInner();
     const b = vectors.newInner();
     a.children[0] = &leaf.gc;
@@ -592,9 +592,9 @@ fn aNewTreeNodeMarksAsEmpty() void {
 /// the most a vector has, is marked to its element with a budget of one, and
 /// nothing is rooted.
 fn nodesDoNotSpendTheGuard() void {
-    const leaf = vectors.newLeaf();
+    const leaf = vectors.newLeaf(vectors.width);
     const element = value.fromBytes("seven levels down", .string);
-    leaf.items[0] = element;
+    vectors.items(leaf)[0] = element;
     unmark(leaf);
     unmarkValue(element);
 

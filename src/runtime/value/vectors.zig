@@ -9,8 +9,9 @@
 //!
 //! A vector's nodes are collector blocks of their own memory types. An
 //! _inner node_ is a `vector_inner` block and has 32 child pointers. A _leaf_
-//! is a `vector_leaf` block and has 32 elements. `newInner` and `newLeaf`
-//! allocate them. `gc/mark.zig`'s `markNode` marks a node and everything under
+//! is a `vector_leaf` block and has one to 32 elements, as many as its
+//! `capacityOf` says, which follow the header in the same block. `newInner` and
+//! `newLeaf` allocate them, and `items` gives a leaf's elements. `gc/mark.zig`'s `markNode` marks a node and everything under
 //! it, and `gc/sweep.zig` frees an unreachable node with no finalizer. A
 //! `vector` block owns nothing outside itself either.
 //!
@@ -18,7 +19,12 @@
 //!
 //! The last one to 32 elements are in the _tail_, a leaf the payload points at
 //! directly. The rest are in the trie under `root`, in full leaves. While a
-//! vector has 32 elements or fewer, `root` is null. When the trie has one
+//! vector has 32 elements or fewer, `root` is null.
+//!
+//! A leaf in the trie is always 32 elements; only the tail is ever shorter.
+//! The tail is allocated at the capacity it needs and doubles as it fills, so
+//! a vector of two elements is a block of two rather than of 32, and a tail
+//! reaching 32 is full when it is grafted into the trie. When the trie has one
 //! leaf, `root` is that leaf and `shift` is zero. Otherwise `root` is an inner
 //! node, and `shift` is the bit position the root's child index is read from.
 //!
@@ -31,13 +37,17 @@
 //!
 //! - Every slot of a node holds a valid entry from allocation onwards. An
 //!   unused child is null and an unused element is nil. The mark phase reads
-//!   all 32 slots, because a node does not record how many are in use.
+//!   every slot a node has, because a node records how many it has room for
+//!   and not how many are in use: how many of a tail's elements a vector is
+//!   using follows from the vector's `count`.
 //!
 //! - A node is not changed once a vector refers to it. An update copies the
 //!   path from the root to the element it changes, so the old vector and the
 //!   new one share every other node. Two updates change nodes in place: a
 //!   transient's, on the nodes it made, and building a vector from a slice,
-//!   on nodes no vector refers to yet.
+//!   on nodes no vector refers to yet. A full tail is the one node neither
+//!   can change in place, since a block cannot grow where it lies: it is
+//!   copied into one of twice the capacity.
 //!
 //! ## Updating a vector in place
 //!
@@ -48,7 +58,9 @@
 //! - A transient update sets `own_editable` on every node it makes, and
 //!   changes a node in place only where the bit is set. A node a transient
 //!   made is reachable from that transient and from nothing else, because a
-//!   transient is made only from a vector and `persistent!` ends it.
+//!   transient is made only from a vector and `persistent!` ends it. A tail
+//!   the transient made is still copied where it is full, and the copy keeps
+//!   the bit.
 //!
 //! - An update makes the whole path from the root editable, so every editable
 //!   node's parent is editable. `persistent` clears the bits by walking down
@@ -121,6 +133,13 @@ const mask: usize = width - 1;
 /// and may change it in place.
 pub const own_editable: u6 = 1;
 
+/// Bits 1 to 3 of a leaf's collector header: the base-two logarithm of how
+/// many elements it has room for. `capacityOf` reads them and `newLeaf` writes
+/// them, and nothing else touches them, so `clearEditable` clearing bit 0
+/// leaves them alone.
+const own_capacity_shift: u3 = 1;
+const own_capacity_mask: u6 = 0b1110;
+
 /// The number of slots in a node.
 pub const width = 1 << bits;
 
@@ -153,13 +172,24 @@ pub const Inner = extern struct {
     children: [width]?*abi.GCObject = @splat(null),
 };
 
-/// A vector's leaf: the collector's object and 32 elements.
+/// A vector's leaf: the collector's object and its elements.
 ///
-/// `newLeaf` returns a `Leaf`. `items` holds the elements, with nil in each
-/// unused slot.
+/// `newLeaf` returns a `Leaf` and `items` gives its elements, which follow the
+/// header in the same block. `capacityOf` is how many there is room for, a
+/// power of two from one to `width`, and every one of them holds a valid
+/// entry, with nil in each unused slot. A leaf in the trie is always `width`
+/// long; only a tail is ever shorter, and it doubles as it fills.
+///
+/// The capacity is three bits of the collector header rather than a field of
+/// its own, because a field costs eight bytes: `GCObject` is sixteen bytes and
+/// the elements are eight-byte aligned, so a `u32` and its padding move them
+/// from offset sixteen to twenty-four. Those eight bytes are most of what a
+/// short tail saves, and they made a full leaf larger than it had been, which
+/// measured as a five percent regression on building a vector of `width`
+/// elements. The header had five bits spare beside `own_editable`.
 pub const Leaf = extern struct {
     gc: abi.GCObject = .{},
-    items: [width]repr.Value,
+    _items: [0]repr.Value = .{},
 };
 
 /// How an update treats the nodes on the path it changes.
@@ -209,8 +239,8 @@ pub fn assoc(src: *const Vector, index: usize, x: repr.Value) *Vector {
 pub fn at(v: *const Vector, index: usize) repr.Value {
     std.debug.assert(index < v.count);
     const offset = tailOffset(v);
-    if (index >= offset) return v.tail.?.items[index - offset];
-    return leafFor(v, index).items[index & mask];
+    if (index >= offset) return elements(v.tail.?)[index - offset];
+    return elements(leafFor(v, index))[index & mask];
 }
 
 /// Refuses a key-value list with a key and no value.
@@ -232,8 +262,8 @@ pub fn checkPairs(argv: []const repr.Value) raise.Error!void {
 pub fn chunk(v: *const Vector, index: usize) abi.Chunk {
     std.debug.assert(index < v.count);
     const offset = tailOffset(v);
-    if (index >= offset) return .{ .items = &v.tail.?.items, .len = v.count - offset, .start = offset };
-    return .{ .items = &leafFor(v, index).items, .len = width, .start = index & ~mask };
+    if (index >= offset) return .{ .items = elements(v.tail.?), .len = v.count - offset, .start = offset };
+    return .{ .items = elements(leafFor(v, index)), .len = width, .start = index & ~mask };
 }
 
 /// Returns a new vector equal to `src` with `x` appended.
@@ -282,12 +312,12 @@ pub fn fromSlice(xs: []const repr.Value) *Vector {
     const trie_len = ((n - 1) >> bits) << bits;
     var start: usize = 0;
     while (start < trie_len) : (start += width) {
-        const leaf = newLeaf();
-        leaf.items = xs[start..][0..width].*;
+        const leaf = allocLeaf(width);
+        fillLeaf(leaf, xs[start..][0..width]);
         pushLeaf(v, leaf, start + width, .fresh);
     }
-    const tail = newLeaf();
-    @memcpy(tail.items[0 .. n - trie_len], xs[trie_len..]);
+    const tail = allocLeaf(capacityFor(n - trie_len));
+    fillLeaf(tail, xs[trie_len..]);
     v.tail = tail;
     v.count = n;
     for (xs, 0..) |x, index| v.sum +%= term(index, x);
@@ -347,6 +377,34 @@ pub fn mark(v: *const Vector) void {
     if (v.tail) |tail| gc_mark.markNode(&tail.gc);
 }
 
+/// Returns the elements of `leaf`, all `capacity` of them.
+///
+/// This function cannot raise. The run is the leaf's own storage, and every
+/// slot in it holds a valid entry. How many of them a vector is using is the
+/// vector's to say, from its `count`; the leaf does not record it.
+pub fn items(leaf: *Leaf) []repr.Value {
+    return elements(leaf)[0..capacityOf(leaf)];
+}
+
+/// Returns `leaf`'s elements without their bound.
+///
+/// This function cannot raise. It is for a reader that has already checked its
+/// index against the vector's `count`, which is the authority on how many of a
+/// tail's slots are in use; reading the capacity as well would be a second
+/// bound on a read that is already inside the first.
+pub inline fn elements(leaf: *const Leaf) [*]repr.Value {
+    return @ptrCast(@constCast(&leaf._items));
+}
+
+/// Returns how many elements `leaf` has room for, a power of two from one to
+/// `width`.
+///
+/// This function cannot raise.
+pub fn capacityOf(leaf: *const Leaf) u32 {
+    const exponent: u3 = @intCast((leaf.gc.flags.own & own_capacity_mask) >> own_capacity_shift);
+    return @as(u32, 1) << exponent;
+}
+
 /// Returns whether two vectors can be equal: whether their lengths and hashes
 /// are equal.
 ///
@@ -367,14 +425,15 @@ pub fn newInner() *Inner {
     return node;
 }
 
-/// Allocates a leaf with every element nil.
+/// Allocates a leaf of `capacity` elements, every one of them nil.
 ///
-/// This function cannot raise. The leaf is unreachable until the caller stores
-/// it where the mark phase finds it, so the next collection frees a leaf the
-/// caller has not stored.
-pub fn newLeaf() *Leaf {
-    const node = gc_alloc.gcalloc(Leaf, .vector_leaf);
-    node.items = @splat(wrap.fromNil());
+/// This function cannot raise. `capacity` must be a power of two from one to
+/// `width`. The leaf is unreachable until the caller stores it where the mark
+/// phase finds it, so the next collection frees a leaf the caller has not
+/// stored.
+pub fn newLeaf(capacity: u32) *Leaf {
+    const node = allocLeaf(capacity);
+    @memset(items(node), wrap.fromNil());
     return node;
 }
 
@@ -449,15 +508,53 @@ fn appendIn(v: *Vector, x: repr.Value, mode: Mode) void {
     const tail_count = v.count - tailOffset(v);
     if (tail_count == width) {
         pushLeaf(v, v.tail.?, v.count, mode);
-        v.tail = newLeafFor(mode);
+        v.tail = newLeafFor(1, mode);
     } else if (tail_count == 0) {
-        v.tail = newLeafFor(mode);
+        v.tail = newLeafFor(1, mode);
     } else {
-        v.tail = ownLeaf(v.tail.?, mode);
+        v.tail = growTail(v.tail.?, @intCast(tail_count), mode);
     }
-    v.tail.?.items[tail_count % width] = x;
+    elements(v.tail.?)[tail_count % width] = x;
     v.sum +%= term(v.count, x);
     v.count += 1;
+}
+
+/// The capacity a leaf holding `len` elements is given: `len` rounded up to a
+/// power of two, and at least one.
+///
+/// `len` must be from one to `width`, which is what a tail ever holds.
+fn capacityFor(len: usize) u32 {
+    std.debug.assert(len >= 1 and len <= width);
+    return @intCast(std.math.ceilPowerOfTwoAssert(usize, len));
+}
+
+/// Allocates a leaf of `capacity` elements without filling them.
+///
+/// `capacity` must be a power of two from one to `width`. The caller makes
+/// every slot valid before the leaf is stored where the mark phase can find
+/// it, which is what `newLeaf` does for a caller that has nothing to put in
+/// one yet. An unstored leaf is unreachable, so the collection an allocation
+/// in between could schedule never sees the slots the caller has not written.
+fn allocLeaf(capacity: u32) *Leaf {
+    std.debug.assert(capacity >= 1 and capacity <= width);
+    std.debug.assert(std.math.isPowerOfTwo(capacity));
+    const size = @offsetOf(Leaf, "_items") + @sizeOf(repr.Value) * capacity;
+    const node: *Leaf = @ptrCast(@alignCast(gc_alloc.gcallocBytes(.vector_leaf, size)));
+    const exponent: u6 = @intCast(std.math.log2_int(u32, capacity));
+    node.gc.flags.own = (node.gc.flags.own & ~own_capacity_mask) |
+        (exponent << own_capacity_shift);
+    return node;
+}
+
+/// Fills `leaf` with `xs` and nil in whatever room is left over.
+///
+/// `xs` is at most the leaf's capacity. This is the one place a leaf's slots
+/// become valid where `newLeaf` did not make them so, and it leaves none
+/// unwritten.
+fn fillLeaf(leaf: *Leaf, xs: []const repr.Value) void {
+    const slots = items(leaf);
+    @memcpy(slots[0..xs.len], xs);
+    @memset(slots[xs.len..], wrap.fromNil());
 }
 
 /// Casts a node header to the inner node it begins.
@@ -536,11 +633,33 @@ fn copyInner(node: *const Inner) *Inner {
     return copy;
 }
 
-/// Allocates a copy of a leaf.
-fn copyLeaf(node: *const Leaf) *Leaf {
-    const copy = newLeaf();
-    copy.items = node.items;
+/// Allocates a copy of a leaf, of `capacity` elements.
+///
+/// `capacity` is at least the leaf's own, so that a copy made to be appended
+/// to can be the larger block the append needs. The slots past the original's
+/// elements are the nil `newLeaf` left.
+fn copyLeaf(node: *Leaf, capacity: u32) *Leaf {
+    std.debug.assert(capacity >= capacityOf(node));
+    const copy = allocLeaf(capacity);
+    fillLeaf(copy, items(node));
     return copy;
+}
+
+/// Returns the tail an append may write at `len`, which is the number of
+/// elements it already holds.
+///
+/// A tail that is not full is `ownLeaf`'s answer, copied or not as `mode`
+/// says. A full one is copied into a block of twice the capacity whatever the
+/// mode, since a block cannot grow where it lies. Doubling from one reaches
+/// `width` exactly, so a tail grafted into the trie is always `width` long,
+/// and an append costs an amortised constant number of copied elements rather
+/// than the whole `width` every time.
+fn growTail(tail: *Leaf, len: u32, mode: Mode) *Leaf {
+    if (len < capacityOf(tail)) return ownLeaf(tail, mode);
+    std.debug.assert(len == capacityOf(tail) and capacityOf(tail) < width);
+    const grown = copyLeaf(tail, capacityOf(tail) * 2);
+    if (mode == .transient) grown.gc.flags.own |= own_editable;
+    return grown;
 }
 
 /// Whether `node` has `own_editable` set.
@@ -565,9 +684,10 @@ fn newInnerFor(mode: Mode) *Inner {
     return node;
 }
 
-/// Allocates a leaf, editable where `mode` is `transient`.
-fn newLeafFor(mode: Mode) *Leaf {
-    const node = newLeaf();
+/// Allocates a leaf of `capacity` elements, editable where `mode` is
+/// `transient`.
+fn newLeafFor(capacity: u32, mode: Mode) *Leaf {
+    const node = newLeaf(capacity);
     if (mode == .transient) node.gc.flags.own |= own_editable;
     return node;
 }
@@ -598,9 +718,9 @@ fn ownInner(node: *abi.GCObject, mode: Mode) *Inner {
 fn ownLeaf(node: *Leaf, mode: Mode) *Leaf {
     return switch (mode) {
         .fresh => node,
-        .persistent => copyLeaf(node),
+        .persistent => copyLeaf(node, capacityOf(node)),
         .transient => if (isEditable(&node.gc)) node else blk: {
-            const copy = copyLeaf(node);
+            const copy = copyLeaf(node, capacityOf(node));
             copy.gc.flags.own |= own_editable;
             break :blk copy;
         },
@@ -614,6 +734,7 @@ fn ownLeaf(node: *Leaf, mode: Mode) *Leaf {
 /// elements up to and including it. `mode` says whether an inner node on the
 /// path is copied before it changes.
 fn pushLeaf(v: *Vector, leaf: *Leaf, old_count: usize, mode: Mode) void {
+    std.debug.assert(capacityOf(leaf) == width);
     if (old_count == width) {
         v.root = &leaf.gc;
         return;
@@ -650,8 +771,8 @@ fn replaceIn(v: *Vector, index: usize, x: repr.Value, mode: Mode) void {
     var old: repr.Value = undefined;
     if (index >= offset) {
         const tail = ownLeaf(v.tail.?, mode);
-        old = tail.items[index - offset];
-        tail.items[index - offset] = x;
+        old = elements(tail)[index - offset];
+        elements(tail)[index - offset] = x;
         v.tail = tail;
     } else {
         // Each node on the path is replaced in its parent by the node an
@@ -667,8 +788,8 @@ fn replaceIn(v: *Vector, index: usize, x: repr.Value, mode: Mode) void {
             slot = &inner.children[child_index];
         }
         const leaf = ownLeaf(asLeaf(node), mode);
-        old = leaf.items[index & mask];
-        leaf.items[index & mask] = x;
+        old = elements(leaf)[index & mask];
+        elements(leaf)[index & mask] = x;
         slot.* = &leaf.gc;
     }
     v.sum = v.sum -% term(index, old) +% term(index, x);

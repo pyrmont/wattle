@@ -338,8 +338,8 @@ fn unreachableNodesAreFreed() void {
     const before = harness.vm().gc.block_count;
 
     const inner = vectors.newInner();
-    inner.children[0] = &vectors.newLeaf().gc;
-    inner.children[1] = &vectors.newLeaf().gc;
+    inner.children[0] = &vectors.newLeaf(vectors.width).gc;
+    inner.children[1] = &vectors.newLeaf(vectors.width).gc;
     expect(harness.vm().gc.block_count == before + 3);
 
     gc_mark.collect();
@@ -355,8 +355,8 @@ fn nodesSurviveThroughTheirHolder() void {
 
     const buffer = buffers.new(8);
     _ = buffers.pushCstringAbi(buffer, "in a leaf");
-    const leaf = vectors.newLeaf();
-    leaf.items[0] = wrap.fromBuffer(buffer);
+    const leaf = vectors.newLeaf(vectors.width);
+    vectors.items(leaf)[0] = wrap.fromBuffer(buffer);
     const inner = vectors.newInner();
     inner.children[0] = &leaf.gc;
     const val = holder(&inner.gc);
@@ -368,7 +368,7 @@ fn nodesSurviveThroughTheirHolder() void {
     expect(onList(harness.vm().gc.blocks, leaf));
     expect(!reachable(inner));
     expect(!reachable(leaf));
-    expect(wrap.toBuffer(leaf.items[0]) == buffer);
+    expect(wrap.toBuffer(vectors.items(leaf)[0]) == buffer);
     expect(std.mem.eql(u8, buffer.slice()[0..9], "in a leaf"));
 
     _ = gc_alloc.gcunroot(val);
@@ -384,8 +384,8 @@ fn aSharedNodeOutlivesOneHolder() void {
     const before = harness.vm().gc.block_count;
 
     const buffer = buffers.new(8);
-    const leaf = vectors.newLeaf();
-    leaf.items[0] = wrap.fromBuffer(buffer);
+    const leaf = vectors.newLeaf(vectors.width);
+    vectors.items(leaf)[0] = wrap.fromBuffer(buffer);
     const a = vectors.newInner();
     const b = vectors.newInner();
     a.children[0] = &leaf.gc;
@@ -675,7 +675,7 @@ fn repeatedCycles() void {
             wrap.fromAbstract(abstracts.newBytes(plain(), 8)),
         );
         const inner = vectors.newInner();
-        inner.children[0] = &vectors.newLeaf().gc;
+        inner.children[0] = &vectors.newLeaf(vectors.width).gc;
         tables.put(table, value.fromBytes("nodes", .keyword), holder(&inner.gc));
         const tree = maps.newInner(.set, 1);
         maps.children(tree)[0] = &maps.newLeaf(.set, 2).gc;

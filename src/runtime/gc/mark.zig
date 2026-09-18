@@ -520,7 +520,7 @@ fn markVectorInner(vm: *vm_state.Vm, inner: *vectors.Inner) void {
 /// Marks every element of a vector's leaf, unused slots included, since each
 /// holds nil. The leaf itself is already marked.
 fn markVectorLeaf(vm: *vm_state.Vm, leaf: *vectors.Leaf) void {
-    markMany(vm, &leaf.items);
+    markMany(vm, vectors.items(leaf));
 }
 
 /// The run of `n` items at `p`, or an empty slice.

@@ -162,7 +162,7 @@ fn aChunkIsALeafOrTheTail() !void {
     expect(second.start == 32 and second.len == vectors.width);
     const tail = at(v, 99);
     expect(tail.start == 96 and tail.len == 4);
-    expect(tail.items.? == @as([*]const repr.Value, &v.tail.?.items));
+    expect(tail.items.? == @as([*]const repr.Value, vectors.items(v.tail.?).ptr));
 }
 
 /// An update leaves the vector it was made from unchanged, and shares every
@@ -260,10 +260,16 @@ fn aTransientChangesOnlyItsOwnNodes() !void {
         expected[i] = harness.wrapInteger(@intCast(i * 7));
         vectors.transientConj(&t.vector, expected[i]);
         if (i == 1150) gc_mark.collect();
-        // Index 1184 starts a new tail. The transient made it, so the next
-        // append changes it in place.
+        // Index 1184 starts a new tail, one element long. A tail doubles as
+        // it fills, so the appends at 1185 and 1186 each find it full and
+        // replace it with a block of twice the capacity, and the one at 1187
+        // finds room in the four it now has and changes it in place. That is
+        // the whole of what a transient's tail does differently from the rest
+        // of its nodes, which it only ever changes in place.
         if (i == 1184) tail_made = t.vector.tail.?;
-        if (i == 1185) expect(t.vector.tail.? == tail_made);
+        if (i == 1185) expect(t.vector.tail.? != tail_made);
+        if (i == 1186) tail_made = t.vector.tail.?;
+        if (i == 1187) expect(t.vector.tail.? == tail_made);
     }
     expect(editableIn(&t.vector) > 0);
     try expectElements(original, elements);

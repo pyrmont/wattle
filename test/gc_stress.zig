@@ -290,9 +290,9 @@ fn sharedNodesAcrossVersions() void {
     var expected: [vectors.width]i32 = undefined;
     const first = vectors.newInner();
     for (0..vectors.width) |i| {
-        const leaf = vectors.newLeaf();
+        const leaf = vectors.newLeaf(vectors.width);
         expected[i] = @intCast(i);
-        leaf.items[0] = harness.wrapInteger(expected[i]);
+        vectors.items(leaf)[0] = harness.wrapInteger(expected[i]);
         first.children[i] = &leaf.gc;
     }
     var current = holder(first);
@@ -304,10 +304,10 @@ fn sharedNodesAcrossVersions() void {
         const slot = round % vectors.width;
         const root = vectors.newInner();
         root.children = old_root.children;
-        const leaf = vectors.newLeaf();
-        leaf.items = leafAt(old_root, slot).items;
+        const leaf = vectors.newLeaf(vectors.width);
+        @memcpy(vectors.items(leaf), vectors.items(leafAt(old_root, slot)));
         expected[slot] = @intCast(vectors.width + round);
-        leaf.items[0] = harness.wrapInteger(expected[slot]);
+        vectors.items(leaf)[0] = harness.wrapInteger(expected[slot]);
         root.children[slot] = &leaf.gc;
 
         const next = holder(root);
@@ -323,7 +323,7 @@ fn sharedNodesAcrossVersions() void {
 
     const root = holderRoot(current);
     for (0..vectors.width) |i| {
-        expect(harness.integerIs(leafAt(root, i).items[0], expected[i]));
+        expect(harness.integerIs(vectors.items(leafAt(root, i))[0], expected[i]));
     }
 
     _ = gc_alloc.gcunroot(previous.?);
