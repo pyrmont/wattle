@@ -3,8 +3,8 @@
 Janet in a web page: the runtime built as a wasm32-wasi reactor, a page that
 calls into it, and the JavaScript that supplies WASI in its place.
 
-- `main.zig` is the reactor's root. It exports `janet_web_init`,
-  `janet_web_eval`, `janet_web_alloc` and `janet_web_free`.
+- `main.zig` is the reactor's root. It exports `wattle_web_init`,
+  `wattle_web_eval`, `wattle_web_alloc` and `wattle_web_free`.
 - `wasi.js` is the `wasi_snapshot_preview1` import object, hand-written and
   without dependencies, and `start`, which instantiates the binary and
   returns an `eval` over it.
@@ -42,17 +42,17 @@ A WASI *command* has `_start`, which runs `main` and exits. A *reactor* has
 `_initialize`, which runs wasi-libc's constructors and returns, and then
 whatever functions the module exports. `build.zig`'s `web` step sets
 `wasi_exec_model = .reactor` on the executable. The page calls `_initialize`
-and `janet_web_init` once, and `janet_web_eval` for each submission. The
+and `wattle_web_init` once, and `wattle_web_eval` for each submission. The
 runtime is the same `subsystems` module the `wattle` client imports, unchanged.
 
 ### A submission runs as a REPL line
 
-`janet_web_init` evaluates a short Janet function, `eval-line`, once, and
-`janet_web_eval` calls it with the submitted source. `eval-line` calls
+`wattle_web_init` evaluates a short Janet function, `eval-line`, once, and
+`wattle_web_eval` calls it with the submitted source. `eval-line` calls
 `run-context` as `repl` does, with the environment kept between calls and the
 REPL's `debugger-on-status`. Each form's value is printed with
 `*pretty-format*` and bound to `_`, and an error is printed with its stack
-trace. `janet_web_eval` returns 0, or 1 when parsing, compiling or running
+trace. `wattle_web_eval` returns 0, or 1 when parsing, compiling or running
 failed. Written in Janet, the REPL's printing is reused rather than repeated
 in Zig, and the Zig side is a call.
 

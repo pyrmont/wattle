@@ -21,7 +21,7 @@
 //!
 //! The two length bounds are not the same bound. `length` rejects an abstract
 //! length above `INT32_MAX` and `lengthv` rejects one at or above
-//! `JANET_INTMAX_INT64`, so there is a wide band in which one panics and the
+//! `intmax_int64`, so there is a wide band in which one panics and the
 //! other succeeds. An implementation that used one bound for both would pass
 //! every case that did not look in that band.
 //!
@@ -119,7 +119,7 @@ var huge_value: repr.Value = undefined;
 
 /// Whether the upper half of that straddle can be *expressed* on this target.
 ///
-/// A `length` callback returns a `size_t` and `JANET_INTMAX_INT64` is 2^53,
+/// A `length` callback returns a `size_t` and `intmax_int64` is 2^53,
 /// so on a 32-bit target the bound `lengthv` enforces is out of reach through
 /// this interface and the case below has nothing to say. Truncating the
 /// literal instead would turn a case about the 2^53 bound into a case about
@@ -210,7 +210,7 @@ fn edgeLength(_: *anyopaque, _: usize) raise.Error!usize {
 }
 
 fn hugeLength(_: *anyopaque, _: usize) raise.Error!usize {
-    return 9007199254740992; // JANET_INTMAX_INT64
+    return 9007199254740992; // intmax_int64
 }
 
 /// The `:length` method of a type with no `length` callback, which `length`
@@ -468,7 +468,7 @@ fn run_(src: [*:0]const u8) repr.Value {
     var out: repr.Value = undefined;
     const status = core_env.dostring(harness.coreEnv(), src, "value_access", &out);
     if (status != 0) {
-        std.debug.print("janet source failed: {s}\n", .{src});
+        std.debug.print("wattle source failed: {s}\n", .{src});
         expect(false);
     }
     return out;
@@ -910,7 +910,7 @@ fn theAbstractLengthCallback() !void {
 }
 
 /// The band where the two functions disagree. `length` stops at `INT32_MAX`
-/// because it returns an `int32_t`; `lengthv` stops at `JANET_INTMAX_INT64`
+/// because it returns an `int32_t`; `lengthv` stops at `intmax_int64`
 /// because it returns a double. A length between them panics one and satisfies
 /// the other.
 fn theTwoLengthBoundsAreDifferent() !void {
@@ -1150,7 +1150,7 @@ fn putOnANonWritablePanics() void {
         .beginsWith("no setter for <value-access/bare "));
 }
 
-fn fromJanet() void {
+fn fromWattle() void {
     const out = run_(
         "[(do (var n 0) (each x !{:a 1 :b 2 :c 3} (+= n x)) n) " ++
             " (do (var n 0) (eachk k [:a :b :c] (+= n k)) n) " ++
@@ -1270,7 +1270,7 @@ fn body() !void {
     try putOnATableAndAnAbstract();
     putOnANonWritablePanics();
 
-    fromJanet();
+    fromWattle();
 }
 
 pub fn run() void {

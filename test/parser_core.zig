@@ -16,7 +16,7 @@
 //! ## The oracle is the printer, not a second parser
 //!
 //! The two parsers were each other's oracle while both existed. What replaces
-//! that pair is `theRoundTrip`: `%j` writes a value as source, and that source
+//! that pair is `theRoundTrip`: `%w` writes a value as source, and that source
 //! has to parse back to the value it was given. The printer's tables are not
 //! the parser's, so the two sides are still independently derived, which is
 //! what a contract owes. It is also the property the swap made load-bearing --
@@ -397,7 +397,7 @@ fn refusalIs(source: []const u8, expected: []const u8) bool {
 
 /// The oracle: what the printer writes, the parser reads back.
 ///
-/// Janet's parser was this contract's oracle until step 7 removed it. `%j`
+/// Janet's parser was this contract's oracle until step 7 removed it. `%w`
 /// writes a value as source, so printing a parsed value and parsing the
 /// result must give the value back. The printer's tables are not the
 /// parser's, so the two sides are independently derived; and a defect in
@@ -412,7 +412,7 @@ fn theRoundTrip() !void {
     };
     for (sources) |source| {
         const parsed = try only(source);
-        const printed = try pretty.jdn(null, guard, parsed, 0, 0);
+        const printed = try pretty.wdn(null, guard, parsed, 0, 0);
         const reparsed = try only(printed.slice());
         expect(order.equals(parsed, reparsed));
     }

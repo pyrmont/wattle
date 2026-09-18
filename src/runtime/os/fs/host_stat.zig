@@ -50,7 +50,7 @@ const c = @import("cabi");
 /// is `opaque {}`. That is harmless because the Linux arm never names it, and
 /// a comptime-false branch is not analysed.
 const sys = @cImport({
-    @cInclude("janet_features.h");
+    @cInclude("wattle_features.h");
     @cInclude("sys/stat.h");
 });
 

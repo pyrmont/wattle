@@ -31,7 +31,7 @@
 //! Four entry points are called by import rather than through their abis.
 //! `coreEnv`, `coreLookupTable`, `dobytes` and `loopFiber` each have a
 //! `raise.toAbi` wrapper over a raise-capable implementation, and every one
-//! of them can raise. Called directly, a raise is an `error.JanetSignal` the
+//! of them can raise. Called directly, a raise is an `error.Signal` the
 //! compiler will not let this file ignore.
 //!
 //! The native loader is called as an abi instead, with `harness.abiRaised`.
@@ -172,7 +172,7 @@ fn theLengthParameterTruncatesTheSource() raise.Error!void {
     // Cutting a form in half is an EOF in the middle of it, which is a parse
     // error rather than a silent truncation.
     expect(try core_env.dobytesImpl(test_env, "(+ 1 2)"[0..5], "contract", &out) ==
-        constants.JANET_DO_ERROR_PARSE);
+        constants.do_error_parse);
 
     // The bound is exclusive. `dostring` always passes a length that stops on
     // a NUL, so only a caller of `dobytes` can tell an off-by-one here from
@@ -202,7 +202,7 @@ fn aParseOrCompileFailureStopsTheStream() raise.Error!void {
         "contract",
         &out,
     );
-    expect(flags == constants.JANET_DO_ERROR_PARSE);
+    expect(flags == constants.do_error_parse);
     expect(harness.isType(tables.get(env, value.fromBytes("contract-parse", .keyword)), repr.Tag.nil));
 
     errReset();
@@ -212,7 +212,7 @@ fn aParseOrCompileFailureStopsTheStream() raise.Error!void {
         "contract",
         &out,
     );
-    expect(flags == constants.JANET_DO_ERROR_COMPILE);
+    expect(flags == constants.do_error_compile);
     expect(harness.isType(tables.get(env, value.fromBytes("contract-compile", .keyword)), repr.Tag.nil));
 }
 
@@ -224,7 +224,7 @@ fn aCompileErrorPrefersTheSourceMapping() raise.Error!void {
     errReset();
     // The parser has consumed three lines by the time the second form fails,
     // so a position of 2 can only have come from the source mapping.
-    expect(try doString("(+ 1 2)\n(def)\n", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
+    expect(try doString("(+ 1 2)\n(def)\n", "contract", &out) == constants.do_error_compile);
     expectErrPrefix("contract:2:1: compile error: ");
 
     // A mapping is used only when both its line and its column are positive.
@@ -233,17 +233,17 @@ fn aCompileErrorPrefersTheSourceMapping() raise.Error!void {
     // the parser's position is reported instead.
     const macro = "(defmacro contract-mapped [l c] (tuple/setmap (tuple 'def) l c))\n";
     errReset();
-    expect(try doString(macro ++ "(contract-mapped 0 5)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
+    expect(try doString(macro ++ "(contract-mapped 0 5)", "contract", &out) == constants.do_error_compile);
     expectErrPrefix("contract:2:21: compile error: ");
     errReset();
-    expect(try doString(macro ++ "(contract-mapped 5 0)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
+    expect(try doString(macro ++ "(contract-mapped 5 0)", "contract", &out) == constants.do_error_compile);
     expectErrPrefix("contract:2:21: compile error: ");
 }
 
 fn aParseErrorNamesAPosition() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
-    expect(try doString("(+ 1 2))", "contract", &out) == constants.JANET_DO_ERROR_PARSE);
+    expect(try doString("(+ 1 2))", "contract", &out) == constants.do_error_parse);
     expectString(out, "contract:1:8: parse error: unexpected closing delimiter )");
     expectErr("contract:1:8: parse error: unexpected closing delimiter )\n");
 }
@@ -251,7 +251,7 @@ fn aParseErrorNamesAPosition() raise.Error!void {
 fn aCompileErrorNamesAPosition() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
-    expect(try doString("(def)", "contract", &out) == constants.JANET_DO_ERROR_COMPILE);
+    expect(try doString("(def)", "contract", &out) == constants.do_error_compile);
     expect(harness.isType(out, repr.Tag.string));
     const text = wrap.toString(out);
     const length: usize = strings.head(text).length;
@@ -273,7 +273,7 @@ fn aMacroExpansionErrorPrintsATrace() raise.Error!void {
         "(defmacro contract-boom [] (error :expansion)) (contract-boom)",
         "contract",
         &out,
-    ) == constants.JANET_DO_ERROR_COMPILE);
+    ) == constants.do_error_compile);
     expectErrPrefix("contract:1:48: compile error: ");
     expect(std.mem.indexOf(u8, errText(), "expansion") != null);
     expect(std.mem.indexOf(u8, errText(), "\n  in contract-boom ") != null);
@@ -290,7 +290,7 @@ fn aMacroExpansionErrorPrintsATrace() raise.Error!void {
 fn aRuntimeErrorReportsTheValue() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
-    expect(try doString("(error :thrown)", "contract", &out) == constants.JANET_DO_ERROR_RUNTIME);
+    expect(try doString("(error :thrown)", "contract", &out) == constants.do_error_runtime);
     expect(wrap.isKeyword(out));
     expect(harness.stringIs(wrap.toKeyword(out), "thrown"));
     expectErrPrefix("error: thrown\n  in thunk [contract] ");
@@ -305,7 +305,7 @@ fn aFailureStopsTheStream() raise.Error!void {
     env.proto = test_env;
     const source = "(error :stop) (setdyn :contract-ran true)";
     const flags = try core_env.dobytesImpl(env, source[0..@intCast(source.len)], "contract", &out);
-    expect(flags == constants.JANET_DO_ERROR_RUNTIME);
+    expect(flags == constants.do_error_runtime);
     expect(flags == (flags & -flags));
     expect(harness.isType(tables.get(env, value.fromBytes("contract-ran", .keyword)), repr.Tag.nil));
 }
@@ -313,7 +313,7 @@ fn aFailureStopsTheStream() raise.Error!void {
 fn aNullSourcePathIsNamedUnknown() raise.Error!void {
     var out = wrap.fromNil();
     errReset();
-    expect(try doString("(+ 1 2))", null, &out) == constants.JANET_DO_ERROR_PARSE);
+    expect(try doString("(+ 1 2))", null, &out) == constants.do_error_parse);
     expectString(out, "<unknown>:1:8: parse error: unexpected closing delimiter )");
 }
 
@@ -399,8 +399,8 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     _ = c.fflush(in);
     c.rewind(in);
 
-    const in_handle = io_core.makefile(in, constants.JANET_FILE_READ | constants.JANET_FILE_WRITE);
-    const out_handle = io_core.makefile(out_file, constants.JANET_FILE_WRITE);
+    const in_handle = io_core.makefile(in, constants.file_read | constants.file_write);
+    const out_handle = io_core.makefile(out_file, constants.file_write);
     gc_alloc.gcroot(in_handle);
     gc_alloc.gcroot(out_handle);
     // Into the environment table rather than through `vm_state.setdyn`. A
@@ -465,7 +465,7 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
         _ = c.fwrite("a\x00b\n", 1, 4, nul);
         _ = c.fflush(nul);
         c.rewind(nul);
-        const nul_handle = io_core.makefile(nul, constants.JANET_FILE_READ | constants.JANET_FILE_WRITE);
+        const nul_handle = io_core.makefile(nul, constants.file_read | constants.file_write);
         gc_alloc.gcroot(nul_handle);
         tables.put(test_env, value.fromBytes("in", .keyword), nul_handle);
         expect(try doString("(getline)", "contract", &result) == 0);
@@ -491,7 +491,7 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
             c.fopen("/dev/null", "w");
         expect(write_only != null);
         if (builtin.os.tag == .wasi) expect(c.unlink(write_only_path) == 0);
-        const write_only_handle = io_core.makefile(write_only, constants.JANET_FILE_WRITE);
+        const write_only_handle = io_core.makefile(write_only, constants.file_write);
         gc_alloc.gcroot(write_only_handle);
         tables.put(test_env, value.fromBytes("in", .keyword), write_only_handle);
         expect(try doString("(getline)", "contract", &result) == 0);
@@ -510,7 +510,7 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // A fourth is a plain arity error.
     errReset();
     expect(try doString("(getline \"\" !\"\" :a :b)", "contract", &result) ==
-        constants.JANET_DO_ERROR_RUNTIME);
+        constants.do_error_runtime);
 
     tables.put(test_env, value.fromBytes("in", .keyword), wrap.fromNil());
     tables.put(test_env, value.fromBytes("out", .keyword), wrap.fromNil());
@@ -518,12 +518,12 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     _ = gc_alloc.gcunroot(out_handle);
 }
 
-/// `janet/config-bits` is janet.h's `JANET_CURRENT_CONFIG_BITS`, which a
+/// `wattle/config-bits` is `api/constants.zig`'s `current_config_bits`, which a
 /// module and the runtime compare at load. janet.h's bits are 0x1 for a
 /// NaN-boxed value, 0x2 for a single-threaded build, and `0x4 << shift` for a
 /// 64-bit NaN box whose pointers are shifted. A NaN-boxed value is eight bytes
 /// and the tagged one sixteen, so the layout says which this build has.
-fn theConfigBitsAreJanetHs() raise.Error!void {
+fn theConfigBitsAreTheBuildsOwn() raise.Error!void {
     const nanboxed = @sizeOf(repr.Value) == 8;
     const shift: u5 = @intCast(config.nanbox_pointer_shift);
     const shifted = nanboxed and @sizeOf(usize) == 8 and shift != 0;
@@ -531,11 +531,11 @@ fn theConfigBitsAreJanetHs() raise.Error!void {
         (if (config.single_threaded) 0x2 else 0) |
         (if (shifted) @as(i32, 0x4) << shift else 0);
     var out = wrap.fromNil();
-    expect(try doString("janet/config-bits", "contract", &out) == 0);
+    expect(try doString("wattle/config-bits", "contract", &out) == 0);
     expect(wrap.toNumber(out) == @as(f64, @floatFromInt(want)));
 }
 
-/// `janet/api` is `api/fingerprint.zig`'s number, spelled as sixteen
+/// `wattle/api` is `api/fingerprint.zig`'s number, spelled as sixteen
 /// lowercase hexadecimal digits. A module and the runtime compare the number
 /// at load, and the binding is how a Janet program reads the runtime's own.
 ///
@@ -544,7 +544,7 @@ fn theConfigBitsAreJanetHs() raise.Error!void {
 /// number and not one function called twice.
 fn theApiVersionIsTheFingerprint() raise.Error!void {
     var out = wrap.fromNil();
-    expect(try doString("janet/api", "contract", &out) == 0);
+    expect(try doString("wattle/api", "contract", &out) == 0);
     expect(harness.isType(out, repr.Tag.string));
     const spelled = wrap.toString(out);
     const digits = spelled[0..strings.head(spelled).length];
@@ -585,7 +585,7 @@ fn sandboxAccumulatesEveryCapability() raise.Error!void {
     // An unknown capability rejects the whole call, including the ones before
     // it in the same argument list.
     before = harness.vm().sandbox_flags;
-    expect(try doString("(sandbox :env :nope)", "contract", &out) == constants.JANET_DO_ERROR_RUNTIME);
+    expect(try doString("(sandbox :env :nope)", "contract", &out) == constants.do_error_runtime);
     expect(harness.vm().sandbox_flags == before);
     expect(!harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"env"})));
 }
@@ -593,7 +593,7 @@ fn sandboxAccumulatesEveryCapability() raise.Error!void {
 /// Irreversible, so it goes last.
 fn nativeIsBehindTheSandbox() void {
     var err: ?strings.String = null;
-    vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"dynamic_modules"})) catch @panic("core_env: janet_sandbox raised");
+    vm_lifecycle.sandbox(vm_lifecycle.Sandbox.of(&.{"dynamic_modules"})) catch @panic("core_env: sandbox raised");
     const refusal = harness.abiRaised(
         core_env.nativeAbi,
         .{ @as([*:0]const u8, "./contract-no-such-module.so"), &err },
@@ -655,7 +655,7 @@ fn body() raise.Error!void {
     try theLookupTableIsKeyedBySymbol();
     try theLookupTableTakesReplacements();
     try getlineReadsALineThroughTheDyn();
-    try theConfigBitsAreJanetHs();
+    try theConfigBitsAreTheBuildsOwn();
     try theApiVersionIsTheFingerprint();
     nativeReportsALoaderError();
     try sandboxAccumulatesEveryCapability();

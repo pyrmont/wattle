@@ -134,7 +134,7 @@ fn cfunCollectHere(argv: []repr.Value) raise.Error!repr.Value {
     // And *why* it survived, which the assertion above cannot say on its own.
     //
     // The obvious second reading is the mark bit, and it is unavailable: the
-    // sweep clears `JANET_MEM_REACHABLE` on every survivor so that the next
+    // sweep clears `mem_reachable` on every survivor so that the next
     // mark phase starts from a clean heap, so `harness.heap.reachable` is
     // false here for every live block in the process. Asserting it would be an
     // assertion that cannot succeed.

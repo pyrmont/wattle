@@ -17,7 +17,7 @@
 //!  - `buffers.pushU8` and its kin, which raise on a buffer that cannot grow,
 //!    and are reached from every `push*` below;
 //!  - an abstract type's `marshal` and `unmarshal` callbacks, which are
-//!    `error{JanetSignal}!` function pointers a subsystem or a native module
+//!    `error{Signal}!` function pointers a subsystem or a native module
 //!    supplies.
 //!
 //! The allocators are not a third kind. `tables.put` returns `void`,
@@ -87,16 +87,16 @@ const stackframe_hasenv: i32 = std.math.minInt(i32);
 
 /// A stack frame's size in `Value` slots. `stackFrame` below does the
 /// arithmetic and nothing else does.
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 
 /// Whether this build has the event loop, as a `bool` so that each guard below
 /// is a plain `if`. The value is comptime-known either way, so a build without
 /// the event loop never analyses the arm.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 /// The marshalling flag a threaded channel sets to hand ownership across.
 ///
-/// It has the same value as `JANET_MARSHAL_NO_CYCLES`. The aliasing is
+/// It has the same value as `marshal_no_cycles`. The aliasing is
 /// preserved rather than tidied: the two flags are read by different callers,
 /// and separating them would change which flag a caller gets.
 const marshal_decref: c_int = 0x40000;
@@ -306,8 +306,8 @@ pub fn libMarsh(env: *tables.Table) void {
 /// Marshals `x` into `buf`.
 ///
 /// `rreg` is the reverse registry, and a value found in it travels as its
-/// symbol rather than by value. `flags` is `JANET_MARSHAL_UNSAFE`,
-/// `JANET_MARSHAL_NO_CYCLES` and the depth counter in the low sixteen bits.
+/// symbol rather than by value. `flags` is `marshal_unsafe`,
+/// `marshal_no_cycles` and the depth counter in the low sixteen bits.
 pub fn marshal(
     buf: *buffers.Buffer,
     x: repr.Value,
@@ -321,7 +321,7 @@ pub fn marshal(
         .seen_envs = .empty,
         .seen_defs = .empty,
         .nextid = 0,
-        .maybe_cycles = (flags & constants.JANET_MARSHAL_NO_CYCLES) == 0,
+        .maybe_cycles = (flags & constants.marshal_no_cycles) == 0,
         .flags = flags,
     };
     _ = tables.init(&st.seen, 0);
@@ -355,7 +355,7 @@ pub fn marshalBytes(m: *abi.Marshal, bytes: []const u8) raise.Error!void {
 }
 
 /// This nesting level's flag word, which is where a callback reads
-/// `JANET_MARSHAL_UNSAFE`.
+/// `marshal_unsafe`.
 pub fn marshalFlags(m: *abi.Marshal) c_int {
     return marshalState(m).flags;
 }
@@ -375,7 +375,7 @@ pub fn marshalInt64(m: *abi.Marshal, val: i64) raise.Error!void {
 /// A raise travels back out through the traversal frames the callback was
 /// called from, so the callback's `try` is the whole of what it owes and
 /// nothing has to be freed on the way.
-pub fn marshalJanet(m: *abi.Marshal, x: repr.Value) raise.Error!void {
+pub fn marshalValue(m: *abi.Marshal, x: repr.Value) raise.Error!void {
     const st = marshalState(m);
     return marshalOne(st, x, st.flags + 1);
 }
@@ -384,7 +384,7 @@ pub fn marshalJanet(m: *abi.Marshal, x: repr.Value) raise.Error!void {
 /// another process.
 pub fn marshalPtr(m: *abi.Marshal, ptr: ?*const anyopaque) raise.Error!void {
     const st = marshalState(m);
-    if ((st.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+    if ((st.flags & constants.marshal_unsafe) == 0) {
         return raise.panic("can only marshal pointers in unsafe mode");
     }
     try pushPointer(st, ptr);
@@ -456,7 +456,7 @@ pub fn unmarshalAbstract(u: *abi.Unmarshal, size: usize) raise.Error!?*anyopaque
 pub fn unmarshalAbstractReuse(u: *abi.Unmarshal, p: ?*anyopaque) raise.Error!void {
     const st = unmarshalState(u);
     if (st.at == null) {
-        return raise.panic("janet_unmarshal_abstract called more than once");
+        return raise.panic("unmarshal_abstract called more than once");
     }
     scratch_vector.push(&st.lookup, wrap.abi.fromAbstract(p));
     st.at = null;
@@ -507,7 +507,7 @@ pub fn unmarshalInt64(u: *abi.Unmarshal) raise.Error!i64 {
 }
 
 /// Reads a whole value from inside a callback, re-entering the traversal.
-pub fn unmarshalJanet(u: *abi.Unmarshal) raise.Error!repr.Value {
+pub fn unmarshalValue(u: *abi.Unmarshal) raise.Error!repr.Value {
     const st = unmarshalState(u);
     const decoded = try unmarshalOne(st, st.data.?, st.flags);
     st.data = decoded.next;
@@ -517,7 +517,7 @@ pub fn unmarshalJanet(u: *abi.Unmarshal) raise.Error!repr.Value {
 /// Reads a raw pointer, in unsafe mode only.
 pub fn unmarshalPtr(u: *abi.Unmarshal) raise.Error!?*anyopaque {
     const st = unmarshalState(u);
-    if ((st.flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+    if ((st.flags & constants.marshal_unsafe) == 0) {
         return raise.panic("can only unmarshal pointers in unsafe mode");
     }
     try eosAddr(st, @intFromPtr(st.data) +% @sizeOf(?*anyopaque) -% 1);
@@ -572,7 +572,7 @@ fn cfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     var flags: c_int = 0;
     if (argv.len > 1) rreg = try args_core.getTable(argv, 1);
     const buffer = if (argv.len > 2) try args_core.getBuffer(argv, 2) else buffers.new(10);
-    if (argv.len > 3 and repr.truthy(argv[3])) flags |= constants.JANET_MARSHAL_NO_CYCLES;
+    if (argv.len > 3 and repr.truthy(argv[3])) flags |= constants.marshal_no_cycles;
     try marshal(buffer, argv[0], rreg, flags);
     return wrap.fromBuffer(buffer);
 }
@@ -653,7 +653,7 @@ inline fn indexOf(st: *UnmarshalState, data: [*]const u8) i32 {
 }
 
 /// Records `x` as reference number `nextid`, so that a later occurrence can be
-/// written as `Lead.reference`. `JANET_MARSHAL_NO_CYCLES` turns this off, at
+/// written as `Lead.reference`. `marshal_no_cycles` turns this off, at
 /// which point a cyclic structure recurses until the guard above stops it.
 fn markSeen(st: *MarshalState, x: repr.Value) void {
     if (st.maybe_cycles) {
@@ -742,7 +742,7 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
             if (has_ev) {
                 // A buffer over memory the runtime does not own travels as its
                 // pointer, in unsafe mode only.
-                if ((flags & constants.JANET_MARSHAL_UNSAFE) != 0 and
+                if ((flags & constants.marshal_unsafe) != 0 and
                     buffers.isForeign(buffer))
                 {
                     try pushByte(st, Lead.pointer_buffer.byte());
@@ -856,14 +856,14 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
             try marshalOneFiber(st, wrap.toFiber(x), flags + 1);
         },
         repr.Tag.cfunction => {
-            if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) return noRegistry(x);
+            if ((flags & constants.marshal_unsafe) == 0) return noRegistry(x);
             markSeen(st, x);
             try pushByte(st, Lead.unsafe_cfunction.byte());
             const cfn = wrap.toCfunction(x);
             try pushBytes(st, std.mem.asBytes(&cfn));
         },
         repr.Tag.pointer => {
-            if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) return noRegistry(x);
+            if ((flags & constants.marshal_unsafe) == 0) return noRegistry(x);
             markSeen(st, x);
             try pushByte(st, Lead.unsafe_pointer.byte());
             try pushPointer(st, wrap.toPointer(x));
@@ -886,7 +886,7 @@ fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Erro
         // which is what prevents a death in transit: the sending thread
         // dropping its reference and collecting while the message is still
         // between the two heaps.
-        if ((flags & constants.JANET_MARSHAL_UNSAFE) != 0 and
+        if ((flags & constants.marshal_unsafe) != 0 and
             gcType(abi.abstractHead(abstract)) == gc_alloc.MemoryType.threaded_abstract)
         {
             _ = abstracts.incref(abstract);
@@ -1304,7 +1304,7 @@ fn unmarshalOne(
                 const count = try readCount(st, &data);
                 const capacity = try readCount(st, &data);
                 try eos(st, data + @sizeOf(?*anyopaque));
-                if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+                if ((flags & constants.marshal_unsafe) == 0) {
                     return pp_format.panicf(
                         "unsafe flag not given, will not unmarshal raw pointer at index %d",
                         .{indexOf(st, data)},
@@ -1321,7 +1321,7 @@ fn unmarshalOne(
             Lead.threaded_abstract => {
                 try eos(st, data + @sizeOf(?*anyopaque));
                 data += 1;
-                if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+                if ((flags & constants.marshal_unsafe) == 0) {
                     return pp_format.panicf(
                         "unsafe flag not given, will not unmarshal threaded abstract pointer at index %d",
                         .{indexOf(st, data)},
@@ -1551,7 +1551,7 @@ fn unmarshalOne(
         Lead.unsafe_pointer => {
             try eos(st, data + @sizeOf(?*anyopaque));
             data += 1;
-            if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+            if ((flags & constants.marshal_unsafe) == 0) {
                 return pp_format.panicf(
                     "unsafe flag not given, will not unmarshal raw pointer at index %d",
                     .{indexOf(st, data)},
@@ -1567,7 +1567,7 @@ fn unmarshalOne(
         Lead.unsafe_cfunction => {
             try eos(st, data + @sizeOf(abi.CFunction));
             data += 1;
-            if ((flags & constants.JANET_MARSHAL_UNSAFE) == 0) {
+            if ((flags & constants.marshal_unsafe) == 0) {
                 return pp_format.panicf(
                     "unsafe flag not given, will not unmarshal function pointer at index %d",
                     .{indexOf(st, data)},
@@ -1628,7 +1628,7 @@ fn unmarshalOneAbstract(
         // raising.
         const abst = (try unmarshal_fn(@ptrCast(st))) orelse fatal.fatal("null pointer abstract");
         const decoded = wrap.fromAbstract(abst);
-        if (st.at != null) return raise.panic("janet_unmarshal_abstract not called");
+        if (st.at != null) return raise.panic("unmarshal_abstract not called");
         return .{ .value = decoded, .next = st.data.? };
     }
     return raise.panic("invalid abstract type - no unmarshal function pointer");

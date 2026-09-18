@@ -11,7 +11,7 @@
 //! A contract in *this* binary is on the near side. `build.zig` builds the
 //! runtime's module graph a second time with this file as its root, so a
 //! contract reaches its subject through `@import("subsystems")` and a raise
-//! crosses as `error.JanetSignal`, the same way it crosses between two
+//! crosses as `error.Signal`, the same way it crosses between two
 //! subsystems, and checked by the compiler in the same way. Nothing is
 //! reported, nothing is adapted, and a contract that forgets to handle a raise
 //! does not compile.

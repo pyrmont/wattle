@@ -123,7 +123,7 @@ export function createWasi() {
     // No descriptor is a preopened directory. wasi-libc's constructor, run by
     // `_initialize`, asks from descriptor 3 upwards and stops at EBADF. Any
     // other error, ENOSYS included, makes it exit with status 71 before
-    // `janet_web_init` is called. With no preopens, wasi-libc fails every
+    // `wattle_web_init` is called. With no preopens, wasi-libc fails every
     // relative path itself, so the `path_*` calls below are not reached.
     fd_prestat_get() {
       return EBADF;
@@ -251,17 +251,17 @@ export function createWasi() {
 // submission failed, and `error` is null, or the exception that stopped the
 // instance (a `WebAssembly.RuntimeError` for a trap, a `WasiExit` for
 // `os/exit`). After an `error`, the instance is unusable and `eval` throws;
-// the host starts a new one. Throws when `janet_web_init` fails.
+// the host starts a new one. Throws when `wattle_web_init` fails.
 export async function start(module) {
   const wasi = createWasi();
   const instance = await WebAssembly.instantiate(module, wasi.imports);
   const exports = instance.exports;
   wasi.bind(exports.memory);
   exports._initialize();
-  const initStatus = exports.janet_web_init();
+  const initStatus = exports.wattle_web_init();
   const initOutput = wasi.take();
   if (initStatus !== 0) {
-    throw new Error(`janet_web_init returned ${initStatus}: ${initOutput.stderr}`);
+    throw new Error(`wattle_web_init returned ${initStatus}: ${initOutput.stderr}`);
   }
 
   const encoder = new TextEncoder();
@@ -271,13 +271,13 @@ export async function start(module) {
     eval(source) {
       if (stopped) throw new Error("the instance has stopped", { cause: stopped });
       const encoded = encoder.encode(source);
-      const ptr = exports.janet_web_alloc(encoded.length);
+      const ptr = exports.wattle_web_alloc(encoded.length);
       if (ptr === 0) throw new Error(`could not allocate ${encoded.length} bytes`);
       new Uint8Array(exports.memory.buffer, ptr, encoded.length).set(encoded);
       let status = 1;
       try {
-        status = exports.janet_web_eval(ptr, encoded.length);
-        exports.janet_web_free(ptr, encoded.length);
+        status = exports.wattle_web_eval(ptr, encoded.length);
+        exports.wattle_web_free(ptr, encoded.length);
       } catch (error) {
         stopped = error;
       }

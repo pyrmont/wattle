@@ -52,12 +52,12 @@ var child_saw_zero = false;
 var child_vm: ?*vm_state.Vm = null;
 
 /// The per-thread half of the contract needs a second thread to say it with.
-/// `constants.JANET_VM_THREAD_LOCAL` is false only in a single-threaded
+/// `constants.vm_thread_local` is false only in a single-threaded
 /// build, where the storage is one process-wide object by construction and
 /// there is nothing here to check. Windows is cross-compiled and never
 /// executed, so its path is left out rather than written blind, on the same
 /// condition and for the same reason as `test/fiber_core.zig`.
-const has_threads = constants.JANET_VM_THREAD_LOCAL != 0 and builtin.os.tag != .windows;
+const has_threads = constants.vm_thread_local != 0 and builtin.os.tag != .windows;
 
 var main_vm: *vm_state.Vm = undefined;
 

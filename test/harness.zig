@@ -156,7 +156,7 @@ pub const frame = struct {
     /// The frame header below the slot at `index`.
     pub fn at(fiber: *fibers.Fiber, index: i32) *vm_state.StackFrame {
         const base = fiber.data.? + @as(usize, @intCast(index));
-        return @ptrCast(@alignCast(base - @as(usize, @intCast(constants.JANET_FRAME_SIZE))));
+        return @ptrCast(@alignCast(base - @as(usize, @intCast(constants.frame_size))));
     }
 
     /// The frame the fiber is stopped in.
@@ -194,7 +194,7 @@ pub const heap = struct {
     /// block must not have set: an allocation that arrived pre-marked would
     /// survive one collection it had no right to.
     pub fn reachable(block: ?*anyopaque) bool {
-        return (gcBits(headerOf(block).flags) & constants.JANET_MEM_REACHABLE) != 0;
+        return (gcBits(headerOf(block).flags) & constants.mem_reachable) != 0;
     }
 
     /// Whether `block` is on the list headed by `list`. Only ever called for
@@ -286,7 +286,7 @@ pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
 /// of them is arranging one. A contract that means to test *that* should call
 /// `arrays.push` itself under `raised`.
 pub fn arrayPush(array: *arrays.Array, val: repr.Value) void {
-    arrays.push(array, val) catch @panic("harness: janet_array_push raised");
+    arrays.push(array, val) catch @panic("harness: arrays.push raised");
 }
 
 /// Call a core cfunction by name over a slice of arguments.
@@ -317,7 +317,7 @@ pub fn core(name: [*:0]const u8) raise.CFunction {
 ///
 /// The table is never null.
 pub fn coreEnv() *tables.Table {
-    return core_env.coreEnv(null) catch @panic("harness: janet_core_env raised");
+    return core_env.coreEnv(null) catch @panic("harness: coreEnv raised");
 }
 
 /// `core`, for a name a reduced build may not register at all: null rather
@@ -475,7 +475,7 @@ pub fn inFiber(environment: *tables.Table, source: []const u8) void {
 /// `vm_lifecycle.init` itself under `raised`. This is for the contracts that
 /// only need a VM, which is most of them.
 pub fn init() void {
-    _ = vm_lifecycle.init() catch @panic("harness: janet_init raised");
+    _ = vm_lifecycle.init() catch @panic("harness: lifecycle.init raised");
 }
 
 /// Whether `value` is the number `expected`, which is the assertion a contract

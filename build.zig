@@ -11,9 +11,6 @@ const version_extra = "-dev";
 const version_string = std.fmt.comptimePrint("{d}.{d}.{d}{s}", .{
     version.major, version.minor, version.patch, version_extra,
 });
-/// The version of Janet this runtime matches, which `env.zig` publishes as
-/// `janet/version`.
-const janet_version = "1.41.3";
 const build_name = "zig";
 
 /// The Janet suites, and the configuration each one needs.
@@ -78,7 +75,7 @@ const test_suites = &[_]Suite{
 
 // **This file compiles no C and holds no C flags.** Neither `src/` nor `test/`
 // contains a `.c`. What remains of C in this tree is four hand-written headers
-// -- `src/host/janet_features.h` and the three host translations under
+// -- `src/host/wattle_features.h` and the three host translations under
 // `src/runtime` -- and
 // libc itself, which is deliberate: "no C in the tree" and "no libc" are
 // different claims, and only the first is a goal.
@@ -250,7 +247,7 @@ pub fn wattleModule(
     // "Option ... declared twice". The fallback covers a caller that arrives
     // before `build()` ran.
     const opts = if (builtFor(b)) |built| built.options else readOptions(b);
-    const cfg = janetConfig(opts, target);
+    const cfg = resolveConfig(opts, target);
 
     const config_module = makeConfigModule(b, blk: {
         var module_cfg = cfg;
@@ -428,7 +425,7 @@ pub fn build(b: *std.Build) void {
             "link natives in at build time with quickbin.",
         .{ target.result.cpu.arch, target.result.os.tag, target.result.abi },
     );
-    const config = janetConfig(options, target);
+    const config = resolveConfig(options, target);
     // A wasm target has no dynamic loader, so the build makes no shared library
     // and keeps no export table there: `wasm-ld` rejects the shared library
     // without PIC, and nothing would load it.
@@ -551,7 +548,7 @@ pub fn build(b: *std.Build) void {
     // `rdynamic` puts the export table in the binary, and the linker's
     // dead-strip then removes every symbol the client itself never calls.
     // Measured at `HEAD` — the Debug client exports **691** and the
-    // `ReleaseSafe` client **92**, with `janet_cfuns_ext` and `janet_abstract`
+    // `ReleaseSafe` client **92**, with `cfuns_ext` and `abstract`
     // among the six hundred that go. So a module has only ever been able to
     // reach whatever the interpreter happened to reference, and the old
     // `test/zig-native.wattle` fixture passed because its four names were in
@@ -1148,7 +1145,7 @@ pub fn build(b: *std.Build) void {
     // its state. `-Dstack-max` overrides it. The NaN-box pointer shift is
     // cleared because its range depends on the target, and wasm32 allows only
     // 0.
-    const web_step = b.step("examples/web", "Build examples/web, Janet as a wasm32-wasi reactor, with its page into <prefix>/web");
+    const web_step = b.step("examples/web", "Build examples/web, Wattle as a wasm32-wasi reactor, with its page into <prefix>/web");
     // The three example steps under one name. `zig build examples` builds
     // every example the build knows how to; each is also its own step.
     const examples_step = b.step("examples", "Build examples/quickbin, examples/standalone and examples/web");
@@ -1162,7 +1159,7 @@ pub fn build(b: *std.Build) void {
         var web_options = options;
         if (!b.user_input_options.contains("stack-max")) web_options.stack_max = 1000000;
         web_options.nanbox_pointer_shift = null;
-        const web_config = janetConfig(web_options, web_target);
+        const web_config = resolveConfig(web_options, web_target);
         const web_image = coreImage(b, web_options, web_target, boot_host);
         if (makeRuntimeGraph(b, web_target, web_optimize, web_options, web_config, web_image)) |g| {
             const web_module = b.createModule(.{
@@ -1821,7 +1818,7 @@ fn addCliChecks(
 }
 
 fn readOptions(b: *std.Build) BuildOptions {
-    // The range depends on the target, so `janetConfig` checks it.
+    // The range depends on the target, so `resolveConfig` checks it.
     const pointer_shift = b.option(i32, "nanbox-pointer-shift", "Override the NaN-box pointer shift (0 through 2 on aarch64, 0 elsewhere)");
 
     const options: BuildOptions = .{
@@ -1829,7 +1826,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .omit_frame_pointer = b.option(bool, "omit-frame-pointer", "Omit the frame pointer: unset omits it in ReleaseFast and keeps it in Debug, ReleaseSafe and ReleaseSmall, true omits it in every mode, false keeps it in every mode"),
-        .nanbox = b.option(bool, "nanbox", "Use Janet's NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),
+        .nanbox = b.option(bool, "nanbox", "Use the NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),
         .nanbox_pointer_shift = pointer_shift,
         .dynamic_modules = b.option(bool, "dynamic-modules", "Enable dynamic native modules: unset enables them except on WASI and under -Dlinkage=static on a musl target"),
         .linkage = b.option(std.builtin.LinkMode, "linkage", "Link the executables dynamically (the default) or statically. A dynamic musl executable needs /lib/ld-musl-<arch>.so.1 at run time; a static one loads no native module"),
@@ -1856,7 +1853,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .recursion_guard = b.option(i32, "recursion-guard", "Native recursion guard (default 1024, or 512 on wasm)"),
         .max_proto_depth = b.option(i32, "max-proto-depth", "Maximum prototype lookup depth") orelse 200,
         .max_macro_expand = b.option(i32, "max-macro-expand", "Maximum macro expansion depth") orelse 200,
-        .stack_max = b.option(i32, "stack-max", "Maximum Janet stack size") orelse 0x7fffffff,
+        .stack_max = b.option(i32, "stack-max", "Maximum Wattle stack size") orelse 0x7fffffff,
         // `os/which` and `os/arch` overrides. A build option rather than a
         // macro, because no header is installed for a user to edit.
         .fiber_stack_shuffle = b.option(bool, "fiber-stack-shuffle", "Move every fiber's stack on every frame push, so a pointer kept across one is a use-after-free the allocator can see") orelse false,
@@ -1879,7 +1876,7 @@ fn readOptions(b: *std.Build) BuildOptions {
 
 /// Which of the three value representations this build compiles.
 ///
-/// `janetConfig` picks one from `-Dnanbox` and the target; no build option
+/// `resolveConfig` picks one from `-Dnanbox` and the target; no build option
 /// names a representation directly.
 const ValueRepr = enum { nanbox_64, nanbox_32, tagged };
 
@@ -1952,16 +1949,15 @@ const Config = struct {
     single_threaded: bool,
     interpreter_interrupt: bool,
 
-    /// Wattle's version quintet, the Janet version, and the four limits, which
-    /// the runtime reads as `config` fields: `env.zig` publishes
-    /// `wattle/version`, `janet/version` and `janet/build`, and the limits are
-    /// read at nineteen, eleven, one and two sites.
+    /// Wattle's version quintet and the four limits, which the runtime reads
+    /// as `config` fields: `env.zig` publishes `wattle/version` and
+    /// `wattle/build`, and the limits are read at nineteen, eleven, one and
+    /// two sites.
     version_major: i32,
     version_minor: i32,
     version_patch: i32,
     version_extra: []const u8,
     version: []const u8,
-    janet_version: []const u8,
     build_name: []const u8,
     recursion_guard: i32,
     max_proto_depth: i32,
@@ -2015,7 +2011,7 @@ const Config = struct {
 /// Every comptime fact a file reads as `config.<name>` is answered here and
 /// nowhere else, so a file cannot be compiled under one answer and guarded
 /// under another.
-fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
+fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
     const os = target.result.os.tag;
     const emscripten = os == .emscripten;
     const linux = os == .linux;
@@ -2145,7 +2141,6 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
         .version_patch = version.patch,
         .version_extra = version_extra,
         .version = version_string,
-        .janet_version = janet_version,
         .build_name = build_name,
         // The budget the native recursions spend, one unit per level: the
         // printer, the marshaller, the compiler and the PEG engine all start
@@ -2155,7 +2150,7 @@ fn janetConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config {
         // **512 on wasm, because a wasm host's call stack is smaller than a
         // native thread's and the guard is only a guard if it fires first.**
         // Measured 2026-09-12 under wasmtime's default stack, printing nested
-        // tables as jdn, which spends two native frames per level: a
+        // tables as wdn, which spends two native frames per level: a
         // ReleaseSmall build exhausted the stack at 777 levels, where the
         // Debug build reached the 1024th and raised. A guard of 512 fires
         // below both.
@@ -2190,17 +2185,17 @@ fn applyLinkage(exe: *std.Build.Step.Compile, options: BuildOptions, target: std
 ///
 /// The generator evaluates `boot.wattle` and marshals the environment it
 /// builds, so its features decide which bindings the image holds. Every
-/// field therefore comes from `janetConfig(options, target)`: a feature the
+/// field therefore comes from `resolveConfig(options, target)`: a feature the
 /// target turns off, such as the event loop, FFI and networking under
 /// Emscripten, is off in the generator too, and `boot.wattle`'s `compwhen`
 /// blocks see what the runtime will have.
 ///
 /// Six fields describe the machine the generator runs on, and come from
-/// `janetConfig(options, host)` instead: the event-loop backend (`ev_epoll`,
+/// `resolveConfig(options, host)` instead: the event-loop backend (`ev_epoll`,
 /// `ev_kqueue`, `ev_poll`), `bits64`, `value_repr` and
 /// `nanbox_pointer_shift`. None of them decides which bindings the image
 /// holds. The representation and the shift reach one binding,
-/// `janet/config-bits`, and `src/runtime/env.zig` rewrites its value when the
+/// `wattle/config-bits`, and `src/runtime/env.zig` rewrites its value when the
 /// image loads.
 ///
 /// The host side takes the host's default shift. `-Dnanbox-pointer-shift`
@@ -2212,9 +2207,9 @@ fn bootConfig(
 ) Config {
     var host_options = options;
     host_options.nanbox_pointer_shift = null;
-    const machine = janetConfig(host_options, host);
+    const machine = resolveConfig(host_options, host);
 
-    var cfg = janetConfig(options, target);
+    var cfg = resolveConfig(options, target);
     cfg.bootstrap = true;
     cfg.ev_epoll = machine.ev_epoll;
     cfg.ev_kqueue = machine.ev_kqueue;
@@ -2259,7 +2254,7 @@ fn configureCModule(
 ) void {
     // Two include paths, one per tier that holds a header: the three subsystem
     // translations `os/abi.h`, `net/abi.h` and `filewatch/abi.h` are runtime
-    // files, and the `janet_features.h` all three of them open with is the
+    // files, and the `wattle_features.h` all three of them open with is the
     // host's.
     module.addIncludePath(b.path("src/runtime"));
     module.addIncludePath(b.path("src/host"));
@@ -2518,7 +2513,7 @@ const RuntimeGraph = struct {
 
 /// Builds the graph for one configuration.
 ///
-/// `cfg` is what the graph is compiled under: `janetConfig` for `-Dtarget`,
+/// `cfg` is what the graph is compiled under: `resolveConfig` for `-Dtarget`,
 /// `bootConfig` for the generator. `options` supplies what `cfg` does not
 /// hold, the sanitizers and the platform libraries.
 fn makeRuntimeGraph(

@@ -120,14 +120,14 @@ const linux_names = [_][:0]const u8{
     "unmount",
 };
 
-/// `constants.JANET_STREAM_CLOSED`. A watcher whose own descriptor is closed
+/// `constants.stream_closed`. A watcher whose own descriptor is closed
 /// cannot listen and cannot be added to; `listen` is where that is said,
 /// because `add` already fails at the call it is made on.
-const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
+const stream_closed: u32 = @intCast(constants.stream_closed);
 
-/// `constants.JANET_STREAM_READABLE`, which a watcher's own stream is created
+/// `constants.stream_readable`, which a watcher's own stream is created
 /// with.
-const stream_readable: u32 = @intCast(constants.JANET_STREAM_READABLE);
+const stream_readable: u32 = @intCast(constants.stream_readable);
 
 /// The watcher's abstract type. Every field after `gcmark` is null, which the
 /// structure already defaults them to.

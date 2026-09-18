@@ -313,7 +313,7 @@ fn theAddressLookup() void {
     };
     expect(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));
 
-    // The port may also be a string, which is the branch `janet_checkint` does
+    // The port may also be a string, which is the branch `checkint` does
     // not take.
     argv[1] = value.fromBytes("9999", .string);
     expect(tupleIs2(unpack(callCore("net/address", argv[0..2])), "127.0.0.1", 9999));

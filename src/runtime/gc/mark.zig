@@ -74,12 +74,12 @@ const wrap = @import("../value/helpers/wrap.zig");
 
 /// A stack frame's size in `Value` slots, named locally so the frame
 /// arithmetic in `markFiber` reads as arithmetic.
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 
 /// Whether this build has the event loop. Three parts of the traversal are the
 /// event loop's, and one of them reaches a `Vm` field that exists only in that
 /// configuration, so this gates compilation and not merely behaviour.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 // ==========================================================================
 // Public functions

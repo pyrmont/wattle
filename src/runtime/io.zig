@@ -851,7 +851,7 @@ fn fileGet(_: *File, key: repr.Value) raise.Error!?repr.Value {
 /// descriptor; a borrowed file, `stdout` and its kin, is written as it stands.
 /// WASI has no `dup`, so there a closeable file raises.
 fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Error!void {
-    if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
+    if (marsh.marshalFlags(m) & constants.marshal_unsafe == 0) {
         return raise.panic("cannot marshal file in safe mode");
     }
     const borrowed = iof.flags & file_not_closeable != 0;
@@ -881,7 +881,7 @@ fn fileNext(_: *File, key: repr.Value) raise.Error!repr.Value {
 /// which is what makes `modeFromFlags` something other than the inverse of
 /// `scanMode`: `c.fdopen` only has to accept it.
 fn fileUnmarshal(u: *abi.Unmarshal) raise.Error!*File {
-    if (marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE == 0) {
+    if (marsh.unmarshalFlags(u) & constants.marshal_unsafe == 0) {
         return raise.panic("cannot unmarshal file in safe mode");
     }
     const iof: *File = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(File))));

@@ -48,23 +48,23 @@ const wrap = @import("value/helpers/wrap.zig");
 
 /// A stack frame's size in `Value` slots, which is what separates a frame's
 /// header from its locals.
-const frame_size: usize = constants.JANET_FRAME_SIZE;
+const frame_size: usize = constants.frame_size;
 
 /// How a `TraceFrame` locates the code it describes: a cfunction's registered
 /// line, no location at all, a bytecode offset, or a line and column from a
 /// funcdef's source map.
-const loc_cfun_line: u8 = @intCast(constants.JANET_TRACE_LOC_CFUN_LINE);
-const loc_none: u8 = @intCast(constants.JANET_TRACE_LOC_NONE);
-const loc_pc: u8 = @intCast(constants.JANET_TRACE_LOC_PC);
-const loc_sourcemap: u8 = @intCast(constants.JANET_TRACE_LOC_SOURCEMAP);
+const loc_cfun_line: u8 = @intCast(constants.trace_loc_cfun_line);
+const loc_none: u8 = @intCast(constants.trace_loc_none);
+const loc_pc: u8 = @intCast(constants.trace_loc_pc);
+const loc_sourcemap: u8 = @intCast(constants.trace_loc_sourcemap);
 
 /// What a `TraceFrame` names: an anonymous function, a registered cfunction, a
 /// cfunction with no registry entry, a named function, or nothing.
-const name_anonymous: u8 = @intCast(constants.JANET_TRACE_NAME_ANONYMOUS);
-const name_cfunction: u8 = @intCast(constants.JANET_TRACE_NAME_CFUNCTION);
-const name_cfunction_bare: u8 = @intCast(constants.JANET_TRACE_NAME_CFUNCTION_BARE);
-const name_function: u8 = @intCast(constants.JANET_TRACE_NAME_FUNCTION);
-const name_none: u8 = @intCast(constants.JANET_TRACE_NAME_NONE);
+const name_anonymous: u8 = @intCast(constants.trace_name_anonymous);
+const name_cfunction: u8 = @intCast(constants.trace_name_cfunction);
+const name_cfunction_bare: u8 = @intCast(constants.trace_name_cfunction_bare);
+const name_function: u8 = @intCast(constants.trace_name_function);
+const name_none: u8 = @intCast(constants.trace_name_none);
 
 // ==========================================================================
 // Types
@@ -217,8 +217,8 @@ pub fn libDebug(env: *tables.Table) void {
         corefn.reg("debug/break", &cfunDebugBreak, @src(), "(debug/break source line col)", "Sets a breakpoint in `source` at a given line and column. " ++
             "Will throw an error if the breakpoint location " ++
             "cannot be found. For example\n\n" ++
-            "\t(debug/break \"core.janet\" 10 4)\n\n" ++
-            "will set a breakpoint at line 10, 4th column of the file core.janet."),
+            "\t(debug/break \"core.wattle\" 10 4)\n\n" ++
+            "will set a breakpoint at line 10, 4th column of the file core.wattle."),
         corefn.reg("debug/unbreak", &cfunDebugUnbreak, @src(), "(debug/unbreak source line column)", "Remove a breakpoint with a source key at a given line and column. " ++
             "Will throw an error if the breakpoint " ++
             "cannot be found."),
@@ -249,7 +249,7 @@ pub fn libDebug(env: *tables.Table) void {
             "is useful when a fiber signals or errors to an ancestor fiber. Using this function, " ++
             "the fiber handling the error can see which fiber raised the signal. This function should " ++
             "be used mostly for debugging purposes."),
-        corefn.reg("debug/step", &cfunDebugStep, @src(), "(debug/step fiber &opt x)", "Run a fiber for one virtual instruction of the Janet machine. Can optionally " ++
+        corefn.reg("debug/step", &cfunDebugStep, @src(), "(debug/step fiber &opt x)", "Run a fiber for one virtual instruction of the Wattle machine. Can optionally " ++
             "pass in a value that will be passed as the resuming value. Returns the signal value, " ++
             "which will usually be nil, as breakpoints raise nil signals."),
     };
@@ -587,7 +587,7 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
     }
 
     while (index > 0) {
-        const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data.? + @as(usize, @intCast(index)) - @as(usize, constants.JANET_FRAME_SIZE)));
+        const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data.? + @as(usize, @intCast(index)) - @as(usize, constants.frame_size)));
         var descriptor: TraceFrame = undefined;
         index = frame.prevframe;
         try traceFrame(frame, &descriptor);
@@ -595,14 +595,14 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
         try eprintf("  in", .{});
 
         switch (descriptor.name_kind) {
-            constants.JANET_TRACE_NAME_ANONYMOUS => try eprintf(" %s", .{@as([*]const u8, "<anonymous>")}),
-            constants.JANET_TRACE_NAME_FUNCTION => try eprintf(" %s", .{descriptor.name}),
-            constants.JANET_TRACE_NAME_CFUNCTION => if (descriptor.name_prefix != null) {
+            constants.trace_name_anonymous => try eprintf(" %s", .{@as([*]const u8, "<anonymous>")}),
+            constants.trace_name_function => try eprintf(" %s", .{descriptor.name}),
+            constants.trace_name_cfunction => if (descriptor.name_prefix != null) {
                 try eprintf(" %s/%s", .{ descriptor.name_prefix, descriptor.name });
             } else {
                 try eprintf(" %s", .{descriptor.name});
             },
-            constants.JANET_TRACE_NAME_CFUNCTION_BARE => try eprintf(" <cfunction>", .{}),
+            constants.trace_name_cfunction_bare => try eprintf(" <cfunction>", .{}),
             else => {},
         }
 
@@ -612,12 +612,12 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
         if (descriptor.tail != 0) try eprintf(" (tail call)", .{});
 
         switch (descriptor.loc_kind) {
-            constants.JANET_TRACE_LOC_SOURCEMAP => try eprintf(" on line %d, column %d", .{ descriptor.line, descriptor.column }),
-            constants.JANET_TRACE_LOC_PC => try eprintf(" pc=%d", .{descriptor.pc}),
+            constants.trace_loc_sourcemap => try eprintf(" on line %d, column %d", .{ descriptor.line, descriptor.column }),
+            constants.trace_loc_pc => try eprintf(" pc=%d", .{descriptor.pc}),
             // The widening is deliberate: `%d` renders the 64 bits the
             // specifier asks for, so the digits are the same for every
             // line number this runtime can produce.
-            constants.JANET_TRACE_LOC_CFUN_LINE => try eprintf(" on line %d", .{@as(c_long, descriptor.line)}),
+            constants.trace_loc_cfun_line => try eprintf(" on line %d", .{@as(c_long, descriptor.line)}),
             else => {},
         }
         try eprintf("\n", .{});

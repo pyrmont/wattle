@@ -487,7 +487,7 @@ pub fn asmFillSourcemap(
 /// Writes the symbol map the source declares into the funcdef.
 ///
 /// It cannot raise: a failure is `error.Assembly` with the message already in
-/// the assembler, which is the assembler's own channel. `error.JanetSignal`
+/// the assembler, which is the assembler's own channel. `error.Signal`
 /// cannot travel through that error set, so a raise-capable return here
 /// would only cost the caller a `catch` it could do nothing with.
 pub fn asmFillSymbolmap(
@@ -644,7 +644,7 @@ pub fn invalidError(status: verify.Verdict) [*:0]const u8 {
 pub fn libAsm(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("asm", &cfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
-            "The syntax for the assembly can be found on the Janet website, and should correspond\n" ++
+            "The syntax for the assembly is Janet's, documented at janet-lang.org, and should correspond\n" ++
             "to the return value of disasm. Will throw an\n" ++
             "error on invalid assembly."),
         corefn.reg("disasm", &cfunDisasm, @src(), "(disasm func &opt field)", "Returns assembly that could be used to compile the given function. " ++

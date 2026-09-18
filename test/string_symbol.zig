@@ -213,7 +213,7 @@ fn stringCopiesAndHashes() void {
     expect(std.mem.eql(u8, bytesOf(nul), "a\x00b"));
     expect(nul[3] == 0);
 
-    // `janet_cstring` takes its length from the bytes instead.
+    // `cstring` takes its length from the bytes instead.
     const cs = strings.cstring("a\x00b");
     expect(stringLength(cs) == 1);
     expect(cs[0] == 'a' and cs[1] == 0);
@@ -740,7 +740,7 @@ fn tupleNCopiesAndHashes() void {
 
 /// The standard library reaches all of this through the core environment, so
 /// the Zig entry points above have to agree with what Janet sees.
-fn fromJanet() void {
+fn fromWattle() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const source =
@@ -821,7 +821,7 @@ pub fn run() void {
     tupleNCopiesAndHashes();
 
     repeatStopsAtTheLength();
-    fromJanet();
+    fromWattle();
 
     theRegistryRecordsALocation();
 

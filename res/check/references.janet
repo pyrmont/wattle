@@ -129,8 +129,8 @@
 
   A span whose last component is a source suffix is a file name rather than a
   qualified declaration, and is skipped whole. `gc.zig` was harmless split,
-  its left half being ungated anyway; `janet_features.h` is not, its left half
-  landing in the `janet_*` population as a name for a header that exists.``
+  its left half being ungated anyway; `wattle_features.h` is not, its left half
+  landing in the runtime's own population as a name for a header that exists.``
   [text]
   (def out @[])
   (def suffixes {"zig" true "h" true "c" true "janet" true "md" true

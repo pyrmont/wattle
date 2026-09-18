@@ -36,7 +36,7 @@
 //! own line and nothing counts them at the end.
 //!
 //! The decoder is reached by import, so a raise from a `tostring` callback
-//! reached through the trace decoding arrives as `error.JanetSignal` rather
+//! reached through the trace decoding arrives as `error.Signal` rather
 //! than as a report nobody consumes.
 
 // ==========================================================================
@@ -368,7 +368,7 @@ fn aSecondCycle() raise.Error!void {
 /// The Janet-function case, with everything a funcdef can contribute: a name,
 /// a source, a source map, a program counter, the register file, and the
 /// symbol map that turns registers back into names.
-fn aJanetFrame() void {
+fn aWattleFrame() void {
     // Written with its geometry fixed, because a source map that swapped line
     // for column would pass any assertion that only checked both were numbers.
     // `(debug/stack` opens at line 4, column 11.
@@ -444,7 +444,7 @@ fn aJanetFrame() void {
 /// An anonymous function reports no name and still reports everything else,
 /// which is the classification `debug.traceFrame` calls NAME_ANONYMOUS and
 /// which this consumer renders as the absence of a key.
-fn anAnonymousJanetFrame() void {
+fn anAnonymousWattleFrame() void {
     const frames = eval("((fn [] (debug/stack (fiber/current))))");
     const built = wrap.toArray(frames).slice()[1];
     expectAbsent(built, "name");
@@ -668,8 +668,8 @@ fn body() raise.Error!void {
     test_env = harness.coreEnv();
     registry.cfuns(test_env, "vmlife", &cfuns);
 
-    aJanetFrame();
-    anAnonymousJanetFrame();
+    aWattleFrame();
+    anAnonymousWattleFrame();
     aCapturedBinding();
     aCapturedBindingOffTheStack();
     aRegisteredCfunctionFrame();

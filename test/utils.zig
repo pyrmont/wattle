@@ -155,7 +155,7 @@ fn theHashesAreTheOnesTheirCallersExpect() void {
         expect(value.hashBytes(hello) == 1719582043);
         expect(value.hashBytes(embedded_nul) == -1777808027);
     } else {
-        var key: [constants.JANET_HASH_KEY_SIZE]u8 = @splat(0);
+        var key: [constants.hash_key_size]u8 = @splat(0);
         for (0..8) |i| key[i] = @intCast(i);
         value.initHashKey(&key);
         expect(value.hashBytes(a) == 1520149057);

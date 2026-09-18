@@ -73,12 +73,12 @@ const debug_build = config.debug;
 /// A stack frame's size in `Value` slots, named locally so the arithmetic
 /// below reads as arithmetic. `stackFrame` and `dataAt` are the only places
 /// that do it.
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 
 /// Whether this build has the event loop. `Fiber` has five extra fields where
 /// it does, and `resetState` clears all five. The condition is comptime, so
 /// the fields are named only in a build where they exist.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 // ==========================================================================
 // Aliased types
@@ -173,8 +173,8 @@ pub const FiberFlags = packed struct(u32) {
     /// The signals this fiber traps instead of propagating.
     traps: signal.SignalSet = .{},
     _reserved14: u2 = 0,
-    /// The six status bits: `constants.JANET_FIBER_STATUS_MASK`, at
-    /// `constants.JANET_FIBER_STATUS_OFFSET`.
+    /// The six status bits: `constants.fiber_status_mask`, at
+    /// `constants.fiber_status_offset`.
     status: u6 = 0,
     resume_signal: bool = false,
     _reserved23: u1 = 0,
@@ -388,10 +388,10 @@ pub fn lib(env: *tables.Table) raise.Error!void {
             "ancestor that does not have a parent. Note that a root fiber " ++
             "is also a task fiber."),
         corefn.reg("fiber/current", &cfunFiberCurrent, @src(), "(fiber/current)", "Returns the currently running fiber."),
-        corefn.reg("fiber/maxstack", &cfunFiberMaxstack, @src(), "(fiber/maxstack fib)", "Gets the maximum stack size in janet values allowed for a fiber. While memory for " ++
+        corefn.reg("fiber/maxstack", &cfunFiberMaxstack, @src(), "(fiber/maxstack fib)", "Gets the maximum stack size in Wattle values allowed for a fiber. While memory for " ++
             "the fiber's stack is not allocated up front, the fiber will not allocated more " ++
             "than this amount and will throw a stack-overflow error if more memory is needed. "),
-        corefn.reg("fiber/setmaxstack", &cfunFiberSetmaxstack, @src(), "(fiber/setmaxstack fib maxstack)", "Sets the maximum stack size in janet values for a fiber. By default, the " ++
+        corefn.reg("fiber/setmaxstack", &cfunFiberSetmaxstack, @src(), "(fiber/setmaxstack fib maxstack)", "Sets the maximum stack size in Wattle values for a fiber. By default, the " ++
             "maximum stack size is usually 8192."),
         corefn.reg("fiber/getenv", &cfunFiberGetenv, @src(), "(fiber/getenv fiber)", "Gets the environment for a fiber. Returns nil if no such table is " ++
             "set yet."),
@@ -1070,7 +1070,7 @@ fn stackOffset(fiber: *const Fiber, arr: []const repr.Value) ?usize {
     return (start - base) / @sizeOf(repr.Value);
 }
 
-/// The six bits `constants.JANET_FIBER_STATUS_MASK` covers, read as the
+/// The six bits `constants.fiber_status_mask` covers, read as the
 /// vocabulary they stand for.
 ///
 /// The field is wider than the vocabulary, six bits for sixteen values, and

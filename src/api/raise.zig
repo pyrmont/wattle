@@ -22,7 +22,7 @@
 //! return register, the fiber flag. Both deliveries call it, so they cannot
 //! differ.
 //!
-//! - A Zig caller is returned `error.JanetSignal` and reads `pending_signal`
+//! - A Zig caller is returned `error.Signal` and reads `pending_signal`
 //!   at the `catch`.
 //!
 //! - A caller across the C ABI reaches `runtime/signal.zig`'s `signalv`, which
@@ -136,7 +136,7 @@ pub inline fn cfunction(slot: abi.CFunction) CFunction {
 /// `module.zig` wraps every call it makes through the table in this, and
 /// `runtime/env.zig` wraps the `_wattle_init` it reached by name.
 pub inline fn fromAbi(value: anytype) Error!@TypeOf(value) {
-    if (tookCRaise()) return error.JanetSignal;
+    if (tookCRaise()) return error.Signal;
     return value;
 }
 
@@ -275,7 +275,7 @@ pub inline fn report(_: Error) void {
 ///
 /// ```zig
 /// const value = interface.rt.call_value(f, p, n);
-/// if (raise.tookCRaise()) return error.JanetSignal;
+/// if (raise.tookCRaise()) return error.Signal;
 /// ```
 ///
 /// The result is zeroed rather than `undefined`, so a forgotten test gives the
@@ -300,7 +300,7 @@ pub fn signal(sig: abi.Signal, message: repr.Value) Error {
     } else {
         signal_impl.signalRecord(sig, message);
     }
-    return error.JanetSignal;
+    return error.Signal;
 }
 
 /// Returns a cfunction on its way into a stored slot, at registration.

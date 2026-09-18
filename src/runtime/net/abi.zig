@@ -115,7 +115,7 @@ pub const sock_flags: c_int = if (windows or !@hasDecl(h, "SOCK_CLOEXEC")) 0 els
 
 /// Whether this target's `sockaddr` parameters arrive as a transparent union.
 ///
-/// Under `_GNU_SOURCE`, which `janet_features.h` sets, glibc declares `bind`,
+/// Under `_GNU_SOURCE`, which `wattle_features.h` sets, glibc declares `bind`,
 /// `getsockname`, `getpeername` and `accept4` with `__SOCKADDR_ARG` and
 /// `__CONST_SOCKADDR_ARG`: unions of every `sockaddr_*` pointer, marked
 /// `__attribute__((__transparent_union__))`. The C ABI passes such a union

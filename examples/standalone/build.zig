@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
     const host = b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug });
     const exe = wattle.quickbin(dep, host, .{
         .name = "hello",
-        .source = b.path("main.janet"),
+        .source = b.path("main.wattle"),
         .natives = &.{
             .{ .name = "greet", .root = b.path("greet.zig") },
         },

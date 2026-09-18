@@ -624,13 +624,13 @@ fn IndexAbi(comptime f: anytype) type {
     return switch (info.params.len) {
         2 => struct {
             pub fn abi(argv: [*]const repr.Value, n: i32) callconv(.c) P {
-                vm_state.requireJanetThread();
+                vm_state.requireVmThread();
                 return f(argv[0..@intCast(n + 1)], @intCast(n)) catch raise.reportToAbi(P);
             }
         },
         3 => struct {
             pub fn abi(argv: [*]const repr.Value, n: i32, third: info.params[2].type.?) callconv(.c) P {
-                vm_state.requireJanetThread();
+                vm_state.requireVmThread();
                 return f(argv[0..@intCast(n + 1)], @intCast(n), third) catch raise.reportToAbi(P);
             }
         },
@@ -692,12 +692,12 @@ pub fn OptLen(comptime G: type, comptime construct: anytype) type {
 /// fourteen times, so a representation change, `-Dnanbox=false` returning a
 /// different Zig type for several of these, cannot make the published
 /// signature disagree with what the getter gives back.
-fn TypeGetter(comptime unwrap: anytype, comptime janet_type: repr.Tag, comptime typeflags: repr.TagSet) type {
+fn TypeGetter(comptime unwrap: anytype, comptime tag: repr.Tag, comptime typeflags: repr.TagSet) type {
     return struct {
         pub const Value = @typeInfo(@TypeOf(unwrap)).@"fn".return_type.?;
         pub fn get(argv: []const repr.Value, n: usize) raise.Error!Value {
             var fault: Fault = undefined;
-            if (!argChecktype(argv, n, janet_type, typeflags, &fault)) {
+            if (!argChecktype(argv, n, tag, typeflags, &fault)) {
                 return raiseFault(argv, fault);
             }
             return unwrap(argSlot(argv, n));
@@ -816,16 +816,16 @@ pub fn argCbytes(argv: []const repr.Value, n: usize) CBytes {
     return .view;
 }
 
-/// Whether the argument at `n` has the tag `janet_type`, filling in a
+/// Whether the argument at `n` has the tag `tag`, filling in a
 /// `.wrong_type` fault naming `typeflags` otherwise.
 pub fn argChecktype(
     argv: []const repr.Value,
     n: usize,
-    janet_type: repr.Tag,
+    tag: repr.Tag,
     typeflags: repr.TagSet,
     fault: *Fault,
 ) bool {
-    if (repr.checkType(argSlot(argv, n), janet_type)) return true;
+    if (repr.checkType(argSlot(argv, n), tag)) return true;
     fault.* = .{ .wrong_type = .{ .slot = n, .expected = typeflags } };
     return false;
 }
@@ -1035,7 +1035,7 @@ pub fn bytesView(str: repr.Value) ?[]const u8 {
 /// callback, which `abi.zig` declares `callconv(.c)`, so there is no report to
 /// flatten.
 pub fn bytesViewAbi(x: repr.Value, out: *abi.ByteView) callconv(.c) bool {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     const bytes = bytesView(x) orelse return false;
     out.* = .{ .bytes = bytes.ptr, .len = bytes.len };
     return true;
@@ -1052,7 +1052,7 @@ pub fn checkArity(count: i32, min: i32, max: i32) raise.Error!void {
 /// the crossings a module reaches through the table. `marsh.zig`'s
 /// `marshalAbi` is `raise.panicking`'s one call site.
 pub fn checkArityAbi(argc: i32, min: i32, max: i32) callconv(.c) void {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     return checkArity(argc, min, max) catch raise.reportToAbi(void);
 }
 
@@ -1257,7 +1257,7 @@ pub fn dictionaryChunk(x: repr.Value, position: usize, len: usize) raise.Error!a
 
 /// `dictionaryChunk`, published.
 pub fn dictionaryChunkAbi(x: repr.Value, position: usize, len: usize) callconv(.c) abi.Chunk {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     return dictionaryChunk(x, position, len) catch raise.reportToAbi(abi.Chunk);
 }
 
@@ -1326,7 +1326,7 @@ pub fn fixArity(count: i32, fix: i32) raise.Error!void {
 
 /// `fixArity`, published. See `checkArityAbi`.
 pub fn fixArityAbi(argc: i32, fix: i32) callconv(.c) void {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     return fixArity(argc, fix) catch raise.reportToAbi(void);
 }
 
@@ -1550,7 +1550,7 @@ pub fn getRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!Ran
 /// as well, and that slot's absence is what makes the end default, a
 /// distinction only a count records.
 pub fn getRangeAbi(argv: [*]const repr.Value, argc: i32, n: i32, length: i32) callconv(.c) Range {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     return getRange(argv[0..@intCast(argc)], @intCast(n), length) catch raise.reportToAbi(Range);
 }
 
@@ -1623,13 +1623,13 @@ pub fn indexedChunk(x: repr.Value, index: usize, len: usize) raise.Error!abi.Chu
 
 /// `indexedChunk`, published.
 pub fn indexedChunkAbi(x: repr.Value, index: usize, len: usize) callconv(.c) abi.Chunk {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     return indexedChunk(x, index, len) catch raise.reportToAbi(abi.Chunk);
 }
 
 /// Whether `x` is a keyword, published as `is_keyword`. It cannot raise.
 pub fn isKeywordAbi(x: repr.Value) callconv(.c) bool {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     return wrap.isKeyword(x);
 }
 
@@ -1778,7 +1778,7 @@ pub fn symeq(x: repr.Value, cstring: [*:0]const u8) bool {
 /// An out-parameter and a `bool` for the optional, as `toIndexedAbi` uses, and
 /// for the same reason it can raise. A raise is reported and gives back false.
 pub fn toDictionaryAbi(x: repr.Value, out: *abi.Dictionary) callconv(.c) bool {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     out.* = (dictionaryOf(x) catch return raise.reportToAbi(bool)) orelse return false;
     return true;
 }
@@ -1789,7 +1789,7 @@ pub fn toDictionaryAbi(x: repr.Value, out: *abi.Dictionary) callconv(.c) bool {
 /// Unlike `bytesViewAbi`, this can raise, because an abstract's `length`
 /// callback can. A raise is reported and gives back false.
 pub fn toIndexedAbi(x: repr.Value, out: *abi.Indexed) callconv(.c) bool {
-    vm_state.requireJanetThread();
+    vm_state.requireVmThread();
     out.* = (indexedOf(x) catch return raise.reportToAbi(bool)) orelse return false;
     return true;
 }

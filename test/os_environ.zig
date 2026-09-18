@@ -12,7 +12,7 @@
 //!
 //! ## The cfunctions are called directly
 //!
-//! A cfunction returns `error{JanetSignal}!Value` over Zig's calling
+//! A cfunction returns `error{Signal}!Value` over Zig's calling
 //! convention, so this file calls one and writes `try`.
 //!
 //! That is what makes `theRefusals` below possible: a refusal is a value, so

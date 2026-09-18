@@ -327,7 +327,7 @@ pub fn length(x: repr.Value) raise.Error!i32 {
 /// `x` is the value. This exists so that an abstract type longer than
 /// `INT32_MAX` can be reported at all: the value is wrapped as a double
 /// rather than truncated, and the bound moves from `INT32_MAX` to
-/// `JANET_INTMAX_INT64`, the largest integer a double represents exactly.
+/// `intmax_int64`, the largest integer a double represents exactly.
 ///
 /// The 32-bit arm has no bound because it cannot need one: a `usize` there is
 /// 32 bits, so every value it can take is exactly representable. It is a
@@ -351,7 +351,7 @@ pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
                 if (comptime !config.bits64) {
                     return wrap.fromNumber(@floatFromInt(len));
                 } else {
-                    if (len < @as(usize, constants.JANET_INTMAX_INT64)) {
+                    if (len < @as(usize, constants.intmax_int64)) {
                         return wrap.fromNumber(@floatFromInt(len));
                     } else {
                         return pp_format.panicf("integer length %u too large", .{@as(u64, len)});

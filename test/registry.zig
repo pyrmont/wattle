@@ -282,13 +282,13 @@ fn checkEntry(env: *tables.Table, name: [*:0]const u8, has_doc: bool, has_map: b
 /// The one entry point a native module reaches by symbol, and the sentinel
 /// adapter behind it.
 ///
-/// `janet_cfuns_ext` is the whole of `module.zig`'s registration surface, and
+/// `cfuns_ext` is the whole of `module.zig`'s registration surface, and
 /// `abi.Reg` is the one row shape. There is no narrow row to widen, so the
 /// only thing to check is that a full row registers with its source map.
 fn thePublishedEntryPointDefinesAndRegisters() void {
     const env = tables.new(4);
 
-    capi.janet_cfuns_ext(@ptrCast(env), "probe", &c_reg_ext);
+    capi.cfuns_ext(@ptrCast(env), "probe", &c_reg_ext);
     checkEntry(env, "three", true, true);
 
     const entry = tables.get(env, value.fromBytes("three", .symbol));
@@ -338,7 +338,7 @@ fn thePrefixingFormRewritesOnlyTheName() void {
 
     // A null environment registers without defining, and must not build a name
     // buffer at all. Both surviving entry points take it.
-    capi.janet_cfuns_ext(null, "probe", &c_reg_ext);
+    capi.cfuns_ext(null, "probe", &c_reg_ext);
     registry.cfunsPrefix(null, "probe", &probe_reg);
 }
 

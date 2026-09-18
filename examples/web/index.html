@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Janet in a web page</title>
+<title>Wattle in a web page</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 1rem auto; max-width: 50rem; padding: 0 1rem; }
   textarea, pre { font-family: ui-monospace, monospace; font-size: 0.9rem; }
@@ -15,10 +15,10 @@
 </style>
 </head>
 <body>
-<h1>Janet in a web page</h1>
+<h1>Wattle in a web page</h1>
 <p>
-  The Janet runtime compiled to WebAssembly, running in this page. Each run
-  evaluates the text as one line of the <code>janet</code> REPL, in an
+  The Wattle runtime compiled to WebAssembly, running in this page. Each run
+  evaluates the text as one line of the <code>wattle</code> REPL, in an
   environment kept between runs. There is no file system, standard input is
   empty, and <code>os/sleep</code> returns at once.
 </p>
@@ -69,40 +69,40 @@ function appendCapped(text, className) {
 }
 
 let module;
-let janet;
+let wattle;
 
 async function load() {
   try {
     const response = await fetch("wattle-web.wasm");
     if (!response.ok) throw new Error(`fetching wattle-web.wasm: ${response.status}`);
     module = await WebAssembly.compile(await response.arrayBuffer());
-    janet = await start(module);
+    wattle = await start(module);
     output.textContent = "";
     source.disabled = false;
     run.disabled = false;
     source.focus();
   } catch (error) {
     output.textContent = "";
-    append(`Could not start Janet: ${error}`, "stderr");
+    append(`Could not start Wattle: ${error}`, "stderr");
   }
 }
 
 async function evaluate() {
-  if (!janet) return;
+  if (!wattle) return;
   run.disabled = true;
   append(source.value, "source");
-  const result = janet.eval(source.value);
+  const result = wattle.eval(source.value);
   appendCapped(result.stdout, "stdout");
   appendCapped(result.stderr, "stderr");
   if (result.error) {
     // A trap or `os/exit` leaves the instance unusable. A new one starts
     // with a new environment.
     append(`The runtime stopped (${result.error}). Starting a new one; earlier definitions are gone.`, "note");
-    janet = null;
+    wattle = null;
     try {
-      janet = await start(module);
+      wattle = await start(module);
     } catch (error) {
-      append(`Could not restart Janet: ${error}`, "stderr");
+      append(`Could not restart Wattle: ${error}`, "stderr");
       return;
     }
   }

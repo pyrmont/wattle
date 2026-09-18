@@ -41,7 +41,7 @@ pub const Method = module.Method;
 /// `Method` above and this are one layout, a name and a pointer, and they
 /// differ only in the declared type of the function the pointer names. This is
 /// the arm for the places where that signature is fixed from outside:
-/// `janet_getmethod` and `janet_nextmethod` take an array of these, and
+/// `getmethod` and `nextmethod` take an array of these, and
 /// `Stream.methods` points at one, because a caller that reached the runtime
 /// through the C ABI cannot name a `module.CFunction`.
 ///

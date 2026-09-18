@@ -149,23 +149,23 @@ pub const AbstractType = struct {
     gcperthread: ?*const fn (data: *anyopaque, len: usize) callconv(.c) void = null,
 
     // Access.
-    get: ?*const fn (data: *anyopaque, key: repr.Value) error{JanetSignal}!?repr.Value = null,
-    put: ?*const fn (data: *anyopaque, key: repr.Value, value: repr.Value) error{JanetSignal}!void = null,
-    next: ?*const fn (p: *anyopaque, key: repr.Value) error{JanetSignal}!repr.Value = null,
-    length: ?*const fn (p: *anyopaque, len: usize) error{JanetSignal}!usize = null,
-    call: ?*const fn (p: *anyopaque, argc: i32, argv: [*]repr.Value) error{JanetSignal}!repr.Value = null,
+    get: ?*const fn (data: *anyopaque, key: repr.Value) error{Signal}!?repr.Value = null,
+    put: ?*const fn (data: *anyopaque, key: repr.Value, value: repr.Value) error{Signal}!void = null,
+    next: ?*const fn (p: *anyopaque, key: repr.Value) error{Signal}!repr.Value = null,
+    length: ?*const fn (p: *anyopaque, len: usize) error{Signal}!usize = null,
+    call: ?*const fn (p: *anyopaque, argc: i32, argv: [*]repr.Value) error{Signal}!repr.Value = null,
 
     // Identity.
     compare: ?*const fn (lhs: *anyopaque, rhs: *anyopaque) callconv(.c) i32 = null,
     hash: ?*const fn (p: *anyopaque, len: usize) callconv(.c) i32 = null,
 
     // Rendering.
-    tostring: ?*const fn (p: *anyopaque, render: *Render) error{JanetSignal}!void = null,
+    tostring: ?*const fn (p: *anyopaque, render: *Render) error{Signal}!void = null,
     bytes: ?*const fn (p: *anyopaque, len: usize) callconv(.c) ByteView = null,
 
     // Marshalling.
-    marshal: ?*const fn (p: *anyopaque, m: *Marshal) error{JanetSignal}!void = null,
-    unmarshal: ?*const fn (u: *Unmarshal) error{JanetSignal}!?*anyopaque = null,
+    marshal: ?*const fn (p: *anyopaque, m: *Marshal) error{Signal}!void = null,
+    unmarshal: ?*const fn (u: *Unmarshal) error{Signal}!?*anyopaque = null,
 
     // Contents.
     chunk: ?*const fn (p: *anyopaque, index: usize) callconv(.c) Chunk = null,

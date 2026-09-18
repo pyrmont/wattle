@@ -336,7 +336,7 @@ pub fn libPeg(env: *tables.Table) raise.Error!void {
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
             "`default-peg-grammar` for the grammar of the peg."),
         corefn.reg("peg/match", &cfunPegMatch, @src(), "(peg/match peg text &opt start & args)", "Match a Parsing Expression Grammar to a byte string and return an array of captured values. " ++
-            "Returns nil if text does not match the language defined by peg. The syntax of PEGs is documented on the Janet website."),
+            "Returns nil if text does not match the language defined by peg. The syntax of PEGs is Janet's, documented at janet-lang.org."),
         corefn.reg("peg/find", &cfunPegFind, @src(), "(peg/find peg text &opt start & args)", "Find first index where the peg matches in text. Returns an integer, or nil if not found."),
         corefn.reg("peg/find-all", &cfunPegFindAll, @src(), "(peg/find-all peg text &opt start & args)", "Find all indexes where the peg matches in text. Returns an array of integers."),
         corefn.reg("peg/replace", &cfunPegReplace, @src(), "(peg/replace peg subst text &opt start & args)", "Replace first match of `peg` in `text` with `subst`, returning a new buffer. " ++
@@ -981,7 +981,7 @@ fn pegMarshal(peg: *Peg, m: *abi.Marshal) raise.Error!void {
     try marsh.marshalInt(m, @bitCast(peg.num_constants));
     marsh.marshalAbstract(m, peg);
     for (peg.instructions()) |instruction| try marsh.marshalInt(m, @bitCast(instruction));
-    for (peg.constantValues()) |x| try marsh.marshalJanet(m, x);
+    for (peg.constantValues()) |x| try marsh.marshalValue(m, x);
 }
 
 /// The iteration order behind `next` and `(keys peg)`.
@@ -1781,7 +1781,7 @@ fn pegUnmarshal(u: *abi.Unmarshal) raise.Error!*Peg {
     peg.num_constants = num_constants;
 
     for (bytecode[0..peg.bytecode_len]) |*word| word.* = @bitCast(try marsh.unmarshalInt(u));
-    for (consts[0..peg.num_constants]) |*constant| constant.* = try marsh.unmarshalJanet(u);
+    for (consts[0..peg.num_constants]) |*constant| constant.* = try marsh.unmarshalValue(u);
 
     // After here, nothing raises except the rejection at the end.
 

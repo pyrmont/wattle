@@ -9,7 +9,7 @@
 //!   decision: the null test on the return register, the coercion predicate,
 //!   the event bump of the root fiber's `sched_id`, the store into the return
 //!   register, and the fiber's `did_raise` flag. What a caller does next is the
-//!   caller's, and every caller in the tree returns `error.JanetSignal` and
+//!   caller's, and every caller in the tree returns `error.Signal` and
 //!   reads what this file left in `pending_signal`, which is what stops the
 //!   decision and the delivery drifting apart.
 //!
@@ -55,7 +55,7 @@ const wrap = @import("value/helpers/wrap.zig");
 /// Whether this build has the event loop. A fiber has `sched_id` in every
 /// configuration; only the bump in `signalPlan` is the loop's, so this guards
 /// the behaviour and not the field.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 // ==========================================================================
 // Types
@@ -163,7 +163,7 @@ pub fn cRaiseTake() bool {
 ///
 /// `sig` is the signal where there is one, and `message` the value that goes
 /// with it. A Zig caller skips these and calls `raise.signal`, `raise.panicv`
-/// or `raise.panic` directly, which returns `error.JanetSignal` instead.
+/// or `raise.panic` directly, which returns `error.Signal` instead.
 ///
 /// `raise.panicking` does not generate them. It builds an abi for a function
 /// that returns a payload on the way through, and there is no way through
@@ -233,9 +233,9 @@ pub fn signalCommit(message: *const repr.Value) void {
 /// left untouched meanwhile.
 ///
 /// It costs an aliasing worth knowing before anyone tidies it.
-/// `JANET_FIBER_STATUS_MASK` covers bits 16 through 21 of `gc.flags`, and
-/// `JANET_FIBER_EV_FLAG_CANCELED`, `JANET_FIBER_EV_FLAG_SUSPENDED` and
-/// `JANET_FIBER_FLAG_ROOT` are bits 16, 17 and 18 of the same word, so
+/// `fiber_status_mask` covers bits 16 through 21 of `gc.flags`, and
+/// `fiber_ev_flag_canceled`, `fiber_ev_flag_suspended` and
+/// `fiber_flag_root` are bits 16, 17 and 18 of the same word, so
 /// clearing the mask clears all three. Nothing observable depends on it today,
 /// because `ev.zig`'s `scheduleGeneral` re-sets the root flag on every schedule
 /// and the fiber is running between the clear and the next schedule, but the
@@ -280,7 +280,7 @@ pub fn signalPlan(sig: abi.Signal) Decision {
 /// Decides and publishes a raise, without delivering it.
 ///
 /// `sig` is the signal and `message` the value that goes with it. The delivery
-/// is the caller's, and every caller delivers by returning `error.JanetSignal`
+/// is the caller's, and every caller delivers by returning `error.Signal`
 /// after reading the signal this leaves in the VM's `pending_signal`. This
 /// function does not return when the plan is `.top_level`: there is no scope to
 /// raise into, so `topLevelSignal` ends the process or the thread.

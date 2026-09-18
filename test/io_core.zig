@@ -6,7 +6,7 @@
 //!
 //! Three things here are unreachable from Janet. The `io.File` entry points
 //! are C API with no Janet spelling; the abstract type's `marshal` and
-//! `unmarshal` callbacks run only under `JANET_MARSHAL_UNSAFE`, which
+//! `unmarshal` callbacks run only under `marshal_unsafe`, which
 //! `(marshal f)` never sets; and a `io.File` whose flags and whose stream
 //! disagree is a thing only an embedder can build, and is the only way into
 //! two of the failure paths.
@@ -177,32 +177,32 @@ fn theModeScanning() void {
     // Each leading flag selects one access mode and one permission.
     var r = scan("r");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == constants.JANET_FILE_READ);
+    expect(r.flags == constants.file_read);
     expect(r.sandbox == vm_lifecycle.Sandbox.of(&.{"fs_read"}));
 
     r = scan("w");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == constants.JANET_FILE_WRITE);
+    expect(r.flags == constants.file_write);
     expect(r.sandbox == vm_lifecycle.Sandbox.of(&.{"fs_write"}));
 
     // Appending asks for the whole filesystem permission, not just write.
     r = scan("a");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == constants.JANET_FILE_APPEND);
+    expect(r.flags == constants.file_append);
     expect(r.sandbox == vm_lifecycle.Sandbox.fs);
 
     // Trailing flags accumulate in any order and are independent.
     r = scan("wnb");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == (constants.JANET_FILE_WRITE | constants.JANET_FILE_NONIL | constants.JANET_FILE_BINARY));
+    expect(r.flags == (constants.file_write | constants.file_nonil | constants.file_binary));
     r = scan("wbn");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == (constants.JANET_FILE_WRITE | constants.JANET_FILE_NONIL | constants.JANET_FILE_BINARY));
+    expect(r.flags == (constants.file_write | constants.file_nonil | constants.file_binary));
 
     // An update flag adds the write permission even to a read mode.
     r = scan("r+");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == (constants.JANET_FILE_READ | constants.JANET_FILE_UPDATE));
+    expect(r.flags == (constants.file_read | constants.file_update));
     expect(r.sandbox == vm_lifecycle.Sandbox.of(&.{ "fs_read", "fs_write" }));
 
     // The longest accepted mode is ten bytes; eleven is rejected on length
@@ -287,16 +287,16 @@ fn theModeReconstruction() void {
 
     // Reading comes first, and appending replaces writing rather than joining
     // it, because a marshalled descriptor only needs a mode `fdopen` accepts.
-    expect(io_core.modeFromFlags(constants.JANET_FILE_READ, &out) == 1);
+    expect(io_core.modeFromFlags(constants.file_read, &out) == 1);
     expect(std.mem.eql(u8, out[0..2], "r\x00"));
-    expect(io_core.modeFromFlags(constants.JANET_FILE_WRITE, &out) == 1);
+    expect(io_core.modeFromFlags(constants.file_write, &out) == 1);
     expect(std.mem.eql(u8, out[0..2], "w\x00"));
-    expect(io_core.modeFromFlags(constants.JANET_FILE_APPEND, &out) == 1);
+    expect(io_core.modeFromFlags(constants.file_append, &out) == 1);
     expect(std.mem.eql(u8, out[0..2], "a\x00"));
-    expect(io_core.modeFromFlags(constants.JANET_FILE_READ | constants.JANET_FILE_WRITE, &out) == 2);
+    expect(io_core.modeFromFlags(constants.file_read | constants.file_write, &out) == 2);
     expect(std.mem.eql(u8, out[0..3], "rw\x00"));
     expect(io_core.modeFromFlags(
-        constants.JANET_FILE_READ | constants.JANET_FILE_WRITE | constants.JANET_FILE_APPEND,
+        constants.file_read | constants.file_write | constants.file_append,
         &out,
     ) == 2);
     expect(std.mem.eql(u8, out[0..3], "ra\x00"));
@@ -304,11 +304,11 @@ fn theModeReconstruction() void {
     // The binary, update and no-nil flags are dropped, and an empty result is
     // still terminated.
     expect(io_core.modeFromFlags(
-        constants.JANET_FILE_READ | constants.JANET_FILE_BINARY | constants.JANET_FILE_UPDATE,
+        constants.file_read | constants.file_binary | constants.file_update,
         &out,
     ) == 1);
     expect(std.mem.eql(u8, out[0..2], "r\x00"));
-    expect(io_core.modeFromFlags(constants.JANET_FILE_BINARY, &out) == 0);
+    expect(io_core.modeFromFlags(constants.file_binary, &out) == 0);
     expect(out[0] == 0);
 }
 
@@ -442,9 +442,9 @@ fn thePublicApi() raise.Error!void {
     // `io.makejfile` hands back the payload; `io.makefile` wraps it. The
     // buffer size is the C library's default, which is what `file/open`
     // compares against to decide whether a caller asked for another one.
-    const jf = io_core.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE);
+    const jf = io_core.makejfile(@ptrCast(@alignCast(raw)), constants.file_write);
     expect(@as(?*anyopaque, @ptrCast(jf.file)) == @as(?*anyopaque, raw));
-    expect(jf.flags == constants.JANET_FILE_WRITE);
+    expect(jf.flags == constants.file_write);
     expect(jf.vbufsize == c.BUFSIZ);
 
     const wrapped = wrap.fromAbstract(jf);
@@ -454,7 +454,7 @@ fn thePublicApi() raise.Error!void {
 
     var flags: i32 = 0;
     expect(@as(?*anyopaque, @ptrCast(io_core.unwrapfile(wrapped, &flags))) == @as(?*anyopaque, raw));
-    expect(flags == constants.JANET_FILE_WRITE);
+    expect(flags == constants.file_write);
     expect(@as(?*anyopaque, @ptrCast(io_core.unwrapfile(wrapped, null))) == @as(?*anyopaque, raw));
 
     // The reporting halves of these two are `capi.zig`'s, which is where a
@@ -464,23 +464,23 @@ fn thePublicApi() raise.Error!void {
     expect(try io_core.getjfile(argv[0..1], 0) == jf);
     flags = 0;
     expect(@as(?*anyopaque, @ptrCast(try io_core.getfile(argv[0..1], 0, &flags))) == @as(?*anyopaque, raw));
-    expect(flags == constants.JANET_FILE_WRITE);
+    expect(flags == constants.file_write);
     expect(@as(?*anyopaque, @ptrCast(try io_core.getfile(argv[0..1], 0, null))) == @as(?*anyopaque, raw));
 
     // Closing marks the payload and clears the stream, so a later use is a
     // null dereference rather than a use-after-free. A second close is a
     // no-op, and so is closing a file this runtime only borrowed.
     expect(io_core.fileClose(jf) == 0);
-    expect(jf.flags & constants.JANET_FILE_CLOSED != 0);
+    expect(jf.flags & constants.file_closed != 0);
     expect(jf.file == null);
     expect(io_core.fileClose(jf) == 0);
 
     const borrowed = io_core.makejfile(
         stdio.out(),
-        constants.JANET_FILE_APPEND | constants.JANET_FILE_NOT_CLOSEABLE,
+        constants.file_append | constants.file_not_closeable,
     );
     expect(io_core.fileClose(borrowed) == 0);
-    expect(borrowed.flags & constants.JANET_FILE_CLOSED == 0);
+    expect(borrowed.flags & constants.file_closed == 0);
     expect(asHandle(borrowed.file) == asHandle(stdio.out()));
 
     // A value of the wrong type is an argument fault rather than a null. It
@@ -510,7 +510,7 @@ fn theDynamicFile() void {
 
     const jf = io_core.makejfile(
         stdio.out(),
-        constants.JANET_FILE_APPEND | constants.JANET_FILE_NOT_CLOSEABLE,
+        constants.file_append | constants.file_not_closeable,
     );
     vm_state.setdyn("io-core-out", wrap.fromAbstract(jf));
     expect(asHandle(io_core.dynfile("io-core-out", stdio.err())) == asHandle(stdio.out()));
@@ -525,11 +525,11 @@ fn unmarshalled(buffer: *buffers.Buffer, flags: c_int) raise.Error!repr.Value {
     return marsh.unmarshal(buffer.slice(), flags, null, null);
 }
 
-/// A file marshals only under `JANET_MARSHAL_UNSAFE`, which no Janet caller
+/// A file marshals only under `marshal_unsafe`, which no Janet caller
 /// can ask for, so the whole callback pair is unreachable from the language.
 fn theMarshalling() raise.Error!void {
     const raw = io_core.open(scratch, "wb").?;
-    const file = wrap.fromAbstract(io_core.makejfile(@ptrCast(@alignCast(raw)), constants.JANET_FILE_WRITE));
+    const file = wrap.fromAbstract(io_core.makejfile(@ptrCast(@alignCast(raw)), constants.file_write));
 
     const buffer = buffers.new(0);
     expectRaise(marshalled, .{ buffer, file, @as(c_int, 0) }, "cannot marshal file in safe mode");
@@ -541,7 +541,7 @@ fn theMarshalling() raise.Error!void {
         buffer.count = 0;
         expectRaise(
             marshalled,
-            .{ buffer, file, constants.JANET_MARSHAL_UNSAFE },
+            .{ buffer, file, constants.marshal_unsafe },
             "cannot marshal a closeable file on WASI",
         );
         expect(io_core.fileClose(@ptrCast(@alignCast(io_core.checkfile(file)))) == 0);
@@ -550,17 +550,17 @@ fn theMarshalling() raise.Error!void {
     }
 
     buffer.count = 0;
-    try marshalled(buffer, file, constants.JANET_MARSHAL_UNSAFE);
+    try marshalled(buffer, file, constants.marshal_unsafe);
     expect(buffer.count > 0);
 
     // Reading it back in safe mode is refused by the other half of the pair.
     expectRaise(unmarshalled, .{ buffer, @as(c_int, 0) }, "cannot unmarshal file in safe mode");
 
-    const back = try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE);
+    const back = try unmarshalled(buffer, constants.marshal_unsafe);
     const copy = io_core.checkfile(back);
     expect(copy != null);
     const copyf: *io_core.File = @ptrCast(@alignCast(copy));
-    expect(copyf.flags == constants.JANET_FILE_WRITE);
+    expect(copyf.flags == constants.file_write);
     expect(copyf.vbufsize == c.BUFSIZ);
 
     // The descriptor was duplicated, because the original owns its stream, so
@@ -582,13 +582,13 @@ fn theMarshalledBufferSize() raise.Error!void {
     if (builtin.os.tag == .wasi) return;
 
     const stream = io_core.open(scratch, "wb").?;
-    const jf = io_core.makejfile(@ptrCast(@alignCast(stream)), constants.JANET_FILE_WRITE);
+    const jf = io_core.makejfile(@ptrCast(@alignCast(stream)), constants.file_write);
     jf.vbufsize = 0;
     const file = wrap.fromAbstract(jf);
 
     const buffer = buffers.new(0);
-    try marshalled(buffer, file, constants.JANET_MARSHAL_UNSAFE);
-    const copy = io_core.checkfile(try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE));
+    try marshalled(buffer, file, constants.marshal_unsafe);
+    const copy = io_core.checkfile(try unmarshalled(buffer, constants.marshal_unsafe));
     expect(copy != null);
     const copyf: *io_core.File = @ptrCast(@alignCast(copy));
     expect(copyf.vbufsize == 0);
@@ -621,17 +621,17 @@ fn theUnreopenableDescriptor() raise.Error!void {
     const stream = io_core.open(scratch, "wb").?;
     const jf = io_core.makejfile(
         @ptrCast(@alignCast(stream)),
-        constants.JANET_FILE_WRITE | constants.JANET_FILE_NOT_CLOSEABLE,
+        constants.file_write | constants.file_not_closeable,
     );
     jf.vbufsize = 0;
     const buffer = buffers.new(0);
-    try marshalled(buffer, wrap.fromAbstract(jf), constants.JANET_MARSHAL_UNSAFE);
+    try marshalled(buffer, wrap.fromAbstract(jf), constants.marshal_unsafe);
     expect(io_core.close(stream) == 0);
 
-    const copy = io_core.checkfile(try unmarshalled(buffer, constants.JANET_MARSHAL_UNSAFE));
+    const copy = io_core.checkfile(try unmarshalled(buffer, constants.marshal_unsafe));
     expect(copy != null);
     const copyf: *io_core.File = @ptrCast(@alignCast(copy));
-    expect(copyf.flags == constants.JANET_FILE_CLOSED);
+    expect(copyf.flags == constants.file_closed);
     expect(copyf.file == null);
     _ = c.remove(scratch);
 }
@@ -643,7 +643,7 @@ fn theUnreopenableDescriptor() raise.Error!void {
 fn theMismatchedHandles() void {
     const writer = io_core.open(scratch, "wb").?;
     const claims_readable = wrap.fromAbstract(
-        io_core.makejfile(@ptrCast(@alignCast(writer)), constants.JANET_FILE_READ),
+        io_core.makejfile(@ptrCast(@alignCast(writer)), constants.file_read),
     );
 
     // The readability check passes on the flags and the read then fails, which
@@ -654,7 +654,7 @@ fn theMismatchedHandles() void {
 
     const reader = io_core.open(scratch, "rb").?;
     const claims_writeable = wrap.fromAbstract(
-        io_core.makejfile(@ptrCast(@alignCast(reader)), constants.JANET_FILE_WRITE),
+        io_core.makejfile(@ptrCast(@alignCast(reader)), constants.file_write),
     );
 
     // `xprint` has no default handle, so a failed write names the destination

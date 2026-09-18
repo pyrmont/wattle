@@ -84,9 +84,9 @@ const wrap = @import("subsystems").value.wrap;
 /// way to resume a fiber stopped at `.put` or `.put_index`.
 const at_yielding_put = abstract_type.define(anyopaque, .{ .name = "vm-run/yielding-put", .put = &yieldingPut });
 
-/// `JANET_VM_HAS_INTERRUPT`, which decides whether the loop reads
+/// `vm_has_interrupt`, which decides whether the loop reads
 /// `auto_suspend` at all.
-const has_interrupt = constants.JANET_VM_HAS_INTERRUPT == 1;
+const has_interrupt = constants.vm_has_interrupt == 1;
 
 /// Whether this build registered `asm`. The cases that can only be expressed in
 /// assembled bytecode ask it first, because an absent binding is a *compile*
@@ -873,7 +873,7 @@ fn theRemainingOpcodes() void {
 /// are the opcodes' own arguments to the same check.
 fn theOpcodesRefuseARootFiber() void {
     const rooted = eval("(fiber/new (fn [] 1))");
-    harness.gcSetBits(&wrap.toFiber(rooted).gc.flags, constants.JANET_FIBER_FLAG_ROOT);
+    harness.gcSetBits(&wrap.toFiber(rooted).gc.flags, constants.fiber_flag_root);
     registry.def(test_env.?, "vmrun-rooted", rooted, null);
     expectError(
         "(resume vmrun-rooted)",

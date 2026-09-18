@@ -171,14 +171,14 @@ fn bindDefinitionLeaf(
     const attribute_table = metadata(attributes);
     if (attribute_table) |table| {
         if (repr.truthy(tableGetKeyword(table, "unused"))) {
-            definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
+            definition_flags |= constants.defflag_no_unused;
         }
     }
     if (redef) {
-        definition_flags |= constants.JANET_DEFFLAG_NO_SHADOWCHECK;
+        definition_flags |= constants.defflag_no_shadowcheck;
     } else if (attribute_table) |table| {
         if (repr.truthy(tableGetKeyword(table, "shadow"))) {
-            definition_flags |= constants.JANET_DEFFLAG_NO_SHADOWCHECK;
+            definition_flags |= constants.defflag_no_shadowcheck;
         }
     }
     const result = try nameLocal(compiler, symbol, .{}, slot, definition_flags);
@@ -244,10 +244,10 @@ fn bindVariableLeaf(
     var definition_flags: u32 = 0;
     if (metadata(attributes)) |table| {
         if (repr.truthy(tableGetKeyword(table, "unused"))) {
-            definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
+            definition_flags |= constants.defflag_no_unused;
         }
         if (repr.truthy(tableGetKeyword(table, "shadow"))) {
-            definition_flags |= constants.JANET_DEFFLAG_NO_SHADOWCHECK;
+            definition_flags |= constants.defflag_no_shadowcheck;
         }
     }
     return nameLocal(compiler, symbol, .{ .mutable = true }, slot, definition_flags);
@@ -654,7 +654,7 @@ fn nameLocal(
     // The only bit `nameLocal`'s two callers set is `mutable`, and it is a
     // union with the bit the slot already has rather than a replacement.
     slot.flags.mutable = slot.flags.mutable or binding_flags.mutable;
-    if (currentScope(compiler).flags.top) definition_flags |= constants.JANET_DEFFLAG_NO_UNUSED;
+    if (currentScope(compiler).flags.top) definition_flags |= constants.defflag_no_unused;
     try compiler_primitives.nameslot(compiler, symbol, slot, definition_flags);
     return !unnamed_register;
 }
@@ -1012,7 +1012,7 @@ fn specialFn(
                 compiler,
                 symbol,
                 slot,
-                constants.JANET_DEFFLAG_NO_UNUSED | constants.JANET_DEFFLAG_NO_SHADOWCHECK,
+                constants.defflag_no_unused | constants.defflag_no_shadowcheck,
             );
         }
     }
@@ -1074,10 +1074,10 @@ fn specialIf(
     compiler_primitives.pushScope(&condition_scope, compiler, .{}, "if");
     var condition_form = arguments[0];
     var jump_opcode: constants.Opcode = .jump_if_not;
-    if (checkNilForm(condition_form, constants.JANET_FUN_EQ)) |operand| {
+    if (checkNilForm(condition_form, constants.fun_eq)) |operand| {
         condition_form = operand;
         jump_opcode = constants.Opcode.jump_if_not_nil;
-    } else if (checkNilForm(condition_form, constants.JANET_FUN_NEQ)) |operand| {
+    } else if (checkNilForm(condition_form, constants.fun_neq)) |operand| {
         condition_form = operand;
         jump_opcode = constants.Opcode.jump_if_nil;
     }
@@ -1274,13 +1274,13 @@ fn specialWhile(
     var is_not_nil_form = false;
     var true_jump: constants.Opcode = .jump_if;
     var false_jump: constants.Opcode = .jump_if_not;
-    if (checkNilForm(condition_form, constants.JANET_FUN_EQ)) |operand| {
+    if (checkNilForm(condition_form, constants.fun_eq)) |operand| {
         condition_form = operand;
         is_nil_form = true;
         true_jump = constants.Opcode.jump_if_nil;
         false_jump = constants.Opcode.jump_if_not_nil;
     }
-    if (checkNilForm(condition_form, constants.JANET_FUN_NEQ)) |operand| {
+    if (checkNilForm(condition_form, constants.fun_neq)) |operand| {
         condition_form = operand;
         is_not_nil_form = true;
         true_jump = constants.Opcode.jump_if_not_nil;

@@ -5,7 +5,7 @@
 //! strict subset of the subsystem. Everything below is either unreachable from
 //! Janet or unobservable there.
 //!
-//!  - `JANET_MARSHAL_UNSAFE` has no Janet spelling. `cfun_marshal` never sets
+//!  - `marshal_unsafe` has no Janet spelling. `cfun_marshal` never sets
 //!    it and `cfun_unmarshal` passes a hard zero, so five of the twenty-nine
 //!    lead bytes are reachable only from a caller inside the runtime:
 //!    pointers, cfunctions, pointer-backed buffers and threaded abstracts.
@@ -204,8 +204,8 @@ fn probeMarshal(probe: *Probe, m: *abi.Marshal) raise.Error!void {
     try marsh.marshalSize(m, probe.sz);
     try marsh.marshalByte(m, probe.byte);
     try marsh.marshalBytes(m, &probe.bytes);
-    try marsh.marshalJanet(m, probe.value);
-    const unsafe = (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE) != 0;
+    try marsh.marshalValue(m, probe.value);
+    const unsafe = (marsh.marshalFlags(m) & constants.marshal_unsafe) != 0;
     try marsh.marshalByte(m, @intFromBool(unsafe));
     if (unsafe) try marsh.marshalPtr(m, probe.ptr);
 }
@@ -220,11 +220,11 @@ fn probeUnmarshal(u: *abi.Unmarshal) raise.Error!*Probe {
     try marsh.unmarshalEnsure(u, 1);
     probe.byte = try marsh.unmarshalByte(u);
     try marsh.unmarshalBytes(u, &probe.bytes, probe.bytes.len);
-    probe.value = try marsh.unmarshalJanet(u);
+    probe.value = try marsh.unmarshalValue(u);
     probe.ptr = null;
     const unsafe = try marsh.unmarshalByte(u);
     if (unsafe != 0) {
-        expect((marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE) != 0);
+        expect((marsh.unmarshalFlags(u) & constants.marshal_unsafe) != 0);
         probe.ptr = try marsh.unmarshalPtr(u);
     }
     return probe;
@@ -416,9 +416,9 @@ fn theContextApiRoundTrips() raise.Error!void {
     expect(back.ptr == null);
 
     // Unsafe mode lets it through.
-    b = try marshalled(wrap.fromAbstract(probe), null, constants.JANET_MARSHAL_UNSAFE);
+    b = try marshalled(wrap.fromAbstract(probe), null, constants.marshal_unsafe);
     back = @ptrCast(@alignCast(wrap.toAbstract(
-        keep(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)),
+        keep(try unmarshalled(b, constants.marshal_unsafe)),
     )));
     expect(back.ptr == @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
 
@@ -452,13 +452,13 @@ fn theAbstractProtocolIsEnforced() raise.Error!void {
     twice.* = 7;
     var b = try marshalled(keep(wrap.fromAbstract(twice)), null, 0);
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
-        .says("janet_unmarshal_abstract called more than once"));
+        .says("unmarshal_abstract called more than once"));
 
     const never: *u8 = @ptrCast(abstracts.newBytes(stored(&never_at), 1));
     never.* = 7;
     b = try marshalled(keep(wrap.fromAbstract(never)), null, 0);
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
-        .says("janet_unmarshal_abstract not called"));
+        .says("unmarshal_abstract not called"));
 
     const inert: *i32 = @ptrCast(@alignCast(abstracts.newBytes(stored(&inert_at), @sizeOf(i32))));
     inert.* = 7;
@@ -475,11 +475,11 @@ fn theUnsafeGateOnTheContextApi() raise.Error!void {
         .{ refuser, @as(?*tables.Table, null), @as(c_int, 0) },
     ).?.says("can only marshal pointers in unsafe mode"));
 
-    const b = try marshalled(refuser, null, constants.JANET_MARSHAL_UNSAFE);
+    const b = try marshalled(refuser, null, constants.marshal_unsafe);
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("can only unmarshal pointers in unsafe mode"));
     // And succeeds when the flag is given.
-    expect(harness.isType(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE), repr.Tag.abstract));
+    expect(harness.isType(try unmarshalled(b, constants.marshal_unsafe), repr.Tag.abstract));
 
     // A length that cannot be a buffer index is refused before anything is
     // read from it.
@@ -506,17 +506,17 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Error!void {
     expect(harness.raised(marshalled, .{ cfun, @as(?*tables.Table, null), @as(c_int, 0) }).?
         .beginsWith("no registry value and cannot marshal <cfunction 0x"));
 
-    var b = try marshalled(ptr, null, constants.JANET_MARSHAL_UNSAFE);
+    var b = try marshalled(ptr, null, constants.marshal_unsafe);
     expect(b.slice()[0] == lb_unsafe_pointer);
     expect(b.count == 1 + @sizeOf(*anyopaque));
-    expect(wrap.toPointer(try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE)) ==
+    expect(wrap.toPointer(try unmarshalled(b, constants.marshal_unsafe)) ==
         @as(?*anyopaque, @ptrCast(@constCast(stored(&probe_at)))));
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal raw pointer at index 1"));
 
-    b = try marshalled(cfun, null, constants.JANET_MARSHAL_UNSAFE);
+    b = try marshalled(cfun, null, constants.marshal_unsafe);
     expect(b.slice()[0] == lb_unsafe_cfunction);
-    const back = try unmarshalled(b, constants.JANET_MARSHAL_UNSAFE);
+    const back = try unmarshalled(b, constants.marshal_unsafe);
     expect(wrap.toCfunction(back) == raise.stored(&aCfunction));
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal function pointer at index 1"));
@@ -574,7 +574,7 @@ fn whenAValueBecomesAReference() raise.Error!void {
 
     // With cycles switched off nothing is recorded, so the same array is
     // written twice and the copies come back distinct.
-    b = try marshalled(wrap.fromArray(outer), null, constants.JANET_MARSHAL_NO_CYCLES);
+    b = try marshalled(wrap.fromArray(outer), null, constants.marshal_no_cycles);
     wireIs(b, "\xd1\x02\xd1\x00\xd1\x00");
     back_a = wrap.toArray(keep(try unmarshalled(b, 0)));
     expect(wrap.toArray(back_a.slice()[0]) != wrap.toArray(back_a.slice()[1]));
@@ -583,7 +583,7 @@ fn whenAValueBecomesAReference() raise.Error!void {
     expect(harness.raised(marshalled, .{
         wrap.fromArray(a),
         @as(?*tables.Table, null),
-        @as(c_int, constants.JANET_MARSHAL_NO_CYCLES),
+        @as(c_int, constants.marshal_no_cycles),
     }).?.says("stack overflow"));
 }
 

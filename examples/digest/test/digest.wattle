@@ -115,7 +115,7 @@
 (when execute
   (def child
     (string/format
-      """(import* %j :prefix "digest/")
+      """(import* %w :prefix "digest/")
         (ev/go (fn [] (digest/sha256 (string/repeat "0123456789abcdef" 4194304))))
         (ev/sleep 0)
         (os/exit 0)"""

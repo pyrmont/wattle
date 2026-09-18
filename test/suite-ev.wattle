@@ -32,12 +32,12 @@
   (end-suite)
   (os/exit 0))
 
-(def test-port (os/getenv "JANET_TEST_PORT" "8761"))
-(def test-host (os/getenv "JANET_TEST_HOST" "127.0.0.1"))
+(def test-port (os/getenv "WATTLE_TEST_PORT" "8761"))
+(def test-host (os/getenv "WATTLE_TEST_HOST" "127.0.0.1"))
 
 ; Subprocess
 ; 5e1a8c86f
-(def janet (dyn *executable*))
+(def wattle (dyn *executable*))
 
 ; Subprocess should inherit the "RUN" parameter for fancy testing
 (def run (filter next (string/split " " (os/getenv "SUBRUN" ""))))
@@ -47,36 +47,36 @@
 (compwhen (dyn 'os/spawn)
   (repeat 10
 
-    (let [p (os/spawn [|run janet "-e" """(print "hello")"""] :p {:out :pipe})]
+    (let [p (os/spawn [|run wattle "-e" """(print "hello")"""] :p {:out :pipe})]
       (os/proc-wait p)
       (def x (:read (p :out) :all))
       (assert (deep= "hello" (string/trim x))
               "capture stdout from os/spawn pre close."))
 
-    (let [p (os/spawn [|run janet "-e" """(print "hello")"""] :p {:out :pipe})]
+    (let [p (os/spawn [|run wattle "-e" """(print "hello")"""] :p {:out :pipe})]
       (def x (:read (p :out) 1024))
       (os/proc-wait p)
       (assert (deep= "hello" (string/trim x))
               "capture stdout from os/spawn post close."))
 
-    (let [p (os/spawn [|run janet "-e" """(file/read stdin :line)"""] :px
+    (let [p (os/spawn [|run wattle "-e" """(file/read stdin :line)"""] :px
                       {:in :pipe})]
       (:write (p :in) "hello!\n")
       (assert-no-error "pipe stdin to process" (os/proc-wait p))))
 
-  (let [p (os/spawn [|run janet "-e" """(print (file/read stdin :line))"""] :px
+  (let [p (os/spawn [|run wattle "-e" """(print (file/read stdin :line))"""] :px
                     {:in :pipe :out :pipe})]
     (:write (p :in) "hello!\n")
     (def x (:read (p :out) 1024))
     (assert-no-error "pipe stdin to process 2" (os/proc-wait p))
     (assert (= "hello!" (string/trim x)) "round trip pipeline in process"))
 
-  (let [p (os/spawn [|run janet "-e" """(do (ev/sleep 30) (os/exit 24)"""] :p)]
+  (let [p (os/spawn [|run wattle "-e" """(do (ev/sleep 30) (os/exit 24)"""] :p)]
     (os/proc-kill p)
     (def retval (os/proc-wait p))
     (assert (not= retval 24) "Process was *not* terminated by parent"))
 
-  (let [p (os/spawn [|run janet "-e" """(do (ev/sleep 30) (os/exit 24)"""] :p)]
+  (let [p (os/spawn [|run wattle "-e" """(do (ev/sleep 30) (os/exit 24)"""] :p)]
     (os/proc-kill p false :term)
     (def retval (os/proc-wait p))
     (assert (not= retval 24) "Process was *not* terminated by parent"))
@@ -86,7 +86,7 @@
   (defn calc-1
     "Run subprocess, read from stdout, then wait on subprocess."
     [code]
-    (let [p (os/spawn [|run janet "-e" (string """(printf "%j" """ code """)""")] :px
+    (let [p (os/spawn [|run wattle "-e" (string """(printf "%w" """ code """)""")] :px
                       {:out :pipe})]
       (os/proc-wait p)
       (def output (:read (p :out) :all))
@@ -106,7 +106,7 @@
     to 10 bytes instead of :all
     """
     [code]
-    (let [p (os/spawn [|run janet "-e" (string """(printf "%j" """ code """)""")] :px
+    (let [p (os/spawn [|run wattle "-e" (string """(printf "%w" """ code """)""")] :px
                       {:out :pipe})]
       (def output (:read (p :out) 10))
       (os/proc-wait p)
@@ -126,18 +126,18 @@
   ; a1cc5ca04
   (assert-no-error "file writing 1"
     (with [f (file/temp)]
-      (os/execute [|run janet "-e" """(repeat 20 (print :hello))"""] :p {:out f})))
+      (os/execute [|run wattle "-e" """(repeat 20 (print :hello))"""] :p {:out f})))
 
   (assert-no-error "file writing 2"
     (with [f (file/open "unique.txt" :w)]
-      (os/execute [|run janet "-e" """(repeat 20 (print :hello))"""] :p {:out f})
+      (os/execute [|run wattle "-e" """(repeat 20 (print :hello))"""] :p {:out f})
       (file/flush f)))
 
   ; Issue #593
   ; a1cc5ca04
   (assert-no-error "file writing 3"
     (def outfile (file/open "unique.txt" :w))
-    (os/execute [|run janet "-e" "(pp (seq [i :range (1 10)] i))"] :p
+    (os/execute [|run wattle "-e" "(pp (seq [i :range (1 10)] i))"] :p
                 {:out outfile})
     (file/flush outfile)
     (file/close outfile)
@@ -293,7 +293,7 @@
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   ; f0dbc2e
-  (assert (os/execute [|run janet "-e" """(+ 1 2 3)"""] :xp) "os/execute self"))
+  (assert (os/execute [|run wattle "-e" """(+ 1 2 3)"""] :xp) "os/execute self"))
 
 ; Test some channel
 ; e76b8da26
@@ -399,7 +399,7 @@
     (assert (= "hi"
                (ev/with-deadline
                  10
-                 (exec-slurp |run janet "-e" "(print :hi)")))
+                 (exec-slurp |run wattle "-e" "(print :hi)")))
             "exec-slurp 1")))
 
 ; valgrind-able check for #1337
@@ -519,7 +519,7 @@
 (def c (ev/chan 0))
 (ev/spawn (while (def x (ev/take c))))
 (defn print-to-chan [x] (ev/give c x))
-(assert-error "coerce await inside janet_call to error"
+(assert-error "coerce await inside call_value to error"
               (with-dyns [*out* print-to-chan]
                 (pp :foo)))
 (ev/chan-close c)
@@ -565,7 +565,7 @@
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   ; Cancel os/proc-wait with ev/deadline
-  (let [p (os/spawn [|run janet "-e" "(os/sleep 4)"] :p)]
+  (let [p (os/spawn [|run wattle "-e" "(os/sleep 4)"] :p)]
     (var terminated-normally false)
     (assert-error "deadline expired"
                   (ev/with-deadline 0.01
@@ -577,7 +577,7 @@
     (assert-no-error "kill proc after wait failed" (os/proc-kill p)))
 
   ; Cancel os/proc-wait with ev/deadline 2
-  (let [p (os/spawn [|run janet "-e" "(os/sleep 0.1)"] :p)]
+  (let [p (os/spawn [|run wattle "-e" "(os/sleep 0.1)"] :p)]
     (var terminated-normally false)
     (assert-error "deadline expired"
                   (ev/with-deadline 0.05
@@ -655,7 +655,7 @@
     (if (ev/read f 0x10000 buf)
       (ev/slurp f buf)
       buf))
-  (def p (os/spawn [|run janet "-e" (string/format "%j" subproc-code)] :px {:out :pipe :err :out}))
+  (def p (os/spawn [|run wattle "-e" (string/format "%w" subproc-code)] :px {:out :pipe :err :out}))
   (def [exit-code data]
     (ev/gather
       (os/proc-wait p)
@@ -668,7 +668,7 @@
 (assert-error "bad thread" (ev/thread in))
 (assert-error "bad thread 2" (ev/thread (fn [x y] x) 1))
 
-; Channel operations refuse to suspend inside janet_call, because the C frame
+; Channel operations refuse to suspend inside call_value, because the C frame
 ; that called back into Janet cannot be unwound and resumed. ev/give, ev/take
 ; and ev/select each check janet_vm.coerce_error to enforce that. Nothing else
 ; in this suite reaches those checks: they need a callback invoked through
@@ -684,29 +684,29 @@
 ; janet_call, so it is compiled out of a build without PEGs.
 (compwhen (dyn 'peg/match)
  (do
-  (defn in-janet-call [f]
+  (defn in-call-value [f]
     (peg/match `(/ '(some :d) ~(fn [_] (f))) "123"))
   (defn message [f]
     (try (do (f) :no-error) ([e] (string e))))
   (def a (ev/chan 1))
-  (assert (= "cannot give to channel inside janet_call"
-             (message (fn [] (in-janet-call (fn [] (ev/give a 1))))))
-          "give inside janet_call")
+  (assert (= "cannot give to channel inside call_value"
+             (message (fn [] (in-call-value (fn [] (ev/give a 1))))))
+          "give inside call_value")
   (def b (ev/chan 1))
   (ev/give b 9)
-  (assert (= "cannot take from channel inside janet_call"
-             (message (fn [] (in-janet-call (fn [] (ev/take b))))))
-          "take inside janet_call")
+  (assert (= "cannot take from channel inside call_value"
+             (message (fn [] (in-call-value (fn [] (ev/take b))))))
+          "take inside call_value")
   (def c (ev/chan 1))
   (ev/give c 9)
-  (assert (= "cannot select from channel inside janet_call"
-             (message (fn [] (in-janet-call (fn [] (ev/select c))))))
-          "select inside janet_call")
-  ; The same operations outside janet_call still work, so the check is not
+  (assert (= "cannot select from channel inside call_value"
+             (message (fn [] (in-call-value (fn [] (ev/select c))))))
+          "select inside call_value")
+  ; The same operations outside call_value still work, so the check is not
   ; simply disabling channels for the whole fiber.
   (def d (ev/chan 1))
-  (assert (= d (ev/give d 1)) "give outside janet_call")
-  (assert (= 1 (ev/take d)) "take outside janet_call")))
+  (assert (= d (ev/give d 1)) "give outside call_value")
+  (assert (= 1 (ev/take d)) "take outside call_value")))
 
 ; Every assertion below closes a mutation a sweep over the event loop and the
 ; channel left alive -- that is, a change the 742 assertions above did not
@@ -1181,7 +1181,7 @@
       '(do (def f (coro (forever :foo)))
            (ev/deadline 0.05 nil f true)
            (protect (resume f))))
-    (def p (os/spawn [|run janet "-e" (string/format "%j" interrupt-code)] :p {:err :pipe}))
+    (def p (os/spawn [|run wattle "-e" (string/format "%w" interrupt-code)] :p {:err :pipe}))
     (def [_ err] (ev/gather (os/proc-wait p) (ev/read (p :err) :all)))
     (assert (or (nil? err) (empty? err))
             "an interrupted task prints no stack trace")))
@@ -1214,7 +1214,7 @@
 ; arguments puts it there.
 (do
   (def path "wattle-suite-thread-arg.txt")
-  (ev/thread (fn [x] (spit "wattle-suite-thread-arg.txt" (string/format "%j" x)))
+  (ev/thread (fn [x] (spit "wattle-suite-thread-arg.txt" (string/format "%w" x)))
              :the-value)
   (assert (= ":the-value" (string (slurp path))) "ev/thread passes its second argument")
   (os/rm path))
@@ -1360,7 +1360,7 @@
      (ev/thread (fn [] (os/sleep 0.05)) nil)
      (ev/cancel w "stop")
      (prin "done")""")
-  (def long-wait (os/spawn [|run janet "-e" long-wait-code] :p {:out :pipe :err :pipe}))
+  (def long-wait (os/spawn [|run wattle "-e" long-wait-code] :p {:out :pipe :err :pipe}))
   (def long-wait-result
     (protect (ev/with-deadline 5
                [(string (:read (long-wait :out) :all)) (os/proc-wait long-wait)])))

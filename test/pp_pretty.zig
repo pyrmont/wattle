@@ -1,4 +1,4 @@
-//! Behavioral contract for the pretty printer and the JDN writer.
+//! Behavioral contract for the pretty printer and the WDN writer.
 //!
 //! ## Why this exists rather than leaning on the Janet suites
 //!
@@ -10,7 +10,7 @@
 //! *into text that is already there* behaves differently from printing into an
 //! empty buffer.
 //!
-//! `pretty.jdn` raises and this file `try`s it, so there is no abi to test
+//! `pretty.wdn` raises and this file `try`s it, so there is no abi to test
 //! beside it. A refusal is a value here, and `Raise.says` checks the message
 //! at the site that expected it.
 
@@ -98,9 +98,9 @@ fn buffer(capacity: usize) *buffers.Buffer {
 fn prettyWidth(b: *buffers.Buffer, width: u32, flags: c_int, x: repr.Value) !void {
     const conv = [8]u8{ 'p', 'P', 'q', 'Q', 'm', 'M', 'n', 'N' };
     const index: usize =
-        @as(usize, if (flags & constants.JANET_PRETTY_COLOR != 0) 1 else 0) |
-        @as(usize, if (flags & constants.JANET_PRETTY_ONELINE != 0) 2 else 0) |
-        @as(usize, if (flags & constants.JANET_PRETTY_NOTRUNC != 0) 4 else 0);
+        @as(usize, if (flags & constants.pretty_color != 0) 1 else 0) |
+        @as(usize, if (flags & constants.pretty_oneline != 0) 2 else 0) |
+        @as(usize, if (flags & constants.pretty_notrunc != 0) 4 else 0);
 
     expect(width >= 1 and width <= 99);
     var spec: [8]u8 = undefined;
@@ -118,7 +118,7 @@ fn aNullBufferIsAllocated() !void {
     const b = try pretty.prettyBuffer(null, guard, 80, .{}, eval("[1 2 3]"), 0, 0);
     checkBuffer(b, "[1 2 3]");
 
-    const j = try pretty.jdn(null, guard, eval("[1 2 3]"), 0, 0);
+    const j = try pretty.wdn(null, guard, eval("[1 2 3]"), 0, 0);
     checkBuffer(j, "[1 2 3]");
 }
 
@@ -167,7 +167,7 @@ fn theWidthDecidesTheWrapping() !void {
 
 fn oneLineNeverWraps() !void {
     const b = buffer(64);
-    try prettyWidth(b, 4, constants.JANET_PRETTY_ONELINE, eval("![![1 2] ![3 4]]"));
+    try prettyWidth(b, 4, constants.pretty_oneline, eval("![![1 2] ![3 4]]"));
     checkBuffer(b, "![![1 2] ![3 4]]");
 }
 
@@ -190,7 +190,7 @@ fn colourCostsNoColumns() !void {
     const colored = buffer(64);
 
     try prettyWidth(plain, 16, 0, val);
-    try prettyWidth(colored, 16, constants.JANET_PRETTY_COLOR, val);
+    try prettyWidth(colored, 16, constants.pretty_color, val);
 
     expect(colored.count > plain.count);
     expect(newlines(plain) == 0);
@@ -200,7 +200,7 @@ fn colourCostsNoColumns() !void {
     const narrow_plain = buffer(64);
     const narrow_colored = buffer(64);
     try prettyWidth(narrow_plain, 12, 0, val);
-    try prettyWidth(narrow_colored, 12, constants.JANET_PRETTY_COLOR, val);
+    try prettyWidth(narrow_colored, 12, constants.pretty_color, val);
     expect(newlines(narrow_plain) == 4);
     expect(newlines(narrow_colored) == 4);
 }
@@ -217,7 +217,7 @@ fn aTwoDigitCycleId() !void {
         \\(as 0)
     );
     const b = buffer(64);
-    try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, outer);
+    try prettyWidth(b, 99, constants.pretty_oneline, outer);
     checkBuffer(b, "![![![![![![![![![![![![![<cycle 12>]]]]]]]]]]]]]");
 }
 
@@ -227,7 +227,7 @@ fn aTwoDigitCycleId() !void {
 fn aRepeatThatIsNotACycle() !void {
     const pair = eval("(def inner ![1 2]) ![inner inner]");
     const b = buffer(64);
-    try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, pair);
+    try prettyWidth(b, 99, constants.pretty_oneline, pair);
     checkBuffer(b, "![![1 2] ![1 2]]");
 }
 
@@ -238,8 +238,8 @@ fn theArrayTruncationBoundary() !void {
     const at_limit = buffer(1024);
     const over = buffer(1024);
 
-    try prettyWidth(at_limit, 99, constants.JANET_PRETTY_ONELINE, eval("(seq [i :range [0 160]] i)"));
-    try prettyWidth(over, 99, constants.JANET_PRETTY_ONELINE, eval("(seq [i :range [0 161]] i)"));
+    try prettyWidth(at_limit, 99, constants.pretty_oneline, eval("(seq [i :range [0 160]] i)"));
+    try prettyWidth(over, 99, constants.pretty_oneline, eval("(seq [i :range [0 161]] i)"));
 
     // 160 elements, whole: no elision anywhere, and the last element is the
     // last one rather than the last one printed before an elision.
@@ -256,8 +256,8 @@ fn theDictionaryTruncationBoundary() !void {
     const at_limit = buffer(1024);
     const over = buffer(1024);
 
-    try prettyWidth(at_limit, 99, constants.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 30]] i i)"));
-    try prettyWidth(over, 99, constants.JANET_PRETTY_ONELINE, eval("(tabseq [i :range [0 31]] i i)"));
+    try prettyWidth(at_limit, 99, constants.pretty_oneline, eval("(tabseq [i :range [0 30]] i i)"));
+    try prettyWidth(over, 99, constants.pretty_oneline, eval("(tabseq [i :range [0 31]] i i)"));
 
     expect(!contains(at_limit, "..."));
     expect(endsWith(over, " ...}"));
@@ -267,7 +267,7 @@ fn theDictionaryTruncationBoundary() !void {
     try prettyWidth(
         whole,
         99,
-        constants.JANET_PRETTY_ONELINE | constants.JANET_PRETTY_NOTRUNC,
+        constants.pretty_oneline | constants.pretty_notrunc,
         eval("(tabseq [i :range [0 31]] i i)"),
     );
     expect(!contains(whole, "..."));
@@ -280,7 +280,7 @@ fn theDictionaryTruncationBoundary() !void {
 fn keysAreSortedBelowTheLimit() !void {
     const forward = buffer(1024);
     const backward = buffer(1024);
-    const flags = constants.JANET_PRETTY_ONELINE | constants.JANET_PRETTY_NOTRUNC;
+    const flags = constants.pretty_oneline | constants.pretty_notrunc;
 
     try prettyWidth(forward, 99, flags, eval("(tabseq [i :range [0 40]] i i)"));
     try prettyWidth(backward, 99, flags, eval(
@@ -300,13 +300,13 @@ fn keysAreSortedBelowTheLimit() !void {
 /// level returns.
 fn nestedDictionariesShareTheKeySortScratch() !void {
     const b = buffer(4096);
-    try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, eval(
+    try prettyWidth(b, 99, constants.pretty_oneline, eval(
         "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}",
     ));
     checkBuffer(b, "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}");
 
     const t = buffer(4096);
-    try prettyWidth(t, 99, constants.JANET_PRETTY_ONELINE, eval(
+    try prettyWidth(t, 99, constants.pretty_oneline, eval(
         "!{:a !{:x 1 :y 2 :z 3} :b !{:x 4 :y 5 :z 6} :c !{:x 7 :y 8 :z 9}}",
     ));
     checkBuffer(t, "!{:a !{:x 1 :y 2 :z 3} :b !{:x 4 :y 5 :z 6} :c !{:x 7 :y 8 :z 9}}");
@@ -320,32 +320,32 @@ fn theDepthLimit() !void {
 }
 
 fn whatJdnRefuses() !void {
-    // One key, because JDN walks a dictionary in storage order rather than
+    // One key, because WDN walks a dictionary in storage order rather than
     // sorted order and two would pin the hash layout rather than the writer.
     const b = buffer(64);
-    _ = try pretty.jdn(b, guard, eval("{:a [1 ![2 \"x\"] 1.5]}"), 0, 0);
+    _ = try pretty.wdn(b, guard, eval("{:a [1 ![2 \"x\"] 1.5]}"), 0, 0);
     checkBuffer(b, "{:a [1 ![2 \"x\"] 1.5]}");
 
     for ([_][*:0]const u8{
-        "print", // a cfunction has no JDN form
+        "print", // a cfunction has no WDN form
         "(keyword \"a b\")", // nor a keyword whose text would not lex
         "math/inf", // nor infinity
     }) |source| {
         const val = eval(source);
-        const r = harness.raised(pretty.jdn, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
+        const r = harness.raised(pretty.wdn, .{ buffer(16), guard, val, @as(i32, 0), @as(i32, 0) }).?;
         expect(r.signal == abi.Signal.@"error");
-        expect(r.says("could not print to jdn format"));
+        expect(r.says("could not print to wdn format"));
     }
 }
 
-fn jdnTreatsSymbolsAndKeywordsDifferently() !void {
+fn wdnTreatsSymbolsAndKeywordsDifferently() !void {
     const b = buffer(64);
-    _ = try pretty.jdn(b, guard, eval("(keyword \"1abc\")"), 0, 0);
+    _ = try pretty.wdn(b, guard, eval("(keyword \"1abc\")"), 0, 0);
     checkBuffer(b, ":1abc");
 
     const symbol = eval("(symbol \"1abc\")");
     expect(harness.raised(
-        pretty.jdn,
+        pretty.wdn,
         .{ buffer(16), guard, symbol, @as(i32, 0), @as(i32, 0) },
     ) != null);
 }
@@ -369,7 +369,7 @@ fn body() !void {
     try nestedDictionariesShareTheKeySortScratch();
     try theDepthLimit();
     try whatJdnRefuses();
-    try jdnTreatsSymbolsAndKeywordsDifferently();
+    try wdnTreatsSymbolsAndKeywordsDifferently();
 }
 
 pub fn run() void {

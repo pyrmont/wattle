@@ -199,8 +199,8 @@
         "buffer/format-at 1")
 (assert
   (deep=
-    (buffer/format !"" "%j" [1 2 3 :a :b :c])
-    (buffer/format-at !"" 0 "%j" [1 2 3 :a :b :c]))
+    (buffer/format !"" "%w" [1 2 3 :a :b :c])
+    (buffer/format-at !"" 0 "%w" [1 2 3 :a :b :c]))
   "buffer/format-at empty buffer")
 (def buf !"xxxyyy")
 (buffer/format-at buf -4 "xxx")

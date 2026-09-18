@@ -276,7 +276,7 @@ fn cfunChoice(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
 
     if (vm_state.current().coerce_error) {
-        return raise.panic("cannot select from channel inside janet_call");
+        return raise.panic("cannot select from channel inside call_value");
     }
 
     // Check channels for immediate reads and writes.
@@ -410,7 +410,7 @@ fn cfunGive(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const chan = try channelArg(argv, 0);
     if (vm_state.current().coerce_error) {
-        return raise.panic("cannot give to channel inside janet_call");
+        return raise.panic("cannot give to channel inside call_value");
     }
     if (try push(chan, argv[1], .plain)) return ev.awaitEvent();
     return argv[0];
@@ -446,7 +446,7 @@ fn cfunTake(argv: []repr.Value) raise.Error!repr.Value {
     const chan = try channelArg(argv, 0);
     var item: repr.Value = undefined;
     if (vm_state.current().coerce_error) {
-        return raise.panic("cannot take from channel inside janet_call");
+        return raise.panic("cannot take from channel inside call_value");
     }
     if (try pop(chan, &item, .plain)) ev.schedule(vm_state.current().root_fiber.?, item);
     return ev.awaitEvent();
@@ -488,7 +488,7 @@ fn chanatMarshal(chan: *Channel, m: *abi.Marshal) raise.Error!void {
     try marsh.marshalInt(m, chan.limit);
     try marsh.marshalInt(m, chan.items.count());
     for (chan.items.segments()) |run| {
-        for (run) |item| try marsh.marshalJanet(m, item);
+        for (run) |item| try marsh.marshalValue(m, item);
     }
 }
 
@@ -518,7 +518,7 @@ fn chanatUnmarshal(u: *abi.Unmarshal) raise.Error!*Channel {
     chanInit(abst, limit, false);
     abst.closed = is_closed != 0;
     for (0..@as(usize, @intCast(count))) |_| {
-        const item = try marsh.unmarshalJanet(u);
+        const item = try marsh.unmarshalValue(u);
         ev.assert(@src(), abst.items.push(item) == 0, "bad unmarshal channel");
     }
     return abst;
@@ -627,7 +627,7 @@ fn pack(chan: *Channel, x: *repr.Value) raise.Error!bool {
                 utils.free(buf);
             }
             _ = buffers.init(buf, 10);
-            try marsh.marshal(buf, x.*, null, constants.JANET_MARSHAL_UNSAFE);
+            try marsh.marshal(buf, x.*, null, constants.marshal_unsafe);
             x.* = wrap.fromBuffer(buf);
             return false;
         },
@@ -863,9 +863,9 @@ fn unpack(chan: *Channel, x: *repr.Value, is_cleanup: bool) raise.Error!bool {
         repr.Tag.buffer => {
             const buf = wrap.toBuffer(x.*);
             const flags: c_int = if (is_cleanup)
-                constants.JANET_MARSHAL_UNSAFE | marshalDecref
+                constants.marshal_unsafe | marshalDecref
             else
-                constants.JANET_MARSHAL_UNSAFE;
+                constants.marshal_unsafe;
             x.* = try marsh.unmarshal(buf.slice(), flags, null, null);
             buffers.deinit(buf);
             utils.free(buf);

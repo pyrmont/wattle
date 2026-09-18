@@ -195,7 +195,7 @@ fn beginPublishesAnUntypedBlock() void {
     expect(head.size == 40);
     expect(head.type == counted());
     expect(heap.memoryType(head) == gc_alloc.MemoryType.none);
-    expect(harness.gcBits(head.gc.flags) & constants.JANET_MEM_REACHABLE == 0);
+    expect(harness.gcBits(head.gc.flags) & constants.mem_reachable == 0);
 
     expect(harness.vm().gc.block_count == before_count + 1);
     expect(heap.onList(harness.vm().gc.blocks, head));
@@ -238,20 +238,20 @@ fn endPreservesTheOtherFlagBits() void {
     const a = abstracts.beginBytes(counted(), 8);
     const head = headOf(a);
 
-    harness.gcSetBits(&head.gc.flags, constants.JANET_MEM_REACHABLE);
-    harness.gcSetBits(&head.gc.flags, constants.JANET_MEM_DISABLED);
+    harness.gcSetBits(&head.gc.flags, constants.mem_reachable);
+    harness.gcSetBits(&head.gc.flags, constants.mem_disabled);
 
     _ = abstracts.end(a);
     expect(heap.memoryType(head) == gc_alloc.MemoryType.abstract);
-    expect(harness.gcBits(head.gc.flags) & constants.JANET_MEM_REACHABLE != 0);
-    expect(harness.gcBits(head.gc.flags) & constants.JANET_MEM_DISABLED != 0);
+    expect(harness.gcBits(head.gc.flags) & constants.mem_reachable != 0);
+    expect(harness.gcBits(head.gc.flags) & constants.mem_disabled != 0);
 
     // Leave nothing marked or disabled behind for the next case.
     head.gc.flags = @bitCast(harness.gcBits(head.gc.flags) &
-        ~@as(u32, constants.JANET_MEM_REACHABLE | constants.JANET_MEM_DISABLED));
+        ~@as(u32, constants.mem_reachable | constants.mem_disabled));
 }
 
-/// `janet_abstract` is the two calls in one, and must charge and tag exactly
+/// `abstract` is the two calls in one, and must charge and tag exactly
 /// as they do separately.
 fn abstractIsBeginThenEnd() void {
     settle();

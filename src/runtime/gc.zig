@@ -311,7 +311,7 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
 /// type has already bounded: a `[]const u8` length, an `i32` count, a
 /// `len > 255` guard, a literal zero. The exception is
 /// `value/abstracts.zig`'s `beginBytes`, whose size is the caller's own
-/// `usize` and which `capi.zig` publishes as `janet_abstract`. A size within
+/// `usize` and which `capi.zig` publishes as `abstract`. A size within
 /// `offset` of `usize` max would sum to something small, `rawAlloc` would
 /// serve it, since it fails on a size it cannot serve rather than on one that
 /// has already wrapped, and the module would write its payload past the block.
@@ -493,7 +493,7 @@ pub fn sfree(mem: ?*anyopaque) void {
             return;
         }
     }
-    fatal.fatal("invalid janet_sfree");
+    fatal.fatal("invalid sfree");
 }
 
 /// Allocates scratch memory: freed automatically at the next collection, and
@@ -532,7 +532,7 @@ pub fn srealloc(mem: ?*anyopaque, size: usize) ?*anyopaque {
             return scratchData(news);
         }
     }
-    fatal.fatal("invalid janet_srealloc");
+    fatal.fatal("invalid srealloc");
 }
 
 // ==========================================================================
@@ -619,7 +619,7 @@ fn payloadOffset(comptime Head: type) usize {
 /// `max_scratch_align`.
 fn scratchAllocatorAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
     if (@intFromEnum(alignment) > @intFromEnum(max_scratch_align))
-        fatal.fatal("allocation alignment exceeds what janet_smalloc guarantees");
+        fatal.fatal("allocation alignment exceeds what smalloc guarantees");
     return @ptrCast(@alignCast(smalloc(len)));
 }
 

@@ -1,5 +1,5 @@
 //! Laying a structure of Janet values out on a page, and writing a value back
-//! out as JDN.
+//! out as WDN.
 //!
 //! `pp.zig` renders what a single value is called. This file is everything
 //! that takes more than a single value: the recursion into arrays, tuples,
@@ -8,8 +8,8 @@
 //! parent's line, the two truncation limits, and the key sort that makes a
 //! dictionary print the same way twice.
 //!
-//! `Pretty` serves both the pretty printer and the JDN writer, which share
-//! almost nothing else: JDN has no width, no colour, no alignment and no
+//! `Pretty` serves both the pretty printer and the WDN writer, which share
+//! almost nothing else: WDN has no width, no colour, no alignment and no
 //! truncation, and it fails on values the pretty printer renders happily, such
 //! as a function, a fiber, an abstract, or a keyword that would not read back.
 //! The record is shared because `seen` and the buffer are common to both.
@@ -19,8 +19,8 @@
 //! grow. `tables.put` does not: a type's `hash` and `compare` are
 //! `callconv(.c) i32` with no error channel.
 //!
-//! A value with no JDN form is not a raise in the recursion. `printJdnOne`
-//! reports it upwards as a `bool` and only `jdn` turns it into a panic, so the
+//! A value with no WDN form is not a raise in the recursion. `printWdnOne`
+//! reports it upwards as a `bool` and only `wdn` turns it into a panic, so the
 //! recursion needs no second error channel and the message is written once.
 
 // ==========================================================================
@@ -101,7 +101,7 @@ const type_colors = [16][*:0]const u8{
 /// Two of its fields are scratch, and neither is freed on a raising path.
 /// `seen` is a scratch table, so `tables.deinit` takes the `gc.sfree` arm, but
 /// `prettyBuffer` `try`s its recursion before reaching that call, so a raise
-/// returns past it; `jdn` keeps the error union and deinitialises first, so it
+/// returns past it; `wdn` keeps the error union and deinitialises first, so it
 /// does free. The key-sort buffer is freed here on no path: there is no
 /// `gc.sfree` for it in this file, and its `gc.srealloc` block is the
 /// collector's from the start. Nothing is leaked either way, because
@@ -135,8 +135,8 @@ const Pretty = struct {
 };
 
 /// What the caller asked the pretty printer for: three independent bits,
-/// numbered as C's `JANET_PRETTY_COLOR`, `JANET_PRETTY_ONELINE` and
-/// `JANET_PRETTY_NOTRUNC`.
+/// numbered as C's `pretty_color`, `pretty_oneline` and
+/// `pretty_notrunc`.
 pub const PrettyFlags = packed struct(c_int) {
     /// Emit ANSI colour escapes.
     color: bool = false,
@@ -151,16 +151,16 @@ pub const PrettyFlags = packed struct(c_int) {
 // Public functions
 // ==========================================================================
 
-/// Renders `x` as JDN into `buffer`, or raises saying it cannot be.
+/// Renders `x` as WDN into `buffer`, or raises saying it cannot be.
 ///
-/// This is the only raise the file decides, and why `printJdnOne` reports a
+/// This is the only raise the file decides, and why `printWdnOne` reports a
 /// flag rather than raising: the message is written once, here.
 /// `pp/format.zig` imports this and `try`s it.
 ///
 /// `startlen` and `lookback_barrier` are parameters rather than read from the
 /// buffer's count, because every caller reaching this through the formatter
 /// already has both.
-pub fn jdn(
+pub fn wdn(
     buffer: ?*buffers.Buffer,
     depth: c_int,
     x: repr.Value,
@@ -168,9 +168,9 @@ pub fn jdn(
     lookback_barrier: usize,
 ) raise.Error!*buffers.Buffer {
     var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier);
-    const failed = printJdnOne(&S, x, depth);
+    const failed = printWdnOne(&S, x, depth);
     tables.deinit(&S.seen);
-    if (try failed) return raise.panic("could not print to jdn format");
+    if (try failed) return raise.panic("could not print to wdn format");
     return S.buffer;
 }
 
@@ -297,7 +297,7 @@ fn backtrackNewlines(S: *const Pretty) void {
 
 /// Whether a symbol or keyword contains a character that stops it reading
 /// back. `sym` is the text and `issym` says which of the two it is, since a
-/// symbol may not begin with a digit. Text that fails this has no JDN form.
+/// symbol may not begin with a digit. Text that fails this has no WDN form.
 fn containsBadChars(sym: strings.String, issym: bool) bool {
     const len = strings.head(sym).length;
     if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
@@ -388,9 +388,9 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
     return len + neg;
 }
 
-/// A dictionary's pairs, as `printJdnOne` writes them.
+/// A dictionary's pairs, as `printWdnOne` writes them.
 ///
-/// The keys are sorted, as `prettyEntries` sorts them, because JDN is a
+/// The keys are sorted, as `prettyEntries` sorts them, because WDN is a
 /// serialisation format and storage order is not reproducible: a key hashed by
 /// pointer, such as a buffer, an array, a table, a fiber or an abstract, sits
 /// in a bucket chosen by an allocation address, so the same value prints
@@ -402,7 +402,7 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
 /// nothing to truncate to here, so a quadratic sort over every entry would
 /// make a large dictionary quadratic to serialise. `std.mem.sort` is stable,
 /// so the order agrees with `%p`'s entry for entry.
-fn printJdnKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error!bool {
+fn printWdnKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error!bool {
     const ks_start = S.keysort_start;
     defer S.keysort_start = ks_start;
 
@@ -452,20 +452,20 @@ fn printJdnKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Error
     for (buf[0..len], 0..) |j, i| {
         const kv = &kvs[@intCast(j)];
         try if (i != 0) S.pushByte(' ');
-        if (try printJdnOne(S, kv.key, depth - 1)) return true;
+        if (try printWdnOne(S, kv.key, depth - 1)) return true;
         try S.pushByte(' ');
-        if (try printJdnOne(S, kv.value, depth - 1)) return true;
+        if (try printWdnOne(S, kv.value, depth - 1)) return true;
     }
     return false;
 }
 
-/// Writes `x` as JDN, recursing to `depth`.
+/// Writes `x` as WDN, recursing to `depth`.
 ///
-/// Failure is reported rather than raised: `true` means the value has no JDN
+/// Failure is reported rather than raised: `true` means the value has no WDN
 /// form, and the perimeter is what panics. Depth is a parameter here rather
-/// than a field of the record, because JDN counts down a recursion of its own,
+/// than a field of the record, because WDN counts down a recursion of its own,
 /// separate from the pretty printer's.
-fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
+fn printWdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
     if (depth == 0) return true;
     switch (repr.typeOf(x)) {
         repr.Tag.nil, repr.Tag.boolean, repr.Tag.buffer, repr.Tag.string => {
@@ -474,7 +474,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
         repr.Tag.number => {
             try buffers.ensure(S.buffer, S.buffer.count + bufsize, 2);
             const num = wrap.toNumber(x);
-            // Neither has a JDN spelling that reads back as itself.
+            // Neither has a WDN spelling that reads back as itself.
             if (std.math.isNan(num)) return true;
             if (std.math.isInf(num)) return true;
             try numscan.bufferDtostr(S.buffer, num);
@@ -488,7 +488,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             try S.pushByte('(');
             for (tuples.view(t), 0..) |item, i| {
                 try if (i != 0) S.pushByte(' ');
-                if (try printJdnOne(S, item, depth - 1)) return true;
+                if (try printWdnOne(S, item, depth - 1)) return true;
             }
             try S.pushByte(')');
         },
@@ -504,7 +504,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
                 const run = vectors.chunk(v, index);
                 for (run.items.?[0..run.len]) |item| {
                     try if (index != 0) S.pushByte(' ');
-                    if (try printJdnOne(S, item, depth - 1)) return true;
+                    if (try printWdnOne(S, item, depth - 1)) return true;
                     index += 1;
                 }
             }
@@ -516,7 +516,7 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             try S.pushCstring("![");
             for (0..a.count) |i| {
                 try if (i != 0) S.pushByte(' ');
-                if (try printJdnOne(S, a.slice()[i], depth - 1)) return true;
+                if (try printWdnOne(S, a.slice()[i], depth - 1)) return true;
             }
             try S.pushByte(']');
         },
@@ -524,14 +524,14 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const tab = wrap.toTable(x);
             try S.pushCstring("!{");
-            if (try printJdnKvs(S, tab.slots(), depth)) return true;
+            if (try printWdnKvs(S, tab.slots(), depth)) return true;
             try S.pushByte('}');
         },
         repr.Tag.map => {
             var pairs = args_core.gatherPairs(x).?;
             defer pairs.free();
             try S.pushByte('{');
-            if (try printJdnKvs(S, pairs.view.kvs.?[0..pairs.view.cap], depth)) return true;
+            if (try printWdnKvs(S, pairs.view.kvs.?[0..pairs.view.cap], depth)) return true;
             try S.pushByte('}');
         },
         else => return true,

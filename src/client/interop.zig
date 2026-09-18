@@ -174,11 +174,11 @@ fn cfunZigRooted(argv: []repr.Value) raise.Error!repr.Value {
 /// The local `defs` is the table and this function is what installs it.
 fn define(env: *tables.Table) raise.Error!void {
     const defs = [_]struct { name: [*:0]const u8, cfun: CFunction, doc: [*:0]const u8 }{
-        .{ .name = "zig/identity", .cfun = &cfunZigIdentity, .doc = "Round-trip one Janet value through Zig." },
-        .{ .name = "zig/length", .cfun = &cfunZigLength, .doc = "Read the length of a Janet collection in Zig." },
-        .{ .name = "zig/call", .cfun = &cfunZigCall, .doc = "Call a Janet closure from Zig through a protected call." },
-        .{ .name = "zig/rooted", .cfun = &cfunZigRooted, .doc = "Create and root a Janet value across a forced collection." },
-        .{ .name = "zig/fail", .cfun = &cfunZigFail, .doc = "Raise a controlled Janet error after returning from Zig." },
+        .{ .name = "zig/identity", .cfun = &cfunZigIdentity, .doc = "Round-trip one Wattle value through Zig." },
+        .{ .name = "zig/length", .cfun = &cfunZigLength, .doc = "Read the length of a Wattle collection in Zig." },
+        .{ .name = "zig/call", .cfun = &cfunZigCall, .doc = "Call a Wattle closure from Zig through a protected call." },
+        .{ .name = "zig/rooted", .cfun = &cfunZigRooted, .doc = "Create and root a Wattle value across a forced collection." },
+        .{ .name = "zig/fail", .cfun = &cfunZigFail, .doc = "Raise a controlled Wattle error after returning from Zig." },
     };
     for (defs) |d| {
         registry.def(env, d.name, wrap.fromCfunction(@ptrCast(d.cfun)), d.doc);

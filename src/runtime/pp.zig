@@ -279,7 +279,7 @@ fn intern(buffer: *buffers.Buffer) strings.String {
 /// exponent or a fraction; everything else gets `DBL_DIG` significant digits.
 fn numberToStringB(buffer: *buffers.Buffer, x: f64) raise.Error!void {
     try buffers.ensure(buffer, buffer.count + bufsize, 2);
-    const integral = x == @floor(x) and x <= constants.JANET_INTMAX_DOUBLE and x >= constants.JANET_INTMIN_DOUBLE;
+    const integral = x == @floor(x) and x <= constants.intmax_double and x >= constants.intmin_double;
     const format: [*:0]const u8 = if (integral) "%.0f" else "%.15g";
     if (x == 0.0) {
         // Print '0' rather than letting the formatter render '-0'.

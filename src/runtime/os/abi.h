@@ -15,7 +15,7 @@
   * header, one Zig type: this file is included once, by `os/abi.zig`, and the
   * files of the `os/` subtree share it.
  *
- * `janet_features.h` comes first, as it must before any system header: it is what
+ * `wattle_features.h` comes first, as it must before any system header: it is what
  * sets `_POSIX_C_SOURCE`, and without it `localtime_r`, `gmtime_r` and
  * `sigaction` are not declared.
  *
@@ -26,7 +26,7 @@
  * `isatty` declares it directly, because a one-line `extern fn` has no layout
  * to get wrong and does not grow the translation. */
 
-#include "janet_features.h"
+#include "wattle_features.h"
 
  /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
   * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
@@ -83,7 +83,7 @@ static inline const char *wattle_dirent_name(const struct dirent *entry) {
 #endif
 
 /* `spawn.h` puts its Darwin extensions behind `_DARWIN_C_SOURCE`, which
- * `janet_features.h` defines, and that block includes
+ * `wattle_features.h` defines, and that block includes
  * `mach/exception_types.h`. The chain reaches `mach/message.h`, whose message
  * descriptor structs hold bitfields; `translate-c` demotes each to an opaque
  * type, and the header's own `_Static_assert` on their sizes, live under
@@ -120,7 +120,7 @@ static inline const char *wattle_dirent_name(const struct dirent *entry) {
 #if defined(_WIN32)
 #define WATTLE_SPAWN_CHDIR 0
 #define WATTLE_SPAWN_CHDIR_NP 0
-#elif defined(JANET_SPAWN_NO_CHDIR)
+#elif defined(WATTLE_SPAWN_NO_CHDIR)
 #define WATTLE_SPAWN_CHDIR 0
 #define WATTLE_SPAWN_CHDIR_NP 0
 #elif defined(__GLIBC__)

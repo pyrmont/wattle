@@ -61,7 +61,7 @@ directories they reach.
 
 `src/api/` is what a module author reads: `abstract_type.zig`, `abi.zig`,
 `constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and `repr.zig`.
-`src/host/` is `host.zig`, `cabi.zig` and `janet_features.h`, which each of the
+`src/host/` is `host.zig`, `cabi.zig` and `wattle_features.h`, which each of the
 three host-header translations includes first.
 
 The directories state the boundary but do not enforce it. Both package roots sit
@@ -167,12 +167,12 @@ For that reason the runtime is a single compilation.
 ## Raising
 
 No configuration compiles a `setjmp`, `longjmp` or `jmp_buf`. A raise records
-its signal in `Vm`'s `pending_signal` and returns `error.JanetSignal`. A
+its signal in `Vm`'s `pending_signal` and returns `error.Signal`. A
 protected scope is `signal.tryInit` and `signal.restore` with the call between
 them. `signal.tryInit` points `return_reg` at the scope's payload, which is what
 makes a raise catchable.
 
-A raising function returns `raise.Error!T`, which is `error{JanetSignal}!T`.
+A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
 A cfunction is a Zig function: `raise.CFunction` takes `[]Value` and returns
 `raise.Error!Value` in Zig's calling convention, so `argv[n]` is bounds-checked.
 
@@ -187,7 +187,7 @@ flattens it into a report, in one of four forms:
 | `raise.panicking(f).abi` | wrap a raising function as a C-ABI function    |
 
 `raise.total(result, site)` is not a flattening form. It aborts through
-`wattle_fatal`, and is for a raise that cannot happen and would leave the
+`fatal`, and is for a raise that cannot happen and would leave the
 runtime inconsistent if it did.
 
 A report that nothing consumes aborts the process at the next protected scope,
@@ -230,7 +230,7 @@ with no Janet name among them. `res/check/seam.janet --check` fails if an
 
 ### Host structures
 
-`os/abi.h`, `net/abi.h` and `filewatch/abi.h` each include `janet_features.h`
+`os/abi.h`, `net/abi.h` and `filewatch/abi.h` each include `wattle_features.h`
 first, and each is used by a single subsystem. They exist because what they
 declare depends on the host's headers and cannot be written in Zig without
 guessing. After changing a header, clear `.zig-cache` before trusting the

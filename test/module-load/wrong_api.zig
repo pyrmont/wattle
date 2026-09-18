@@ -21,7 +21,7 @@ comptime {
         .major = config.version_major,
         .minor = config.version_minor,
         .patch = config.version_patch,
-        .bits = @intCast(constants.JANET_CURRENT_CONFIG_BITS),
+        .bits = @intCast(constants.current_config_bits),
         .zig = report.padded(builtin.zig_version_string),
         .api = 0x0123456789abcdef,
     });

@@ -61,8 +61,8 @@ var environment: *tables.Table = undefined;
 /// Pointers rather than aliases: an alias of a `const` is a *copy*, so an
 /// address taken through one would be an address the runtime never handed out,
 /// and an abstract built with it would be refused by its own type.
-const janet_s64_type = &inttypes.s64Type;
-const janet_u64_type = &inttypes.u64Type;
+const s64_type = &inttypes.s64Type;
+const u64_type = &inttypes.u64Type;
 
 // ==========================================================================
 // Aliased types
@@ -114,17 +114,17 @@ fn theHash() void {
     var low: i64 = std.math.minInt(i64);
     var u: u64 = 1;
 
-    expect(janet_s64_type.hash.?(&a, @sizeOf(i64)) == 0);
-    expect(janet_s64_type.hash.?(&b, @sizeOf(i64)) ==
-        janet_u64_type.hash.?(&u, @sizeOf(u64)));
-    expect(janet_s64_type.hash.?(&low, @sizeOf(i64)) == std.math.minInt(i32));
-    expect(janet_s64_type.hash.?(&b, @sizeOf(i64)) !=
-        janet_s64_type.hash.?(&a, @sizeOf(i64)));
+    expect(s64_type.hash.?(&a, @sizeOf(i64)) == 0);
+    expect(s64_type.hash.?(&b, @sizeOf(i64)) ==
+        u64_type.hash.?(&u, @sizeOf(u64)));
+    expect(s64_type.hash.?(&low, @sizeOf(i64)) == std.math.minInt(i32));
+    expect(s64_type.hash.?(&b, @sizeOf(i64)) !=
+        s64_type.hash.?(&a, @sizeOf(i64)));
 
     // Values differing only in the high word still separate, which is what the
     // fold is for.
     var high: i64 = @as(i64, 1) << 32;
-    expect(janet_s64_type.hash.?(&high, @sizeOf(i64)) == 1);
+    expect(s64_type.hash.?(&high, @sizeOf(i64)) == 1);
 }
 
 fn theAbstractCompare() void {
@@ -135,20 +135,20 @@ fn theAbstractCompare() void {
     var u_small: u64 = 5;
     var u_big: u64 = std.math.maxInt(u64);
 
-    expect(janet_s64_type.compare.?(&s_small, &s_big) == -1);
-    expect(janet_s64_type.compare.?(&s_big, &s_small) == 1);
-    expect(janet_s64_type.compare.?(&s_big, &s_big) == 0);
-    expect(janet_s64_type.compare.?(&s_min, &s_max) == -1);
-    expect(janet_s64_type.compare.?(&s_max, &s_min) == 1);
+    expect(s64_type.compare.?(&s_small, &s_big) == -1);
+    expect(s64_type.compare.?(&s_big, &s_small) == 1);
+    expect(s64_type.compare.?(&s_big, &s_big) == 0);
+    expect(s64_type.compare.?(&s_min, &s_max) == -1);
+    expect(s64_type.compare.?(&s_max, &s_min) == 1);
 
     // The unsigned comparison must not borrow the signed ordering.
-    expect(janet_u64_type.compare.?(&u_small, &u_big) == -1);
-    expect(janet_u64_type.compare.?(&u_big, &u_small) == 1);
-    expect(janet_u64_type.compare.?(&u_big, &u_big) == 0);
+    expect(u64_type.compare.?(&u_small, &u_big) == -1);
+    expect(u64_type.compare.?(&u_big, &u_small) == 1);
+    expect(u64_type.compare.?(&u_big, &u_big) == 0);
 
     var high_bit: u64 = @as(u64, 1) << 63;
     var one: u64 = 1;
-    expect(janet_u64_type.compare.?(&high_bit, &one) == 1);
+    expect(u64_type.compare.?(&high_bit, &one) == 1);
 }
 
 fn theSignedAgainstDoubles() void {
@@ -263,30 +263,30 @@ fn theFormatters() !void {
     const b: *buffers.Buffer = buffers.new(0);
 
     var s: i64 = 0;
-    try render(janet_s64_type, &s, b);
+    try render(s64_type, &s, b);
     expect(bufferIs(b, "0"));
 
     b.count = 0;
     s = std.math.minInt(i64);
-    try render(janet_s64_type, &s, b);
+    try render(s64_type, &s, b);
     expect(bufferIs(b, "-9223372036854775808"));
 
     b.count = 0;
     s = std.math.maxInt(i64);
-    try render(janet_s64_type, &s, b);
+    try render(s64_type, &s, b);
     expect(bufferIs(b, "9223372036854775807"));
 
     // The unsigned formatter must not print the high bit as a sign.
     b.count = 0;
     var u: u64 = std.math.maxInt(u64);
-    try render(janet_u64_type, &u, b);
+    try render(u64_type, &u, b);
     expect(bufferIs(b, "18446744073709551615"));
 
     // Formatting appends rather than replacing.
     b.count = 0;
     _ = buffers.pushCstringAbi(b, "n=");
     u = 42;
-    try render(janet_u64_type, &u, b);
+    try render(u64_type, &u, b);
     expect(bufferIs(b, "n=42"));
 }
 
@@ -329,7 +329,7 @@ fn theFlooredDivision() !void {
         expect(inttypes.isInt(result) == constants.IntType.s64);
 
         const b: *buffers.Buffer = buffers.new(0);
-        try render(janet_s64_type, wrap.toAbstract(result), b);
+        try render(s64_type, wrap.toAbstract(result), b);
         expect(bufferIs(b, case[1]));
     }
 

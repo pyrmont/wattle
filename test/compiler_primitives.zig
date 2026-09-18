@@ -19,7 +19,7 @@
 //! Eight of them are raise-capable, `valueImpl` compiling an arbitrary form
 //! that can reach a macro, a lint at strict level, or an abstract type's
 //! `tostring` inside an error message. This file calls the raising function
-//! rather than the abi beside it, so a raise crosses as `error.JanetSignal`
+//! rather than the abi beside it, so a raise crosses as `error.Signal`
 //! and the compiler checks that this file handles it.
 
 // ==========================================================================
@@ -534,7 +534,7 @@ fn aLocalIsCaptured() !strings.String {
     var slot: primitives.Slot = std.mem.zeroes(primitives.Slot);
     slot.index = 4;
     slot.envindex = -1;
-    try primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+    try primitives.nameslot(&compiler, symbol, slot, constants.defflag_no_shadowcheck);
     expect(vector.count(scope.syms) == 2);
     expect(scope.syms.items[1].sym == symbol);
     expect(scope.syms.items[1].sym2 == symbol);

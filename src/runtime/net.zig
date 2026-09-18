@@ -121,21 +121,21 @@ const sockopt_list: []const SockOpt = blk: {
 };
 
 /// The `ev/stream.Stream` flags this file sets and tests.
-const stream_acceptable: u32 = @intCast(constants.JANET_STREAM_ACCEPTABLE);
+const stream_acceptable: u32 = @intCast(constants.stream_acceptable);
 
-const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
+const stream_closed: u32 = @intCast(constants.stream_closed);
 
-const stream_nodups: u32 = @intCast(constants.JANET_STREAM_NODUPS);
+const stream_nodups: u32 = @intCast(constants.stream_nodups);
 
-const stream_readable: u32 = @intCast(constants.JANET_STREAM_READABLE);
+const stream_readable: u32 = @intCast(constants.stream_readable);
 
-const stream_socket: u32 = @intCast(constants.JANET_STREAM_SOCKET);
+const stream_socket: u32 = @intCast(constants.stream_socket);
 
-const stream_toclose: u32 = @intCast(constants.JANET_STREAM_TOCLOSE);
+const stream_toclose: u32 = @intCast(constants.stream_toclose);
 
-const stream_udpserver: u32 = @intCast(constants.JANET_STREAM_UDPSERVER);
+const stream_udpserver: u32 = @intCast(constants.stream_udpserver);
 
-const stream_writable: u32 = @intCast(constants.JANET_STREAM_WRITABLE);
+const stream_writable: u32 = @intCast(constants.stream_writable);
 
 // ==========================================================================
 // Aliased types
@@ -1182,7 +1182,7 @@ fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
 
 /// Builds a stream over a socket and registers it with the event loop.
 ///
-/// Every socket this file produces has `constants.JANET_STREAM_NODUPS` set,
+/// Every socket this file produces has `constants.stream_nodups` set,
 /// which is what lets `ev/stream.zig`'s `streamClose` skip the unregister:
 /// nothing has duplicated the descriptor, so closing it removes it from the
 /// poll set for free.

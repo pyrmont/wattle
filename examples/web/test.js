@@ -44,11 +44,11 @@ if (unused.length > 0) fail(`imports: wasi.js provides [${unused.join(", ")}], w
 console.log(`ok imports (${needed.length} of ${provided.length} provided)`);
 
 const exports = WebAssembly.Module.exports(module).map(({ name }) => name).sort();
-const expectedExports = ["_initialize", "janet_web_alloc", "janet_web_eval", "janet_web_free", "janet_web_init", "memory"];
+const expectedExports = ["_initialize", "memory", "wattle_web_alloc", "wattle_web_eval", "wattle_web_free", "wattle_web_init"];
 if (exports.join() !== expectedExports.join()) fail(`exports: [${exports.join(", ")}]`);
 console.log(`ok exports (${exports.length})`);
 
-const janet = await start(module);
+const wattle = await start(module);
 
 // Each case is a submission and what it must produce. A string matches
 // exactly; a function is a predicate over the text.
@@ -87,7 +87,7 @@ const cases = [
 ];
 
 for (const expected of cases) {
-  const result = janet.eval(expected.source);
+  const result = wattle.eval(expected.source);
   const label = JSON.stringify(expected.source);
   if (result.error) fail(`${label}: the instance stopped: ${result.error}`);
   if (result.status !== expected.status) fail(`${label}: status ${result.status}, expected ${expected.status}`);

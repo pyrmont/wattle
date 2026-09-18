@@ -19,7 +19,7 @@
 //!
 //! A `special_type.Special`'s `compile` is a raising Zig function, and this
 //! file calls it as one, with `try`. No shim stands between the two, so a
-//! raise from a macro or a lint arrives as `error.JanetSignal` and the
+//! raise from a macro or a lint arrives as `error.Signal` and the
 //! compiler checks that this file handles it.
 
 // ==========================================================================
@@ -223,7 +223,7 @@ fn theIfForm(arguments: []repr.Value) !void {
     {
         const symbol = symbols.csymbol("condition");
         const condition = compiler_primitives.farslot(&compiler).?;
-        try compiler_primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+        try compiler_primitives.nameslot(&compiler, symbol, condition, constants.defflag_no_shadowcheck);
         arguments[0] = wrap.fromSymbol(symbol);
     }
     result = try compile("if", options, 3, arguments);
@@ -349,7 +349,7 @@ fn theWhileForm(arguments: []repr.Value) !void {
     {
         const symbol = symbols.csymbol("while-condition");
         const condition = compiler_primitives.farslot(&compiler).?;
-        try compiler_primitives.nameslot(&compiler, symbol, condition, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+        try compiler_primitives.nameslot(&compiler, symbol, condition, constants.defflag_no_shadowcheck);
         arguments[0] = wrap.fromSymbol(symbol);
         const tuple = tuples.begin(1);
         tuple[0] = value.fromBytes("break", .symbol);
@@ -389,7 +389,7 @@ fn theSetForm(arguments: []repr.Value) !void {
         const symbol = symbols.csymbol("mutable");
         var slot = compiler_primitives.farslot(&compiler).?;
         slot.flags.mutable = true;
-        try compiler_primitives.nameslot(&compiler, symbol, slot, constants.JANET_DEFFLAG_NO_SHADOWCHECK);
+        try compiler_primitives.nameslot(&compiler, symbol, slot, constants.defflag_no_shadowcheck);
         arguments[0] = wrap.fromSymbol(symbol);
         arguments[1] = harness.wrapInteger(7);
         result = try compile("set", options, 2, arguments);

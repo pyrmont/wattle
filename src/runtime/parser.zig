@@ -106,7 +106,7 @@ const state_getters = [_]StateGetter{
 /// which can raise, and a `callconv(.c)` slot has no room for the error union
 /// that reports it. The error set is spelled out rather than imported, so that
 /// this declaration needs nothing above `repr` in the module graph.
-pub const Consumer = *const fn (p: *Parser, state: *ParseState, c: u8) error{JanetSignal}!bool;
+pub const Consumer = *const fn (p: *Parser, state: *ParseState, c: u8) error{Signal}!bool;
 
 /// One frame of the state stack: the consumer reading this form, where the
 /// form opened, and two counters whose meaning is the consumer's. A container

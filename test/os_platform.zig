@@ -80,7 +80,7 @@ fn unameMachine(buffer: *std.c.utsname) ?[]const u8 {
 /// project actually runs are written down. An unrecognised sysname skips the
 /// assertion rather than failing it: the point is to catch a build that is
 /// wrong about the machine under it, not to enumerate every Unix.
-fn janetNameForSysname(sysname: []const u8) ?[]const u8 {
+fn osNameForSysname(sysname: []const u8) ?[]const u8 {
     const table = [_]struct { []const u8, []const u8 }{
         .{ "Darwin", "macos" },
         .{ "Linux", "linux" },
@@ -96,7 +96,7 @@ fn janetNameForSysname(sysname: []const u8) ?[]const u8 {
     return null;
 }
 
-fn janetArchForMachine(machine: []const u8) ?[]const u8 {
+fn archForMachine(machine: []const u8) ?[]const u8 {
     const table = [_]struct { []const u8, []const u8 }{
         .{ "arm64", "aarch64" },
         .{ "aarch64", "aarch64" },
@@ -131,7 +131,7 @@ fn theClassificationAgreesWithTheMachine() void {
     // here to check.
     if (config.os_name == null) {
         if (unameSysname(&buffer)) |sysname| {
-            if (janetNameForSysname(sysname)) |expected| {
+            if (osNameForSysname(sysname)) |expected| {
                 expect(std.mem.eql(u8, cstr(os.osName()), expected));
             }
         }
@@ -139,7 +139,7 @@ fn theClassificationAgreesWithTheMachine() void {
 
     if (config.arch_name == null) {
         if (unameMachine(&buffer)) |machine| {
-            if (janetArchForMachine(machine)) |expected| {
+            if (archForMachine(machine)) |expected| {
                 expect(std.mem.eql(u8, cstr(os.osArch()), expected));
             }
         }

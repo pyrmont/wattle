@@ -61,7 +61,7 @@ const wrap = @import("subsystems").value.wrap;
 
 var child_charge: usize = 0;
 var child_saw_main: usize = 0;
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 
 /// `options.ev` is `Config.ev`, which is already `ev and !single_threaded`.
 /// Windows is cross-compiled and never executed here, so its path is left out
@@ -170,7 +170,7 @@ fn theBudgetIsPerThread() !void {
     harness.vm().gc.next_collection = 0;
 }
 
-/// A fresh fiber's first frame: base at `JANET_FRAME_SIZE`, arguments at the
+/// A fresh fiber's first frame: base at `frame_size`, arguments at the
 /// frame's slot 0, every remaining slot nil because the collector walks them.
 fn theFuncframeLayout(add: *functions.Function) void {
     const args = [_]repr.Value{ harness.wrapInteger(11), harness.wrapInteger(22) };
@@ -188,7 +188,7 @@ fn theFuncframeLayout(add: *functions.Function) void {
     expect(frame.prevframe == 0);
     // `fibers.reset` adds ENTRANCE after the frame is pushed, so the frame
     // itself must have been left with no other flags set.
-    expect(@as(i32, @bitCast(frame.flags)) == constants.JANET_STACKFRAME_ENTRANCE);
+    expect(@as(i32, @bitCast(frame.flags)) == constants.stackframe_entrance);
 
     expect(harness.integerIs(slot(fiber, fiber.frame), 11));
     expect(harness.integerIs(slot(fiber, fiber.frame + 1), 22));
@@ -304,10 +304,10 @@ fn theFuncframeTail(add: *functions.Function, other: *functions.Function) raise.
     expect(frame.func == other);
     expect(frame.pc.bytecode == other.def.?.bytecode);
     expect(frame.env == null);
-    expect(@as(i32, @bitCast(frame.flags)) & constants.JANET_STACKFRAME_TAILCALL != 0);
+    expect(@as(i32, @bitCast(frame.flags)) & constants.stackframe_tailcall != 0);
     // The entrance flag belongs to the frame, not to the function in it, and a
     // tail call must not clear it.
-    expect(@as(i32, @bitCast(frame.flags)) & constants.JANET_STACKFRAME_ENTRANCE != 0);
+    expect(@as(i32, @bitCast(frame.flags)) & constants.stackframe_entrance != 0);
 
     expect(harness.integerIs(slot(fiber, base), 30));
     expect(harness.integerIs(slot(fiber, base + 1), 40));
@@ -533,7 +533,7 @@ fn anExactFitDoesNotGrow(add: *functions.Function) raise.Error!void {
     try fibers.pushn(fiber, &three);
     expect(fiber.capacity == capacity);
 
-    // A C frame takes `JANET_FRAME_SIZE` slots above the top.
+    // A C frame takes `frame_size` slots above the top.
     fiber.stacktop = capacity - frame_size;
     fibers.cframe(fiber, raise.stored(&aCfunction));
     expect(fiber.capacity == capacity);

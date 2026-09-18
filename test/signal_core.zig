@@ -13,7 +13,7 @@
 //!
 //! ## There is one transport
 //!
-//! `raise.signal` calls `signal.signalRecord` and returns `error.JanetSignal`;
+//! `raise.signal` calls `signal.signalRecord` and returns `error.Signal`;
 //! the abi is `raise.report` over exactly that expression, and `report`'s
 //! whole body is setting a flag. `pending_signal` is where a Zig caller reads
 //! the signal, so every raising case below reads it back through
@@ -68,7 +68,7 @@ const wrap = @import("subsystems").value.wrap;
 /// `config.ev`, which is what `signal.zig` itself gates the `sched_id` bump
 /// on. Reading the same fact rather than a `Selection` field is the point: the
 /// behaviour is compiled in or it is not, and no subsystem name settles it.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 /// Signals run from OK to USER9; INTERRUPT and EVENT are aliases of USER8 and
 /// USER9 rather than values of their own, so counting the enumeration would
@@ -338,7 +338,7 @@ fn theCommitPublishesAndMarks(nothing: *functions.Function) void {
     expect(fiber.flags.did_raise);
 
     // With no current fiber the register is still written and nothing is
-    // dereferenced. `wattle_signal_record` reaches this whenever a panic is
+    // dereferenced. `signal_record` reaches this whenever a panic is
     // raised outside any fiber at all.
     reg = wrap.fromNil();
     harness.vm().fiber = null;
@@ -500,7 +500,7 @@ fn thePublicAbis() void {
     // `signal.panics` takes an interned string, which has its own length,
     // and must not re-intern it through a C string. Nothing else in the tree
     // notices: every other message raised anywhere is NUL-free, so a
-    // `janet_cstring` inserted here would produce an equal string in every
+    // `cstring` inserted here would produce an equal string in every
     // case but this one, so this is where an embedded NUL is checked.
     const embedded = strings.new("a\x00b");
     gc_alloc.gcroot(wrap.fromString(embedded));
@@ -551,14 +551,14 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     child.child = grandchild;
 
     // Preload the carrier so that a plan which only ORs shows up.
-    harness.gcSetBits(&grandchild.gc.flags, constants.JANET_FIBER_STATUS_MASK);
+    harness.gcSetBits(&grandchild.gc.flags, constants.fiber_status_mask);
     const parent_flags = parent.flags;
     const child_flags = child.flags;
 
     signal_core.signalInject(parent, abi.Signal.user3);
 
     expect(grandchild.flags.resume_signal);
-    expect((harness.gcBits(grandchild.gc.flags) & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
+    expect((harness.gcBits(grandchild.gc.flags) & constants.fiber_status_mask) >> constants.fiber_status_offset ==
         @intFromEnum(abi.Signal.user3));
 
     // The fiber's real status lives in `flags` and is untouched.
@@ -569,16 +569,16 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     expect(std.meta.eql(child.flags, child_flags));
 
     // A chain of one is its own innermost fiber.
-    grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.JANET_FIBER_STATUS_MASK));
+    grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.fiber_status_mask));
     grandchild.flags.resume_signal = false;
     parent.child = null;
     child.child = null;
     signal_core.signalInject(grandchild, abi.Signal.user1);
     expect(grandchild.flags.resume_signal);
-    expect((harness.gcBits(grandchild.gc.flags) & constants.JANET_FIBER_STATUS_MASK) >> constants.JANET_FIBER_STATUS_OFFSET ==
+    expect((harness.gcBits(grandchild.gc.flags) & constants.fiber_status_mask) >> constants.fiber_status_offset ==
         @intFromEnum(abi.Signal.user1));
 
-    grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.JANET_FIBER_STATUS_MASK));
+    grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.fiber_status_mask));
     grandchild.flags.resume_signal = false;
 }
 

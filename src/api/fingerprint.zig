@@ -17,7 +17,7 @@
 //! writes. `abstract_payload` follows them, because a module subtracts it to
 //! reach an abstract's header.
 //!
-//! The configuration bits are not in it. `constants.JANET_CURRENT_CONFIG_BITS`
+//! The configuration bits are not in it. `constants.current_config_bits`
 //! records the options a build was configured with, the loader compares that
 //! field on its own, and a refusal names whichever of the two differed. What
 //! a configured option changes about a layout is in the description anyway,
@@ -86,7 +86,7 @@ pub const build_config: abi.BuildConfig = .{
     .major = config.version_major,
     .minor = config.version_minor,
     .patch = config.version_patch,
-    .bits = constants.JANET_CURRENT_CONFIG_BITS,
+    .bits = constants.current_config_bits,
     .api = api,
     .zig = zig_version,
 };
@@ -144,7 +144,7 @@ const covered = [_]struct { name: []const u8, type: type }{
 /// The whole of what `api` hashes.
 const description: []const u8 = blk: {
     @setEvalBranchQuota(40_000_000);
-    var text: []const u8 = "janet-module-interface\n";
+    var text: []const u8 = "wattle-module-interface\n";
     for (covered) |entry| text = text ++ entry.name ++ "=" ++ typeDesc(entry.type, &.{}) ++ "\n";
     text = text ++ std.fmt.comptimePrint("abstract_payload={d}\n", .{abi.abstract_payload});
     break :blk text;

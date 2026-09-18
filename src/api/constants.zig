@@ -31,131 +31,131 @@ const repr = @import("repr");
 // Constants
 // ==========================================================================
 
-pub const JANET_BUFFER_FLAG_NO_REALLOC = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
+pub const buffer_flag_no_realloc = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
 
 /// The three bits above, or'd. A module and the runtime each put this in an
 /// `abi.BuildConfig`, and `src/runtime/env.zig` compares the two at load, so a
 /// module built under different options fails the load.
-pub const JANET_CURRENT_CONFIG_BITS: c_int =
-    JANET_SINGLE_THREADED_BIT | JANET_NANBOX_BIT | JANET_NANBOX_POINTER_SHIFT_BITS;
+pub const current_config_bits: c_int =
+    single_threaded_bit | nanbox_bit | nanbox_pointer_shift_bits;
 
 /// The compiler's three lint levels, in ascending strictness.
 /// `src/runtime/compiler.zig` declares an enum whose members take these values.
-pub const JANET_C_LINT_RELAXED: c_int = 0;
-pub const JANET_C_LINT_NORMAL: c_int = 1;
-pub const JANET_C_LINT_STRICT: c_int = 2;
+pub const c_lint_relaxed: c_int = 0;
+pub const c_lint_normal: c_int = 1;
+pub const c_lint_strict: c_int = 2;
 
 /// The two flags a definition may set, as single bits in ascending order.
 /// `src/runtime/compiler.zig` and `src/runtime/compiler/specials.zig` read
 /// them.
-pub const JANET_DEFFLAG_NO_SHADOWCHECK = @as(c_int, 1);
-pub const JANET_DEFFLAG_NO_UNUSED = @as(c_int, 2);
+pub const defflag_no_shadowcheck = @as(c_int, 1);
+pub const defflag_no_unused = @as(c_int, 2);
 
 /// The three error kinds a `do` reports, as single bits in ascending order.
 /// `src/runtime/env.zig` or's them into the flag word it returns.
-pub const JANET_DO_ERROR_RUNTIME = @as(c_int, 0x01);
-pub const JANET_DO_ERROR_COMPILE = @as(c_int, 0x02);
-pub const JANET_DO_ERROR_PARSE = @as(c_int, 0x04);
+pub const do_error_runtime = @as(c_int, 0x01);
+pub const do_error_compile = @as(c_int, 0x02);
+pub const do_error_parse = @as(c_int, 0x04);
 
 /// What a completed event-loop task gives back, numbered in ascending order.
 /// `src/runtime/ev.zig` switches on the tag to decide how to build the value a
 /// fiber is resumed with, and `src/runtime/os/process.zig` sets a tag.
-pub const JANET_EV_TCTAG_NIL = @as(c_int, 0);
-pub const JANET_EV_TCTAG_INTEGER = @as(c_int, 1);
-pub const JANET_EV_TCTAG_STRING = @as(c_int, 2);
-pub const JANET_EV_TCTAG_STRINGF = @as(c_int, 3);
-pub const JANET_EV_TCTAG_KEYWORD = @as(c_int, 4);
-pub const JANET_EV_TCTAG_ERR_STRING = @as(c_int, 5);
-pub const JANET_EV_TCTAG_ERR_STRINGF = @as(c_int, 6);
-pub const JANET_EV_TCTAG_ERR_KEYWORD = @as(c_int, 7);
-pub const JANET_EV_TCTAG_BOOLEAN = @as(c_int, 8);
+pub const ev_tctag_nil = @as(c_int, 0);
+pub const ev_tctag_integer = @as(c_int, 1);
+pub const ev_tctag_string = @as(c_int, 2);
+pub const ev_tctag_stringf = @as(c_int, 3);
+pub const ev_tctag_keyword = @as(c_int, 4);
+pub const ev_tctag_err_string = @as(c_int, 5);
+pub const ev_tctag_err_stringf = @as(c_int, 6);
+pub const ev_tctag_err_keyword = @as(c_int, 7);
+pub const ev_tctag_boolean = @as(c_int, 8);
 
 /// A fiber's flag word: a mask and a shift for the status field, then three
 /// single bits in ascending order. `src/runtime/signal.zig` and
 /// `src/runtime/value/fibers.zig` read them.
-pub const JANET_FIBER_STATUS_MASK = helpers.promoteIntLiteral(c_int, 0x3F0000, .hex);
-pub const JANET_FIBER_STATUS_OFFSET = @as(c_int, 16);
-pub const JANET_FIBER_EV_FLAG_CANCELED = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
-pub const JANET_FIBER_EV_FLAG_SUSPENDED = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
-pub const JANET_FIBER_FLAG_ROOT = helpers.promoteIntLiteral(c_int, 0x40000, .hex);
+pub const fiber_status_mask = helpers.promoteIntLiteral(c_int, 0x3F0000, .hex);
+pub const fiber_status_offset = @as(c_int, 16);
+pub const fiber_ev_flag_canceled = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
+pub const fiber_ev_flag_suspended = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
+pub const fiber_flag_root = helpers.promoteIntLiteral(c_int, 0x40000, .hex);
 
 /// A file handle's flags, as single bits in ascending order.
 /// `src/runtime/ev/stream.zig` reads them.
-pub const JANET_FILE_WRITE = @as(c_int, 1);
-pub const JANET_FILE_READ = @as(c_int, 2);
-pub const JANET_FILE_APPEND = @as(c_int, 4);
-pub const JANET_FILE_UPDATE = @as(c_int, 8);
-pub const JANET_FILE_NOT_CLOSEABLE = @as(c_int, 16);
-pub const JANET_FILE_CLOSED = @as(c_int, 32);
-pub const JANET_FILE_BINARY = @as(c_int, 64);
-pub const JANET_FILE_NONIL = @as(c_int, 512);
+pub const file_write = @as(c_int, 1);
+pub const file_read = @as(c_int, 2);
+pub const file_append = @as(c_int, 4);
+pub const file_update = @as(c_int, 8);
+pub const file_not_closeable = @as(c_int, 16);
+pub const file_closed = @as(c_int, 32);
+pub const file_binary = @as(c_int, 64);
+pub const file_nonil = @as(c_int, 512);
 
 /// A stack frame's size in `Value` slots. `src/runtime/vm.zig` and
 /// `src/runtime/marsh.zig` subtract it from a stack pointer to reach the frame
 /// header.
-pub const JANET_FRAME_SIZE = @as(c_int, 4);
+pub const frame_size = @as(c_int, 4);
 
 /// The tag of each builtin defined with inline bytecode, numbered in
 /// ascending order. `src/runtime/env.zig` passes a tag to `quickAsmDef`, and
 /// `src/runtime/compiler/specials.zig` reads them.
-pub const JANET_FUN_DEBUG = @as(c_int, 1);
-pub const JANET_FUN_ERROR = @as(c_int, 2);
-pub const JANET_FUN_APPLY = @as(c_int, 3);
-pub const JANET_FUN_YIELD = @as(c_int, 4);
-pub const JANET_FUN_RESUME = @as(c_int, 5);
-pub const JANET_FUN_IN = @as(c_int, 6);
-pub const JANET_FUN_PUT = @as(c_int, 7);
-pub const JANET_FUN_LENGTH = @as(c_int, 8);
-pub const JANET_FUN_ADD = @as(c_int, 9);
-pub const JANET_FUN_SUBTRACT = @as(c_int, 10);
-pub const JANET_FUN_MULTIPLY = @as(c_int, 11);
-pub const JANET_FUN_DIVIDE = @as(c_int, 12);
-pub const JANET_FUN_BAND = @as(c_int, 13);
-pub const JANET_FUN_BOR = @as(c_int, 14);
-pub const JANET_FUN_BXOR = @as(c_int, 15);
-pub const JANET_FUN_LSHIFT = @as(c_int, 16);
-pub const JANET_FUN_RSHIFT = @as(c_int, 17);
-pub const JANET_FUN_RSHIFTU = @as(c_int, 18);
-pub const JANET_FUN_BNOT = @as(c_int, 19);
-pub const JANET_FUN_GT = @as(c_int, 20);
-pub const JANET_FUN_LT = @as(c_int, 21);
-pub const JANET_FUN_GTE = @as(c_int, 22);
-pub const JANET_FUN_LTE = @as(c_int, 23);
-pub const JANET_FUN_EQ = @as(c_int, 24);
-pub const JANET_FUN_NEQ = @as(c_int, 25);
-pub const JANET_FUN_PROP = @as(c_int, 26);
-pub const JANET_FUN_GET = @as(c_int, 27);
-pub const JANET_FUN_NEXT = @as(c_int, 28);
-pub const JANET_FUN_MODULO = @as(c_int, 29);
-pub const JANET_FUN_REMAINDER = @as(c_int, 30);
-pub const JANET_FUN_CMP = @as(c_int, 31);
-pub const JANET_FUN_CANCEL = @as(c_int, 32);
-pub const JANET_FUN_DIVIDE_FLOOR = @as(c_int, 33);
+pub const fun_debug = @as(c_int, 1);
+pub const fun_error = @as(c_int, 2);
+pub const fun_apply = @as(c_int, 3);
+pub const fun_yield = @as(c_int, 4);
+pub const fun_resume = @as(c_int, 5);
+pub const fun_in = @as(c_int, 6);
+pub const fun_put = @as(c_int, 7);
+pub const fun_length = @as(c_int, 8);
+pub const fun_add = @as(c_int, 9);
+pub const fun_subtract = @as(c_int, 10);
+pub const fun_multiply = @as(c_int, 11);
+pub const fun_divide = @as(c_int, 12);
+pub const fun_band = @as(c_int, 13);
+pub const fun_bor = @as(c_int, 14);
+pub const fun_bxor = @as(c_int, 15);
+pub const fun_lshift = @as(c_int, 16);
+pub const fun_rshift = @as(c_int, 17);
+pub const fun_rshiftu = @as(c_int, 18);
+pub const fun_bnot = @as(c_int, 19);
+pub const fun_gt = @as(c_int, 20);
+pub const fun_lt = @as(c_int, 21);
+pub const fun_gte = @as(c_int, 22);
+pub const fun_lte = @as(c_int, 23);
+pub const fun_eq = @as(c_int, 24);
+pub const fun_neq = @as(c_int, 25);
+pub const fun_prop = @as(c_int, 26);
+pub const fun_get = @as(c_int, 27);
+pub const fun_next = @as(c_int, 28);
+pub const fun_modulo = @as(c_int, 29);
+pub const fun_remainder = @as(c_int, 30);
+pub const fun_cmp = @as(c_int, 31);
+pub const fun_cancel = @as(c_int, 32);
+pub const fun_divide_floor = @as(c_int, 33);
 
-pub const JANET_HASH_KEY_SIZE = @as(c_int, 16);
+pub const hash_key_size = @as(c_int, 16);
 
 /// The largest integer a double represents exactly, which is 2^53.
-pub const JANET_INTMAX_DOUBLE = @as(f64, 9007199254740992.0);
+pub const intmax_double = @as(f64, 9007199254740992.0);
 
 /// 2^53 as a C integer literal, whose type follows the target's `long`.
-pub const JANET_INTMAX_INT64 = helpers.promoteIntLiteral(c_int, 9007199254740992, .decimal);
+pub const intmax_int64 = helpers.promoteIntLiteral(c_int, 9007199254740992, .decimal);
 
 /// The smallest integer a double represents exactly, which is -2^53.
-pub const JANET_INTMIN_DOUBLE = -@as(f64, 9007199254740992.0);
+pub const intmin_double = -@as(f64, 9007199254740992.0);
 
 /// The two marshalling flags, as single bits in ascending order.
 /// `src/runtime/marsh.zig` reads them out of a marshalling state's flag word,
 /// and `module.isUnsafe` reports the first.
-pub const JANET_MARSHAL_UNSAFE = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
-pub const JANET_MARSHAL_NO_CYCLES = helpers.promoteIntLiteral(c_int, 0x40000, .hex);
+pub const marshal_unsafe = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
+pub const marshal_no_cycles = helpers.promoteIntLiteral(c_int, 0x40000, .hex);
 
 /// The two collector bits in a heap block's flag word, in ascending order.
 /// `src/runtime/gc/mark.zig` reads them.
-pub const JANET_MEM_REACHABLE = @as(c_int, 0x100);
-pub const JANET_MEM_DISABLED = @as(c_int, 0x200);
+pub const mem_reachable = @as(c_int, 0x100);
+pub const mem_disabled = @as(c_int, 0x200);
 
 /// `0x0` under the tagged layout, `0x1` otherwise.
-pub const JANET_NANBOX_BIT: c_int = if (config.value_repr == .tagged) 0x0 else 0x1;
+pub const nanbox_bit: c_int = if (config.value_repr == .tagged) 0x0 else 0x1;
 
 /// `0x4 << shift` under nanbox-64, and `0` under every other layout.
 ///
@@ -164,7 +164,7 @@ pub const JANET_NANBOX_BIT: c_int = if (config.value_repr == .tagged) 0x0 else 0
 /// aarch64 macOS has the same 47-bit userland address space as amd64.
 /// `build.zig` owns the predicate and `repr.pointer_shift` is the shift, and
 /// this constant reads both and adds nothing, so the three cannot drift.
-pub const JANET_NANBOX_POINTER_SHIFT_BITS: c_int =
+pub const nanbox_pointer_shift_bits: c_int =
     if (config.value_repr == .nanbox_64 and repr.pointer_shift != 0)
         @as(c_int, 0x4) << @intCast(repr.pointer_shift)
     else
@@ -172,59 +172,59 @@ pub const JANET_NANBOX_POINTER_SHIFT_BITS: c_int =
 
 /// The pretty printer's three option bits, in ascending order. Nothing under
 /// `src/` reads them; `test/pp_pretty.zig` passes them to the printer.
-pub const JANET_PRETTY_COLOR = @as(c_int, 1);
-pub const JANET_PRETTY_ONELINE = @as(c_int, 2);
-pub const JANET_PRETTY_NOTRUNC = @as(c_int, 4);
+pub const pretty_color = @as(c_int, 1);
+pub const pretty_oneline = @as(c_int, 2);
+pub const pretty_notrunc = @as(c_int, 4);
 
 /// `0x2` in a single-threaded build, `0` otherwise.
-pub const JANET_SINGLE_THREADED_BIT: c_int = if (config.single_threaded) 0x2 else 0;
+pub const single_threaded_bit: c_int = if (config.single_threaded) 0x2 else 0;
 
 /// The two stack-frame flags, as single bits in ascending order.
 /// `src/runtime/debug.zig` reads them.
-pub const JANET_STACKFRAME_TAILCALL = @as(c_int, 1);
-pub const JANET_STACKFRAME_ENTRANCE = @as(c_int, 2);
+pub const stackframe_tailcall = @as(c_int, 1);
+pub const stackframe_entrance = @as(c_int, 2);
 
 /// A stream's flags, as single bits in ascending order.
 /// `src/runtime/ev/stream.zig`, `src/runtime/net.zig` and
 /// `src/runtime/filewatch.zig` read them.
-pub const JANET_STREAM_CLOSED = @as(c_int, 0x1);
-pub const JANET_STREAM_SOCKET = @as(c_int, 0x2);
-pub const JANET_STREAM_UNREGISTERED = @as(c_int, 0x4);
-pub const JANET_STREAM_READABLE = @as(c_int, 0x200);
-pub const JANET_STREAM_WRITABLE = @as(c_int, 0x400);
-pub const JANET_STREAM_ACCEPTABLE = @as(c_int, 0x800);
-pub const JANET_STREAM_UDPSERVER = @as(c_int, 0x1000);
-pub const JANET_STREAM_NOT_CLOSEABLE = @as(c_int, 0x2000);
-pub const JANET_STREAM_TOCLOSE = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
-pub const JANET_STREAM_NODUPS = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
+pub const stream_closed = @as(c_int, 0x1);
+pub const stream_socket = @as(c_int, 0x2);
+pub const stream_unregistered = @as(c_int, 0x4);
+pub const stream_readable = @as(c_int, 0x200);
+pub const stream_writable = @as(c_int, 0x400);
+pub const stream_acceptable = @as(c_int, 0x800);
+pub const stream_udpserver = @as(c_int, 0x1000);
+pub const stream_not_closeable = @as(c_int, 0x2000);
+pub const stream_toclose = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
+pub const stream_nodups = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
 
 /// How a stack trace names a location, numbered in ascending order.
 /// `src/runtime/debug.zig` reads them.
-pub const JANET_TRACE_LOC_NONE: c_int = 0;
-pub const JANET_TRACE_LOC_SOURCEMAP: c_int = 1;
-pub const JANET_TRACE_LOC_PC: c_int = 2;
-pub const JANET_TRACE_LOC_CFUN_LINE: c_int = 3;
+pub const trace_loc_none: c_int = 0;
+pub const trace_loc_sourcemap: c_int = 1;
+pub const trace_loc_pc: c_int = 2;
+pub const trace_loc_cfun_line: c_int = 3;
 
 /// How a stack trace names a frame, numbered in ascending order.
 /// `src/runtime/debug.zig` reads them.
-pub const JANET_TRACE_NAME_NONE: c_int = 0;
-pub const JANET_TRACE_NAME_ANONYMOUS: c_int = 1;
-pub const JANET_TRACE_NAME_FUNCTION: c_int = 2;
-pub const JANET_TRACE_NAME_CFUNCTION: c_int = 3;
-pub const JANET_TRACE_NAME_CFUNCTION_BARE: c_int = 4;
+pub const trace_name_none: c_int = 0;
+pub const trace_name_anonymous: c_int = 1;
+pub const trace_name_function: c_int = 2;
+pub const trace_name_cfunction: c_int = 3;
+pub const trace_name_cfunction_bare: c_int = 4;
 
 /// `1` under the event loop.
-pub const JANET_VM_HAS_EV: c_int = if (config.ev) 1 else 0;
+pub const vm_has_ev: c_int = if (config.ev) 1 else 0;
 
 /// `0` when the interpreter does not check for an interrupt between
 /// instructions.
-pub const JANET_VM_HAS_INTERRUPT: c_int = if (config.interpreter_interrupt) 1 else 0;
+pub const vm_has_interrupt: c_int = if (config.interpreter_interrupt) 1 else 0;
 
 /// `1` under networking.
-pub const JANET_VM_HAS_NET: c_int = if (config.net) 1 else 0;
+pub const vm_has_net: c_int = if (config.net) 1 else 0;
 
 /// `1` unless the build is single-threaded.
-pub const JANET_VM_THREAD_LOCAL: c_int = if (config.single_threaded) 0 else 1;
+pub const vm_thread_local: c_int = if (config.single_threaded) 0 else 1;
 
 /// C's integer-literal promotion, whose result type follows the target's
 /// `long`. A literal a C header wrote as an `int` is spelled through it.

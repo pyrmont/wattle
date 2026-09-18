@@ -1033,7 +1033,7 @@ fn theRelationsHoldOverACorpus() void {
 /// The same properties once more, reached the way a Janet program reaches them,
 /// so that the entry points above are shown to be the ones the language is
 /// actually built on.
-fn fromJanet() void {
+fn fromWattle() void {
     var out: repr.Value = undefined;
     const src =
         "[(= [1 2] [1 2]) " ++
@@ -1126,5 +1126,5 @@ pub fn run() void {
 
     theRelationsHoldOverACorpus();
 
-    fromJanet();
+    fromWattle();
 }

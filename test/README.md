@@ -110,14 +110,14 @@ sixty-five times in one process, and that is a workload nothing else here has.
 
 Three 32-bit targets are reachable, and glibc is too. The paragraph below said
 one and none, and it was wrong for two phases. The cause was our own include
-path: a `features.h` of ours sat on the `-I` path, `-I` beats the system search
-path, and it therefore satisfied `#include <features.h>` in every libc header
-that used it. (It is `src/host/janet_features.h` now, and the rename is what
-closes the hazard.) glibc's `features.h` is what defines `__GLIBC_USE`, so `#if
+path: a `wattle_features.h` of ours sat on the `-I` path, `-I` beats the system search
+path, and it therefore satisfied `#include <wattle_features.h>` in every libc header
+that used it. (It is `src/host/wattle_features.h` now, and the rename is what
+closes the hazard.) glibc's `wattle_features.h` is what defines `__GLIBC_USE`, so `#if
 __GLIBC_USE (IEC_60559_BFP_EXT)` became `0 (...)` and the translation failed
 6,662 times. musl's 32-bit headers lost their own feature macros the same way,
 and the `__REDIR` declarations named below were the symptom rather than the
-cause. Renaming ours to `janet_features.h` opened `x86_64-linux-gnu`,
+cause. Renaming ours to `wattle_features.h` opened `x86_64-linux-gnu`,
 `aarch64-linux-gnu`, `x86-linux-musl` and `arm-linux-musleabihf` in one change.
 
 The rule generalises beyond the fix, and it is rule 47's family: a failure
@@ -141,7 +141,7 @@ wrong diagnosis plausible.
 A 32-bit target is reachable, only one is, and it belongs in the set as a
 compile check. Zig 0.16's translate-c front end (Aro) rejects musl's 32-bit
 `time64` `__REDIR` declarations, which appear in `sched.h` and `time.h` and are
-reached by `abi.zig` through `features.h`. That fails the shared translation, so
+reached by `abi.zig` through `wattle_features.h`. That fails the shared translation, so
 on `x86-linux-musl` and `arm-linux-musleabihf` every Zig subsystem fails to
 compile at once. `x86-windows-gnu` fails in `malloc.h` and the shipped glibc
 headers fail in `libc-header-start.h`. `riscv32-linux-musl` is the target that

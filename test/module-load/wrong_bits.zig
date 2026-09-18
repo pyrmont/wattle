@@ -1,7 +1,7 @@
 //! A native module reporting configuration bits no build sets, so that the
 //! loader's first comparison is the one that refuses it.
 //!
-//! Bit `0x40000000` names no option. `constants.JANET_CURRENT_CONFIG_BITS`
+//! Bit `0x40000000` names no option. `constants.current_config_bits`
 //! with that bit added therefore differs from the host's bits whatever this
 //! build was configured with, and the fields the loader compares after `bits`
 //! are the host's own, so a refusal naming either of those two is the
@@ -21,7 +21,7 @@ comptime {
         .major = config.version_major,
         .minor = config.version_minor,
         .patch = config.version_patch,
-        .bits = @intCast(constants.JANET_CURRENT_CONFIG_BITS | 0x40000000),
+        .bits = @intCast(constants.current_config_bits | 0x40000000),
         .zig = report.padded(builtin.zig_version_string),
     });
 }

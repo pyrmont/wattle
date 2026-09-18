@@ -110,7 +110,7 @@ pub const BindingType = enum(u32) {
 ///
 /// It is a struct rather than a function because a caller with a
 /// sentinel-terminated table cannot pass a slice: `capi.zig`'s
-/// `janet_cfuns_ext` takes the rows one at a time through `put`, and the name
+/// `cfuns_ext` takes the rows one at a time through `put`, and the name
 /// buffer's lifetime is what the type owns.
 pub const Installer = struct {
     env: ?*tables.Table,

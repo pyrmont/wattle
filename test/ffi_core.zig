@@ -915,11 +915,11 @@ fn hasCallableConvention() bool {
 }
 
 fn reachable(head: *abi.AbstractHead) bool {
-    return harness.gcBits(head.gc.flags) & constants.JANET_MEM_REACHABLE != 0;
+    return harness.gcBits(head.gc.flags) & constants.mem_reachable != 0;
 }
 
 fn unmark(head: *abi.AbstractHead) void {
-    head.gc.flags = @bitCast(harness.gcBits(head.gc.flags) & ~@as(u32, constants.JANET_MEM_REACHABLE));
+    head.gc.flags = @bitCast(harness.gcBits(head.gc.flags) & ~@as(u32, constants.mem_reachable));
 }
 
 /// A struct type and a signature each mark the struct types they hold. The

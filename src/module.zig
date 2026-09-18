@@ -362,7 +362,7 @@ pub const Dictionary = struct {
 /// includes are stored inside the runtime: the value goes to the fiber's
 /// return register and the signal beside it. Every function here that can
 /// raise returns `Error!T`.
-pub const Error = error{JanetSignal};
+pub const Error = error{Signal};
 
 /// The elements of an array, a vector, a tuple or an indexed abstract, read by
 /// position or in order.
@@ -666,7 +666,7 @@ pub fn bytesView(v: Value) ?[]const u8 {
 /// function or cfunction, got x". A method call on a keyword is `mcall`.
 ///
 /// This function raises on anything but a return. An error from Janet code
-/// arrives as `Error.JanetSignal` with the error's payload. A yield or a
+/// arrives as `Error.Signal` with the error's payload. A yield or a
 /// debug signal arrives coerced as the same type.
 ///
 /// This function re-enters Janet code, so the re-entry rules at the top of
@@ -997,7 +997,7 @@ pub fn getNumber(argv: []const Value, n: i32) Error!f64 {
 ///
 /// This can be used for a function like `(f x &opt start end)`.
 pub fn getRange(argv: []const Value, n: i32, len: usize) Error!Range {
-    if (len > std.math.maxInt(i32)) return panic("length exceeds the range a Janet index can name");
+    if (len > std.math.maxInt(i32)) return panic("length exceeds the range a Wattle index can name");
     return fromAbi(interface.rt.getrange(argv.ptr, @intCast(argv.len), n, @intCast(len)));
 }
 
@@ -1124,7 +1124,7 @@ pub fn isUnsafe(capability: anytype) bool {
         interface.rt.marshal_flags(capability)
     else
         interface.rt.unmarshal_flags(capability);
-    return (flags & constants.JANET_MARSHAL_UNSAFE) != 0;
+    return (flags & constants.marshal_unsafe) != 0;
 }
 
 /// Wraps a slice of `u8` as a keyword.
@@ -1376,7 +1376,7 @@ pub fn pullSize(u: *Unmarshal) Error!usize {
 /// Reads a `Value` from the unmarshalling stream, re-entering the
 /// unmarshaller's own traversal.
 pub fn pullValue(u: *Unmarshal) Error!Value {
-    return fromAbi(interface.rt.unmarshal_janet(u));
+    return fromAbi(interface.rt.unmarshal_value(u));
 }
 
 /// Appends bytes to the buffer into which a value is being rendered.
@@ -1447,7 +1447,7 @@ pub fn pushSize(m: *Marshal, n: usize) Error!void {
 /// Writes a `Value` to the marshalling stream, re-entering the marshaller's
 /// own traversal.
 pub fn pushValue(m: *Marshal, v: Value) Error!void {
-    return fromAbi(interface.rt.marshal_janet(m, v));
+    return fromAbi(interface.rt.marshal_value(m, v));
 }
 
 /// Puts `x` in `d` associated with `key`.

@@ -339,7 +339,7 @@ pub fn lib(env: *tables.Table) void {
             "not appear in `set`."),
         corefn.reg("string/join", &cfunStringJoin, @src(), "(string/join parts &opt sep)", "Joins an array of strings into one string, optionally separated by " ++
             "a separator string `sep`."),
-        corefn.reg("string/format", &cfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Janet values. Returns " ++
+        corefn.reg("string/format", &cfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
             "a new string.\n\n" ++
             "The following conversion specifiers are supported, where the upper case specifiers generate " ++
             "upper case output:\n" ++
@@ -355,7 +355,7 @@ pub fn lib(env: *tables.Table) void {
             "- `t`: emit the type of the given value.\n" ++
             "- `v`: format with (describe x)\n" ++
             "- `V`: format with (string x)\n" ++
-            "- `j`: format to jdn (Janet data notation).\n" ++
+            "- `w`: format to wdn (Wattle data notation).\n" ++
             "\n" ++
             "The following conversion specifiers are used for \"pretty-printing\", where the upper-case " ++
             "variants generate colored output. These specifiers can take a precision " ++

@@ -5,7 +5,7 @@
 //! Adapted from Lua's `lstrlib.c`. A specifier is rewritten into an ordinary
 //! C one and handed to `c.snprintf` for the numeric and string conversions.
 //! The Janet-specific conversions are rendered here: `%v`, `%V`, `%t`, `%T`,
-//! `%K`, `%j` and the eight spellings of pretty-printing.
+//! `%K`, `%w` and the eight spellings of pretty-printing.
 //!
 //! `formatTuple` takes its arguments as a comptime tuple rather than a
 //! `va_list`, and its format string is `comptime` too, so the walk happens
@@ -267,7 +267,7 @@ pub fn bufferFormat(
             'v' => try pp_describe.descriptionB(b, argv[arg]),
             't' => try buffers.pushBytes(b, typestr(argv[arg])),
 
-            'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
+            'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'w' => try renderPretty(
                 b,
                 conversion,
                 &spec,
@@ -703,7 +703,7 @@ inline fn renderConversion(
         'T' => try pushtypes(b, @as(repr.TagSet, arg)),
         'K' => try pushProtocolTypes(b, @as(repr.TagSet, arg)),
 
-        'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'j' => try renderPretty(
+        'M', 'm', 'N', 'n', 'Q', 'q', 'P', 'p', 'w' => try renderPretty(
             b,
             conversion,
             &local,
@@ -721,17 +721,17 @@ inline fn renderConversion(
     try item.flush(b);
 }
 
-/// Renders the eight pretty conversions and `%j`, which both drivers reach the
+/// Renders the eight pretty conversions and `%w`, which both drivers reach the
 /// same way.
 ///
 /// `b` is the destination, `conversion` the conversion character, `spec` its
 /// specifier, `x` the value, and `startlen` where the message being formatted
 /// began in `b`, which is what the pretty printer measures a line from.
 fn renderPretty(b: *buffers.Buffer, conversion: u8, spec: *const Specifier, x: repr.Value, startlen: usize) raise.Error!void {
-    if (conversion == 'j') {
+    if (conversion == 'w') {
         var depth = Specifier.number(&spec.precision);
         if (depth < 1) depth = recursion_guard;
-        _ = try pretty.jdn(b, depth, x, startlen, b.count);
+        _ = try pretty.wdn(b, depth, x, startlen, b.count);
         return;
     }
     const opts = PrettyOpts.decode(conversion, spec);

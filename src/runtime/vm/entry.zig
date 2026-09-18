@@ -67,13 +67,13 @@ const wrap = @import("../value/helpers/wrap.zig");
 // ==========================================================================
 
 /// A stack frame's size in `Value` slots.
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 
 /// Whether this build has the event loop. Two regions below are the loop's:
 /// the `sched_id` bump on a coerced `Signal.event`, and the wording of the
 /// root-fiber refusal, which names `ev/cancel` and `ev/go` only where those
 /// exist.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 // ==========================================================================
 // Types
@@ -127,7 +127,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 
     // Check entry conditions.
     if (v.fiber == null) {
-        return raise.panic("janet_call failed because there is no current fiber");
+        return raise.panic("call_value failed because there is no current fiber");
     }
     if (v.stackn >= config.recursion_guard) {
         return raise.panic("C stack recursed too deeply");
@@ -199,7 +199,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 /// types, which index their one argument rather than call it. This is that
 /// whole vocabulary reached from a host frame. `mcallValue` below needs all of
 /// it, because a looked-up method may be any of them; `capi.zig`'s
-/// `janet_call_value` refuses everything but a function and a cfunction
+/// `call_value` refuses everything but a function and a cfunction
 /// before calling this.
 ///
 /// The arguments are copied onto the current fiber's stack, under a `cframe`
@@ -235,7 +235,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.Value {
     const v = vm_state.pinned();
     if (v.fiber == null) {
-        return raise.panic("janet_call failed because there is no current fiber");
+        return raise.panic("call_value failed because there is no current fiber");
     }
     const fiber = vm_state.fiberOf(v);
     // The stack is clean here, and this is where that is checked rather than

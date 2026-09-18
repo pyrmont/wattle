@@ -676,7 +676,7 @@ comptime {
 }
 
 comptime {
-    if (has_ev != (constants.JANET_VM_HAS_EV != 0))
+    if (has_ev != (constants.vm_has_ev != 0))
         @compileError("config.ev disagrees with constants' restatement of it");
 }
 

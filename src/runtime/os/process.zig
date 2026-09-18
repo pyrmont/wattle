@@ -880,7 +880,7 @@ fn cfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
     var action: h.struct_sigaction = std.mem.zeroes(h.struct_sigaction);
     action.sa_flags |= h.SA_RESTART;
     if (can_interrupt) {
-        if (constants.JANET_VM_HAS_INTERRUPT == 0) return raise.panic("interpreter interrupt not enabled");
+        if (constants.vm_has_interrupt == 0) return raise.panic("interpreter interrupt not enabled");
         setHandler(&action, &Trampolines.interrupting);
     } else {
         setHandler(&action, &Trampolines.plain);
@@ -1390,7 +1390,7 @@ fn shellSubroutine(args: ev_loop.GenericMessage) callconv(.c) ev_loop.GenericMes
     const stat = shell(@ptrCast(@alignCast(args.argp)));
     utils.free(args.argp);
     out.argp = null;
-    out.tag = if (args.argi != 0) constants.JANET_EV_TCTAG_INTEGER else constants.JANET_EV_TCTAG_BOOLEAN;
+    out.tag = if (args.argi != 0) constants.ev_tctag_integer else constants.ev_tctag_boolean;
     out.argi = stat;
     return out;
 }

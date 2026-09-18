@@ -100,16 +100,16 @@ pub const android = builtin.abi.isAndroid();
 
 /// The three fiber flags the scheduler tests, which are `fibers.FiberFlags`
 /// bits read as a word.
-const fiber_flag_canceled: i32 = @intCast(constants.JANET_FIBER_EV_FLAG_CANCELED);
-const fiber_flag_root: i32 = @intCast(constants.JANET_FIBER_FLAG_ROOT);
-const fiber_flag_suspended: i32 = @intCast(constants.JANET_FIBER_EV_FLAG_SUSPENDED);
+const fiber_flag_canceled: i32 = @intCast(constants.fiber_ev_flag_canceled);
+const fiber_flag_root: i32 = @intCast(constants.fiber_flag_root);
+const fiber_flag_suspended: i32 = @intCast(constants.fiber_ev_flag_suspended);
 
 /// Whether this build has the interrupt, which decides whether `loop1` polls
 /// for one.
-pub const has_interrupt = constants.JANET_VM_HAS_INTERRUPT != 0;
+pub const has_interrupt = constants.vm_has_interrupt != 0;
 
 /// Whether this build has the net subsystem.
-pub const has_net = constants.JANET_VM_HAS_NET != 0;
+pub const has_net = constants.vm_has_net != 0;
 
 /// The longest kqueue timer interval this build will ask for, in milliseconds.
 /// macOS's `kevent` refuses a timeout whose `tv_sec` is above 2147483647 with
@@ -502,28 +502,28 @@ pub fn evDefaultThreadedCallback(return_value: GenericMessage) callconv(.c) void
     };
     if (fibers.canResume(fiber)) {
         switch (return_value.tag) {
-            constants.JANET_EV_TCTAG_INTEGER => schedule(fiber, wrap.fromInteger(return_value.argi)),
-            constants.JANET_EV_TCTAG_STRING, constants.JANET_EV_TCTAG_STRINGF => schedule(
+            constants.ev_tctag_integer => schedule(fiber, wrap.fromInteger(return_value.argi)),
+            constants.ev_tctag_string, constants.ev_tctag_stringf => schedule(
                 fiber,
                 value.fromBytes(std.mem.span(payloadText(return_value)), .string),
             ),
-            constants.JANET_EV_TCTAG_KEYWORD => schedule(
+            constants.ev_tctag_keyword => schedule(
                 fiber,
                 value.fromBytes(std.mem.span(payloadText(return_value)), .keyword),
             ),
-            constants.JANET_EV_TCTAG_ERR_STRING, constants.JANET_EV_TCTAG_ERR_STRINGF => raise.total(cancel(
+            constants.ev_tctag_err_string, constants.ev_tctag_err_stringf => raise.total(cancel(
                 fiber,
                 value.fromBytes(std.mem.span(payloadText(return_value)), .string),
             ), "a threaded call's error reply"),
-            constants.JANET_EV_TCTAG_ERR_KEYWORD => raise.total(cancel(
+            constants.ev_tctag_err_keyword => raise.total(cancel(
                 fiber,
                 value.fromBytes(std.mem.span(payloadText(return_value)), .keyword),
             ), "a threaded call's error reply"),
-            constants.JANET_EV_TCTAG_BOOLEAN => schedule(
+            constants.ev_tctag_boolean => schedule(
                 fiber,
                 wrap.fromBoolean(return_value.argi != 0),
             ),
-            // JANET_EV_TCTAG_NIL, and every tag the C switch sends to
+            // ev_tctag_nil, and every tag the C switch sends to
             // `default`, which is the same arm.
             else => schedule(fiber, wrap.fromNil()),
         }
@@ -1282,10 +1282,10 @@ fn cfunThread(argv: []repr.Value) raise.Error!repr.Value {
         outOfMemory(@src())));
     _ = buffers.init(buffer, 0);
     if (flags & 0x2 == 0) {
-        try marsh.marshal(buffer, wrap.fromTable(vm_state.current().abstract_registry.?), null, constants.JANET_MARSHAL_UNSAFE);
+        try marsh.marshal(buffer, wrap.fromTable(vm_state.current().abstract_registry.?), null, constants.marshal_unsafe);
     }
     if (supervisor) |sup| {
-        try marsh.marshal(buffer, wrap.fromAbstract(sup), null, constants.JANET_MARSHAL_UNSAFE);
+        try marsh.marshal(buffer, wrap.fromAbstract(sup), null, constants.marshal_unsafe);
     }
     if (flags & 0x4 == 0) {
         assert(@src(), vm_state.current().registry.rows.items.len <= std.math.maxInt(i32), "assert failed size check");
@@ -1296,8 +1296,8 @@ fn cfunThread(argv: []repr.Value) raise.Error!repr.Value {
             std.mem.sliceAsBytes(vm_state.current().registry.rows.items),
         );
     }
-    try marsh.marshal(buffer, argv[0], null, constants.JANET_MARSHAL_UNSAFE);
-    try marsh.marshal(buffer, val, null, constants.JANET_MARSHAL_UNSAFE);
+    try marsh.marshal(buffer, argv[0], null, constants.marshal_unsafe);
+    try marsh.marshal(buffer, val, null, constants.marshal_unsafe);
 
     if (flags & 0x1 != 0) {
         // Return immediately.
@@ -1339,8 +1339,8 @@ inline fn eprintf(comptime format: [:0]const u8, args: anytype) void {
 /// the request pointer the subroutine has already released in that slot.
 inline fn freeThreadedPayload(return_value: GenericMessage) void {
     switch (return_value.tag) {
-        constants.JANET_EV_TCTAG_STRINGF,
-        constants.JANET_EV_TCTAG_ERR_STRINGF,
+        constants.ev_tctag_stringf,
+        constants.ev_tctag_err_stringf,
         => utils.free(return_value.argp),
         else => {},
     }
@@ -1356,7 +1356,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
     if (flags & 0x2 == 0) {
         const aregv = try marsh.unmarshal(
             ctx.next[0 .. @intFromPtr(ctx.end) - @intFromPtr(ctx.next)],
-            constants.JANET_MARSHAL_UNSAFE,
+            constants.marshal_unsafe,
             null,
             @ptrCast(&ctx.next),
         );
@@ -1369,7 +1369,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
     if (flags & thread_supervisor_flag != 0) {
         const sup = try marsh.unmarshal(
             ctx.next[0 .. @intFromPtr(ctx.end) - @intFromPtr(ctx.next)],
-            constants.JANET_MARSHAL_UNSAFE,
+            constants.marshal_unsafe,
             null,
             @ptrCast(&ctx.next),
         );
@@ -1401,13 +1401,13 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
 
     const fiberv = try marsh.unmarshal(
         ctx.next[0 .. @intFromPtr(ctx.end) - @intFromPtr(ctx.next)],
-        constants.JANET_MARSHAL_UNSAFE,
+        constants.marshal_unsafe,
         null,
         @ptrCast(&ctx.next),
     );
     const val = try marsh.unmarshal(
         ctx.next[0 .. @intFromPtr(ctx.end) - @intFromPtr(ctx.next)],
-        constants.JANET_MARSHAL_UNSAFE,
+        constants.marshal_unsafe,
         null,
         @ptrCast(&ctx.next),
     );
@@ -1444,7 +1444,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
     // raise-capable, and a report nobody here consumes is exactly what
     // `res/check/swallowed.janet` finds.
     try loop();
-    ctx.args.tag = constants.JANET_EV_TCTAG_NIL;
+    ctx.args.tag = constants.ev_tctag_nil;
 }
 
 /// The protected scope `ev/thread`'s child interpreter runs under.
@@ -1511,13 +1511,13 @@ fn goThreadSubr(args_in: GenericMessage) callconv(.c) GenericMessage {
         } else {
             // Make the ev/thread call from the parent thread error.
             if (repr.checkType(payload, repr.Tag.string)) {
-                args.tag = constants.JANET_EV_TCTAG_ERR_STRINGF;
+                args.tag = constants.ev_tctag_err_stringf;
                 const msg = wrap.toString(payload);
                 const len: usize = strings.head(msg).length;
                 args.argp = utils.malloc(len + 1);
                 @memcpy(@as([*]u8, @ptrCast(args.argp))[0 .. len + 1], msg[0 .. len + 1]);
             } else {
-                args.tag = constants.JANET_EV_TCTAG_ERR_STRING;
+                args.tag = constants.ev_tctag_err_string;
                 args.argp = @ptrCast(@constCast("failed to start thread"));
             }
         }

@@ -579,14 +579,14 @@ fn theByteAndCstringShapes() raise.Error!void {
 /// The third cbytes shape: a buffer that cannot be realloced and is exactly
 /// full, where pushing a terminator would raise. It is copied with the scratch
 /// allocator instead, which the suites never reach: nothing in the runtime
-/// sets `JANET_BUFFER_FLAG_NO_REALLOC`, so such a buffer is only ever built by
+/// sets `buffer_flag_no_realloc`, so such a buffer is only ever built by
 /// hand, as this case does.
 fn cbytesCopiesAFullNoReallocBuffer() raise.Error!void {
     const b = buffers.new(0);
     var backing = [_]u8{ 'a', 'b', 'c' };
 
     // Not `buffers.init`, which is for a buffer the caller owns: it sets
-    // `gc.data.next = null` and `gc.flags = JANET_MEM_DISABLED`, and on a
+    // `gc.data.next = null` and `gc.flags = mem_disabled`, and on a
     // *collectable* buffer that writes through the block at the head of the
     // heap list and severs it.
     //
@@ -596,7 +596,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Error!void {
     b.data = &backing;
     b.count = 3;
     b.capacity = 3;
-    harness.gcSetBits(&b.gc.flags, constants.JANET_BUFFER_FLAG_NO_REALLOC);
+    harness.gcSetBits(&b.gc.flags, constants.buffer_flag_no_realloc);
 
     // The block is on the heap list now, and a value reachable only from a
     // local is
@@ -617,7 +617,7 @@ fn cbytesCopiesAFullNoReallocBuffer() raise.Error!void {
     b.data = null;
     b.count = 0;
     b.capacity = 0;
-    b.gc.flags = @bitCast(harness.gcBits(b.gc.flags) & ~@as(u32, constants.JANET_BUFFER_FLAG_NO_REALLOC));
+    b.gc.flags = @bitCast(harness.gcBits(b.gc.flags) & ~@as(u32, constants.buffer_flag_no_realloc));
 }
 
 /// A `bytes` callback, non-raising because it is reached from paths that

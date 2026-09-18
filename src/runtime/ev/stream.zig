@@ -136,16 +136,16 @@ pub const streamType = abstract_type.define(Stream, .{
 
 /// The stream flag word: what the stream is, what it can do, and what has
 /// happened to it.
-const stream_acceptable: u32 = @intCast(constants.JANET_STREAM_ACCEPTABLE);
-const stream_closed: u32 = @intCast(constants.JANET_STREAM_CLOSED);
-const stream_nodups: u32 = @intCast(constants.JANET_STREAM_NODUPS);
-const stream_not_closeable: u32 = @intCast(constants.JANET_STREAM_NOT_CLOSEABLE);
-const stream_readable: u32 = @intCast(constants.JANET_STREAM_READABLE);
-const stream_socket: u32 = @intCast(constants.JANET_STREAM_SOCKET);
-const stream_toclose: u32 = @intCast(constants.JANET_STREAM_TOCLOSE);
-const stream_udpserver: u32 = @intCast(constants.JANET_STREAM_UDPSERVER);
-const stream_unregistered: u32 = @intCast(constants.JANET_STREAM_UNREGISTERED);
-const stream_writable: u32 = @intCast(constants.JANET_STREAM_WRITABLE);
+const stream_acceptable: u32 = @intCast(constants.stream_acceptable);
+const stream_closed: u32 = @intCast(constants.stream_closed);
+const stream_nodups: u32 = @intCast(constants.stream_nodups);
+const stream_not_closeable: u32 = @intCast(constants.stream_not_closeable);
+const stream_readable: u32 = @intCast(constants.stream_readable);
+const stream_socket: u32 = @intCast(constants.stream_socket);
+const stream_toclose: u32 = @intCast(constants.stream_toclose);
+const stream_udpserver: u32 = @intCast(constants.stream_udpserver);
+const stream_unregistered: u32 = @intCast(constants.stream_unregistered);
+const stream_writable: u32 = @intCast(constants.stream_writable);
 
 /// Whether this target takes the completion-port arm of every transfer below.
 const windows = ev.windows;
@@ -269,7 +269,7 @@ pub fn cfunStreamWrite(argv: []repr.Value) raise.Error!repr.Value {
     return writeGeneric(s, @constCast(bytes.bytes), null, write_mode_write, false, 0);
 }
 
-/// Closes a stream marked `constants.JANET_STREAM_TOCLOSE`, once nothing is
+/// Closes a stream marked `constants.stream_toclose`, once nothing is
 /// listening on it.
 pub fn checkToClose(s: *Stream) raise.Error!void {
     if ((s.flags & stream_toclose != 0) and s.read_fiber == null and s.write_fiber == null) {
@@ -627,13 +627,13 @@ fn getFileForStream(s: *Stream) raise.Error!?*io_core.File {
     var fmt = [_]u8{ 0, 0, 0, 0 };
     var index: usize = 0;
     if (s.flags & stream_readable != 0) {
-        flags |= constants.JANET_FILE_READ;
+        flags |= constants.file_read;
         try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
         fmt[index] = 'r';
         index += 1;
     }
     if (s.flags & stream_writable != 0) {
-        flags |= constants.JANET_FILE_WRITE;
+        flags |= constants.file_write;
         try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
         fmt[index] = if (index == 0) 'w' else '+';
         index += 1;
@@ -881,7 +881,7 @@ fn streamMark(stream: *Stream, _: usize) void {
 
 /// Writes the descriptor and the flags, which only an unsafe marshal may do.
 fn streamMarshal(s: *Stream, m: *abi.Marshal) raise.Error!void {
-    if (marsh.marshalFlags(m) & constants.JANET_MARSHAL_UNSAFE == 0) {
+    if (marsh.marshalFlags(m) & constants.marshal_unsafe == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
     // This stream might now be duplicated, which invalidates some EV
@@ -939,7 +939,7 @@ fn streamToString(stream: *Stream, render: *abi.Render) raise.Error!void {
 
 /// Reattaches a descriptor read back out of a stream, and registers it.
 fn streamUnmarshal(u: *abi.Unmarshal) raise.Error!*Stream {
-    if (marsh.unmarshalFlags(u) & constants.JANET_MARSHAL_UNSAFE == 0) {
+    if (marsh.unmarshalFlags(u) & constants.marshal_unsafe == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
     const p: *Stream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Stream))));

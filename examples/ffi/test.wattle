@@ -75,7 +75,7 @@
   (def buf (ffi/write t value))
   (def same-value (ffi/read t buf))
   (assert (deep= value same-value)
-          (string/format "round trip %j (got %j)" value same-value)))
+          (string/format "round trip %w (got %w)" value same-value)))
 
 (check-round-trip :bool true)
 (check-round-trip :bool false)

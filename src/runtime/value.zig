@@ -47,7 +47,7 @@ const vm_state = @import("vm/state.zig");
 
 /// The per-process key the pseudo-random hash draws from, and its width.
 /// `initHashKey` fills it at startup.
-const hash_key_size = constants.JANET_HASH_KEY_SIZE;
+const hash_key_size = constants.hash_key_size;
 var hash_key: [hash_key_size]u8 = @splat(0);
 
 /// The seed both byte hashes start their mixing from. It is upstream Janet's,

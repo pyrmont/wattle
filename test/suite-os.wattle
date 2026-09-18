@@ -21,7 +21,7 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
-(def janet (dyn :executable))
+(def wattle (dyn :executable))
 (def run (filter next (string/split " " (os/getenv "SUBRUN" ""))))
 
 ; OS Date test
@@ -160,7 +160,7 @@
 (compwhen (dyn 'os/execute)
   ; os/execute with environment variables
   ; issue #636 - 7e2c433ab
-  (assert (= 0 (os/execute [|run janet "-e" "(+ 1 2 3)"] :pe
+  (assert (= 0 (os/execute [|run wattle "-e" "(+ 1 2 3)"] :pe
                            (merge (os/environ) {"HELLO" "WORLD"})))
           "os/execute with env")
 
@@ -168,14 +168,14 @@
   ; pr #1686
   ; native MinGW can't find system DLLs without PATH, SystemRoot, etc. and so fails
   ; Also fails for address sanitizer builds on windows.
-  (def result (os/execute [|run janet "-e" "(+ 1 2 3)"] :pe {}))
+  (def result (os/execute [|run wattle "-e" "(+ 1 2 3)"] :pe {}))
   (assert (or (= result -1073741515) (= result 0))
           "os/execute with minimal env")
 
   ; os/execute regressions
   ; 427f7c362
   (for i 0 10
-    (assert (= i (os/execute [|run janet "-e"
+    (assert (= i (os/execute [|run wattle "-e"
                               (string/format "(os/exit %d)" i)] :p))
             (string "os/execute " i)))
 
@@ -190,7 +190,7 @@
                                    "/dev/null"))
                        (os/open path :w))
                      (with [dn (devnull)]
-                       (os/execute [|run janet
+                       (os/execute [|run wattle
                                     "-e"
                                     "(print :foo) (eprint :bar)"]
                                    :px
@@ -207,7 +207,7 @@
                                    "/dev/null"))
                        (os/open path (if (= os :windows) :wWI :wW)))
                      (with [dn (devnull)]
-                       (os/execute [|run janet
+                       (os/execute [|run wattle
                                     "-e"
                                     "(print :foo) (eprint :bar)"]
                                    :px
@@ -225,7 +225,7 @@
 ; none of these bindings, and a missing binding is a compile error.
 (compwhen (dyn 'os/spawn)
   (defn child [code &opt flags env]
-    (def p (os/spawn [|run janet "-e" code] (or flags :p)
+    (def p (os/spawn [|run wattle "-e" code] (or flags :p)
                      (merge {:out :pipe} (or env {}))))
     (def out (string (:read (p :out) :all)))
     [(os/proc-wait p) out])
@@ -250,27 +250,27 @@
         (assert (= [0 (string (os/stat path :inode))]
                    (child """(prin (os/stat "/dev/fd/0" :inode))""" :p {:in f}))
                 "a file for stdin is descriptor 0"))
-      (assert (= [0 (string/format "%j" (os/stat "/dev/fd/0" :inode))]
-                 (child """(prinf "%j" (os/stat "/dev/fd/0" :inode))""" :p {:in stdin}))
+      (assert (= [0 (string/format "%w" (os/stat "/dev/fd/0" :inode))]
+                 (child """(prinf "%w" (os/stat "/dev/fd/0" :inode))""" :p {:in stdin}))
               "stdin given as itself stays open")
       (def own-out (os/stat "/dev/fd/1" :inode))
-      (assert (= 0 (os/execute [|run janet "-e"
-                                (string/format """(os/exit (if (= %j (os/stat "/dev/fd/1" :inode)) 0 1))"""
+      (assert (= 0 (os/execute [|run wattle "-e"
+                                (string/format """(os/exit (if (= %w (os/stat "/dev/fd/1" :inode)) 0 1))"""
                                                own-out)]
                                :p {:out stdout}))
               "stdout given as itself stays open")
       (with [f (file/open path :r+)]
-        (assert (= 0 (os/execute [|run janet "-e" "nil"] :p {:in f :out f}))
+        (assert (= 0 (os/execute [|run wattle "-e" "nil"] :p {:in f :out f}))
                 "one file may be stdin and stdout")
-        (assert (= 0 (os/execute [|run janet "-e" "nil"] :p {:in f :err f :out stdout}))
+        (assert (= 0 (os/execute [|run wattle "-e" "nil"] :p {:in f :err f :out stdout}))
                 "one file may be stdin and stderr"))
       (with [f (file/open err-path :w)]
-        (os/execute [|run janet "-e" """(eprin "e")"""] :p {:err f}))
+        (os/execute [|run wattle "-e" """(eprin "e")"""] :p {:err f}))
       (assert (= "e" (string (slurp err-path))) "a file for stderr is descriptor 2")))
 
   ; Only os/spawn makes pipes; os/execute refuses the keyword.
   (assert (= "expected file|stream, got :pipe"
-             (in (protect (os/execute [|run janet "-e" "nil"] :p {:in :pipe})) 1))
+             (in (protect (os/execute [|run wattle "-e" "nil"] :p {:in :pipe})) 1))
           "os/execute refuses :pipe")
 
   ; A file given to os/spawn becomes a stream the process keeps, readable or
@@ -313,12 +313,12 @@
           "a child is started with an empty name in its environment")
 
   ; A map gives the options and the environment as a table does.
-  (let [p (os/spawn [|run janet "-e" """(prin (os/getenv "WATTLE_MAP"))"""] :pe
+  (let [p (os/spawn [|run wattle "-e" """(prin (os/getenv "WATTLE_MAP"))"""] :pe
                     (hash-map :out :pipe "WATTLE_MAP" "x"))
         out (string (:read (p :out) :all))]
     (assert (= [0 "x"] [(os/proc-wait p) out]) "a map as the options and the environment"))
   (assert-error "os/spawn refuses a set as its options"
-                (os/spawn [|run janet "-e" "1"] :p (hash-set :out)))
+                (os/spawn [|run wattle "-e" "1"] :p (hash-set :out)))
 
   ; A process collected without being waited for is killed and reaped, and
   ; one spawned with :d is left alone. `kill -0` asks whether a pid is still a
@@ -348,7 +348,7 @@
       (def kept-procs ![])
       (def counts ![])
       (repeat 3
-        (def p (os/spawn [|run janet "-e" """(print (length (os/dir "/dev/fd")))"""]
+        (def p (os/spawn [|run wattle "-e" """(print (length (os/dir "/dev/fd")))"""]
                          :p {:out :pipe :err null}))
         (array/push kept-procs p)
         (defn read-count []
@@ -373,7 +373,7 @@
   ; stdout alone is a pipe.
   (when (os/stat "/dev/fd")
     (defn count-in-child [streams]
-      (def p (os/spawn [|run janet "-e" """(print (length (os/dir "/dev/fd")))"""] :p streams))
+      (def p (os/spawn [|run wattle "-e" """(print (length (os/dir "/dev/fd")))"""] :p streams))
       (def n (string/trim (string (:read (p :out) :all))))
       (os/proc-wait p)
       (each k [:in :out :err] (when (p k) (:close (p k))))
@@ -404,8 +404,8 @@
   (def spawn-pid (buffer/new-filled 4 0))
   (def spawn-status (buffer/new-filled 4 0))
   (def spawned
-    (posix_spawn spawn-pid janet nil nil
-                 (strings [janet "-e" """(os/exit (if (= "1" (os/getenv "A")) 0 1))"""])
+    (posix_spawn spawn-pid wattle nil nil
+                 (strings [wattle "-e" """(os/exit (if (= "1" (os/getenv "A")) 0 1))"""])
                  (strings ["=x" "NOEQUALS" "A=1"])))
   (when (= 0 spawned) (waitpid (ffi/read :int spawn-pid) spawn-status 0))
   (assert (and (= 0 spawned) (= 0 (ffi/read :int spawn-status)))

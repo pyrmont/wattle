@@ -334,14 +334,14 @@ fn theAbstractType(chan: repr.Value) void {
     expect(at.bytes == null);
     expect(at.gcperthread == null);
 
-    // The registered type is this one: `janet_abstract` stored this address
+    // The registered type is this one: `abstract` stored this address
     // and a watcher reports it.
     expect(abi.abstractHead(abst).type == at);
 
     // The live watcher marks without complaint.
     at.gcmark.?(abst, abi.abstractHead(abst).size);
 
-    // And a watcher that never reached its backend's `init`. `janet_abstract`
+    // And a watcher that never reached its backend's `init`. `abstract`
     // does not zero, so the guard is a read of whatever was there; a zeroed one
     // is the case it exists for, and the collector reaching a watcher in that
     // state is what a raise between the allocation and the initialisation would

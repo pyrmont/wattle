@@ -221,7 +221,7 @@ pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
         // `stdio.err()` is the stream `(dyn :err)` falls back to, named
         // directly because there is no interpreter state to consult here.
         raise.total(
-            pp_format.dynprintf("err", stdio.err(), "no userdata found for janet callback\n", .{}),
+            pp_format.dynprintf("err", stdio.err(), "no userdata found for Wattle callback\n", .{}),
             "an ffi callback's diagnostic",
         );
         return;

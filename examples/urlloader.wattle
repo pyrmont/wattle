@@ -25,5 +25,5 @@
     path))
 
 ; Add the module loader and path tuple to right places
-(array/push module/paths [check-http-url :janet-http])
-(put module/loaders :janet-http load-url)
+(array/push module/paths [check-http-url :wattle-http])
+(put module/loaders :wattle-http load-url)

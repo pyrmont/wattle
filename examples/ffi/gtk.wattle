@@ -40,7 +40,7 @@
 (def cb (delay (ffi/trampoline :default)))
 
 (defn ffi/array
-  """Convert a janet array to a buffer that can be passed to FFI functions.
+  """Convert a Wattle array to a buffer that can be passed to FFI functions.
   For example, to create an array of type `char *` (array of c strings), one
   could use `(ffi/array ["hello" "world"] :ptr)`. One needs to be careful that
   array elements are not garbage collected though - the GC can't follow references
@@ -63,7 +63,7 @@
 
 (defn main
   [&]
-  (def app (gtk-application-new "org.janet-lang.example.HelloApp" 0))
+  (def app (gtk-application-new "org.wattle-lang.example.HelloApp" 0))
   (g-signal-connect-data app "activate" (cb) on-active nil 1)
   ; manually build an array with ffi/write
   ; - we are responsible for preventing gc when the arg array is used

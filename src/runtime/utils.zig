@@ -501,7 +501,7 @@ pub fn strerrorSafe(e: c_int) [*:0]const u8 {
 /// the block is not growing, because `realloc` may move.
 fn allocatorAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
     if (@intFromEnum(alignment) > @intFromEnum(max_malloc_align))
-        fatal.fatal("allocation alignment exceeds what janet_malloc guarantees");
+        fatal.fatal("allocation alignment exceeds what malloc guarantees");
     return @ptrCast(malloc(len));
 }
 

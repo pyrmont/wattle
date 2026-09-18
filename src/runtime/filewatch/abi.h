@@ -14,10 +14,10 @@
  * a `Stream *` and a `Channel *`, and those are `ev/stream.zig`'s and
  * `ev/channel.zig`'s, which are Zig and which every file shares.
  *
- * `janet_features.h` comes first, as it must before any system header.
+ * `wattle_features.h` comes first, as it must before any system header.
  */
 
-#include "janet_features.h"
+#include "wattle_features.h"
 
  /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
   * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`

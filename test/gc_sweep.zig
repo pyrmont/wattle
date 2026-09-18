@@ -117,7 +117,7 @@ fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
 }
 
 fn reachable(pointer: ?*anyopaque) bool {
-    return harness.gcBits(headerOf(pointer).flags) & constants.JANET_MEM_REACHABLE != 0;
+    return harness.gcBits(headerOf(pointer).flags) & constants.mem_reachable != 0;
 }
 
 /// Whether a block is still on one of the two heap lists. Only ever called for
@@ -225,8 +225,8 @@ fn aSurvivorKeepsItsPayloadAndLosesItsMark() void {
     expect(harness.vm().gc.block_count == before);
 }
 
-/// `JANET_MEM_DISABLED` keeps a block through a sweep that never reached it,
-/// and unlike `JANET_MEM_REACHABLE` it is not cleared on the way past. It
+/// `mem_disabled` keeps a block through a sweep that never reached it,
+/// and unlike `mem_reachable` it is not cleared on the way past. It
 /// keeps the block through every later sweep too, until whoever set it clears
 /// it. `buffers.init` sets it on a caller-owned buffer for exactly that
 /// reason; here it is set by hand on a heap block, which is the general case
@@ -236,18 +236,18 @@ fn theDisabledFlagOutlivesASweep() void {
     const before = harness.vm().gc.block_count;
 
     const buffer = buffers.new(8);
-    harness.gcSetBits(&buffer.gc.flags, constants.JANET_MEM_DISABLED);
+    harness.gcSetBits(&buffer.gc.flags, constants.mem_disabled);
 
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before + 1);
     expect(onList(harness.vm().gc.blocks, buffer));
-    expect(harness.gcBits(buffer.gc.flags) & constants.JANET_MEM_DISABLED != 0);
+    expect(harness.gcBits(buffer.gc.flags) & constants.mem_disabled != 0);
     expect(!reachable(buffer));
 
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before + 1);
 
-    buffer.gc.flags = @bitCast(harness.gcBits(buffer.gc.flags) & ~@as(u32, constants.JANET_MEM_DISABLED));
+    buffer.gc.flags = @bitCast(harness.gcBits(buffer.gc.flags) & ~@as(u32, constants.mem_disabled));
     gc_mark.collect();
     expect(harness.vm().gc.block_count == before);
 }

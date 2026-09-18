@@ -89,7 +89,7 @@ fn Math2Op(comptime fop: anytype) type {
 /// supports, and the guard is kept rather than deleted, because removing a
 /// configuration is a product decision rather than a prose one.
 const MathEntry = struct {
-    janet_name: [:0]const u8,
+    name: [:0]const u8,
     fop: *const fn (f64) callconv(.c) f64,
     doc: [:0]const u8,
     plan9_only_absent: bool = false,
@@ -154,49 +154,49 @@ pub fn lcm(x: f64, y: f64) f64 {
 /// the bootstrap puts in the image.
 pub fn libMath(env: *tables.Table) raise.Error!void {
     const ops = [_]MathEntry{
-        .{ .janet_name = "acos", .fop = &c.acos, .doc = "Returns the arccosine of x." },
-        .{ .janet_name = "asin", .fop = &c.asin, .doc = "Returns the arcsin of x." },
-        .{ .janet_name = "atan", .fop = &c.atan, .doc = "Returns the arctangent of x." },
-        .{ .janet_name = "cos", .fop = &c.cos, .doc = "Returns the cosine of x." },
-        .{ .janet_name = "cosh", .fop = &c.cosh, .doc = "Returns the hyperbolic cosine of x." },
-        .{ .janet_name = "acosh", .fop = &c.acosh, .doc = "Returns the hyperbolic arccosine of x." },
-        .{ .janet_name = "sin", .fop = &c.sin, .doc = "Returns the sine of x." },
-        .{ .janet_name = "sinh", .fop = &c.sinh, .doc = "Returns the hyperbolic sine of x." },
-        .{ .janet_name = "tan", .fop = &c.tan, .doc = "Returns the tangent of x." },
-        .{ .janet_name = "tanh", .fop = &c.tanh, .doc = "Returns the hyperbolic tangent of x." },
-        .{ .janet_name = "exp", .fop = &c.exp, .doc = "Returns e to the power of x." },
-        .{ .janet_name = "exp2", .fop = &c.exp2, .doc = "Returns 2 to the power of x." },
-        .{ .janet_name = "log1p", .fop = &c.log1p, .doc = "Returns (log base e of x) + 1 more accurately than (+ (math/log x) 1)" },
-        .{ .janet_name = "log", .fop = &c.log, .doc = "Returns the natural logarithm of x." },
-        .{ .janet_name = "log10", .fop = &c.log10, .doc = "Returns the log base 10 of x." },
-        .{ .janet_name = "log2", .fop = &c.log2, .doc = "Returns the log base 2 of x." },
-        .{ .janet_name = "sqrt", .fop = &c.sqrt, .doc = "Returns the square root of x." },
-        .{ .janet_name = "ceil", .fop = &c.ceil, .doc = "Returns the smallest integer value number that is not less than x." },
-        .{ .janet_name = "floor", .fop = &c.floor, .doc = "Returns the largest integer value number that is not greater than x." },
-        .{ .janet_name = "trunc", .fop = &c.trunc, .doc = "Returns the integer between x and 0 nearest to x." },
-        .{ .janet_name = "round", .fop = &c.round, .doc = "Returns the integer nearest to x." },
-        .{ .janet_name = "abs", .fop = &c.fabs, .doc = "Return the absolute value of x." },
+        .{ .name = "acos", .fop = &c.acos, .doc = "Returns the arccosine of x." },
+        .{ .name = "asin", .fop = &c.asin, .doc = "Returns the arcsin of x." },
+        .{ .name = "atan", .fop = &c.atan, .doc = "Returns the arctangent of x." },
+        .{ .name = "cos", .fop = &c.cos, .doc = "Returns the cosine of x." },
+        .{ .name = "cosh", .fop = &c.cosh, .doc = "Returns the hyperbolic cosine of x." },
+        .{ .name = "acosh", .fop = &c.acosh, .doc = "Returns the hyperbolic arccosine of x." },
+        .{ .name = "sin", .fop = &c.sin, .doc = "Returns the sine of x." },
+        .{ .name = "sinh", .fop = &c.sinh, .doc = "Returns the hyperbolic sine of x." },
+        .{ .name = "tan", .fop = &c.tan, .doc = "Returns the tangent of x." },
+        .{ .name = "tanh", .fop = &c.tanh, .doc = "Returns the hyperbolic tangent of x." },
+        .{ .name = "exp", .fop = &c.exp, .doc = "Returns e to the power of x." },
+        .{ .name = "exp2", .fop = &c.exp2, .doc = "Returns 2 to the power of x." },
+        .{ .name = "log1p", .fop = &c.log1p, .doc = "Returns (log base e of x) + 1 more accurately than (+ (math/log x) 1)" },
+        .{ .name = "log", .fop = &c.log, .doc = "Returns the natural logarithm of x." },
+        .{ .name = "log10", .fop = &c.log10, .doc = "Returns the log base 10 of x." },
+        .{ .name = "log2", .fop = &c.log2, .doc = "Returns the log base 2 of x." },
+        .{ .name = "sqrt", .fop = &c.sqrt, .doc = "Returns the square root of x." },
+        .{ .name = "ceil", .fop = &c.ceil, .doc = "Returns the smallest integer value number that is not less than x." },
+        .{ .name = "floor", .fop = &c.floor, .doc = "Returns the largest integer value number that is not greater than x." },
+        .{ .name = "trunc", .fop = &c.trunc, .doc = "Returns the integer between x and 0 nearest to x." },
+        .{ .name = "round", .fop = &c.round, .doc = "Returns the integer nearest to x." },
+        .{ .name = "abs", .fop = &c.fabs, .doc = "Return the absolute value of x." },
     };
     const plan9_absent_ops = [_]MathEntry{
-        .{ .janet_name = "expm1", .fop = &c.expm1, .doc = "Returns e to the power of x minus 1." },
-        .{ .janet_name = "cbrt", .fop = &c.cbrt, .doc = "Returns the cube root of x." },
-        .{ .janet_name = "erf", .fop = &c.erf, .doc = "Returns the error function of x." },
-        .{ .janet_name = "erfc", .fop = &c.erfc, .doc = "Returns the complementary error function of x." },
-        .{ .janet_name = "log-gamma", .fop = &c.lgamma, .doc = "Returns log-gamma(x)." },
-        .{ .janet_name = "gamma", .fop = &c.tgamma, .doc = "Returns gamma(x)." },
-        .{ .janet_name = "atanh", .fop = &c.atanh, .doc = "Returns the hyperbolic arctangent of x." },
-        .{ .janet_name = "asinh", .fop = &c.asinh, .doc = "Returns the hyperbolic arcsine of x." },
+        .{ .name = "expm1", .fop = &c.expm1, .doc = "Returns e to the power of x minus 1." },
+        .{ .name = "cbrt", .fop = &c.cbrt, .doc = "Returns the cube root of x." },
+        .{ .name = "erf", .fop = &c.erf, .doc = "Returns the error function of x." },
+        .{ .name = "erfc", .fop = &c.erfc, .doc = "Returns the complementary error function of x." },
+        .{ .name = "log-gamma", .fop = &c.lgamma, .doc = "Returns log-gamma(x)." },
+        .{ .name = "gamma", .fop = &c.tgamma, .doc = "Returns gamma(x)." },
+        .{ .name = "atanh", .fop = &c.atanh, .doc = "Returns the hyperbolic arctangent of x." },
+        .{ .name = "asinh", .fop = &c.asinh, .doc = "Returns the hyperbolic arcsine of x." },
     };
 
     const two_arg = [_]struct {
-        janet_name: [:0]const u8,
+        name: [:0]const u8,
         fop: *const fn (f64, f64) callconv(.c) f64,
         usage: [:0]const u8,
         doc: [:0]const u8,
     }{
-        .{ .janet_name = "atan2", .fop = &c.atan2, .usage = "(math/atan2 y x)", .doc = "Returns the arctangent of y/x. Works even when x is 0." },
-        .{ .janet_name = "pow", .fop = &c.pow, .usage = "(math/pow a x)", .doc = "Returns a to the power of x." },
-        .{ .janet_name = "hypot", .fop = &c.hypot, .usage = "(math/hypot a b)", .doc = "Returns c from the equation c^2 = a^2 + b^2." },
+        .{ .name = "atan2", .fop = &c.atan2, .usage = "(math/atan2 y x)", .doc = "Returns the arctangent of y/x. Works even when x is 0." },
+        .{ .name = "pow", .fop = &c.pow, .usage = "(math/pow a x)", .doc = "Returns a to the power of x." },
+        .{ .name = "hypot", .fop = &c.hypot, .usage = "(math/hypot a b)", .doc = "Returns c from the equation c^2 = a^2 + b^2." },
     };
 
     // The table is built at comptime so that every `corefn.reg` still gets a
@@ -207,25 +207,25 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
         var list: []const corefn.Entry = &.{};
         for (ops) |op| {
             list = list ++ [_]corefn.Entry{corefn.reg(
-                "math/" ++ op.janet_name,
+                "math/" ++ op.name,
                 &MathOp(op.fop).call,
                 @src(),
-                "(math/" ++ op.janet_name ++ " x)",
+                "(math/" ++ op.name ++ " x)",
                 op.doc,
             )};
         }
         if (!plan9) for (plan9_absent_ops) |op| {
             list = list ++ [_]corefn.Entry{corefn.reg(
-                "math/" ++ op.janet_name,
+                "math/" ++ op.name,
                 &MathOp(op.fop).call,
                 @src(),
-                "(math/" ++ op.janet_name ++ " x)",
+                "(math/" ++ op.name ++ " x)",
                 op.doc,
             )};
         };
         for (two_arg) |op| {
             list = list ++ [_]corefn.Entry{corefn.reg(
-                "math/" ++ op.janet_name,
+                "math/" ++ op.name,
                 &Math2Op(op.fop).call,
                 @src(),
                 op.usage,

@@ -76,7 +76,7 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 var test_env: *tables.Table = undefined;
 
 /// Whether a fiber has the five scheduler fields, which is whether the event
@@ -306,7 +306,7 @@ fn argumentsLandAboveTheFrame(binary: *functions.Function, nullary: *functions.F
 /// `2 * newstacktop`, and one that is not stays at its old size, because the
 /// frame that follows is small enough to fit either way.
 ///
-/// The frame that follows is `2 * JANET_FRAME_SIZE + slotcount` regardless of
+/// The frame that follows is `2 * frame_size + slotcount` regardless of
 /// how many arguments were pushed, because `funcframe` measures from
 /// `stackstart` and the argument block does not move it. So the assertion
 /// below is independent of the vararg function's arity.
@@ -320,7 +320,7 @@ fn theArgumentBlockGrowsOnEquality(variadic: *functions.Function) void {
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 
-    // `JANET_FRAME_SIZE + argc == 32 == the capacity asked for`, so the stack
+    // `frame_size + argc == 32 == the capacity asked for`, so the stack
     // was doubled to 64 before the arguments were written.
     expect(fiber.capacity == 64);
 }
@@ -343,7 +343,7 @@ fn aFiberIsReadyToRun(binary: *functions.Function) void {
     const frame = fiberFrame(fiber);
     expect(fiber.frame == frame_size);
     expect(frame.func == binary);
-    expect(@as(i32, @bitCast(frame.flags)) == constants.JANET_STACKFRAME_ENTRANCE);
+    expect(@as(i32, @bitCast(frame.flags)) == constants.stackframe_entrance);
     expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
     if (with_ev) expect(fiber.supervisor_channel == null);
 }

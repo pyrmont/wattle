@@ -318,7 +318,7 @@ fn theStreamExtension() void {
     const handles = probePipe();
     const ps: *ProbeStream = @ptrCast(@alignCast(try_(stream.makeStreamExt(
         handles[0],
-        @intCast(constants.JANET_STREAM_READABLE),
+        @intCast(constants.stream_readable),
         &probe_methods,
         @sizeOf(ProbeStream),
     ))));
@@ -326,7 +326,7 @@ fn theStreamExtension() void {
 
     const s = &ps.stream;
     expect(s.handle == handles[0]);
-    expect(s.flags == @as(u32, @intCast(constants.JANET_STREAM_READABLE)));
+    expect(s.flags == @as(u32, @intCast(constants.stream_readable)));
     expect(s.read_fiber == null and s.write_fiber == null);
     expect(@intFromPtr(s.methods) == @intFromPtr(&probe_methods));
 
@@ -351,7 +351,7 @@ fn theStreamExtension() void {
 
     expect(ps.marker == 0x0123456789ABCDEF);
     try_(stream.streamClose(s));
-    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
+    expect(s.flags & @as(u32, @intCast(constants.stream_closed)) != 0);
     expect(s.handle == invalidHandle());
     // Closing twice is a no-op rather than a double close.
     try_(stream.streamClose(s));
@@ -361,7 +361,7 @@ fn theStreamExtension() void {
 
 fn theDefaultMethods() void {
     const handles = probePipe();
-    const s = try_(stream.makeStream(handles[0], @intCast(constants.JANET_STREAM_READABLE), null));
+    const s = try_(stream.makeStream(handles[0], @intCast(constants.stream_readable), null));
     const at = &stream.streamType;
 
     // A null method table means the four default stream methods.
@@ -386,7 +386,7 @@ fn theDefaultMethods() void {
 
 fn theStreamRendering() void {
     const handles = probePipe();
-    const s = try_(stream.makeStream(handles[0], @intCast(constants.JANET_STREAM_READABLE), null));
+    const s = try_(stream.makeStream(handles[0], @intCast(constants.stream_readable), null));
     const buffer = buffers.new(16);
     try_(stream.streamType.tostring.?(s, @ptrCast(buffer)));
 
@@ -403,11 +403,11 @@ fn theStreamRendering() void {
 
 fn theStreamFlagMessages() void {
     const handles = probePipe();
-    const readable: u32 = @intCast(constants.JANET_STREAM_READABLE);
-    const writable: u32 = @intCast(constants.JANET_STREAM_WRITABLE);
-    const socket: u32 = @intCast(constants.JANET_STREAM_SOCKET);
-    const acceptable: u32 = @intCast(constants.JANET_STREAM_ACCEPTABLE);
-    const udpserver: u32 = @intCast(constants.JANET_STREAM_UDPSERVER);
+    const readable: u32 = @intCast(constants.stream_readable);
+    const writable: u32 = @intCast(constants.stream_writable);
+    const socket: u32 = @intCast(constants.stream_socket);
+    const acceptable: u32 = @intCast(constants.stream_acceptable);
+    const udpserver: u32 = @intCast(constants.stream_udpserver);
 
     const s = try_(stream.makeStream(handles[0], readable | socket, null));
 
@@ -438,13 +438,13 @@ fn theStreamFlagMessages() void {
 
 fn theNotCloseableStream() void {
     const handles = probePipe();
-    const flags: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_NOT_CLOSEABLE);
+    const flags: u32 = @intCast(constants.stream_readable | constants.stream_not_closeable);
     const s = try_(stream.makeStream(handles[0], flags, null));
     try_(stream.streamClose(s));
 
     // The handle is forgotten either way; what NOT_CLOSEABLE changes is that
     // the descriptor itself survives, so it is still usable here.
-    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_CLOSED)) != 0);
+    expect(s.flags & @as(u32, @intCast(constants.stream_closed)) != 0);
     expect(s.handle == invalidHandle());
 
     if (!windows) {
@@ -457,13 +457,13 @@ fn theNotCloseableStream() void {
 }
 
 /// A stream is a file descriptor, so both directions refuse to work without
-/// `JANET_MARSHAL_UNSAFE`, and the refusal reaches an embedder as the report
+/// `marshal_unsafe`, and the refusal reaches an embedder as the report
 /// `marsh.marshalAbi` leaves. `ev/thread` is the only thing in Janet that
 /// marshals unsafely, and it never marshals a bare stream, so neither the
 /// refusal nor the success path has a Janet spelling.
 fn theStreamMarshalling() void {
     const handles = probePipe();
-    const s = try_(stream.makeStream(handles[0], @intCast(constants.JANET_STREAM_READABLE), null));
+    const s = try_(stream.makeStream(handles[0], @intCast(constants.stream_readable), null));
     const streamv = wrap.fromAbstract(s);
     gc_alloc.gcroot(streamv);
     defer _ = gc_alloc.gcunroot(streamv);
@@ -477,11 +477,11 @@ fn theStreamMarshalling() void {
     // With the flag, it marshals, and duplicates the descriptor on the way
     // out, which is what makes an unmarshalled stream independent of this one.
     buffer.count = 0;
-    subsystems.marsh.marshalAbi(buffer, streamv, null, constants.JANET_MARSHAL_UNSAFE);
+    subsystems.marsh.marshalAbi(buffer, streamv, null, constants.marshal_unsafe);
     expect(buffer.count > 0);
 
     // Marshalling clears NODUPS, because the handle may now have two owners.
-    expect(s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) == 0);
+    expect(s.flags & @as(u32, @intCast(constants.stream_nodups)) == 0);
 
     // The reader refuses without the flag too.
     {
@@ -495,7 +495,7 @@ fn theStreamMarshalling() void {
     const backv = subsystems.marsh.unmarshalAbi(
         buffer.data,
         @intCast(buffer.count),
-        constants.JANET_MARSHAL_UNSAFE,
+        constants.marshal_unsafe,
         null,
         null,
     );
@@ -660,15 +660,15 @@ fn theNullCallback() void {
 fn theThreadedReplyTags() void {
     const Case = struct { tag: c_int, callback_frees: bool };
     const cases = [_]Case{
-        .{ .tag = constants.JANET_EV_TCTAG_NIL, .callback_frees = false },
-        .{ .tag = constants.JANET_EV_TCTAG_INTEGER, .callback_frees = false },
-        .{ .tag = constants.JANET_EV_TCTAG_STRING, .callback_frees = false },
-        .{ .tag = constants.JANET_EV_TCTAG_STRINGF, .callback_frees = true },
-        .{ .tag = constants.JANET_EV_TCTAG_KEYWORD, .callback_frees = false },
-        .{ .tag = constants.JANET_EV_TCTAG_ERR_STRING, .callback_frees = false },
-        .{ .tag = constants.JANET_EV_TCTAG_ERR_STRINGF, .callback_frees = true },
-        .{ .tag = constants.JANET_EV_TCTAG_ERR_KEYWORD, .callback_frees = false },
-        .{ .tag = constants.JANET_EV_TCTAG_BOOLEAN, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_nil, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_integer, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_string, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_stringf, .callback_frees = true },
+        .{ .tag = constants.ev_tctag_keyword, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_err_string, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_err_stringf, .callback_frees = true },
+        .{ .tag = constants.ev_tctag_err_keyword, .callback_frees = false },
+        .{ .tag = constants.ev_tctag_boolean, .callback_frees = false },
     };
     var owned: u32 = 0;
     for (cases) |case| {
@@ -824,7 +824,7 @@ fn theCancelOfANonTask() void {
 /// a fiber it schedules. The capability is the VM itself.
 fn theWakeAnswers() void {
     const w: *boundary.Wake = @ptrCast(harness.vm());
-    expect(!capi.janet_wake(w, wrap.fromNumber(1), wrap.fromNil()));
+    expect(!capi.wake(w, wrap.fromNumber(1), wrap.fromNil()));
 
     const out = doString("[(fiber/new (fn [x] x) :e) (fiber/new (fn [x] x) :e)]");
     gc_alloc.gcroot(out);
@@ -842,9 +842,9 @@ fn theWakeAnswers() void {
 
     ev.schedule(cancelled, wrap.fromNil());
     expect(harness.raised(ev.cancel, .{ cancelled, value.fromBytes("gone", .string) }) == null);
-    expect(!capi.janet_wake(w, tup[0], wrap.fromNil()));
+    expect(!capi.wake(w, tup[0], wrap.fromNil()));
 
-    expect(capi.janet_wake(w, tup[1], value.fromBytes("woken", .string)));
+    expect(capi.wake(w, tup[1], value.fromBytes("woken", .string)));
     raise.toAbi(ev.loop());
     expect(ev.loopDone());
     expect(payloadIs(wrap.toFiber(tup[1]).last_value, "woken"));

@@ -3,7 +3,7 @@
 //! `current()` is the calling thread's `Vm`, and `Vm` is every subsystem's
 //! view of the interpreter: the running fiber, the collector, the registry,
 //! the symbol cache, the dynamic bindings. `isInitialised` and
-//! `requireJanetThread` are the two liveness questions asked of it, `dyn` and
+//! `requireVmThread` are the two liveness questions asked of it, `dyn` and
 //! `setdyn` read and write a dynamic binding, and `vmAlloc`, `vmSave`,
 //! `vmLoad` and `vmFree` move a whole VM in and out of detached storage.
 //!
@@ -62,7 +62,7 @@ const wrap = @import("../value/helpers/wrap.zig");
 // ==========================================================================
 
 /// False only in a `-Dsingle-threaded` build, which uses one process-wide VM.
-const is_thread_local = constants.JANET_VM_THREAD_LOCAL != 0;
+const is_thread_local = constants.vm_thread_local != 0;
 
 /// `strerror_r`'s scratch. Windows has no such field, and a zero-length array
 /// is how a configuration drops one out of a struct without a second
@@ -275,7 +275,7 @@ pub fn interpreterInterruptHandled(vm: ?*Vm) void {
 ///
 /// The VM is the caller's rather than fetched here, so a caller that has
 /// already captured one does not pay a second thread-local access to ask this.
-/// `requireJanetThread` below passes `current()`, which is the thread question.
+/// `requireVmThread` below passes `current()`, which is the thread question.
 ///
 /// Two callers ask it, for two different failures, and each states its own
 /// message. `gc.gcallocBytes` asks whether an embedder forgot to bring the VM
@@ -331,7 +331,7 @@ pub inline fn pinned() *Vm {
 
 /// Aborts unless the calling thread is running Janet.
 ///
-/// Every published crossing but `janet_post` opens with this. A module with a
+/// Every published crossing but `post` opens with this. A module with a
 /// `Loop` can hand a runtime pointer to a thread the runtime did not start,
 /// and every crossing but `post` finds the VM through the thread-local: on a
 /// thread that never ran `lifecycle.init` that thread-local is the zeroed
@@ -345,7 +345,7 @@ pub inline fn pinned() *Vm {
 /// rule. No runtime-internal path pays it.
 ///
 /// Four crossings are exempt, and each says why at its own definition.
-/// `janet_post`, because it is the one a thread with no VM may call, and
+/// `post`, because it is the one a thread with no VM may call, and
 /// `raise.zig`'s flag pair and its abort, because none of the three can be the
 /// first crossing on a thread and a check that cannot fire first guards
 /// nothing.
@@ -359,8 +359,8 @@ pub inline fn pinned() *Vm {
 ///
 /// It is here rather than in `fatal.zig` because the question is about the
 /// storage above. `fatal.zig` is how to give up and nothing about a VM.
-pub inline fn requireJanetThread() void {
-    if (!isInitialised(current())) fatal.fatal("called from a thread that is not running Janet");
+pub inline fn requireVmThread() void {
+    if (!isInitialised(current())) fatal.fatal("called from a thread that is not running Wattle");
 }
 
 /// Binds `name` to `val` in the dynamic bindings.

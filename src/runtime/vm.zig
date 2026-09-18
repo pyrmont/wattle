@@ -65,12 +65,12 @@ const wrap = @import("value/helpers/wrap.zig");
 
 /// A stack frame's size in `Value` slots. `stackFrame` is the one place that
 /// does the arithmetic.
-const frame_size: i32 = constants.JANET_FRAME_SIZE;
+const frame_size: i32 = constants.frame_size;
 
 /// Whether this build checks for an interpreter interrupt between
 /// instructions. The negative spelling is Janet's; `constants` states it
 /// positively so the guards read forwards.
-const has_interrupt = constants.JANET_VM_HAS_INTERRUPT == 1;
+const has_interrupt = constants.vm_has_interrupt == 1;
 
 // ==========================================================================
 // Types

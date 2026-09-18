@@ -173,7 +173,7 @@ fn callerOwnedBufferIsDisabled() !void {
     expect(b.count == 0);
     expect(b.capacity == 32);
     expect(b.data != null);
-    expect(harness.gcBits(b.gc.flags) == constants.JANET_MEM_DISABLED);
+    expect(harness.gcBits(b.gc.flags) == constants.mem_disabled);
     expect(b.gc.data.next == null);
     expect(!heap.onList(harness.vm().gc.blocks, &b));
 
@@ -193,7 +193,7 @@ fn pointerBufferNeverReallocates() !void {
     expect(b.data == @as([*]u8, &foreign));
     expect(b.capacity == 8);
     expect(b.count == 3);
-    expect(harness.gcBits(b.gc.flags) & constants.JANET_BUFFER_FLAG_NO_REALLOC != 0);
+    expect(harness.gcBits(b.gc.flags) & constants.buffer_flag_no_realloc != 0);
     expect(heap.memoryType(b) == gc_alloc.MemoryType.buffer);
     expect(heap.onList(harness.vm().gc.blocks, b));
 
@@ -771,7 +771,7 @@ fn theCollectorReclaimsBoth() !void {
 /// The standard library reaches this code through the core environment, so the
 /// two halves have to agree from Janet as well as from Zig. This also
 /// exercises `cfun_buffer_trim`, which calls `canRealloc`.
-fn fromJanet() void {
+fn fromWattle() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
     const source =
@@ -923,7 +923,7 @@ fn body() !void {
     try theCeilings();
 
     try theCollectorReclaimsBoth();
-    fromJanet();
+    fromWattle();
     concatReadsAnIndexedAbstract();
 }
 

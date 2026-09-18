@@ -186,7 +186,7 @@ fn formatbAppendsAndReturnsItsBuffer() void {
 /// `%S` takes a Janet string, whose length is in its head, where
 /// `%s` takes a C string and does. The difference is only observable for a
 /// string with an interior zero, which is exactly the case `%s` cannot render.
-fn theJanetStringConversion() void {
+fn theWattleStringConversion() void {
     const raw = [_]u8{ 'a', 0, 'b' };
     const embedded = strings.new(raw[0..@intCast(3)]);
 
@@ -314,17 +314,17 @@ fn theRefusals() void {
     var two = [_]repr.Value{ wrapInteger(1), wrapInteger(2) };
     expectRaise("not enough values for format", formatted, .{ "%d %d %d", two[0..] });
 
-    // `%j` is the one conversion that can refuse the value it was given, and it
-    // must refuse it through both loops. Without this, a `%j` that
-    // pretty-printed instead of writing JDN would pass every other assertion
+    // `%w` is the one conversion that can refuse the value it was given, and it
+    // must refuse it through both loops. Without this, a `%w` that
+    // pretty-printed instead of writing WDN would pass every other assertion
     // here: the two spellings agree on the values that have both forms, and
     // disagree only on the values that have one.
     var fn_slot = [_]repr.Value{eval("print")};
-    expectRaise("could not print to jdn format", fmt.formatc, .{ "%j", .{fn_slot[0]} });
-    expectRaise("could not print to jdn format", formatted, .{ "%j", fn_slot[0..] });
+    expectRaise("could not print to wdn format", fmt.formatc, .{ "%w", .{fn_slot[0]} });
+    expectRaise("could not print to wdn format", formatted, .{ "%w", fn_slot[0..] });
 }
 
-/// `%j` sorts a dictionary's keys, so the same value writes the same bytes.
+/// `%w` sorts a dictionary's keys, so the same value writes the same bytes.
 ///
 /// The keys here hash by *pointer*, which is what makes this assertable at
 /// all: a buffer's bucket is chosen by its allocation address, so in storage
@@ -352,22 +352,22 @@ fn theJdnWriterSortsItsKeys() void {
     _ = tables.put(t, wrap.fromBuffer(b4), wrapInteger(4));
 
     var slot = [_]repr.Value{wrap.fromTable(t)};
-    const jdn = formatted("%j", slot[0..]) catch @panic("raised");
+    const wdn = formatted("%w", slot[0..]) catch @panic("raised");
 
     // The same order the pretty printer produces. That agreement is the
     // assertion and the order itself is not: two buffers order by address, so
     // which of the four comes first is the allocator's business and differs
-    // between platforms. What must not differ is that `%j` and `%q` give one
+    // between platforms. What must not differ is that `%w` and `%q` give one
     // order rather than two that happen to agree here.
     const pretty = formatted("%q", slot[0..]) catch @panic("raised");
-    expect(std.mem.eql(u8, bytes(jdn), bytes(pretty)));
+    expect(std.mem.eql(u8, bytes(wdn), bytes(pretty)));
 
     // And it survives the storage order changing under it, which is the whole
     // of what "reproducible" means: rehashing moves every entry to a new
-    // bucket and `%j` renders the same bytes.
+    // bucket and `%w` renders the same bytes.
     var before: [128]u8 = undefined;
-    const before_len = bytes(jdn).len;
-    @memcpy(before[0..before_len], bytes(jdn));
+    const before_len = bytes(wdn).len;
+    @memcpy(before[0..before_len], bytes(wdn));
     for (0..64) |i| {
         const filler = buffers.new(1);
         buffers.pushCstringAbi(filler, "z");
@@ -375,7 +375,7 @@ fn theJdnWriterSortsItsKeys() void {
         _ = tables.remove(t, wrap.fromBuffer(filler));
     }
     expect(t.capacity > 8);
-    const after = formatted("%j", slot[0..]) catch @panic("raised");
+    const after = formatted("%w", slot[0..]) catch @panic("raised");
     expect(std.mem.eql(u8, before[0..before_len], bytes(after)));
 
     // A map takes the same path, and nesting keeps each level's own order. A
@@ -385,7 +385,7 @@ fn theJdnWriterSortsItsKeys() void {
     const nested = eval("{:b {:z 1 :a 2} :a 3}");
     var nest_slot = [_]repr.Value{nested};
     checkString(
-        formatted("%j", nest_slot[0..]) catch @panic("raised"),
+        formatted("%w", nest_slot[0..]) catch @panic("raised"),
         "{:a 3 :b {:a 2 :z 1}}",
     );
 }
@@ -436,7 +436,7 @@ fn anOversizedItemIsRefused() void {
 fn theTwoLoopsAgreeWhereTheyOverlap() void {
     var slot = [_]repr.Value{eval("!{:a [1 2 3] :b \"x\"}")};
 
-    inline for (.{ "%q", "%j", "%t", "%V" }) |spelling| {
+    inline for (.{ "%q", "%w", "%t", "%V" }) |spelling| {
         checkString(
             formatted(spelling, slot[0..]) catch @panic("raised"),
             bytes(fmt.formatc(spelling, .{slot[0]}) catch @panic("raised")),
@@ -553,7 +553,7 @@ fn dynprintfReachesItsFourDestinations() void {
     fmt.dynprintf("pp-format-out", null, "dropped", .{}) catch @panic("raised");
 
     // A closed file is a raise.
-    const jf = io_core.makejfile(io_core.open(scratch, "rb"), constants.JANET_FILE_READ);
+    const jf = io_core.makejfile(io_core.open(scratch, "rb"), constants.file_read);
     vm_state.setdyn("pp-format-out", wrap.fromAbstract(jf));
     expectRaise("file is not writeable", fmt.dynprintf, .{
         @as(?[*:0]const u8, "pp-format-out"),
@@ -594,7 +594,7 @@ pub fn run() void {
 
     everyArgumentWidthInOneCall();
     formatbAppendsAndReturnsItsBuffer();
-    theJanetStringConversion();
+    theWattleStringConversion();
     theTypeSetConversion();
     theTypeNameConversion();
     theUpperCaseIntegerConversionsAreRefused();

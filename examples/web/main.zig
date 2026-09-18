@@ -2,8 +2,8 @@
 //!
 //! `build.zig`'s `web` step roots a reactor at this file. A reactor has no
 //! `main`: the host calls `_initialize`, which runs wasi-libc's constructors,
-//! and then the functions exported here. `janet_web_init` starts the runtime
-//! and evaluates `eval_line_source` once, and `janet_web_eval` calls the
+//! and then the functions exported here. `wattle_web_init` starts the runtime
+//! and evaluates `eval_line_source` once, and `wattle_web_eval` calls the
 //! function that evaluation returned with each submission.
 //!
 //! A submission runs as a line of the `wattle` REPL runs: through
@@ -12,7 +12,7 @@
 //! bound to `_`, and an error is printed with its stack trace. Output goes
 //! through `fd_write` on descriptors 1 and 2, which the host captures.
 //!
-//! `janet_web_alloc` and `janet_web_free` are how the host places the source
+//! `wattle_web_alloc` and `wattle_web_free` are how the host places the source
 //! in wasm memory before the call.
 
 // ==========================================================================
@@ -41,7 +41,7 @@ const wrap = subsystems.value.wrap;
 // Constants
 // ==========================================================================
 
-/// The source `janet_web_init` evaluates in the core environment. Its value
+/// The source `wattle_web_init` evaluates in the core environment. Its value
 /// is `eval-line`.
 ///
 /// `eval-line` takes the source of one submission and returns 0, or 1 when
@@ -66,8 +66,8 @@ const eval_line_source =
     \\     :on-status (fn [f x]
     \\                  (unless (= :dead (fiber/status f)) (set failed true))
     \\                  (on-status f x))
-    \\     :on-compile-error (fn [& args] (set failed true) (bad-compile ;args))
-    \\     :on-parse-error (fn [& args] (set failed true) (bad-parse ;args))})
+    \\     :on-compile-error (fn [& args] (set failed true) (bad-compile |args))
+    \\     :on-parse-error (fn [& args] (set failed true) (bad-parse |args))})
     \\  (flush)
     \\  (eflush)
     \\  (if failed 1 0))
@@ -77,7 +77,7 @@ const eval_line_source =
 // Variables
 // ==========================================================================
 
-/// `eval-line`, rooted against collection. Null until `janet_web_init` has
+/// `eval-line`, rooted against collection. Null until `wattle_web_init` has
 /// succeeded.
 var eval_line: ?*functions.Function = null;
 
@@ -91,18 +91,18 @@ var eval_line: ?*functions.Function = null;
 /// `eval_line_source` raised or did not return a function, and 0 without
 /// doing anything when a previous call succeeded. The host calls
 /// `_initialize` first.
-export fn janet_web_init() i32 {
+export fn wattle_web_init() i32 {
     if (eval_line != null) return 0;
     return initRaising() catch 2;
 }
 
-/// Evaluates `len` bytes of Janet source at `ptr`, and returns 0, or 1 when
+/// Evaluates `len` bytes of Wattle source at `ptr`, and returns 0, or 1 when
 /// the submission failed.
 ///
 /// The value or the error is printed as the REPL prints it. The result is
-/// also 1 when `eval-line` itself did not return, and when `janet_web_init`
+/// also 1 when `eval-line` itself did not return, and when `wattle_web_init`
 /// has not succeeded.
-export fn janet_web_eval(ptr: [*]const u8, len: usize) i32 {
+export fn wattle_web_eval(ptr: [*]const u8, len: usize) i32 {
     const function = eval_line orelse return 1;
     const source = value.fromBytes(ptr[0..len], .string);
     // Rooted until `pcall` has copied it onto the fiber's stack, since
@@ -116,13 +116,13 @@ export fn janet_web_eval(ptr: [*]const u8, len: usize) i32 {
 }
 
 /// Allocates `len` bytes for the host to write source into, or returns null.
-export fn janet_web_alloc(len: usize) ?[*]u8 {
+export fn wattle_web_alloc(len: usize) ?[*]u8 {
     return @ptrCast(std.c.malloc(len));
 }
 
-/// Frees what `janet_web_alloc` returned. `len` is the length it was given,
+/// Frees what `wattle_web_alloc` returned. `len` is the length it was given,
 /// which `free` does not need.
-export fn janet_web_free(ptr: ?[*]u8, len: usize) void {
+export fn wattle_web_free(ptr: ?[*]u8, len: usize) void {
     _ = len;
     std.c.free(ptr);
 }
@@ -131,7 +131,7 @@ export fn janet_web_free(ptr: ?[*]u8, len: usize) void {
 // Private functions
 // ==========================================================================
 
-/// `janet_web_init`'s work, with a raise left to the caller.
+/// `wattle_web_init`'s work, with a raise left to the caller.
 fn initRaising() raise.Error!i32 {
     if (try lifecycle.init() != 0) return 1;
     const env = try env_core.coreEnv(null);

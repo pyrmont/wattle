@@ -178,9 +178,9 @@ pub const FunctionOptimizer = struct {
 /// How loudly a lint is filed. `(compile ...)` takes the level a caller asks
 /// for and drops anything quieter.
 pub const LintLevel = enum(c_uint) {
-    relaxed = constants.JANET_C_LINT_RELAXED,
-    normal = constants.JANET_C_LINT_NORMAL,
-    strict = constants.JANET_C_LINT_STRICT,
+    relaxed = constants.c_lint_relaxed,
+    normal = constants.c_lint_normal,
+    strict = constants.c_lint_strict,
 
     /// This level as the keyword a lint tuple records.
     fn keyword(self: LintLevel) [*:0]const u8 {
@@ -480,7 +480,7 @@ pub fn nameslot(
     slot: Slot,
     flags: u32,
 ) raise.Error!void {
-    if (flags & constants.JANET_DEFFLAG_NO_SHADOWCHECK == 0 and symbol[0] != '_') {
+    if (flags & constants.defflag_no_shadowcheck == 0 and symbol[0] != '_') {
         try shadowLint(compiler, symbol, shadowcheck(compiler, symbol));
     }
     const instruction_count = compiler.buffer.items.len;
@@ -491,7 +491,7 @@ pub fn nameslot(
         .sym = symbol,
         .sym2 = symbol,
         .keep = false,
-        .referenced = flags & constants.JANET_DEFFLAG_NO_UNUSED != 0 or symbol[0] == '_',
+        .referenced = flags & constants.defflag_no_unused != 0 or symbol[0] == '_',
         .birth_pc = @intCast(if (instruction_count != 0) instruction_count - 1 else 0),
         .death_pc = std_max_u32,
     });

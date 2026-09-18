@@ -88,9 +88,9 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-/// `JANET_VM_HAS_EV`, which is what `checkCanResume` reads to decide whether
+/// `vm_has_ev`, which is what `checkCanResume` reads to decide whether
 /// its root-fiber refusal may name the scheduler's entry points.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 const max_stops = 256;
 var test_env: ?*tables.Table = null;
 
@@ -360,7 +360,7 @@ fn steppingAFiberThatCannotBe() void {
 fn callingWithoutAFiber() void {
     const fun = evalfn("(fn [] 1)");
     expect(harness.vm().fiber == null); // top level runs outside any fiber
-    expect(harness.raised(vm_entry.call, .{ fun, &.{} }).?.says("janet_call failed because there is no current fiber"));
+    expect(harness.raised(vm_entry.call, .{ fun, &.{} }).?.says("call_value failed because there is no current fiber"));
 }
 
 /// Five things need `vm.fiber` to be set, and the only honest way to get
@@ -382,7 +382,7 @@ fn cfunProbe(argv: []repr.Value) raise.Error!repr.Value {
     // the scheduler's own entry points when there is one.
     {
         const rooted = fiberOver("(fn [] 1)");
-        harness.gcSetBits(&rooted.gc.flags, constants.JANET_FIBER_FLAG_ROOT);
+        harness.gcSetBits(&rooted.gc.flags, constants.fiber_flag_root);
         resumed = vm_entry.continueFiber(rooted, wrap.fromNil());
         expectReport(resumed, if (has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber");
         resumed = vm_entry.continueSignal(rooted, wrap.fromNil(), abi.Signal.@"error");

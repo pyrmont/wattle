@@ -42,8 +42,8 @@ const wrap = @import("../value/helpers/wrap.zig");
 /// `config.ev` and `config.net`, as comptime constants. Each guards a pair of
 /// calls whose declarations exist only in a build that sets it, and Zig
 /// resolves a name in every branch a runtime `if` analyses.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
-const has_net = constants.JANET_VM_HAS_NET != 0;
+const has_ev = constants.vm_has_ev != 0;
+const has_net = constants.vm_has_net != 0;
 
 // ==========================================================================
 // Types

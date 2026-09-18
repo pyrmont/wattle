@@ -129,7 +129,7 @@ fn theGcPressure() void {
 }
 
 fn isReachable(block: *abi.GCObject) bool {
-    return harness.gcBits(block.flags) & constants.JANET_MEM_REACHABLE != 0;
+    return harness.gcBits(block.flags) & constants.mem_reachable != 0;
 }
 
 /// A new block goes on the front of the normal heap with its type in the low

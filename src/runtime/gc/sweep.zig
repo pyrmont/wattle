@@ -61,7 +61,7 @@ const wrap = @import("../value/helpers/wrap.zig");
 /// Whether this build has the event loop. Three regions here reach
 /// `vm.ev.threaded_abstracts`, a field that exists only in that configuration,
 /// so this gates compilation and not merely behaviour.
-const has_ev = constants.JANET_VM_HAS_EV != 0;
+const has_ev = constants.vm_has_ev != 0;
 
 // ==========================================================================
 // Public functions

@@ -18,7 +18,7 @@
 //! `debug.traceFrame` and `debug.stacktraceExt` are raise-capable and this
 //! calls them directly, so a raise from a `tostring` callback reached through
 //! `%v`, which is the only raise either can make, arrives as
-//! `error.JanetSignal` rather than as a report nobody consumes.
+//! `error.Signal` rather than as a report nobody consumes.
 //!
 //! The two abis stay, each having callers inside the runtime that cannot take
 //! an error union.
@@ -167,11 +167,11 @@ fn aNamedFunctionWithASourcemap(named: *functions.Function) void {
     frameOfFunction(&frame, named, 0);
     var desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
+    expect(desc.name_kind == constants.trace_name_function);
     expect(desc.name == @as([*]const u8, @ptrCast(named.def.?.name)));
     expect(desc.name_prefix == null);
     expect(desc.source == @as([*]const u8, @ptrCast(named.def.?.source)));
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
+    expect(desc.loc_kind == constants.trace_loc_sourcemap);
     expect(desc.line == named.def.?.sourceMappings()[0].line);
     expect(desc.column == named.def.?.sourceMappings()[0].column);
     expect(desc.tail == 0);
@@ -181,7 +181,7 @@ fn aNamedFunctionWithASourcemap(named: *functions.Function) void {
     if (named.def.?.bytecode_length > 1) {
         frameOfFunction(&frame, named, 1);
         desc = decode(&frame);
-        expect(desc.loc_kind == constants.JANET_TRACE_LOC_SOURCEMAP);
+        expect(desc.loc_kind == constants.trace_loc_sourcemap);
         expect(desc.line == named.def.?.sourceMappings()[1].line);
         expect(desc.column == named.def.?.sourceMappings()[1].column);
     }
@@ -197,7 +197,7 @@ fn anAnonymousFunction(anonymous: *functions.Function) void {
     frameOfFunction(&frame, anonymous, 0);
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_ANONYMOUS);
+    expect(desc.name_kind == constants.trace_name_anonymous);
     expect(desc.name == null);
     expect(desc.source == @as([*]const u8, @ptrCast(anonymous.def.?.source)));
 }
@@ -216,8 +216,8 @@ fn aFunctionWithoutASourcemap(named: *functions.Function) void {
     const desc = decode(&frame);
     named.def.?.sourcemap = saved;
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_PC);
+    expect(desc.name_kind == constants.trace_name_function);
+    expect(desc.loc_kind == constants.trace_loc_pc);
     expect(desc.pc == 1);
     expect(desc.line == 0);
     expect(desc.column == 0);
@@ -230,8 +230,8 @@ fn aFunctionWithoutAPc(named: *functions.Function) void {
     frameOfFunction(&frame, named, -1);
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.name_kind == constants.trace_name_function);
+    expect(desc.loc_kind == constants.trace_loc_none);
 }
 
 /// The tail-call marker is independent of everything else.
@@ -242,7 +242,7 @@ fn theTailCallFlag(named: *functions.Function) void {
     frame.flags.tailcall = true;
     var desc = decode(&frame);
     expect(desc.tail == 1);
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_FUNCTION);
+    expect(desc.name_kind == constants.trace_name_function);
 
     frameOfCfunction(&frame, keyOf(&probeNamed));
     frame.flags.tailcall = true;
@@ -257,11 +257,11 @@ fn aRegisteredCfunction() void {
     frameOfCfunction(&frame, keyOf(&probeNamed));
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
+    expect(desc.name_kind == constants.trace_name_cfunction);
     expect(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
     expect(std.mem.orderZ(u8, desc.name_prefix.?, "trace") == .eq);
     expect(std.mem.orderZ(u8, desc.source.?, "trace_frames.zig") == .eq);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_CFUN_LINE);
+    expect(desc.loc_kind == constants.trace_loc_cfun_line);
     expect(desc.line == probe_line);
     expect(desc.pc == 0);
     expect(desc.column == 0);
@@ -279,11 +279,11 @@ fn anUnregisteredCfunction() void {
     frameOfCfunction(&frame, keyOf(&probeUnregistered));
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION_BARE);
+    expect(desc.name_kind == constants.trace_name_cfunction_bare);
     expect(desc.name == null);
     expect(desc.name_prefix == null);
     expect(desc.source == null);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.loc_kind == constants.trace_loc_none);
 }
 
 /// The case the two-field descriptor exists for. A registry entry with no name
@@ -301,12 +301,12 @@ fn aRegisteredCfunctionWithoutAName() void {
     frameOfCfunction(&frame, keyOf(&probeUnnamed));
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION_BARE);
+    expect(desc.name_kind == constants.trace_name_cfunction_bare);
     expect(desc.name == null);
     // Not reported, even though the entry has one: a source is printed only in
     // the branch that printed a name.
     expect(desc.source == null);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_CFUN_LINE);
+    expect(desc.loc_kind == constants.trace_loc_cfun_line);
     expect(desc.line == 99);
 }
 
@@ -321,12 +321,12 @@ fn aRegisteredCfunctionWithoutALine() void {
     reg.?.source_line = 0;
     frameOfCfunction(&frame, keyOf(&probeNamed));
     var desc = decode(&frame);
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.name_kind == constants.trace_name_cfunction);
+    expect(desc.loc_kind == constants.trace_loc_none);
 
     reg.?.source_line = -1;
     desc = decode(&frame);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.loc_kind == constants.trace_loc_none);
 
     reg.?.source_line = saved;
 }
@@ -342,7 +342,7 @@ fn aRegisteredCfunctionWithoutAPrefix() void {
     reg.?.name_prefix = null;
     frameOfCfunction(&frame, keyOf(&probeNamed));
     const desc = decode(&frame);
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_CFUNCTION);
+    expect(desc.name_kind == constants.trace_name_cfunction);
     expect(desc.name_prefix == null);
     expect(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
 
@@ -357,11 +357,11 @@ fn anEmptyFrame() void {
     frameOfCfunction(&frame, null);
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.JANET_TRACE_NAME_NONE);
+    expect(desc.name_kind == constants.trace_name_none);
     expect(desc.name == null);
     expect(desc.name_prefix == null);
     expect(desc.source == null);
-    expect(desc.loc_kind == constants.JANET_TRACE_LOC_NONE);
+    expect(desc.loc_kind == constants.trace_loc_none);
     expect(desc.tail == 0);
 }
 
@@ -380,9 +380,9 @@ fn aPrefixedCfunctionRenders() raise.Error!void {
     const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
-    fiber.frame = constants.JANET_FRAME_SIZE;
-    fiber.stackstart = constants.JANET_FRAME_SIZE;
-    fiber.stacktop = constants.JANET_FRAME_SIZE;
+    fiber.frame = constants.frame_size;
+    fiber.stackstart = constants.frame_size;
+    fiber.stacktop = constants.frame_size;
     const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data));
     frameOfCfunction(frame, keyOf(&probeNamed));
     frame.prevframe = 0;
@@ -418,9 +418,9 @@ fn aBareCfunctionRenders() raise.Error!void {
     const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
-    fiber.frame = constants.JANET_FRAME_SIZE;
-    fiber.stackstart = constants.JANET_FRAME_SIZE;
-    fiber.stacktop = constants.JANET_FRAME_SIZE;
+    fiber.frame = constants.frame_size;
+    fiber.stackstart = constants.frame_size;
+    fiber.stacktop = constants.frame_size;
     const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data));
 
     frameOfCfunction(frame, keyOf(&probeUnregistered));

@@ -1208,7 +1208,7 @@ pub fn nextElement(t: *Tree, element: repr.Value) repr.Value {
 /// Reads back what a map's or a set's marshalled form holds.
 /// Marshals the values of every entry under `node`, in order.
 fn marshalNode(m: *abi.Marshal, node: *Node) raise.Error!void {
-    for (entries(node)) |x| try marsh.marshalJanet(m, x);
+    for (entries(node)) |x| try marsh.marshalValue(m, x);
     for (children(node)) |slot| try marshalNode(m, asNode(slot.?));
 }
 
@@ -1618,10 +1618,10 @@ fn unmarshalTree(u: *abi.Unmarshal, kind: Kind) raise.Error!*Tree {
     const count = try marsh.unmarshalSize(u);
     var values: scratch_vector.Vector(repr.Value) = .empty;
     for (0..count) |_| {
-        const key = try marsh.unmarshalJanet(u);
+        const key = try marsh.unmarshalValue(u);
         try checkKey(key);
         scratch_vector.push(&values, key);
-        if (kind == .map) scratch_vector.push(&values, try marsh.unmarshalJanet(u));
+        if (kind == .map) scratch_vector.push(&values, try marsh.unmarshalValue(u));
     }
     const built = buildContents(kind, values.items);
     scratch_vector.free(&values);

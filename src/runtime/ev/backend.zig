@@ -119,9 +119,9 @@ const Epoll = struct {
             .events = if (edge_trigger) EPOLLET else 0,
             .data = .{ .ptr = @intFromPtr(s) },
         };
-        const readable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_ACCEPTABLE);
+        const readable: u32 = @intCast(constants.stream_readable | constants.stream_acceptable);
         if (s.flags & readable != 0) event.events |= EPOLLIN;
-        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_WRITABLE)) != 0) event.events |= EPOLLOUT;
+        if (s.flags & @as(u32, @intCast(constants.stream_writable)) != 0) event.events |= EPOLLOUT;
         const status = c.retryIntr(c.epoll_ctl, .{
             vm_state.current().ev.backend.epoll,
             if (mod) EPOLL_CTL_MOD else EPOLL_CTL_ADD,
@@ -132,7 +132,7 @@ const Epoll = struct {
             if (c.errno() == ev.EPERM) {
                 // Couldn't add to the event loop, so assume it completes
                 // synchronously.
-                s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+                s.flags |= @intCast(constants.stream_unregistered);
             } else {
                 return raise.panicv(stream_mod.evLasterr());
             }
@@ -158,10 +158,10 @@ const Epoll = struct {
     /// state this is trying to reach, and kqueue reaches it silently. Anything
     /// else is still raised.
     fn unregister(s: *stream_mod.Stream) raise.Error!void {
-        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
+        if (s.flags & @as(u32, @intCast(constants.stream_nodups)) != 0) return;
         const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
         if (status == -1 and c.errno() != @intFromEnum(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
-        s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+        s.flags |= @intCast(constants.stream_unregistered);
     }
 
     fn loop1(has_timeout: bool, timeout: ev.Timestamp) raise.Error!void {
@@ -221,11 +221,11 @@ const Iocp = struct {
 
     fn register(s: *stream_mod.Stream) raise.Error!void {
         if (c.CreateIoCompletionPort(s.handle, ev.iocpHandle(), @intFromPtr(s), 0) == null) {
-            const listenable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_WRITABLE | constants.JANET_STREAM_ACCEPTABLE);
+            const listenable: u32 = @intCast(constants.stream_readable | constants.stream_writable | constants.stream_acceptable);
             if (s.flags & listenable != 0) {
                 return pp_format.panicf("failed to listen for events: %V", .{stream_mod.evLasterr()});
             }
-            s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+            s.flags |= @intCast(constants.stream_unregistered);
         }
     }
 
@@ -325,12 +325,12 @@ const Kqueue = struct {
     /// report how many were written.
     fn changes(kevs: *[2]Kevent, s: *stream_mod.Stream, flags: u16) usize {
         var length: usize = 0;
-        const readable: u32 = @intCast(constants.JANET_STREAM_READABLE | constants.JANET_STREAM_ACCEPTABLE);
+        const readable: u32 = @intCast(constants.stream_readable | constants.stream_acceptable);
         if (s.flags & readable != 0) {
             set(&kevs[length], s.handle, EVFILT_READ, flags, @intFromPtr(s));
             length += 1;
         }
-        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_WRITABLE)) != 0) {
+        if (s.flags & @as(u32, @intCast(constants.stream_writable)) != 0) {
             set(&kevs[length], s.handle, EVFILT_WRITE, flags, @intFromPtr(s));
             length += 1;
         }
@@ -346,7 +346,7 @@ const Kqueue = struct {
         var kevs: [2]Kevent = undefined;
         const clear: u16 = if (edge_trigger) @intCast(std.c.EV.CLEAR) else 0;
         const length = changes(&kevs, s, @as(u16, @intCast(std.c.EV.ADD | std.c.EV.ENABLE)) | clear);
-        if (apply(kevs[0..length]) == -1) s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+        if (apply(kevs[0..length]) == -1) s.flags |= @intCast(constants.stream_unregistered);
     }
 
     fn register(s: *stream_mod.Stream) raise.Error!void {
@@ -369,12 +369,12 @@ const Kqueue = struct {
     }
 
     fn unregister(s: *stream_mod.Stream) raise.Error!void {
-        if (s.flags & @as(u32, @intCast(constants.JANET_STREAM_NODUPS)) != 0) return;
+        if (s.flags & @as(u32, @intCast(constants.stream_nodups)) != 0) return;
         var kevs: [2]Kevent = undefined;
         const length = changes(&kevs, s, @intCast(std.c.EV.DELETE));
         // The status might be -1 on the BSDs for subprocesses.
         _ = apply(kevs[0..length]);
-        s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+        s.flags |= @intCast(constants.stream_unregistered);
     }
 
     fn init() raise.Error!void {
@@ -504,7 +504,7 @@ const Poll = struct {
         streams()[i] = last;
         last.index = s.index;
         b.stream_count -= 1;
-        s.flags |= @intCast(constants.JANET_STREAM_UNREGISTERED);
+        s.flags |= @intCast(constants.stream_unregistered);
     }
 
     fn edgeTriggered(s: *stream_mod.Stream) raise.Error!void {

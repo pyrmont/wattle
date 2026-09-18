@@ -61,12 +61,12 @@ pub fn libFfi(env: *tables.Table) void {
         corefn.reg("ffi/signature", &ffi_call.cfunSignature, @src(), "(ffi/signature calling-convention ret-type & arg-types)", "Create a function signature object that can be used to make calls " ++
             "with raw function pointers."),
         corefn.reg("ffi/call", &ffi_call.cfunCall, @src(), "(ffi/call pointer signature & args)", "Call a raw pointer as a function pointer. The function signature specifies " ++
-            "how Janet values in `args` are converted to native machine types."),
+            "how Wattle values in `args` are converted to native machine types."),
         corefn.reg("ffi/struct", &cfunFfiStruct, @src(), "(ffi/struct & types)", "Create a struct type definition that can be used to pass structs into native functions. "),
         corefn.reg("ffi/write", &cfunBufferWrite, @src(), "(ffi/write ffi-type data &opt buffer index)", "Append a native type to a buffer such as it would appear in memory. This can be used " ++
             "to pass pointers to structs in the ffi, or send C/C++/native structs over the network " ++
             "or to files. Returns a modified buffer or a new buffer if one is not supplied."),
-        corefn.reg("ffi/read", &cfunBufferRead, @src(), "(ffi/read ffi-type bytes &opt offset)", "Parse a native struct out of a buffer and convert it to normal Janet data structures. " ++
+        corefn.reg("ffi/read", &cfunBufferRead, @src(), "(ffi/read ffi-type bytes &opt offset)", "Parse a native struct out of a buffer and convert it to normal Wattle data structures. " ++
             "This function is the inverse of `ffi/write`. `bytes` can also be a raw pointer, although " ++
             "this is unsafe."),
         corefn.reg("ffi/size", &cfunFfiSize, @src(), "(ffi/size type)", "Get the size of an ffi type in bytes."),
@@ -74,7 +74,7 @@ pub fn libFfi(env: *tables.Table) void {
         corefn.reg("ffi/trampoline", &ffi_call.cfunTrampoline, @src(), "(ffi/trampoline cc)", "Get a native function pointer that can be used as a callback and passed to C libraries. " ++
             "This callback trampoline has the signature `void trampoline(void \\*ctx, void \\*userdata)` in " ++
             "the given calling convention. This is the only function signature supported. " ++
-            "It is up to the programmer to ensure that the `userdata` argument contains a janet function " ++
+            "It is up to the programmer to ensure that the `userdata` argument contains a Wattle function " ++
             "the will be called with one argument, `ctx` which is an opaque pointer. This pointer can " ++
             "be further inspected with `ffi/read`."),
         corefn.reg("ffi/jitfn", &ffi_call.cfunJitfn, @src(), "(ffi/jitfn bytes)", "Create an abstract type that can be used as the pointer argument to `ffi/call`. The content " ++

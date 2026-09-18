@@ -1,6 +1,6 @@
 //! A payload the runtime's allocator cannot align, allocated.
 //!
-//! `janet_calloc` is `malloc`-backed, so the strictest alignment it promises
+//! `calloc` is `malloc`-backed, so the strictest alignment it promises
 //! is `max_align_t`. `alloc` takes the payload type rather than returning a
 //! `?*anyopaque`, so a request for more than that is refused at the call that
 //! makes it. Given the opaque pointer an author would write the `@alignCast`

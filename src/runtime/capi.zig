@@ -68,86 +68,86 @@ const tables = @import("value/tables.zig");
 /// second description of a crossing is kept anywhere, so there is none to fall
 /// out of step.
 pub const table: interface.Runtime = .{
-    .abstract = &janet_abstract,
+    .abstract = &abstract,
     .arity = &impl.args.checkArityAbi,
-    .array_push_value = &janet_array_push_value,
-    .buffer_push_bytes = &janet_buffer_push_bytes,
-    .buffer_push_value = &janet_buffer_push_value,
+    .array_push_value = &array_push_value,
+    .buffer_push_bytes = &buffer_push_bytes,
+    .buffer_push_value = &buffer_push_value,
     .bytes_view = &impl.args.bytesViewAbi,
-    .c_raise_record = &wattle_c_raise_record,
-    .c_raise_take = &wattle_c_raise_take,
-    .call_value = &janet_call_value,
-    .calloc = &janet_calloc,
-    .cfuns_ext = &janet_cfuns_ext,
-    .checkint = &janet_checkint,
-    .cstring = &janet_cstring,
-    .current_loop = &janet_current_loop,
-    .def = &janet_def,
+    .c_raise_record = &c_raise_record,
+    .c_raise_take = &c_raise_take,
+    .call_value = &call_value,
+    .calloc = &calloc,
+    .cfuns_ext = &cfuns_ext,
+    .checkint = &checkint,
+    .cstring = &cstring,
+    .current_loop = &current_loop,
+    .def = &def,
     .dictionary_chunk = &impl.args.dictionaryChunkAbi,
-    .fatal = &wattle_fatal,
-    .fiber_status_value = &janet_fiber_status_value,
+    .fatal = &fatal,
+    .fiber_status_value = &fiber_status_value,
     .fixarity = &impl.args.fixArityAbi,
-    .free = &janet_free,
-    .gcroot = &janet_gcroot,
-    .gcunroot = &janet_gcunroot,
-    .get = &janet_get,
+    .free = &free,
+    .gcroot = &gcroot,
+    .gcunroot = &gcunroot,
+    .get = &get,
     .getabstract = &impl.args.getAbstractAbi,
     .getboolean = &impl.args.GetBoolean.abi,
     .getbytes = &impl.args.getBytesAbi,
     .getdictionary = &impl.args.getDictionaryAbi,
     .getindexed = &impl.args.getIndexedAbi,
     .getinteger = &impl.args.GetInteger.abi,
-    .getmethod = &janet_getmethod,
+    .getmethod = &getmethod,
     .getnumber = &impl.args.GetNumber.abi,
     .getrange = &impl.args.getRangeAbi,
     .getsize = &impl.args.GetSize.abi,
     .getuinteger = &impl.args.GetUInteger.abi,
     .indexed_chunk = &impl.args.indexedChunkAbi,
     .is_keyword = &impl.args.isKeywordAbi,
-    .length = &janet_length,
-    .mark = &janet_mark,
-    .marshal_abstract = &janet_marshal_abstract,
-    .marshal_byte = &janet_marshal_byte,
-    .marshal_bytes = &janet_marshal_bytes,
-    .marshal_flags = &janet_marshal_flags,
-    .marshal_int = &janet_marshal_int,
-    .marshal_int64 = &janet_marshal_int64,
-    .marshal_janet = &janet_marshal_janet,
-    .marshal_ptr = &janet_marshal_ptr,
-    .marshal_size = &janet_marshal_size,
-    .mcall = &janet_mcall,
-    .new_array = &janet_new_array,
-    .new_buffer = &janet_new_buffer,
-    .new_keyword = &janet_new_keyword,
-    .new_string = &janet_new_string,
-    .new_map = &janet_new_map,
-    .new_symbol = &janet_new_symbol,
-    .new_table = &janet_new_table,
-    .new_tuple = &janet_new_tuple,
-    .nextmethod = &janet_nextmethod,
-    .pcall_value = &janet_pcall_value,
-    .post = &janet_post,
-    .put = &janet_put,
-    .register_abstract_type = &janet_register_abstract_type,
-    .root_fiber_value = &janet_root_fiber_value,
-    .signal_record = &wattle_signal_record,
+    .length = &length,
+    .mark = &mark,
+    .marshal_abstract = &marshal_abstract,
+    .marshal_byte = &marshal_byte,
+    .marshal_bytes = &marshal_bytes,
+    .marshal_flags = &marshal_flags,
+    .marshal_int = &marshal_int,
+    .marshal_int64 = &marshal_int64,
+    .marshal_value = &marshal_value,
+    .marshal_ptr = &marshal_ptr,
+    .marshal_size = &marshal_size,
+    .mcall = &mcall,
+    .new_array = &new_array,
+    .new_buffer = &new_buffer,
+    .new_keyword = &new_keyword,
+    .new_string = &new_string,
+    .new_map = &new_map,
+    .new_symbol = &new_symbol,
+    .new_table = &new_table,
+    .new_tuple = &new_tuple,
+    .nextmethod = &nextmethod,
+    .pcall_value = &pcall_value,
+    .post = &post,
+    .put = &put,
+    .register_abstract_type = &register_abstract_type,
+    .root_fiber_value = &root_fiber_value,
+    .signal_record = &signal_record,
     .to_dictionary = &impl.args.toDictionaryAbi,
     .to_indexed = &impl.args.toIndexedAbi,
-    .unmarshal_abstract = &janet_unmarshal_abstract,
-    .unmarshal_abstract_reuse = &janet_unmarshal_abstract_reuse,
-    .unmarshal_byte = &janet_unmarshal_byte,
-    .unmarshal_bytes = &janet_unmarshal_bytes,
-    .unmarshal_ensure = &janet_unmarshal_ensure,
-    .unmarshal_flags = &janet_unmarshal_flags,
-    .unmarshal_int = &janet_unmarshal_int,
-    .unmarshal_int64 = &janet_unmarshal_int64,
-    .unmarshal_janet = &janet_unmarshal_janet,
-    .unmarshal_ptr = &janet_unmarshal_ptr,
-    .unmarshal_remaining = &janet_unmarshal_remaining,
-    .unmarshal_size = &janet_unmarshal_size,
-    .unwrap_integer = &janet_unwrap_integer,
-    .unwrap_pointer = &janet_unwrap_pointer,
-    .wake = &janet_wake,
+    .unmarshal_abstract = &unmarshal_abstract,
+    .unmarshal_abstract_reuse = &unmarshal_abstract_reuse,
+    .unmarshal_byte = &unmarshal_byte,
+    .unmarshal_bytes = &unmarshal_bytes,
+    .unmarshal_ensure = &unmarshal_ensure,
+    .unmarshal_flags = &unmarshal_flags,
+    .unmarshal_int = &unmarshal_int,
+    .unmarshal_int64 = &unmarshal_int64,
+    .unmarshal_value = &unmarshal_value,
+    .unmarshal_ptr = &unmarshal_ptr,
+    .unmarshal_remaining = &unmarshal_remaining,
+    .unmarshal_size = &unmarshal_size,
+    .unwrap_integer = &unwrap_integer,
+    .unwrap_pointer = &unwrap_pointer,
+    .wake = &wake,
     .wrap_abstract = &impl.value_helpers_wrap.abi.fromAbstract,
     .wrap_pointer = &impl.value_helpers_wrap.abi.fromPointer,
     .wrap_string = &impl.value_helpers_wrap.abi.fromString,
@@ -193,7 +193,7 @@ const impl = struct {
 ///
 /// A build without the loop still publishes both symbols, and neither is
 /// reachable, because reaching either needs a `*abi.Loop` and
-/// `janet_current_loop` refuses to make one. The refusal here is therefore an
+/// `current_loop` refuses to make one. The refusal here is therefore an
 /// assertion about that argument rather than a path a program takes.
 const loop_ops = if (config.ev) struct {
     /// What the loop thread runs off the self-pipe, and where the author's two
@@ -259,36 +259,36 @@ const loop_ops = if (config.ev) struct {
 // ==========================================================================
 
 /// Allocates an abstract of type `atype` with `size` bytes of payload.
-pub fn janet_abstract(atype: *const abi.AbstractType, size: usize) callconv(.c) ?*anyopaque {
-    requireJanetThread();
+pub fn abstract(atype: *const abi.AbstractType, size: usize) callconv(.c) ?*anyopaque {
+    requireVmThread();
     return impl.value_abstracts.newBytes(atype, size);
 }
 
 /// Mutation and access through the `Value` rather than through a heap pointer.
 /// Each flattens a raise into a report, which `module.zig` rebuilds with
 /// `raise.fromAbi`.
-pub fn janet_array_push_value(v: repr.Value, x: repr.Value) callconv(.c) void {
-    requireJanetThread();
+pub fn array_push_value(v: repr.Value, x: repr.Value) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.value_arrays.pushChecked(v, x));
 }
 
-pub fn janet_buffer_push_value(v: repr.Value, bytes: [*]const u8, len: usize) callconv(.c) void {
-    requireJanetThread();
+pub fn buffer_push_value(v: repr.Value, bytes: [*]const u8, len: usize) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.value_buffers.pushBytesChecked(v, bytes[0..len]));
 }
 
-pub fn janet_get(ds: repr.Value, key: repr.Value) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn get(ds: repr.Value, key: repr.Value) callconv(.c) repr.Value {
+    requireVmThread();
     return raise.toAbi(impl.value_helpers_access.get(ds, key));
 }
 
-pub fn janet_length(x: repr.Value) callconv(.c) i32 {
-    requireJanetThread();
+pub fn length(x: repr.Value) callconv(.c) i32 {
+    requireVmThread();
     return raise.toAbi(impl.value_helpers_access.length(x));
 }
 
-pub fn janet_put(ds: repr.Value, key: repr.Value, val: repr.Value) callconv(.c) void {
-    requireJanetThread();
+pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.value_helpers_access.put(ds, key, val));
 }
 
@@ -300,8 +300,8 @@ pub fn janet_put(ds: repr.Value, key: repr.Value, val: repr.Value) callconv(.c) 
 /// what a hand-written abi is made of: the raise `pushBytes` returns cannot
 /// travel a `callconv(.c)` return, so it is recorded and `module.push` rebuilds
 /// it with `raise.fromAbi`.
-pub fn janet_buffer_push_bytes(render: *abi.Render, bytes: [*]const u8, len: usize) callconv(.c) void {
-    requireJanetThread();
+pub fn buffer_push_bytes(render: *abi.Render, bytes: [*]const u8, len: usize) callconv(.c) void {
+    requireVmThread();
     const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
     return raise.toAbi(impl.value_buffers.pushBytes(buffer, bytes[0..len]));
 }
@@ -312,8 +312,8 @@ pub fn janet_buffer_push_bytes(render: *abi.Render, bytes: [*]const u8, len: usi
 /// Any other callee is refused. `vm/entry.zig`'s `callValue` is reached for
 /// both accepted types because it copies the arguments onto the fiber under a
 /// frame, which a cfunction needs.
-pub fn janet_call_value(f: repr.Value, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn call_value(f: repr.Value, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     const result: raise.Error!repr.Value = if (repr.checkType(f, repr.Tag.function) or repr.checkType(f, repr.Tag.cfunction))
         impl.vm_entry.callValue(f, args[0..len])
     else
@@ -322,43 +322,43 @@ pub fn janet_call_value(f: repr.Value, args: [*]const repr.Value, len: usize) ca
 }
 
 /// `(:name ...)`, from a module's frame, raising on anything but a return.
-pub fn janet_mcall(name: [*:0]const u8, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn mcall(name: [*:0]const u8, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return raise.toAbi(impl.vm_entry.mcallValue(name, args[0..len]));
 }
 
 /// The allocator for memory the runtime may later free.
-pub fn janet_calloc(nmemb: usize, size: usize) callconv(.c) ?*anyopaque {
-    requireJanetThread();
+pub fn calloc(nmemb: usize, size: usize) callconv(.c) ?*anyopaque {
+    requireVmThread();
     return impl.utils.calloc(nmemb, size);
 }
 
-pub fn janet_free(ptr: ?*anyopaque) callconv(.c) void {
-    requireJanetThread();
+pub fn free(ptr: ?*anyopaque) callconv(.c) void {
+    requireVmThread();
     return impl.utils.free(ptr);
 }
 
 /// Registration: a table of cfunctions read to its null-name terminator, and
 /// one plain binding.
-pub fn janet_cfuns_ext(env: ?*abi.Env, regprefix: ?[*:0]const u8, registrations: [*]const abi.Reg) callconv(.c) void {
-    requireJanetThread();
+pub fn cfuns_ext(env: ?*abi.Env, regprefix: ?[*:0]const u8, registrations: [*]const abi.Reg) callconv(.c) void {
+    requireVmThread();
     installSentinel(@ptrCast(@alignCast(env)), regprefix, registrations);
 }
 
-pub fn janet_def(env: *abi.Env, name: [*:0]const u8, val: repr.Value, doc: ?[*:0]const u8) callconv(.c) void {
-    requireJanetThread();
+pub fn def(env: *abi.Env, name: [*:0]const u8, val: repr.Value, doc: ?[*:0]const u8) callconv(.c) void {
+    requireVmThread();
     return impl.registry.def(@ptrCast(@alignCast(env)), name, val, doc);
 }
 
 /// Whether `x` is a number whose value is an exact 32-bit integer.
-pub fn janet_checkint(x: repr.Value) callconv(.c) c_int {
-    requireJanetThread();
+pub fn checkint(x: repr.Value) callconv(.c) c_int {
+    requireVmThread();
     return @intFromBool(impl.args.checkint(x));
 }
 
 /// Interns a NUL-terminated C string as a Janet string.
-pub fn janet_cstring(str: [*:0]const u8) callconv(.c) [*:0]const u8 {
-    requireJanetThread();
+pub fn cstring(str: [*:0]const u8) callconv(.c) [*:0]const u8 {
+    requireVmThread();
     return impl.value_strings.cstring(str);
 }
 
@@ -367,33 +367,33 @@ pub fn janet_cstring(str: [*:0]const u8) callconv(.c) [*:0]const u8 {
 /// The four loop crossings exist in every build; a build without the loop
 /// refuses here, and `post`, `wake` and `await` are unreachable without what
 /// this returns.
-pub fn janet_current_loop() callconv(.c) *abi.Loop {
-    requireJanetThread();
+pub fn current_loop() callconv(.c) *abi.Loop {
+    requireVmThread();
     return raise.toAbi(currentLoop());
 }
 
 /// A fiber value's status, reporting where the value is not a fiber.
-pub fn janet_fiber_status_value(fiber: repr.Value) callconv(.c) abi.FiberStatus {
-    requireJanetThread();
+pub fn fiber_status_value(fiber: repr.Value) callconv(.c) abi.FiberStatus {
+    requireVmThread();
     return raise.toAbi(impl.value_fibers.statusChecked(fiber));
 }
 
 /// The precise pair a module keeps a value alive across a call into Janet
 /// with. `gc.zig`'s root set is a multiset, so these cross as they stand: one
-/// `janet_gcunroot` drops one rooting and reports whether it found one.
-pub fn janet_gcroot(v: repr.Value) callconv(.c) void {
-    requireJanetThread();
+/// `gcunroot` drops one rooting and reports whether it found one.
+pub fn gcroot(v: repr.Value) callconv(.c) void {
+    requireVmThread();
     return impl.gc_alloc.gcroot(v);
 }
 
-pub fn janet_gcunroot(v: repr.Value) callconv(.c) bool {
-    requireJanetThread();
+pub fn gcunroot(v: repr.Value) callconv(.c) bool {
+    requireVmThread();
     return impl.gc_alloc.gcunroot(v);
 }
 
 /// Looks `method` up in a method table, for an abstract type's `get` slot.
-pub fn janet_getmethod(method: [*:0]const u8, methods: [*]const method_type.CMethod, out: *repr.Value) callconv(.c) c_int {
-    requireJanetThread();
+pub fn getmethod(method: [*:0]const u8, methods: [*]const method_type.CMethod, out: *repr.Value) callconv(.c) c_int {
+    requireVmThread();
     return impl.args.getmethod(method, methods, out);
 }
 
@@ -401,8 +401,8 @@ pub fn janet_getmethod(method: [*:0]const u8, methods: [*]const method_type.CMet
 /// abstract type's `gcmark` slot is for. `module.mark` is the author's side;
 /// the definition is `gc/mark.zig`'s `mark`, and it cannot raise, so this
 /// needs no report.
-pub fn janet_mark(x: repr.Value) callconv(.c) void {
-    requireJanetThread();
+pub fn mark(x: repr.Value) callconv(.c) void {
+    requireVmThread();
     return impl.gc_mark.mark(x);
 }
 
@@ -418,109 +418,109 @@ pub fn janet_mark(x: repr.Value) callconv(.c) void {
 /// Seventeen of the twenty-one flatten a raise into a report, because a
 /// `callconv(.c)` return has no room for an error union; `module.zig` rebuilds
 /// it with `raise.fromAbi`. The four that cannot fail are the two flag reads,
-/// `janet_marshal_abstract` and `janet_unmarshal_remaining`.
-pub fn janet_marshal_abstract(m: *abi.Marshal, p: ?*anyopaque) callconv(.c) void {
-    requireJanetThread();
+/// `marshal_abstract` and `unmarshal_remaining`.
+pub fn marshal_abstract(m: *abi.Marshal, p: ?*anyopaque) callconv(.c) void {
+    requireVmThread();
     return impl.marsh.marshalAbstract(m, p);
 }
 
-pub fn janet_marshal_byte(m: *abi.Marshal, b: u8) callconv(.c) void {
-    requireJanetThread();
+pub fn marshal_byte(m: *abi.Marshal, b: u8) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.marshalByte(m, b));
 }
 
-pub fn janet_marshal_bytes(m: *abi.Marshal, bytes: [*]const u8, len: usize) callconv(.c) void {
-    requireJanetThread();
+pub fn marshal_bytes(m: *abi.Marshal, bytes: [*]const u8, len: usize) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.marshalBytes(m, bytes[0..len]));
 }
 
-pub fn janet_marshal_flags(m: *abi.Marshal) callconv(.c) c_int {
-    requireJanetThread();
+pub fn marshal_flags(m: *abi.Marshal) callconv(.c) c_int {
+    requireVmThread();
     return impl.marsh.marshalFlags(m);
 }
 
-pub fn janet_marshal_int(m: *abi.Marshal, x: i32) callconv(.c) void {
-    requireJanetThread();
+pub fn marshal_int(m: *abi.Marshal, x: i32) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.marshalInt(m, x));
 }
 
-pub fn janet_marshal_int64(m: *abi.Marshal, x: i64) callconv(.c) void {
-    requireJanetThread();
+pub fn marshal_int64(m: *abi.Marshal, x: i64) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.marshalInt64(m, x));
 }
 
-pub fn janet_marshal_janet(m: *abi.Marshal, x: repr.Value) callconv(.c) void {
-    requireJanetThread();
-    return raise.toAbi(impl.marsh.marshalJanet(m, x));
+pub fn marshal_value(m: *abi.Marshal, x: repr.Value) callconv(.c) void {
+    requireVmThread();
+    return raise.toAbi(impl.marsh.marshalValue(m, x));
 }
 
-pub fn janet_marshal_ptr(m: *abi.Marshal, p: ?*const anyopaque) callconv(.c) void {
-    requireJanetThread();
+pub fn marshal_ptr(m: *abi.Marshal, p: ?*const anyopaque) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.marshalPtr(m, p));
 }
 
-pub fn janet_marshal_size(m: *abi.Marshal, n: usize) callconv(.c) void {
-    requireJanetThread();
+pub fn marshal_size(m: *abi.Marshal, n: usize) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.marshalSize(m, n));
 }
 
-pub fn janet_unmarshal_abstract(u: *abi.Unmarshal, size: usize) callconv(.c) ?*anyopaque {
-    requireJanetThread();
+pub fn unmarshal_abstract(u: *abi.Unmarshal, size: usize) callconv(.c) ?*anyopaque {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalAbstract(u, size));
 }
 
-pub fn janet_unmarshal_abstract_reuse(u: *abi.Unmarshal, p: ?*anyopaque) callconv(.c) void {
-    requireJanetThread();
+pub fn unmarshal_abstract_reuse(u: *abi.Unmarshal, p: ?*anyopaque) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalAbstractReuse(u, p));
 }
 
-pub fn janet_unmarshal_byte(u: *abi.Unmarshal) callconv(.c) u8 {
-    requireJanetThread();
+pub fn unmarshal_byte(u: *abi.Unmarshal) callconv(.c) u8 {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalByte(u));
 }
 
-pub fn janet_unmarshal_bytes(u: *abi.Unmarshal, dest: [*]u8, len: usize) callconv(.c) void {
-    requireJanetThread();
+pub fn unmarshal_bytes(u: *abi.Unmarshal, dest: [*]u8, len: usize) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalBytes(u, dest, len));
 }
 
-pub fn janet_unmarshal_ensure(u: *abi.Unmarshal, size: usize) callconv(.c) void {
-    requireJanetThread();
+pub fn unmarshal_ensure(u: *abi.Unmarshal, size: usize) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalEnsure(u, size));
 }
 
-pub fn janet_unmarshal_flags(u: *abi.Unmarshal) callconv(.c) c_int {
-    requireJanetThread();
+pub fn unmarshal_flags(u: *abi.Unmarshal) callconv(.c) c_int {
+    requireVmThread();
     return impl.marsh.unmarshalFlags(u);
 }
 
-pub fn janet_unmarshal_int(u: *abi.Unmarshal) callconv(.c) i32 {
-    requireJanetThread();
+pub fn unmarshal_int(u: *abi.Unmarshal) callconv(.c) i32 {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalInt(u));
 }
 
-pub fn janet_unmarshal_int64(u: *abi.Unmarshal) callconv(.c) i64 {
-    requireJanetThread();
+pub fn unmarshal_int64(u: *abi.Unmarshal) callconv(.c) i64 {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalInt64(u));
 }
 
-pub fn janet_unmarshal_janet(u: *abi.Unmarshal) callconv(.c) repr.Value {
-    requireJanetThread();
-    return raise.toAbi(impl.marsh.unmarshalJanet(u));
+pub fn unmarshal_value(u: *abi.Unmarshal) callconv(.c) repr.Value {
+    requireVmThread();
+    return raise.toAbi(impl.marsh.unmarshalValue(u));
 }
 
-pub fn janet_unmarshal_ptr(u: *abi.Unmarshal) callconv(.c) ?*anyopaque {
-    requireJanetThread();
+pub fn unmarshal_ptr(u: *abi.Unmarshal) callconv(.c) ?*anyopaque {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalPtr(u));
 }
 
-pub fn janet_unmarshal_remaining(u: *abi.Unmarshal) callconv(.c) usize {
-    requireJanetThread();
+pub fn unmarshal_remaining(u: *abi.Unmarshal) callconv(.c) usize {
+    requireVmThread();
     return impl.marsh.unmarshalRemaining(u);
 }
 
-pub fn janet_unmarshal_size(u: *abi.Unmarshal) callconv(.c) usize {
-    requireJanetThread();
+pub fn unmarshal_size(u: *abi.Unmarshal) callconv(.c) usize {
+    requireVmThread();
     return raise.toAbi(impl.marsh.unmarshalSize(u));
 }
 
@@ -531,53 +531,53 @@ pub fn janet_unmarshal_size(u: *abi.Unmarshal) callconv(.c) usize {
 /// string and `arrays.newFrom` an `*Array`, and the wrap happens here, on this
 /// side of the boundary, which is what makes the crossing one call instead of
 /// two.
-pub fn janet_new_array(items: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_array(items: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value_helpers_wrap.abi.fromArray(impl.value_arrays.newFrom(items[0..len]));
 }
 
-pub fn janet_new_buffer(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_buffer(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return raise.toAbi(newBufferValue(bytes[0..len]));
 }
 
-pub fn janet_new_keyword(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_keyword(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value.fromBytes(bytes[0..len], .keyword);
 }
 
-pub fn janet_new_string(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_string(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value.fromBytes(bytes[0..len], .string);
 }
 
-pub fn janet_new_map(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_map(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value_helpers_wrap.abi.fromMap(impl.value_maps.buildPairs(kvs[0..len]));
 }
 
-pub fn janet_new_symbol(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_symbol(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value.fromBytes(bytes[0..len], .symbol);
 }
 
-pub fn janet_new_table(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_table(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value_helpers_wrap.abi.fromTable(impl.value_tables.newFrom(kvs[0..len]));
 }
 
-pub fn janet_new_tuple(items: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn new_tuple(items: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.value_helpers_wrap.abi.fromTuple(impl.value_tuples.newFrom(items[0..len]));
 }
 
 /// The method after `key`, for an abstract type's `next` slot.
-pub fn janet_nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) callconv(.c) repr.Value {
+    requireVmThread();
     return impl.args.nextmethod(methods, key);
 }
 
-/// The same call as `janet_call_value` on a fresh fiber, reporting instead of
+/// The same call as `call_value` on a fresh fiber, reporting instead of
 /// raising.
 ///
 /// The fiber is always fresh. `entry.pcall` can recycle one through its slot
@@ -593,14 +593,14 @@ pub fn janet_nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) 
 /// same reason: that renders `%s` of a static status name and this renders
 /// `%t` of a static type name, so no user callback runs under a formatter with
 /// nothing above it to raise into.
-pub fn janet_pcall_value(
+pub fn pcall_value(
     f: repr.Value,
     args: [*]const repr.Value,
     len: usize,
     out_value: *repr.Value,
     out_fiber: *repr.Value,
 ) callconv(.c) abi.Signal {
-    requireJanetThread();
+    requireVmThread();
     if (!repr.checkType(f, repr.Tag.function)) {
         out_fiber.* = impl.value_helpers_wrap.fromNil();
         out_value.* = impl.value_helpers_wrap.fromString(raise.total(
@@ -628,7 +628,7 @@ pub fn janet_pcall_value(
 ///
 /// It allocates nothing away from Windows, where the completion-port arm
 /// allocates one event with libc per post.
-pub fn janet_post(l: *abi.Loop, cb: module.PostCallback, ctx: *anyopaque) callconv(.c) void {
+pub fn post(l: *abi.Loop, cb: module.PostCallback, ctx: *anyopaque) callconv(.c) void {
     return loop_ops.post(l, cb, ctx);
 }
 
@@ -637,27 +637,27 @@ pub fn janet_post(l: *abi.Loop, cb: module.PostCallback, ctx: *anyopaque) callco
 /// Without this a module can write an `unmarshal` callback that nothing ever
 /// reaches: `marsh.unmarshalOneAbstract` looks the type up by the name on the
 /// wire, and an unregistered type is an `unknown abstract type` raise.
-pub fn janet_register_abstract_type(at: *const abi.AbstractType) callconv(.c) void {
-    requireJanetThread();
+pub fn register_abstract_type(at: *const abi.AbstractType) callconv(.c) void {
+    requireVmThread();
     return raise.toAbi(impl.registry.registerAbstractType(at));
 }
 
 /// The fiber `await` suspends, as a `Value`.
-pub fn janet_root_fiber_value() callconv(.c) repr.Value {
-    requireJanetThread();
+pub fn root_fiber_value() callconv(.c) repr.Value {
+    requireVmThread();
     return raise.toAbi(rootFiberValue());
 }
 
 /// Unwraps a number value as a 32-bit integer, reporting where it is not an
 /// integer.
-pub fn janet_unwrap_integer(x: repr.Value) callconv(.c) i32 {
-    requireJanetThread();
+pub fn unwrap_integer(x: repr.Value) callconv(.c) i32 {
+    requireVmThread();
     return impl.value_helpers_wrap.toIntegerAbi(x);
 }
 
 /// Unwraps a pointer value.
-pub fn janet_unwrap_pointer(x: repr.Value) callconv(.c) ?*anyopaque {
-    requireJanetThread();
+pub fn unwrap_pointer(x: repr.Value) callconv(.c) ?*anyopaque {
+    requireVmThread();
     return impl.value_helpers_wrap.toPointer(x);
 }
 
@@ -665,8 +665,8 @@ pub fn janet_unwrap_pointer(x: repr.Value) callconv(.c) ?*anyopaque {
 /// took.
 ///
 /// It cannot raise: the posted callback it runs inside has no scope above it.
-pub fn janet_wake(w: *abi.Wake, fiber: repr.Value, value: repr.Value) callconv(.c) bool {
-    requireJanetThread();
+pub fn wake(w: *abi.Wake, fiber: repr.Value, value: repr.Value) callconv(.c) bool {
+    requireVmThread();
     return loop_ops.wake(w, fiber, value);
 }
 
@@ -678,38 +678,38 @@ pub fn janet_wake(w: *abi.Wake, fiber: repr.Value, value: repr.Value) callconv(.
 /// first crossing on a thread guards nothing, because whichever crossing came
 /// before it on that thread has already aborted.
 ///
-/// `wattle_c_raise_take` and `wattle_c_raise_record` are not on the
+/// `c_raise_take` and `c_raise_record` are not on the
 /// author surface at all, since `module.zig` re-exports no `raise`, so the
 /// only way to reach either is `raise.fromAbi`, which reads the flag back on
 /// the statement after a crossing that set it. Charging them turned every
 /// raising crossing into two checks: `module.getAbstract` is
 /// `fromAbi(interface.rt.getabstract(...))`, the getter and the flag read.
 ///
-/// `wattle_fatal` is `raise.total`'s abort, reached only where a raise
+/// `fatal` is `raise.total`'s abort, reached only where a raise
 /// already happened, and `fatal.fatal` reads no VM state at all, so a check
 /// there cannot prevent a null read and can only replace the module author's
 /// abort message with a different one.
 ///
-/// `wattle_signal_record` keeps its check, and that is what makes the rule
+/// `signal_record` keeps its check, and that is what makes the rule
 /// more than a saving. `module.await` is `raise.signal(.event, nil())`, and
 /// `nil` is a published wrap that reads nothing, so `await` from a worker
 /// thread would reach this as the first crossing of its life and record a
 /// signal into a zeroed VM. It is the one member of this family that can be
 /// first.
-pub fn wattle_c_raise_record() callconv(.c) void {
+pub fn c_raise_record() callconv(.c) void {
     return impl.signal.cRaiseRecord();
 }
 
-pub fn wattle_c_raise_take() callconv(.c) c_int {
+pub fn c_raise_take() callconv(.c) c_int {
     return @intFromBool(impl.signal.cRaiseTake());
 }
 
-pub fn wattle_fatal(message: [*:0]const u8) callconv(.c) noreturn {
+pub fn fatal(message: [*:0]const u8) callconv(.c) noreturn {
     return impl.fatal.fatal(message);
 }
 
-pub fn wattle_signal_record(sig: c_uint, message: repr.Value) callconv(.c) void {
-    requireJanetThread();
+pub fn signal_record(sig: c_uint, message: repr.Value) callconv(.c) void {
+    requireVmThread();
     return impl.signal.signalRecord(abi.Signal.fromWire(sig), message);
 }
 
@@ -747,12 +747,12 @@ fn newBufferValue(bytes: []const u8) raise.Error!repr.Value {
     return impl.value_helpers_wrap.abi.fromBuffer(try impl.value_buffers.newFrom(bytes));
 }
 
-/// The check every entry point below but `janet_post` opens with.
+/// The check every entry point below but `post` opens with.
 ///
 /// The declaration is `vm/state.zig`'s, because `args.zig`'s generated `*Abi`
 /// shims are the other half of the same population and the two files share no
 /// other boundary code.
-const requireJanetThread = impl.vm_state.requireJanetThread;
+const requireVmThread = impl.vm_state.requireVmThread;
 
 /// The fiber `await` suspends, or a refusal where no fiber is running.
 ///

@@ -370,7 +370,7 @@
 (assert (= "expected buffer, got \"ab\"" (refusal mutate ![] !{} "ab"))
         "bufferPush refuses a string")
 (assert (= "expected buffer, array or table, got 3" (refusal mutate ![] 3 !""))
-        "put refuses a number, with Janet's own message")
+        "put refuses a number, with Wattle's own message")
 
 ; `get` is Janet's own: a miss is nil and so is a value with no indexed
 ; access. It does not refuse, which is what separates it from `put`.
@@ -402,7 +402,7 @@
         "but the module's length does not call it")
 (assert (string/has-prefix? "could not find method :length for <zig-native/odd"
                             (refusal length (odd)))
-        "and neither does Janet's own")
+        "and neither does Wattle's own")
 
 ; `toAbstract` tests the abstract type's identity rather than the tag: an
 ; `odd` unwraps to a valid pointer into a payload that is not a keeper's, and
@@ -431,7 +431,7 @@
   [sig val (if fib (status-of fib))])
 
 ; A return, through both.
-(assert (= 7 (apply-fn (fn [a b] (+ a b)) 3 4)) "call runs a Janet function")
+(assert (= 7 (apply-fn (fn [a b] (+ a b)) 3 4)) "call runs a Wattle function")
 (assert (= 0 (apply-fn (fn [] 0))) "and one with no arguments")
 (assert (deep= [:ok 7 :dead] (attempted (fn [a b] (+ a b)) 3 4))
         "pcall reports the return, and the fiber it ran on is spent")
@@ -473,7 +473,7 @@
 
 ; An error. `call` raises it and `pcall` reports it, with one payload.
 (assert (= "boom" (refusal apply-fn (fn [] (error "boom"))))
-        "call raises the error Janet code raised")
+        "call raises the error Wattle code raised")
 (assert (deep= [:error "boom" :error] (attempted (fn [] (error "boom"))))
         "pcall reports it instead, and the fiber carries the status")
 
@@ -485,7 +485,7 @@
 (assert (= :yield sig) "pcall reports the signal")
 (assert (= 5 val) "and the yielded value")
 (assert (= :pending (status-of fib)) "and a fiber that is pending")
-(assert (= :pending (fiber/status fib)) "which is the status Janet reports too")
+(assert (= :pending (fiber/status fib)) "which is the status Wattle reports too")
 (assert (= :after (resume fib)) "and it resumes to the value after the yield")
 (assert (= :dead (status-of fib)) "and is spent once it has")
 
@@ -524,7 +524,7 @@
 (assert (deep= ![1 2 3 5 9] (sorted < ![5 1 9 2 3])) "a cfunction comparator")
 (assert (deep= ![9 5 3 2 1] (sorted > [5 1 9 2 3])) "and over a tuple")
 (assert (deep= ![9 5 3 2 1] (sorted (fn [a b] (> a b)) ![5 1 9 2 3]))
-        "and a Janet function")
+        "and a Wattle function")
 (assert (deep= ![] (sorted < ![])) "the empty case")
 (assert (deep= ![1] (sorted < ![1])) "and the one-element case")
 (assert (= "boom" (refusal sorted (fn [a b] (error "boom")) ![2 1]))

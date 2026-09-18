@@ -56,7 +56,7 @@ Three things must match, and the loader checks all three.
     built with `-Dnanbox=false` and loaded into a NaN-boxed runtime would be
     wrong values rather than a link error. Pass the same feature options to
     the dependency that the runtime was built with.
-    `janet/config-bits` is the runtime's own set.
+    `wattle/config-bits` is the runtime's own set.
   - The Zig version. `wattle` is a source dependency rather than an ABI. Zig
     makes no promise across versions, so a module and the runtime it loads
     into are built with the same Zig version. `build.zig.zon` records the
@@ -65,7 +65,7 @@ Three things must match, and the loader checks all three.
   - The interface fingerprint. It is a hash of every declaration the module
     and the runtime share: the runtime table, `Value`, the layouts that cross
     by pointer, the two enums and the callback signatures.
-    `janet/api` is the runtime's own.
+    `wattle/api` is the runtime's own.
 
 The `_wattle_mod_config` symbol the module exports reports all three, and the
 loader compares them in the order above. The first difference is a refusal

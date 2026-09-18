@@ -59,12 +59,12 @@ const wrap = @import("helpers/wrap.zig");
 const big_endian = (builtin.cpu.arch.endian() == .big);
 
 /// The ends of the contiguous integer range of a double, matching
-/// `constants.JANET_INTMAX_DOUBLE`. Past them a double cannot tell
+/// `constants.intmax_double`. Past them a double cannot tell
 /// neighbouring integers apart.
 const intmax_double: f64 = 9007199254740992.0;
 const intmin_double: f64 = -9007199254740992.0;
 
-/// The same bound as an `i64`, matching `constants.JANET_INTMAX_INT64`.
+/// The same bound as an `i64`, matching `constants.intmax_int64`.
 /// `cfunToNumber` refuses a box outside it.
 const intmax_int64: i64 = 9007199254740992;
 

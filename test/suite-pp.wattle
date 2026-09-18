@@ -49,17 +49,17 @@
            """abcd---!"abcd" !"abcd"---""") "buffer/format on self 2")
 
 ; 5c364e0
-(defn check-jdn [x]
-  (assert (deep= (parse (string/format "%j" x)) x) "round trip jdn"))
+(defn check-wdn [x]
+  (assert (deep= (parse (string/format "%w" x)) x) "round trip wdn"))
 
-(check-jdn 0)
-(check-jdn nil)
-(check-jdn [])
-(check-jdn ![[] [] 1231 9.123123 -123123 0.1231231230001])
-(check-jdn -0.123123123123)
-(check-jdn 12837192371923)
-(check-jdn "a string")
-(check-jdn !"a buffer")
+(check-wdn 0)
+(check-wdn nil)
+(check-wdn [])
+(check-wdn ![[] [] 1231 9.123123 -123123 0.1231231230001])
+(check-wdn -0.123123123123)
+(check-wdn 12837192371923)
+(check-wdn "a string")
+(check-wdn !"a buffer")
 
 ; Issue 1737
 (assert (deep= "![]" (string/format "%M" ![])))
@@ -147,17 +147,17 @@
 
 ; Phase 20 batch 2d found these unmeasured. Each block names what it pins.
 
-; `%j` refuses a value it cannot write as data, and the refusal has to travel
+; `%w` refuses a value it cannot write as data, and the refusal has to travel
 ; out of whatever container the value was found in. Each of the five below
-; reaches a different arm of the jdn printer, and none of them was asked for.
-(assert-error "could not print to jdn format" (string/format "%j" (/ 0 0)))
-(assert-error "could not print to jdn format" (string/format "%j" print))
-(assert-error "could not print to jdn format" (string/format "%j" !{:a print}))
-(assert-error "could not print to jdn format" (string/format "%j" ![print]))
-(assert-error "could not print to jdn format" (string/format "%j" [print]))
-(assert-error "could not print to jdn format" (string/format "%j" {:a print}))
+; reaches a different arm of the wdn printer, and none of them was asked for.
+(assert-error "could not print to wdn format" (string/format "%w" (/ 0 0)))
+(assert-error "could not print to wdn format" (string/format "%w" print))
+(assert-error "could not print to wdn format" (string/format "%w" !{:a print}))
+(assert-error "could not print to wdn format" (string/format "%w" ![print]))
+(assert-error "could not print to wdn format" (string/format "%w" [print]))
+(assert-error "could not print to wdn format" (string/format "%w" {:a print}))
 
-; The jdn printer spends one frame of the build's recursion budget per level,
+; The wdn printer spends one frame of the build's recursion budget per level,
 ; so a level short of it is written and the budget itself is refused. Both ends
 ; are asserted, because a budget spent twice as fast still refuses the far end.
 ;
@@ -175,28 +175,28 @@
   (defn nest-tab [n] (var d !{}) (repeat n (set d !{:k d})) d)
   (def budget (if (= :wasm (os/arch)) 512 1024))
   (def within (- budget 1))
-  (assert-no-error "a level short of the budget prints an array as jdn"
-                   (string/format "%j" (nest-arr within)))
-  (assert-error "could not print to jdn format" (string/format "%j" (nest-arr budget)))
-  (assert-no-error "a level short of the budget prints a tuple as jdn"
-                   (string/format "%j" (nest-tup within)))
-  (assert-error "could not print to jdn format" (string/format "%j" (nest-tup budget)))
-  (assert-no-error "a level short of the budget prints a table as jdn"
-                   (string/format "%j" (nest-tab within)))
-  (assert-error "could not print to jdn format" (string/format "%j" (nest-tab budget))))
+  (assert-no-error "a level short of the budget prints an array as wdn"
+                   (string/format "%w" (nest-arr within)))
+  (assert-error "could not print to wdn format" (string/format "%w" (nest-arr budget)))
+  (assert-no-error "a level short of the budget prints a tuple as wdn"
+                   (string/format "%w" (nest-tup within)))
+  (assert-error "could not print to wdn format" (string/format "%w" (nest-tup budget)))
+  (assert-no-error "a level short of the budget prints a table as wdn"
+                   (string/format "%w" (nest-tab within)))
+  (assert-error "could not print to wdn format" (string/format "%w" (nest-tab budget))))
 
-; A key that has no jdn form fails the dictionary, exactly as a value does.
-(assert-error "could not print to jdn format" (string/format "%j" !{print :a}))
-(assert-error "could not print to jdn format" (string/format "%j" {print :a}))
+; A key that has no wdn form fails the dictionary, exactly as a value does.
+(assert-error "could not print to wdn format" (string/format "%w" !{print :a}))
+(assert-error "could not print to wdn format" (string/format "%w" {print :a}))
 
-; A symbol that reads back as a number has no jdn form, and a keyword does,
+; A symbol that reads back as a number has no wdn form, and a keyword does,
 ; because a keyword may begin with a digit and a symbol may not.
-(assert-error "could not print to jdn format" (string/format "%j" (symbol "1abc")))
+(assert-error "could not print to wdn format" (string/format "%w" (symbol "1abc")))
 ; Both ends of the digit range, which is where the two comparisons differ.
-(assert-error "could not print to jdn format" (string/format "%j" (symbol "0abc")))
-(assert-error "could not print to jdn format" (string/format "%j" (symbol "9abc")))
-(assert (= "abc" (string/format "%j" (symbol "abc"))) "an ordinary symbol has one")
-(assert (= ":1abc" (string/format "%j" (keyword "1abc"))) "and a keyword may begin with a digit")
+(assert-error "could not print to wdn format" (string/format "%w" (symbol "0abc")))
+(assert-error "could not print to wdn format" (string/format "%w" (symbol "9abc")))
+(assert (= "abc" (string/format "%w" (symbol "abc"))) "an ordinary symbol has one")
+(assert (= ":1abc" (string/format "%w" (keyword "1abc"))) "and a keyword may begin with a digit")
 
 ; `%p` breaks lines and elides a long dictionary; both are defaults rather
 ; than something the caller asks for.
@@ -229,12 +229,12 @@
 (assert (= "-10000" (string/format "%q" -10000)))
 (assert (= "99999" (string/format "%q" 99999)) "as is the positive side")
 
-; A precision on `%j` is the depth budget, and it is read as a decimal number
+; A precision on `%w` is the depth budget, and it is read as a decimal number
 ; from a three-byte field. A precision of one is one level, not the default.
-(assert-error "could not print to jdn format" (string/format "%.1j" [[1]]))
-(assert (= "[[[1]]]" (string/format "%.10j" [[[1]]]))
+(assert-error "could not print to wdn format" (string/format "%.1w" [[1]]))
+(assert (= "[[[1]]]" (string/format "%.10w" [[[1]]]))
         "a two-digit precision is read as both its digits")
-(assert (= "[1]" (string/format "%.2j" [1])) "and a small one bounds the depth")
+(assert (= "[1]" (string/format "%.2w" [1])) "and a small one bounds the depth")
 
 ; `%%` is one literal per cent sign and consumes nothing after it.
 (assert (= "%x" (string/format "%%x")) "%% writes one per cent and no more")

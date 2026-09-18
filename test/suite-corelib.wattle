@@ -460,7 +460,7 @@
 ; thirteen `janet_quick_asm` calls, thirteen variadic operators and six
 ; comparators -- and the compiler inlines every one of them when it sees the
 ; name in call position: `(+ 1 2)` becomes JOP_ADD and never enters the thunk.
-; That is what `JANET_FUN_ADD` and its kin are for. So ordinary Janet code, and
+; That is what `fun_add` and its kin are for. So ordinary Janet code, and
 ; every other assertion in this file, exercises the *opcodes* and leaves the
 ; assembled bodies unrun. Passing the function as a value is what reaches them,
 ; and the mutation sweep found this: inverting the `<` comparator's result

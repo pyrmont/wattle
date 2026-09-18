@@ -46,7 +46,7 @@ pub const instructions: [constants.Opcode.count]constants.InstructionType = buil
     }
     for (filled, 0..) |present, opcode| {
         if (!present) {
-            @compileError("janet_instructions: no row for opcode " ++
+            @compileError("instructions: no row for opcode " ++
                 std.fmt.comptimePrint("{d}", .{opcode}));
         }
     }

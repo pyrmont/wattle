@@ -438,7 +438,7 @@
 ;;;
 ; 20d5d560f
 (def- bf-peg
-  "Peg for compiling brainfuck into a Janet source ast."
+  "Peg for compiling brainfuck into a Wattle source ast."
   (peg/compile
     `{:+ (/ '(some "+") ~(fn [x] `(+= (DATA POS) ~(length x))))
       :- (/ '(some "-") ~(fn [x] `(-= (DATA POS) ~(length x))))

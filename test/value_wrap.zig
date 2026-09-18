@@ -178,7 +178,7 @@ fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
     out[at(.pointer)] = wrap.abi.fromPointer(pointerB());
 }
 
-/// Every wrapper stamps its own type, and `janet_type` reads it back. This is
+/// Every wrapper stamps its own type, and `repr.typeOf` reads it back. This is
 /// the whole of the representation's job stated once. The pointers are not
 /// dereferenced by anything here: a wrapper stores an address and a tag, and
 /// whether the address points at a real object is the collector's problem.

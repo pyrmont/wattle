@@ -168,7 +168,7 @@ pub fn install(env: *tables.Table, comptime entries: anytype) void {
 /// `end`.
 pub fn installTerminated(env: *tables.Table, entries: [*]const Entry) void {
     if (bootstrap) {
-        capi.janet_cfuns_ext(@ptrCast(env), null, entries);
+        capi.cfuns_ext(@ptrCast(env), null, entries);
     } else {
         registry.coreCfunsExt(env, null, entries);
     }

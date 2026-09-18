@@ -2,7 +2,7 @@
 //! recursion guard, and `gc/mark.zig`'s `collect`.
 //!
 //! Marking has no return value and frees nothing, so almost everything here is
-//! observed the same way: clear `JANET_MEM_REACHABLE` on the objects under
+//! observed the same way: clear `mem_reachable` on the objects under
 //! test, mark one value, and ask which headers came back set. The bit is the
 //! result, so this file reads block headers directly.
 //!
@@ -96,11 +96,11 @@ fn headerOf(pointer: ?*anyopaque) *abi.GCObject {
 }
 
 fn reachable(pointer: ?*anyopaque) bool {
-    return harness.gcBits(headerOf(pointer).flags) & constants.JANET_MEM_REACHABLE != 0;
+    return harness.gcBits(headerOf(pointer).flags) & constants.mem_reachable != 0;
 }
 
 fn unmark(pointer: ?*anyopaque) void {
-    headerOf(pointer).flags = @bitCast(harness.gcBits(headerOf(pointer).flags) & ~@as(u32, constants.JANET_MEM_REACHABLE));
+    headerOf(pointer).flags = @bitCast(harness.gcBits(headerOf(pointer).flags) & ~@as(u32, constants.mem_reachable));
 }
 
 /// The head of whatever `value` refers to, or null for a value the collector
@@ -717,7 +717,7 @@ fn aSuspendedFiberMarksItsFrames() void {
     expect(fiber.frame > 0);
 
     const frame: *vm_state.StackFrame = @ptrCast(@alignCast(
-        fiber.data.? + @as(usize, @intCast(fiber.frame - constants.JANET_FRAME_SIZE)),
+        fiber.data.? + @as(usize, @intCast(fiber.frame - constants.frame_size)),
     ));
     expect(frame.func != null);
 

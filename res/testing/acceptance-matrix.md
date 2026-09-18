@@ -320,7 +320,7 @@ selector under test and 9 on the other** -- and that even split is the whole
 argument, because it is what distinguishes a shared fixture from a defect in
 the code being tested. A one-armed failure would have been the port's; an even
 one cannot be. `matrix.janet` now compiles concurrently, which is where the time
-goes, and takes a lock to run. `JANET_TEST_PORT` is also set per slot, but that
+goes, and takes a lock to run. `WATTLE_TEST_PORT` is also set per slot, but that
 fixes only the first of the three -- the other two are cwd- and /tmp-relative
 and cannot move without editing the suites.
 

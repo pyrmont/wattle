@@ -40,7 +40,7 @@ const raise = @import("../../api/raise.zig");
 /// the `pthread_*` types stay inside this file. The Windows arm is an empty
 /// struct, because that platform's four calls are `kernel32`'s.
 const sys = if (windows) struct {} else @cImport({
-    @cInclude("janet_features.h");
+    @cInclude("wattle_features.h");
     @cInclude("pthread.h");
 });
 
