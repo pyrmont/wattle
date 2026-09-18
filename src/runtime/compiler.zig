@@ -947,6 +947,12 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
             repr.Tag.map => result = try makeDictionary(options, val, constants.Opcode.make_map),
             repr.Tag.table => result = try makeDictionary(options, val, constants.Opcode.make_table),
             repr.Tag.buffer => result = try makeBuffer(options, val),
+            // A set literal is compiled; every other abstract is a value a
+            // macro computed, and is its own constant.
+            repr.Tag.abstract => result = if (maps.toTree(val, .set)) |tree|
+                try makeSet(options, tree)
+            else
+                cslot(val),
             else => result = cslot(val),
         }
     }
@@ -1268,6 +1274,87 @@ fn makeValue(options: FormOptions, slots: scratch_vector.Vector(Slot), operation
     const result = gettarget(options);
     _ = emit_core.emitSlot(compiler, operation, result, 1);
     return result;
+}
+
+/// Emits a call to `cfun` over the slots already gathered, for a literal whose
+/// constructor is a function rather than an opcode.
+///
+/// The callee is a constant slot holding the cfunction itself, so no name is
+/// resolved and rebinding the binding it is also registered under does not
+/// change what the literal builds -- which is one of the two properties an
+/// opcode was taken for elsewhere. The other, folding a literal whose elements
+/// are all constants, the caller has already done: `makeValue` and this
+/// function are the two tails of the same decision.
+pub fn callConstant(
+    options: FormOptions,
+    slots: scratch_vector.Vector(Slot),
+    cfun: abi.CFunction,
+) Slot {
+    const compiler: *Compiler = options.compiler;
+    _ = pushslots(compiler, slots.items);
+    freeslots(compiler, slots);
+    const target = gettarget(options);
+    _ = emit_core.emitSs(compiler, .call, target, cslot(wrap.fromCfunction(cfun)), 1);
+    return target;
+}
+
+/// Compiles a set literal's elements and builds the set.
+///
+/// A set is an abstract, so it reaches here through the abstract arm rather
+/// than a tag of its own, and it is the one abstract whose contents are
+/// compiled rather than taken whole: `#{a b}` is the set of the values of `a`
+/// and `b`, as `[a b]` is the vector of them. Every other abstract in a syntax
+/// tree is a value a macro computed, and `cslot` is right for it.
+///
+/// The elements are sorted, for the reason `toslotskv` sorts a dictionary's
+/// keys. The parser has already built the set by the time this runs, so the
+/// order they were written in is gone, and a set's own order is the mixed hash
+/// of each element, which a pointer-hashed element, and every element under
+/// `-Dprf`, orders differently in a second run. Sorting is what makes a
+/// literal evaluate its forms the same way twice, and it is the same
+/// comparison a map literal uses.
+fn makeSet(options: FormOptions, tree: *maps.Tree) raise.Error!Slot {
+    const compiler: *Compiler = options.compiler;
+    const count = tree.count;
+    var slots: scratch_vector.Vector(Slot) = .empty;
+    var element_options = foptsDefault(compiler);
+    element_options.flags.accept_splice = true;
+
+    if (count != 0) {
+        // A `Keyval` run with nil values, so that `utils.sortedKeys` orders a
+        // set exactly as it orders a dictionary. A set holds no nil, so every
+        // slot of the run is live and `cap` is the count.
+        const entries: [*]tables.Keyval = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(tables.Keyval) * count)));
+        const indices: [*]i32 = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(i32) * count)));
+        var element = wrapNil();
+        for (0..count) |index| {
+            element = maps.nextElement(tree, element);
+            entries[index] = .{ .key = element, .value = wrapNil() };
+        }
+        _ = utils.sortedKeys(entries, @intCast(count), indices);
+        for (0..count) |index| {
+            scratch_vector.push(&slots, try valueImpl(element_options, entries[@intCast(indices[index])].key));
+        }
+        gc_alloc.sfree(indices);
+        gc_alloc.sfree(entries);
+    }
+
+    var can_inline = true;
+    for (slots.items) |slot| {
+        if (!slot.flags.constant or slot.flags.spliced) {
+            can_inline = false;
+            break;
+        }
+    }
+    if (can_inline) {
+        const elements: [*]repr.Value = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(repr.Value) * count)));
+        for (slots.items, 0..) |slot, index| elements[index] = slot.constant;
+        const built = cslot(wrap.fromAbstract(maps.build(.set, elements[0..count])));
+        gc_alloc.sfree(elements);
+        freeslots(compiler, slots);
+        return built;
+    }
+    return callConstant(options, slots, maps.hash_set_cfunction);
 }
 
 /// `count` elements of `T` from the runtime's allocator.

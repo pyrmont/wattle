@@ -41,6 +41,7 @@ const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
 const vector = harness.vector;
+const maps = @import("subsystems").value.maps;
 const vectors = @import("subsystems").value.vectors;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
@@ -282,6 +283,19 @@ fn theQuasiquoteForm(arguments: []repr.Value) !void {
     result = try compile("quasiquote", options, 1, arguments);
     expect(!result.flags.constant);
     expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.make_vector));
+    try compiler_primitives.popscope(&compiler);
+
+    // A quasiquoted set is rebuilt too, but by a call rather than an opcode:
+    // `notes/LANGUAGE.md` decided on 2026-09-18 against a `make_set`, so the
+    // last instruction is `call` on a constant holding `hash-set` itself.
+    vector.empty(&compiler.buffer);
+    compiler_primitives.pushScope(&scope, &compiler, .{ .function = true }, "quasiquote-set");
+    var set_elements = [2]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
+    arguments[0] = wrap.fromAbstract(maps.build(.set, &set_elements));
+    result = try compile("quasiquote", options, 1, arguments);
+    expect(!result.flags.constant);
+    expect(operationOf(emitted(@intCast(emittedCount() - 1))) == harness.op(constants.Opcode.call));
+    expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
     try compiler_primitives.popscope(&compiler);
 
     // An unquote inside one is compiled, not kept: the element is the form's

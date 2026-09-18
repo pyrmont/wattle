@@ -28,6 +28,7 @@ const config = @import("config");
 const constants = @import("constants");
 const emit_core = @import("emit.zig");
 const functions = @import("../value/functions.zig");
+const maps = @import("../value/maps.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const registry = @import("../registry.zig");
@@ -756,6 +757,25 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
                 slots,
                 if (repr.checkType(val, repr.Tag.table)) constants.Opcode.make_table else constants.Opcode.make_map,
             );
+        },
+        repr.Tag.abstract => {
+            // A set rebuilds, as a vector and a map do, so an unquote inside
+            // one is compiled rather than kept as a literal `(unquote x)`.
+            // Every other abstract is its own constant.
+            const tree = maps.toTree(val, .set) orelse return compiler_primitives.cslot(val);
+            // Read in the set's own order, not sorted. The dictionary arm
+            // above reads a map in its storage order for the same reason:
+            // these are the quasiquote arms, and an unquote inside a quoted
+            // collection has the same unstable evaluation order a literal's
+            // forms would have without `toslotskv`'s sort. Sorting here is a
+            // separate question from `makeSet`'s and belongs with the map arm
+            // rather than ahead of it.
+            var element = wrap.fromNil();
+            for (0..tree.count) |_| {
+                element = maps.nextElement(tree, element);
+                pushSlot(&slots, try quasiquote(suboptions, element, depth - 1, level));
+            }
+            return compiler_primitives.callConstant(options, slots, maps.hash_set_cfunction);
         },
         else => return compiler_primitives.cslot(val),
     }

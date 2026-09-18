@@ -32,6 +32,7 @@ const std = @import("std");
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const access = @import("subsystems").value.access;
+const maps = @import("subsystems").value.maps;
 const order = @import("subsystems").value.order;
 const parser_core = @import("subsystems").parser;
 const repr = @import("repr");
@@ -182,6 +183,41 @@ fn theRawStringReindent() !void {
     expect(repr.checkType(try wattle("!\"\"\"ab\"\"\""), repr.Tag.buffer));
 }
 
+/// `#{ }` closes to a set, whose elements are its own rather than pairs.
+fn theSetLiterals() !void {
+    // The expected set is built rather than parsed: `only` parses and does not
+    // evaluate, so a Janet-parsed `(hash-set 1 2 3)` is a tuple.
+    var three = [_]repr.Value{ wrap.fromInteger(1), wrap.fromInteger(2), wrap.fromInteger(3) };
+    const expected = wrap.fromAbstract(maps.build(.set, &three));
+    expect(order.equals(try wattle("#{1 2 3}"), expected));
+    expect(order.equals(try wattle("#{}"), wrap.fromAbstract(maps.build(.set, &.{}))));
+
+    // Order does not distinguish one, and a repeat is one element.
+    expect(order.equals(try wattle("#{1 2}"), try wattle("#{2 1}")));
+    expect(order.equals(try wattle("#{1 1 2}"), try wattle("#{1 2}")));
+
+    // A set nests, and is not a map.
+    expect(repr.checkType(try access.getIndex(try wattle("[#{1}]"), 0), repr.Tag.abstract));
+    expect(!order.equals(try wattle("#{1}"), try wattle("{1 1}")));
+
+    // Every element is checked, not every other one as a map's keys are.
+    expect(refusalIs("#{nil}", "cannot use nil as a key"));
+    expect(refusalIs("#{1 nil}", "cannot use nil as a key"));
+
+    // An odd count is fine, where a map literal refuses one.
+    expect(order.equals(try wattle("#{1 2 3}"), expected));
+
+    // Two identical forms are one element, because the set is built where it
+    // is written: `#{(f) (f)}` holds one tuple, so `(f)` is called once, where
+    // `[(f) (f)]` calls it twice. A map literal's repeated key behaves the
+    // same way, keeping the last.
+    const forms = try wattle("#{(f) (f)}");
+    expect(maps.toTree(forms, .set).?.count == 1);
+
+    // An unclosed one names `#{` rather than `{`.
+    expect(refusalIs("#{1 2)", "mismatched delimiter ), #{ opened at line 1, column 1"));
+}
+
 /// `;` comments to end of line, and `,` is whitespace.
 fn theWhitespaceAndComments() !void {
     expect(harness.integerIs(try wattle("; a comment\n7"), 7));
@@ -224,6 +260,19 @@ fn theShebang() !void {
     expect(harness.integerIs(try wattle("#!/usr/bin/env wattle\n7"), 7));
     // The same two bytes further in are a tag, which is not implemented.
     expect(refusalIs("7\n#!/usr/bin/env wattle\n", "tagged literals are not implemented"));
+}
+
+/// `parser/state`'s two reports name Wattle's forms, not Janet's.
+fn theParserState() !void {
+    var parser: parser_core.Parser = undefined;
+    parser_core.parserInitDialect(&parser, .wattle);
+    defer parser_core.parserDeinit(&parser);
+
+    // A pending raw string reports the run that opened it in quotes, where a
+    // Janet parser would report backticks.
+    try consume(&parser, "\"\"\"abc");
+    const delimiters = try parser_core.parserStateDelimiters(&parser);
+    expect(harness.stringIs(wrap.toString(delimiters), "\"\"\""));
 }
 
 /// A prefix and its form are one unit, and a newline between them is refused
@@ -281,7 +330,6 @@ fn theRefusals() !void {
     expect(harness.symbolIs(try wattle("a@b"), "a@b"));
     expect(harness.symbolIs(try wattle("a^b"), "a^b"));
 
-    expect(refusalIs("#{1 2}", "set literals are not implemented"));
     expect(refusalIs("#tuple [1 2]", "tagged literals are not implemented"));
     expect(refusalIs("#,", "unknown dispatch"));
 
@@ -301,9 +349,11 @@ fn body() !void {
     try theStrings();
     try theQuotedCollections();
     try theRawStringReindent();
+    try theSetLiterals();
     try theWhitespaceAndComments();
     try theReaderMacros();
     try theShebang();
+    try theParserState();
     try theAdjacencyRule();
     try theDelimiterErrors();
     try theRefusals();

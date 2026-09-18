@@ -165,9 +165,12 @@ pub const ParseStateFlags = packed struct(c_int) {
     vector: bool = false,
     /// Wattle's `#`, waiting for the character that says what it opens.
     dispatch: bool = false,
+    /// A `#{ }` container, which closes to a set. The curly brackets alone
+    /// would close to a map.
+    set: bool = false,
     in_string: bool = false,
     end_candidate: bool = false,
-    _reserved23: u9 = 0,
+    _reserved24: u8 = 0,
 };
 
 /// A parser: the queue of finished values, the stack of states, the scratch
@@ -339,16 +342,18 @@ pub fn parserCloseArray(
     return wrap.fromArray(array);
 }
 
-/// The refusal a map literal's keys earn, or null where every key may be
+/// The refusal a map or set literal earns, or null where every element may be
 /// stored.
 ///
-/// A map holds neither a nil key nor a NaN one, so `{nil 1}` is refused where
-/// it is written rather than read as a map that cannot be iterated. A table
-/// takes both and drops the pair, which is why this is the map's arm alone.
-fn unstorableKeyIn(parser: *Parser, state: *ParseState) ?[*:0]const u8 {
+/// Neither holds a nil or a NaN, so `{nil 1}` and `#{nil}` are refused where
+/// they are written rather than read as a collection that cannot be iterated.
+/// A table takes both and drops the pair, which is why a table does not ask.
+/// `stride` is 2 for a map, whose keys are every other value on the queue, and
+/// 1 for a set, whose elements are all of them.
+fn unstorableElementIn(parser: *Parser, state: *ParseState, stride: usize) ?[*:0]const u8 {
     const start = parser.args.items.len - @as(usize, @intCast(state.argn));
     var index = start;
-    while (index < parser.args.items.len) : (index += 2) {
+    while (index < parser.args.items.len) : (index += stride) {
         const key = parser.args.items[index];
         if (maps.storableKey(key)) continue;
         return if (repr.checkType(key, repr.Tag.nil))
@@ -370,6 +375,18 @@ pub fn parserCloseVector(
     const built = vectors.fromSlice(parser.args.items[start..]);
     parser.args.shrinkRetainingCapacity(start);
     return wrap.fromVector(built);
+}
+
+/// Takes `state.argn` values off the queue into a set, which is what `#{ }`
+/// closes to.
+pub fn parserCloseSet(
+    parser: *Parser,
+    state: *ParseState,
+) repr.Value {
+    const start = parser.args.items.len - @as(usize, @intCast(state.argn));
+    const built = maps.build(.set, parser.args.items[start..]);
+    parser.args.shrinkRetainingCapacity(start);
+    return wrap.fromAbstract(built);
 }
 
 /// Takes `state.argn` values off the queue as alternating keys and values,
@@ -714,6 +731,16 @@ fn wattleComment(
     return false;
 }
 
+/// Moves the top `depth` states' recorded position back to where the form
+/// they belong to actually opened.
+fn openedAt(parser: *Parser, depth: usize, line: usize, column: usize) void {
+    const top = parser.states.items.len;
+    for (top - depth..top) |index| {
+        parser.states.items[index].line = line;
+        parser.states.items[index].column = column;
+    }
+}
+
 /// The refusal a prefix earns when its form does not begin on the same line,
 /// naming the prefix and where it was written.
 fn adjacencyError(parser: *Parser, state: *ParseState) raise.Error!void {
@@ -775,15 +802,22 @@ fn wattleDispatch(
         parserPushState(parser, wattleComment, .{ .comment = true });
         return true;
     }
+    // A dispatch form opens at its `#`, not at the delimiter after it, so an
+    // error inside `#{1 2)` names column 1. `parserPushState` records where
+    // the parser is now, which is the delimiter, so the two are moved back.
+    const opened_line = state.line;
+    const opened_column = state.column;
     _ = parser.states.pop();
     switch (character) {
         '(' => {
             parserPushState(parser, wattleRoot, .{ .reader_macro = true, .macro_char = '#' });
             parserPushState(parser, wattleRoot, .{ .container = true, .parens = true });
+            openedAt(parser, 2, opened_line, opened_column);
             return true;
         },
         '{' => {
-            parser.@"error" = "set literals are not implemented";
+            parserPushState(parser, wattleRoot, .{ .container = true, .curly_brackets = true, .set = true });
+            openedAt(parser, 1, opened_line, opened_column);
             return true;
         },
         else => {
@@ -1249,13 +1283,22 @@ fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Erro
                 state,
                 if (character == ']') constants.JANET_TUPLE_FLAG_BRACKETCTOR else 0,
             );
+    } else if (character == '}' and state.flags.set) {
+        // A set's elements are its own, not pairs, so the even-count rule does
+        // not apply; the storable rule does, and for every element rather than
+        // every other one.
+        if (unstorableElementIn(parser, state, 1)) |message| {
+            parser.@"error" = message;
+            return true;
+        }
+        val = parserCloseSet(parser, state);
     } else if (character == '}' and state.flags.curly_brackets) {
         if (state.argn & 1 != 0) {
             parser.@"error" = "map and table literals expect even number of arguments";
             return true;
         }
         if (!state.flags.at_symbol) {
-            if (unstorableKeyIn(parser, state)) |message| {
+            if (unstorableElementIn(parser, state, 2)) |message| {
                 parser.@"error" = message;
                 return true;
             }
@@ -1295,6 +1338,8 @@ fn delimError(
             try buffers.pushU8(text, '(');
         } else if (state.flags.square_brackets) {
             try buffers.pushU8(text, '[');
+        } else if (state.flags.set) {
+            try buffers.pushCString(text, "#{");
         } else if (state.flags.curly_brackets) {
             try buffers.pushU8(text, '{');
         } else if (state.flags.string) {
@@ -1598,7 +1643,7 @@ fn parserNext(_: *Parser, key: repr.Value) raise.Error!repr.Value {
 /// It declares an error it never returns, so that it and `parserStateFrames`,
 /// which does raise, share a signature and sit in one array. A tagged union
 /// over two function types is more machinery than the fact deserves.
-fn parserStateDelimiters(parser: *Parser) raise.Error!repr.Value {
+pub fn parserStateDelimiters(parser: *Parser) raise.Error!repr.Value {
     const old_count = parser.buf.items.len;
     for (0..parser.states.items.len) |index| {
         const state = &parser.states.items[index];
@@ -1611,8 +1656,14 @@ fn parserStateDelimiters(parser: *Parser) raise.Error!repr.Value {
         } else if (state.flags.string) {
             parserPushBuf(parser, '"');
         } else if (state.flags.long_string) {
+            // The delimiter that opened it, as `delimError` names it: Janet
+            // counts backticks and Wattle counts quotes.
+            const opener: u8 = switch (parser.dialect) {
+                .janet => '`',
+                .wattle => '"',
+            };
             const ticks: usize = @intCast(state.argn);
-            for (0..ticks) |_| parserPushBuf(parser, '`');
+            for (0..ticks) |_| parserPushBuf(parser, opener);
         }
     }
     const text = strings.new(parser.buf.items[old_count..]);
@@ -1636,7 +1687,7 @@ fn parserStateFrames(parser: *Parser) raise.Error!repr.Value {
     while (index >= 0) : (index -= 1) {
         const state = &parser.states.items[@intCast(index)];
         if (state.flags.container and state.argn != 0) args = args.? - @as(usize, @intCast(state.argn));
-        states.reserved()[@intCast(index)] = try wrapParseState(state, args, parser.buf.items.ptr, @intCast(parser.buf.items.len));
+        states.reserved()[@intCast(index)] = try wrapParseState(parser.dialect, state, args, parser.buf.items.ptr, @intCast(parser.buf.items.len));
     }
     return wrap.fromArray(states);
 }
@@ -1687,6 +1738,7 @@ fn tokenEquals(bytes: []const u8, comptime expected: []const u8) bool {
 /// One frame of `(parser/state p :frames)`: what is being parsed, where it
 /// started, and what has been read into it so far.
 fn wrapParseState(
+    dialect: Dialect,
     state: *allowzero const ParseState,
     args: ?[*]repr.Value,
     buf: ?[*]u8,
@@ -1704,6 +1756,8 @@ fn wrapParseState(
 
     const type_name: [*:0]const u8 = if (state.flags.parens or state.flags.square_brackets)
         (if (state.flags.at_symbol) "array" else if (state.flags.vector) "vector" else "tuple")
+    else if (state.flags.set)
+        "set"
     else if (state.flags.curly_brackets)
         (if (state.flags.at_symbol) "table" else "map")
     else if (state.flags.string or state.flags.long_string) blk: {
@@ -1718,13 +1772,29 @@ fn wrapParseState(
     } else if (state.flags.dispatch)
         "dispatch"
     else if (state.flags.at_symbol)
-        "at"
-    else if (state.flags.reader_macro) switch (state.flags.macro_char) {
-        '\'' => "quote",
-        ',' => "unquote",
-        ';' => "splice",
-        '~' => "quasiquote",
-        else => "<reader>",
+        (switch (dialect) {
+            .janet => "at",
+            .wattle => "bang",
+        })
+    else if (state.flags.reader_macro) switch (dialect) {
+        // Janet's `|` has no name of its own here and takes the generic one,
+        // which `suite-parse` pins; `wrapReader` names it because that is what
+        // builds the form.
+        .janet => switch (state.flags.macro_char) {
+            '\'' => "quote",
+            ',' => "unquote",
+            ';' => "splice",
+            '~' => "quasiquote",
+            else => "<reader>",
+        },
+        .wattle => switch (state.flags.macro_char) {
+            '\'' => "quote",
+            '~' => "unquote",
+            '|' => "splice",
+            '#' => "short-fn",
+            '`' => "quasiquote",
+            else => "<reader>",
+        },
     } else "root";
 
     tables.put(table, value.fromBytes("type", .keyword), value.fromBytes(std.mem.span(type_name), .keyword));

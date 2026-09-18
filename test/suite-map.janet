@@ -229,4 +229,25 @@
 (assert (= "{:a 1}" (string/format "%j" (hash-map :a 1))) "and so is JDN")
 (assert (= ":a 1" (string (hash-map :a 1))) "string gives the entries")
 
+# A set in a syntax tree is a literal
+
+# A set is the one abstract whose contents the compiler compiles rather than
+# taking whole, because `#{a b}` is the set of the values of `a` and `b`, as
+# `[a b]` is the vector of them. Janet's parser writes no set literal, so a
+# macro returning one is the only way to reach the arm from here. Before it,
+# a set fell through to the constant path and kept whatever the macro put in.
+(def set-elem-a 1)
+(def set-elem-b 2)
+(defmacro set-of-symbols [] (hash-set 'set-elem-a 'set-elem-b))
+(assert (= (hash-set 1 2) (set-of-symbols))
+  "a set in the tree evaluates its elements")
+
+(defmacro set-of-constants [] (hash-set 3 4))
+(assert (= (hash-set 3 4) (set-of-constants))
+  "a set of constants folds to a constant set")
+
+(defmacro set-of-forms [] (hash-set ~(+ 2 3)))
+(assert (= (hash-set 5) (set-of-forms))
+  "a form inside a set is compiled")
+
 (end-suite)

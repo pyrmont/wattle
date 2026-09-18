@@ -200,6 +200,16 @@ pub const set_type = abstract_type.define(Tree, .{
     .unmarshal = setUnmarshal,
 });
 
+/// The `hash-set` cfunction as the registry stores it, for the compiler's set
+/// literal arm.
+///
+/// A set literal is built by calling this through a constant slot rather than
+/// by an opcode, so `#{}` resolves no name and rebinding `hash-set` does not
+/// change what it builds. `notes/LANGUAGE.md` decided against a `make_set` on
+/// 2026-09-18: the opcode would buy the few percent a literal saves over a
+/// call, and cost four tables to keep in step for a form nothing yet uses.
+pub const hash_set_cfunction = raise.stored(&cfunHashSet);
+
 // ==========================================================================
 // Types
 // ==========================================================================
@@ -1182,6 +1192,16 @@ pub fn lookup(t: *const Tree, key: repr.Value) repr.Value {
 /// This function cannot raise. It moves `t`'s cursor to the entry returned.
 pub fn nextKey(t: *Tree, key: repr.Value) repr.Value {
     const entry = nextEntry(t, .map, key) orelse return wrap.fromNil();
+    return entry[0];
+}
+
+/// The element after `element` in the set `t`, or nil at its end.
+///
+/// `nextKey`'s sibling rather than a special case of it: a kind gives its
+/// entries a stride, 2 for a map and 1 for a set, so a set walked with
+/// `nextKey` returns every other element and then reads past the last node.
+pub fn nextElement(t: *Tree, element: repr.Value) repr.Value {
+    const entry = nextEntry(t, .set, element) orelse return wrap.fromNil();
     return entry[0];
 }
 
