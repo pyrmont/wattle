@@ -217,8 +217,34 @@
   # builds, and `emit_core` the instruction it emits. The three assembler
   # contracts are already in the `no assembler` entry's skip list, which is
   # what makes them safe to name.
-  ["verify" "vm_run" "compiler_primitives" "specials_core" "emit_core"
-   "movopt" "remove_noops" "vectors" "asm_encode" "asm_decode" "disasm"])
+  #
+  # The parser swap replaced these with the contracts over the language it
+  # changed. The parser a program gets is Wattle's now, so `parser_wattle` is
+  # the primary subject and `parser_core` is Janet's, which stays in the tree
+  # as that contract's oracle and is loaded by nothing else. The positional
+  # result became a vector across the library, so the value itself
+  # (`vectors`, `maps`) is here with the callers whose returns changed:
+  # `math` (`math/frexp`), `string_symbol` (`string/bytes`), `os_process`
+  # (`os/pipe`), `net_sockets` (`net/address-unpack`) and `fiber_core` (`&
+  # rest` in the frame push). The compiler and the bytecode now build from a
+  # vector where they built from a bracket tuple, which is `emit_core`,
+  # `compiler_primitives` and `specials_core` (the destructuring pattern and
+  # quasiquote), `verify` and `vm_run`, and the assembler in both directions
+  # (`asm_encode`, `asm_decode`, `disasm`) -- `disasm` because the decoded
+  # instruction is a vector and the breakpoint flag it carried is gone. The
+  # printer's notation is settled in `pp_pretty`, `pp_format` and
+  # `pp_describe`, a value the pretty printer writes now having to parse.
+  # `peg` reads a vector as the combinator its tuple is. `registry` and
+  # `core_env` are the published boundary, which `env.zig`'s new paths reach.
+  # `net_sockets` is safe to name because the `no net` and `single threaded`
+  # entries both skip it, and the three assembler contracts because the `no
+  # assembler` entry does; `io_core`, `os_fs`, `os_surface`, `filewatch_core`
+  # and the ev pair still cannot be named, for the reasons above. The `full`
+  # entries run all of them.
+  ["parser_wattle" "parser_core" "vectors" "maps" "math" "string_symbol"
+   "os_process" "net_sockets" "fiber_core" "emit_core" "compiler_primitives"
+   "specials_core" "verify" "vm_run" "asm_encode" "asm_decode" "disasm"
+   "pp_pretty" "pp_format" "pp_describe" "peg" "registry" "core_env"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty
