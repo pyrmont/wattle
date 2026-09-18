@@ -16,11 +16,10 @@ const asm_encode = @import("../bytecode.zig");
 const constants = @import("constants");
 const functions = @import("../value/functions.zig");
 const gc_alloc = @import("../gc.zig");
+const maps = @import("../value/maps.zig");
 const repr = @import("repr");
 const strings = @import("../value/strings.zig");
-const structs = @import("../value/structs.zig");
 const symbols = @import("../value/symbols.zig");
-const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const verify = @import("verify.zig");
 const vm_state = @import("../vm/state.zig");
@@ -215,10 +214,6 @@ inline fn disasmWrapString(val: strings.String) repr.Value {
     return wrap.fromString(val);
 }
 
-inline fn disasmWrapStruct(val: structs.Struct) repr.Value {
-    return wrap.fromStruct(val);
-}
-
 inline fn disasmWrapSymbol(val: strings.Symbol) repr.Value {
     return wrap.fromSymbol(val);
 }
@@ -227,26 +222,31 @@ inline fn disasmWrapTuple(val: tuples.Tuple) repr.Value {
     return wrap.fromTuple(val);
 }
 
-/// Every field of `definition`, as a struct keyed by keyword. A subdefinition
+/// Every field of `definition`, as a map keyed by keyword. A subdefinition
 /// is disassembled the same way, so this recurses through `defs`.
+///
+/// Built as the entries directly rather than into a table that is then frozen,
+/// which is what it did while the result was a struct: the keys are fixed and
+/// distinct, so there is nothing for a table's overwriting to do.
 fn disassembleAll(definition: *functions.FuncDef) repr.Value {
-    const result = tables.new(10);
-    put(result, "arity", disassembleField(definition, .arity));
-    put(result, "min-arity", disassembleField(definition, .min_arity));
-    put(result, "max-arity", disassembleField(definition, .max_arity));
-    put(result, "bytecode", disassembleField(definition, .bytecode));
-    put(result, "source", disassembleField(definition, .source));
-    put(result, "vararg", disassembleField(definition, .vararg));
-    put(result, "structarg", disassembleField(definition, .structarg));
-    put(result, "namedargs", disassembleField(definition, .namedargs));
-    put(result, "name", disassembleField(definition, .name));
-    put(result, "slotcount", disassembleField(definition, .slotcount));
-    put(result, "symbolmap", disassembleField(definition, .symbolmap));
-    put(result, "constants", disassembleField(definition, .constants));
-    put(result, "sourcemap", disassembleField(definition, .sourcemap));
-    put(result, "environments", disassembleField(definition, .environments));
-    put(result, "defs", disassembleField(definition, .defs));
-    return disasmWrapStruct(tables.toStruct(result));
+    const fields = [_]repr.Value{
+        disasmKeyword("arity"),        disassembleField(definition, .arity),
+        disasmKeyword("min-arity"),    disassembleField(definition, .min_arity),
+        disasmKeyword("max-arity"),    disassembleField(definition, .max_arity),
+        disasmKeyword("bytecode"),     disassembleField(definition, .bytecode),
+        disasmKeyword("source"),       disassembleField(definition, .source),
+        disasmKeyword("vararg"),       disassembleField(definition, .vararg),
+        disasmKeyword("structarg"),    disassembleField(definition, .structarg),
+        disasmKeyword("namedargs"),    disassembleField(definition, .namedargs),
+        disasmKeyword("name"),         disassembleField(definition, .name),
+        disasmKeyword("slotcount"),    disassembleField(definition, .slotcount),
+        disasmKeyword("symbolmap"),    disassembleField(definition, .symbolmap),
+        disasmKeyword("constants"),    disassembleField(definition, .constants),
+        disasmKeyword("sourcemap"),    disassembleField(definition, .sourcemap),
+        disasmKeyword("environments"), disassembleField(definition, .environments),
+        disasmKeyword("defs"),         disassembleField(definition, .defs),
+    };
+    return wrap.fromAbstract(maps.build(.map, &fields));
 }
 
 /// Every instruction of `definition`, decoded, as an array.
@@ -336,11 +336,6 @@ fn makeTuple(values: []const repr.Value) tuples.Tuple {
     const tuple = tuples.begin(@intCast(values.len));
     for (values, 0..) |val, index| tuple[index] = val;
     return tuples.end(tuple);
-}
-
-/// Binds `key`, as a keyword, to `val` in `table`.
-fn put(table: *tables.Table, key: [*:0]const u8, val: repr.Value) void {
-    tables.put(table, disasmKeyword(key), val);
 }
 
 /// A signed instruction field, as an arithmetic right shift of the word

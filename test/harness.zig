@@ -37,6 +37,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const access = @import("subsystems").value.access;
 const arrays = @import("subsystems").value.arrays;
 
 /// `boundary` rather than `abi`, which `abiRaised` takes as a parameter name.
@@ -350,6 +351,18 @@ pub inline fn equals(left: repr.Value, right: repr.Value) bool {
 /// of the assertions.
 pub fn field(structure: structs.Struct, name: [*:0]const u8) repr.Value {
     return structs.get(structure, value.fromBytes(std.mem.span(name), .keyword));
+}
+
+/// A dictionary value's entry by keyword name, read the way a program reads
+/// one rather than through the representation.
+///
+/// `field` is the same question of a struct the contract already holds as a
+/// `Struct`. This one takes the value, so a contract over something the
+/// runtime returns does not have to know which dictionary it is.
+/// It raises where the read does, which for an abstract is its `get`
+/// callback, so a contract over one is written in the raising shape.
+pub fn entry(dictionary: repr.Value, name: [*:0]const u8) raise.Error!repr.Value {
+    return access.get(dictionary, value.fromBytes(std.mem.span(name), .keyword));
 }
 
 /// The GC header's flag word as the thirty-two bits C had.

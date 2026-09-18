@@ -35,11 +35,12 @@ const access = @import("../value/helpers/access.zig");
 const args_core = @import("../args.zig");
 const c = @import("cabi");
 const corefn = @import("../corefn.zig");
+const maps = @import("../value/maps.zig");
+const structs = @import("../value/structs.zig");
 const oa = @import("abi.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
-const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
@@ -88,15 +89,15 @@ const timeint_t = if (windows) i32 else i64;
 /// The three registrations, which `os.zig` installs.
 pub fn entries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/mktime", &cfunMktime, @src(), "(os/mktime date-struct &opt local)", "Get the broken down date-struct time expressed as the number " ++
+        corefn.reg("os/mktime", &cfunMktime, @src(), "(os/mktime date &opt local)", "Get the broken down date expressed as the number " ++
             "of seconds since January 1, 1970, the Unix epoch. " ++
             "Returns a real number. " ++
             "Date is given in UTC unless `local` is truthy, in which case the " ++
             "date is computed for the local timezone.\n\n" ++
             "Inverse function to os/date."),
-        corefn.reg("os/date", &cfunDate, @src(), "(os/date &opt time local)", "Returns the given time as a date struct, or the current time if `time` is not given. " ++
+        corefn.reg("os/date", &cfunDate, @src(), "(os/date &opt time local)", "Returns the given time as a date map, or the current time if `time` is not given. " ++
             "Date is given in UTC unless `local` is truthy, in which case the date is formatted for " ++
-            "the local timezone. Returns a struct with following key values. Note that all numbers are 0-indexed.\n\n" ++
+            "the local timezone. Returns a map with following key values. Note that all numbers are 0-indexed.\n\n" ++
             "* :seconds - number of seconds [0-61]\n\n" ++
             "* :minutes - number of minutes [0-59]\n\n" ++
             "* :hours - number of hours [0-23]\n\n" ++
@@ -126,17 +127,18 @@ fn cfunDate(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     var t_info: h.struct_tm = undefined;
     try timeToTm(argv, 0, &t_info);
-    const st = structs.begin(9);
-    structs.put(st, value.fromBytes("seconds", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_sec)));
-    structs.put(st, value.fromBytes("minutes", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_min)));
-    structs.put(st, value.fromBytes("hours", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_hour)));
-    structs.put(st, value.fromBytes("month-day", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_mday - 1)));
-    structs.put(st, value.fromBytes("month", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_mon)));
-    structs.put(st, value.fromBytes("year", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_year + 1900)));
-    structs.put(st, value.fromBytes("week-day", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_wday)));
-    structs.put(st, value.fromBytes("year-day", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_yday)));
-    structs.put(st, value.fromBytes("dst", .keyword), wrap.fromBoolean(t_info.tm_isdst != 0));
-    return wrap.fromStruct(structs.end(st));
+    const fields = [_]repr.Value{
+        value.fromBytes("seconds", .keyword),   wrap.fromNumber(@floatFromInt(t_info.tm_sec)),
+        value.fromBytes("minutes", .keyword),   wrap.fromNumber(@floatFromInt(t_info.tm_min)),
+        value.fromBytes("hours", .keyword),     wrap.fromNumber(@floatFromInt(t_info.tm_hour)),
+        value.fromBytes("month-day", .keyword), wrap.fromNumber(@floatFromInt(t_info.tm_mday - 1)),
+        value.fromBytes("month", .keyword),     wrap.fromNumber(@floatFromInt(t_info.tm_mon)),
+        value.fromBytes("year", .keyword),      wrap.fromNumber(@floatFromInt(t_info.tm_year + 1900)),
+        value.fromBytes("week-day", .keyword),  wrap.fromNumber(@floatFromInt(t_info.tm_wday)),
+        value.fromBytes("year-day", .keyword),  wrap.fromNumber(@floatFromInt(t_info.tm_yday)),
+        value.fromBytes("dst", .keyword),       wrap.fromBoolean(t_info.tm_isdst != 0),
+    };
+    return wrap.fromAbstract(maps.build(.map, &fields));
 }
 
 /// `(os/mktime date-struct &opt local)`.

@@ -287,7 +287,7 @@ fn theRefusals() void {
     refused("'{}", "bytecode expected, instruction 0");
     refused(
         "'not-an-assembly",
-        "expected struct or table for assembly source, instruction 0",
+        "expected dictionary for assembly source, instruction 0",
     );
 }
 

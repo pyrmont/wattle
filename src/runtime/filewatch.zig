@@ -33,12 +33,12 @@ const fw_abi = @import("filewatch/abi.zig");
 const gc_alloc = @import("gc.zig");
 const gc_mark = @import("gc/mark.zig");
 const host_stat = @import("os/fs/host_stat.zig");
+const maps = @import("value/maps.zig");
 const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const stdio = @import("stdio.zig");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const utils = @import("utils.zig");
 const value = @import("value.zig");
@@ -326,32 +326,36 @@ const inotify = struct {
                             watcher.watch_descriptors.?,
                             wrap.fromInteger(inevent.wd),
                         );
-                        const kvs = structs.begin(6);
-                        structs.put(kvs, value.fromBytes("wd", .keyword), wrap.fromInteger(inevent.wd));
-                        structs.put(kvs, value.fromBytes("wd-path", .keyword), path);
-                        if (repr.checkType(name, repr.Tag.nil)) {
+                        const split = if (repr.checkType(name, repr.Tag.nil))
                             // Watching a file directly, so the path is the
                             // full path: split it into dirname and basename.
                             // `name` is nil here, which is what a path with no
                             // separator reports as its file name.
-                            splitPath(kvs, path, path, name);
-                        } else {
-                            structs.put(kvs, value.fromBytes("dir-name", .keyword), path);
-                            structs.put(kvs, value.fromBytes("file-name", .keyword), name);
-                        }
-                        structs.put(kvs, value.fromBytes("cookie", .keyword), wrap.fromInteger(@as(i32, @bitCast(inevent.cookie))));
-                        // Reported in table order, and `structs.put`
-                        // overwrites, so the last matching name wins. The zero
-                        // check is the absent-constant convention: every
+                            splitPath(path, path, name)
+                        else
+                            [2]repr.Value{ path, name };
+                        // Read in table order and the last matching name wins,
+                        // as it did when each was put over the one before. A
+                        // nil is no `:type` entry at all, a nil value removing
+                        // its key, which is what no match gave before. The
+                        // zero check is the absent-constant convention: every
                         // inotify constant is defined, but without it a zero
                         // would match every mask rather than none.
-                        const etype = value.fromBytes("type", .keyword);
+                        var etype = wrap.fromNil();
                         for (values, 0..) |flag, fi| {
                             if (flag != 0 and (inevent.mask & flag) == flag) {
-                                structs.put(kvs, etype, value.fromBytes(flagName(.linux, fi).?, .keyword));
+                                etype = value.fromBytes(flagName(.linux, fi).?, .keyword);
                             }
                         }
-                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromStruct(structs.end(kvs)));
+                        const fields = [_]repr.Value{
+                            value.fromBytes("wd", .keyword),        wrap.fromInteger(inevent.wd),
+                            value.fromBytes("wd-path", .keyword),   path,
+                            value.fromBytes("dir-name", .keyword),  split[0],
+                            value.fromBytes("file-name", .keyword), split[1],
+                            value.fromBytes("cookie", .keyword),    wrap.fromInteger(@as(i32, @bitCast(inevent.cookie))),
+                            value.fromBytes("type", .keyword),      etype,
+                        };
+                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromAbstract(maps.build(.map, &fields)));
                     }
                     // Read some more if possible.
                     continue :read_more;
@@ -543,20 +547,21 @@ const kqueue = struct {
                     // skipped without a guard.
                     for (values[1..], 1..) |flagcheck, j| {
                         if ((kev.fflags & flagcheck) == 0) continue;
-                        const kvs = structs.begin(6);
-                        structs.put(kvs, value.fromBytes("wd", .keyword), ident);
-                        structs.put(kvs, value.fromBytes("wd-path", .keyword), path);
-                        structs.put(kvs, value.fromBytes("cookie", .keyword), wrap.fromNumber(@floatFromInt(state.cookie)));
-                        structs.put(kvs, value.fromBytes("type", .keyword), value.fromBytes(flagName(.kqueue, j).?, .keyword));
-                        if (is_dir) {
+                        const split = if (is_dir)
                             // Pass in directly.
-                            structs.put(kvs, value.fromBytes("file-name", .keyword), value.fromBytes("", .string));
-                            structs.put(kvs, value.fromBytes("dir-name", .keyword), path);
-                        } else {
+                            [2]repr.Value{ path, value.fromBytes("", .string) }
+                        else
                             // Split path.
-                            splitPath(kvs, path, value.fromBytes(".", .string), path);
-                        }
-                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromStruct(structs.end(kvs)));
+                            splitPath(path, value.fromBytes(".", .string), path);
+                        const fields = [_]repr.Value{
+                            value.fromBytes("wd", .keyword),        ident,
+                            value.fromBytes("wd-path", .keyword),   path,
+                            value.fromBytes("cookie", .keyword),    wrap.fromNumber(@floatFromInt(state.cookie)),
+                            value.fromBytes("type", .keyword),      value.fromBytes(flagName(.kqueue, j).?, .keyword),
+                            value.fromBytes("dir-name", .keyword),  split[0],
+                            value.fromBytes("file-name", .keyword), split[1],
+                        };
+                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromAbstract(maps.build(.map, &fields)));
                     }
                 }
             },
@@ -786,16 +791,17 @@ const win = struct {
                         filename = value.fromBytes("", .string);
                     }
 
-                    const kvs = structs.begin(3);
                     // The lookup reports null for an action code outside the
                     // six, so the fallback is named explicitly rather than
                     // read past the end of a table.
                     const named = actionName(@intCast(fni.Action));
                     const action: [*:0]const u8 = if (named) |name| name.ptr else "unknown";
-                    structs.put(kvs, value.fromBytes("type", .keyword), value.fromBytes(std.mem.span(action), .keyword));
-                    structs.put(kvs, value.fromBytes("file-name", .keyword), filename);
-                    structs.put(kvs, value.fromBytes("dir-name", .keyword), wrap.fromString(ow.dir_path));
-                    _ = try ev_loop.channelGive(watcher.channel, wrap.fromStruct(structs.end(kvs)));
+                    const fields = [_]repr.Value{
+                        value.fromBytes("type", .keyword),      value.fromBytes(std.mem.span(action), .keyword),
+                        value.fromBytes("file-name", .keyword), filename,
+                        value.fromBytes("dir-name", .keyword),  wrap.fromString(ow.dir_path),
+                    };
+                    _ = try ev_loop.channelGive(watcher.channel, wrap.fromAbstract(maps.build(.map, &fields)));
 
                     if (fni.NextEntryOffset == 0) break;
                     const base: [*]u8 = @ptrCast(fni);
@@ -1224,22 +1230,19 @@ fn namesFor(platform: Platform) []const [:0]const u8 {
 /// byte, which is what makes a path ending in `/` split on that separator, and
 /// it was written out twice in C.
 fn splitPath(
-    kvs: [*]tables.Keyval,
     path: repr.Value,
     no_sep_dir: repr.Value,
     no_sep_file: repr.Value,
-) void {
+) [2]repr.Value {
     const spath = wrap.toString(path);
     const len = strings.head(spath).length;
     var cursor: u32 = len;
     while (cursor > 0 and spath[cursor] != '/') cursor -= 1;
-    if (cursor == 0) {
-        structs.put(kvs, value.fromBytes("dir-name", .keyword), no_sep_dir);
-        structs.put(kvs, value.fromBytes("file-name", .keyword), no_sep_file);
-    } else {
-        structs.put(kvs, value.fromBytes("dir-name", .keyword), wrap.fromString(strings.new(spath[0..@intCast(cursor)])));
-        structs.put(kvs, value.fromBytes("file-name", .keyword), wrap.fromString(strings.new(spath[@intCast(cursor + 1)..@intCast(len)])));
-    }
+    if (cursor == 0) return .{ no_sep_dir, no_sep_file };
+    return .{
+        wrap.fromString(strings.new(spath[0..@intCast(cursor)])),
+        wrap.fromString(strings.new(spath[@intCast(cursor + 1)..@intCast(len)])),
+    };
 }
 
 /// Whether the watcher's own instance descriptor is still open.

@@ -27,6 +27,7 @@ const constants = @import("constants");
 const corefn = @import("corefn.zig");
 const disasm = @import("bytecode/disasm.zig");
 const functions = @import("value/functions.zig");
+const maps = @import("value/maps.zig");
 const order = @import("value/helpers/order.zig");
 const pp_describe = @import("pp.zig");
 const pp_format = @import("pp/format.zig");
@@ -647,10 +648,10 @@ pub fn parseHeader(
     a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    if (!repr.checkType(source, repr.Tag.@"struct") and
-        !repr.checkType(source, repr.Tag.table))
+    if (!repr.checkTypes(source, repr.TagSet.dictionary) and
+        maps.toTree(source, .map) == null)
     {
-        return a.fail("expected struct or table for assembly source");
+        return a.fail("expected dictionary for assembly source");
     }
     const definition = a.def;
     var val = getFieldByName(source, "name");
@@ -1055,13 +1056,22 @@ fn findTypeMask(name: [*:0]const u8) ?repr.TagSet {
     return null;
 }
 
-/// A lookup that gives back nil for anything that is not a table or a struct,
+/// A lookup that gives back nil for anything it cannot read as a dictionary,
 /// which is what lets `asm1` ask for a field of a source it has not yet
 /// validated.
+///
+/// The three dictionaries are read by type rather than through `access.get`,
+/// which raises: the assembler reports with `Assembler.fail` and has no raise
+/// to propagate. `maps.find` cannot raise, so a map is as readable here as the
+/// other two, and when a map has a tag this becomes a third arm of the switch.
 fn getField(ds: repr.Value, key: repr.Value) repr.Value {
     return switch (repr.typeOf(ds)) {
         repr.Tag.table => tables.get(wrap.toTable(ds), key),
         repr.Tag.@"struct" => structs.get(wrap.toStruct(ds), key),
+        repr.Tag.abstract => if (maps.toTree(ds, .map)) |tree|
+            if (maps.find(tree, .map, key)) |found| found[1] else wrap.fromNil()
+        else
+            wrap.fromNil(),
         else => wrap.fromNil(),
     };
 }

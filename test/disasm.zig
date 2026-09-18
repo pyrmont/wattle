@@ -30,6 +30,8 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const args_core = @import("subsystems").args;
+const raise = @import("subsystems").raise;
 const constants = @import("constants");
 const disasm = @import("subsystems").disasm;
 const expect = @import("expect.zig").expect;
@@ -37,7 +39,6 @@ const functions = @import("subsystems").value.functions;
 const harness = @import("harness.zig");
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
 const symbols = @import("subsystems").value.symbols;
 const tuples = @import("subsystems").value.tuples;
 const value = @import("subsystems").value;
@@ -48,21 +49,21 @@ const wrap = @import("subsystems").value.wrap;
 // Cases
 // ==========================================================================
 
-fn theScalarFields(result: structs.Struct) void {
-    expect(harness.integerIs(harness.field(result, "arity"), 2));
-    expect(harness.integerIs(harness.field(result, "min-arity"), 1));
-    expect(harness.integerIs(harness.field(result, "max-arity"), 4));
-    expect(harness.integerIs(harness.field(result, "slotcount"), 9));
+fn theScalarFields(result: repr.Value) raise.Error!void {
+    expect(harness.integerIs(try harness.entry(result, "arity"), 2));
+    expect(harness.integerIs(try harness.entry(result, "min-arity"), 1));
+    expect(harness.integerIs(try harness.entry(result, "max-arity"), 4));
+    expect(harness.integerIs(try harness.entry(result, "slotcount"), 9));
     // The three flags come back as booleans and a count rather than as bits.
-    expect(wrap.toBoolean(harness.field(result, "vararg")));
-    expect(wrap.toBoolean(harness.field(result, "structarg")));
-    expect(harness.integerIs(harness.field(result, "namedargs"), 3));
-    expect(harness.stringValueIs(harness.field(result, "source"), "source.janet"));
-    expect(harness.stringValueIs(harness.field(result, "name"), "sample"));
+    expect(wrap.toBoolean(try harness.entry(result, "vararg")));
+    expect(wrap.toBoolean(try harness.entry(result, "structarg")));
+    expect(harness.integerIs(try harness.entry(result, "namedargs"), 3));
+    expect(harness.stringValueIs(try harness.entry(result, "source"), "source.janet"));
+    expect(harness.stringValueIs(try harness.entry(result, "name"), "sample"));
 }
 
-fn theBytecode(result: structs.Struct) void {
-    const array = wrap.toArray(harness.field(result, "bytecode"));
+fn theBytecode(result: repr.Value) raise.Error!void {
+    const array = wrap.toArray(try harness.entry(result, "bytecode"));
     expect(array.count == 2);
 
     const noop = wrap.toTuple(array.slice()[0]);
@@ -75,30 +76,30 @@ fn theBytecode(result: structs.Struct) void {
     expect(harness.integerIs(ldi[2], -7));
 }
 
-fn theConstants(result: structs.Struct, expected: []const repr.Value) void {
-    const array = wrap.toArray(harness.field(result, "constants"));
+fn theConstants(result: repr.Value, expected: []const repr.Value) raise.Error!void {
+    const array = wrap.toArray(try harness.entry(result, "constants"));
     expect(array.count == 2);
     expect(harness.equals(array.slice()[0], expected[0]));
     expect(harness.equals(array.slice()[1], expected[1]));
 }
 
-fn theSourceMap(result: structs.Struct) void {
-    const array = wrap.toArray(harness.field(result, "sourcemap"));
+fn theSourceMap(result: repr.Value) raise.Error!void {
+    const array = wrap.toArray(try harness.entry(result, "sourcemap"));
     expect(array.count == 2);
     const second = wrap.toTuple(array.slice()[1]);
     expect(harness.integerIs(second[0], 8));
     expect(harness.integerIs(second[1], 13));
 }
 
-fn theEnvironments(result: structs.Struct) void {
-    const array = wrap.toArray(harness.field(result, "environments"));
+fn theEnvironments(result: repr.Value) raise.Error!void {
+    const array = wrap.toArray(try harness.entry(result, "environments"));
     expect(array.count == 2);
     expect(harness.integerIs(array.slice()[0], 4));
     expect(harness.integerIs(array.slice()[1], 1));
 }
 
-fn theSymbolMap(result: structs.Struct) void {
-    const array = wrap.toArray(harness.field(result, "symbolmap"));
+fn theSymbolMap(result: repr.Value) raise.Error!void {
+    const array = wrap.toArray(try harness.entry(result, "symbolmap"));
     expect(array.count == 2);
 
     // An ordinary local: birth, death, slot, name.
@@ -113,15 +114,17 @@ fn theSymbolMap(result: structs.Struct) void {
     expect(harness.keywordIs(upvalue[0], "upvalue"));
 }
 
-fn theChildDefinition(result: structs.Struct) void {
-    const array = wrap.toArray(harness.field(result, "defs"));
+fn theChildDefinition(result: repr.Value) raise.Error!void {
+    const array = wrap.toArray(try harness.entry(result, "defs"));
     expect(array.count == 1);
-    // Disassembled recursively, so the child's own fields are present.
-    const nested = wrap.toStruct(array.slice()[0]);
-    expect(harness.integerIs(harness.field(nested, "arity"), 1));
+    // Disassembled recursively, so the child's own fields are present, and
+    // the child is a map as its parent is.
+    const nested = array.slice()[0];
+    expect(args_core.checkdictionary(nested));
+    expect(harness.integerIs(try harness.entry(nested, "arity"), 1));
 }
 
-fn theWholeDefinitionRoundTrips() void {
+fn theWholeDefinitionRoundTrips() raise.Error!void {
     var child: functions.FuncDef = std.mem.zeroes(functions.FuncDef);
     child.arity = 1;
     child.min_arity = 1;
@@ -175,17 +178,17 @@ fn theWholeDefinitionRoundTrips() void {
     definition.defs = &definitions;
     definition.defs_length = definitions.len;
 
-    const val = disasm.disasm(&definition);
-    expect(harness.isType(val, repr.Tag.@"struct"));
-    const result = wrap.toStruct(val);
+    const result = disasm.disasm(&definition);
+    expect(harness.isType(result, repr.Tag.abstract));
+    expect(args_core.checkdictionary(result));
 
-    theScalarFields(result);
-    theBytecode(result);
-    theConstants(result, &consts);
-    theSourceMap(result);
-    theEnvironments(result);
-    theSymbolMap(result);
-    theChildDefinition(result);
+    try theScalarFields(result);
+    try theBytecode(result);
+    try theConstants(result, &consts);
+    try theSourceMap(result);
+    try theEnvironments(result);
+    try theSymbolMap(result);
+    try theChildDefinition(result);
 }
 
 // ==========================================================================
@@ -194,6 +197,6 @@ fn theWholeDefinitionRoundTrips() void {
 
 pub fn run() void {
     harness.init();
-    theWholeDefinitionRoundTrips();
+    theWholeDefinitionRoundTrips() catch @panic("disasm: a read raised unexpectedly");
     vm_lifecycle.deinit();
 }
