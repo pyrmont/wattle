@@ -30,7 +30,6 @@ const args_core = @import("args.zig");
 const arrays = @import("value/arrays.zig");
 const buffers = @import("value/buffers.zig");
 const config = @import("config");
-const constants = @import("constants");
 const corefn = @import("corefn.zig");
 const fatal = @import("fatal.zig");
 const gc_mark = @import("gc/mark.zig");
@@ -109,23 +108,6 @@ const state_getters = [_]StateGetter{
 /// this declaration needs nothing above `repr` in the module graph.
 pub const Consumer = *const fn (p: *Parser, state: *ParseState, c: u8) error{JanetSignal}!bool;
 
-/// Which language's syntax a parser reads.
-///
-/// The two share this file: the token scanner, the escapes, the reindentation,
-/// the state stack, the `parser/*` methods and the error fields are one
-/// implementation, and what differs is which states the root consumer pushes
-/// and what each of them closes to. A consumer is a function pointer in
-/// `ParseState`, so the dialect is read where a state is pushed and never per
-/// byte.
-///
-/// Nothing a program can write selects one. `parser/new` takes no dialect and
-/// `module/paths` has no Wattle entry: `wattle` is reachable from the
-/// converter and from the contracts until it replaces `janet` outright.
-pub const Dialect = enum(u8) {
-    janet,
-    wattle,
-};
-
 /// One frame of the state stack: the consumer reading this form, where the
 /// form opened, and two counters whose meaning is the consumer's. A container
 /// counts its elements in `argn`, a long string counts its opening backticks
@@ -190,9 +172,6 @@ pub const Parser = struct {
     /// as one question: either sets `:dead`.
     dead: bool = false,
     generated_error: bool = false,
-    /// Set once by `parserInitDialect` and never changed: a parser reads one
-    /// language for its whole life.
-    dialect: Dialect = .janet,
 };
 
 /// What `parser/status` reports, and the whole of what a parser can be in.
@@ -277,29 +256,6 @@ pub fn libParse(env: *tables.Table) void {
     corefn.install(env, entries);
 }
 
-/// The consumer just after an `@`: the next character decides a mutable
-/// container or a buffer, and anything else starts a token that keeps the `@`.
-pub fn parserAtsign(
-    parser: *Parser,
-    _: *ParseState,
-    character: u8,
-) raise.Error!bool {
-    _ = parser.states.pop();
-    switch (character) {
-        '{' => parserPushState(parser, parserRoot, .{ .container = true, .curly_brackets = true, .at_symbol = true }),
-        '"' => parserPushState(parser, parserStringchar, .{ .buffer = true, .string = true }),
-        '`' => parserPushState(parser, parserLongstring, .{ .buffer = true, .long_string = true }),
-        '[' => parserPushState(parser, parserRoot, .{ .container = true, .square_brackets = true, .at_symbol = true }),
-        '(' => parserPushState(parser, parserRoot, .{ .container = true, .parens = true, .at_symbol = true }),
-        else => {
-            parserPushState(parser, parserTokenchar, .{ .token = true });
-            parserPushBuf(parser, '@');
-            return false;
-        },
-    }
-    return true;
-}
-
 /// Copies `source` into `destination`: queue, stack, buffer and position
 /// alike.
 pub fn parserClone(source: *const Parser, destination: *Parser) void {
@@ -314,7 +270,6 @@ pub fn parserClone(source: *const Parser, destination: *Parser) void {
         .lookback = source.lookback,
         .dead = source.dead,
         .generated_error = source.generated_error,
-        .dialect = source.dialect,
     };
     // Count-many, not capacity-many: each of the three allocations is sized to
     // the count it then copies, so a clone has none of the source's spare
@@ -416,37 +371,18 @@ pub fn parserCloseTable(
     return wrap.fromTable(table);
 }
 
-/// Takes `state.argn` values off the queue into a tuple. A nonzero `flag`
-/// marks the tuple bracketed.
+/// Takes `state.argn` values off the queue into a tuple.
 pub fn parserCloseTuple(
     parser: *Parser,
     state: *ParseState,
-    flag: i32,
 ) repr.Value {
     const tuple = tuples.begin(@intCast(state.argn));
-    if (flag != 0) tuples.setBracketed(utils.tupleHead(tuple));
     var index = state.argn;
     while (index > 0) {
         index -= 1;
         tuple[@intCast(index)] = parser.args.pop().?;
     }
     return wrap.fromTuple(tuples.end(tuple));
-}
-
-/// The consumer inside a `#` comment: bytes accumulate until a newline pops
-/// the state and discards them.
-pub fn parserComment(
-    parser: *Parser,
-    _: *ParseState,
-    character: u8,
-) raise.Error!bool {
-    if (character == '\n') {
-        _ = parser.states.pop();
-        parser.buf.clearRetainingCapacity();
-    } else {
-        parserPushBuf(parser, character);
-    }
-    return true;
 }
 
 /// Feeds one byte to the parser, running the top consumer until the byte is
@@ -512,14 +448,8 @@ pub fn parserHasMore(parser: *Parser) bool {
     return parser.pending != 0;
 }
 
-/// `parserInitDialect` reading Wattle, which is the language and what every
-/// caller but `test/parser_core.zig` wants.
-pub fn parserInit(parser: *Parser) void {
-    parserInitDialect(parser, .wattle);
-}
-
 /// Starts a parser at line 1, column 0, with the root state on the stack.
-pub fn parserInitDialect(parser: *Parser, dialect: Dialect) void {
+pub fn parserInit(parser: *Parser) void {
     parser.* = .{
         .args = .empty,
         .@"error" = null,
@@ -529,7 +459,6 @@ pub fn parserInitDialect(parser: *Parser, dialect: Dialect) void {
         .column = 0,
         .pending = 0,
         .lookback = -1,
-        .dialect = dialect,
     };
     // `Precise` because a fresh parser has just the root state, and the second
     // slot is room for one push before the first grow.
@@ -540,7 +469,7 @@ pub fn parserInitDialect(parser: *Parser, dialect: Dialect) void {
         .flags = .{ .container = true },
         .line = parser.line,
         .column = parser.column,
-        .consumer = rootConsumer(dialect),
+        .consumer = wattleRoot,
     });
 }
 
@@ -568,7 +497,6 @@ pub fn parserPopState(parser: *Parser, original_value: repr.Value) void {
         }
         if (new_top.flags.reader_macro) {
             val = wrapReader(
-                parser.dialect,
                 val,
                 new_top.flags.macro_char,
                 new_top.line,
@@ -624,17 +552,9 @@ pub fn parserPushState(
     }) catch fatal.outOfMemory();
 }
 
-/// The consumer `parserInitDialect` starts a parser's root state with.
-fn rootConsumer(dialect: Dialect) Consumer {
-    return switch (dialect) {
-        .janet => parserRoot,
-        .wattle => wattleRoot,
-    };
-}
-
 /// Wattle's consumer between forms.
 ///
-/// The shape is `parserRoot`'s and the characters are not: `;` comments where
+/// The shape Janet's root consumer had, with Wattle's characters: `;` comments where
 /// `#` did, `#` dispatches, `` ` `` quasiquotes where it opened a long string,
 /// `~` unquotes where it quasiquoted, `|` splices where it made a short
 /// function, `!` opens a mutable container where `@` did, and `,` is
@@ -710,7 +630,7 @@ pub fn wattleRoot(
     }
 }
 
-/// `parserComment` for Wattle, which hands the newline back rather than
+/// The comment consumer, which hands the newline back rather than
 /// consuming it.
 ///
 /// A comment does not excuse the newline that ends it: `'; note` leaves a
@@ -758,7 +678,7 @@ fn adjacencyError(parser: *Parser, state: *ParseState) raise.Error!void {
 /// The consumer after a `!`: a mutable container or a buffer where the next
 /// character opens one, and the first character of a symbol otherwise.
 ///
-/// `parserAtsign`'s shape. The difference is the string arm: Wattle has one
+/// The consumer just after a `!`. Wattle has one
 /// string opener and classifies it by the length of its run, so `!"` and
 /// `!"""` are one state here where Janet's `@"` and `` @` `` are two.
 fn wattleBang(
@@ -793,7 +713,7 @@ fn wattleDispatch(
     state: *ParseState,
     character: u8,
 ) raise.Error!bool {
-    // Line 1, column 1 is the first byte of the source: `parserInitDialect`
+    // Line 1, column 1 is the first byte of the source: `parserInit`
     // starts at column 0 and `parserConsume` counts before it dispatches. A
     // chunk boundary cannot fall before byte zero, so this holds however the
     // source is fed.
@@ -836,7 +756,7 @@ fn wattleDispatch(
 ///
 /// One quote opens an ordinary string, two are the empty string, and three or
 /// more open a raw string closed by a run of the same length. The run is
-/// counted in `state.argn`, as `parserLongstring` counts its backticks, and
+/// counted in `state.argn`, and
 /// the character that ends the run is handed back to whichever consumer the
 /// count chose.
 fn wattleQuoteRun(
@@ -873,7 +793,7 @@ fn wattleQuoteRun(
     }
 }
 
-/// `parserStringchar` for Wattle, which refuses the newline Janet drops.
+/// The consumer inside a `"` string, which refuses a bare newline.
 ///
 /// An ordinary string is one line: `"""` is how a string spans lines, so
 /// nothing is left for the quiet behaviour to serve.
@@ -902,60 +822,6 @@ fn wattleLongstring(
     character: u8,
 ) raise.Error!bool {
     return longstringImpl('"', parser, state, character);
-}
-
-/// The consumer between forms: whitespace is skipped, a delimiter opens or
-/// closes a container, and anything else begins a string, a comment, a reader
-/// macro or a token.
-pub fn parserRoot(
-    parser: *Parser,
-    state: *ParseState,
-    character: u8,
-) raise.Error!bool {
-    switch (character) {
-        '\'', ',', ';', '~', '|' => {
-            parserPushState(parser, parserRoot, .{ .reader_macro = true, .macro_char = character });
-            return true;
-        },
-        '"' => {
-            parserPushState(parser, parserStringchar, .{ .string = true });
-            return true;
-        },
-        '#' => {
-            parserPushState(parser, parserComment, .{ .comment = true });
-            return true;
-        },
-        '@' => {
-            parserPushState(parser, parserAtsign, .{ .at_symbol = true });
-            return true;
-        },
-        '`' => {
-            parserPushState(parser, parserLongstring, .{ .long_string = true });
-            return true;
-        },
-        ')', ']', '}' => return closeDelimiter(parser, state, character),
-        '(' => {
-            parserPushState(parser, parserRoot, .{ .container = true, .parens = true });
-            return true;
-        },
-        '[' => {
-            parserPushState(parser, parserRoot, .{ .container = true, .square_brackets = true });
-            return true;
-        },
-        '{' => {
-            parserPushState(parser, parserRoot, .{ .container = true, .curly_brackets = true });
-            return true;
-        },
-        else => {
-            if (isWhitespace(character)) return true;
-            if (!numscan.isSymbolChar(character)) {
-                parser.@"error" = "unexpected character";
-                return true;
-            }
-            parserPushState(parser, parserTokenchar, .{ .token = true });
-            return false;
-        },
-    }
 }
 
 /// What state the parser is in.
@@ -1279,11 +1145,7 @@ fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Erro
         else if (state.flags.vector)
             parserCloseVector(parser, state)
         else
-            parserCloseTuple(
-                parser,
-                state,
-                if (character == ']') constants.JANET_TUPLE_FLAG_BRACKETCTOR else 0,
-            );
+            parserCloseTuple(parser, state);
     } else if (character == '}' and state.flags.set) {
         // A set's elements are its own, not pairs, so the even-count rule does
         // not apply; the storable rule does, and for every element rather than
@@ -1346,14 +1208,9 @@ fn delimError(
         } else if (state.flags.string) {
             try buffers.pushU8(text, '"');
         } else if (state.flags.long_string) {
-            // The run that opened it, in the delimiter that opened it: Janet
-            // counts backticks and Wattle counts quotes.
-            const opener: u8 = switch (parser.dialect) {
-                .janet => '`',
-                .wattle => '"',
-            };
+            // The run that opened it, in the delimiter that opened it.
             const ticks: usize = @intCast(state.argn);
-            for (0..ticks) |_| try buffers.pushU8(text, opener);
+            for (0..ticks) |_| try buffers.pushU8(text, '"');
         }
         _ = try pp_format.formatb(text, " opened at line %d, column %d", .{ @as(i32, @intCast(state.line)), @as(i32, @intCast(state.column)) });
     }
@@ -1500,7 +1357,7 @@ fn parserEscape1(
         state.consumer = parserEscapeUnicode;
     } else {
         parserPushBuf(parser, @intCast(escaped));
-        state.consumer = parserStringchar;
+        state.consumer = wattleStringchar;
     }
     return true;
 }
@@ -1521,7 +1378,7 @@ fn parserEscapeHex(
     if (state.counter == 0) {
         parserPushBuf(parser, @intCast(state.argn & 0xff));
         state.argn = 0;
-        state.consumer = parserStringchar;
+        state.consumer = wattleStringchar;
     }
     return true;
 }
@@ -1547,7 +1404,7 @@ fn parserEscapeUnicode(
         }
         writeCodepoint(parser, state.argn);
         state.argn = 0;
-        state.consumer = parserStringchar;
+        state.consumer = wattleStringchar;
     }
     return true;
 }
@@ -1560,15 +1417,6 @@ fn parserGC(parser: *Parser, _: usize) void {
 /// The method lookup behind `(p :consume)` and its siblings.
 fn parserGet(_: *Parser, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(&methods));
-}
-
-/// The consumer inside a backtick string, which is Janet's raw string.
-fn parserLongstring(
-    parser: *Parser,
-    state: *ParseState,
-    character: u8,
-) raise.Error!bool {
-    return longstringImpl('`', parser, state, character);
 }
 
 /// The consumer inside a raw string, closed by a run of `delimiter` as long as
@@ -1657,14 +1505,9 @@ pub fn parserStateDelimiters(parser: *Parser) raise.Error!repr.Value {
         } else if (state.flags.string) {
             parserPushBuf(parser, '"');
         } else if (state.flags.long_string) {
-            // The delimiter that opened it, as `delimError` names it: Janet
-            // counts backticks and Wattle counts quotes.
-            const opener: u8 = switch (parser.dialect) {
-                .janet => '`',
-                .wattle => '"',
-            };
+            // The delimiter that opened it, as `delimError` names it.
             const ticks: usize = @intCast(state.argn);
-            for (0..ticks) |_| parserPushBuf(parser, opener);
+            for (0..ticks) |_| parserPushBuf(parser, '"');
         }
     }
     const text = strings.new(parser.buf.items[old_count..]);
@@ -1688,27 +1531,9 @@ fn parserStateFrames(parser: *Parser) raise.Error!repr.Value {
     while (index >= 0) : (index -= 1) {
         const state = &parser.states.items[@intCast(index)];
         if (state.flags.container and state.argn != 0) args = args.? - @as(usize, @intCast(state.argn));
-        states.reserved()[@intCast(index)] = try wrapParseState(parser.dialect, state, args, parser.buf.items.ptr, @intCast(parser.buf.items.len));
+        states.reserved()[@intCast(index)] = try wrapParseState(state, args, parser.buf.items.ptr, @intCast(parser.buf.items.len));
     }
     return wrap.fromArray(states);
-}
-
-/// The consumer inside a `"` string: a backslash switches to the escape
-/// consumer, a `"` finishes the string, and a bare newline or carriage return
-/// is dropped.
-fn parserStringchar(
-    parser: *Parser,
-    state: *ParseState,
-    character: u8,
-) raise.Error!bool {
-    if (character == '\\') {
-        state.consumer = parserEscape1;
-    } else if (character == '"') {
-        return try finishString(parser, state);
-    } else if (character != '\n' and character != '\r') {
-        parserPushBuf(parser, character);
-    }
-    return true;
 }
 
 /// Records where a form began. A tuple is the only value with a source map, so
@@ -1739,7 +1564,6 @@ fn tokenEquals(bytes: []const u8, comptime expected: []const u8) bool {
 /// One frame of `(parser/state p :frames)`: what is being parsed, where it
 /// started, and what has been read into it so far.
 fn wrapParseState(
-    dialect: Dialect,
     state: *allowzero const ParseState,
     args: ?[*]repr.Value,
     buf: ?[*]u8,
@@ -1773,29 +1597,14 @@ fn wrapParseState(
     } else if (state.flags.dispatch)
         "dispatch"
     else if (state.flags.at_symbol)
-        (switch (dialect) {
-            .janet => "at",
-            .wattle => "bang",
-        })
-    else if (state.flags.reader_macro) switch (dialect) {
-        // Janet's `|` has no name of its own here and takes the generic one,
-        // which `suite-parse` pins; `wrapReader` names it because that is what
-        // builds the form.
-        .janet => switch (state.flags.macro_char) {
-            '\'' => "quote",
-            ',' => "unquote",
-            ';' => "splice",
-            '~' => "quasiquote",
-            else => "<reader>",
-        },
-        .wattle => switch (state.flags.macro_char) {
-            '\'' => "quote",
-            '~' => "unquote",
-            '|' => "splice",
-            '#' => "short-fn",
-            '`' => "quasiquote",
-            else => "<reader>",
-        },
+        "bang"
+    else if (state.flags.reader_macro) switch (state.flags.macro_char) {
+        '\'' => "quote",
+        '~' => "unquote",
+        '|' => "splice",
+        '#' => "short-fn",
+        '`' => "quasiquote",
+        else => "<reader>",
     } else "root";
 
     tables.put(table, value.fromBytes("type", .keyword), value.fromBytes(std.mem.span(type_name), .keyword));
@@ -1808,29 +1617,16 @@ fn wrapParseState(
 }
 
 /// Builds the two-element form a reader macro expands to, such as `(quote x)`
-/// for `'x` in either dialect.
-fn wrapReader(dialect: Dialect, original_value: repr.Value, character: c_int, line: usize, column: usize) repr.Value {
+/// for `'x`.
+fn wrapReader(original_value: repr.Value, character: c_int, line: usize, column: usize) repr.Value {
     const tuple = tuples.begin(2);
-    // The dialect is needed, not just the character: `~` quasiquotes in Janet
-    // and unquotes in Wattle, and `|` makes a short function in Janet and
-    // splices in Wattle.
-    const name: [*:0]const u8 = switch (dialect) {
-        .janet => switch (character) {
-            '\'' => "quote",
-            ',' => "unquote",
-            ';' => "splice",
-            '|' => "short-fn",
-            '~' => "quasiquote",
-            else => "<unknown>",
-        },
-        .wattle => switch (character) {
-            '\'' => "quote",
-            '~' => "unquote",
-            '|' => "splice",
-            '#' => "short-fn",
-            '`' => "quasiquote",
-            else => "<unknown>",
-        },
+    const name: [*:0]const u8 = switch (character) {
+        '\'' => "quote",
+        '~' => "unquote",
+        '|' => "splice",
+        '#' => "short-fn",
+        '`' => "quasiquote",
+        else => "<unknown>",
     };
     tuple[0] = wrap.fromSymbol(symbols.csymbol(name));
     tuple[1] = original_value;

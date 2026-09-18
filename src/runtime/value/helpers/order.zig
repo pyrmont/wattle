@@ -40,7 +40,6 @@ const std = @import("std");
 const abi = @import("abi");
 const abstracts = @import("../abstracts.zig");
 const config = @import("config");
-const constants = @import("constants");
 const gc_alloc = @import("../../gc.zig");
 const maps = @import("../maps.zig");
 const repr = @import("repr");
@@ -62,9 +61,6 @@ const wrap = @import("wrap.zig");
 /// is a union, and `x.as.u64` under the tagged one, where it is a struct with
 /// the payload in a nested union.
 const isBoxedUnion = config.value_repr != .tagged;
-
-/// The flag that says a tuple was written with brackets.
-const tuple_flag_bracketctor: i32 = constants.JANET_TUPLE_FLAG_BRACKETCTOR;
 
 // ==========================================================================
 // Types
@@ -202,9 +198,6 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
                 const rhs = wrap.toTuple(y);
                 const lh = tuples.head(lhs);
                 const rh = tuples.head(rhs);
-                if (tuples.isBracketed(lh) != tuples.isBracketed(rh)) {
-                    return if (tuples.isBracketed(lh)) 1 else -1;
-                }
                 pushTraversalNode(stack, lh, rh, 1);
             },
             repr.Tag.map => {
@@ -312,7 +305,6 @@ pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
                 if (t1 != t2) {
                     const h1 = tuples.head(t1);
                     const h2 = tuples.head(t2);
-                    if (tuples.isBracketed(h1) != tuples.isBracketed(h2)) return false;
                     if (h1.hash != h2.hash) return false;
                     if (h1.length != h2.length) return false;
                     pushTraversalNode(stack, h1, h2, 0);
@@ -350,13 +342,7 @@ pub fn hash(x: repr.Value) i32 {
             h = stringHeadHash(wrap.toString(x));
         },
         repr.Tag.tuple => {
-            const t = wrap.toTuple(x);
-            const head = tuples.head(t);
-            h = head.hash;
-            const inc: u32 = if (tuples.isBracketed(head)) 1 else 0;
-            // Through u32: the bracket increment on a full-width stored hash
-            // must wrap rather than trap.
-            h = @bitCast(@as(u32, @bitCast(h)) +% inc);
+            h = tuples.head(wrap.toTuple(x)).hash;
         },
         repr.Tag.map => h = maps.hashOf(wrap.toMap(x)),
         repr.Tag.vector => h = vectors.hash(wrap.toVector(x)),

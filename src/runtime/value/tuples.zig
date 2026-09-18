@@ -57,13 +57,6 @@ const wrap = @import("helpers/wrap.zig");
 // ==========================================================================
 
 /// Bit 0 of the collector header's per-type field: the tuple was written with
-/// brackets rather than parentheses.
-///
-/// `tuple/type` reports it, the printer reads it, the comparison and the hash
-/// both fold it in, and it travels in a marshalled tuple, so it is a property
-/// of the value rather than a hint.
-const own_bracket_ctor: u6 = 1;
-
 /// Where the slots begin within the block.
 ///
 /// `@offsetOf` rather than `@sizeOf`: the head is Zig's own declaration, so
@@ -132,15 +125,9 @@ pub inline fn head(t: [*]const repr.Value) *TupleHead {
     return @ptrFromInt(@intFromPtr(t) -% tuple_payload);
 }
 
-/// Whether the tuple was written with brackets.
-pub inline fn isBracketed(hd: *const TupleHead) bool {
-    return hd.gc.flags.own & own_bracket_ctor != 0;
-}
-
 /// Installs the `tuple/*` cfunctions into the core environment.
 pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("tuple/brackets", &cfunTupleBrackets, @src(), "(tuple/brackets & xs)", "Creates a new bracketed tuple containing the elements xs."),
         corefn.reg("tuple/slice", &cfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
             "inclusive to index `end` exclusive. If `start` or `end` are not provided, " ++
             "they default to 0 and the length of `arrtup`, respectively. " ++
@@ -148,11 +135,6 @@ pub fn lib(env: *tables.Table) void {
             "from the end of the input. Note that if `start` is negative it is " ++
             "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
             "negative slice range. Returns the new tuple."),
-        corefn.reg("tuple/type", &cfunTupleType, @src(), "(tuple/type tup)", "Checks how the tuple was constructed. Will return the keyword " ++
-            ":brackets if the tuple was parsed with brackets, and :parens " ++
-            "otherwise. The two types of tuples will behave the same most of " ++
-            "the time, but will print differently and be treated differently by " ++
-            "the compiler."),
         corefn.reg("tuple/sourcemap", &cfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
             "which is another tuple (line, column)."),
         corefn.reg("tuple/setmap", &cfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. `line` and `column` " ++
@@ -191,11 +173,6 @@ pub fn newFrom(values: []const repr.Value) [*]const repr.Value {
     return end(t);
 }
 
-/// Marks the tuple as written with brackets.
-pub inline fn setBracketed(hd: *TupleHead) void {
-    hd.gc.flags.own |= own_bracket_ctor;
-}
-
 /// Returns a tuple's elements.
 ///
 /// `t` is the slot array. The length is in the head, so this is the pairing
@@ -218,12 +195,6 @@ pub inline fn view(t: [*]const repr.Value) []const repr.Value {
 ///
 /// `cfunTupleJoin` checks every argument and counts every element before it
 /// allocates, so a refusal leaves nothing behind.
-fn cfunTupleBrackets(argv: []repr.Value) raise.Error!repr.Value {
-    const tup = newFrom(argv);
-    setBracketed(head(tup));
-    return wrap.fromTuple(tup);
-}
-
 fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, -1);
     var total: usize = 0;
@@ -271,15 +242,6 @@ fn cfunTupleSourcemap(argv: []repr.Value) raise.Error!repr.Value {
         wrap.fromInteger(head(tup).sm_column),
     };
     return wrap.fromVector(vectors.fromSlice(&pair));
-}
-
-fn cfunTupleType(argv: []repr.Value) raise.Error!repr.Value {
-    try args_core.fixarity(argv, 1);
-    const tup = try args_core.getTuple(argv, 0);
-    if (isBracketed(head(tup))) {
-        return value.fromBytes("brackets", .keyword);
-    }
-    return value.fromBytes("parens", .keyword);
 }
 
 /// `tuple/join` where an argument is not an array or a tuple.

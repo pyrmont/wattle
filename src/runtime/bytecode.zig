@@ -116,7 +116,6 @@ pub const opcodes = [_]OpcodeDefinition{
     .{ .name = "lte", .opcode = constants.Opcode.less_than_equal },
     .{ .name = "ltim", .opcode = constants.Opcode.less_than_immediate },
     .{ .name = "mkarr", .opcode = constants.Opcode.make_array },
-    .{ .name = "mkbtp", .opcode = constants.Opcode.make_bracket_tuple },
     .{ .name = "mkbuf", .opcode = constants.Opcode.make_buffer },
     .{ .name = "mkmap", .opcode = constants.Opcode.make_map },
     .{ .name = "mkstr", .opcode = constants.Opcode.make_string },

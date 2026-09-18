@@ -213,8 +213,6 @@ pub const JANET_TRACE_NAME_FUNCTION: c_int = 2;
 pub const JANET_TRACE_NAME_CFUNCTION: c_int = 3;
 pub const JANET_TRACE_NAME_CFUNCTION_BARE: c_int = 4;
 
-pub const JANET_TUPLE_FLAG_BRACKETCTOR = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
-
 /// `1` under the event loop.
 pub const JANET_VM_HAS_EV: c_int = if (config.ev) 1 else 0;
 
@@ -390,18 +388,12 @@ pub const Opcode = enum(u8) {
     not_equals = 74,
     not_equals_immediate = 75,
     cancel = 76,
-    // Last on purpose, because it is the one opcode already decided to go:
-    // there are no bracket tuples in Wattle, and the parser and boot depend
-    // on them only until the Janet parser is removed. Here, its deletion is
-    // one member and a lower `count`; anywhere else it leaves a hole, which
-    // `bytecode/verify.zig`'s table refuses to compile.
-    make_bracket_tuple = 77,
     _,
 
     /// How many opcodes there are: one past the last, and not itself an
     /// opcode. `src/runtime/bytecode/verify.zig`'s type table and
     /// `src/runtime/bytecode.zig`'s name table are both this long.
-    pub const count: usize = 78;
+    pub const count: usize = 77;
 
     pub inline fn fromWord(word: u32) Opcode {
         return @enumFromInt(@as(u8, @truncate(word)));
@@ -535,11 +527,11 @@ comptime {
         .{ .make_array, 64 },           .{ .make_buffer, 65 },                    .{ .make_string, 66 },            .{ .make_map, 67 },
         .{ .make_table, 68 },           .{ .make_tuple, 69 },                     .{ .make_vector, 70 },            .{ .greater_than_equal, 71 },
         .{ .less_than_equal, 72 },      .{ .next, 73 },                           .{ .not_equals, 74 },             .{ .not_equals_immediate, 75 },
-        .{ .cancel, 76 },               .{ .make_bracket_tuple, 77 },
+        .{ .cancel, 76 },
     };
     std.debug.assert(expected_opcode.len == @typeInfo(Opcode).@"enum".fields.len);
     for (expected_opcode) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
-    std.debug.assert(Opcode.count == @intFromEnum(Opcode.make_bracket_tuple) + 1);
+    std.debug.assert(Opcode.count == @intFromEnum(Opcode.cancel) + 1);
 }
 
 comptime {

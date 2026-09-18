@@ -25,10 +25,10 @@
 ; c6edf03ae
 ;
 ; There are no bracket tuples: `[ ]` is a vector, so no source spells one and
-; every tuple is a parenthesised one. `tuple/type` and `tuple/brackets` go
-; with Janet's parser.
-(assert (= (tuple/type '(1 2 3)) :parens) "normal tuple")
-(assert (= (tuple/type (-> '(1 2 3) marshal unmarshal)) :parens)
+; every tuple is a parenthesised one. `tuple/type` and `tuple/brackets` went
+; with Janet's parser, so a tuple's type is the only thing left to ask.
+(assert (= (type '(1 2 3)) :tuple) "normal tuple")
+(assert (= (type (-> '(1 2 3) marshal unmarshal)) :tuple)
         "normal tuple marshalled/unmarshalled")
 (assert (= :vector (type (-> [1 2 3] marshal unmarshal)))
         "a vector marshals as a vector")

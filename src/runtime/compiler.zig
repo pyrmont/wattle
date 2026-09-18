@@ -924,8 +924,6 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
                 const length = tuples.head(tuple).length;
                 if (length == 0) {
                     result = cslot(wrap.fromTuple(tuples.newFrom(&.{})));
-                } else if (tuples.isBracketed(tuples.head(tuple))) {
-                    result = try makeTuple(options, val);
                 } else {
                     var suboptions = foptsDefault(compiler);
                     const function = try valueImpl(suboptions, tuple[0]);
@@ -1101,7 +1099,6 @@ fn expandMacroOnce(compiler: *Compiler, val: repr.Value) raise.Error!Expansion {
         compiler.current_mapping.line = head.sm_line;
         compiler.current_mapping.column = head.sm_column;
     }
-    if (tuples.isBracketed(head)) return .done;
     if (!wrap.isSymbol(form[0])) return .done;
 
     const name = wrap.toSymbol(form[0]);

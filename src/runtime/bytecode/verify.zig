@@ -136,7 +136,6 @@ const rows = [_]Row{
     .{ .op = constants.Opcode.not_equals, .type = constants.InstructionType.sss },
     .{ .op = constants.Opcode.not_equals_immediate, .type = constants.InstructionType.ssi },
     .{ .op = constants.Opcode.cancel, .type = constants.InstructionType.sss },
-    .{ .op = constants.Opcode.make_bracket_tuple, .type = constants.InstructionType.s },
 };
 
 // ==========================================================================

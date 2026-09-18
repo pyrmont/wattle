@@ -485,13 +485,12 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
         },
         repr.Tag.tuple => {
             const t = wrap.toTuple(x);
-            const bracketed = tuples.isBracketed(tuples.head(t));
-            try S.pushByte(if (bracketed) '[' else '(');
+            try S.pushByte('(');
             for (tuples.view(t), 0..) |item, i| {
                 try if (i != 0) S.pushByte(' ');
                 if (try printJdnOne(S, item, depth - 1)) return true;
             }
-            try S.pushByte(if (bracketed) ']' else ')');
+            try S.pushByte(')');
         },
         repr.Tag.vector => {
             // `[ ]` is a vector in Wattle's syntax, and a bracketed tuple in
@@ -677,11 +676,8 @@ fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Error!void {
     var gathered: ?args_core.Gathered = if (isvector) (try args_core.gather(x)).? else null;
     defer if (gathered) |*g| g.free();
     const arr = if (gathered) |g| g.items else args_core.items(x).?;
-    const bracketed = !isarray and !isvector and
-        tuples.isBracketed(tuples.head(arr.ptr));
-
-    const opener: [*:0]const u8 = if (isarray) "![" else if (isvector or bracketed) "[" else "(";
-    const closer: u8 = if (isarray or isvector or bracketed) ']' else ')';
+    const opener: [*:0]const u8 = if (isarray) "![" else if (isvector) "[" else "(";
+    const closer: u8 = if (isarray or isvector) ']' else ')';
     try S.pushCstring(opener);
     S.align_col += @intCast(std.mem.len(opener));
     const align_col = S.align_col;

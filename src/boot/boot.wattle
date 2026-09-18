@@ -1429,7 +1429,7 @@
      ~s))
 
 (defn keep-syntax
-  """Creates a tuple with the tuple type and sourcemap of `before` but the
+  """Creates a tuple with the sourcemap of `before` but the
   elements of `after`. If either one of its arguments is not a tuple, returns
   `after` unmodified. Useful to preserve syntactic information when transforming
   an ast in macros."""
@@ -1437,9 +1437,7 @@
   (if (and (= :tuple (type before))
            (= :tuple (type after)))
     (do
-      (def res (if (= :parens (tuple/type before))
-                 (tuple/slice after)
-                 (tuple/brackets |after)))
+      (def res (tuple/slice after))
       (tuple/setmap res |(tuple/sourcemap before)))
     after))
 
@@ -2024,9 +2022,9 @@
   * symbol -- a pattern that is a symbol will match anything, binding `x`'s
     value to that symbol.
 
-  * array or bracket tuple -- an array or bracket tuple will match only if
+  * array or vector -- an array or vector will match only if
     all of its elements match the corresponding elements in `x`.
-    Use `& rest` at the end of an array or bracketed tuple to bind all remaining values to `rest`.
+    Use `& rest` at the end of an array or vector to bind all remaining values to `rest`.
 
   * table or map -- a table or map will match if all values match with
     the corresponding values in `x`.
@@ -2088,8 +2086,7 @@
     (if (= pattern '_) (break))
     (def s (get-sym parent-sym key))
     (def t (type pattern))
-    (def isarr (or (= t :array) (= t :vector)
-                   (and (= t :tuple) (= (tuple/type pattern) :brackets))))
+    (def isarr (or (= t :array) (= t :vector)))
     (cond
 
       ; match local binding
@@ -2144,8 +2141,7 @@
     (if (= pattern '_) (break))
     (def s (get-sym parent-sym key))
     (def t (type pattern))
-    (def isarr (or (= t :array) (= t :vector)
-                   (and (= t :tuple) (= (tuple/type pattern) :brackets))))
+    (def isarr (or (= t :array) (= t :vector)))
     (when isarr
       (array/push anda (get-length-sym s))
       (def amp-index (find-index (fn [x] (= x '&)) pattern))
@@ -2299,13 +2295,11 @@
   (defn expandqq [t]
     (defn qq [x]
       (case (type x)
-        :tuple (if (= :brackets (tuple/type x))
-                 `[~|(map qq x)]
-                 (do
-                   (def x0 (get x 0))
-                   (if (= 'unquote x0)
-                     (tuple x0 (recur (get x 1)))
-                     (tuple/slice (map qq x)))))
+        :tuple (do
+                 (def x0 (get x 0))
+                 (if (= 'unquote x0)
+                   (tuple x0 (recur (get x 1)))
+                   (tuple/slice (map qq x))))
         :vector (vector |(map qq x))
         :array (map qq x)
         :table (table |(map qq (kvs x)))
@@ -2340,9 +2334,7 @@
 
   (def ret
     (case (type x)
-      :tuple (if (= (tuple/type x) :brackets)
-               (tuple/brackets |(map recur x))
-               (dotup x))
+      :tuple (dotup x)
       :vector (vector |(map recur x))
       :array (map recur x)
       :map (table/to-map (dotable x recur))
@@ -3895,7 +3887,6 @@
     (def padding (string/repeat " " 20))
     (loop [i :range [0 (length bytecode)]
            :let [instr (bytecode i)]]
-      (eprin (if (= (tuple/type instr) :brackets) "*" " "))
       (eprin (if (= i pc) "> " "  "))
       (eprinf "%.20s" (string (string/join (map string instr) " ") padding))
       (when sourcemap
@@ -4237,7 +4228,7 @@
   evaluated.
   """
   [thunk source env where]
-  (when (and (tuple? source) (= (tuple/type source) :parens))
+  (when (tuple? source)
     (def head (source 0))
     (def entry (get env head {}))
     (def fc (get flycheck-specials head (get entry :flycheck)))
@@ -4277,8 +4268,7 @@
   [src]
   (cond
     (tuple? src)
-    (if (= (tuple/type src) :brackets)
-      (all no-side-effects src))
+    nil
     (or (array? src) (vector? src))
     (all no-side-effects src)
     (dictionary? src)

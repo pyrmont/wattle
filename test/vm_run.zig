@@ -574,10 +574,10 @@ fn theCollectionConstructors() void {
     expectEqual("{:a 1}", "{:a 1}");
     expectEqual("(string \"a\" 1 :b)", "\"a1b\"");
     expectEqual("(buffer \"a\" 1 :b)", "!\"a1b\"");
-    // No source spells a bracket tuple, so every tuple is a parenthesised one
-    // and `[ ]` builds a vector through its own opcode. `mkbtp` is reachable
-    // from the assembler alone and goes with Janet's parser.
-    expectEqual("(tuple/type '(1 2))", ":parens");
+    // A tuple is `( )` and nothing else, and `[ ]` builds a vector through its
+    // own opcode. `mkbtp` went with the bracket flag, so `mktup` is the only
+    // tuple constructor the assembler can reach.
+    expectEqual("(type '(1 2))", ":tuple");
     expectEqual("(type '[1 2])", ":vector");
     if (has_assembler) {
         expectEqual(
@@ -585,8 +585,8 @@ fn theCollectionConstructors() void {
             ":vector",
         );
         expectEqual(
-            "(tuple/type ((asm '{:arity 0 :constants [1]  :bytecode [(ldc 0 0) (push 0) (mktup 1) (ret 1)]})))",
-            ":parens",
+            "(type ((asm '{:arity 0 :constants [1]  :bytecode [(ldc 0 0) (push 0) (mktup 1) (ret 1)]})))",
+            ":tuple",
         );
     }
 }

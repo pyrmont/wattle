@@ -219,9 +219,8 @@
   # what makes them safe to name.
   #
   # The parser swap replaced these with the contracts over the language it
-  # changed. The parser a program gets is Wattle's now, so `parser_wattle` is
-  # the primary subject and `parser_core` is Janet's, which stays in the tree
-  # as that contract's oracle and is loaded by nothing else. The positional
+  # changed. Step 7 merged the two parser contracts, so `parser_core` is the
+  # one parser's one contract and the primary subject here. The positional
   # result became a vector across the library, so the value itself
   # (`vectors`, `maps`) is here with the callers whose returns changed:
   # `math` (`math/frexp`), `string_symbol` (`string/bytes`), `os_process`
@@ -241,7 +240,7 @@
   # assembler` entry does; `io_core`, `os_fs`, `os_surface`, `filewatch_core`
   # and the ev pair still cannot be named, for the reasons above. The `full`
   # entries run all of them.
-  ["parser_wattle" "parser_core" "vectors" "maps" "math" "string_symbol"
+  ["parser_core" "vectors" "maps" "math" "string_symbol"
    "os_process" "net_sockets" "fiber_core" "emit_core" "compiler_primitives"
    "specials_core" "verify" "vm_run" "asm_encode" "asm_decode" "disasm"
    "pp_pretty" "pp_format" "pp_describe" "peg" "registry" "core_env"])

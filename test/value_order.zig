@@ -47,7 +47,6 @@ const abstract_type = @import("subsystems").abstract_type;
 const abstracts = @import("subsystems").value.abstracts;
 const arrays = @import("subsystems").value.arrays;
 const buffers = @import("subsystems").value.buffers;
-const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 
@@ -117,11 +116,10 @@ fn intv(i: i32) repr.Value {
     return harness.wrapInteger(i);
 }
 
-/// A tuple from a slice of values, paren-constructed unless `bracket`.
-fn mktuple(items: []const repr.Value, bracket: bool) repr.Value {
+/// A tuple from a slice of values.
+fn mktuple(items: []const repr.Value) repr.Value {
     const t = tuples.begin(@intCast(items.len));
     for (items, 0..) |item, i| t[i] = item;
-    if (bracket) harness.gcSetBits(&utils.tupleHead(t).gc.flags, constants.JANET_TUPLE_FLAG_BRACKETCTOR);
     return wrap.fromTuple(tuples.end(t));
 }
 
@@ -206,7 +204,7 @@ fn nestTuples(depth: i32, leaf: repr.Value) repr.Value {
     var i: i32 = 0;
     while (i < depth) : (i += 1) {
         const items = [_]repr.Value{ intv(i), acc };
-        const next = mktuple(&items, false);
+        const next = mktuple(&items);
         gc_alloc.gcroot(next);
         _ = gc_alloc.gcunroot(acc);
         acc = next;
@@ -228,8 +226,8 @@ fn theHashOfTheAtoms() void {
 /// property every dictionary in the runtime is built on.
 fn theHashAgreesWithEquality() void {
     const items = [_]repr.Value{ intv(1), kw("a"), str("s") };
-    const a = mktuple(&items, false);
-    const b = mktuple(&items, false);
+    const a = mktuple(&items);
+    const b = mktuple(&items);
     expect(harness.equals(a, b));
     expect(order.hash(a) == order.hash(a));
     expect(order.hash(a) == order.hash(b));
@@ -297,28 +295,12 @@ fn integersAndDoublesHashAlike() void {
     expect(order.hash(intv(7)) == order.hash(num(7.0)));
 }
 
-/// A bracket-constructed tuple hashes to one more than the paren-constructed
-/// tuple with the same contents, and compares unequal to it. The flag is the
-/// only case in the language where something other than contents participates
-/// in a hash.
-fn bracketTuplesHashAndCompareApart() void {
-    const items = [_]repr.Value{ intv(1), intv(2) };
-    const paren = mktuple(&items, false);
-    const bracket = mktuple(&items, true);
-    expect(!harness.equals(paren, bracket));
-    expect(@as(u32, @bitCast(order.hash(bracket))) ==
-        @as(u32, @bitCast(order.hash(paren))) +% 1);
-    // And the difference is a *hash* difference, not a length or content one:
-    // the stored head hashes are identical.
-    expect(tupleHash(wrap.toTuple(paren)) == tupleHash(wrap.toTuple(bracket)));
-}
-
 /// The stored hash is returned rather than recomputed, for every type that has
 /// one. Asserted by mutating the head after construction: a recomputing
 /// implementation would ignore the change.
 fn theHashReadsTheStoredHead() void {
     const items = [_]repr.Value{intv(1)};
-    const t = mktuple(&items, false);
+    const t = mktuple(&items);
     utils.tupleHead(wrap.toTuple(t)).hash = 0x5eed;
     expect(order.hash(t) == 0x5eed);
 
@@ -447,20 +429,18 @@ fn theEqualityOfMutableContainers() void {
     expect(!harness.equals(wrap.fromArray(a1), wrap.fromArray(a2)));
 }
 
-/// Tuple equality traverses, and each of the four cheap rejections in front of
-/// the traversal is reached by a case that reaches no other.
+/// Tuple equality traverses, and each of the three cheap rejections in front
+/// of the traversal is reached by a case that reaches no other.
 fn theEqualityOfTuples() void {
     const items = [_]repr.Value{ intv(1), kw("k"), str("s") };
     const other = [_]repr.Value{ intv(1), kw("k"), str("t") };
-    const a = mktuple(&items, false);
-    const b = mktuple(&items, false);
+    const a = mktuple(&items);
+    const b = mktuple(&items);
     expect(wrap.toTuple(a) != wrap.toTuple(b));
     expect(harness.equals(a, b));
-    expect(!harness.equals(a, mktuple(&other, false)));
+    expect(!harness.equals(a, mktuple(&other)));
     // Shorter, so the length rejection fires.
-    expect(!harness.equals(a, mktuple(items[0..2], false)));
-    // Same contents, different constructor, so the flag rejection fires.
-    expect(!harness.equals(a, mktuple(&items, true)));
+    expect(!harness.equals(a, mktuple(items[0..2])));
     // Identity short-circuits before any of them.
     expect(harness.equals(a, a));
 }
@@ -476,10 +456,10 @@ fn theEqualityOfTuples() void {
 /// variable.
 fn aTupleHoldingNanEqualsItself() void {
     const items = [_]repr.Value{num(std.math.nan(f64))};
-    const a = mktuple(&items, false);
+    const a = mktuple(&items);
     gc_alloc.gcroot(a);
     defer _ = gc_alloc.gcunroot(a);
-    const b = mktuple(&items, false);
+    const b = mktuple(&items);
     gc_alloc.gcroot(b);
     defer _ = gc_alloc.gcunroot(b);
 
@@ -519,10 +499,10 @@ fn theChecksBehindTheHash() void {
     // `index2` clear as `order.equals` pushes it, reports that there is
     // nothing more to compare. The result would be "equal".
     const pair = [_]repr.Value{ intv(1), intv(2) };
-    const t1 = mktuple(&pair, false);
+    const t1 = mktuple(&pair);
     gc_alloc.gcroot(t1);
     defer _ = gc_alloc.gcunroot(t1);
-    const t2 = mktuple(&pair, false);
+    const t2 = mktuple(&pair);
     gc_alloc.gcroot(t2);
     defer _ = gc_alloc.gcunroot(t2);
     expect(harness.equals(t1, t2));
@@ -687,25 +667,20 @@ fn theOrderOfStringLikes() void {
 }
 
 /// Tuples order element-wise, and a prefix sorts before its extension, which
-/// the traversal decides rather than a length check up front. The bracket flag
-/// is checked before any element and outranks all of them.
+/// the traversal decides rather than a length check up front.
 fn theOrderOfTuples() void {
     const a = [_]repr.Value{ intv(1), intv(2) };
     const b = [_]repr.Value{ intv(1), intv(2), intv(3) };
     const cc = [_]repr.Value{ intv(1), intv(3) };
     const big = [_]repr.Value{ intv(9), intv(0) };
-    expect(order.compare(mktuple(&a, false), mktuple(&b, false)) == -1);
-    expect(order.compare(mktuple(&b, false), mktuple(&a, false)) == 1);
-    expect(order.compare(mktuple(&a, false), mktuple(&cc, false)) == -1);
-    expect(order.compare(mktuple(&a, false), mktuple(&a, false)) == 0);
+    expect(order.compare(mktuple(&a), mktuple(&b)) == -1);
+    expect(order.compare(mktuple(&b), mktuple(&a)) == 1);
+    expect(order.compare(mktuple(&a), mktuple(&cc)) == -1);
+    expect(order.compare(mktuple(&a), mktuple(&a)) == 0);
     // Element-wise beats length: a longer tuple whose first element is larger
     // still sorts after. And a shorter one whose first element is larger sorts
     // after too, which is the same claim from the other side.
-    expect(order.compare(mktuple(&big, false), mktuple(&b, false)) == 1);
-
-    // The bracket flag outranks the contents in both directions.
-    expect(order.compare(mktuple(&a, true), mktuple(&b, false)) == 1);
-    expect(order.compare(mktuple(&b, false), mktuple(&a, true)) == -1);
+    expect(order.compare(mktuple(&big), mktuple(&b)) == 1);
 }
 
 /// Maps order by count, then by running sum, and only then entry-wise. The
@@ -807,9 +782,9 @@ fn theOrderOfAbstracts() void {
 fn theBaseSlotIsDead() void {
     const items = [_]repr.Value{intv(0)};
     const other = [_]repr.Value{intv(1)};
-    const a = mktuple(&items, false);
-    const b = mktuple(&items, false);
-    const d = mktuple(&other, false);
+    const a = mktuple(&items);
+    const b = mktuple(&items);
+    const d = mktuple(&other);
 
     expect(harness.equals(a, b));
     expect(stackDepth() == 0);
@@ -887,8 +862,8 @@ fn aShorterTupleIsNotReadPastItsEnd() void {
     const short = tuples.end(t);
     utils.tupleHead(short).length = 1;
     const long = [_]repr.Value{ intv(1), intv(5) };
-    expect(order.compare(mktuple(&long, false), wrap.fromTuple(short)) == 1);
-    expect(order.compare(wrap.fromTuple(short), mktuple(&long, false)) == -1);
+    expect(order.compare(mktuple(&long), wrap.fromTuple(short)) == 1);
+    expect(order.compare(wrap.fromTuple(short), mktuple(&long)) == -1);
 }
 
 /// Neither entry point pops what it pushed: an early rejection deep inside a
@@ -1014,9 +989,9 @@ fn theRelationsHoldOverACorpus() void {
         str(""),
         sym("a"),
         kw("a"),
-        mktuple(&items, false),
-        mktuple(&items, true),
-        mktuple(items[0..1], false),
+        mktuple(&items),
+        mktuple(&items),
+        mktuple(items[0..1]),
         mkmap(&kvs),
         mkmap(kvs[0..2]),
         wrap.fromArray(arrays.new(1)),
@@ -1113,7 +1088,6 @@ pub fn run() void {
     theHashNormalizesNegativeZero();
     theExactNumberHashes();
     integersAndDoublesHashAlike();
-    bracketTuplesHashAndCompareApart();
     theHashReadsTheStoredHead();
     theAbstractHashCallback();
     thePointerHashIsTheHighWord();

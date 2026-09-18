@@ -1460,13 +1460,10 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             continue :sw self.nextOp();
         },
 
-        .make_tuple, .make_bracket_tuple => |op| {
+        .make_tuple => {
             const count = fiber.stacktop - fiber.stackstart;
             const mem = fiber.data.? + utils.asSize(fiber.stackstart);
             const tup = tuples.newFrom(mem[0..utils.asSize(count)]);
-            if (op == constants.Opcode.make_bracket_tuple) {
-                tuples.setBracketed(tuples.head(tup));
-            }
             self.stack[fD(self.pc)] = wrap.fromTuple(tup);
             fiber.stacktop = fiber.stackstart;
             self.maybeCollect();

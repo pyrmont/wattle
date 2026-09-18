@@ -72,7 +72,6 @@
   (def padding (string/repeat " " 20))
   (loop [i :range [0 (length bytecode)]
          :let [instr (bytecode i)]]
-    (prin (if (= (tuple/type instr) :brackets) "*" " "))
     (prin (if (= i pc) "> " "  "))
     (prinf "\e[33m%.20s\e[0m" (string (string/join (map string instr) " ") padding))
     (when sourcemap

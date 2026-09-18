@@ -38,6 +38,7 @@ const special = @import("../special_type.zig");
 const strings = @import("../value/strings.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
+const vectors = @import("../value/vectors.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const wrap = @import("../value/helpers/wrap.zig");
@@ -263,9 +264,7 @@ fn buildDestructureHeads(
     const compiler: *compiler_primitives.Compiler = options.compiler;
     const lhs_indexed = repr.TagSet.indexed.has(repr.typeOf(lhs));
     const rhs_indexed = repr.checkType(rhs, repr.Tag.array) or
-        repr.checkType(rhs, repr.Tag.vector) or
-        (repr.checkType(rhs, repr.Tag.tuple) and
-            tuples.isBracketed(utils.tupleHead(wrap.toTuple(rhs))));
+        repr.checkType(rhs, repr.Tag.vector);
     const has_drop = options.flags.drop;
     var suboptions = compiler_primitives.foptsDefault(compiler);
     suboptions.flags = options.flags;
@@ -481,15 +480,12 @@ fn destructure(
                         return true;
                     }
                     if (index + 2 < values.len) {
-                        const extra_count = values.len - index - 1;
-                        const extra = tuples.begin(@intCast(extra_count));
-                        tuples.setBracketed(utils.tupleHead(extra));
-                        for (0..extra_count) |extra_index| {
-                            extra[extra_index] = values[index + 1 + extra_index];
-                        }
+                        // The rest of the pattern, rendered as the vector a
+                        // pattern is written as.
+                        const extra = wrap.fromVector(vectors.fromSlice(values[index + 1 ..]));
                         compiler_primitives.recordError(
                             compiler,
-                            try pp_format.formatc("expected a single symbol follow '& in destructuring pattern, found %q", .{wrap.fromTuple(tuples.end(extra))}),
+                            try pp_format.formatc("expected a single symbol follow '& in destructuring pattern, found %q", .{extra}),
                         );
                         return true;
                     }
@@ -716,11 +712,7 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
             for (0..@as(usize, @intCast(length))) |index| {
                 pushSlot(&slots, try quasiquote(suboptions, tuple[index], depth - 1, level));
             }
-            const opcode = if (tuples.isBracketed(utils.tupleHead(tuple)))
-                constants.Opcode.make_bracket_tuple
-            else
-                constants.Opcode.make_tuple;
-            return quoteSlots(options, slots, opcode);
+            return quoteSlots(options, slots, constants.Opcode.make_tuple);
         },
         repr.Tag.array => {
             const array = wrap.toArray(val);
