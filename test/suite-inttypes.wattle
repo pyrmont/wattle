@@ -1,0 +1,408 @@
+; Copyright (c) 2026 Calvin Rose & contributors
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to
+; deal in the Software without restriction, including without limitation the
+; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+; sell copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+; FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+; IN THE SOFTWARE.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; Disable linting warnings
+(setdyn *lint-warn* :none)
+
+; Nothing in this suite exists in a build without JANET_INT_TYPES, and an
+; absent binding is a compile error rather than a runtime one. Janet compiles
+; and runs a file one top-level form at a time, so leaving here keeps the rest
+; of the suite from reaching the compiler at all.
+(compwhen (not (dyn 'int/s64))
+  (end-suite)
+  (os/exit 0))
+
+; some tests for bigint
+; 319575c
+(def i64 int/s64)
+(def u64 int/u64)
+
+(assert-no-error
+  "create some uint64 bigints"
+  (do
+    ; from number
+    (def a (u64 10))
+    ; max double we can convert to int (2^53)
+    (def b (u64 0x1fffffffffffff))
+    (def b (u64 (math/pow 2 53)))
+    ; from string
+    (def c (u64 "0xffff_ffff_ffff_ffff"))
+    (def c (u64 "32rvv_vv_vv_vv"))
+    (def d (u64 "123456789"))))
+
+; Conversion back to an int32
+; 88db9751d
+(assert (= (int/to-number (u64 0xFaFa)) 0xFaFa))
+(assert (= (int/to-number (i64 0xFaFa)) 0xFaFa))
+(assert (= (int/to-number (u64 9007199254740991)) 9007199254740991))
+(assert (= (int/to-number (i64 9007199254740991)) 9007199254740991))
+(assert (= (int/to-number (i64 -9007199254740991)) -9007199254740991))
+
+; New parser
+(assert (= (u64 "123") 123:u) "u64 parsing")
+(assert (= (u64 "0") 0:u) "u64 parsing")
+(assert (= (u64 "0xFFFF_FFFF_FFFF_FFFF") 0xFFFF_FFFF_FFFF_FFFF:u) "u64 parsing")
+(assert (= (i64 "123") 123:s) "s64 parsing")
+(assert (= (i64 "-123") -123:s) "s64 parsing")
+(assert (= (i64 "0") 0:s) "s64 parsing")
+
+(assert-error
+  "u64 out of bounds for safe integer"
+  (int/to-number (u64 "9007199254740993"))
+
+  (assert-error
+    "s64 out of bounds for safe integer"
+    (int/to-number (i64 "-9007199254740993"))))
+
+(assert-error-value
+  "int/to-number fails on non-abstract types"
+  "expected int/u64 or int/s64, got 1"
+  (int/to-number 1))
+
+(assert-no-error
+  "create some int64 bigints"
+  (do
+    ; from number
+    (def a (i64 -10))
+    ; max double we can convert to int (2^53)
+    (def b (i64 0x1fffffffffffff))
+    (def b (i64 (math/pow 2 53)))
+    ; from string
+    (def c (i64 "0x7fff_ffff_ffff_ffff"))
+    (def d (i64 "123456789"))))
+
+(assert-error
+  "bad initializers"
+  (do
+    ; double to big to be converted to uint64 without truncation (2^53 + 1)
+    (def b (u64 (+ 0xffff_ffff_ffff_ff 1)))
+    (def b (u64 (+ (math/pow 2 53) 1)))
+    ; out of range 65 bits
+    (def c (u64 "0x1ffffffffffffffff"))
+    ; just to big
+    (def d (u64 "123456789123456789123456789"))))
+
+(assert (= (:/ (u64 "0xffff_ffff_ffff_ffff") 8 2) (u64 "0xfffffffffffffff"))
+        "bigint operations 1")
+(assert (let [a (u64 0xff)] (= (:+ a a a a) (:* a 2 2)))
+        "bigint operations 2")
+
+; 5ae520a2c
+(assert (= (string (i64 -123)) "-123") "i64 prints reasonably")
+(assert (= (string (u64 123)) "123") "u64 prints reasonably")
+
+; 1db6d0e0b
+(assert-error
+  "trap INT64_MIN / -1"
+  (:/ (int/s64 "-0x8000_0000_0000_0000") -1))
+
+; int/s64 and int/u64 serialization
+; 6aea7c7f7
+(assert (deep= (int/to-bytes (u64 0)) !"\x00\x00\x00\x00\x00\x00\x00\x00"))
+
+(assert (deep= (int/to-bytes (i64 1) :le)
+               !"\x01\x00\x00\x00\x00\x00\x00\x00"))
+(assert (deep= (int/to-bytes (i64 1) :be)
+               !"\x00\x00\x00\x00\x00\x00\x00\x01"))
+(assert (deep= (int/to-bytes (i64 -1))
+               !"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"))
+(assert (deep= (int/to-bytes (i64 -5) :be)
+               !"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFB"))
+
+(assert (deep= (int/to-bytes (u64 1) :le)
+               !"\x01\x00\x00\x00\x00\x00\x00\x00"))
+(assert (deep= (int/to-bytes (u64 1) :be)
+               !"\x00\x00\x00\x00\x00\x00\x00\x01"))
+(assert (deep= (int/to-bytes (u64 300) :be)
+               !"\x00\x00\x00\x00\x00\x00\x01\x2C"))
+
+; int/s64 int/u64 to existing buffer
+; bbb3e16fd
+(let [buf1 !""
+      buf2 !"abcd"]
+  (assert (deep= (int/to-bytes (i64 1) :le buf1)
+                 !"\x01\x00\x00\x00\x00\x00\x00\x00"))
+  (assert (deep= buf1 !"\x01\x00\x00\x00\x00\x00\x00\x00"))
+  (assert (deep= (int/to-bytes (u64 300) :be buf2)
+                 !"abcd\x00\x00\x00\x00\x00\x00\x01\x2C")))
+
+; int/s64 and int/u64 parameter type checking
+; 6aea7c7f7
+(assert-error-value
+  "bad value passed to int/to-bytes"
+  "int/to-bytes: expected an int/s64 or int/u64, got 1"
+  (int/to-bytes 1))
+
+; 6aea7c7f7
+(assert-error-value
+  "invalid endianness passed to int/to-bytes"
+  "int/to-bytes: expected endianness :le, :be or nil, got :little"
+  (int/to-bytes (u64 0) :little))
+
+; bbb3e16fd
+; A valid order, so the refusal is the buffer's and not the endianness's.
+(assert-error-value
+  "invalid buffer passed to int/to-bytes"
+  "int/to-bytes: expected buffer or nil, got :buffer"
+  (int/to-bytes (u64 0) :le :buffer))
+
+; Right hand operators
+; 4fe005e3c
+(assert (= (int/s64 (sum (range 10))) (sum (map int/s64 (range 10))))
+        "right hand operators 1")
+(assert (= (int/s64
+             (product (range 1 10))) (product (map int/s64 (range 1 10))))
+        "right hand operators 2")
+(assert (= (int/s64 15) (bor 10 (int/s64 5)) (bor (int/s64 10) 5))
+        "right hand operators 3")
+
+; Integer type checks
+; 11067d7a5
+(assert (compare= 0 (- (int/u64 "1000") 1000)) "subtract from int/u64")
+
+(assert (odd? (int/u64 "1001")) "odd? 1")
+(assert (not (odd? (int/u64 "1000"))) "odd? 2")
+(assert (odd? (int/s64 "1001")) "odd? 3")
+(assert (not (odd? (int/s64 "1000"))) "odd? 4")
+(assert (odd? (int/s64 "-1001")) "odd? 5")
+(assert (not (odd? (int/s64 "-1000"))) "odd? 6")
+
+(assert (even? (int/u64 "1000")) "even? 1")
+(assert (not (even? (int/u64 "1001"))) "even? 2")
+(assert (even? (int/s64 "1000")) "even? 3")
+(assert (not (even? (int/s64 "1001"))) "even? 4")
+(assert (even? (int/s64 "-1000")) "even? 5")
+(assert (not (even? (int/s64 "-1001"))) "even? 6")
+
+; integer type operations
+(defn opcheck [int x y]
+  (each op [mod % div]
+    (assert (compare= (op x y) (op (int x) y))
+            (string int " (" op " " x " " y ") expected " (op x y)
+                    ", got " (op (int x) y)))
+    (assert (compare= (op x y) (op x (int y)))
+            (string int " (" op " " x " " y ") expected " (op x y)
+                    ", got " (op x (int y))))
+    (assert (compare= (op x y) (op (int x) (int y)))
+            (string int " (" op " " x " " y ") expected " (op x y)
+                    ", got " (op (int x) (int y))))))
+
+(loop [x :in [-5 -3 0 3 5]
+       y :in [-4 -3 3 4]]
+  (opcheck int/s64 x y)
+  (if (and (>= x 0) (>= y 0))
+    (opcheck int/u64 x y)))
+
+(each int [int/s64 int/u64]
+  (each op [% / div]
+    (assert-error "division by zero" (op (int 7) 0))
+    (assert-error "division by zero" (op 7 (int 0)))
+    (assert-error "division by zero" (op (int 7) (int 0)))))
+
+(each int [int/s64 int/u64]
+  (loop [x :in [-5 -3 0 3 5] :when (or (pos? x) (= int int/s64))]
+    ; skip check when comparing negative values with unsigned integers.
+    (assert (= (int x) (mod (int x) 0)) (string int " mod 0"))
+    (assert (= (int x) (mod x (int 0))) (string int " mod 0"))
+    (assert (= (int x) (mod (int x) (int 0))) (string int " mod 0"))))
+
+(loop [x :in [-5 -3 0 3 5]]
+  (assert (compare= (bnot x) (bnot (int/s64 x))) "int/s64 bnot"))
+
+(loop [x :range [0 10]]
+  (assert (= (int/u64 "0xFFFF_FFFF_FFFF_FFFF")
+          (bxor (int/u64 x) (bnot (int/u64 x))))
+          "int/u64 bnot"))
+
+; Check for issue #1130
+; 7e65c2bda
+(var d (int/s64 7))
+(mod 0 d)
+
+(var d (int/s64 7))
+(def result (seq [n :in (range -21 0)] (mod n d)))
+(assert (deep= result
+               (map int/s64 ![0 1 2 3 4 5 6 0 1 2 3 4 5 6 0 1 2 3 4 5 6]))
+        "issue #1130")
+
+; issue #272 - 81d301a42
+(let [MAX_INT_64_STRING "9223372036854775807"
+      MAX_UINT_64_STRING "18446744073709551615"
+      MAX_INT_IN_DBL_STRING "9007199254740991"
+      NAN (math/log -1)
+      INF (/ 1 0)
+      MINUS_INF (/ -1 0)
+      compare-poly-tests
+      [[(int/s64 3) (int/u64 3) 0]
+       [(int/s64 -3) (int/u64 3) -1]
+       [(int/s64 3) (int/u64 2) 1]
+       [(int/s64 3) 3 0] [(int/s64 3) 4 -1] [(int/s64 3) -9 1]
+       [(int/u64 3) 3 0] [(int/u64 3) 4 -1] [(int/u64 3) -9 1]
+       [3 (int/s64 3) 0] [3 (int/s64 4) -1] [3 (int/s64 -5) 1]
+       [3 (int/u64 3) 0] [3 (int/u64 4) -1] [3 (int/u64 2) 1]
+       [(int/s64 MAX_INT_64_STRING) (int/u64 MAX_UINT_64_STRING) -1]
+       [(int/s64 MAX_INT_IN_DBL_STRING)
+        (scan-number MAX_INT_IN_DBL_STRING) 0]
+       [(int/u64 MAX_INT_IN_DBL_STRING)
+        (scan-number MAX_INT_IN_DBL_STRING) 0]
+       [(+ 1 (int/u64 MAX_INT_IN_DBL_STRING))
+        (scan-number MAX_INT_IN_DBL_STRING) 1]
+       [(int/s64 0) INF -1] [(int/u64 0) INF -1]
+       [MINUS_INF (int/u64 0) -1] [MINUS_INF (int/s64 0) -1]
+       [(int/s64 1) NAN 0] [NAN (int/u64 1) 0]]]
+  (each [x y c] compare-poly-tests
+    (assert (= c (compare x y))
+            (string/format "compare polymorphic %q %q %d" x y c))))
+
+; marshal
+(def m1 (u64 3141592654))
+(def m2 (unmarshal (marshal m1)))
+(assert (= m1 m2) "marshal/unmarshal")
+
+; compare u64/u64
+(assert (= (compare (u64 1) (u64 2)) -1) "compare 1")
+(assert (= (compare (u64 1) (u64 1))  0) "compare 2")
+(assert (= (compare (u64 2) (u64 1)) +1) "compare 3")
+
+; compare i64/i64
+(assert (= (compare (i64 -1) (i64 +1)) -1) "compare 4")
+(assert (= (compare (i64 +1) (i64 +1))  0) "compare 5")
+(assert (= (compare (i64 +1) (i64 -1)) +1) "compare 6")
+
+; compare u64/i64
+(assert (= (compare (u64 1) (i64 2)) -1) "compare 7")
+(assert (= (compare (u64 1) (i64 -1)) +1) "compare 8")
+(assert (= (compare (u64 0) (i64 -1)) +1) "compare 9")
+
+; compare i64/u64
+(assert (= (compare (i64 1) (u64 2)) -1) "compare 10")
+(assert (= (compare (i64 -1) (u64 1)) -1) "compare 11")
+(assert (= (compare (i64 -1) (u64 0)) -1) "compare 12")
+
+; off by 1 error in inttypes
+; a3e812b86
+(assert (= (int/s64 "-0x8000_0000_0000_0000")
+           (+ (int/s64 "0x7FFF_FFFF_FFFF_FFFF") 1)) "int types wrap around")
+(assert (= (int/s64 "0x7FFF_FFFF_FFFF_FFFF")
+           (- (int/s64 "-0x8000_0000_0000_0000") 1)) "int types wrap around")
+
+; Issue #1217
+(assert (= (- (int/u64 "0xFFFFFFFF") 1) (int/u64 "0xFFFFFFFE")) "u64 subtract")
+
+; The r-prefixed methods, which the interpreter reaches when the boxed integer
+; is the right-hand operand. The commuting operations were covered by the
+; arithmetic above; subtraction and division were reached by nothing.
+(assert (= (int/s64 7) (- 10 (int/s64 3))) "s64 inverted subtract")
+(assert (= (int/u64 7) (- 10 (int/u64 3))) "u64 inverted subtract")
+(assert (= (int/s64 5) (/ 10 (int/s64 2))) "s64 inverted divide")
+(assert (= (int/u64 5) (/ 10 (int/u64 2))) "u64 inverted divide")
+(assert (= (int/s64 1) (% 10 (int/s64 3))) "s64 inverted remainder")
+(assert (= (int/u64 1) (% 10 (int/u64 3))) "u64 inverted remainder")
+(assert (= (int/s64 -3) (- 0 (int/s64 3))) "s64 inverted subtract from zero")
+
+; int/to-number's range check. The values above are all small; the bound is
+; 2^53, beyond which a double cannot tell neighbouring integers apart.
+(assert-error "int/to-number s64 too large"
+              (int/to-number (int/s64 "9007199254740993")))
+(assert-error "int/to-number s64 too small"
+              (int/to-number (int/s64 "-9007199254740993")))
+(assert-error "int/to-number u64 too large"
+              (int/to-number (int/u64 "9007199254740993")))
+(assert (= 9007199254740992 (int/to-number (int/s64 "9007199254740992")))
+        "int/to-number at the bound")
+
+; The same rule at 64 bits: a boxed integer's shift count is taken modulo 64.
+(assert (= (int/u64 1) (:<< (int/u64 1) 64)) "a 64-bit shift count is taken modulo 64")
+(assert (= (int/u64 2) (:<< (int/u64 1) 65)) "and again past the width")
+(assert (= (int/u64 256) (:>> (int/u64 256) 64)) "the right shift takes it the same way")
+(assert (= (int/s64 -1) (:>> (int/s64 -1) 64)) "signed too")
+
+; INT64_MIN / -1 has no representable result, and all six methods refuse it.
+(def most-negative (int/s64 "-9223372036854775808"))
+(each op [/ % div mod]
+  (assert-error "INT64_MIN divided by -1" (op most-negative (int/s64 -1))))
+(assert-error "INT64_MIN divided by -1" (:rdiv (int/s64 -1) most-negative))
+(assert-error "INT64_MIN divided by -1" (:rmod (int/s64 -1) most-negative))
+(assert (= (int/s64 "-9223372036854775808") (div most-negative (int/s64 1)))
+        "and the divisors either side of it still divide")
+
+; The refusal is for the one divisor -1, so the most negative value still
+; divides by anything else, through `/` and `%` as well as `div`.
+(assert (= (int/s64 "-4611686018427387904") (/ most-negative (int/s64 2)))
+        "INT64_MIN divided by 2")
+(assert (= (int/s64 0) (% most-negative (int/s64 2))) "INT64_MIN remainder 2")
+(assert (= (int/s64 3) (/ (int/s64 7) 2)) "s64 divide truncates")
+(assert (= (int/s64 -3) (/ (int/s64 -7) 2)) "s64 divide truncates toward zero")
+
+; A box of either type converts to the other by reinterpreting its bits, and a
+; box of any other abstract type does not convert.
+(assert (= (int/s64 -1) (int/s64 (int/u64 "0xFFFF_FFFF_FFFF_FFFF")))
+        "int/s64 of an int/u64")
+(assert (= (int/u64 "0xFFFF_FFFF_FFFF_FFFF") (int/u64 (int/s64 -1)))
+        "int/u64 of an int/s64")
+(assert-error "int/s64 of another abstract" (int/s64 (math/rng)))
+(assert-error "int/u64 of another abstract" (int/u64 (math/rng)))
+
+; A number converts at the ends of the range a double holds exactly, and not
+; past them.
+(assert (= (int/s64 "-9007199254740992") (int/s64 -9007199254740992))
+        "int/s64 at the lower bound")
+(assert-error "int/s64 past the upper bound" (int/s64 (math/pow 2 54)))
+(assert-error "int/s64 past the lower bound" (int/s64 (- (math/pow 2 54))))
+(assert (= -9007199254740992 (int/to-number (int/s64 "-9007199254740992")))
+        "int/to-number at the lower bound")
+(assert (= 9007199254740992 (int/to-number (int/u64 "9007199254740992")))
+        "int/to-number of an int/u64 at the bound")
+
+; With no byte order given the bytes are the host's.
+(assert (deep= (int/to-bytes (u64 1)) (buffer/push-uint64 !"" :native 1))
+        "int/to-bytes defaults to the native order")
+
+; The `compare` methods, called directly. Through `compare` a method that
+; answers nil hands over to the other operand's method, which hides it.
+(assert (= 0 (:compare (int/s64 3) (int/u64 3))) "s64 compare method on a u64")
+(assert (= 0 (:compare (int/u64 3) (int/s64 3))) "u64 compare method on an s64")
+(assert (= 0 (compare (int/u64 0) (int/s64 0))) "compare u64 0 with s64 0")
+(assert (= 0 (compare (int/u64 "9223372036854775807")
+                      (int/s64 "9223372036854775807")))
+        "compare u64 with s64 at INT64_MAX")
+(assert (= 0 (compare most-negative (- (math/pow 2 63))))
+        "compare INT64_MIN with -2^63")
+
+; 2^63 and 2^64 are the first doubles past the two ranges, and each orders
+; above a box of its type from either side, as the doubles either side of it
+; do.
+(def two-63 (math/pow 2 63))
+(def two-64 (math/pow 2 64))
+(assert (= -1 (compare (int/s64 1) two-63)) "compare s64 with 2^63")
+(assert (= 1 (compare two-63 (int/s64 1))) "compare 2^63 with s64")
+(assert (= -1 (compare (int/u64 1) two-64)) "compare u64 with 2^64")
+(assert (= 1 (compare two-64 (int/u64 1))) "compare 2^64 with u64")
+(assert (= -1 (compare (int/s64 1) (- two-63 1024)))
+        "compare s64 with the double below 2^63")
+(assert (= -1 (compare (int/s64 1) (* 2 two-63))) "compare s64 with 2^64")
+(assert (= -1 (compare (int/u64 1) (- two-64 2048)))
+        "compare u64 with the double below 2^64")
+(assert (= -1 (compare (int/u64 1) (* 2 two-64))) "compare u64 with 2^65")
+
+(end-suite)

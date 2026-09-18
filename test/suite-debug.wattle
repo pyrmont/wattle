@@ -1,0 +1,291 @@
+; Copyright (c) 2026 Calvin Rose
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to
+; deal in the Software without restriction, including without limitation the
+; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+; sell copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+; FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+; IN THE SOFTWARE.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; Simple function break
+; a8afc5b81
+(debug/fbreak map 1)
+(def f (fiber/new (fn [] (map inc [1 2 3])) :a))
+(resume f)
+(assert (= :debug (fiber/status f)) "debug/fbreak")
+(debug/unfbreak map 1)
+(map inc [1 2 3])
+
+; debug/fbreak range checking, which janet_debug_break does for both the
+; function form and the source form.
+(defn breakable [x] (+ x 1))
+(assert-error "invalid bytecode offset" (debug/fbreak breakable 100000))
+(assert-error "invalid bytecode offset" (debug/fbreak breakable -1))
+(assert-error "invalid bytecode offset" (debug/unfbreak breakable 100000))
+; The first offset past the last instruction is out of range for both.
+(compwhen (dyn 'disasm)
+  (def breakable-length (length (disasm breakable :bytecode)))
+  (assert-error-value "fbreak one past the last instruction" "invalid bytecode offset"
+                      (debug/fbreak breakable breakable-length))
+  (assert-error-value "unfbreak one past the last instruction" "invalid bytecode offset"
+                      (debug/unfbreak breakable breakable-length)))
+
+; debug/break over a source position that no funcdef claims.
+(assert-error "could not find breakpoint" (debug/break "no-such-source-file" 1 1))
+(assert-error "could not find breakpoint" (debug/unbreak "no-such-source-file" 1 1))
+
+; A breakpoint stops the fiber, and clearing it lets the fiber finish.
+(debug/fbreak breakable 0)
+(def bf (fiber/new (fn [] (breakable 5)) :dy))
+(resume bf)
+(assert (= :debug (fiber/status bf)) "fbreak stops the fiber")
+(debug/unfbreak breakable 0)
+(assert (= 6 (resume bf)) "unfbreak lets it run")
+
+; debug/stack reports a local from its birth pc up to its death pc and not at
+; it. An argument is born at 0, so a breakpoint there already sees it.
+(debug/fbreak breakable 0)
+(def born (fiber/new (fn [] (breakable 5)) :dy))
+(resume born)
+(assert (deep= !{'x 5} ((first (debug/stack born)) :locals)) "an argument is a local at pc 0")
+(debug/unfbreak breakable 0)
+
+; `t` is the last entry in `scoped`'s symbol map, and it is live at the yield.
+(defn scoped [a]
+  (let [t (+ a 1)] (yield t))
+  (yield :after)
+  a)
+(def live (fiber/new scoped))
+(resume live 10)
+(assert (deep= !{'a 10 't 11} ((first (debug/stack live)) :locals))
+        "every live local is reported, the last one in the symbol map included")
+; A breakpoint at `t`'s death pc stops the fiber with `t` gone. The death pc
+; is read from the symbol map, which `disasm` reports.
+(compwhen (dyn 'disasm)
+  (def t-death ((find #(= 't (last $)) (disasm scoped :symbolmap)) 1))
+  (debug/fbreak scoped t-death)
+  (def dead (fiber/new (fn [] (scoped 10)) :dy))
+  (resume dead)
+  (resume dead)
+  (assert (= :debug (fiber/status dead)) "the fiber stops at the death pc")
+  (assert (deep= !{'a 10} ((first (debug/stack dead)) :locals)) "a local is not reported at its death pc")
+  (debug/unfbreak scoped t-death))
+
+; debug/step advances one instruction at a time.
+(def sf (fiber/new (fn [] (+ 1 2)) :dy))
+(debug/step sf)
+(assert (= :debug (fiber/status sf)) "step leaves the fiber debuggable")
+
+; debug/lineage walks the child chain. The child link survives only while the
+; inner fiber is still suspended inside the outer one, which is what
+; `propagate` arranges: a plain `resume` that has already returned leaves no
+; chain to walk.
+(def lin-inner (fiber/new (fn [] (error "li")) :ie))
+(def lin-outer (fiber/new (fn [] (propagate (resume lin-inner) lin-inner)) :ie))
+(resume lin-outer)
+(assert (= 2 (length (debug/lineage lin-outer))) "lineage includes the child")
+(assert (= 1 (length (debug/lineage lin-inner))) "lineage of a leaf is itself")
+
+; debug/stack names the frames it can name.
+(def stk-f (fiber/new (fn [] (defn named-frame [] (error "x")) (named-frame)) :ie))
+(resume stk-f)
+(assert (deep= !["named-frame"] (map #(get $ :name) (debug/stack stk-f))) "stack names")
+
+; debug/arg-stack is empty unless the fiber signalled mid-call.
+(assert (deep= ![] (debug/arg-stack stk-f)) "arg stack is empty")
+; An arity refusal stops the fiber with the arguments it pushed still on the
+; stack. The callee is a `var` so that the compiler cannot refuse the call.
+(var arity-one (fn [x] x))
+(def pushed (fiber/new (fn [] (arity-one 1 2 3)) :e))
+(resume pushed)
+(assert (deep= ![1 2 3] (debug/arg-stack pushed)) "arg stack holds the pushed arguments")
+
+; The stack-trace printer, captured through the :err dynamic binding rather
+; than by reading stderr. This is what makes `janet_eprintf` -- a C variadic
+; Zig calls but cannot define -- observable from a suite.
+; `:err-color` is bound explicitly, and that is the point rather than tidiness.
+; The printer wraps the whole trace in "\e[31m" and "\e[0m" when the binding is
+; truthy, and Janet's CLI turns it on when stderr is a terminal -- so without
+; this every prefix and suffix assertion below passes when the suite's output is
+; redirected and fails when a person runs it in a shell, which is a thing only
+; an interactive run notices.
+;
+; The colour path itself is asserted further down, with `:err-color true` bound
+; just as explicitly.
+(defn trace-of
+  [fib err prefix]
+  (def out !"")
+  (with-dyns [:err out :err-color false] (debug/stacktrace fib err prefix))
+  (string out))
+
+(def tf (fiber/new (fn [] (defn traced [] (error "trace-me")) (traced)) :ie))
+(resume tf)
+(def full-trace (trace-of tf "trace-me" "P"))
+(assert (string/has-prefix? "Perror: trace-me\n" full-trace) "prefix and error line")
+(assert (string/find "  in traced [" full-trace) "frame line")
+
+; A nil prefix skips the error line entirely.
+(def bare-trace (trace-of tf "trace-me" nil))
+(assert (not (string/find "error: trace-me" bare-trace)) "nil prefix skips the error line")
+(assert (string/find "  in traced [" bare-trace) "but still prints frames")
+
+; :err-color wraps the whole trace, including the case where nothing is
+; printed between the two escapes.
+(def colored
+  (do (def out !"")
+      (with-dyns [:err out :err-color true] (debug/stacktrace tf "c" "P"))
+      (string out)))
+(assert (string/has-prefix? "\e[31m" colored) "color prologue")
+(assert (string/has-suffix? "\e[0m" colored) "color epilogue")
+
+; A nested fiber chain prints innermost first, which is what the trace walk's
+; recursion into the child produces.
+(defn depth3 [] (error "deep"))
+(def n1 (fiber/new depth3 :ie))
+(def n2 (fiber/new (fn [] (propagate (resume n1) n1)) :ie))
+(def n3 (fiber/new (fn [] (propagate (resume n2) n2)) :ie))
+(resume n3)
+(def chain-trace (trace-of n3 (fiber/last-value n3) "C"))
+(def frame-lines (filter #(string/has-prefix? "  in " $) (string/split "\n" chain-trace)))
+(assert (= 3 (length frame-lines)) "one frame line per fiber in the chain")
+(assert (string/find "depth3" (first frame-lines)) "innermost fiber prints first")
+(assert (= 1 (length (filter #(string/has-prefix? "C" $) (string/split "\n" chain-trace))))
+        "the error line is printed once for the whole chain")
+
+; The trace's location is a line and a column in that order, and the numbers
+; come from the same source map `debug/stack` reads -- so the two have to
+; agree. Comparing them rather than hard-coding a position keeps this stable
+; when the file above it grows.
+(def loc-f (fiber/new (fn [] (defn located [] (error "loc")) (located)) :ie))
+(resume loc-f)
+(def loc-frame (first (debug/stack loc-f)))
+(def loc-line (get loc-frame :source-line))
+(def loc-col (get loc-frame :source-column))
+(assert (not= loc-line loc-col) "the probe frame has distinguishable coordinates")
+(assert (string/find (string/format "on line %d, column %d" loc-line loc-col)
+                     (trace-of loc-f "loc" "L"))
+        "the trace agrees with debug/stack about which number is which")
+
+; A cfunction frame names its prefix, records the file it was registered from,
+; and reports a bare line rather than a line and column.
+(def cf (fiber/new (fn [] (string/find 1 2)) :ie))
+(resume cf)
+(def cf-trace (trace-of cf (fiber/last-value cf) "C"))
+(assert (string/find "  in string/find [" cf-trace) "a cfunction keeps its prefix")
+(assert (not (string/find "  in find [" cf-trace)) "and is not printed without one")
+; Guarded because it is the one assertion in this suite that needs a peg, and a
+; `-Dpeg=false` build has no `peg/find` to compile against. A matrix entry
+; running `zig build test -Dpeg=false` is what found that.
+(compwhen (dyn 'peg/find)
+  (assert (peg/find '(* "  in string/find [" (some (if-not "]" 1)) "] on line " (some :d) "\n")
+                    cf-trace)
+          "a registered cfunction reports a line and no column"))
+
+; The tail-call marker appears on a tail call and not otherwise.
+(defn tail-callee [] (error "t"))
+(defn tail-caller [] (tail-callee))
+(def tf2 (fiber/new tail-caller :ie))
+(resume tf2)
+(def tail-trace (trace-of tf2 "t" "T"))
+(assert (string/find "(tail call)" tail-trace) "a tail call is marked")
+(assert (not (string/find "(tail call)" cf-trace)) "a cfunction frame is not")
+
+; debug/break by source position, which is the only way `janet_debug_find` is
+; reached with a match. The form is built through a parser with an explicit
+; source name so the position is known here rather than depending on this
+; file's line numbering.
+(def brk-parser (parser/new))
+(parser/consume brk-parser "(fn [x] (+ x 1))")
+(parser/eof brk-parser)
+(def brk-fn ((compile (parser/produce brk-parser) (curenv) "brk-src")))
+; `disasm` is absent from a `-Dassembler=false` build, and an absent binding is
+; a compile error at its use site rather than a nil value, so it needs
+; `compwhen` and not `when`. Guarded on its own rather than by leaving the
+; suite, so the breakpoint region below it still runs there.
+(compwhen (dyn 'disasm)
+  (assert (deep= ![[1 9] [1 9]] (disasm brk-fn :sourcemap)) "the probe's source map"))
+
+(debug/break "brk-src" 1 9)
+(def brk-fiber (fiber/new (fn [] (brk-fn 5)) :dy))
+(assert (nil? (resume brk-fiber)) "a source breakpoint raises a nil signal")
+(assert (= :debug (fiber/status brk-fiber)) "and stops the fiber")
+(assert (= 0 ((first (debug/stack brk-fiber)) :pc))
+        "at the first of the instructions mapped to the position")
+(debug/unbreak "brk-src" 1 9)
+(assert (= 6 (resume brk-fiber)) "clearing it lets the fiber finish")
+
+; The source name is compared, so another name finds nothing...
+(assert-error "could not find breakpoint" (debug/break "not-brk-src" 1 9))
+; ...and the column is a bound, so a position before the only mapping finds
+; nothing either.
+(assert-error "could not find breakpoint" (debug/break "brk-src" 1 0))
+; A position after it does find it, because the rule is "at or before".
+(debug/break "brk-src" 1 40)
+(debug/unbreak "brk-src" 1 40)
+
+; A mapping on a later line is never chosen. The thunk `compile` returns maps
+; its form to line 1, so a breakpoint asked for on line 1 lands there, and the
+; function whose only mappings are on line 2 runs through.
+(def two-parser (parser/new))
+(parser/consume two-parser "(fn [x]\n  (+ x 1))")
+(parser/eof two-parser)
+(def two-thunk (compile (parser/produce two-parser) (curenv) "brk-two"))
+(def two-fn (two-thunk))
+(debug/break "brk-two" 1 40)
+(def two-fiber (fiber/new (fn [] (two-fn 5)) :dy))
+(assert (= 6 (resume two-fiber)) "a breakpoint asked for on line 1 is not placed on line 2")
+(debug/unbreak "brk-two" 1 40)
+
+; A breakpoint is bit 7 of the instruction word, and the bytecode verifier
+; masks it off wherever it appears -- including on the last instruction, which
+; is the one the terminator check reads. Marshalling is what runs the verifier.
+; `disasm` is what names the last offset, and it goes with the assembler.
+(compwhen (dyn 'disasm)
+  (defn breakable-tail [x] (+ x 1))
+  (def last-offset (dec (length (disasm breakable-tail :bytecode))))
+  (debug/fbreak breakable-tail last-offset)
+  (assert (function? (unmarshal (marshal breakable-tail)))
+          "a breakpoint on the last instruction survives a marshal round trip")
+  (debug/fbreak breakable-tail 0)
+  (assert (function? (unmarshal (marshal breakable-tail)))
+          "a breakpoint anywhere else does too")
+  (debug/unfbreak breakable-tail last-offset)
+  (debug/unfbreak breakable-tail 0))
+
+; A traced call renders through (dyn :err), and a handler written in Janet runs
+; on the same fiber -- so it can grow that fiber's stack while the interpreter
+; is standing on a pointer into it. The call is traced once and completes.
+(defn deep-args [& xs] (length xs))
+(def traced-chunks ![])
+(defn growing-err [b] (def _ (deep-args |(range 200))) (array/push traced-chunks (string b)) nil)
+(defn traced-meth [self a b c d] (+ 0 5 (length [self a b c d])))
+(trace traced-meth)
+(def trace-result
+  (with-dyns [:err growing-err]
+    (traced-meth :self :A :B :C :D)))
+(untrace traced-meth)
+(assert (= 10 trace-result) "a traced call whose handler grows the stack returns")
+(assert (= 1 (count #(string/has-prefix? "trace (" $) traced-chunks))
+        "and is traced exactly once")
+(assert (= " :self" (get traced-chunks 1))
+        "with the arguments it was called with")
+(def untraced-buf !"")
+(with-dyns [:err untraced-buf] (traced-meth :self :A :B :C :D))
+(assert (empty? untraced-buf) "an untraced function prints no trace")
+
+(end-suite)
+

@@ -136,4 +136,14 @@ for the one whose subject the change touches rather than the newest.
 ## repo
 
 Chores, run occasionally and by hand: `tm_lang_gen.janet` emits the TextMate
-grammar, and `removecr.janet` strips carriage returns.
+grammar, `removecr.janet` strips carriage returns, and
+`janet-to-wattle.janet` rewrites Janet source as Wattle source.
+
+`janet-to-wattle.janet FILE.janet ...` writes the `.wattle` file beside each
+and reports every site it changed in a way a reader should look at; `--dry-run`
+reports without writing, and the exit status is non-zero where a site had no
+Wattle spelling at all. It substitutes one lexical form at a time and copies
+everything else through, so its output diffs against its input line for line.
+It converts syntax and not meaning: a `.janet` path inside a string, and a
+macro that builds code as `['if ...]`, are untouched. `notes/LANGUAGE.md` says
+what it converts and what it leaves.

@@ -1,0 +1,65 @@
+; Copyright (c) 2026 Calvin Rose
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to
+; deal in the Software without restriction, including without limitation the
+; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+; sell copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+; FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+; IN THE SOFTWARE.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; Symbol function
+; 5460ff1
+(assert (= (symbol "abc" 1 2 3) 'abc123) "symbol function")
+
+; Gensym tests
+; 3ccd68843
+(assert (not= (gensym) (gensym)) "two gensyms not equal")
+((fn []
+   (def syms (table))
+   (var counter 0)
+   (while (< counter 128)
+     (put syms (gensym) true)
+     (set counter (+ 1 counter)))
+   (assert (= (length syms) 128) "many symbols")))
+
+; issue #753 - a78cbd91d
+(assert (pos? (length (gensym))) "gensym not empty, regression #753")
+
+; A keyword is a symbol of the other kind: one tag, and two interned objects
+; for one name.
+(assert (not= :abc 'abc) "a keyword is not the symbol of its name")
+(assert (= :keyword (type :abc)) "type names a keyword")
+(assert (= :symbol (type 'abc)) "and a symbol")
+(assert (and (keyword? :abc) (not (symbol? :abc))) "keyword? is by kind")
+(assert (and (symbol? 'abc) (not (keyword? 'abc))) "and so is symbol?")
+(assert (not= (hash :abc) (hash 'abc)) "a keyword's hash is not its symbol's")
+(assert (= 2 (length !{:abc 1 'abc 2})) "a table keeps the two apart")
+(assert (= -1 (compare 'zzz :aaa)) "every symbol orders before every keyword")
+(assert (= 1 (compare :aaa 'zzz)) "and every keyword after every symbol")
+(assert (= :abc (unmarshal (marshal :abc))) "a keyword marshals as a keyword")
+(assert (= 'abc (unmarshal (marshal 'abc))) "and a symbol as a symbol")
+(assert (= :abc (keyword 'abc)) "a keyword from a symbol's name")
+(assert (= 'abc (symbol :abc)) "and a symbol from a keyword's name")
+(assert (= "abc" (string :abc)) "a keyword's bytes have no colon")
+(assert (= ":abc" (describe :abc)) "and its description has one")
+(defn- named-kind [&named alpha] alpha)
+(assert (= 1 (named-kind :alpha 1)) "&named keys a parameter by its keyword")
+(assert (= :abc (eval :abc)) "a keyword compiles to itself")
+(def abc :bound)
+(assert (= :bound (eval 'abc)) "and a symbol to its binding")
+
+(end-suite)

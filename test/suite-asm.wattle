@@ -1,0 +1,387 @@
+; Copyright (c) 2026 Calvin Rose
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to
+; deal in the Software without restriction, including without limitation the
+; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+; sell copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+; FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+; IN THE SOFTWARE.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+(setdyn *lint-warn* :none)
+
+; The assembler and disassembler are absent from a build without
+; JANET_ASSEMBLER, and an absent binding is a compile error rather than a
+; runtime one. Janet compiles and runs a file one top-level form at a time, so
+; leaving here keeps the rest of the suite from reaching the compiler at all.
+(compwhen (not (dyn 'asm))
+  (end-suite)
+  (os/exit 0))
+
+; Assembly test
+; Fibonacci sequence, implemented with naive recursion.
+; a679f60
+(def fibasm (asm '{
+  :arity 1
+  :bytecode [
+    (ltim 1 0 0x2)      ; $1 = $0 < 2
+    (jmpif 1 :done)     ; if ($1) goto :done
+    (lds 1)             ; $1 = self
+    (addim 0 0 -0x1)    ; $0 = $0 - 1
+    (push 0)            ; push($0), push argument for next function call
+    (call 2 1)          ; $2 = call($1)
+    (addim 0 0 -0x1)    ; $0 = $0 - 1
+    (push 0)            ; push($0)
+    (call 0 1)          ; $0 = call($1)
+    (add 0 0 2)        ; $0 = $0 + $2 (integers)
+    :done
+    (ret 0)             ; return $0
+  ]
+}))
+
+(assert (= 0 (fibasm 0)) "fibasm 1")
+(assert (= 1 (fibasm 1)) "fibasm 2")
+(assert (= 55 (fibasm 10)) "fibasm 3")
+(assert (= 6765 (fibasm 20)) "fibasm 4")
+
+; dacbe29
+(def f (asm (disasm (fn [x] (fn [y] (+ x y))))))
+(assert (= ((f 10) 37) 47) "asm environment tables")
+
+; issue #1424
+(assert-no-error "arity > used slots (issue #1424)"
+                 (asm
+                   (disasm
+                     (fn []
+                       (def foo (fn [one two] one))
+                       (foo 100 200)))))
+
+; A failed nested assembly reports the child's message at the top level.
+;
+; This path once had two mechanisms and no coverage: the child raised into the
+; parent's handler having copied its message across, which made the parent's own
+; check on the child's result unreachable. That check is the live path now, and a
+; mutation sweep found nothing anywhere noticed when it was removed -- the
+; assembler stored a null funcdef instead of failing.
+(assert-error "nested assembly failure propagates"
+              (asm {:arity 0
+                    :bytecode ['(ret 0)]
+                    :defs [{:arity 0 :bytecode ['(bogus-op 0)]}]}))
+
+(let [[ok err] (protect (asm {:arity 0
+                              :bytecode ['(ret 0)]
+                              :defs [{:arity 0 :bytecode ['(bogus-op 0)]}]}))]
+  (assert (not ok) "nested assembly failure is an error")
+  (assert (string/find "bogus-op" (string err))
+          "nested assembly failure names the child's instruction"))
+
+; A closure may name an enclosing function's environment by symbol. The
+; assembler has not captured it yet at the point the operand is read, so the
+; lookup falls through to the capture walk rather than refusing the name.
+(def outer-asm
+  (asm '{:name outer
+         :arity 1
+         :slots 2
+         :closures [{:name child :arity 0 :slots 1 :bytecode [(ldu 0 outer 0) (ret 0)]}]
+         :bytecode [(clo 1 child) (ret 1)]}))
+(assert (function? outer-asm) "asm resolves an outer environment named by symbol")
+(assert (= 42 ((outer-asm 42))) "the captured environment is the caller's frame")
+
+; A name no ancestor has, and the name of the function being assembled, are
+; both environments that cannot be indexed.
+(assert-error "unknown environment nowhere"
+              (asm '{:name outer
+                     :arity 1
+                     :slots 2
+                     :closures [{:name child :arity 0 :slots 1 :bytecode [(ldu 0 nowhere 0) (ret 0)]}]
+                     :bytecode [(clo 1 child) (ret 1)]}))
+(assert-error "unknown environment child"
+              (asm '{:name outer
+                     :arity 1
+                     :slots 2
+                     :closures [{:name child :arity 0 :slots 1 :bytecode [(ldu 0 child 0) (ret 0)]}]
+                     :bytecode [(clo 1 child) (ret 1)]}))
+
+(defn check-bytecode
+  [f expected note]
+  (assert (deep= expected (get (disasm f) :bytecode)) note))
+
+; A builtin call the compiler folds emits its own opcode; one it leaves alone
+; emits a push and a call. Which of the two happens is decided by an arity
+; predicate per builtin, and the predicates below are asserted at the counts
+; they accept, since a count inside the range separates no predicate from its
+; neighbour.
+
+; One argument and two, both folded.
+(check-bytecode (fn [t] (next t))
+                !['(ldn 2) '(next 1 0 2) '(ret 1)]
+                "next of one argument folds")
+(check-bytecode (fn [t k] (next t k))
+                !['(next 2 0 1) '(ret 2)]
+                "next of two arguments folds")
+
+; Two arguments and three, both folded, the third supplying the default.
+(check-bytecode (fn [t k] (get t k))
+                !['(get 2 0 1) '(ret 2)]
+                "get of two arguments folds")
+(check-bytecode (fn [t k d] (get t k d))
+                !['(get 3 0 1) '(jmpnn 3 2) '(movn 3 2) '(ret 3)]
+                "get of three arguments folds")
+
+; Exactly three, exactly one, and two or more.
+(check-bytecode (fn [t k v] (put t k v))
+                !['(movn 3 0) '(put 3 1 2) '(ret 3)]
+                "put of three arguments folds")
+(check-bytecode (fn [x] (yield x))
+                !['(sig 1 0 3) '(ret 1)]
+                "yield of one argument folds")
+(check-bytecode (fn [f a] (apply f a))
+                !['(pusha 1) '(tcall 0)]
+                "apply of two arguments folds")
+
+; An integer operand becomes an immediate while it fits in eight signed bits,
+; and is loaded into a register once it does not. Both ends of the range.
+(check-bytecode (fn [x] (+ x -128))
+                !['(addim 1 0 -128) '(ret 1)]
+                "the low end of the immediate range")
+(check-bytecode (fn [x] (+ x -129))
+                !['(ldi 2 -129) '(add 1 0 2) '(ret 1)]
+                "one below the immediate range")
+(check-bytecode (fn [x] (+ x 127))
+                !['(addim 1 0 127) '(ret 1)]
+                "the high end of the immediate range")
+(check-bytecode (fn [x] (+ x 128))
+                !['(ldi 2 128) '(add 1 0 2) '(ret 1)]
+                "one above the immediate range")
+
+; The last form of a function body is a tail call, and so is a call the
+; argument splice sends through the optimizer. Neither is followed by a
+; return, which is what says the tail path was taken.
+(check-bytecode (fn [g] (g 1))
+                !['(ldi 1 1) '(push 1) '(tcall 0)]
+                "the last body form is a tail call")
+(check-bytecode (fn [f a] (f a |[]))
+                !['(push 1) '(ldc 2 0) '(pusha 2) '(tcall 0)]
+                "a spliced call in tail position")
+
+; A form whose value nothing reads is compiled for its effect and given no
+; target. A call takes a target either way, so the form here is an `if`,
+; which is one of the forms that reads the flag: dropped it copies neither
+; arm anywhere, and kept it copies both into one register.
+(check-bytecode (fn [g x] (do (if x (g x) (g 1)) x))
+                !['(jmpno 1 4) '(push 1) '(call 2 0) '(jmp 4) '(ldi 2 1) '(push 2)
+                  '(call 2 0) '(ret 1)]
+                "a dropped if in a do copies neither arm")
+(check-bytecode (fn [g x] (while x (if x (g x) (g 1))) nil)
+                !['(jmpno 1 9) '(jmpno 1 4) '(push 1) '(call 2 0) '(jmp 4) '(ldi 2 1)
+                  '(push 2) '(call 2 0) '(jmp -8) '(retn)]
+                "a dropped if in a while body")
+(check-bytecode (fn [g x] (while x (break (if x (g x) (g 1)))) nil)
+                !['(jmpno 1 10) '(jmpno 1 4) '(push 1) '(call 2 0) '(jmp 4) '(ldi 2 1)
+                  '(push 2) '(call 2 0) '(jmp 2) '(jmp -9) '(retn)]
+                "a dropped if under a break")
+
+; A form whose value nothing reads is compiled for its effect and given no
+; target. The four places that happens are a body, a `do`, a while body and
+; the argument to `break`.
+(check-bytecode (fn [g a] (g a) (g a))
+                !['(push 1) '(call 2 0) '(push 1) '(tcall 0)]
+                "a body form before the last is dropped")
+(check-bytecode (fn [g x] (do (g x) (g x) x))
+                !['(push 1) '(call 2 0) '(push 1) '(call 2 0) '(ret 1)]
+                "a do form before the last is dropped")
+(check-bytecode (fn [g x] (while x (g x) (g x)) nil)
+                !['(jmpno 1 6) '(push 1) '(call 2 0) '(push 1) '(call 2 0) '(jmp -5) '(retn)]
+                "a while body drops each form")
+(check-bytecode (fn [g x] (while x (break (g x))) nil)
+                !['(jmpno 1 5) '(push 1) '(call 2 0) '(jmp 2) '(jmp -4) '(retn)]
+                "a break drops its argument")
+
+; A destructuring binding indexes the value once per leaf and releases the
+; register it read into as soon as the leaf is bound, so the shape below is
+; also the count of registers the binding costs.
+(check-bytecode (fn [xs] (def [a b] xs) a)
+                !['(geti 1 0 0) '(movn 2 1) '(geti 1 0 1) '(ret 2)]
+                "a destructuring of a value binds each element in turn")
+(check-bytecode (fn [s] (def {:k v} s) v)
+                !['(ldc 2 0) '(in 1 0 2) '(movn 2 1) '(ret 2)]
+                "a destructuring of a dictionary")
+(check-bytecode (fn [xs] (def [[a b] c] xs) a)
+                !['(geti 1 0 0) '(geti 2 1 0) '(movn 3 2) '(geti 2 1 1) '(geti 1 0 1)
+                  '(movn 2 1) '(ret 3)]
+                "a nested destructuring")
+(check-bytecode (fn [xs] (def [a & r] xs) r)
+                !['(geti 1 0 0) '(ldi 3 1) '(len 5 0) '(lt 4 3 5) '(jmpno 4 5) '(get 4 0 3)
+                  '(push 4) '(addim 3 3 1) '(jmp -5) '(mktup 1) '(movn 3 1) '(ret 3)]
+                "a destructuring with a rest parameter")
+
+; Where both sides are written out and nothing reads the result, the pattern
+; is matched against the form list rather than against a value, so the value
+; is never built.
+(check-bytecode (fn [c d] (def [a b] [c d]) nil)
+                !['(retn)]
+                "a dropped destructuring of two literals builds nothing")
+
+; A function compiled with no source name carries no source map, which is
+; what the name is asked for.
+(assert (nil? (get (disasm ((compile '(fn [] 1) (curenv)))) :sourcemap))
+        "a compile with no source name builds no source map")
+(assert (not (nil? (get (disasm ((compile '(fn [] 1) (curenv) "named.janet"))) :sourcemap)))
+        "a compile with a source name builds one")
+
+; Each operand field has a width and a signedness, and the assembler refuses
+; what will not fit. Signedness is only visible at the top of an unsigned
+; field and below the bottom of a signed one: an unsigned byte reaches 255
+; where a signed one stops at 127, and a signed field takes negatives where an
+; unsigned one takes none. So every field below is assembled at the last value
+; it accepts and at the first it refuses, which is where a field that had the
+; wrong signedness would part company with this one.
+
+(defn- bad-argument [spec] (assert-error "too large" (asm spec)))
+
+; One byte, unsigned: the three slots of a three-slot instruction, each taken
+; to 255 on its own so that no one field carries the case for the others.
+(assert-no-error "sss slot A reaches 255"
+                 (asm {:arity 0 :slotcount 256 :bytecode '[(add 255 0 0) (ret 0)]}))
+(assert-no-error "sss slot B reaches 255"
+                 (asm {:arity 0 :slotcount 256 :bytecode '[(add 0 255 0) (ret 0)]}))
+(assert-no-error "sss slot C reaches 255"
+                 (asm {:arity 0 :slotcount 256 :bytecode '[(add 0 0 255) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300 :bytecode '[(add 0 0 256) (ret 0)]})
+
+; Two bytes, unsigned: the single slot of a one-slot instruction.
+(assert-no-error "s slot reaches 65535"
+                 (asm {:arity 0 :slotcount 65536 :bytecode '[(ret 65535)]}))
+(bad-argument {:arity 0 :slotcount 70000 :bytecode '[(ret 65536)]})
+
+; A one-byte slot beside a two-byte slot, and each edge on its own.
+(assert-no-error "ss reaches 255 and 65535"
+                 (asm {:arity 0 :slotcount 65536 :bytecode '[(movf 255 65535) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 65536 :bytecode '[(movf 256 0) (ret 0)]})
+(bad-argument {:arity 0 :slotcount 70000 :bytecode '[(movf 0 65536) (ret 0)]})
+
+; A slot and a type mask, the mask two unsigned bytes.
+(assert-no-error "st reaches 255 and 65535"
+                 (asm {:arity 0 :slotcount 256 :bytecode '[(tchck 255 65535) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300 :bytecode '[(tchck 256 0) (ret 0)]})
+(bad-argument {:arity 0 :slotcount 2 :bytecode '[(tchck 0 65536) (ret 0)]})
+
+; A slot and a signed two-byte immediate, which is the field that takes the
+; most negative value the assembler will encode.
+(assert-no-error "si reaches slot 255 and immediate -32768"
+                 (asm {:arity 0 :slotcount 256 :bytecode '[(ldi 255 -32768) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300 :bytecode '[(ldi 256 0) (ret 0)]})
+
+; Two slots and a signed one-byte immediate.
+(assert-no-error "ssi reaches 255, 255 and -128"
+                 (asm {:arity 0 :slotcount 256 :bytecode '[(ltim 255 255 -128) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300 :bytecode '[(ltim 256 0 0) (ret 0)]})
+(bad-argument {:arity 0 :slotcount 300 :bytecode '[(ltim 0 256 0) (ret 0)]})
+
+; A slot and a child-funcdef index. The index is two bytes and unsigned, so
+; 128 is the first value a signed field of the same width would refuse, and it
+; takes a hundred and twenty-nine children to name it.
+(def- many-defs (map (fn [i] (disasm (fn [] i))) (range 129)))
+(assert-no-error "sd slot reaches 255"
+                 (asm {:arity 0 :slotcount 256 :defs [(disasm (fn [] 0))]
+                       :bytecode '[(clo 255 0) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300 :defs [(disasm (fn [] 0))]
+               :bytecode '[(clo 256 0) (ret 0)]})
+(assert-no-error "sd child index reaches 128"
+                 (asm {:arity 0 :slotcount 2 :defs many-defs
+                       :bytecode '[(clo 0 128) (ret 0)]}))
+
+; A slot and a constant index, the index the same width and signedness.
+(def- many-constants (map (fn [i] (keyword (string "k" i))) (range 129)))
+(assert-no-error "sc slot reaches 255"
+                 (asm {:arity 0 :slotcount 256 :constants [:x]
+                       :bytecode '[(ldc 255 0) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300 :constants [:x]
+               :bytecode '[(ldc 256 0) (ret 0)]})
+(assert-no-error "sc constant index reaches 128"
+                 (asm {:arity 0 :slotcount 2 :constants many-constants
+                       :bytecode '[(ldc 0 128) (ret 0)]}))
+
+; A label is signed, so a jump backwards is what tells it from an unsigned
+; field. The displacement is measured from the jump's own index, so the label
+; has to sit at least one instruction above the jump for it to be negative at
+; all: a jump to itself has a displacement of zero, which an unsigned field
+; takes just as happily.
+(assert-no-error "a three-byte label jumps backwards"
+                 (asm {:arity 0 :slotcount 2
+                       :bytecode '[:top (noop) (jmp :top) (ret 0)]}))
+(assert-no-error "a two-byte label jumps backwards"
+                 (asm {:arity 0 :slotcount 2
+                       :bytecode '[:top (noop) (jmpif 0 :top) (ret 0)]}))
+; The two-byte label's slot is unsigned and one byte, so it belongs to the
+; same pair of edges as every other slot.
+(assert-no-error "sl slot reaches 255"
+                 (asm {:arity 0 :slotcount 256
+                       :bytecode '[:top (noop) (jmpif 255 :top) (ret 0)]}))
+(bad-argument {:arity 0 :slotcount 300
+               :bytecode '[:top (noop) (jmpif 256 :top) (ret 0)]})
+
+; A signed field's floor is one below the negative of its ceiling, and the
+; value just under it is what says so: a floor computed one too low would take
+; it.
+(assert-no-error "a two-byte immediate reaches -32768"
+                 (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 -32768) (ret 0)]}))
+(assert-error "too small" (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 -32769) (ret 0)]}))
+(assert-no-error "a one-byte immediate reaches -128"
+                 (asm {:arity 0 :slotcount 2 :bytecode '[(ltim 0 0 -128) (ret 0)]}))
+(assert-error "too small" (asm {:arity 0 :slotcount 2 :bytecode '[(ltim 0 0 -129) (ret 0)]}))
+
+; An operand is resolved to a number before its field is measured, and the two
+; steps refuse with different words. A value that fits in an `i32` but not in
+; its field is "too large"; one that is not an `i32` at all is "error parsing".
+; So the edge of the `i32` range is where the two messages meet, and asserting
+; on the message rather than on the fact of an error is what tells them apart.
+; The value is compared rather than the fact of an error, because both sides
+; of this edge raise and only the words tell which step did it.
+(assert-error-value "the i32 ceiling is measured, not parsed"
+                    "instruction argument 2147483647 is too large, must be 2 bytes"
+                    (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 2147483647) (ret 0)]}))
+(assert-error-value "one past the i32 ceiling is not parsed at all"
+                    "error parsing instruction argument 2147483648"
+                    (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 2147483648) (ret 0)]}))
+(assert-error-value "the i32 floor is measured, not parsed"
+                    "instruction argument -2147483648 is too small, must be 2 bytes"
+                    (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 -2147483648) (ret 0)]}))
+(assert-error-value "one below the i32 floor is not parsed at all"
+                    "error parsing instruction argument -2147483649"
+                    (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 -2147483649) (ret 0)]}))
+; A number with a fractional part is not an operand at any width.
+(assert-error "error parsing" (asm {:arity 0 :slotcount 2 :bytecode '[(ldi 0 1.5) (ret 0)]}))
+
+; A slot the assembly names but the header does not count raises the slot
+; count to one past it, which is the count a function with that slot needs.
+(assert (= 4 (get (disasm (asm {:arity 0 :bytecode '[(add 3 0 0) (ret 0)]})) :slotcount))
+        "an unheaded slot raises the slot count to one past itself")
+
+; The named-argument count is a field the assembler copies and a flag it sets
+; beside it, and the disassembler prints the field only when the flag is on.
+(assert (= 2 (get (disasm (asm {:arity 0 :slotcount 2 :namedargs 2 :bytecode '[(ret 0)]}))
+                  :namedargs))
+        "an assembled named-argument count comes back")
+
+; The environment array is as long as the highest index the assembly names,
+; counted from one. A closure over a single upvalue has exactly one.
+(assert (= 1 (length (get (first (get (disasm (asm (disasm (fn [x] (fn [y] (+ x y)))))) :defs))
+                          :environments)))
+        "one upvalue makes one environment")
+
+(end-suite)
+
