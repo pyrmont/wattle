@@ -22,6 +22,21 @@ previous run and the two that were not had been in flight together. Re-running
 those two alone gave normal times on a colder cache. Diff the per-entry times
 against the last run first.
 
+**The baseline, as of 2026-09-18: thirty-six entries, 648.3s wall (1295.7s of
+work) at `-j2`, every entry PASS.** Read a total against that rather than
+against the 278s and 263s quoted elsewhere in this file, which are Phase 13's
+and earlier: the matrix has grown since, and the cold build in a throwaway
+cache those paragraphs cost at 11s is about 25s now. That is most of the
+difference, and it is the build rather than the machine.
+
+Within that run each kind sat at its own floor: the seventeen build-only
+entries between 24.9s and 27.6s, the seven `contracts` entries between 25.7s
+and 33.0s, and the twelve `full` entries between 42.3s and 91.1s, the slowest
+of them ReleaseSafe. The sum of the per-job times came to exactly twice the
+wall, which is what `-j2` gives when neither worker is stalling on the other;
+a ratio well under two is a pair that was in flight together, which is what
+the paragraph above is for.
+
 **A `-D` option the matrix never selects is a configuration nobody has ever
 built.** Increment 3a found the poll event-loop backend in exactly that state:
 `build.zig` picks epoll on Linux and kqueue on the BSDs and macOS, so poll is
@@ -106,9 +121,9 @@ will say the same thing and the verdict has to be thrown away anyway. A
 contract that compiles and then *fails* does not abort -- that is a real
 result, and "count the FLAKYs first" below needs the whole picture.
 
-**The matrix is thirty-four entries**, and the twelve that took it from
-twenty-one to thirty-three are why this paragraph bites harder than it used
-to. The population of configurations is `zig build -h`'s option list -- 39 of
+**The matrix is thirty-six entries**, and the fifteen that took it from
+twenty-one are why this paragraph bites harder than it used to. The
+population of configurations is `zig build -h`'s option list -- 39 of
 them -- rather than this file's job list: the matrix samples what is worth
 *running*, which is a different question from what is worth *compiling*. Two
 bugs came from confusing them. A sweep of only what the matrix named would
@@ -121,10 +136,10 @@ has been folded in rather than kept. 263s at `-j2` for thirty-three, against
 
 **Do not hand-roll a reduced-configuration sweep beside the matrix.** Phase 11
 Parts 7 and 8 each did, over thirteen configurations, and `matrix.janet` covers
-twelve of the thirteen. A cold build in a throwaway cache is 11s, so the loop
-cost about what the whole matrix costs (172s at `-j2` for twenty-one entries)
-and checked strictly less — no suites, no optimize modes, no Rosetta, no
-cross-compiles. Set `contracts-default` and run the matrix. Hand-roll a configuration
+twelve of the thirteen. A cold build in a throwaway cache was 11s then and is
+about 25s now, so the loop cost about what the whole matrix costs (172s at
+`-j2` for twenty-one entries) and checked strictly less — no suites, no
+optimize modes, no Rosetta, no cross-compiles. Set `contracts-default` and run the matrix. Hand-roll a configuration
 only when the matrix genuinely lacks it, which so far means `-Ddocstrings=false`
 and its successors under `phase_11.md`'s rule 19.
 
@@ -235,7 +250,7 @@ each time. Every one passed four times out of four when re-run alone. It is
 `-j2`, and it attaches to whichever entry happens to be running, which is
 exactly why it reads as a finding about that entry.
 
-So a 53-entry run at `-j2` that reports one `deadline expired` and nothing else
+So a full run at `-j2` that reports one `deadline expired` and nothing else
 **has passed**, once the entry is confirmed alone. Two or more, or any failure
 that is not a clock, is a different matter.
 
