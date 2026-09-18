@@ -126,7 +126,7 @@ const rows = [_]Row{
     .{ .op = constants.Opcode.make_array, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_buffer, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_string, .type = constants.InstructionType.s },
-    .{ .op = constants.Opcode.make_struct, .type = constants.InstructionType.s },
+    .{ .op = constants.Opcode.make_map, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_table, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_tuple, .type = constants.InstructionType.s },
     .{ .op = constants.Opcode.make_vector, .type = constants.InstructionType.s },

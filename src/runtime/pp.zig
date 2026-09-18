@@ -39,6 +39,7 @@ const buffers = @import("value/buffers.zig");
 const c = @import("cabi");
 const config = @import("config");
 const constants = @import("constants");
+const maps = @import("value/maps.zig");
 const raise = @import("../api/raise.zig");
 const registry = @import("registry.zig");
 const repr = @import("repr");
@@ -76,14 +77,20 @@ pub fn description(x: repr.Value) strings.String {
 /// Renders `x` the way `(describe x)` does, into `buffer`.
 ///
 /// A container is not walked: it comes out as `<tuple 0x...>`. A vector's
-/// elements are each described, inside angle brackets after its type's name,
-/// and so is an abstract with a `tostring` callback, through the callback.
+/// elements and a map's entries are each described, inside angle brackets
+/// after its type's name, and so is an abstract with a `tostring` callback,
+/// through the callback.
 pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => return try buffers.pushCString(buffer, "nil"),
         repr.Tag.symbol => if (wrap.isKeyword(x)) try buffers.pushU8(buffer, ':'),
         repr.Tag.string => return escapeStringB(buffer, wrap.toString(x)),
         repr.Tag.buffer => return escapeBufferB(buffer, wrap.toBuffer(x)),
+        repr.Tag.map => {
+            try buffers.pushCString(buffer, "<map ");
+            try maps.describeTree(@constCast(wrap.toMap(x)), @ptrCast(buffer));
+            return try buffers.pushCString(buffer, ">");
+        },
         repr.Tag.vector => {
             try buffers.pushCString(buffer, "<vector ");
             try vectorElementsB(buffer, wrap.toVector(x));
@@ -179,6 +186,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
             if (buffer == to) try buffers.extra(buffer, @intCast(to.count));
             try buffers.pushBytes(buffer, to.slice());
         },
+        repr.Tag.map => try maps.describeTree(@constCast(wrap.toMap(x)), @ptrCast(buffer)),
         repr.Tag.vector => try vectorElementsB(buffer, wrap.toVector(x)),
         repr.Tag.abstract => {
             const p = wrap.toAbstract(x);

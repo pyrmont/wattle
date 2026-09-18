@@ -9,12 +9,12 @@
 //! `remove` returns what it took out. `weakk`, `weakkv` and `weakv` are `new`
 //! on the weak heap.
 //!
-//! `structs.zig` is the sibling and the other half of the dictionary group.
-//! The two call each other, `toStruct` calling `structs.begin`, `structs.put`
-//! and `structs.end` and `structs.toTable` calling `put`, so the two files
-//! import each other, which Zig allows. Each declares its own `isNilKey` and
-//! `isUnstorableKey`, two inline predicates of two lines, because neither file
-//! is the right owner of a rule about the other's keys.
+//! `maps.zig` is the sibling and the other half of the dictionary group.
+//! `toMap` freezes a table's pairs into a map and `mergeMap` merges a map's
+//! into a table, so the two files import each other, which Zig allows. Each
+//! declares its own `isNilKey` and `isUnstorableKey`, two inline predicates of
+//! two lines, because neither file is the right owner of a rule about the
+//! other's keys.
 //!
 //! ## The probe keeps tombstones
 //!
@@ -26,8 +26,9 @@
 //! depends on insertion order and on deletion order, and nothing observable
 //! depends on table layout.
 //!
-//! That is the opposite discipline to a struct's, which has no tombstones and
-//! a layout that is a function of its pairs. `structs.zig` records why.
+//! A map keeps no tombstones and has no layout to observe at all: its entries
+//! are ordered by the hash of each key, so equal maps give their entries in
+//! one order however they were built. `maps.zig` records why.
 //!
 //! ## No lookup path here raises
 //!
@@ -59,9 +60,10 @@ const c = @import("cabi");
 const config = @import("config");
 const corefn = @import("../corefn.zig");
 const gc_alloc = @import("../gc.zig");
+const maps = @import("maps.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
-const structs = @import("structs.zig");
+const scratch_vector = @import("../scratch_vector.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const wrap = @import("helpers/wrap.zig");
@@ -265,7 +267,7 @@ pub fn lib(env: *Table) void {
             "Returns the new table."),
         corefn.reg("table/weak-values", &cfunTableWeakValues, @src(), "(table/weak-values capacity)", "Creates a new empty table with normal references to keys and weak references to values. Similar to `table/new`. " ++
             "Returns the new table."),
-        corefn.reg("table/to-struct", &cfunTableTostruct, @src(), "(table/to-struct tab &opt proto)", "Convert a table to a struct. Returns a new struct."),
+        corefn.reg("table/to-map", &cfunTableTomap, @src(), "(table/to-map tab)", "Convert a table to a map. The prototype is not followed. Returns a new map."),
         corefn.reg("table/getproto", &cfunTableGetproto, @src(), "(table/getproto tab)", "Get the prototype table of a table. Returns nil if the table " ++
             "has no prototype, otherwise returns the prototype."),
         corefn.reg("table/setproto", &cfunTableSetproto, @src(), "(table/setproto tab proto)", "Set the prototype of a table. Returns the original table `tab`."),
@@ -280,9 +282,15 @@ pub fn lib(env: *Table) void {
     corefn.install(env, entries);
 }
 
-/// Merges a struct's own pairs into `table`. Its prototype is not consulted.
-pub fn mergeStruct(table: *Table, other: [*]const Keyval) void {
-    mergeKV(table, other[0..structs.head(other).capacity]);
+/// Merges a map's pairs into `table`.
+pub fn mergeMap(table: *Table, other: *const maps.Tree) void {
+    var index: usize = 0;
+    while (index < 2 * other.count) {
+        const run = maps.chunkAt(other, index);
+        var i: usize = 0;
+        while (i < run.items.len) : (i += 2) _ = put(table, run.items[i], run.items[i + 1]);
+        index += run.items.len;
+    }
 }
 
 /// Merges another table's own pairs into `table`. Its prototype is not
@@ -298,8 +306,8 @@ pub fn new(capacity: usize) *Table {
 }
 
 /// Builds a table from `kvs`, which is what `module.tableOf` reaches through
-/// `capi.zig`'s `new_table`. See `structs.newFrom` for why this takes pairs
-/// rather than a view, and for what a nil value does.
+/// `capi.zig`'s `new_table`. The pairs are the caller's own, not a
+/// dictionary's hash array, and a nil value drops its pair.
 ///
 /// The capacity is `2 * len` so that no `put` in the loop can rehash. `new`
 /// rounds its argument up through `value.capacityFor`, which gives the
@@ -399,17 +407,17 @@ pub fn remove(t: *Table, key: repr.Value) repr.Value {
     return wrap.fromNil();
 }
 
-/// Freezes `t`'s own pairs into a struct.
-///
-/// The struct is begun at `count` rather than at `capacity`, so tombstones
-/// cost nothing here. The prototype is not copied; `table/to-struct` takes the
-/// struct's prototype as a separate argument.
-pub fn toStruct(t: *Table) [*]const Keyval {
-    const st = structs.begin(@intCast(t.count));
+/// Freezes `t`'s own pairs into a map. The prototype is not copied.
+pub fn toMap(t: *Table) *maps.Tree {
+    var values: scratch_vector.Vector(repr.Value) = .empty;
     for (t.slots()) |kv| {
-        if (!isNilKey(kv.key)) structs.put(st, kv.key, kv.value);
+        if (isNilKey(kv.key)) continue;
+        scratch_vector.push(&values, kv.key);
+        scratch_vector.push(&values, kv.value);
     }
-    return structs.end(st);
+    const built = maps.build(.map, values.items);
+    scratch_vector.free(&values);
+    return built;
 }
 
 /// The three weak variants differ from `new` only in their memory type, which
@@ -488,15 +496,10 @@ fn cfunTableSetproto(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `table/to-struct`: the pairs frozen, with the struct's prototype taken as a
-/// separate argument.
-fn cfunTableTostruct(argv: []repr.Value) raise.Error!repr.Value {
-    try args_core.arity(argv, 1, 2);
-    const t = try args_core.getTable(argv, 0);
-    const proto = try args_core.optStruct(argv, 1, null);
-    const st = toStruct(t);
-    structs.head(st).proto = proto;
-    return wrap.fromStruct(st);
+/// `table/to-map`: the table's own pairs frozen into a map.
+fn cfunTableTomap(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 1);
+    return wrap.fromMap(toMap(try args_core.getTable(argv, 0)));
 }
 
 /// `table/weak`: `table/new` with weak keys and weak values.

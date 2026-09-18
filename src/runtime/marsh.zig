@@ -48,13 +48,13 @@ const fatal = @import("fatal.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
 const gc_alloc = @import("gc.zig");
+const maps = @import("value/maps.zig");
 const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const registry = @import("registry.zig");
 const repr = @import("repr");
 const scratch_vector = @import("scratch_vector.zig");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const symbols = @import("value/symbols.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
@@ -135,7 +135,7 @@ pub const Lead = enum(u8) {
     tuple = 210,
     table = 211,
     table_proto = 212,
-    @"struct" = 213,
+    map = 213,
     buffer = 214,
     function = 215,
     registry = 216,
@@ -145,8 +145,11 @@ pub const Lead = enum(u8) {
     funcdef_ref = 220,
     unsafe_cfunction = 221,
     unsafe_pointer = 222,
-    struct_proto = 223,
 
+    /// 223 was a struct with a prototype, and 213 a struct without one. A map
+    /// is the immutable dictionary now and took 213; 223 names nothing, and is
+    /// left unused rather than reused, because a number here is the format.
+    ///
     /// 224 and 225 are written and read in every configuration. A build
     /// without the event loop cannot produce a threaded abstract or a pointer
     /// buffer, so it never writes one; what it must still do is give the two
@@ -592,11 +595,11 @@ fn entryGetval(env_entry: repr.Value) repr.Value {
             return tables.get(entry, value.fromBytes("ref", .keyword));
         }
         return checkval;
-    } else if (repr.checkType(env_entry, repr.Tag.@"struct")) {
-        const entry = wrap.toStruct(env_entry);
-        const checkval = structs.get(entry, value.fromBytes("value", .keyword));
+    } else if (repr.checkType(env_entry, repr.Tag.map)) {
+        const entry = wrap.toMap(env_entry);
+        const checkval = maps.lookup(entry, value.fromBytes("value", .keyword));
         if (repr.checkType(checkval, repr.Tag.nil)) {
-            return structs.get(entry, value.fromBytes("ref", .keyword));
+            return maps.lookup(entry, value.fromBytes("ref", .keyword));
         }
         return checkval;
     } else {
@@ -815,26 +818,21 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
                 try marshalOne(st, kv.value, flags + 1);
             }
         },
-        repr.Tag.@"struct" => {
-            const struct_ = wrap.toStruct(x);
-            const head = structs.head(struct_);
-            const count = head.length;
-            try pushByte(st, if (head.proto != null) Lead.struct_proto.byte() else Lead.@"struct".byte());
-            try pushInt(st, @intCast(count));
-            if (head.proto) |proto| {
-                try marshalOne(st, wrap.fromStruct(proto), flags + 1);
-            }
-            // The capacity is not written to the stream, since the reader
-            // rebuilds it from the count, so the walk over it is a plain
-            // index, as in the table case above.
-            for (0..head.capacity) |i| {
-                const kv = struct_[i];
-                if (repr.checkType(kv.key, repr.Tag.nil)) continue;
-                try marshalOne(st, kv.key, flags + 1);
-                try marshalOne(st, kv.value, flags + 1);
+        repr.Tag.map => {
+            const t = wrap.toMap(x);
+            try pushByte(st, Lead.map.byte());
+            try pushInt(st, @intCast(t.count));
+            // The runs are leaves, which do not change, so a run stays valid
+            // across marshalling an entry. Each run starts where the last
+            // ended and holds whole pairs.
+            var index: usize = 0;
+            while (index < 2 * t.count) {
+                const run = maps.chunkAt(t, index);
+                for (run.items) |item| try marshalOne(st, item, flags + 1);
+                index += run.items.len;
             }
             // Marked as seen AFTER marshalling, for the reason the tuple case
-            // gives.
+            // gives, and because a map's hash depends on its entries.
             markSeen(st, x);
         },
         repr.Tag.abstract => {
@@ -1440,8 +1438,7 @@ fn unmarshalOne(
         Lead.array_weak,
         Lead.tuple,
         Lead.vector,
-        Lead.@"struct",
-        Lead.struct_proto,
+        Lead.map,
         Lead.table,
         Lead.table_proto,
         Lead.table_weakk,
@@ -1496,21 +1493,22 @@ fn unmarshalOne(
                 }
                 out = wrap.fromVector(vectors.fromBuilt(built));
                 scratch_vector.push(&st.lookup, out);
-            } else if (lead == Lead.@"struct" or lead == Lead.struct_proto) {
-                const struct_ = structs.begin(@intCast(len));
-                if (lead == Lead.struct_proto) {
-                    const proto = try unmarshalOne(st, data, flags + 1);
-                    data = proto.next;
-                    try assertType(proto.value, repr.Tag.@"struct");
-                    structs.head(struct_).proto = wrap.toStruct(proto.value);
-                }
+            } else if (lead == Lead.map) {
+                // Gathered and then built, and entered in the lookup table
+                // after the last entry, as `value/maps.zig`'s header says. A
+                // nil or NaN key is refused and a nil value removes its key,
+                // under `build`'s rules.
+                var pairs: scratch_vector.Vector(repr.Value) = .empty;
+                defer scratch_vector.free(&pairs);
                 for (0..len) |_| {
                     const key = try unmarshalOne(st, data, flags + 1);
                     const val = try unmarshalOne(st, key.next, flags + 1);
                     data = val.next;
-                    structs.put(struct_, key.value, val.value);
+                    try maps.checkKey(key.value);
+                    scratch_vector.push(&pairs, key.value);
+                    scratch_vector.push(&pairs, val.value);
                 }
-                out = wrap.fromStruct(structs.end(struct_));
+                out = wrap.fromMap(maps.build(.map, pairs.items));
                 scratch_vector.push(&st.lookup, out);
             } else if (lead == Lead.reference) {
                 // No `len < 0` arm: a negative was refused at the seam by

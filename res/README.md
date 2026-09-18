@@ -127,7 +127,7 @@ difference that small. An isolated benchmark of the one function and
 
 The corpora are beside the scripts: `interpreter/` is the general workload,
 `value/` is the value-access workload, `collections/` reads a collection's
-elements, `maps/` measures small persistent maps against structs,
+elements, `maps/` measures small persistent maps,
 `vectors/` measures persistent vectors against tuples and arrays, and
 `hashbench/` is a hash workload from upstream. A corpus is
 written for the increment that needed it and says so in its header, so reach

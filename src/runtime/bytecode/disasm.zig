@@ -47,7 +47,7 @@ pub const Field = enum(c_int) {
     bytecode,
     source,
     vararg,
-    structarg,
+    maparg,
     namedargs,
     name,
     slotcount,
@@ -127,7 +127,7 @@ pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value
         .bytecode => disassembleBytecode(definition),
         .source => if (definition.source) |source| disasmWrapString(source) else wrapNil(),
         .vararg => wrapBoolean(definition.flags.vararg),
-        .structarg => wrapBoolean(definition.flags.structarg),
+        .maparg => wrapBoolean(definition.flags.maparg),
         .namedargs => if (definition.flags.namedargs)
             wrap.fromInteger(definition.named_args_count)
         else
@@ -236,7 +236,7 @@ fn disassembleAll(definition: *functions.FuncDef) repr.Value {
         disasmKeyword("bytecode"),     disassembleField(definition, .bytecode),
         disasmKeyword("source"),       disassembleField(definition, .source),
         disasmKeyword("vararg"),       disassembleField(definition, .vararg),
-        disasmKeyword("structarg"),    disassembleField(definition, .structarg),
+        disasmKeyword("maparg"),       disassembleField(definition, .maparg),
         disasmKeyword("namedargs"),    disassembleField(definition, .namedargs),
         disasmKeyword("name"),         disassembleField(definition, .name),
         disasmKeyword("slotcount"),    disassembleField(definition, .slotcount),
@@ -246,7 +246,7 @@ fn disassembleAll(definition: *functions.FuncDef) repr.Value {
         disasmKeyword("environments"), disassembleField(definition, .environments),
         disasmKeyword("defs"),         disassembleField(definition, .defs),
     };
-    return wrap.fromAbstract(maps.build(.map, &fields));
+    return wrap.fromMap(maps.build(.map, &fields));
 }
 
 /// Every instruction of `definition`, decoded, as an array.

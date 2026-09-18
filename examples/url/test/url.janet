@@ -55,10 +55,10 @@
 
 (defn- parts [s] (sort (string/split "&" s)))
 
-(assert (deep= @["a=1" "b=2"] (parts (url/query {:a 1 :b 2}))) "a struct")
+(assert (deep= @["a=1" "b=2"] (parts (url/query {:a 1 :b 2}))) "a map")
 (assert (deep= @["a=1" "b=2"] (parts (url/query @{:a 1 :b 2}))) "a table")
 (assert (deep= @["a=1" "b=2"] (parts (url/query (hash-map :a 1 :b 2)))) "a map")
-(assert (= "" (url/query {})) "an empty struct has no entries to walk")
+(assert (= "" (url/query {})) "an empty map has no entries to walk")
 (assert (= "" (url/query @{})) "and neither does an empty table")
 (assert (deep= @["name=ada" "tag=x"] (parts (url/query {:name "ada" :tag :x})))
         "a value may be text as well as a number")
@@ -88,11 +88,11 @@
 # getters return, which is why the pairs are built from the slice `getBytes`
 # returns with nothing copied.
 
-(assert (deep= {:a "1" :b "2"} (url/parse-query "a=1&b=2")) "a query string parses to a struct")
-(assert (deep= {} (url/parse-query "")) "an empty query is an empty struct")
+(assert (deep= {:a "1" :b "2"} (url/parse-query "a=1&b=2")) "a query string parses to a map")
+(assert (deep= {} (url/parse-query "")) "an empty query is an empty map")
 (assert (deep= {:a "2"} (url/parse-query "a=1&a=2")) "a repeated key keeps the last")
 (assert (deep= {:a ""} (url/parse-query "a=")) "an empty value is the empty string")
-(assert (= :struct (type (url/parse-query "a=1"))) "and the answer really is a struct")
+(assert (= :map (type (url/parse-query "a=1"))) "and the answer really is a map")
 (assert (= "field 0 has no '='" (refusal url/parse-query "nope"))
         "a field with no separator is refused by name")
 

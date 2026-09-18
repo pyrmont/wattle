@@ -1,4 +1,4 @@
-//! Behavioral contract for `core/map` and `core/set` and their transients: the
+//! Behavioral contract for the map, `core/set` and their transients: the
 //! shape of a tree, reading and iterating, persistence across updates, what a
 //! transient may change, equality, order and hash, and marshalling.
 //!
@@ -102,6 +102,30 @@ const Version = struct {
 // ==========================================================================
 // Cases
 // ==========================================================================
+
+/// A collection's value: a `map` block for a map, and an abstract for a set.
+fn treeValue(kind: maps.Kind, t: *const maps.Tree) repr.Value {
+    return switch (kind) {
+        .map => wrap.fromMap(t),
+        .set => wrap.fromAbstract(@constCast(t)),
+    };
+}
+
+/// The key or element after `key`, whichever `kind` reads it through.
+fn nextOf(kind: maps.Kind, t: *maps.Tree, key: repr.Value) !repr.Value {
+    return switch (kind) {
+        .map => maps.nextKey(t, key),
+        .set => try maps.set_type.next.?(t, key),
+    };
+}
+
+/// What `key` looks up to: a map's value, and a set's element.
+fn getOf(kind: maps.Kind, t: *maps.Tree, key: repr.Value) !repr.Value {
+    return switch (kind) {
+        .map => maps.lookup(t, key),
+        .set => (try maps.set_type.get.?(t, key)).?,
+    };
+}
 
 /// A new probe with `hash` and `id`.
 fn probe(hash: u32, id: i32) repr.Value {
@@ -246,10 +270,9 @@ fn expectEntries(kind: maps.Kind, t: *maps.Tree, entries: []const Entry) !void {
         if (kind == .map) expect(order.equals(found[1], e.value));
     }
 
-    const next = kind.abstractType().next.?;
     var seen: usize = 0;
-    var key = try next(t, wrap.fromNil());
-    while (!harness.isType(key, repr.Tag.nil)) : (key = try next(t, key)) {
+    var key = try nextOf(kind, t, wrap.fromNil());
+    while (!harness.isType(key, repr.Tag.nil)) : (key = try nextOf(kind, t, key)) {
         expect(oracleFind(entries, key) != null);
         seen += 1;
         expect(seen <= entries.len);
@@ -260,7 +283,7 @@ fn expectEntries(kind: maps.Kind, t: *maps.Tree, entries: []const Entry) !void {
     // built over the tree itself rather than through `args.keyvals`.
     if (kind == .set) return;
     const over: args.Keyvals = .{
-        .source = .{ .abstract = .{ .payload = t, .at = &maps.map_type } },
+        .source = .{ .map = t },
         .count = t.count,
         .len = 2 * t.count,
     };
@@ -317,8 +340,8 @@ fn aTransientChangesOnlyItsOwnNodes() !void {
     var entries: [400]Entry = undefined;
     for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i)) };
     const original = buildOn(.map, &empty_tree, &entries);
-    gc_alloc.gcroot(wrap.fromAbstract(original));
-    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    gc_alloc.gcroot(treeValue(.map, original));
+    defer _ = gc_alloc.gcunroot(treeValue(.map, original));
 
     const t = transients.fromTree(original, .map);
     gc_alloc.gcroot(wrap.fromAbstract(t));
@@ -357,8 +380,8 @@ fn aTransientChangesOnlyItsOwnNodes() !void {
     expect(editableIn(original) == 0);
 
     const persisted = maps.toTree(transients.persistent(t), .map).?;
-    gc_alloc.gcroot(wrap.fromAbstract(persisted));
-    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(persisted));
+    gc_alloc.gcroot(treeValue(.map, persisted));
+    defer _ = gc_alloc.gcunroot(treeValue(.map, persisted));
     expect(t.* == .ended);
     expect(editableIn(persisted) == 0);
     try expectEntries(.map, persisted, remaining.items);
@@ -378,8 +401,8 @@ fn anAbandonedTransientIsCollected() !void {
     var entries: [200]Entry = undefined;
     for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(0) };
     const original = buildOn(.set, &empty_tree, &entries);
-    gc_alloc.gcroot(wrap.fromAbstract(original));
-    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    gc_alloc.gcroot(treeValue(.set, original));
+    defer _ = gc_alloc.gcunroot(treeValue(.set, original));
     gc_mark.collect();
     const before = harness.vm().gc.block_count;
 
@@ -411,14 +434,14 @@ fn randomUpdatesAgainstLists(kind: maps.Kind, seed: u64) !void {
     var versions: std.ArrayListUnmanaged(Version) = .empty;
     defer {
         for (versions.items) |*version| {
-            _ = gc_alloc.gcunroot(wrap.fromAbstract(version.tree));
+            _ = gc_alloc.gcunroot(treeValue(kind, version.tree));
             version.entries.deinit(allocator);
         }
         versions.deinit(allocator);
     }
 
     const empty = maps.remove(&empty_tree, kind, wrap.fromNil());
-    gc_alloc.gcroot(wrap.fromAbstract(empty));
+    gc_alloc.gcroot(treeValue(kind, empty));
     try versions.append(allocator, .{ .tree = empty, .entries = .empty });
 
     for (0..4000) |round| {
@@ -476,11 +499,11 @@ fn randomUpdatesAgainstLists(kind: maps.Kind, seed: u64) !void {
                 try entries.append(allocator, e);
             }
         }
-        gc_alloc.gcroot(wrap.fromAbstract(t));
+        gc_alloc.gcroot(treeValue(kind, t));
         try versions.append(allocator, .{ .tree = t, .entries = entries });
         try expectEntries(kind, t, entries.items);
         // A map is read as pairs, to twice its count, and a set is not.
-        if (try args.keyvals(wrap.fromAbstract(t))) |pairs| {
+        if (try args.keyvals(treeValue(kind, t))) |pairs| {
             expect(kind == .map and pairs.len == 2 * t.count);
         } else {
             expect(kind == .set);
@@ -492,9 +515,9 @@ fn randomUpdatesAgainstLists(kind: maps.Kind, seed: u64) !void {
             random.shuffle(Entry, shuffled);
             const rebuilt = buildOn(kind, &empty_tree, shuffled);
             expect(sameEntries(kind, t, rebuilt));
-            expect(order.equals(wrap.fromAbstract(t), wrap.fromAbstract(rebuilt)));
-            expect(order.compare(wrap.fromAbstract(t), wrap.fromAbstract(rebuilt)) == 0);
-            expect(order.hash(wrap.fromAbstract(t)) == order.hash(wrap.fromAbstract(rebuilt)));
+            expect(order.equals(treeValue(kind, t), treeValue(kind, rebuilt)));
+            expect(order.compare(treeValue(kind, t), treeValue(kind, rebuilt)) == 0);
+            expect(order.hash(treeValue(kind, t)) == order.hash(treeValue(kind, rebuilt)));
         }
         if (round % 500 == 0) gc_mark.collect();
     }
@@ -516,8 +539,8 @@ fn removalsMergeNodes() !void {
         var small: [64]repr.Value = undefined;
         for (&small, 0..) |*x, i| x.* = harness.wrapInteger(@intCast(i));
         const two_leaves = maps.build(.set, &small);
-        gc_alloc.gcroot(wrap.fromAbstract(two_leaves));
-        defer _ = gc_alloc.gcunroot(wrap.fromAbstract(two_leaves));
+        gc_alloc.gcroot(treeValue(.set, two_leaves));
+        defer _ = gc_alloc.gcunroot(treeValue(.set, two_leaves));
         const top = two_leaves.root.?;
         expect(maps.isInner(top) and top.len == 2);
         expect(maps.asNode(maps.children(top)[0].?).len == 32);
@@ -533,8 +556,8 @@ fn removalsMergeNodes() !void {
         var large: [1088]repr.Value = undefined;
         for (&large, 0..) |*x, i| x.* = harness.wrapInteger(@intCast(i));
         const tall = maps.build(.set, &large);
-        gc_alloc.gcroot(wrap.fromAbstract(tall));
-        defer _ = gc_alloc.gcunroot(wrap.fromAbstract(tall));
+        gc_alloc.gcroot(treeValue(.set, tall));
+        defer _ = gc_alloc.gcunroot(treeValue(.set, tall));
         expect(tall.root.?.len == 2);
         expect(maps.asNode(maps.children(tall.root.?)[0].?).len == 17);
 
@@ -660,7 +683,7 @@ fn aBulkBuildOfManyKeysWithOneHash() !void {
     var all: [80]repr.Value = undefined;
     for (&all, probes) |*x, key| x.* = key;
     var shrinking = maps.build(.set, &all);
-    gc_alloc.gcroot(wrap.fromAbstract(shrinking));
+    gc_alloc.gcroot(treeValue(.set, shrinking));
     const first = shrinking;
     expect(longestLeaf(shrinking.root.?) == 40);
     random.shuffle(repr.Value, &all);
@@ -669,7 +692,7 @@ fn aBulkBuildOfManyKeysWithOneHash() !void {
         if (shrinking.root) |root| _ = checkNode(.set, root, true);
         expect(shrinking.count == all.len - i - 1);
     }
-    _ = gc_alloc.gcunroot(wrap.fromAbstract(first));
+    _ = gc_alloc.gcunroot(treeValue(.set, first));
 }
 
 /// The number of entries in the longest leaf under `node`.
@@ -693,7 +716,6 @@ fn theCursorReadsAsTheRootDoes(kind: maps.Kind) !void {
     const pool = keyPool();
     defer _ = gc_alloc.gcunroot(wrap.fromArray(pool));
     const keys = pool.slice();
-    const at = kind.abstractType();
 
     var values: std.ArrayListUnmanaged(repr.Value) = .empty;
     defer values.deinit(allocator);
@@ -702,25 +724,25 @@ fn theCursorReadsAsTheRootDoes(kind: maps.Kind) !void {
         if (kind == .map) try values.append(allocator, harness.wrapInteger(@intCast(i)));
     }
     const t = maps.build(kind, values.items);
-    gc_alloc.gcroot(wrap.fromAbstract(t));
-    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(t));
+    gc_alloc.gcroot(treeValue(kind, t));
+    defer _ = gc_alloc.gcunroot(treeValue(kind, t));
 
     // The order `next` gives, read with the cursor cleared before each step,
     // so every step searches from the root.
     var in_order: std.ArrayListUnmanaged(repr.Value) = .empty;
     defer in_order.deinit(allocator);
-    var key = try at.next.?(t, wrap.fromNil());
+    var key = try nextOf(kind, t, wrap.fromNil());
     while (!harness.isType(key, repr.Tag.nil)) {
         try in_order.append(allocator, key);
         t.cursor = null;
-        key = try at.next.?(t, key);
+        key = try nextOf(kind, t, key);
     }
     expect(in_order.items.len == keys.len);
 
     for (0..2000) |_| {
         const i = random.uintLessThan(usize, in_order.items.len);
         const k = in_order.items[i];
-        const after = try at.next.?(t, k);
+        const after = try nextOf(kind, t, k);
         if (i + 1 < in_order.items.len) {
             expect(order.equals(after, in_order.items[i + 1]));
         } else {
@@ -728,7 +750,7 @@ fn theCursorReadsAsTheRootDoes(kind: maps.Kind) !void {
         }
         // Where there is a successor, the cursor is now on it.
         const read = if (harness.isType(after, repr.Tag.nil)) k else after;
-        const got = (try at.get.?(t, read)).?;
+        const got = try getOf(kind, t, read);
         const expected = maps.find(t, kind, read).?;
         expect(order.equals(got, if (kind == .map) expected[1] else expected[0]));
     }
@@ -739,19 +761,19 @@ fn theCursorReadsAsTheRootDoes(kind: maps.Kind) !void {
         const text = wrap.toString(k);
         const copy = value.fromBytes(text[0..strings.head(text).length], .string);
         expect(!std.mem.eql(u8, std.mem.asBytes(&copy), std.mem.asBytes(&k)));
-        const after = try at.next.?(t, copy);
+        const after = try nextOf(kind, t, copy);
         if (i + 1 < in_order.items.len) {
             expect(order.equals(after, in_order.items[i + 1]));
         } else {
             expect(harness.isType(after, repr.Tag.nil));
         }
-        expect(order.equals((try at.get.?(t, copy)).?, (try at.get.?(t, k)).?));
+        expect(order.equals(try getOf(kind, t, copy), try getOf(kind, t, k)));
     }
 
     // Leave the cursor on a key, then replace that key's value, or remove the
     // key, in a new collection.
     const target = in_order.items[in_order.items.len / 2];
-    _ = try at.next.?(t, in_order.items[in_order.items.len / 2 - 1]);
+    _ = try nextOf(kind, t, in_order.items[in_order.items.len / 2 - 1]);
     expect(t.cursor != null);
     const marker = harness.wrapInteger(-7);
     const updated = switch (kind) {
@@ -759,7 +781,7 @@ fn theCursorReadsAsTheRootDoes(kind: maps.Kind) !void {
         .set => maps.remove(t, kind, target),
     };
     expect(updated.cursor == null);
-    const read = (try at.get.?(updated, target)).?;
+    const read = try getOf(kind, updated, target);
     switch (kind) {
         .map => expect(harness.integerIs(read, -7)),
         .set => expect(harness.isType(read, repr.Tag.nil)),
@@ -772,12 +794,12 @@ fn anUpdateKeepsTheOriginal() !void {
     var entries: [300]Entry = undefined;
     for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i * 2)) };
     const original = buildOn(.map, &empty_tree, &entries);
-    gc_alloc.gcroot(wrap.fromAbstract(original));
-    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(original));
+    gc_alloc.gcroot(treeValue(.map, original));
+    defer _ = gc_alloc.gcunroot(treeValue(.map, original));
 
     const changed = maps.put(original, .map, &.{ harness.wrapInteger(7), harness.wrapInteger(-1) });
-    gc_alloc.gcroot(wrap.fromAbstract(changed));
-    defer _ = gc_alloc.gcunroot(wrap.fromAbstract(changed));
+    gc_alloc.gcroot(treeValue(.map, changed));
+    defer _ = gc_alloc.gcunroot(treeValue(.map, changed));
     const absent = maps.remove(original, .map, harness.wrapInteger(1000));
     expect(absent.root == original.root);
 
@@ -789,9 +811,9 @@ fn anUpdateKeepsTheOriginal() !void {
 }
 
 /// Maps and sets are equal when their entries are, and order by count, then
-/// hash, then the first difference in their entries in order. The order is antisymmetric
-/// and transitive over a batch of collections that share counts and, for some
-/// pairs, hashes. A map is never equal to a set, nor to a struct.
+/// hash, then the first difference in their entries in order. The order is
+/// antisymmetric and transitive over a batch of collections that share counts
+/// and, for some pairs, hashes. A map is never equal to a set.
 fn equalityOrderAndHash() !void {
     var prng = std.Random.DefaultPrng.init(0x6d61_7073);
     const random = prng.random();
@@ -806,7 +828,7 @@ fn equalityOrderAndHash() !void {
         var entries: [4]Entry = undefined;
         for (&entries) |*e| e.* = .{ .key = keys[probe_start - 2 + random.uintLessThan(usize, 12)], .value = harness.wrapInteger(@intCast(random.uintLessThan(u8, 2))) };
         const kind: maps.Kind = if (i % 2 == 0) .map else .set;
-        harness.arrayPush(batch, wrap.fromAbstract(buildOn(kind, &empty_tree, &entries)));
+        harness.arrayPush(batch, treeValue(kind, buildOn(kind, &empty_tree, &entries)));
     }
     const items = batch.slice();
     for (items) |x| {
@@ -826,9 +848,9 @@ fn equalityOrderAndHash() !void {
     const key = harness.wrapInteger(1);
     const as_map = maps.put(&empty_tree, .map, &.{ key, one });
     const as_set = maps.put(&empty_tree, .set, &.{key});
-    expect(!order.equals(wrap.fromAbstract(as_map), wrap.fromAbstract(as_set)));
+    expect(!order.equals(treeValue(.map, as_map), treeValue(.set, as_set)));
     const other_value = maps.put(as_map, .map, &.{ key, harness.wrapInteger(2) });
-    expect(!order.equals(wrap.fromAbstract(as_map), wrap.fromAbstract(other_value)));
+    expect(!order.equals(treeValue(.map, as_map), treeValue(.map, other_value)));
     // Two probes with one hash give two maps, and two sets, whose counts and
     // sums are equal, so only the walk through their entries tells them apart.
     const p = probe(base_hash, 1);
@@ -839,8 +861,8 @@ fn equalityOrderAndHash() !void {
     harness.arrayPush(probes, p);
     harness.arrayPush(probes, q);
     for ([_]maps.Kind{ .map, .set }) |kind| {
-        const with_p = wrap.fromAbstract(buildOn(kind, &empty_tree, &.{.{ .key = p, .value = one }}));
-        const with_q = wrap.fromAbstract(buildOn(kind, &empty_tree, &.{.{ .key = q, .value = one }}));
+        const with_p = treeValue(kind, buildOn(kind, &empty_tree, &.{.{ .key = p, .value = one }}));
+        const with_q = treeValue(kind, buildOn(kind, &empty_tree, &.{.{ .key = q, .value = one }}));
         expect(maps.toTree(with_p, kind).?.sum == maps.toTree(with_q, kind).?.sum);
         expect(!order.equals(with_p, with_q));
         expect(order.compare(with_p, with_q) < 0 and order.compare(with_q, with_p) > 0);
@@ -848,8 +870,8 @@ fn equalityOrderAndHash() !void {
 
     const empty_a = maps.remove(&empty_tree, .map, key);
     const empty_b = maps.remove(as_map, .map, key);
-    expect(order.equals(wrap.fromAbstract(empty_a), wrap.fromAbstract(empty_b)));
-    expect(order.compare(wrap.fromAbstract(empty_a), wrap.fromAbstract(as_map)) < 0);
+    expect(order.equals(treeValue(.map, empty_a), treeValue(.map, empty_b)));
+    expect(order.compare(treeValue(.map, empty_a), treeValue(.map, as_map)) < 0);
 }
 
 /// `x` marshalled into a new buffer.
@@ -883,7 +905,7 @@ fn marshallingRoundTrips() !void {
 
     for ([_]maps.Kind{ .map, .set }) |kind| {
         for ([_]usize{ 0, 1, 2, 31, 33, 100, keys.len }) |n| {
-            const written = wrap.fromAbstract(buildOn(kind, &empty_tree, shuffled[0..n]));
+            const written = treeValue(kind, buildOn(kind, &empty_tree, shuffled[0..n]));
             gc_alloc.gcroot(written);
             defer _ = gc_alloc.gcunroot(written);
             const back = try unmarshalled((try marshalled(written)).slice());
@@ -905,14 +927,17 @@ fn marshallingRoundTrips() !void {
 /// A marshalled stream is a file format, so the bytes are the contract.
 fn theWireFormat() !void {
     const lb_abstract = 217;
+    const lb_map = 213;
     const lb_symbol = 207;
     const one = harness.wrapInteger(1);
     const two = harness.wrapInteger(2);
-    const map = try marshalled(wrap.fromAbstract(maps.put(&empty_tree, .map, &.{ one, two })));
-    expect(std.mem.eql(u8, map.slice(), &[_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/map".* ++ [_]u8{ 1, 1, 2 }));
-    const set = try marshalled(wrap.fromAbstract(maps.put(&empty_tree, .set, &.{one})));
+    // A map has a lead byte of its own, where a set goes out as the abstract
+    // it is, named by its type.
+    const map = try marshalled(treeValue(.map, maps.put(&empty_tree, .map, &.{ one, two })));
+    expect(std.mem.eql(u8, map.slice(), &[_]u8{ lb_map, 1, 1, 2 }));
+    const set = try marshalled(treeValue(.set, maps.put(&empty_tree, .set, &.{one})));
     expect(std.mem.eql(u8, set.slice(), &[_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".* ++ [_]u8{ 1, 1 }));
-    const empty = try marshalled(wrap.fromAbstract(maps.remove(&empty_tree, .set, one)));
+    const empty = try marshalled(treeValue(.set, maps.remove(&empty_tree, .set, one)));
     expect(std.mem.eql(u8, empty.slice(), &[_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".* ++ [_]u8{0}));
 }
 
@@ -925,8 +950,8 @@ fn marshallingKeepsIdentityAndHashes() !void {
     var entries: [40]Entry = undefined;
     for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i * 3)) };
     for ([_]maps.Kind{ .map, .set }) |kind| {
-        const shared = wrap.fromAbstract(buildOn(kind, &empty_tree, &entries));
-        const equal = wrap.fromAbstract(buildOn(kind, &empty_tree, &entries));
+        const shared = treeValue(kind, buildOn(kind, &empty_tree, &entries));
+        const equal = treeValue(kind, buildOn(kind, &empty_tree, &entries));
         const holder = arrays.new(3);
         harness.arrayPush(holder, shared);
         harness.arrayPush(holder, shared);
@@ -934,15 +959,15 @@ fn marshallingKeepsIdentityAndHashes() !void {
         const back = try unmarshalled((try marshalled(wrap.fromArray(holder))).slice());
         const items = wrap.toArray(back).slice();
         expect(items.len == 3);
-        expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[1]));
-        expect(wrap.toAbstract(items[0]) == wrap.toAbstract(items[2]));
+        expect(wrap.toPointer(items[0]) == wrap.toPointer(items[1]));
+        expect(wrap.toPointer(items[0]) == wrap.toPointer(items[2]));
         try expectEntries(kind, maps.toTree(items[0], kind).?, &entries);
 
         // A table holding, as a key, the collection that holds the table: as
         // a map's value, and as a set's element.
         const t = tables.new(1);
         const entry = [2]repr.Value{ harness.wrapInteger(1), wrap.fromTable(t) };
-        const outer = wrap.fromAbstract(switch (kind) {
+        const outer = treeValue(kind, switch (kind) {
             .map => maps.put(&empty_tree, .map, &entry),
             .set => maps.put(&empty_tree, .set, entry[1..]),
         });
@@ -968,7 +993,7 @@ fn aForgedStreamIsReadAsHashMapReadsItsArguments() !void {
     const lb_abstract = 217;
     const lb_symbol = 207;
     const lb_nil = 201;
-    const map_head = [_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/map".*;
+    const map_head = [_]u8{213};
     const set_head = [_]u8{ lb_abstract, lb_symbol, 8 } ++ "core/set".*;
     const one = harness.wrapInteger(1);
     const three = harness.wrapInteger(3);
@@ -998,8 +1023,8 @@ fn aForgedStreamIsReadAsHashMapReadsItsArguments() !void {
 fn aShortStreamIsRefused() !void {
     var entries: [70]Entry = undefined;
     for (&entries, 0..) |*e, i| e.* = .{ .key = harness.wrapInteger(@intCast(i)), .value = harness.wrapInteger(@intCast(i)) };
-    entries[40].value = wrap.fromAbstract(buildOn(.set, &empty_tree, entries[0..3]));
-    const whole = try marshalled(wrap.fromAbstract(buildOn(.map, &empty_tree, &entries)));
+    entries[40].value = treeValue(.set, buildOn(.set, &empty_tree, entries[0..3]));
+    const whole = try marshalled(treeValue(.map, buildOn(.map, &empty_tree, &entries)));
     gc_alloc.gcroot(wrap.fromBuffer(whole));
     for (0..@intCast(whole.count)) |len| {
         const refusal = harness.raised(unmarshalled, .{whole.slice()[0..len]});

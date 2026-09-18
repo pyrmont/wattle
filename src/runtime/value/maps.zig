@@ -1,13 +1,14 @@
-//! `core/map` and `core/set`: the persistent map and the persistent set, both
+//! The map and `core/set`: the persistent map and the persistent set, both
 //! a B-tree ordered by the hash of each key.
 //!
 //! A map and a set are one file because they are one structure. A map's entry
 //! is a key and its value, and a set's is an element alone, and nothing else
 //! about the tree differs. `Kind` says which a node or a payload belongs to.
-//! `map_type` and `set_type` are the abstract types, both with a `Tree` as
-//! their payload, and `lib` installs `hash-map`, `hash-set`, `dissoc` and
-//! `disj`. `vectors.zig`'s `conj` and `assoc` reach a set and a map through
-//! `conjSet` and `assocMap`.
+//! A map is a built-in type: its value points at a `Head`, a `map` block
+//! holding the collector's object and a `Tree`. A set is the abstract type
+//! `set_type`, with a `Tree` as its payload. `lib` installs `hash-map`,
+//! `hash-set`, `dissoc` and `disj`. `vectors.zig`'s `conj` and `assoc` reach a
+//! set and a map through `conjSet` and `assocMap`.
 //!
 //! A tree's nodes are collector blocks of their own memory types. A map's
 //! node is a `map_node` block, and a set's node is a `set_node` block.
@@ -88,11 +89,12 @@
 //!
 //! ## Runs
 //!
-//! A map's contents are `pairs`, and `mapChunk` hands out a leaf's entries as
+//! A map's contents are `pairs`, and `chunkAt` hands out a leaf's entries as
 //! they are stored, a key then its value, with no copy. A leaf's first pair is
 //! at the number of entries before it, found from the inner nodes' counts, so
-//! its run starts at twice that. A set has no `chunk`: its entry is one value,
-//! not a pair.
+//! its run starts at twice that. `args.zig`'s pair reader has a map source
+//! that calls it, where a set has no runs at all: its entry is one value, not
+//! a pair.
 //!
 //! ## The cursor
 //!
@@ -112,11 +114,12 @@
 //!
 //! ## Marshalling
 //!
-//! A map or a set is written as its count and then its entries in order: a key
-//! and then its value for a map, and an element for a set. Reading back
-//! gathers the entries and builds the tree as `hash-map` does, under its
-//! rules: a nil or NaN key raises, a nil value removes its key, and a repeated
-//! key replaces the earlier entry.
+//! A map is written under its own lead byte, and a set through the abstract
+//! it is. Each is its count and then its entries in order: a key and then its
+//! value for a map, and an element for a set. Reading back gathers the entries
+//! and builds the tree as `hash-map` does, under its rules: a nil or NaN key
+//! raises, a nil value removes its key, and a repeated key replaces the
+//! earlier entry.
 //!
 //! A map or a set enters the marshaller's reference table after its entries,
 //! as a vector does and for the reason `vectors.zig` gives: its hash depends
@@ -172,21 +175,6 @@ const insertion_sort_max = 12;
 /// The most entries a leaf holds, unless every entry shares one place hash.
 pub const leaf_max = 32;
 
-/// The abstract type a map is.
-pub const map_type = abstract_type.define(Tree, .{
-    .name = "core/map",
-    .gcmark = treeMark,
-    .get = mapGet,
-    .next = mapNext,
-    .length = treeLength,
-    .hash = treeHash,
-    .tostring = describeTree,
-    .marshal = treeMarshal,
-    .unmarshal = mapUnmarshal,
-    .chunk = mapChunk,
-    .contents = .pairs,
-});
-
 /// The length below which a node a removal changed merges with a neighbour.
 pub const merge_below = 8;
 
@@ -198,6 +186,8 @@ pub const own_editable: u6 = 1;
 pub const own_inner: u6 = 2;
 
 /// The abstract type a set is.
+///
+/// A map has no abstract type: it is a built-in, read through its tag.
 pub const set_type = abstract_type.define(Tree, .{
     .name = "core/set",
     .gcmark = treeMark,
@@ -239,18 +229,10 @@ const KeyOrder = struct {
 };
 
 /// Which collection a node or a payload belongs to, which decides its memory
-/// type, its abstract type, and how many values an entry is.
+/// type and how many values an entry is.
 pub const Kind = enum {
     map,
     set,
-
-    /// The abstract type of a collection of this kind.
-    pub fn abstractType(kind: Kind) *const abi.AbstractType {
-        return switch (kind) {
-            .map => &map_type,
-            .set => &set_type,
-        };
-    }
 
     /// The number of values in one entry: a key and its value for a map, and
     /// an element for a set.
@@ -277,6 +259,15 @@ pub const Kind = enum {
 /// copies any other with the bit set on the copy. In both modes, a node whose
 /// length changes is a new node.
 const Mode = enum { persistent, transient };
+
+/// A map's block: the collector's object and the payload.
+///
+/// A map's value points at its `Head`, and `ofHead` and `wrap.toMap` return
+/// the `Tree` inside it. A set has no `Head`: its payload is an abstract's.
+pub const Head = extern struct {
+    gc: abi.GCObject = .{},
+    tree: Tree = .{},
+};
 
 /// A node header: the collector's object and the node's length.
 ///
@@ -329,7 +320,9 @@ const Seek = union(enum) {
 /// `count` is zero. `sum` is the running sum the hash is made from. `cursor`
 /// is the leaf holding the entry `next` last gave and `cursor_index` that
 /// entry's index in it, or `cursor` is null.
-pub const Tree = struct {
+///
+/// `extern` because `Head` is.
+pub const Tree = extern struct {
     count: usize = 0,
     root: ?*Node = null,
     sum: u32 = 0,
@@ -348,6 +341,28 @@ pub const Tree = struct {
 pub inline fn asNode(header: *abi.GCObject) *Node {
     std.debug.assert(kindOf(header) != null);
     return @alignCast(@fieldParentPtr("gc", header));
+}
+
+/// Builds a map from `kvs`, which is what `module.mapOf` reaches through
+/// `capi.zig`'s `new_map`.
+///
+/// The pairs are the caller's own, not a dictionary's hash array. A repeated
+/// key takes the last value and a nil value drops its pair, as `hash-map`
+/// does, because `build` is what both go through.
+///
+/// A pair whose key a map cannot store is dropped rather than refused: the
+/// crossing is `callconv(.c)` and has no way to raise, so the choice is
+/// between dropping the pair and building a map that `next` cannot walk.
+pub fn buildPairs(kvs: []const abi.Keyval) *Tree {
+    var values: scratch_vector.Vector(repr.Value) = .empty;
+    for (kvs) |kv| {
+        if (!storableKey(kv.key)) continue;
+        scratch_vector.push(&values, kv.key);
+        scratch_vector.push(&values, kv.value);
+    }
+    const t = build(.map, values.items);
+    scratch_vector.free(&values);
+    return t;
 }
 
 /// `assoc` for a map: a new map with each key in `argv` associated with the
@@ -388,10 +403,7 @@ pub fn build(kind: Kind, values: []const repr.Value) *Tree {
 ///
 /// This function raises if `key` is nil or NaN.
 pub fn checkKey(key: repr.Value) raise.Error!void {
-    const nan = repr.checkType(key, repr.Tag.number) and std.math.isNan(wrap.toNumber(key));
-    if (repr.checkType(key, repr.Tag.nil) or nan) {
-        return pp_format.panicf("cannot use %v as a key", .{key});
-    }
+    if (!storableKey(key)) return pp_format.panicf("cannot use %v as a key", .{key});
 }
 
 /// Returns the child slots of `node`: `len` of them for an inner node, and
@@ -458,6 +470,14 @@ pub fn find(t: *const Tree, kind: Kind, key: repr.Value) ?[]repr.Value {
     return leafEntries(node, w)[i * w ..][0..w];
 }
 
+/// A collection's hash: its count mixed with the running sum of its entries.
+///
+/// This function cannot raise. It is named with `Of` because `hash` is what
+/// every function here calls a place hash.
+pub fn hashOf(t: *const Tree) i32 {
+    return @bitCast(value.hashMix(@truncate(t.count), t.sum));
+}
+
 /// Returns the place hashes of the leaf `node`, one for each entry.
 ///
 /// This function cannot raise. `node` must be a leaf.
@@ -488,18 +508,18 @@ pub fn kindOf(header: *const abi.GCObject) ?Kind {
 }
 
 /// Installs `hash-map`, `hash-set`, `dissoc` and `disj` into the core
-/// environment and registers `core/map` and `core/set`.
+/// environment and registers `core/set`.
 ///
 /// `env` is the environment. This function raises if a registration does.
 pub fn lib(env: *tables.Table) raise.Error!void {
     const bindings = comptime [_]corefn.Entry{
         corefn.reg("hash-map", &cfunHashMap, @src(), "(hash-map & kvs)", "Create a new persistent map from alternating keys and values. The pairs are added in order, so a later value for a key replaces an earlier one, and a nil value removes its key. A key cannot be nil or NaN."),
         corefn.reg("hash-set", &cfunHashSet, @src(), "(hash-set & xs)", "Create a new persistent set containing the elements xs. An element cannot be nil or NaN."),
+        corefn.reg("map/to-table", &cfunMapTotable, @src(), "(map/to-table m)", "Convert a map to a table. Returns a new table."),
         corefn.reg("dissoc", &cfunDissoc, @src(), "(dissoc map & ks)", "Return a new persistent map without the keys ks. `map` is unchanged."),
         corefn.reg("disj", &cfunDisj, @src(), "(disj set & xs)", "Return a new persistent set without the elements xs. `set` is unchanged."),
     };
     corefn.install(env, bindings);
-    try registry.registerAbstractType(&map_type);
     try registry.registerAbstractType(&set_type);
 }
 
@@ -547,13 +567,17 @@ pub fn newLeaf(kind: Kind, len: usize) *Node {
     return node;
 }
 
-/// Returns the payload of a map's or a set's abstract header.
+/// Returns the payload behind a map's or a set's header.
 ///
-/// This function cannot raise. `head` must be the header of a `core/map` or a
-/// `core/set`, and any other header is illegal behaviour.
+/// This function cannot raise. `head` must be the header of a `map` block or
+/// of a `core/set` abstract, and any other header is illegal behaviour.
 pub fn ofHead(head: *const abi.GCObject) *const Tree {
+    if (gc_alloc.memoryTypeOf(head) == .map) {
+        const block: *const Head = @alignCast(@fieldParentPtr("gc", head));
+        return &block.tree;
+    }
     const abstract_head: *const abi.AbstractHead = @alignCast(@fieldParentPtr("gc", head));
-    std.debug.assert(abstract_head.type == &map_type or abstract_head.type == &set_type);
+    std.debug.assert(abstract_head.type == &set_type);
     return @ptrCast(@alignCast(abstracts.data(abstract_head)));
 }
 
@@ -609,13 +633,42 @@ pub fn separators(node: *Node) []u32 {
     return many[0..node.len];
 }
 
+/// Marshals `t`'s count and then its entries in order.
+///
+/// It is half of a set's `marshal` callback and the whole of what a map's
+/// arm of the marshaller writes after the lead byte.
+pub fn marshalTree(t: *Tree, m: *abi.Marshal) raise.Error!void {
+    try marsh.marshalSize(m, t.count);
+    // Nodes do not change, so a node stays valid across marshalling a value.
+    if (t.root) |root| try marshalNode(m, root);
+}
+
+/// Whether `key` may be stored: not nil, which is where `next` starts and
+/// ends, and not NaN, which is not equal to itself.
+///
+/// This function cannot raise. `checkKey` is the raising form, and the parser
+/// and the varargs fill, neither of which has a raise to propagate, read this
+/// one.
+pub inline fn storableKey(key: repr.Value) bool {
+    if (repr.checkType(key, repr.Tag.nil)) return false;
+    return !(repr.checkType(key, repr.Tag.number) and std.math.isNan(wrap.toNumber(key)));
+}
+
 /// Returns the payload of `x` if `x` is a collection of `kind`, and null
 /// otherwise.
 pub fn toTree(x: repr.Value, kind: Kind) ?*Tree {
-    if (!repr.checkType(x, repr.Tag.abstract)) return null;
-    const payload = wrap.toAbstract(x);
-    if (abi.abstractHead(payload).type != kind.abstractType()) return null;
-    return @ptrCast(@alignCast(payload));
+    switch (kind) {
+        .map => {
+            if (!repr.checkType(x, repr.Tag.map)) return null;
+            return @constCast(wrap.toMap(x));
+        },
+        .set => {
+            if (!repr.checkType(x, repr.Tag.abstract)) return null;
+            const payload = wrap.toAbstract(x);
+            if (abi.abstractHead(payload).type != &set_type) return null;
+            return @ptrCast(@alignCast(payload));
+        },
+    }
 }
 
 /// Adds `entry` to `t` in place, or replaces the value of the entry that has
@@ -758,10 +811,19 @@ fn cfunDisj(argv: []repr.Value) raise.Error!repr.Value {
 /// `dissoc`: a new map without the keys.
 fn cfunDissoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
-    const src = try args_core.getAbstract(Tree, argv, 0, &map_type);
+    const src = try args_core.getMap(argv, 0);
     var built = copyTree(src);
     for (argv[1..]) |key| removeKey(&built, .map, key, .transient);
     return result(argv[0], src, built, .map);
+}
+
+/// `map/to-table`: a map's entries copied into a new table.
+fn cfunMapTotable(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 1);
+    const t = try args_core.getMap(argv, 0);
+    const table = tables.new(t.count);
+    tables.mergeMap(table, t);
+    return wrap.fromTable(table);
 }
 
 /// `hash-map`: a map of the key-value pairs in the arguments.
@@ -771,7 +833,7 @@ fn cfunHashMap(argv: []repr.Value) raise.Error!repr.Value {
     }
     var i: usize = 0;
     while (i < argv.len) : (i += 2) try checkKey(argv[i]);
-    return wrap.fromAbstract(build(.map, argv));
+    return wrap.fromMap(build(.map, argv));
 }
 
 /// `hash-set`: a set of the arguments.
@@ -843,9 +905,13 @@ fn describeNode(buffer: *buffers.Buffer, node: *Node, first: *bool) raise.Error!
     for (children(node)) |slot| try describeNode(buffer, asNode(slot.?), first);
 }
 
-/// `core/map`'s and `core/set`'s `tostring` callback: each value of each
+/// `core/set`'s `tostring` callback, and the map's printed form: each value of each
 /// entry described, in order, separated by spaces.
-fn describeTree(t: *Tree, render: *abi.Render) raise.Error!void {
+/// Pushes a collection's entries, separated by spaces, into `render`.
+///
+/// It is the `tostring` callback of a set and what `pp.zig` calls for a map,
+/// which has no callback to be reached through.
+pub fn describeTree(t: *Tree, render: *abi.Render) raise.Error!void {
     const buffer: *buffers.Buffer = @ptrCast(@alignCast(render));
     var first = true;
     // Nodes do not change, so a node stays valid across the allocations and
@@ -1070,12 +1136,18 @@ fn lowerBound(hs: []const u32, hash: u32) u32 {
     return lo;
 }
 
-/// `core/map`'s `chunk` callback: the entries of the leaf that holds the pair
+/// The entries of the leaf that holds the pair
 /// at `position`, which counts values, so pair i is at 2i.
 ///
 /// `t` is not empty, because `position` is below twice its count. This
 /// function cannot raise.
-fn mapChunk(t: *Tree, position: usize) abstract_type.Chunk {
+/// The run of entries holding the pair at `position`, which counts values, so
+/// pair i is at position 2i.
+///
+/// This function cannot raise. `t` must hold the pair, and a position at or
+/// past twice its count is illegal behaviour. The run is a leaf's own storage,
+/// so it stays valid until the next update of `t`.
+pub fn chunkAt(t: *const Tree, position: usize) abstract_type.Chunk {
     var node = t.root.?;
     var at = position / 2;
     var first: usize = 0;
@@ -1091,25 +1163,29 @@ fn mapChunk(t: *Tree, position: usize) abstract_type.Chunk {
     return .{ .items = leafEntries(node, 2), .start = first * 2 };
 }
 
-/// `core/map`'s `get` callback: the value at `key`, or nil.
+/// The value at `key`, or nil.
 ///
 /// A missing key is reported as found with nil, so `in` gives nil for it.
-fn mapGet(t: *Tree, key: repr.Value) raise.Error!?repr.Value {
+/// The value `key` is associated with in `t`, or nil where it has none.
+///
+/// This function cannot raise, so a caller with no raise to propagate, such as
+/// the assembler, may read a map through it.
+pub fn lookup(t: *const Tree, key: repr.Value) repr.Value {
     const entry = cursorEntry(t, .map, key) orelse find(t, .map, key) orelse return wrap.fromNil();
     return entry[1];
 }
 
-/// `core/map`'s `next` callback: the key after `key`.
-fn mapNext(t: *Tree, key: repr.Value) raise.Error!repr.Value {
+/// The key after `key`.
+/// The key after `key` in `t`, the first key where `key` is nil, or nil at the
+/// end.
+///
+/// This function cannot raise. It moves `t`'s cursor to the entry returned.
+pub fn nextKey(t: *Tree, key: repr.Value) repr.Value {
     const entry = nextEntry(t, .map, key) orelse return wrap.fromNil();
     return entry[0];
 }
 
-/// `core/map`'s `unmarshal` callback: reads what `treeMarshal` wrote.
-fn mapUnmarshal(u: *abi.Unmarshal) raise.Error!*Tree {
-    return unmarshalTree(u, .map);
-}
-
+/// Reads back what a map's or a set's marshalled form holds.
 /// Marshals the values of every entry under `node`, in order.
 fn marshalNode(m: *abi.Marshal, node: *Node) raise.Error!void {
     for (entries(node)) |x| try marsh.marshalJanet(m, x);
@@ -1158,8 +1234,14 @@ fn newLeafFor(kind: Kind, len: usize, mode: Mode) *Node {
 }
 
 /// Allocates a map or a set with the contents of `built` and no cursor.
+///
+/// A map is a `map` block and a set an abstract, so the two allocate
+/// differently and everything above this function works on the `Tree` alike.
 fn newTree(kind: Kind, built: Tree) *Tree {
-    const payload: *Tree = @ptrCast(@alignCast(abstracts.newBytes(kind.abstractType(), @sizeOf(Tree))));
+    const payload: *Tree = switch (kind) {
+        .map => &gc_alloc.gcalloc(Head, .map).tree,
+        .set => @ptrCast(@alignCast(abstracts.newBytes(&set_type, @sizeOf(Tree)))),
+    };
     payload.* = copyTree(&built);
     return payload;
 }
@@ -1361,7 +1443,11 @@ fn replaceChildren(kind: Kind, node: *Node, at: usize, removed: usize, with: []c
 fn result(original: repr.Value, src: *const Tree, built: Tree, kind: Kind) repr.Value {
     if (built.root == src.root) return original;
     if (built.root) |root| clearEditable(root);
-    return wrap.fromAbstract(newTree(kind, built));
+    const made = newTree(kind, built);
+    return switch (kind) {
+        .map => wrap.fromMap(made),
+        .set => wrap.fromAbstract(made),
+    };
 }
 
 /// The index of the child of the inner node `node` whose range holds `hash`.
@@ -1401,8 +1487,8 @@ fn seekAfter(node: *Node, hash: u32, key: repr.Value) Seek {
 
 /// `core/set`'s `get` callback: the element equal to `key`, or nil.
 ///
-/// A missing element is reported as found with nil, for the reason `mapGet`
-/// gives.
+/// A missing element is reported as found with nil rather than as absent, so
+/// that the runtime does not fall back to a method lookup on it.
 fn setGet(t: *Tree, key: repr.Value) raise.Error!?repr.Value {
     const entry = cursorEntry(t, .set, key) orelse find(t, .set, key) orelse return wrap.fromNil();
     return entry[0];
@@ -1473,30 +1559,28 @@ fn term(kind: Kind, hash: u32, entry: []const repr.Value) u32 {
     };
 }
 
-/// `core/map`'s and `core/set`'s `hash` callback: the count mixed with the
+/// `core/set`'s `hash` callback: the count mixed with the
 /// running sum.
 fn treeHash(t: *const Tree, _: usize) i32 {
-    return @bitCast(value.hashMix(@truncate(t.count), t.sum));
+    return hashOf(t);
 }
 
-/// `core/map`'s and `core/set`'s `length` callback.
+/// `core/set`'s `length` callback.
 fn treeLength(t: *Tree, _: usize) raise.Error!usize {
     return t.count;
 }
 
-/// `core/map`'s and `core/set`'s `marshal` callback: the count, then each
+/// `core/set`'s `marshal` callback: the count, then each
 /// entry's values in order.
 ///
 /// The collection is entered in the reference table last. The file header
 /// says why.
 fn treeMarshal(t: *Tree, m: *abi.Marshal) raise.Error!void {
-    try marsh.marshalSize(m, t.count);
-    // Nodes do not change, so a node stays valid across marshalling a value.
-    if (t.root) |root| try marshalNode(m, root);
+    try marshalTree(t, m);
     marsh.marshalAbstract(m, t);
 }
 
-/// `core/map`'s and `core/set`'s `gcmark` callback: the tree.
+/// `core/set`'s `gcmark` callback: the tree.
 fn treeMark(t: *Tree, _: usize) void {
     mark(t);
 }

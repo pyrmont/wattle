@@ -47,7 +47,6 @@ const functions = @import("../value/functions.zig");
 const gc_alloc = @import("../gc.zig");
 const repr = @import("repr");
 const strings = @import("../value/strings.zig");
-const structs = @import("../value/structs.zig");
 const symbols = @import("../value/symbols.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
@@ -190,8 +189,7 @@ fn checkLiveref(x: repr.Value) bool {
         repr.Tag.string, repr.Tag.symbol => gcReachable(strings.head(wrap.toString(x))),
         repr.Tag.abstract => gcReachable(abi.abstractHead(wrap.toAbstract(x))),
         repr.Tag.tuple => gcReachable(tuples.head(wrap.toTuple(x))),
-        repr.Tag.vector => gcReachable(wrap.toPointer(x)),
-        repr.Tag.@"struct" => gcReachable(structs.head(wrap.toStruct(x))),
+        repr.Tag.map, repr.Tag.vector => gcReachable(wrap.toPointer(x)),
         else => true,
     };
 }
@@ -297,7 +295,7 @@ fn deinitBlock(mem: *abi.GCObject) void {
         gc_alloc.MemoryType.none,
         gc_alloc.MemoryType.string,
         gc_alloc.MemoryType.tuple,
-        gc_alloc.MemoryType.@"struct",
+        gc_alloc.MemoryType.map,
         gc_alloc.MemoryType.function,
         gc_alloc.MemoryType.threaded_abstract,
         gc_alloc.MemoryType.vector,

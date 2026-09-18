@@ -59,7 +59,6 @@ const harness = @import("harness.zig");
 const maps = @import("subsystems").value.maps;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
@@ -120,7 +119,7 @@ fn headOf(val: repr.Value) ?*anyopaque {
         => utils.stringHead(wrap.toString(val)),
         repr.Tag.abstract => utils.abstractHead(wrap.toAbstract(val)),
         repr.Tag.tuple => utils.tupleHead(wrap.toTuple(val)),
-        repr.Tag.@"struct" => utils.structHead(wrap.toStruct(val)),
+        repr.Tag.map => wrap.toPointer(val),
         else => null,
     };
 }
@@ -182,11 +181,6 @@ fn theHeadOffsets() void {
     expect(@intFromPtr(tuple) - newestBlock() == @sizeOf(tuples.TupleHead));
     tuple[0] = wrap.fromNil();
     _ = tuples.end(tuple);
-
-    const structure = structs.begin(1);
-    expect(@intFromPtr(structure) - newestBlock() == @sizeOf(structs.StructHead));
-    structs.put(structure, value.fromBytes("k", .keyword), wrap.fromNil());
-    _ = structs.end(structure);
 
     const abstract = abstracts.newBytes(&at_plain, 8);
     expect(@intFromPtr(abstract) - newestBlock() == @sizeOf(abi.AbstractHead));
@@ -359,32 +353,21 @@ fn thePrototypeChain() void {
     expect(reachable(x) and reachable(y));
 }
 
-fn aStructMarksItsProtoAndEntries() void {
-    const proto_builder = structs.begin(1);
-    const proto_value = value.fromBytes("in the struct proto", .string);
-    structs.put(proto_builder, value.fromBytes("p", .keyword), proto_value);
-    const proto = structs.end(proto_builder);
+fn aMapMarksItsEntries() void {
+    const key = value.fromBytes("map key", .string);
+    const val = value.fromBytes("map value", .string);
+    const built = maps.build(.map, &.{ key, val });
+    const head = wrap.toPointer(wrap.fromMap(built)).?;
 
-    const builder = structs.begin(1);
-    const key = value.fromBytes("struct key", .string);
-    const val = value.fromBytes("struct value", .string);
-    structs.put(builder, key, val);
-    const structure = structs.end(builder);
-    utils.structHead(structure).proto = proto;
-
-    unmark(utils.structHead(structure));
-    unmark(utils.structHead(proto));
+    unmark(head);
     unmarkValue(key);
     unmarkValue(val);
-    unmarkValue(proto_value);
 
-    gc_mark.mark(wrap.fromStruct(structure));
+    gc_mark.mark(wrap.fromMap(built));
 
-    expect(reachable(utils.structHead(structure)));
-    expect(reachable(utils.structHead(proto)));
+    expect(reachable(head));
     expect(valueReachable(key));
     expect(valueReachable(val));
-    expect(valueReachable(proto_value));
 }
 
 fn aTupleMarksItsElements() void {
@@ -981,7 +964,7 @@ fn body() !void {
     theFourTableKinds();
     thePrototypeChain();
 
-    aStructMarksItsProtoAndEntries();
+    aMapMarksItsEntries();
     aTupleMarksItsElements();
 
     anAbstractMarksThroughItsCallbackOnce();

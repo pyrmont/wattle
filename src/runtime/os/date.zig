@@ -36,7 +36,6 @@ const args_core = @import("../args.zig");
 const c = @import("cabi");
 const corefn = @import("../corefn.zig");
 const maps = @import("../value/maps.zig");
-const structs = @import("../value/structs.zig");
 const oa = @import("abi.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
@@ -138,7 +137,7 @@ fn cfunDate(argv: []repr.Value) raise.Error!repr.Value {
         value.fromBytes("year-day", .keyword),  wrap.fromNumber(@floatFromInt(t_info.tm_yday)),
         value.fromBytes("dst", .keyword),       wrap.fromBoolean(t_info.tm_isdst != 0),
     };
-    return wrap.fromAbstract(maps.build(.map, &fields));
+    return wrap.fromMap(maps.build(.map, &fields));
 }
 
 /// `(os/mktime date-struct &opt local)`.
@@ -197,12 +196,12 @@ fn cfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
 
 /// The value a date dictionary holds for the keyword `field`, or nil.
 ///
-/// A table and a struct are read with their prototypes, and a dictionary
-/// abstract through its `get`. Anything else holds nothing.
+/// A table is read with its prototype, and a map or a dictionary abstract
+/// through its own entries. Anything else holds nothing.
 fn entryField(entry: repr.Value, comptime field: [:0]const u8) raise.Error!repr.Value {
     return switch (repr.typeOf(entry)) {
         .table => tables.getKeyword(wrap.toTable(entry), field),
-        .@"struct" => structs.get(wrap.toStruct(entry), value.fromBytes(field, .keyword)),
+        .map => maps.lookup(wrap.toMap(entry), value.fromBytes(field, .keyword)),
         .abstract => if (args_core.checkdictionary(entry))
             access.get(entry, value.fromBytes(field, .keyword))
         else

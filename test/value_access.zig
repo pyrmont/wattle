@@ -75,11 +75,10 @@ const harness = @import("harness.zig");
 const raise = @import("subsystems").raise;
 const registry = @import("subsystems").registry;
 const repr = @import("repr");
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
-const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
@@ -128,7 +127,7 @@ var huge_value: repr.Value = undefined;
 /// faked, and Zig refusing the literal is what forces the choice.
 const intmax_int64_fits_in_a_length = std.math.maxInt(usize) >= 9007199254740992;
 
-const not_lengthable = "expected buffer, string, array, vector, table, struct, " ++
+const not_lengthable = "expected buffer, string, array, vector, table, map, " ++
     "symbol, keyword or tuple, got ";
 
 var slots_value: repr.Value = undefined;
@@ -295,10 +294,13 @@ fn nextStepsOverTombstones() !void {
     expect(count == 8);
 }
 
-fn nextVisitsEveryStructKeyOnce() !void {
-    const st = structs.begin(20);
-    for (0..20) |i| structs.put(st, intv(@intCast(i)), intv(@intCast(i)));
-    const s = wrap.fromStruct(structs.end(st));
+fn nextVisitsEveryMapKeyOnce() !void {
+    var entries: [40]repr.Value = undefined;
+    for (0..20) |i| {
+        entries[2 * i] = intv(@intCast(i));
+        entries[2 * i + 1] = intv(@intCast(i));
+    }
+    const s = wrap.fromMap(maps.build(.map, &entries));
 
     var seen = [_]bool{false} ** 20;
     var count: usize = 0;
@@ -312,29 +314,6 @@ fn nextVisitsEveryStructKeyOnce() !void {
         expect(count <= 20);
     }
     expect(count == 20);
-}
-
-/// Iteration reads the bucket array and nothing else, so a prototype's keys are
-/// not visited even though `in` finds them. The two disagree, and that is
-/// established behaviour rather than an accident: `(each k s ...)` over a
-/// struct with a prototype sees only the struct's own keys.
-fn nextDoesNotFollowAStructPrototype() !void {
-    const pst = structs.begin(1);
-    structs.put(pst, kw("inherited"), intv(1));
-    const proto = structs.end(pst);
-
-    const st = structs.begin(1);
-    structs.put(st, kw("own"), intv(2));
-    utils.structHead(st).proto = proto;
-    const s = wrap.fromStruct(structs.end(st));
-
-    const k = try access.next(s, wrap.fromNil());
-    expect(harness.equals(k, kw("own")));
-    expect(isNil(try access.next(s, k)));
-
-    // ...but the key is reachable through every accessor.
-    expect(harness.equals(try access.in(s, kw("inherited")), intv(1)));
-    expect(harness.equals(try access.get(s, kw("inherited")), intv(1)));
 }
 
 /// A table's prototype behaves the same way, and for the same reason.
@@ -355,7 +334,7 @@ fn nextDoesNotFollowATablePrototype() !void {
 /// the end of a zero-length bucket array.
 fn nextOverEmptyDictionaries() !void {
     expect(isNil(try access.next(wrap.fromTable(tables.new(0)), wrap.fromNil())));
-    const empty = wrap.fromStruct(structs.end(structs.begin(0)));
+    const empty = wrap.fromMap(maps.build(.map, &.{}));
     expect(isNil(try access.next(empty, wrap.fromNil())));
 }
 
@@ -679,9 +658,8 @@ fn inReadsEveryContainer() !void {
     tables.put(tab, kw("k"), intv(3));
     expect(harness.equals(try access.in(wrap.fromTable(tab), kw("k")), intv(3)));
 
-    const st = structs.begin(1);
-    structs.put(st, kw("k"), intv(4));
-    expect(harness.equals(try access.in(wrap.fromStruct(structs.end(st)), kw("k")), intv(4)));
+    const m = wrap.fromMap(maps.build(.map, &.{ kw("k"), intv(4) }));
+    expect(harness.equals(try access.in(m, kw("k")), intv(4)));
 
     expect(harness.equals(try access.in(slots_value, intv(2)), intv(12)));
 }
@@ -692,8 +670,8 @@ fn inReadsEveryContainer() !void {
 fn inOnAMissingDictionaryKeyIsNil() !void {
     const tab = tables.new(0);
     expect(isNil(try access.in(wrap.fromTable(tab), kw("nope"))));
-    const st = wrap.fromStruct(structs.end(structs.begin(0)));
-    expect(isNil(try access.in(st, kw("nope"))));
+    const m = wrap.fromMap(maps.build(.map, &.{}));
+    expect(isNil(try access.in(m, kw("nope"))));
     // Including keys no sequence would accept.
     expect(isNil(try access.in(wrap.fromTable(tab), wrap.fromNumber(1.5))));
 }
@@ -807,8 +785,7 @@ fn getAgreesWithInWhereBothSucceed() !void {
     buffers.pushCstringAbi(b, "AB");
     const tab = tables.new(0);
     tables.put(tab, kw("k"), intv(3));
-    const st = structs.begin(1);
-    structs.put(st, kw("k"), intv(4));
+    const m = wrap.fromMap(maps.build(.map, &.{ kw("k"), intv(4) }));
 
     const pairs = [_][2]repr.Value{
         .{ wrap.fromArray(a), intv(1) },
@@ -816,7 +793,7 @@ fn getAgreesWithInWhereBothSucceed() !void {
         .{ wrap.fromBuffer(b), intv(1) },
         .{ value.fromBytes("AB", .string), intv(0) },
         .{ wrap.fromTable(tab), kw("k") },
-        .{ wrap.fromStruct(structs.end(st)), kw("k") },
+        .{ m, kw("k") },
         .{ slots_value, intv(2) },
     };
     for (pairs) |pair| {
@@ -856,9 +833,7 @@ fn theGetIndexPolicies() !void {
     expect(harness.equals(try access.getIndex(wrap.fromTable(tab), 7), kw("seven")));
     expect(isNil(try access.getIndex(wrap.fromTable(tab), 0)));
 
-    const st = structs.begin(1);
-    structs.put(st, intv(7), kw("seven"));
-    const s = wrap.fromStruct(structs.end(st));
+    const s = wrap.fromMap(maps.build(.map, &.{ intv(7), kw("seven") }));
     expect(harness.equals(try access.getIndex(s, 7), kw("seven")));
     expect(isNil(try access.getIndex(s, 0)));
 
@@ -888,8 +863,7 @@ fn theLengthOfEveryContainer() !void {
     const tab = tables.new(0);
     tables.put(tab, kw("a"), intv(1));
     tables.put(tab, kw("b"), intv(2));
-    const st = structs.begin(1);
-    structs.put(st, kw("a"), intv(1));
+    const m = wrap.fromMap(maps.build(.map, &.{ kw("a"), intv(1) }));
 
     const cases = [_]struct { value: repr.Value, length: i32 }{
         .{ .value = value.fromBytes("abc", .string), .length = 3 },
@@ -899,19 +873,21 @@ fn theLengthOfEveryContainer() !void {
         .{ .value = wrap.fromBuffer(b), .length = 4 },
         .{ .value = wrap.fromTuple(tuples.end(t)), .length = 2 },
         .{ .value = wrap.fromTable(tab), .length = 2 },
-        .{ .value = wrap.fromStruct(structs.end(st)), .length = 1 },
+        .{ .value = m, .length = 1 },
     };
     for (cases) |case| {
         expect(try access.length(case.value) == case.length);
         expect(harness.equals(try access.lengthv(case.value), intv(case.length)));
     }
 
-    // A struct's length is its pair count, not its bucket count.
-    const wide = structs.begin(9);
-    for (0..9) |i| structs.put(wide, intv(@intCast(i)), intv(@intCast(i)));
-    const w = wrap.fromStruct(structs.end(wide));
+    // A map's length is its entry count, whatever its tree looks like.
+    var wide: [18]repr.Value = undefined;
+    for (0..9) |i| {
+        wide[2 * i] = intv(@intCast(i));
+        wide[2 * i + 1] = intv(@intCast(i));
+    }
+    const w = wrap.fromMap(maps.build(.map, &wide));
     expect(try access.length(w) == 9);
-    expect(utils.structHead(wrap.toStruct(w)).capacity > 9);
 }
 
 /// A table's length is its live count, so removing a key shortens it even
@@ -1156,12 +1132,12 @@ fn putOnANonWritablePanics() void {
     const t = tuples.begin(1);
     t[0] = intv(0);
     const tup = wrap.fromTuple(tuples.end(t));
-    const st = wrap.fromStruct(structs.end(structs.begin(0)));
+    const m = wrap.fromMap(maps.build(.map, &.{}));
 
     expect(refusal(access.put, .{ tup, intv(0), intv(1) })
         .beginsWith("expected buffer, array or table, got <tuple "));
-    expect(refusal(access.putIndex, .{ st, 0, intv(1) })
-        .beginsWith("expected buffer, array or table, got <struct "));
+    expect(refusal(access.putIndex, .{ m, 0, intv(1) })
+        .beginsWith("expected buffer, array or table, got <map "));
     expect(refusal(access.put, .{ value.fromBytes("ab", .string), intv(0), intv(1) })
         .says("expected buffer, array or table, got \"ab\""));
     expect(refusal(access.putIndex, .{ intv(5), 0, intv(1) })
@@ -1241,8 +1217,7 @@ fn body() !void {
 
     try nextVisitsEveryTableKeyOnce();
     try nextStepsOverTombstones();
-    try nextVisitsEveryStructKeyOnce();
-    try nextDoesNotFollowAStructPrototype();
+    try nextVisitsEveryMapKeyOnce();
     try nextDoesNotFollowATablePrototype();
     try nextOverEmptyDictionaries();
 

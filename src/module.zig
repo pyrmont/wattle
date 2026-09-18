@@ -41,7 +41,7 @@
 //! runs rather than one, and `Dictionary` for a dictionary's pairs, which a
 //! table holds with empty slots between them and a dictionary abstract in many
 //! runs. How long a getter's result stays valid depends on the
-//! type it came from. A string's, a tuple's and a struct's are stable while
+//! type it came from. A string's, a tuple's and a map's are stable while
 //! the value is reachable; a buffer's, an array's and a table's are not.
 //!
 //! A _capability_ is `opaque {}`. It is the authority to perform an operation
@@ -197,8 +197,8 @@ pub const Env = abi.Env;
 /// `.@"error"` in Zig.
 pub const FiberStatus = abi.FiberStatus;
 
-/// One key-value pair of a struct or a table. `Dictionary.next` returns a
-/// `Keyval`, and `structOf` and `tableOf` take a slice of `Keyval`.
+/// One key-value pair of a map or a table. `Dictionary.next` returns a
+/// `Keyval`, and `mapOf` and `tableOf` take a slice of `Keyval`.
 pub const Keyval = abi.Keyval;
 
 /// The capability to queue a callback for the loop thread's next turn.
@@ -288,20 +288,20 @@ pub const CFunction = *const fn ([]Value) Error!Value;
 /// ```
 pub const Chunk = struct { items: []const Value, start: usize };
 
-/// The pairs of a table, a struct or an abstract whose contents are pairs,
+/// The pairs of a table, a map or an abstract whose contents are pairs,
 /// read in order.
 ///
 /// `getDictionary` and `toDictionary` return a `Dictionary`. `count` is how
 /// many pairs there are, and `len` is how many values the runs hold, which
-/// counts a table's or a struct's empty slots. The other fields are the
+/// counts a table's empty slots. The other fields are the
 /// position reading has reached and the part of a run not yet returned, and an
 /// author does not set them.
 ///
-/// A table's or a struct's slots are one run, read with no crossing. An
-/// abstract's are read through its `chunk` callback, one crossing per run.
+/// A table's slots are one run, read with no crossing. A map's leaves and an
+/// abstract's runs are read through `dictionary_chunk`, one crossing per run.
 ///
 /// A `Dictionary` is valid until the module re-enters Janet code or mutates
-/// the value it reads. The pairs of a struct are stable while it is reachable.
+/// the value it reads. The pairs of a map are stable while it is reachable.
 /// A `put` on a table may rehash and move every pair, so a walk finishes
 /// before any `put`.
 ///
@@ -337,7 +337,7 @@ pub const Dictionary = struct {
     /// Returns the values from the next position to the end of its run, key
     /// then value, or null when every run has been returned.
     ///
-    /// A table's or a struct's run includes its empty slots, whose keys are
+    /// A table's run includes its empty slots, whose keys are
     /// nil. A run `next` has begun is returned from the next pair on.
     ///
     /// This function raises where `next` does.
@@ -915,7 +915,7 @@ pub fn getBytes(argv: []const Value, n: i32) Error![]const u8 {
     return p[0..view.len];
 }
 
-/// Gets the pairs of a table, a struct or a dictionary abstract from a slice of
+/// Gets the pairs of a table, a map or a dictionary abstract from a slice of
 /// `Value`.
 ///
 /// `argv` is named as such because this function is typically used to
@@ -1078,9 +1078,9 @@ pub fn isString(v: Value) bool {
     return checkTag(v, .string);
 }
 
-/// Returns whether a wrapped value is a struct.
-pub fn isStruct(v: Value) bool {
-    return checkTag(v, .@"struct");
+/// Returns whether a wrapped value is a map.
+pub fn isMap(v: Value) bool {
+    return checkTag(v, .map);
 }
 
 /// Returns whether a wrapped value is a symbol.
@@ -1134,7 +1134,7 @@ pub fn keyword(bytes: []const u8) Value {
 
 /// Returns the length of a value.
 ///
-/// `v` may be a string, symbol, keyword, buffer, array, tuple, struct or
+/// `v` may be a string, symbol, keyword, buffer, array, tuple, map or
 /// table. It may also be an abstract type with a `length` callback. A type
 /// without one has no length, whatever methods it has: a `:length` method is
 /// not called, as it would be in C Janet.
@@ -1506,15 +1506,16 @@ pub fn string(bytes: []const u8) Value {
     return interface.rt.new_string(bytes.ptr, bytes.len);
 }
 
-/// Wraps key-value pairs as a struct.
+/// Wraps key-value pairs as a map.
 ///
 /// If a key is repeated, the last key is associated with the value. A nil
 /// value drops its pair. `pairs` is the caller's own pairs, not a dictionary's
 /// hash array.
 ///
-/// The name is due to `struct` being a reserved word in Zig.
-pub fn structOf(pairs: []const Keyval) Value {
-    return interface.rt.new_struct(pairs.ptr, pairs.len);
+/// The name is `mapOf` rather than `map` because `map` is what a caller is
+/// likely to have named something of its own.
+pub fn mapOf(pairs: []const Keyval) Value {
+    return interface.rt.new_map(pairs.ptr, pairs.len);
 }
 
 /// Wraps a slice of `u8` as a symbol.
@@ -1524,8 +1525,8 @@ pub fn symbol(bytes: []const u8) Value {
 
 /// Wraps key-value pairs as a table.
 ///
-/// See `structOf` for a further explanation of duplicate keys and nil values.
-/// The name matches `structOf`.
+/// See `mapOf` for a further explanation of duplicate keys and nil values.
+/// The name matches `mapOf`.
 pub fn tableOf(pairs: []const Keyval) Value {
     return interface.rt.new_table(pairs.ptr, pairs.len);
 }
@@ -1549,7 +1550,7 @@ pub fn toAbstract(comptime T: type, v: Value, at: *const AbstractType) ?*T {
     return @ptrCast(@alignCast(p));
 }
 
-/// Returns the pairs of a table, a struct or a dictionary abstract.
+/// Returns the pairs of a table, a map or a dictionary abstract.
 ///
 /// `v` is a value read out of a view rather than an argument slot, such as an
 /// element of a tuple.
@@ -1732,7 +1733,7 @@ inline fn fromAbi(v: anytype) Error!@TypeOf(v) {
 
 /// Builds a `Dictionary` from the `abi.Dictionary` the runtime gives.
 ///
-/// A table's or a struct's slots are the one run, so reading starts past it
+/// A table's slots are the one run, so reading starts past it
 /// with the run as what is not yet returned. A null `items` is an empty value
 /// or an abstract, and either starts with no run.
 fn dictionaryOf(view: abi.Dictionary) Dictionary {

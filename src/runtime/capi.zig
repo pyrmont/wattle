@@ -120,7 +120,7 @@ pub const table: interface.Runtime = .{
     .new_buffer = &janet_new_buffer,
     .new_keyword = &janet_new_keyword,
     .new_string = &janet_new_string,
-    .new_struct = &janet_new_struct,
+    .new_map = &janet_new_map,
     .new_symbol = &janet_new_symbol,
     .new_table = &janet_new_table,
     .new_tuple = &janet_new_tuple,
@@ -174,7 +174,7 @@ const impl = struct {
     pub const value = @import("value.zig");
     pub const value_tuples = @import("value/tuples.zig");
     pub const value_arrays = @import("value/arrays.zig");
-    pub const value_structs = @import("value/structs.zig");
+    pub const value_maps = @import("value/maps.zig");
     pub const value_tables = @import("value/tables.zig");
     pub const value_helpers_access = @import("value/helpers/access.zig");
     pub const value_fibers = @import("value/fibers.zig");
@@ -551,9 +551,9 @@ pub fn janet_new_string(bytes: [*]const u8, len: usize) callconv(.c) repr.Value 
     return impl.value.fromBytes(bytes[0..len], .string);
 }
 
-pub fn janet_new_struct(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
+pub fn janet_new_map(kvs: [*]const abi.Keyval, len: usize) callconv(.c) repr.Value {
     requireJanetThread();
-    return impl.value_helpers_wrap.abi.fromStruct(impl.value_structs.newFrom(kvs[0..len]));
+    return impl.value_helpers_wrap.abi.fromMap(impl.value_maps.buildPairs(kvs[0..len]));
 }
 
 pub fn janet_new_symbol(bytes: [*]const u8, len: usize) callconv(.c) repr.Value {

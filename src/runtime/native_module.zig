@@ -272,7 +272,7 @@ fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
     // does.
     const seed = try wattle.getBytes(argv, 0);
     const items = [_]wattle.Value{ wattle.number(1), wattle.number(2) };
-    // Pairs, not a hash array. `structOf` and `tableOf` take what the caller
+    // Pairs, not a hash array. `mapOf` and `tableOf` take what the caller
     // wrote; a table's own storage is slots with empties among them, and
     // `Dictionary` is what reads that.
     const pairs = [_]wattle.Keyval{
@@ -288,7 +288,7 @@ fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
         wattle.tuple(&items),
         wattle.array(&items),
         wattle.buffer(seed),
-        wattle.structOf(&pairs),
+        wattle.mapOf(&pairs),
         wattle.tableOf(&pairs),
     };
     return wattle.tuple(&composites);
@@ -325,8 +325,8 @@ fn classify(argv: []wattle.Value) wattle.Error!wattle.Value {
         "tuple"
     else if (wattle.isArray(v))
         "array"
-    else if (wattle.isStruct(v))
-        "struct"
+    else if (wattle.isMap(v))
+        "map"
     else if (wattle.isTable(v))
         "table"
     else if (wattle.isFunction(v))

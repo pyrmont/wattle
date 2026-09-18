@@ -84,7 +84,7 @@
   # suites cover them in every `full` entry instead.)
   #
   # Phase 15 Part 1 replaced these with its own: the constructors and the three
-  # heads (`value_alloc`, `buffer_array`, `struct_table`, `string_symbol`,
+  # heads (`value_alloc`, `buffer_array`, `tables`, `string_symbol`,
   # `value_order`, `utils`), the compiler's registers (`regalloc`,
   # `emit_core`), the GC header (`gc_mark`, `gc_sweep`, `signal_core`,
   # `value_wrap`) and the widths that travel (`marsh`).
@@ -99,7 +99,7 @@
   # the retry loops and the `errno` accessor (`filewatch_core`, `ev_loop`,
   # `net_sockets`, `os_process`), the structures that stopped being `extern`
   # (`ev_core`, `os_surface`), the `callconv(.c)` residue in the value layer
-  # (`value_alloc`, `string_symbol`, `struct_table`), and `io.zig`'s handles
+  # (`value_alloc`, `string_symbol`, `tables`), and `io.zig`'s handles
   # (`pp_format`, `vm_run`). `io_core` and `os_fs` still cannot be named --
   # each creates files in the working directory two concurrent entries share.
   # `filewatch_core`, `ev_loop`, `net_sockets` and `ev_core` are the part's
@@ -113,7 +113,7 @@
   # Phase 15 Part 2 replaced these with the contracts over the bodies it
   # rewrote. The part touched 48 files, so this is not "what it changed" but
   # what its four *kinds* of change can break: the loops and the copies over
-  # the value types (`value_alloc`, `buffer_array`, `struct_table`,
+  # the value types (`value_alloc`, `buffer_array`, `tables`,
   # `string_symbol`), the optionals in the dictionary probe and the ordering
   # (`value_access`, `value_order`), the compiler's loops and scope unwraps
   # (`compiler_primitives`, `emit_core`, `specials_core`), the parser and the
@@ -128,7 +128,7 @@
   # their `callconv(.c)` and 48 unreferenced `pub` declarations went. So these
   # twelve are the contracts over the files those deletions touched: the value
   # layer's abi shims and the constructors (`value_wrap`, `value_alloc`,
-  # `string_symbol`, `struct_table`), the collector and the scratch table
+  # `string_symbol`, `tables`), the collector and the scratch table
   # (`gc_alloc`, `gc_mark`), the register allocator that became a type with
   # methods (`regalloc`, `emit_core`, `compiler_primitives`), the marshaller
   # whose abi was rewritten (`marsh`), the signal record whose `cRaiseClear`
@@ -173,7 +173,7 @@
   # them, so what a `contracts` entry can break is the layer underneath: every
   # fault message the getters raise (`args_core`), and the formatter that
   # renders them (`pp_format`); the six aggregates the three views read
-  # (`string_symbol`, `buffer_array`, `struct_table`); the unwraps behind each
+  # (`string_symbol`, `buffer_array`, `tables`); the unwraps behind each
   # getter and the `abi` namespace's bit layout (`value_wrap`); the length
   # `getRange` folds against (`value_access`); the file `KV` moved out of and
   # the traversal that walks a table (`marsh`); `abi.zig`'s own restructuring,
@@ -185,7 +185,7 @@
   # Phase 18 Part 8 keeps Part 7's list and adds the two the constructors
   # reach: `value_alloc`, because every constructor allocates through the
   # collector, and `gc_mark`, because a composite built by a module is
-  # reachable only from the value it answered. `buffer_array`, `struct_table`,
+  # reachable only from the value it answered. `buffer_array`, `tables`,
   # `string_symbol` and `value_access` were already here and are now the
   # constructors' subjects as well as the views'.
   #

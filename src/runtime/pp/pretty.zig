@@ -43,7 +43,6 @@ const order = @import("../value/helpers/order.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const strings = @import("../value/strings.zig");
-const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
@@ -81,7 +80,7 @@ const type_colors = [16][*:0]const u8{
     "\x1B[36m", // array
     "\x1B[36m", // vector
     "\x1B[36m", // table
-    "\x1B[36m", // struct
+    "\x1B[36m", // map
     "\x1B[34m", // symbol
     "\x1B[36m", // tuple
     "\x1B[36m", // fiber
@@ -388,10 +387,7 @@ fn integerToStringB(buffer: *buffers.Buffer, val: i32) raise.Error!i32 {
     return len + neg;
 }
 
-/// The entries of a struct or table, as `printJdnOne` writes them.
-///
-/// The two containers differ only in where their buckets and capacity come
-/// from, so both arrive as parameters.
+/// A dictionary's pairs, as `printJdnOne` writes them.
 ///
 /// The keys are sorted, as `prettyEntries` sorts them, because JDN is a
 /// serialisation format and storage order is not reproducible: a key hashed by
@@ -513,10 +509,11 @@ fn printJdnOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             if (try printJdnKvs(S, tab.slots(), depth)) return true;
             try S.pushByte('}');
         },
-        repr.Tag.@"struct" => {
-            const st = wrap.toStruct(x);
+        repr.Tag.map => {
+            var pairs = args_core.gatherPairs(x).?;
+            defer pairs.free();
             try S.pushByte('{');
-            if (try printJdnKvs(S, st[0..structs.head(st).capacity], depth)) return true;
+            if (try printJdnKvs(S, pairs.view.kvs.?[0..pairs.view.cap], depth)) return true;
             try S.pushByte('}');
         },
         else => return true,
@@ -542,7 +539,7 @@ fn printNewline(S: *Pretty, align_col: c_int) raise.Error!void {
     for (0..indent) |_| try S.pushByte(' ');
 }
 
-/// A struct or a table.
+/// A map or a table.
 fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Error!void {
     if (repr.checkType(x, repr.Tag.table)) {
         const t = wrap.toTable(x);
@@ -550,11 +547,6 @@ fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Error!void {
         try S.pushCstring("@");
         if (t.proto) |proto| {
             try pushClassName(S, tables.get(proto, value.fromBytes("_name", .keyword)));
-        }
-    } else {
-        const st = wrap.toStruct(x);
-        if (structs.head(st).proto) |proto| {
-            try pushClassName(S, structs.get(proto, value.fromBytes("_name", .keyword)));
         }
     }
 
@@ -567,7 +559,9 @@ fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Error!void {
     if (S.depth == 0) {
         try pushEllipsis(S);
     } else {
-        try prettyEntries(S, x, align_col);
+        var pairs = args_core.gatherPairs(x).?;
+        defer pairs.free();
+        try prettyEntries(S, pairs.view, align_col);
     }
     S.depth += 1;
 
@@ -575,9 +569,13 @@ fn prettyDictionary(S: *Pretty, x: repr.Value) raise.Error!void {
     S.align_col += 1;
 }
 
-/// The entries of a struct or table, sorted where sorting is affordable.
-fn prettyEntries(S: *Pretty, x: repr.Value, align_col: c_int) raise.Error!void {
-    const view = args_core.dictionaryView(x).?;
+/// The pairs of a dictionary, sorted where sorting is affordable.
+///
+/// A map's order is a function of the hash of each key, and a key that hashes
+/// by pointer, or any key at all under `-Dprf`, gives a different order in a
+/// second run. So a map is sorted exactly as a table is, which is what makes
+/// one dictionary print the same way twice.
+fn prettyEntries(S: *Pretty, view: args_core.DictView, align_col: c_int) raise.Error!void {
     var len = view.len;
     const ks_start = S.keysort_start;
     var truncated = false;
@@ -742,7 +740,7 @@ fn prettyOne(S: *Pretty, x: repr.Value) raise.Error!void {
 
     switch (repr.typeOf(x)) {
         repr.Tag.array, repr.Tag.tuple => try prettyIndexed(S, x),
-        repr.Tag.@"struct", repr.Tag.table => try prettyDictionary(S, x),
+        repr.Tag.map, repr.Tag.table => try prettyDictionary(S, x),
         else => try prettyLeaf(S, x),
     }
 

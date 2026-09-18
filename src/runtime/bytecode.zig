@@ -34,7 +34,6 @@ const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
@@ -57,7 +56,7 @@ const disasm_fields = [_]struct { name: [*:0]const u8, field: disasm.Field }{
     .{ .name = "source", .field = .source },
     .{ .name = "name", .field = .name },
     .{ .name = "vararg", .field = .vararg },
-    .{ .name = "structarg", .field = .structarg },
+    .{ .name = "maparg", .field = .maparg },
     .{ .name = "namedargs", .field = .namedargs },
     .{ .name = "slotcount", .field = .slotcount },
     .{ .name = "symbolmap", .field = .symbolmap },
@@ -117,8 +116,8 @@ pub const opcodes = [_]OpcodeDefinition{
     .{ .name = "mkarr", .opcode = constants.Opcode.make_array },
     .{ .name = "mkbtp", .opcode = constants.Opcode.make_bracket_tuple },
     .{ .name = "mkbuf", .opcode = constants.Opcode.make_buffer },
+    .{ .name = "mkmap", .opcode = constants.Opcode.make_map },
     .{ .name = "mkstr", .opcode = constants.Opcode.make_string },
-    .{ .name = "mkstu", .opcode = constants.Opcode.make_struct },
     .{ .name = "mktab", .opcode = constants.Opcode.make_table },
     .{ .name = "mktup", .opcode = constants.Opcode.make_tuple },
     .{ .name = "mkvec", .opcode = constants.Opcode.make_vector },
@@ -170,11 +169,11 @@ const type_aliases = [_]TypeAlias{
     .{ .name = "function", .mask = repr.TagSet.one(.function) },
     .{ .name = "indexed", .mask = repr.TagSet.indexed },
     .{ .name = "keyword", .mask = repr.TagSet.one(.symbol) },
+    .{ .name = "map", .mask = repr.TagSet.one(.map) },
     .{ .name = "nil", .mask = repr.TagSet.one(.nil) },
     .{ .name = "number", .mask = repr.TagSet.one(.number) },
     .{ .name = "pointer", .mask = repr.TagSet.one(.pointer) },
     .{ .name = "string", .mask = repr.TagSet.one(.string) },
-    .{ .name = "struct", .mask = repr.TagSet.one(.@"struct") },
     .{ .name = "symbol", .mask = repr.TagSet.one(.symbol) },
     .{ .name = "table", .mask = repr.TagSet.one(.table) },
     .{ .name = "tuple", .mask = repr.TagSet.one(.tuple) },
@@ -612,7 +611,7 @@ pub fn libAsm(env: *tables.Table) raise.Error!void {
             "* :min-arity - minimum number of arguments function can be called with.\n" ++
             "* :max-arity - maximum number of arguments function can be called with.\n" ++
             "* :vararg - true if function can take a variable number of arguments.\n" ++
-            "* :structarg - true if function can take a variable number of arguments using the &keys option.\n" ++
+            "* :maparg - true if function can take a variable number of arguments using the &keys option.\n" ++
             "* :namedargs - if function can take a variable number of arguments using the &named option, this will be the number of named arguments.\n" ++
             "* :bytecode - array of parsed bytecode instructions. Each instruction is a tuple.\n" ++
             "* :source - name of source file that this function was compiled from.\n" ++
@@ -642,15 +641,13 @@ pub fn parentForEnvironment(context: *Assembler, environment: u32) ?*Assembler {
 }
 
 /// Reads the funcdef's header fields out of `source`: its name, its three
-/// arities, the vararg and struct-argument flags, the named-argument count and
+/// arities, the vararg and map-argument flags, the named-argument count and
 /// the source name.
 pub fn parseHeader(
     a: *Assembler,
     source: repr.Value,
 ) AsmError!void {
-    if (!repr.checkTypes(source, repr.TagSet.dictionary) and
-        maps.toTree(source, .map) == null)
-    {
+    if (!repr.checkTypes(source, repr.TagSet.dictionary)) {
         return a.fail("expected dictionary for assembly source");
     }
     const definition = a.def;
@@ -678,8 +675,8 @@ pub fn parseHeader(
     if (repr.truthy(val)) definition.flags.vararg = true;
     definition.slotcount = definition.arity + @intFromBool(definition.flags.vararg);
 
-    val = getFieldByName(source, "structarg");
-    if (repr.truthy(val)) definition.flags.structarg = true;
+    val = getFieldByName(source, "maparg");
+    if (repr.truthy(val)) definition.flags.maparg = true;
 
     val = getFieldByName(source, "namedargs");
     if (args_core.checkint(val)) {
@@ -1060,18 +1057,13 @@ fn findTypeMask(name: [*:0]const u8) ?repr.TagSet {
 /// which is what lets `asm1` ask for a field of a source it has not yet
 /// validated.
 ///
-/// The three dictionaries are read by type rather than through `access.get`,
+/// The two dictionaries are read by tag rather than through `access.get`,
 /// which raises: the assembler reports with `Assembler.fail` and has no raise
-/// to propagate. `maps.find` cannot raise, so a map is as readable here as the
-/// other two, and when a map has a tag this becomes a third arm of the switch.
+/// to propagate. Neither `tables.get` nor `maps.lookup` can raise.
 fn getField(ds: repr.Value, key: repr.Value) repr.Value {
     return switch (repr.typeOf(ds)) {
         repr.Tag.table => tables.get(wrap.toTable(ds), key),
-        repr.Tag.@"struct" => structs.get(wrap.toStruct(ds), key),
-        repr.Tag.abstract => if (maps.toTree(ds, .map)) |tree|
-            if (maps.find(tree, .map, key)) |found| found[1] else wrap.fromNil()
-        else
-            wrap.fromNil(),
+        repr.Tag.map => maps.lookup(wrap.toMap(ds), key),
         else => wrap.fromNil(),
     };
 }

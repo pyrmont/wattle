@@ -58,7 +58,7 @@ const marsh = subsystems.marsh;
 const raise = @import("subsystems").raise;
 const registry = subsystems.registry;
 const repr = @import("repr");
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const value = @import("subsystems").value;
@@ -708,10 +708,10 @@ fn envLookupIntoPrefixesAndRecurses() void {
     env.proto = proto;
     tables.put(env, value.fromBytes("plain", .symbol), anEntry("value", w(2)));
     tables.put(env, value.fromBytes("by-ref", .symbol), anEntry("ref", w(3)));
-    // A struct entry is read the same way a table entry is.
-    const st = structs.begin(1);
-    structs.put(st, value.fromBytes("value", .keyword), w(4));
-    tables.put(env, value.fromBytes("from-struct", .symbol), wrap.fromStruct(structs.end(st)));
+    // A map entry is read the same way a table entry is.
+    tables.put(env, value.fromBytes("from-map", .symbol), wrap.fromMap(maps.build(.map, &.{
+        value.fromBytes("value", .keyword), w(4),
+    })));
     // Anything else has no value at all, and a non-symbol key is skipped.
     tables.put(env, value.fromBytes("opaque", .symbol), w(99));
     tables.put(env, value.fromBytes("not-a-symbol", .keyword), anEntry("value", w(5)));
@@ -720,7 +720,7 @@ fn envLookupIntoPrefixesAndRecurses() void {
     marsh.envLookupInto(flat, env, null, 1);
     expect(harness.integerIs(tables.get(flat, value.fromBytes("plain", .symbol)), 2));
     expect(harness.integerIs(tables.get(flat, value.fromBytes("by-ref", .symbol)), 3));
-    expect(harness.integerIs(tables.get(flat, value.fromBytes("from-struct", .symbol)), 4));
+    expect(harness.integerIs(tables.get(flat, value.fromBytes("from-map", .symbol)), 4));
     expect(harness.integerIs(tables.get(flat, value.fromBytes("inherited", .symbol)), 1));
     expect(harness.isType(tables.get(flat, value.fromBytes("opaque", .symbol)), repr.Tag.nil));
     expect(harness.isType(tables.get(flat, value.fromBytes("not-a-symbol", .keyword)), repr.Tag.nil));
@@ -792,8 +792,11 @@ fn theDiagnosticsNameAByteAndAnOffset() void {
 /// A struct's prototype has to be a struct and a table's a table, and the
 /// message names the type set rather than the type.
 fn aPrototypeIsTypeChecked() void {
-    expect(refusedBy("\xdf\x00\x00").?.says("expected type struct, got 0"));
     expect(refusedBy("\xd4\x00\x00").?.says("expected type table, got 0"));
+    // 223 was a struct with a prototype. A map is the immutable dictionary
+    // now and has no prototype, so the number names nothing and is refused as
+    // any other unknown byte is.
+    expect(refusedBy("\xdf\x00\x00").?.says("unknown byte df at index 0"));
 }
 
 /// A fiber is only ALIVE while it is running, so the refusal can only be

@@ -355,7 +355,7 @@ const inotify = struct {
                             value.fromBytes("cookie", .keyword),    wrap.fromInteger(@as(i32, @bitCast(inevent.cookie))),
                             value.fromBytes("type", .keyword),      etype,
                         };
-                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromAbstract(maps.build(.map, &fields)));
+                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromMap(maps.build(.map, &fields)));
                     }
                     // Read some more if possible.
                     continue :read_more;
@@ -561,7 +561,7 @@ const kqueue = struct {
                             value.fromBytes("dir-name", .keyword),  split[0],
                             value.fromBytes("file-name", .keyword), split[1],
                         };
-                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromAbstract(maps.build(.map, &fields)));
+                        _ = try ev_loop.channelGive(watcher.channel, wrap.fromMap(maps.build(.map, &fields)));
                     }
                 }
             },
@@ -801,7 +801,7 @@ const win = struct {
                         value.fromBytes("file-name", .keyword), filename,
                         value.fromBytes("dir-name", .keyword),  wrap.fromString(ow.dir_path),
                     };
-                    _ = try ev_loop.channelGive(watcher.channel, wrap.fromAbstract(maps.build(.map, &fields)));
+                    _ = try ev_loop.channelGive(watcher.channel, wrap.fromMap(maps.build(.map, &fields)));
 
                     if (fni.NextEntryOffset == 0) break;
                     const base: [*]u8 = @ptrCast(fni);

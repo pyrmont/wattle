@@ -378,7 +378,10 @@ fn theJdnWriterSortsItsKeys() void {
     const after = formatted("%j", slot[0..]) catch @panic("raised");
     expect(std.mem.eql(u8, before[0..before_len], bytes(after)));
 
-    // A struct takes the same path, and nesting keeps each level's own order.
+    // A map takes the same path, and nesting keeps each level's own order. A
+    // map's entries are ordered by the hash of each key, which a key hashing
+    // by pointer, and every key under `-Dprf`, makes unreproducible, so the
+    // sort is what a map needs here as much as a table does.
     const nested = eval("{:b {:z 1 :a 2} :a 3}");
     var nest_slot = [_]repr.Value{nested};
     checkString(

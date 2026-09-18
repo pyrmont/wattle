@@ -20,7 +20,7 @@
 //!
 //! Three getters cover every Janet aggregate an argument can be:
 //! `getBytes`, `getIndexed` and `getDictionary`. Each reads a pair of types
-//! the same way: a string or a buffer, a tuple or an array, a struct, a
+//! the same way: a string or a buffer, a tuple or an array, a map, a
 //! table or a map. `slug` calls `getBytes` and `getIndexed`, `query` calls
 //! `getDictionary`, and `cut` takes a range over a length of its own. Between them that is the whole of what
 //! this module asks the runtime for.
@@ -243,11 +243,11 @@ fn cut(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.cstring(out[0..n :0]);
 }
 
-/// Returns a query string parsed back into a struct. Implements
+/// Returns a query string parsed back into a map. Implements
 /// `(url/parse-query query)`.
 ///
 /// `argv` slot 0 is the query string. A repeated key keeps the last, which
-/// is what a struct literal does and what `wattle.structOf` documents.
+/// is what a struct literal does and what `wattle.mapOf` documents.
 ///
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if there are more than thirty-two fields, or
@@ -255,7 +255,7 @@ fn cut(argv: []wattle.Value) wattle.Error!wattle.Value {
 fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
     const text = try wattle.getBytes(argv, 0);
-    if (text.len == 0) return wattle.structOf(&.{});
+    if (text.len == 0) return wattle.mapOf(&.{});
 
     var pairs: [32]wattle.Keyval = undefined;
     var n: usize = 0;
@@ -266,14 +266,14 @@ fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
             return wattle.panicFormat("field {d} has no '='", .{n});
         // `wattle.keyword` and `wattle.string` take the `[]const u8` that
         // `wattle.getBytes` returned, so nothing is copied here; the runtime
-        // interns its own copy, which is what lets the struct outlive `text`.
+        // interns its own copy, which is what lets the map outlive `text`.
         pairs[n] = .{
             .key = wattle.keyword(field[0..eq]),
             .value = wattle.string(field[eq + 1 ..]),
         };
         n += 1;
     }
-    return wattle.structOf(pairs[0..n]);
+    return wattle.mapOf(pairs[0..n]);
 }
 
 // ==========================================================================
@@ -292,9 +292,9 @@ fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
 fn defs(env: *wattle.Env) wattle.Error!void {
     wattle.cfuns(env, "url", &.{
         wattle.reg("slug", &slug, "(url/slug title &opt opts)\n\nA title as a URL path segment."),
-        wattle.reg("query", &query, "(url/query params)\n\nA struct or table as a query string."),
+        wattle.reg("query", &query, "(url/query params)\n\nA map or table as a query string."),
         wattle.reg("cut", &cut, "(url/cut text &opt start end)\n\nA slice of a byte argument."),
-        wattle.reg("parse-query", &parseQuery, "(url/parse-query query)\n\nA query string back into a struct."),
+        wattle.reg("parse-query", &parseQuery, "(url/parse-query query)\n\nA query string back into a map."),
     });
 }
 

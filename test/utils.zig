@@ -18,8 +18,8 @@
 //! ## The four accessors recover what four other files wrote
 //!
 //! A string's length is written through `value/strings.zig`'s own `head` and
-//! read back here through `utils.zig`'s accessor; a struct's through
-//! `value/structs.zig`'s. So each case below builds a value with a constructor
+//! read back here through `utils.zig`'s accessor; a tuple's through
+//! `value/tuples.zig`'s. So each case below builds a value with a constructor
 //! and reads its head back with the accessor, which puts two independent
 //! spellings of the same offset against each other.
 
@@ -42,10 +42,10 @@ const constants = @import("constants");
 const expect = @import("expect.zig").expect;
 
 const harness = @import("harness.zig");
+const maps = @import("subsystems").value.maps;
 const order = @import("subsystems").value.order;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
@@ -123,13 +123,6 @@ fn theHeadAccessorsRecoverWhatTheConstructorsWrote() void {
     const tuple_head = utils.tupleHead(tup);
     expect(tuple_head.length == 2);
     expect(payloadOffset(tuple_head, tup) == @sizeOf(tuples.TupleHead));
-
-    const kvs = structs.begin(1);
-    structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(3));
-    const st = structs.end(kvs);
-    const struct_head = utils.structHead(st);
-    expect(struct_head.length == 1);
-    expect(payloadOffset(struct_head, st) == @sizeOf(structs.StructHead));
 
     const abst = abstracts.newBytes(&head_probe_at, 8);
     const abstract_head = utils.abstractHead(abst);
@@ -282,20 +275,18 @@ fn theProbeDistinguishesATombstoneFromAnEmptyBucket() void {
     }
 }
 
-/// A struct takes the same probe, and `value.dictionaryGet` is the wrapper
-/// that turns "found a nil key" into nil.
+/// `value.dictionaryGet` is the wrapper over the probe that turns "found a nil
+/// key" into nil.
 fn dictionaryGetTurnsAMissIntoNil() void {
-    const kvs = structs.begin(2);
-    structs.put(kvs, value.fromBytes("a", .keyword), harness.wrapInteger(1));
-    structs.put(kvs, value.fromBytes("b", .keyword), harness.wrapInteger(2));
-    const st = structs.end(kvs);
-    const capacity = utils.structHead(st).capacity;
+    const t = tables.new(2);
+    _ = tables.put(t, value.fromBytes("a", .keyword), harness.wrapInteger(1));
+    _ = tables.put(t, value.fromBytes("b", .keyword), harness.wrapInteger(2));
 
     expect(wrap.toInteger(
-        value.dictionaryGet(st[0..@intCast(capacity)], value.fromBytes("a", .keyword)),
+        value.dictionaryGet(t.slots(), value.fromBytes("a", .keyword)),
     ) == 1);
     expect(harness.isType(
-        value.dictionaryGet(st[0..@intCast(capacity)], value.fromBytes("z", .keyword)),
+        value.dictionaryGet(t.slots(), value.fromBytes("z", .keyword)),
         repr.Tag.nil,
     ));
 }
@@ -389,21 +380,19 @@ fn theCollectionHashesAreWhatTheHeadsStore() void {
         harness.wrapInteger(3),
     };
 
-    // The seed is 33, so a zero-length run hashes to it. That is the one value
-    // of the two collection hashes a caller can predict.
+    // The seed is 33, so a zero-length run hashes to it. That is the one
+    // value of the collection hash a caller can predict.
     expect(value.hashIndexed(items[0..0]) == 33);
-    expect(value.hashDictionary(&.{}) == 33);
 
     // A tuple's stored hash is what `value.hashIndexed` computed, and the
     // head it is stored in is recovered by the accessor above.
     const tup = tuples.newFrom(&items);
     expect(utils.tupleHead(tup).hash == value.hashIndexed(tup[0..3]));
 
-    const kvs = structs.begin(1);
-    structs.put(kvs, value.fromBytes("k", .keyword), harness.wrapInteger(1));
-    const st = structs.end(kvs);
-    const head = utils.structHead(st);
-    expect(head.hash == value.hashDictionary(st[0..head.capacity]));
+    // A map keeps a running sum rather than a hash over a bucket array, and
+    // its stored hash is that sum mixed with its count.
+    const built = maps.build(.map, &.{ value.fromBytes("k", .keyword), harness.wrapInteger(1) });
+    expect(maps.hashOf(built) == order.hash(wrap.fromMap(built)));
 }
 
 /// `utils.base64` and the three name tables, checked by position.
@@ -426,7 +415,7 @@ fn theTablesAreIndexedByTheNumbersACallerHas() void {
     // would produce if it were sorted.
     const expected_types = [_][:0]const u8{
         "number",   "nil",       "boolean",  "buffer",  "string", "array",
-        "vector",   "table",     "struct",   "symbol",  "tuple",  "fiber",
+        "vector",   "table",     "map",      "symbol",  "tuple",  "fiber",
         "function", "cfunction", "abstract", "pointer",
     };
     for (expected_types, 0..) |want, i| {

@@ -378,8 +378,8 @@
         "unexpected closing delimiter")
 (def pod (parser/new))
 (parser/consume pod "{1}")
-(assert (= "struct and table literals expect even number of arguments" (parser/error pod))
-        "odd struct literal")
+(assert (= "map and table literals expect even number of arguments" (parser/error pod))
+        "odd map literal")
 
 # A parse error that is *not* a delimiter error leaves the parser alive but
 # holding an unread message, and the two states report differently. This is the

@@ -38,6 +38,7 @@ const fatal = @import("fatal.zig");
 const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
 const gc_alloc = @import("gc.zig");
+const maps = @import("value/maps.zig");
 const optimize = @import("compiler/optimize.zig");
 const order = @import("value/helpers/order.zig");
 const pp_format = @import("pp/format.zig");
@@ -49,7 +50,6 @@ const scratch_vector = @import("scratch_vector.zig");
 const specials = @import("special_type.zig");
 const specials_core = @import("compiler/specials.zig");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
@@ -844,11 +844,19 @@ pub fn toslots(
 
 /// Compiles every key and value of a dictionary into one slot vector,
 /// alternating.
+///
+/// The keys are sorted, which fixes the order a literal's forms are evaluated
+/// in. Neither dictionary gives one otherwise: a table's slots are in storage
+/// order and a map's entries are ordered by the hash of each key, and a key
+/// that hashes by pointer, or any key under `-Dprf`, orders differently in a
+/// second run.
 pub fn toslotskv(compiler: *Compiler, dictionary: repr.Value) raise.Error!scratch_vector.Vector(Slot) {
     var result: scratch_vector.Vector(Slot) = .empty;
     var options = foptsDefault(compiler);
     options.flags.accept_splice = true;
-    const view = args_core.dictionaryView(dictionary).?;
+    var pairs = args_core.gatherPairs(dictionary).?;
+    defer pairs.free();
+    const view = pairs.view;
 
     var stack_indices: [32]i32 = undefined;
     var heap_indices: ?[*]i32 = null;
@@ -936,7 +944,7 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
             repr.Tag.symbol => result = if (wrap.isKeyword(val)) cslot(val) else try resolve(compiler, wrap.toSymbol(val)),
             repr.Tag.array => result = try makeArray(options, val),
             repr.Tag.vector => result = try makeVector(options, val),
-            repr.Tag.@"struct" => result = try makeDictionary(options, val, constants.Opcode.make_struct),
+            repr.Tag.map => result = try makeDictionary(options, val, constants.Opcode.make_map),
             repr.Tag.table => result = try makeDictionary(options, val, constants.Opcode.make_table),
             repr.Tag.buffer => result = try makeBuffer(options, val),
             else => result = cslot(val),
@@ -1231,13 +1239,11 @@ fn makeValue(options: FormOptions, slots: scratch_vector.Vector(Slot), operation
         }
     }
 
-    if (can_inline and operation == constants.Opcode.make_struct) {
-        const structure = structs.begin(@intCast(count / 2));
-        var index: usize = 0;
-        while (index < count) : (index += 2) {
-            structs.put(structure, slots.items[index].constant, slots.items[index + 1].constant);
-        }
-        const result = cslot(wrap.fromStruct(structs.end(structure)));
+    if (can_inline and operation == constants.Opcode.make_map) {
+        const entries: [*]repr.Value = @ptrCast(@alignCast(gc_alloc.smalloc(@sizeOf(repr.Value) * count)));
+        for (slots.items, 0..) |slot, index| entries[index] = slot.constant;
+        const result = cslot(wrap.fromMap(maps.build(.map, entries[0..count])));
+        gc_alloc.sfree(entries);
         freeslots(compiler, slots);
         return result;
     }
@@ -1443,7 +1449,7 @@ fn validateCall(
             const definition = function_value.def.?;
             const minimum = definition.min_arity;
             const maximum = definition.max_arity;
-            const has_struct_argument = definition.flags.structarg;
+            const has_map_argument = definition.flags.maparg;
             const has_named_arguments = definition.flags.namedargs;
 
             if (minimum_arity < 0) {
@@ -1459,7 +1465,7 @@ fn validateCall(
             if (minimum_arity < minimum) {
                 try arityError(compiler, "%v expects at least %d argument%s, got %d", function.constant, minimum, minimum_arity);
             }
-            if (has_struct_argument and
+            if (has_map_argument and
                 minimum_arity > definition.arity and
                 (minimum_arity - definition.arity) & 1 != 0)
             {

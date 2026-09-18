@@ -69,7 +69,6 @@ const raise = @import("subsystems").raise;
 const registry = @import("subsystems").registry;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
@@ -370,26 +369,6 @@ fn fillTable() void {
     _ = gc_alloc.gcunroot(wrap.fromTable(table));
 }
 
-fn fillStruct() void {
-    const st = structs.begin(2);
-    const mem = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
-    vm_calls.fillStruct(st, &mem, 4);
-    const done = structs.end(st);
-    expect(structs.head(done).length == 2);
-    expect(harness.integerIs(harness.field(done, "a"), 1));
-    expect(harness.integerIs(harness.field(done, "b"), 2));
-
-    // A struct stops taking pairs at the length it was begun with, so a pair
-    // past the count shows only where an earlier one was dropped. A nil value
-    // is dropped, which leaves room for the pair after the last.
-    const holed = structs.begin(2);
-    const past = [_]repr.Value{ kw("a"), wrap.fromNil(), kw("b"), intv(2), kw("c"), intv(3) };
-    vm_calls.fillStruct(holed, &past, 4);
-    const filled = structs.end(holed);
-    expect(harness.integerIs(harness.field(filled, "b"), 2));
-    expect(harness.isType(harness.field(filled, "c"), repr.Tag.nil));
-}
-
 fn fillString() raise.Error!void {
     const buffer = buffers.new(8);
     const mem = [_]repr.Value{ intv(1), kw("ab"), eval("\"cd\"") };
@@ -453,7 +432,6 @@ fn cfunContract(argv: []repr.Value) raise.Error!repr.Value {
     try callNonfn();
 
     fillTable();
-    fillStruct();
     try fillString();
     aRaiseFromInsideAFillLoop();
 

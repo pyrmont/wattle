@@ -26,8 +26,6 @@
 
 # OS Date test
 # 719f7ba0c
-# `os/date` returns a map, not a struct, so the expected value is built with
-# `hash-map`: `{...}` is still a struct literal and would not be equal to one.
 (assert (deep= (hash-map :year-day 0
                          :minutes 30
                          :month 0
@@ -38,7 +36,7 @@
                          :hours 20
                          :week-day 3)
                (os/date 1388608200)) "os/date")
-(assert (= :core/map (type (os/date 1388608200))) "os/date returns a map")
+(assert (= :map (type (os/date 1388608200))) "os/date returns a map")
 
 # OS mktime test
 # 3ee43c3ab

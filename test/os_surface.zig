@@ -59,7 +59,7 @@ const os_files = subsystems.fs;
 const os_stat = subsystems.stat;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
@@ -221,8 +221,8 @@ fn bindingField(env: *tables.Table, name: [*:0]const u8, field: [*:0]const u8) r
     if (harness.isType(binding, repr.Tag.table)) {
         return tables.get(wrap.toTable(binding), value.fromBytes(std.mem.span(field), .keyword));
     }
-    if (harness.isType(binding, repr.Tag.@"struct")) {
-        return structs.get(wrap.toStruct(binding), value.fromBytes(std.mem.span(field), .keyword));
+    if (harness.isType(binding, repr.Tag.map)) {
+        return maps.lookup(wrap.toMap(binding), value.fromBytes(std.mem.span(field), .keyword));
     }
     return wrap.fromNil();
 }
@@ -306,7 +306,7 @@ fn theRegistration() void {
     for (expected_bindings) |name| {
         const binding = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
         expect(!harness.isType(binding, repr.Tag.nil));
-        expect(harness.isType(binding, repr.Tag.table) or harness.isType(binding, repr.Tag.@"struct"));
+        expect(harness.isType(binding, repr.Tag.table) or harness.isType(binding, repr.Tag.map));
         count += 1;
 
         // `corefn.reg` drops the source map when the *bootstrap* was built
@@ -557,13 +557,13 @@ fn theOptionalArguments() void {
         \\  (os/setenv "TZ" "EST5EDT,M3.2.0,M11.1.0")
         \\  (assert (= 3600 (- (os/mktime (merge base {:dst false}) true)
         \\                     (os/mktime (merge base {:dst true}) true))))
-        \\  (assert (= 3600 (- (os/mktime (struct ;(kvs base) :dst false) true)
-        \\                     (os/mktime (struct ;(kvs base) :dst true) true))))
+        \\  (assert (= 3600 (- (os/mktime (hash-map ;(kvs base) :dst false) true)
+        \\                     (os/mktime (hash-map ;(kvs base) :dst true) true))))
         \\  (assert (= (os/mktime base true)
         \\             (os/mktime (merge base {:dst false}) true)))
         \\  (assert (= (os/mktime base true) (os/mktime (merge-into @{} base) true)))
         \\  (assert (= (os/mktime (merge base {:dst true}) true)
-        \\             (os/mktime (struct ;(kvs base) :dst true) true)))
+        \\             (os/mktime (hash-map ;(kvs base) :dst true) true)))
         \\  (if saved-tz (os/setenv "TZ" saved-tz) (os/setenv "TZ")))
         \\(assert (= (os/mktime base) (os/mktime base nil)))
         \\(assert (= "expected positive integer" (in (protect (os/cryptorand -1)) 1)))

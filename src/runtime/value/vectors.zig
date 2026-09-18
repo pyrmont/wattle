@@ -575,7 +575,7 @@ fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
     if (maps.toTree(argv[0], .map) != null) return maps.assocMap(argv);
     var v = toVector(argv[0]) orelse
-        return pp_format.panicf("bad slot #0, expected vector or core/map, got %v", .{argv[0]});
+        return pp_format.panicf("bad slot #0, expected vector or map, got %v", .{argv[0]});
     try checkPairs(argv);
     var i: usize = 1;
     while (i < argv.len) : (i += 2) {

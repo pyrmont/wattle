@@ -1,0 +1,73 @@
+# Copyright (c) 2026 Calvin Rose
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to
+# deal in the Software without restriction, including without limitation the
+# rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+# sell copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+# IN THE SOFTWARE.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+# A map literal is order-independent, because a map's entries are ordered by
+# the hash of each key and by nothing else.
+# 21bd960
+(assert (= {1 2 3 4 5 6 7 8} {7 8 5 6 3 4 1 2})
+        "map literal order does not matter 1")
+# 42a88de
+(assert (= {:apple 1 6 :bork '(1 2 3) 5}
+           {6 :bork '(1 2 3) 5 :apple 1})
+        "map literal order does not matter 2")
+(assert (= {1 2 3 4} (hash-map 3 4 1 2))
+        "a literal and the constructor build one map")
+
+# A nil value removes its key, in a literal as in `hash-map`.
+# 38a7e4faf
+(assert (= (length {2 1 3 nil}) 1) "nil value map literal")
+(assert (= (length (hash-map 2 1 3 nil)) 1) "nil value map constructor")
+
+# A key a map cannot store is refused rather than dropped. In a literal whose
+# keys are written out the refusal is the parser's, and in one built at run
+# time it is the constructor's.
+(assert-error "cannot use nil as a key" (eval-string "{1 2 nil 3}"))
+(assert-error "cannot use nan as a key" (eval-string "{1 2 (/ 0 0) 3}"))
+(assert-error "cannot use nil as a key" (hash-map 1 2 nil 3))
+(assert-error "cannot use nan as a key" (hash-map 1 2 (/ 0 0) 3))
+
+# Duplicate keys take the last value.
+# 8bc2987a7
+(assert (= {:a 3 :b 2} {:a 1 :b 2 :a 3}) "map literal duplicate keys")
+(assert (= {:a 3 :b 2} (hash-map :a 1 :b 2 :a 3))
+        "map constructor duplicate keys")
+
+# An odd number of forms is a parse error, not a run-time one.
+(assert-error "map and table literals expect even number of arguments"
+              (eval-string "{1 2 3}"))
+
+# A map has no prototype: `getproto` is a table's question alone.
+(assert-error "expected table, got {:a 1}" (getproto {:a 1}))
+
+# The two conversions between the dictionaries. Neither follows a prototype.
+(def t @{:a 1 :b 2})
+(table/setproto t @{:c 3})
+(assert (= {:a 1 :b 2} (table/to-map t)) "table/to-map drops the prototype")
+(assert (deep= @{:a 1 :b 2} (map/to-table {:a 1 :b 2})) "map/to-table")
+(assert (= :table (type (map/to-table {:a 1}))) "map/to-table gives a table")
+
+# `freeze` gives a map, and `thaw` gives a table again.
+(assert (= {:a 1 :b [1 2]} (freeze @{:a 1 :b @[1 2]})) "freeze gives a map")
+(assert (deep= @{:a 1} (thaw {:a 1})) "thaw gives a table")
+
+(end-suite)

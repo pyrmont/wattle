@@ -187,7 +187,7 @@ pub const MemoryType = enum(u8) {
     array = 3,
     tuple = 4,
     table = 5,
-    @"struct" = 6,
+    map = 6,
     fiber = 7,
     buffer = 8,
     function = 9,
@@ -303,8 +303,8 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
 /// head.
 ///
 /// `Head` is the header type, `mtype` the memory type and `payload_bytes` what
-/// follows the header. A string, a symbol, a tuple, a struct, an abstract and
-/// a closure's environment array are the shapes.
+/// follows the header. A string, a symbol, a tuple, an abstract and a
+/// closure's environment array are the shapes.
 ///
 /// The addition is checked, and it is checked here because one caller's size
 /// is not this runtime's. Every caller but one arrives with a size a narrower
@@ -662,7 +662,7 @@ comptime {
     const expected_memory = [_]struct { MemoryType, comptime_int }{
         .{ .none, 0 },          .{ .string, 1 },             .{ .symbol, 2 },
         .{ .array, 3 },         .{ .tuple, 4 },              .{ .table, 5 },
-        .{ .@"struct", 6 },     .{ .fiber, 7 },              .{ .buffer, 8 },
+        .{ .map, 6 },           .{ .fiber, 7 },              .{ .buffer, 8 },
         .{ .function, 9 },      .{ .abstract, 10 },          .{ .funcenv, 11 },
         .{ .funcdef, 12 },      .{ .threaded_abstract, 13 }, .{ .vector, 14 },
         .{ .vector_inner, 15 }, .{ .vector_leaf, 16 },       .{ .map_node, 17 },

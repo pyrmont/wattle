@@ -55,7 +55,7 @@ const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
 const order = @import("subsystems").value.order;
 const repr = @import("repr");
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
@@ -125,22 +125,14 @@ fn mktuple(items: []const repr.Value, bracket: bool) repr.Value {
     return wrap.fromTuple(tuples.end(t));
 }
 
-/// A struct from alternating key/value pairs, with an optional prototype.
-fn mkstruct(kvs: []const repr.Value, proto: ?structs.Struct) repr.Value {
-    const pairs: usize = kvs.len / 2;
-    const st = structs.begin(pairs);
-    var i: usize = 0;
-    while (i < kvs.len) : (i += 2) structs.put(st, kvs[i], kvs[i + 1]);
-    if (proto) |p| utils.structHead(st).proto = p;
-    return wrap.fromStruct(structs.end(st));
+/// A map from alternating key/value pairs.
+fn mkmap(kvs: []const repr.Value) repr.Value {
+    return wrap.fromMap(maps.build(.map, kvs));
 }
 
-fn structHash(st: structs.Struct) i32 {
-    return utils.structHead(st).hash;
-}
-
-fn structCapacity(st: structs.Struct) u32 {
-    return utils.structHead(st).capacity;
+/// A map's payload, which the forging cases below write to.
+fn mapOf(x: repr.Value) *maps.Tree {
+    return @constCast(wrap.toMap(x));
 }
 
 fn tupleHash(t: tuples.Tuple) i32 {
@@ -244,18 +236,18 @@ fn theHashAgreesWithEquality() void {
 
     const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
     const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
-    const s1 = mkstruct(&kvs, null);
-    const s2 = mkstruct(&rev, null);
-    expect(harness.equals(s1, s2));
-    expect(order.hash(s1) == order.hash(s2));
+    const m1 = mkmap(&kvs);
+    const m2 = mkmap(&rev);
+    expect(harness.equals(m1, m2));
+    expect(order.hash(m1) == order.hash(m2));
 }
 
 /// A symbol and a string hash their bytes and nothing else, so the two spelled
 /// alike collide while comparing unequal. This is not an accident to be tidied
 /// up: it is exactly the collision that makes the `order.compare` tiebreak in
-/// `structs.putExt` load-bearing, and `test/struct_table.zig` has the other
-/// half of the story. A keyword shares a tag with a symbol, so its hash is
-/// mixed to keep it from colliding with the symbol of the same name.
+/// a map's place-hash run load-bearing, and `test/maps.zig` has the other half
+/// of the story. A keyword shares a tag with a symbol, so its hash is mixed to
+/// keep it from colliding with the symbol of the same name.
 fn theStringLikesShareOneHash() void {
     expect(order.hash(sym("tie")) == order.hash(str("tie")));
     expect(order.hash(kw("tie")) != order.hash(sym("tie")));
@@ -329,11 +321,6 @@ fn theHashReadsTheStoredHead() void {
     const t = mktuple(&items, false);
     utils.tupleHead(wrap.toTuple(t)).hash = 0x5eed;
     expect(order.hash(t) == 0x5eed);
-
-    const kvs = [_]repr.Value{ kw("k"), intv(1) };
-    const s = mkstruct(&kvs, null);
-    utils.structHead(wrap.toStruct(s)).hash = 0x5eee;
-    expect(order.hash(s) == 0x5eee);
 
     const v = str("abc");
     utils.stringHead(wrap.toString(v)).hash = 0x5eef;
@@ -503,31 +490,16 @@ fn aTupleHoldingNanEqualsItself() void {
     expect(!harness.equals(a, b));
 }
 
-/// Struct equality is layout equality, which the Robin Hood insert exists to
-/// make order-independent, plus a prototype check that is *presence* only:
-/// two structs whose prototypes differ are still compared through the
-/// traversal rather than rejected up front.
-fn theEqualityOfStructs() void {
+/// Map equality is the entries in order, which is a function of the entries
+/// alone, so two maps built from the same pairs in different orders are equal.
+/// A map has no prototype.
+fn theEqualityOfMaps() void {
     const kvs = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(2) };
     const rev = [_]repr.Value{ kw("y"), intv(2), kw("x"), intv(1) };
     const diff = [_]repr.Value{ kw("x"), intv(1), kw("y"), intv(3) };
-    expect(harness.equals(mkstruct(&kvs, null), mkstruct(&rev, null)));
-    expect(!harness.equals(mkstruct(&kvs, null), mkstruct(&diff, null)));
-    expect(!harness.equals(mkstruct(&kvs, null), mkstruct(kvs[0..2], null)));
-
-    const pk = [_]repr.Value{ kw("p"), intv(9) };
-    const proto = wrap.toStruct(mkstruct(&pk, null));
-    const with = mkstruct(&kvs, proto);
-    const without = mkstruct(&kvs, null);
-    // One has a prototype and the other does not: rejected before traversing.
-    expect(!harness.equals(with, without));
-    expect(!harness.equals(without, with));
-    // Both have one, and it is the same one.
-    expect(harness.equals(with, mkstruct(&rev, proto)));
-    // Both have one and they differ, which only the traversal can tell.
-    const qk = [_]repr.Value{ kw("q"), intv(9) };
-    const other_proto = wrap.toStruct(mkstruct(&qk, null));
-    expect(!harness.equals(with, mkstruct(&kvs, other_proto)));
+    expect(harness.equals(mkmap(&kvs), mkmap(&rev)));
+    expect(!harness.equals(mkmap(&kvs), mkmap(&diff)));
+    expect(!harness.equals(mkmap(&kvs), mkmap(kvs[0..2])));
 }
 
 /// Three checks in `order.equals` sit behind the stored-hash comparison and
@@ -558,102 +530,76 @@ fn theChecksBehindTheHash() void {
     expect(tupleHash(wrap.toTuple(t1)) == tupleHash(wrap.toTuple(t2)));
     expect(!harness.equals(t1, t2));
 
-    // Struct length. Same shape, and it matters more here: a struct's capacity
-    // is a function of its length, and the traversal bounds the bucket walk by
-    // the *left* side's capacity while indexing both. Two structs of different
-    // length therefore have different capacities, and comparing them bucket for
-    // bucket would read past the end of the shorter one. The length check is
-    // what makes that unreachable.
+    // Map count. Same shape: the traversal reads both maps by position and
+    // bounds the walk by the *left* side's count, so two maps of different
+    // counts compared entry for entry would read past the end of the shorter
+    // one. The count check is what makes that unreachable, and it is reached
+    // only once the running sums agree, which is what is forced here.
     const kvs = [_]repr.Value{ kw("a"), intv(1) };
-    const s1 = mkstruct(&kvs, null);
-    gc_alloc.gcroot(s1);
-    defer _ = gc_alloc.gcunroot(s1);
-    const s2 = mkstruct(&kvs, null);
-    gc_alloc.gcroot(s2);
-    defer _ = gc_alloc.gcunroot(s2);
-    expect(harness.equals(s1, s2));
-    utils.structHead(wrap.toStruct(s2)).length = 2;
-    expect(structHash(wrap.toStruct(s1)) == structHash(wrap.toStruct(s2)));
-    expect(!harness.equals(s1, s2));
-
-    // Struct prototype presence. `structs.end` folds the prototype pointer
-    // into the hash, so in practice the hash rejects this pair before the
-    // presence check is consulted; forcing the hashes together is the only way
-    // to reach it. Without it the traversal walks the buckets, finds them
-    // identical, reaches the prototype hop, and the hop's `return 3` ends
-    // `order.equals`'s loop the same way a completed traversal would, so the
-    // result would be "equal".
-    const pk = [_]repr.Value{ kw("p"), intv(1) };
-    const proto = mkstruct(&pk, null);
-    gc_alloc.gcroot(proto);
-    defer _ = gc_alloc.gcunroot(proto);
-    const with = mkstruct(&kvs, wrap.toStruct(proto));
-    gc_alloc.gcroot(with);
-    defer _ = gc_alloc.gcunroot(with);
-    const without = mkstruct(&kvs, null);
-    gc_alloc.gcroot(without);
-    defer _ = gc_alloc.gcunroot(without);
-    expect(structHash(wrap.toStruct(with)) != structHash(wrap.toStruct(without)));
-    utils.structHead(wrap.toStruct(without)).hash =
-        structHash(wrap.toStruct(with));
-    expect(utils.structHead(wrap.toStruct(with)).length ==
-        utils.structHead(wrap.toStruct(without)).length);
-    expect(!harness.equals(with, without));
-    expect(!harness.equals(without, with));
+    const m1 = mkmap(&kvs);
+    gc_alloc.gcroot(m1);
+    defer _ = gc_alloc.gcunroot(m1);
+    const m2 = mkmap(&[_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) });
+    gc_alloc.gcroot(m2);
+    defer _ = gc_alloc.gcunroot(m2);
+    expect(!harness.equals(m1, m2));
+    mapOf(m2).sum = mapOf(m1).sum;
+    expect(mapOf(m1).count != mapOf(m2).count);
+    expect(!harness.equals(m1, m2));
+    expect(!harness.equals(m2, m1));
 }
 
-/// `order.compare` orders two structs by capacity, then by stored hash, and
-/// only then by contents. Each of the first two is isolated by forcing the
-/// later criteria to disagree with it, because an implementation that dropped
-/// either would still order most structs plausibly.
-fn theStructOrderingCriteriaAreInOrder() void {
+/// `order.compare` orders two maps by count, then by running sum, and only
+/// then by entries. Each of the first two is isolated by forcing the later
+/// criteria to disagree with it, because an implementation that dropped either
+/// would still order most maps plausibly.
+fn theMapOrderingCriteriaAreInOrder() void {
     const one = [_]repr.Value{ kw("a"), intv(1) };
     const two = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
-    const small = mkstruct(&one, null);
+    const small = mkmap(&one);
     gc_alloc.gcroot(small);
     defer _ = gc_alloc.gcunroot(small);
-    const large = mkstruct(&two, null);
+    const large = mkmap(&two);
     gc_alloc.gcroot(large);
     defer _ = gc_alloc.gcunroot(large);
-    expect(structCapacity(wrap.toStruct(small)) < structCapacity(wrap.toStruct(large)));
+    expect(mapOf(small).count < mapOf(large).count);
 
-    // Capacity beats hash: the larger struct is given the smaller hash.
-    utils.structHead(wrap.toStruct(small)).hash = 100;
-    utils.structHead(wrap.toStruct(large)).hash = 1;
+    // Count beats sum: the larger map is given the smaller sum.
+    mapOf(small).sum = 100;
+    mapOf(large).sum = 1;
     expect(order.compare(small, large) == -1);
     expect(order.compare(large, small) == 1);
 
-    // Hash beats contents: two structs of equal capacity whose hashes are
-    // forced to the opposite order from their values.
+    // Sum beats entries: two maps of equal count whose sums are forced to the
+    // opposite order from their values.
     const lo = [_]repr.Value{ kw("a"), intv(1) };
     const hi = [_]repr.Value{ kw("a"), intv(2) };
-    const a = mkstruct(&lo, null);
+    const a = mkmap(&lo);
     gc_alloc.gcroot(a);
     defer _ = gc_alloc.gcunroot(a);
-    const b = mkstruct(&hi, null);
+    const b = mkmap(&hi);
     gc_alloc.gcroot(b);
     defer _ = gc_alloc.gcunroot(b);
-    expect(structCapacity(wrap.toStruct(a)) == structCapacity(wrap.toStruct(b)));
-    utils.structHead(wrap.toStruct(a)).hash = 9;
-    utils.structHead(wrap.toStruct(b)).hash = 3;
+    expect(mapOf(a).count == mapOf(b).count);
+    mapOf(a).sum = 9;
+    mapOf(b).sum = 3;
     expect(order.compare(a, b) == 1);
     expect(order.compare(b, a) == -1);
 
-    // And below both of them, the traversal, which is the only thing that looks
-    // at a struct's contents. Reaching it needs everything above it to tie:
-    // same capacity, same key, and the hash forced to agree. Then the *values*
-    // decide, which is the only case in the file where a struct's value slot is
-    // compared at all; every other pair of structs is settled by the stored
-    // hash long before.
-    const c1 = mkstruct(&lo, null);
+    // And below both of them, the traversal, which is the only thing that
+    // looks at a map's entries. Reaching it needs everything above it to tie:
+    // same count, same key, and the sum forced to agree. Then the *values*
+    // decide, which is the only case in the file where a map's value slot is
+    // compared at all.
+    const c1 = mkmap(&lo);
     gc_alloc.gcroot(c1);
     defer _ = gc_alloc.gcunroot(c1);
-    const c2 = mkstruct(&hi, null);
+    const c2 = mkmap(&hi);
     gc_alloc.gcroot(c2);
     defer _ = gc_alloc.gcunroot(c2);
-    utils.structHead(wrap.toStruct(c2)).hash = structHash(wrap.toStruct(c1));
-    expect(harness.equals(structs.get(wrap.toStruct(c1), kw("a")), intv(1)));
-    expect(harness.equals(structs.get(wrap.toStruct(c2), kw("a")), intv(2)));
+    mapOf(c2).sum = mapOf(c1).sum;
+    expect(harness.equals(maps.lookup(mapOf(c1), kw("a")), intv(1)));
+    expect(harness.equals(maps.lookup(mapOf(c2), kw("a")), intv(2)));
     expect(order.compare(c1, c2) == -1);
     expect(order.compare(c2, c1) == 1);
     // `order.equals` reaches it on the same terms and for the same reason.
@@ -762,54 +708,30 @@ fn theOrderOfTuples() void {
     expect(order.compare(mktuple(&b, false), mktuple(&a, true)) == -1);
 }
 
-/// Structs order by capacity, then by hash, and only then element-wise. The
+/// Maps order by count, then by running sum, and only then entry-wise. The
 /// first two are asserted with pairs that isolate them, because an
-/// implementation that dropped either would still order most structs
-/// "correctly" and would silently stop being a total order.
-fn theOrderOfStructs() void {
+/// implementation that dropped either would still order most maps "correctly"
+/// and would silently stop being a total order.
+fn theOrderOfMaps() void {
     const one = [_]repr.Value{ kw("a"), intv(1) };
     const two = [_]repr.Value{ kw("a"), intv(1), kw("b"), intv(2) };
-    const s1 = mkstruct(&one, null);
-    const s2 = mkstruct(&two, null);
-    expect(structCapacity(wrap.toStruct(s1)) < structCapacity(wrap.toStruct(s2)));
-    expect(order.compare(s1, s2) == -1);
-    expect(order.compare(s2, s1) == 1);
-    expect(order.compare(s1, s1) == 0);
-    expect(order.compare(s1, mkstruct(&one, null)) == 0);
+    const m1 = mkmap(&one);
+    const m2 = mkmap(&two);
+    expect(mapOf(m1).count < mapOf(m2).count);
+    expect(order.compare(m1, m2) == -1);
+    expect(order.compare(m2, m1) == 1);
+    expect(order.compare(m1, m1) == 0);
+    expect(order.compare(m1, mkmap(&one)) == 0);
 
-    // Same capacity, different contents: the hash decides, and whichever way it
+    // Same count, different contents: the sum decides, and whichever way it
     // decides it must be antisymmetric and it must agree with equality.
     const alt = [_]repr.Value{ kw("z"), intv(1) };
-    const s3 = mkstruct(&alt, null);
-    expect(structCapacity(wrap.toStruct(s1)) == structCapacity(wrap.toStruct(s3)));
-    expect(!harness.equals(s1, s3));
-    const fwd = order.compare(s1, s3);
-    const rev = order.compare(s3, s1);
+    const m3 = mkmap(&alt);
+    expect(mapOf(m1).count == mapOf(m3).count);
+    expect(!harness.equals(m1, m3));
+    const fwd = order.compare(m1, m3);
+    const rev = order.compare(m3, m1);
     expect(fwd != 0 and fwd == -rev);
-}
-
-/// A struct with a prototype sorts after one without, and two with different
-/// prototypes are decided by comparing the prototypes. Both of these are the
-/// prototype hop at the bottom of the traversal, which is the only place it
-/// replaces a stack node instead of pushing one.
-fn theOrderOfStructPrototypes() void {
-    const kvs = [_]repr.Value{ kw("a"), intv(1) };
-    const pk = [_]repr.Value{ kw("p"), intv(1) };
-    const qk = [_]repr.Value{ kw("p"), intv(2) };
-    const p = wrap.toStruct(mkstruct(&pk, null));
-    const q = wrap.toStruct(mkstruct(&qk, null));
-    const bare = mkstruct(&kvs, null);
-    const with_p = mkstruct(&kvs, p);
-    const with_q = mkstruct(&kvs, q);
-
-    expect(order.compare(with_p, bare) == 1);
-    expect(order.compare(bare, with_p) == -1);
-    expect(order.compare(with_p, mkstruct(&kvs, p)) == 0);
-
-    const fwd = order.compare(with_p, with_q);
-    const rev = order.compare(with_q, with_p);
-    expect(fwd != 0 and fwd == -rev);
-    expect(!harness.equals(with_p, with_q));
 }
 
 /// Mutable containers order by pointer, which is arbitrary but must be a
@@ -903,56 +825,6 @@ fn theBaseSlotIsDead() void {
     expect(tupleHash(wrap.toTuple(a)) != tupleHash(wrap.toTuple(d)));
     expect(!harness.equals(a, d));
     expect(stackDepth() == 0);
-}
-
-/// A long prototype chain is walked by the same stack, and the hop at the
-/// bottom of the traversal replaces the current node rather than pushing on
-/// top of it, so comparing a chain of N prototypes does not need N nodes.
-///
-/// A successful comparison ends with the stack pointer back at the base, so the
-/// depth afterwards says nothing. What does say something is the *capacity*,
-/// which only ever grows and starts at a floor of 128: if the hop pushed, five
-/// hundred levels would have forced two doublings. That is what puts this
-/// case before the deep ones: they grow the array past the floor and it is
-/// never given back.
-fn thePrototypeHopReplacesTheNode() void {
-    const kvs = [_]repr.Value{ kw("a"), intv(1) };
-    var a = wrap.fromNil();
-    var b = wrap.fromNil();
-    gc_alloc.gcroot(a);
-    gc_alloc.gcroot(b);
-    defer {
-        _ = gc_alloc.gcunroot(a);
-        _ = gc_alloc.gcunroot(b);
-    }
-
-    var i: i32 = 0;
-    while (i < 500) : (i += 1) {
-        const pa: ?structs.Struct = if (harness.isType(a, repr.Tag.nil)) null else wrap.toStruct(a);
-        const next_a = mkstruct(&kvs, pa);
-        gc_alloc.gcroot(next_a);
-        _ = gc_alloc.gcunroot(a);
-        a = next_a;
-        const pb: ?structs.Struct = if (harness.isType(b, repr.Tag.nil)) null else wrap.toStruct(b);
-        const next_b = mkstruct(&kvs, pb);
-        gc_alloc.gcroot(next_b);
-        _ = gc_alloc.gcunroot(b);
-        b = next_b;
-    }
-
-    const chain_a = wrap.toStruct(a);
-    expect(harness.equals(a, b));
-    expect(stackDepth() == 0);
-    expect(order.compare(a, b) == 0);
-    expect(harness.vm().traversal.base != null);
-    expect(stackCapacity() == 128);
-
-    // And the chains are genuinely five hundred deep, so the walk had that many
-    // hops to make.
-    var levels: i32 = 0;
-    var p: ?structs.Struct = chain_a;
-    while (p) |current| : (p = utils.structHead(current).proto) levels += 1;
-    expect(levels == 500);
 }
 
 /// The stack grows by doubling from a floor of 128 nodes and never shrinks, so
@@ -1072,15 +944,15 @@ fn deepTuplesDoNotRecurse() void {
     expect(order.compare(d, a) == 1);
 }
 
-/// Build a struct nested `depth` levels deep: `{:k {:k {:k leaf}}}`, rooted the
+/// Build a map nested `depth` levels deep: `{:k {:k {:k leaf}}}`, rooted the
 /// same way and on the same terms.
-fn nestStructs(depth: i32, leaf: repr.Value) repr.Value {
+fn nestMaps(depth: i32, leaf: repr.Value) repr.Value {
     var acc = leaf;
     gc_alloc.gcroot(acc);
     var i: i32 = 0;
     while (i < depth) : (i += 1) {
         const kvs = [_]repr.Value{ kw("k"), acc };
-        const next = mkstruct(&kvs, null);
+        const next = mkmap(&kvs);
         gc_alloc.gcroot(next);
         _ = gc_alloc.gcunroot(acc);
         acc = next;
@@ -1088,10 +960,10 @@ fn nestStructs(depth: i32, leaf: repr.Value) repr.Value {
     return acc;
 }
 
-fn deepStructsDoNotRecurse() void {
-    const a = nestStructs(20000, intv(0));
-    const b = nestStructs(20000, intv(0));
-    const d = nestStructs(20000, intv(1));
+fn deepMapsDoNotRecurse() void {
+    const a = nestMaps(20000, intv(0));
+    const b = nestMaps(20000, intv(0));
+    const d = nestMaps(20000, intv(1));
     defer {
         _ = gc_alloc.gcunroot(a);
         _ = gc_alloc.gcunroot(b);
@@ -1145,8 +1017,8 @@ fn theRelationsHoldOverACorpus() void {
         mktuple(&items, false),
         mktuple(&items, true),
         mktuple(items[0..1], false),
-        mkstruct(&kvs, null),
-        mkstruct(kvs[0..2], null),
+        mkmap(&kvs),
+        mkmap(kvs[0..2]),
         wrap.fromArray(arrays.new(1)),
         wrap.fromTable(tables.new(1)),
         wrap.fromBuffer(buffers.new(1)),
@@ -1253,9 +1125,9 @@ pub fn run() void {
     theEqualityOfMutableContainers();
     theEqualityOfTuples();
     aTupleHoldingNanEqualsItself();
-    theEqualityOfStructs();
+    theEqualityOfMaps();
     theChecksBehindTheHash();
-    theStructOrderingCriteriaAreInOrder();
+    theMapOrderingCriteriaAreInOrder();
     theEqualityOfAbstracts();
 
     theOrderAcrossTypes();
@@ -1263,8 +1135,7 @@ pub fn run() void {
     theOrderOfBooleans();
     theOrderOfStringLikes();
     theOrderOfTuples();
-    theOrderOfStructs();
-    theOrderOfStructPrototypes();
+    theOrderOfMaps();
     theOrderOfMutableContainers();
     theOrderOfAbstracts();
 
@@ -1272,13 +1143,12 @@ pub fn run() void {
     // only ever grows, so every case that asserts a capacity has to run before
     // the ones that grow it past the floor.
     theBaseSlotIsDead();
-    thePrototypeHopReplacesTheNode();
     theStackGrowthPolicy();
     theStackGrowsAtItsLastSlot();
     aShorterTupleIsNotReadPastItsEnd();
     theStackIsResetNotUnwound();
     deepTuplesDoNotRecurse();
-    deepStructsDoNotRecurse();
+    deepMapsDoNotRecurse();
 
     theRelationsHoldOverACorpus();
 

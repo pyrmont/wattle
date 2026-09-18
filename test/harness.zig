@@ -58,7 +58,7 @@ const repr = @import("repr");
 const scratch_vector = @import("subsystems").scratch_vector;
 const signal_core = @import("subsystems").signal;
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const tables = @import("subsystems").value.tables;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
@@ -349,15 +349,15 @@ pub inline fn equals(left: repr.Value, right: repr.Value) bool {
 /// A struct's field by keyword name. Every contract that reads a structure the
 /// runtime built spells this, and spelling it once keeps the `ckeywordv` out
 /// of the assertions.
-pub fn field(structure: structs.Struct, name: [*:0]const u8) repr.Value {
-    return structs.get(structure, value.fromBytes(std.mem.span(name), .keyword));
+pub fn field(m: *const maps.Tree, name: [*:0]const u8) repr.Value {
+    return maps.lookup(m, value.fromBytes(std.mem.span(name), .keyword));
 }
 
 /// A dictionary value's entry by keyword name, read the way a program reads
 /// one rather than through the representation.
 ///
-/// `field` is the same question of a struct the contract already holds as a
-/// `Struct`. This one takes the value, so a contract over something the
+/// `field` is the same question of a map the contract already holds as a
+/// `Tree`. This one takes the value, so a contract over something the
 /// runtime returns does not have to know which dictionary it is.
 /// It raises where the read does, which for an abstract is its `get`
 /// callback, so a contract over one is written in the raising shape.

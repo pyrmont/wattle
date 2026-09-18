@@ -82,7 +82,7 @@
            "hi"
            (array 1 2 3)
            (table "a" "b" "c" "d")
-           (struct 1 2 3 4)
+           (hash-map 1 2 3 4)
            (quote hello)
            :hello
            (tuple 1 2 3)
@@ -900,16 +900,17 @@
 
 # Test thaw and freeze
 # 9cc0645a1
+# A map has no prototype, so freezing a table flattens nothing and drops the
+# prototype's own bindings; what thaws back is the frozen table's own pairs.
 (def table-to-freeze @{:c 22 :b [1 2 3 4] :d @"test" :e "test2"})
-(def table-to-freeze-with-inline-proto
-  @{:a @[1 2 3] :b @[1 2 3 4] :c 22 :d @"test" :e @"test2"})
-(def struct-to-thaw
-  (struct/with-proto {:a [1 2 3]} :c 22 :b [1 2 3 4] :d "test" :e "test2"))
+(def thawed-again
+  @{:b @[1 2 3 4] :c 22 :d @"test" :e @"test2"})
+(def map-to-thaw {:c 22 :b [1 2 3 4] :d "test" :e "test2"})
 (table/setproto table-to-freeze @{:a @[1 2 3]})
 
-(assert (deep= struct-to-thaw (freeze table-to-freeze)))
-(assert (deep= table-to-freeze-with-inline-proto (thaw table-to-freeze)))
-(assert (deep= table-to-freeze-with-inline-proto (thaw struct-to-thaw)))
+(assert (deep= map-to-thaw (freeze table-to-freeze)))
+(assert (deep= (merge @{:a @[1 2 3]} thawed-again) (thaw table-to-freeze)))
+(assert (deep= thawed-again (thaw map-to-thaw)))
 
 # Check that freezing mutable keys is deterministic
 # for issue #1535

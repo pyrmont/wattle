@@ -46,10 +46,10 @@ const boundary = @import("abi");
 const buffers = @import("../buffers.zig");
 const fibers = @import("../fibers.zig");
 const functions = @import("../functions.zig");
+const maps = @import("../maps.zig");
 const repr = @import("repr");
 const strings = @import("../strings.zig");
 const symbols = @import("../symbols.zig");
-const structs = @import("../structs.zig");
 const tables = @import("../tables.zig");
 const tuples = @import("../tuples.zig");
 const vectors = @import("../vectors.zig");
@@ -131,8 +131,8 @@ pub const abi = struct {
         return outer.fromTuple(x);
     }
 
-    pub fn fromStruct(x: structs.Struct) repr.Value {
-        return outer.fromStruct(x);
+    pub fn fromMap(x: *const maps.Tree) repr.Value {
+        return outer.fromMap(x);
     }
 
     pub fn fromFiber(x: ?*fibers.Fiber) repr.Value {
@@ -241,8 +241,11 @@ pub inline fn fromString(x: strings.String) repr.Value {
     return repr.wrapCPointer(x, repr.Tag.string);
 }
 
-pub inline fn fromStruct(x: structs.Struct) repr.Value {
-    return repr.wrapCPointer(x, repr.Tag.@"struct");
+/// A map's value points at its block's head rather than at the payload, so
+/// the collector's header is where `toPointer` reads it.
+pub inline fn fromMap(x: *const maps.Tree) repr.Value {
+    const head: *const maps.Head = @alignCast(@fieldParentPtr("tree", x));
+    return repr.wrapCPointer(head, repr.Tag.map);
 }
 
 pub inline fn fromSymbol(x: strings.Symbol) repr.Value {
@@ -381,10 +384,6 @@ pub fn toString(x: repr.Value) strings.String {
     return @ptrCast(toPointer(x));
 }
 
-pub fn toStruct(x: repr.Value) structs.Struct {
-    return @ptrCast(@alignCast(toPointer(x)));
-}
-
 pub fn toSymbol(x: repr.Value) strings.Symbol {
     return @ptrCast(toPointer(x));
 }
@@ -395,6 +394,11 @@ pub fn toTable(x: repr.Value) *tables.Table {
 
 pub fn toTuple(x: repr.Value) tuples.Tuple {
     return @ptrCast(@alignCast(toPointer(x)));
+}
+
+pub fn toMap(x: repr.Value) *const maps.Tree {
+    const head: *const maps.Head = @ptrCast(@alignCast(toPointer(x)));
+    return &head.tree;
 }
 
 pub fn toVector(x: repr.Value) *const vectors.Vector {

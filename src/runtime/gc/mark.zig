@@ -62,7 +62,6 @@ const gc_sweep = @import("sweep.zig");
 const maps = @import("../value/maps.zig");
 const repr = @import("repr");
 const strings = @import("../value/strings.zig");
-const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const vectors = @import("../value/vectors.zig");
@@ -187,7 +186,7 @@ fn markGuarded(vm: *vm_state.Vm, x: repr.Value) void {
             repr.Tag.function => markFunction(vm, wrap.toFunction(x)),
             repr.Tag.array => markArray(vm, wrap.toArray(x)),
             repr.Tag.table => markTable(vm, wrap.toTable(x)),
-            repr.Tag.@"struct" => markStruct(vm, wrap.toStruct(x)),
+            repr.Tag.map => markMap(vm, wrap.toMap(x)),
             repr.Tag.tuple => markTuple(vm, wrap.toTuple(x)),
             repr.Tag.vector => markVector(vm, wrap.toVector(x)),
             repr.Tag.buffer => markBuffer(wrap.toBuffer(x)),
@@ -393,6 +392,14 @@ fn markMany(vm: *vm_state.Vm, values: []const repr.Value) void {
     for (values) |x| markGuarded(vm, x);
 }
 
+/// Marks a map and the nodes under it.
+fn markMap(vm: *vm_state.Vm, t: *const maps.Tree) void {
+    const head: *maps.Head = @alignCast(@constCast(@fieldParentPtr("tree", t)));
+    if (gcReachable(head)) return;
+    gcMark(head);
+    if (t.root) |root| markNodeIn(vm, &root.gc);
+}
+
 /// Marks every entry of a map's or a set's leaf, or every child of its inner
 /// node, unfilled slots included, since each holds nil or null. The node
 /// itself is already marked.
@@ -421,7 +428,7 @@ fn markNodeIn(vm: *vm_state.Vm, node: *abi.GCObject) void {
         .array,
         .tuple,
         .table,
-        .@"struct",
+        .map,
         .fiber,
         .buffer,
         .function,
@@ -442,19 +449,6 @@ fn markNodeIn(vm: *vm_state.Vm, node: *abi.GCObject) void {
 /// values under it.
 fn markString(str: [*]const u8) void {
     gcMark(strings.head(str));
-}
-
-/// Marks a struct, its entries and its prototype chain, following the chain
-/// iteratively so that a long chain costs no stack frame per link.
-fn markStruct(vm: *vm_state.Vm, st_in: [*]const tables.Keyval) void {
-    var st = st_in;
-    while (true) {
-        const head = structs.head(st);
-        if (gcReachable(head)) return;
-        gcMark(head);
-        markKvs(vm, st[0..head.capacity]);
-        st = head.proto orelse return;
-    }
 }
 
 /// Marks a table and its prototype chain, following the chain iteratively: a

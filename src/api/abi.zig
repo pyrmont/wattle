@@ -379,7 +379,7 @@ pub const Indexed = extern struct {
 
 /// A key-value pair from a struct or table.
 ///
-/// `module.Dictionary.next` returns a `Keyval`, and `module.structOf` and
+/// `module.Dictionary.next` returns a `Keyval`, and `module.mapOf` and
 /// `module.tableOf` take a slice of `Keyval`. `module.Keyval` is this type. A
 /// table's slots are an array of `Keyval`, and a slot whose `key` is nil is
 /// empty.

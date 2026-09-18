@@ -34,6 +34,7 @@ const constants = @import("constants");
 const corefn = @import("corefn.zig");
 const fatal = @import("fatal.zig");
 const gc_mark = @import("gc/mark.zig");
+const maps = @import("value/maps.zig");
 const method_type = @import("method_type.zig");
 const numscan = @import("scan.zig");
 const pp_describe = @import("pp.zig");
@@ -41,7 +42,6 @@ const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const symbols = @import("value/symbols.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
@@ -313,23 +313,39 @@ pub fn parserCloseArray(
     return wrap.fromArray(array);
 }
 
-/// Takes `state.argn` values off the queue as alternating keys and values,
-/// into a struct.
-pub fn parserCloseStruct(
-    parser: *Parser,
-    state: *ParseState,
-) repr.Value {
-    const structure = structs.begin(@intCast(@divTrunc(state.argn, 2)));
+/// The refusal a map literal's keys earn, or null where every key may be
+/// stored.
+///
+/// A map holds neither a nil key nor a NaN one, so `{nil 1}` is refused where
+/// it is written rather than read as a map that cannot be iterated. A table
+/// takes both and drops the pair, which is why this is the map's arm alone.
+fn unstorableKeyIn(parser: *Parser, state: *ParseState) ?[*:0]const u8 {
     const start = parser.args.items.len - @as(usize, @intCast(state.argn));
     var index = start;
     while (index < parser.args.items.len) : (index += 2) {
-        structs.put(structure, parser.args.items[index], parser.args.items[index + 1]);
+        const key = parser.args.items[index];
+        if (maps.storableKey(key)) continue;
+        return if (repr.checkType(key, repr.Tag.nil))
+            "cannot use nil as a key"
+        else
+            "cannot use nan as a key";
     }
-    parser.args.shrinkRetainingCapacity(start);
-    return wrap.fromStruct(structs.end(structure));
+    return null;
 }
 
-/// `parserCloseStruct` into a table.
+/// Takes `state.argn` values off the queue as alternating keys and values,
+/// into a map.
+pub fn parserCloseMap(
+    parser: *Parser,
+    state: *ParseState,
+) repr.Value {
+    const start = parser.args.items.len - @as(usize, @intCast(state.argn));
+    const built = maps.build(.map, parser.args.items[start..]);
+    parser.args.shrinkRetainingCapacity(start);
+    return wrap.fromMap(built);
+}
+
+/// `parserCloseMap` into a table.
 pub fn parserCloseTable(
     parser: *Parser,
     state: *ParseState,
@@ -923,13 +939,19 @@ fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Erro
             );
     } else if (character == '}' and state.flags.curly_brackets) {
         if (state.argn & 1 != 0) {
-            parser.@"error" = "struct and table literals expect even number of arguments";
+            parser.@"error" = "map and table literals expect even number of arguments";
             return true;
+        }
+        if (!state.flags.at_symbol) {
+            if (unstorableKeyIn(parser, state)) |message| {
+                parser.@"error" = message;
+                return true;
+            }
         }
         val = if (state.flags.at_symbol)
             parserCloseTable(parser, state)
         else
-            parserCloseStruct(parser, state);
+            parserCloseMap(parser, state);
     } else {
         try delimError(parser, parser.states.items.len - 1, character, "mismatched delimiter ");
         return true;
@@ -1352,7 +1374,7 @@ fn wrapParseState(
     const type_name: [*:0]const u8 = if (state.flags.parens or state.flags.square_brackets)
         (if (state.flags.at_symbol) "array" else "tuple")
     else if (state.flags.curly_brackets)
-        (if (state.flags.at_symbol) "table" else "struct")
+        (if (state.flags.at_symbol) "table" else "map")
     else if (state.flags.string or state.flags.long_string) blk: {
         add_buffer = true;
         break :blk if (state.flags.buffer) "buffer" else "string";

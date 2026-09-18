@@ -50,6 +50,7 @@ const fatal = @import("fatal.zig");
 const gc_alloc = @import("gc.zig");
 const gc_mark = @import("gc/mark.zig");
 const inttypes = @import("value/ints.zig");
+const maps = @import("value/maps.zig");
 const marsh = @import("marsh.zig");
 const method_type = @import("method_type.zig");
 const numscan = @import("scan.zig");
@@ -61,7 +62,6 @@ const repr = @import("repr");
 const scratch_vector = @import("scratch_vector.zig");
 const stdio = @import("stdio.zig");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
@@ -806,10 +806,10 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
     // The final rule to return.
     var rule: u32 = @intCast(b.bytecode.items.len);
 
-    // Add to the cache. A struct or a dictionary abstract is not cached,
-    // because the rule it compiles to is not settled yet, and caching its main
-    // rule is just as effective.
-    const copied_grammar = repr.checkType(peg, repr.Tag.@"struct") or
+    // Add to the cache. A map or a dictionary abstract is not cached, because
+    // the rule it compiles to is not settled yet, and caching its main rule is
+    // just as effective.
+    const copied_grammar = repr.checkType(peg, repr.Tag.map) or
         (repr.checkType(peg, repr.Tag.abstract) and args_core.checkdictionary(peg));
     if (!copied_grammar) {
         var which_grammar = grammar;
@@ -853,7 +853,7 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
                 return pegPanic(b, "grammar requires :main rule");
             rule = try pegCompile1(b, main_rule);
         },
-        repr.Tag.@"struct" => rule = try pegGrammar(b, peg, grammar),
+        repr.Tag.map => rule = try pegGrammar(b, peg, grammar),
         repr.Tag.abstract => {
             if (!copied_grammar) return pegPanic(b, "unexpected peg source");
             rule = try pegGrammar(b, peg, grammar);
@@ -1522,10 +1522,10 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                 var cap = wrap.fromNil();
                 const constant = s.constants[rule[2]];
                 switch (repr.typeOf(constant)) {
-                    repr.Tag.@"struct" => {
+                    repr.Tag.map => {
                         if (s.captures.count != 0) {
-                            cap = structs.get(
-                                wrap.toStruct(constant),
+                            cap = maps.lookup(
+                                wrap.toMap(constant),
                                 s.captures.slice()[@intCast(s.captures.count - 1)],
                             );
                         }

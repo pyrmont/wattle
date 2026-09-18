@@ -521,11 +521,12 @@ fn destructure(
             }
             return true;
         },
-        repr.Tag.table, repr.Tag.@"struct" => {
-            const view = args_core.dictionaryView(lhs).?;
-            for (0..view.cap) |index| {
-                const pair = view.kvs.?[index];
-                if (repr.checkType(pair.key, repr.Tag.nil)) continue;
+        repr.Tag.table, repr.Tag.map => {
+            // Read through the pair reader, so that a map's leaves and a
+            // table's slots are one walk. The pattern is a value in the tree
+            // and cannot change under the loop.
+            var pairs = (try args_core.keyvals(lhs)).?;
+            while (try pairs.next()) |pair| {
                 const next_rhs = compiler_primitives.farslot(compiler) orelse nilSlot();
                 const key = try compiler_primitives.valueImpl(compiler_primitives.foptsDefault(compiler), pair.key);
                 _ = emit_core.emitSss(compiler, constants.Opcode.in, next_rhs, rhs, key, 1);
@@ -574,7 +575,7 @@ fn handleAttributes(
         switch (repr.typeOf(attribute)) {
             repr.Tag.tuple => compiler_primitives.cerror(compiler, "unexpected form - did you intend to use defn?"),
             repr.Tag.string => tables.put(table, value.fromBytes("doc", .keyword), attribute),
-            repr.Tag.@"struct" => tables.mergeStruct(table, wrap.toStruct(attribute)),
+            repr.Tag.map => tables.mergeMap(table, wrap.toMap(attribute)),
             else => if (wrap.isKeyword(attribute))
                 tables.put(table, attribute, wrap.fromTrue())
             else
@@ -736,13 +737,13 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
             }
             return quoteSlots(options, slots, constants.Opcode.make_vector);
         },
-        repr.Tag.table, repr.Tag.@"struct" => {
-            const view = args_core.dictionaryView(val).?;
-            // An empty table has no bucket array at all; the walk over no
-            // buckets is the empty walk, which is what the null test spelled.
-            const kvs: []const tables.Keyval = if (view.kvs) |buckets| buckets[0..@intCast(view.cap)] else &.{};
-            var pair = value.dictionaryNext(kvs, null);
-            while (pair) |current| : (pair = value.dictionaryNext(kvs, current)) {
+        repr.Tag.table, repr.Tag.map => {
+            // Read through the pair reader, so that a map's leaves and a
+            // table's slots are one walk. Quasiquoting a key or a value
+            // compiles a form, which cannot change the dictionary being read:
+            // it is a value in the tree.
+            var pairs = (try args_core.keyvals(val)).?;
+            while (try pairs.next()) |current| {
                 var key = try quasiquote(suboptions, current.key, depth - 1, level);
                 var pair_value = try quasiquote(suboptions, current.value, depth - 1, level);
                 key.flags.spliced = false;
@@ -753,7 +754,7 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
             return quoteSlots(
                 options,
                 slots,
-                if (repr.checkType(val, repr.Tag.table)) constants.Opcode.make_table else constants.Opcode.make_struct,
+                if (repr.checkType(val, repr.Tag.table)) constants.Opcode.make_table else constants.Opcode.make_map,
             );
         },
         else => return compiler_primitives.cslot(val),
@@ -877,7 +878,7 @@ fn specialFn(
     var arity = parameter_count;
     var minimum_arity: i32 = 0;
     var vararg = false;
-    var structarg = false;
+    var maparg = false;
     var allow_extra = false;
     var seen_amp = false;
     var seen_optional = false;
@@ -939,7 +940,7 @@ fn specialFn(
                 return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "&keys in unexpected location");
             }
             vararg = true;
-            structarg = true;
+            maparg = true;
             arity -= 2;
             seen_amp = true;
         } else if (utils.cstrcmp(symbol, "&named") == 0) {
@@ -947,7 +948,7 @@ fn specialFn(
                 return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "&named in unexpected location");
             }
             vararg = true;
-            structarg = true;
+            maparg = true;
             arity -= 1;
             seen_amp = true;
             named_table = tables.new(10);
@@ -1022,7 +1023,7 @@ fn specialFn(
     definition.max_arity = maximum_arity;
     if (named_table) |named| definition.named_args_count = @intCast(named.count);
     if (vararg) definition.flags.vararg = true;
-    if (structarg) definition.flags.structarg = true;
+    if (maparg) definition.flags.maparg = true;
     if (named_table != null) definition.flags.namedargs = true;
     if (has_name) definition.name = wrap.toSymbol(head);
     compiler_primitives.defAddflags(definition);

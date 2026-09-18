@@ -1,15 +1,15 @@
-# The map sizes corpus: persistent maps against structs, from 2 entries to
-# 400, reading, building and updating.
+# The map sizes corpus: a persistent map from 2 entries to 400, reading,
+# building and updating.
 #
 # Written on 2026-09-17 when maps became B-trees, to measure the change over
-# the sizes where a CHAMP trie had been slow to build. notes/LANGUAGE.md
-# records the figures. Keys are keywords and values are built at runtime, so
-# nothing folds into a constant, and both sides are built through a call.
+# the sizes where a CHAMP trie had been slow to build, and against a struct.
+# notes/LANGUAGE.md records both sets of figures. Structs were dropped on
+# 2026-09-18, so the struct rows are gone and what is left measures one binary
+# against another rather than one type against another.
 #
-# The workloads pair up by name, `-struct-` against `-map-`, and the result is
-# the ratio of each pair at each size. A struct is updated by rebuilding it
-# with one more pair, which is what a struct offers. The counts are sized for
-# `ReleaseFast`.
+# Keys are keywords and values are built at runtime, so nothing folds into a
+# constant, and the map is built through a call rather than a literal. The
+# counts are sized for `ReleaseFast`.
 
 (defn- bench [name f]
   (def start (os/clock :monotonic))
@@ -21,8 +21,7 @@
 
 (defn- run-size [n reps]
   (def ks (take n all-keys))
-  (def kinds [["struct" 'struct (fn [m k v] (struct ;(kvs m) k v))]
-              ["map" 'hash-map assoc]])
+  (def kinds [["map" 'hash-map assoc]])
   (each [name ctor up] kinds
     (def f (eval ~(fn [i] (,ctor ,;(mapcat |[$ 'i] ks)))))
     (def m (f 7))

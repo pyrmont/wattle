@@ -62,7 +62,7 @@
 # table/clone
 # 392813667
 (defn check-table-clone [x msg]
-  (assert (= (table/to-struct x) (table/to-struct (table/clone x))) msg))
+  (assert (= (table/to-map x) (table/to-map (table/clone x))) msg))
 
 (check-table-clone @{:a 123 :b 34 :c :hello : 945 0 1 2 3 4 5}
                    "table/clone 1")

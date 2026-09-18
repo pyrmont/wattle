@@ -294,12 +294,22 @@ fn keysAreSortedBelowTheLimit() !void {
     expect(std.mem.eql(u8, forward.slice()[0..6], "@{0 0 "));
 }
 
+/// Every level of a nested dictionary sorts its own keys, taking its slice of
+/// one scratch allocation above the level below it. A map's pairs are gathered
+/// into a block of their own first, one per level, and each is released as its
+/// level returns.
 fn nestedDictionariesShareTheKeySortScratch() !void {
     const b = buffer(4096);
     try prettyWidth(b, 99, constants.JANET_PRETTY_ONELINE, eval(
         "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}",
     ));
     checkBuffer(b, "{:a {:x 1 :y 2 :z 3} :b {:x 4 :y 5 :z 6} :c {:x 7 :y 8 :z 9}}");
+
+    const t = buffer(4096);
+    try prettyWidth(t, 99, constants.JANET_PRETTY_ONELINE, eval(
+        "@{:a @{:x 1 :y 2 :z 3} :b @{:x 4 :y 5 :z 6} :c @{:x 7 :y 8 :z 9}}",
+    ));
+    checkBuffer(t, "@{:a @{:x 1 :y 2 :z 3} :b @{:x 4 :y 5 :z 6} :c @{:x 7 :y 8 :z 9}}");
 }
 
 fn theDepthLimit() !void {

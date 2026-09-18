@@ -177,13 +177,13 @@ pub const FuncDefFlags = packed struct(u32) {
     hasdefs: bool = false,
     hasenvs: bool = false,
     hassourcemap: bool = false,
-    structarg: bool = false,
+    maparg: bool = false,
     hasclobitset: bool = false,
     namedargs: bool = false,
     _reserved: u5 = 0,
 
     /// The seven bits `compiler.zig`'s `defAddflags` owns, cleared. The tag,
-    /// `vararg`, `needsenv`, `hassymbolmap` and `structarg` are set elsewhere
+    /// `vararg`, `needsenv`, `hassymbolmap` and `maparg` are set elsewhere
     /// and survive.
     pub inline fn withoutControlled(self: FuncDefFlags) FuncDefFlags {
         var out = self;

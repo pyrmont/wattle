@@ -75,7 +75,6 @@ const registry = @import("registry.zig");
 const repr = @import("repr");
 const stdio = @import("stdio.zig");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const symbols = @import("value/symbols.zig");
 const tables = @import("value/tables.zig");
 const trace_frames = @import("debug.zig");
@@ -847,12 +846,7 @@ fn cfunGetproto(argv: []repr.Value) raise.Error!repr.Value {
         const t = wrap.toTable(argv[0]);
         return if (t.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
     }
-    if (repr.checkType(argv[0], repr.Tag.@"struct")) {
-        const st = wrap.toStruct(argv[0]);
-        const proto = structs.head(st).proto;
-        return if (proto) |p| wrap.fromStruct(p) else wrap.fromNil();
-    }
-    return pp_format.panicf("expected struct or table, got %v", .{argv[0]});
+    return pp_format.panicf("expected table, got %v", .{argv[0]});
 }
 
 /// `(hash x)`.
@@ -1055,17 +1049,6 @@ fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
     }
     // The message is the fault layer's and has no spelling on this side.
     return args_core.panicIndexed(x, 0, repr.TagSet.bytes);
-}
-
-/// `(struct & kvs)`.
-fn cfunStruct(argv: []repr.Value) raise.Error!repr.Value {
-    if (argv.len & 1 != 0) return raise.panic("expected even number of arguments");
-    const st = structs.begin(argv.len >> 1);
-    var i: usize = 0;
-    while (i + 1 < argv.len) : (i += 2) {
-        structs.put(st, argv[i], argv[i + 1]);
-    }
-    return wrap.fromStruct(structs.end(st));
 }
 
 /// `(table & kvs)`.
@@ -1285,10 +1268,6 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "on an invalid number. Optionally provide a base - if a base is provided, no " ++
             "radix specifier is expected at the beginning of the number."),
         corefn.reg("tuple", &cfunTuple, @src(), "(tuple & items)", "Creates a new tuple that contains items. Returns the new tuple."),
-        corefn.reg("struct", &cfunStruct, @src(), "(struct & kvs)", "Create a new struct from a sequence of key value pairs. " ++
-            "kvs is a sequence k1, v1, k2, v2, k3, v3, ... If kvs has " ++
-            "an odd number of elements, an error will be thrown. Returns the " ++
-            "new struct."),
         corefn.reg("gensym", &cfunGensym, @src(), "(gensym)", "Returns a new symbol that is unique across the runtime. This means it " ++
             "will not collide with any already created symbols during compilation, so " ++
             "it can be used in macros to generate automatic bindings."),
@@ -1400,7 +1379,6 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     try transients.lib(env);
     buffers.lib(env);
     tables.lib(env);
-    structs.lib(env);
     try fibers.lib(env);
     try os_surface.libOs(env);
     parser_core.libParse(env);

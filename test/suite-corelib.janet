@@ -81,7 +81,7 @@
            "hi"
            (array 1 2 3)
            (table "a" "b" "c" "d")
-           (struct 1 2 3 4)
+           (hash-map 1 2 3 4)
            (quote hello)
            :hello
            (tuple 1 2 3)
@@ -92,9 +92,9 @@
 # b305a7c9b
 (assert (= (string (buffer "123" "456")) (string @"123456")) "buffer literal")
 # 277117165
-(assert (= (get {} 1) nil) "get nil from empty struct")
+(assert (= (get {} 1) nil) "get nil from empty map")
 (assert (= (get @{} 1) nil) "get nil from empty table")
-(assert (= (get {:boop :bap} :boop) :bap) "get non nil from struct")
+(assert (= (get {:boop :bap} :boop) :bap) "get non nil from map")
 (assert (= (get @{:boop :bap} :boop) :bap) "get non nil from table")
 (assert (= (get @"\0" 0) 0) "get non nil from buffer")
 (assert (= (get @"\0" 1) nil) "get nil from buffer oob")
@@ -309,11 +309,12 @@
 
 # The error messages the odd-arity constructors and getproto raise
 (assert-error-value "table odd arity" "expected even number of arguments" (table :a))
-(assert-error-value "struct odd arity" "expected even number of arguments" (struct :a))
-(assert-error-value "getproto type" "expected struct or table, got 1" (getproto 1))
+(assert-error-value "hash-map odd arity" "expected an even number of keys and values, got 1" (hash-map :a))
+(assert-error-value "getproto type" "expected table, got 1" (getproto 1))
 (assert (= nil (getproto @{})) "getproto with no prototype")
 (assert (deep= @{:a 1} (getproto (table/setproto @{} @{:a 1}))) "getproto with a prototype")
-(assert (= nil (getproto {})) "getproto of a struct with no prototype")
+# A map has no prototype, so getproto takes a table and nothing else.
+(assert-error-value "getproto of a map" "expected table, got <map >" (getproto {}))
 
 # slice reports both accepted shapes in one message
 (assert-error-value "slice reports both accepted shapes"
@@ -446,10 +447,6 @@
 (assert (deep= @[1 2] (range 1 3)) "range with two arguments")
 (assert (deep= @[1] (range 1 3 2)) "range with three arguments")
 
-# getproto looks at the second type as well as the first
-(assert (= nil (getproto (struct))) "getproto of an empty struct")
-(assert (deep= {:a 1} (getproto (struct/with-proto {:a 1}))) "getproto of a struct with a prototype")
-
 # sandbox accumulates every capability it is given, and rejects the whole call
 # on the first it does not know. Applying one is irreversible, so the flags
 # themselves are asserted in test/core_env.c and not here.
@@ -580,10 +577,10 @@
 # A zero step takes the other arm of the range assertion pair
 (assert (deep= @[] (range 0 10 0)) "a zero step over a non-empty interval")
 
-# struct walks exactly its arguments; reading one past would take a nil key
-(assert (deep= {:a 1} (struct :a 1)) "struct with one pair")
-(assert (deep= {:a 1 :b 2} (struct :a 1 :b 2)) "struct with two pairs")
-(assert (deep= {} (struct)) "struct with no pairs")
+# hash-map walks exactly its arguments; reading one past would take a nil key
+(assert (deep= {:a 1} (hash-map :a 1)) "hash-map with one pair")
+(assert (deep= {:a 1 :b 2} (hash-map :a 1 :b 2)) "hash-map with two pairs")
+(assert (deep= {} (hash-map)) "hash-map with no pairs")
 (assert (deep= @{:a 1} (table :a 1)) "table with one pair")
 
 # `array/ensure` validates both its arguments.

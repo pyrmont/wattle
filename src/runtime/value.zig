@@ -3,10 +3,10 @@
 //!
 //! Every directory in the tree has a bucket, the file for whatever does not
 //! group into a topic of its own, and this is `value/`'s. `value/tables.zig`,
-//! `value/structs.zig`, `value/strings.zig`, `value/symbols.zig`,
-//! `value/tuples.zig`, `value/helpers/order.zig` and
-//! `value/helpers/access.zig` all reach it, and what is here is owned by both
-//! dictionary leaves and by neither, which is what a bucket is for.
+//! `value/strings.zig`, `value/symbols.zig`, `value/tuples.zig`,
+//! `value/helpers/order.zig` and `value/helpers/access.zig` all reach it, and
+//! what is here is owned by several of them and by none, which is what a
+//! bucket is for.
 //!
 //! ## The two populations beside it
 //!
@@ -68,7 +68,6 @@ pub const buffers = @import("value/buffers.zig");
 pub const strings = @import("value/strings.zig");
 pub const symbols = @import("value/symbols.zig");
 pub const tables = @import("value/tables.zig");
-pub const structs = @import("value/structs.zig");
 pub const abstracts = @import("value/abstracts.zig");
 pub const fibers = @import("value/fibers.zig");
 pub const functions = @import("value/functions.zig");
@@ -287,18 +286,6 @@ pub fn hashBytes(bytes: []const u8) i32 {
     return @bitCast(hashMix(hash, @bitCast(@as(i32, @intCast(bytes.len)))));
 }
 
-/// Returns the hash of a run of key-value pairs, for `structs.end`.
-///
-/// `kvs` is the run.
-pub fn hashDictionary(kvs: []const tables.Keyval) i32 {
-    var hash: u32 = 33;
-    for (kvs) |kv| {
-        hash = hashMix(hash, @bitCast(order.hash(kv.key)));
-        hash = hashMix(hash, @bitCast(order.hash(kv.value)));
-    }
-    return @bitCast(hash);
-}
-
 /// Returns the hash of a run of values, for `tuples.end`.
 ///
 /// `array` is the run. The seed is 33 rather than the 5381 the byte hash starts
@@ -312,10 +299,10 @@ pub fn hashIndexed(array: []const repr.Value) i32 {
 
 /// Mixes two hash words.
 ///
-/// `input` and `more` are the two. `hashBytes`, `hashIndexed` and
-/// `hashDictionary` are three and not four: each covers one of the three kinds
-/// the getters read, bytes, indexed or dictionary, so the taxonomy is closed at
-/// three.
+/// `input` and `more` are the two. `hashBytes` and `hashIndexed` cover the two
+/// kinds of run that hash their contents. A dictionary has no such function:
+/// a table hashes by pointer, and a map keeps a running sum of one term per
+/// entry rather than folding a bucket array.
 pub fn hashMix(input: u32, more: u32) u32 {
     const mix = more +% hash_seed +% (input << 6) +% (input >> 2);
     return input ^ (hash_seed +% (mix << 6) +% (mix >> 2));
@@ -338,7 +325,7 @@ pub fn initHashKey(new_key: [*]u8) void {
 /// This and `memempty` are allocation rather than representation, a
 /// `utils.rawAlloc`, a collection charge and an out-of-memory exit, and what
 /// they allocate is a bucket array, which is this bucket's subject.
-/// `value/tables.zig` and `value/structs.zig` are the two callers.
+/// `value/tables.zig` is the caller.
 pub fn memallocEmpty(count: usize) [*]tables.Keyval {
     const bytes = kvBytes(count);
     const mmem: [*]tables.Keyval = @ptrCast(@alignCast(utils.rawAlloc(bytes)));

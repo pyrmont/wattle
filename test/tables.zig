@@ -1,36 +1,18 @@
-//! Behavioral contract for the key/value containers: structs and tables,
-//! including the three weak table variants.
+//! Behavioral contract for the table, including the three weak variants.
 //!
-//! The two share the `tables.Keyval` bucket layout and nothing else about how
-//! they use it, so this file is organised around the two probing disciplines
-//! rather than around the two halves of the subsystem.
-//!
-//! A struct's layout is observable and is part of the language contract. Robin
-//! Hood insertion exists so that the bucket array depends on the *set* of
-//! pairs and not on the order they arrived in, because `structs.end` hashes
-//! the array: `{1 2 3 4}` and `{3 4 1 2}` must be byte-for-byte identical or
-//! they would not be `=`. So the struct cases compare whole bucket arrays
-//! position by position rather than asserting properties of one of them. See
-//! `sameLayout`, which sets out why that is not a `memcmp`.
-//!
-//! A table's layout is *not* observable and depends on deletion history as
-//! well as insertion order. What is checkable there is the policy: the exact
-//! capacity after each growth, the tombstone a removal leaves, the fact that a
+//! A table's layout is not observable and depends on deletion history as well
+//! as insertion order. What is checkable is the policy: the exact capacity
+//! after each growth, the tombstone a removal leaves, the fact that a
 //! tombstone does not truncate a probe run through it, and the fact that
 //! tombstones are reclaimed only by a rehash. Those are asserted as exact
 //! numbers, because a policy asserted as an inequality passes for almost any
 //! implementation.
 //!
-//! ## The head layout is not asserted here
+//! The immutable dictionary beside it is the map, whose contract is
+//! `test/maps.zig`. The two meet in `toMap` and `mergeMap`, which are here
+//! because a table is what each of them reads or writes.
 //!
-//! What would say a struct head is exactly its own size is that the size
-//! equals the offset of `data`. A head with a flexible array member loses it
-//! in translation, so `@offsetOf` does not compile against one and the header
-//! is recovered with `@sizeOf`, which would compare `@sizeOf` with itself.
-//! `test/gc_mark.zig`'s `theHeadOffsets` derives the struct head's offset from
-//! the allocator instead.
-//!
-//! ## Three things deliberately not covered
+//! ## Two things deliberately not covered
 //!
 //! Weak tables are checked only for the memory type their constructor stamps
 //! and for the heap list that type puts them on. What the collector then does
@@ -59,8 +41,7 @@ const heap = harness.heap;
 
 const order = @import("subsystems").value.order;
 const repr = @import("repr");
-const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const tables = @import("subsystems").value.tables;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -69,26 +50,6 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 // Cases
 // ==========================================================================
-
-fn structLength(st: [*]const tables.Keyval) u32 {
-    return structs.head(st).length;
-}
-
-fn structCapacity(st: [*]const tables.Keyval) u32 {
-    return structs.head(st).capacity;
-}
-
-fn structHash(st: [*]const tables.Keyval) i32 {
-    return structs.head(st).hash;
-}
-
-fn structProto(st: [*]const tables.Keyval) ?[*]const tables.Keyval {
-    return structs.head(st).proto;
-}
-
-fn setStructProto(st: [*]tables.Keyval, proto: ?[*]const tables.Keyval) void {
-    structs.head(st).proto = proto;
-}
 
 fn kw(name: [*:0]const u8) repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
@@ -144,361 +105,6 @@ fn sameLayout(a: [*]const tables.Keyval, b: [*]const tables.Keyval, capacity: u3
         if (!harness.equals(a[i].value, b[i].value)) return false;
     }
     return true;
-}
-
-/// The capacity policy. `value.capacityFor` is a *strict* next power of two, so
-/// twice the pair count is rounded up past itself: a two-pair struct gets
-/// eight buckets, not four. Asserted as exact numbers because the load factor
-/// is what bounds Robin Hood displacement, and an off-by-one-doubling would
-/// still pass every functional case in this file.
-fn structBeginCapacity() void {
-    expect(structCapacity(structs.begin(0)) == 1);
-    expect(structCapacity(structs.begin(1)) == 4);
-    expect(structCapacity(structs.begin(2)) == 8);
-    expect(structCapacity(structs.begin(3)) == 8);
-    expect(structCapacity(structs.begin(4)) == 16);
-}
-
-fn structBeginInitialisesTheHead() void {
-    const st = structs.begin(3);
-    expect(structLength(st) == 3);
-    expect(structCapacity(st) == 8);
-    // The hash field is a running count of filled slots until `end` runs.
-    expect(structHash(st) == 0);
-    expect(structProto(st) == null);
-    var i: usize = 0;
-    while (i < structCapacity(st)) : (i += 1) {
-        expect(harness.isType(st[i].key, repr.Tag.nil));
-        expect(harness.isType(st[i].value, repr.Tag.nil));
-    }
-    expect(heap.memoryType(structs.head(st)) == gc_alloc.MemoryType.@"struct");
-    expect(heap.onList(harness.vm().gc.blocks, structs.head(st)));
-    expect(!heap.onList(harness.vm().gc.weak_blocks, structs.head(st)));
-}
-
-/// The whole reason Robin Hood insertion is here. Two structs built from the
-/// same pairs in different orders must have identical bucket arrays, because
-/// `structs.end` hashes the array and `order.equals` compares the hash
-/// first. Compared over the entire array rather than pair by pair, so that a
-/// difference in *position* fails as loudly as a difference in contents.
-fn structLayoutIsOrderIndependent() void {
-    var keys: [6]repr.Value = undefined;
-    for (&keys, 0..) |*key, i| key.* = harness.wrapInteger(@intCast(i * 37 + 11));
-
-    const a = structs.begin(6);
-    for (keys, 0..) |key, i| structs.put(a, key, harness.wrapInteger(@intCast(i)));
-    const b = structs.begin(6);
-    var i: usize = 6;
-    while (i > 0) {
-        i -= 1;
-        structs.put(b, keys[i], harness.wrapInteger(@intCast(i)));
-    }
-    // And a third order that is neither forwards nor backwards.
-    const d = structs.begin(6);
-    for ([6]usize{ 3, 0, 5, 1, 4, 2 }) |n| {
-        structs.put(d, keys[n], harness.wrapInteger(@intCast(n)));
-    }
-
-    const capacity = structCapacity(a);
-    expect(structCapacity(b) == capacity);
-    expect(structCapacity(d) == capacity);
-
-    const sa = structs.end(a);
-    const sb = structs.end(b);
-    const sd = structs.end(d);
-
-    expect(sameLayout(sa, sb, capacity));
-    expect(sameLayout(sa, sd, capacity));
-    expect(structHash(sa) == structHash(sb));
-    expect(structHash(sa) == structHash(sd));
-    expect(harness.equals(wrap.fromStruct(sa), wrap.fromStruct(sb)));
-}
-
-/// Order-independence alone does not pin the *direction* of the displacement
-/// rule: inverting the comparison consistently still yields a layout that is a
-/// function of the pair set. What pins the direction is a run of keys that all
-/// map to the same bucket, where every displacement comparison ties and the
-/// full hash decides. The pair with the larger hash keeps the earlier slot.
-fn structCollisionRunIsOrderedByHash() void {
-    const st = structs.begin(3);
-    const capacity = structCapacity(st);
-    var keys: [3]repr.Value = undefined;
-    const index = findColliding(capacity, &keys);
-
-    for (keys, 0..) |key, i| structs.put(st, key, harness.wrapInteger(@intCast(i)));
-    const s = structs.end(st);
-
-    var previous: i32 = 0;
-    var n: u32 = 0;
-    while (n < 3) : (n += 1) {
-        const kv = &s[@mod(index + n, capacity)];
-        expect(!harness.isType(kv.key, repr.Tag.nil));
-        const hash = order.hash(kv.key);
-        if (n > 0) expect(hash < previous);
-        previous = hash;
-    }
-
-    // Inserted backwards, the run comes out the same.
-    const st2 = structs.begin(3);
-    var i: usize = 3;
-    while (i > 0) {
-        i -= 1;
-        structs.put(st2, keys[i], harness.wrapInteger(@intCast(i)));
-    }
-    expect(sameLayout(s, structs.end(st2), capacity));
-}
-
-/// The last tiebreak, and the only one that reaches outside this subsystem.
-///
-/// `order.hash` reads only the bytes for a string and a symbol, so the two
-/// spelled the same have the same hash. (A keyword's hash is mixed, so a
-/// keyword does not tie with either.) They map to one same bucket, they tie on
-/// displacement and they tie on hash, so `order.compare` is the only thing
-/// left, and the only thing stopping the second from being taken for a
-/// duplicate of the first, which would silently drop it.
-fn structHashTieFallsThroughToCompare() void {
-    const as_symbol = value.fromBytes("tie", .symbol);
-    const as_string = wrap.fromString(strings.cstring("tie"));
-    expect(order.hash(as_symbol) == order.hash(as_string));
-    expect(!harness.equals(as_symbol, as_string));
-    // The string tag sorts before the symbol tag, so the order is by type.
-    expect(order.compare(as_string, as_symbol) == -1);
-
-    const st = structs.begin(2);
-    structs.put(st, as_symbol, harness.wrapInteger(1));
-    structs.put(st, as_string, harness.wrapInteger(2));
-    // Both landed: neither was mistaken for the other.
-    expect(structHash(st) == 2);
-    const s = structs.end(st);
-    expect(structLength(s) == 2);
-    expect(harness.equals(structs.rawget(s, as_symbol), harness.wrapInteger(1)));
-    expect(harness.equals(structs.rawget(s, as_string), harness.wrapInteger(2)));
-
-    const st2 = structs.begin(2);
-    structs.put(st2, as_string, harness.wrapInteger(2));
-    structs.put(st2, as_symbol, harness.wrapInteger(1));
-    expect(sameLayout(s, structs.end(st2), structCapacity(s)));
-}
-
-/// Every pair that lands moves the running count in the hash field.
-fn structPutCountsInTheHashField() void {
-    const st = structs.begin(3);
-    structs.put(st, kw("a"), harness.wrapInteger(1));
-    expect(structHash(st) == 1);
-    structs.put(st, kw("b"), harness.wrapInteger(2));
-    expect(structHash(st) == 2);
-    // A duplicate replaces rather than adds, so the count stands still.
-    structs.put(st, kw("a"), harness.wrapInteger(9));
-    expect(structHash(st) == 2);
-}
-
-fn structPutRejectsUnstorablePairs() void {
-    const st = structs.begin(4);
-    structs.put(st, wrap.fromNil(), harness.wrapInteger(1));
-    expect(structHash(st) == 0);
-    structs.put(st, kw("k"), wrap.fromNil());
-    expect(structHash(st) == 0);
-    structs.put(st, wrap.fromNumberSafe(std.math.nan(f64)), harness.wrapInteger(1));
-    expect(structHash(st) == 0);
-    // And one that is storable, so the three above are shown to be the reason
-    // the count stayed at zero rather than the puts not working at all.
-    structs.put(st, kw("k"), harness.wrapInteger(1));
-    expect(structHash(st) == 1);
-}
-
-/// Past the declared length, a put is silently dropped.
-fn structPutDropsTheSurplus() void {
-    const st = structs.begin(1);
-    structs.put(st, kw("a"), harness.wrapInteger(1));
-    structs.put(st, kw("b"), harness.wrapInteger(2));
-    expect(structHash(st) == 1);
-    const s = structs.end(st);
-    expect(structLength(s) == 1);
-    expect(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(1)));
-    expect(harness.isType(structs.rawget(s, kw("b")), repr.Tag.nil));
-}
-
-/// `replace` is what separates `structs.put` from the flattening path:
-/// `struct/proto-flatten` walks child first and must not let a prototype's
-/// binding overwrite the child's.
-fn structPutExtHonoursReplace() void {
-    const keep = structs.begin(2);
-    structs.putExt(keep, kw("a"), harness.wrapInteger(1), false);
-    structs.putExt(keep, kw("a"), harness.wrapInteger(2), false);
-    expect(harness.equals(
-        structs.rawget(structs.end(keep), kw("a")),
-        harness.wrapInteger(1),
-    ));
-
-    const over = structs.begin(2);
-    structs.putExt(over, kw("a"), harness.wrapInteger(1), true);
-    structs.putExt(over, kw("a"), harness.wrapInteger(2), true);
-    expect(harness.equals(
-        structs.rawget(structs.end(over), kw("a")),
-        harness.wrapInteger(2),
-    ));
-}
-
-/// When fewer pairs land than were declared, the array is the wrong size for
-/// its contents and the whole struct is rebuilt at the size that fit.
-fn structEndRebuildsOnAShortCount() void {
-    const proto = structs.begin(1);
-    structs.put(proto, kw("p"), harness.wrapInteger(7));
-    const sproto = structs.end(proto);
-
-    const st = structs.begin(3);
-    structs.put(st, kw("a"), harness.wrapInteger(1));
-    structs.put(st, kw("a"), harness.wrapInteger(2));
-    structs.put(st, kw("b"), harness.wrapInteger(3));
-    setStructProto(st, sproto);
-    expect(structCapacity(st) == 8);
-
-    const s = structs.end(st);
-    expect(s != st);
-    expect(structLength(s) == 2);
-    expect(structCapacity(s) == 8);
-    expect(harness.equals(structs.rawget(s, kw("a")), harness.wrapInteger(2)));
-    expect(harness.equals(structs.rawget(s, kw("b")), harness.wrapInteger(3)));
-    // The prototype is not a bucket, so it is copied across by hand.
-    expect(structProto(s) == sproto);
-}
-
-fn structEndKeepsTheArrayWhenTheCountIsExact() void {
-    const st = structs.begin(2);
-    structs.put(st, kw("a"), harness.wrapInteger(1));
-    structs.put(st, kw("b"), harness.wrapInteger(2));
-    expect(structs.end(st) == st);
-}
-
-/// The prototype contributes to the hash by a multiply, so it costs one read
-/// rather than a walk, and two structs with the same pairs and different
-/// prototypes are distinguishable.
-fn structEndFoldsThePrototypeIntoTheHash() void {
-    const p = structs.begin(1);
-    structs.put(p, kw("p"), harness.wrapInteger(1));
-    const sp = structs.end(p);
-
-    const bare = structs.begin(1);
-    structs.put(bare, kw("a"), harness.wrapInteger(1));
-    const sbare = structs.end(bare);
-
-    const with = structs.begin(1);
-    structs.put(with, kw("a"), harness.wrapInteger(1));
-    setStructProto(with, sp);
-    const swith = structs.end(with);
-
-    expect(sameLayout(sbare, swith, structCapacity(sbare)));
-    expect(structHash(sbare) != structHash(swith));
-
-    const buckets: u32 = @bitCast(value.hashDictionary(swith[0..structCapacity(swith)]));
-    const proto: u32 = @bitCast(structHash(sp));
-    const expected: i32 = @bitCast(buckets +% 2654435761 *% proto);
-    expect(structHash(swith) == expected);
-}
-
-fn structFindReturnsAnEmptyBucketForAnAbsentKey() void {
-    const st = structs.begin(2);
-    structs.put(st, kw("a"), harness.wrapInteger(1));
-    const s = structs.end(st);
-
-    const hit = structs.find(s, kw("a"));
-    expect(hit != null);
-    expect(harness.equals(hit.?.value, harness.wrapInteger(1)));
-
-    const miss = structs.find(s, kw("zz"));
-    expect(miss != null);
-    expect(harness.isType(miss.?.key, repr.Tag.nil));
-    expect(harness.isType(structs.rawget(s, kw("zz")), repr.Tag.nil));
-}
-
-/// Build a chain `depth` deep and return the deepest struct. Entry `i` has
-/// the key `i` and its prototype is entry `i - 1`.
-fn structChain(depth: i32) [*]const tables.Keyval {
-    var proto: ?[*]const tables.Keyval = null;
-    var i: i32 = 0;
-    while (i < depth) : (i += 1) {
-        const st = structs.begin(1);
-        structs.put(st, harness.wrapInteger(i), harness.wrapInteger(i));
-        setStructProto(st, proto);
-        proto = structs.end(st);
-    }
-    return proto.?;
-}
-
-/// The chain walk is bounded, and the bound is enumerated rather than sampled:
-/// the last reachable depth and the first unreachable one are both asserted.
-fn structGetBoundsThePrototypeChain() void {
-    const deep = structChain(config.max_proto_depth + 5);
-    // The head has the highest key, and the walk descends toward key 0.
-    const top: i32 = config.max_proto_depth + 4;
-    expect(harness.equals(
-        structs.get(deep, harness.wrapInteger(top)),
-        harness.wrapInteger(top),
-    ));
-    const last: i32 = top - (config.max_proto_depth - 1);
-    expect(harness.equals(
-        structs.get(deep, harness.wrapInteger(last)),
-        harness.wrapInteger(last),
-    ));
-    expect(harness.isType(
-        structs.get(deep, harness.wrapInteger(last - 1)),
-        repr.Tag.nil,
-    ));
-    // `getEx` walks the same bound and names the struct it found the key in.
-    const found = structs.getEx(deep, harness.wrapInteger(last));
-    expect(harness.equals(found.value, harness.wrapInteger(last)));
-    expect(harness.equals(
-        structs.rawget(found.holder.?, harness.wrapInteger(last)),
-        harness.wrapInteger(last),
-    ));
-    expect(structs.getEx(deep, harness.wrapInteger(last - 1)).holder == null);
-    // rawget never leaves the head at all.
-    expect(harness.isType(
-        structs.rawget(deep, harness.wrapInteger(top - 1)),
-        repr.Tag.nil,
-    ));
-}
-
-fn structGetExReportsTheOwner() void {
-    const p = structs.begin(1);
-    structs.put(p, kw("a"), harness.wrapInteger(1));
-    const sp = structs.end(p);
-
-    const ch = structs.begin(1);
-    structs.put(ch, kw("b"), harness.wrapInteger(2));
-    setStructProto(ch, sp);
-    const sch = structs.end(ch);
-
-    const own = structs.getEx(sch, kw("b"));
-    expect(harness.equals(own.value, harness.wrapInteger(2)));
-    expect(own.holder == sch);
-    const inherited = structs.getEx(sch, kw("a"));
-    expect(harness.equals(inherited.value, harness.wrapInteger(1)));
-    expect(inherited.holder == sp);
-}
-
-/// The new table is sized from the struct's *capacity*, not its pair count,
-/// so a two-pair struct becomes a sixteen-bucket table.
-fn structToTable() void {
-    const p = structs.begin(1);
-    structs.put(p, kw("p"), harness.wrapInteger(9));
-    const sp = structs.end(p);
-
-    const st = structs.begin(2);
-    structs.put(st, kw("a"), harness.wrapInteger(1));
-    structs.put(st, kw("b"), harness.wrapInteger(2));
-    setStructProto(st, sp);
-    const s = structs.end(st);
-
-    const t = structs.toTable(s);
-    expect(t.count == 2);
-    expect(t.capacity == value.capacityFor(structCapacity(s)));
-    expect(t.capacity == 16);
-    expect(harness.equals(tables.rawget(t, kw("a")), harness.wrapInteger(1)));
-    expect(harness.equals(tables.rawget(t, kw("b")), harness.wrapInteger(2)));
-    // The prototype is not copied; `struct/to-table` rebuilds it itself.
-    expect(t.proto == null);
-    expect(harness.isType(tables.get(t, kw("p")), repr.Tag.nil));
 }
 
 /// `value.capacityFor` rounds strictly up, so a request for zero still gets
@@ -967,24 +573,22 @@ fn tableMerge() void {
     ));
     expect(harness.isType(tables.rawget(destination, kw("p")), repr.Tag.nil));
 
-    const sp = structs.begin(1);
-    structs.put(sp, kw("s"), harness.wrapInteger(5));
-    const sproto = structs.end(sp);
-    const ss = structs.begin(1);
-    structs.put(ss, kw("c"), harness.wrapInteger(3));
-    setStructProto(ss, sproto);
-    const s = structs.end(ss);
-
-    tables.mergeStruct(destination, s);
+    tables.mergeMap(destination, maps.build(.map, &.{
+        kw("c"), harness.wrapInteger(3),
+        kw("d"), harness.wrapInteger(4),
+    }));
     expect(harness.equals(
         tables.rawget(destination, kw("c")),
         harness.wrapInteger(3),
     ));
-    expect(harness.isType(tables.rawget(destination, kw("s")), repr.Tag.nil));
+    expect(harness.equals(
+        tables.rawget(destination, kw("d")),
+        harness.wrapInteger(4),
+    ));
 }
 
-/// The struct is begun at the table's live count, so tombstones cost nothing.
-fn tableToStructIgnoresTombstones() void {
+/// A tombstone is not an entry, so it does not reach the map.
+fn tableToMapIgnoresTombstones() void {
     const t = tables.new(4);
     var i: i32 = 0;
     while (i < 6) : (i += 1) tables.put(t, harness.wrapInteger(i), harness.wrapInteger(i));
@@ -993,24 +597,22 @@ fn tableToStructIgnoresTombstones() void {
     expect(t.count == 4);
     expect(t.deleted == 2);
 
-    const s = tables.toStruct(t);
-    expect(structLength(s) == 4);
-    expect(structProto(s) == null);
+    const m = tables.toMap(t);
+    expect(m.count == 4);
     expect(harness.equals(
-        structs.rawget(s, harness.wrapInteger(0)),
+        maps.lookup(m, harness.wrapInteger(0)),
         harness.wrapInteger(0),
     ));
     expect(harness.isType(
-        structs.rawget(s, harness.wrapInteger(2)),
+        maps.lookup(m, harness.wrapInteger(2)),
         repr.Tag.nil,
     ));
 
-    // Round-tripping a struct through a table and back reproduces it exactly,
-    // which is the order-independence property seen from the other side: the
-    // table hands the pairs back in bucket order, not insertion order.
-    const back = tables.toStruct(structs.toTable(s));
-    expect(structCapacity(back) == structCapacity(s));
-    expect(sameLayout(back, s, structCapacity(s)));
+    // Round-tripping a map through a table and back gives an equal map, which
+    // is the order-independence property seen from the other side: the table
+    // hands the pairs back in bucket order, not insertion order.
+    const back = tables.toMap(t);
+    expect(harness.equals(wrap.fromMap(back), wrap.fromMap(m)));
 }
 
 /// Flattening walks child first and never overwrites, so a binding nearer the
@@ -1061,27 +663,23 @@ fn fromJanet() void {
     const source =
         \\[(= {1 2 3 4} {3 4 1 2})
         \\ (= (hash {1 2 3 4}) (hash {3 4 1 2}))
-        \\ (get (struct/with-proto {:p 1} :a 2) :p)
-        \\ (struct/rawget (struct/with-proto {:p 1} :a 2) :p)
         \\ (do (def t @{:a 1}) (put t :a nil) (length t))
         \\ (do (def t @{:a 1}) (table/setproto t @{:b 2}) (get t :b))
         \\ (table/proto-flatten (table/setproto @{:a 1} @{:a 2 :b 3}))
-        \\ (length (table/to-struct (do (def t @{:a 1 :b 2}) (put t :a nil) t)))
+        \\ (length (table/to-map (do (def t @{:a 1 :b 2}) (put t :a nil) t)))
         \\ (do (def t @{:a 1}) (table/clear t) (length t))]
     ;
-    expect(core_env.dostring(harness.coreEnv(), source, "struct_table", &out) == 0);
+    expect(core_env.dostring(harness.coreEnv(), source, "tables", &out) == 0);
     const r = wrap.toTuple(out);
     expect(repr.truthy(r[0]));
     expect(repr.truthy(r[1]));
-    expect(harness.integerIs(r[2], 1));
-    expect(harness.isType(r[3], repr.Tag.nil));
-    expect(harness.integerIs(r[4], 0));
-    expect(harness.integerIs(r[5], 2));
-    const flat = wrap.toTable(r[6]);
+    expect(harness.integerIs(r[2], 0));
+    expect(harness.integerIs(r[3], 2));
+    const flat = wrap.toTable(r[4]);
     expect(harness.equals(tables.rawget(flat, kw("a")), harness.wrapInteger(1)));
     expect(harness.equals(tables.rawget(flat, kw("b")), harness.wrapInteger(3)));
-    expect(harness.integerIs(r[7], 1));
-    expect(harness.integerIs(r[8], 0));
+    expect(harness.integerIs(r[5], 1));
+    expect(harness.integerIs(r[6], 0));
 }
 
 // ==========================================================================
@@ -1090,23 +688,6 @@ fn fromJanet() void {
 
 pub fn run() void {
     harness.init();
-
-    structBeginCapacity();
-    structBeginInitialisesTheHead();
-    structLayoutIsOrderIndependent();
-    structCollisionRunIsOrderedByHash();
-    structHashTieFallsThroughToCompare();
-    structPutCountsInTheHashField();
-    structPutRejectsUnstorablePairs();
-    structPutDropsTheSurplus();
-    structPutExtHonoursReplace();
-    structEndRebuildsOnAShortCount();
-    structEndKeepsTheArrayWhenTheCountIsExact();
-    structEndFoldsThePrototypeIntoTheHash();
-    structFindReturnsAnEmptyBucketForAnAbsentKey();
-    structGetBoundsThePrototypeChain();
-    structGetExReportsTheOwner();
-    structToTable();
 
     tableCapacityRounding();
     tableConstructorMarksAndLists();
@@ -1126,7 +707,7 @@ pub fn run() void {
     tableCloneCopiesTheLayout();
     tableCloneOfAnEmptyArray();
     tableMerge();
-    tableToStructIgnoresTombstones();
+    tableToMapIgnoresTombstones();
     tableProtoFlatten();
 
     fromJanet();

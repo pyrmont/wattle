@@ -51,12 +51,12 @@ const buffers = @import("../buffers.zig");
 const config = @import("config");
 const constants = @import("constants");
 const fibers = @import("../fibers.zig");
+const maps = @import("../maps.zig");
 const order = @import("order.zig");
 const pp_format = @import("../../pp/format.zig");
 const raise = @import("../../../api/raise.zig");
 const repr = @import("repr");
 const strings = @import("../strings.zig");
-const structs = @import("../structs.zig");
 const tables = @import("../tables.zig");
 const tuples = @import("../tuples.zig");
 const utils = @import("../../utils.zig");
@@ -122,10 +122,7 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
         repr.Tag.table => {
             return tables.get(wrap.toTable(ds), key);
         },
-        repr.Tag.@"struct" => {
-            const st = wrap.toStruct(ds);
-            return structs.get(st, key);
-        },
+        repr.Tag.map => return maps.lookup(wrap.toMap(ds), key),
         repr.Tag.fiber => {
             // Bit of a hack to allow iterating over fibers.
             if (order.equals(key, wrap.fromInteger(0))) {
@@ -191,7 +188,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
             }
         },
         repr.Tag.table => val = tables.get(wrap.toTable(ds), wrap.fromInteger(index)),
-        repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), wrap.fromInteger(index)),
+        repr.Tag.map => val = maps.lookup(wrap.toMap(ds), wrap.fromInteger(index)),
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.get) |getter| {
@@ -219,7 +216,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
 /// `ds` is the container and `key` the key. This is `(in ds k)` and the VM's
 /// `GETINDEX`-family read.
 ///
-/// The two dictionary types go through `structs.get` and `tables.get`,
+/// The two dictionary types go through `maps.lookup` and `tables.get`,
 /// which means a key that is simply absent gives nil rather than panicking:
 /// the panic here is about keys that are wrong for the container rather than
 /// keys that are missing from it. For the five sequence types the key must be
@@ -233,7 +230,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
     var val: repr.Value = undefined;
     const vtype = repr.typeOf(ds);
     switch (vtype) {
-        repr.Tag.@"struct" => val = structs.get(wrap.toStruct(ds), key),
+        repr.Tag.map => val = maps.lookup(wrap.toMap(ds), key),
         repr.Tag.table => val = tables.get(wrap.toTable(ds), key),
         repr.Tag.array => {
             const array = wrap.toArray(ds);
@@ -307,7 +304,7 @@ pub fn length(x: repr.Value) raise.Error!i32 {
         repr.Tag.buffer => return @intCast(wrap.toBuffer(x).count),
         repr.Tag.tuple => return @intCast(tuples.head(wrap.toTuple(x)).length),
         repr.Tag.vector => return @intCast(wrap.toVector(x).count),
-        repr.Tag.@"struct" => return @intCast(structs.head(wrap.toStruct(x)).length),
+        repr.Tag.map => return @intCast(wrap.toMap(x).count),
         repr.Tag.table => return @intCast(wrap.toTable(x).count),
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
@@ -343,7 +340,7 @@ pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
         repr.Tag.buffer => return wrap.fromInteger(@intCast(wrap.toBuffer(x).count)),
         repr.Tag.tuple => return wrap.fromInteger(@intCast(tuples.head(wrap.toTuple(x)).length)),
         repr.Tag.vector => return wrap.fromInteger(@intCast(wrap.toVector(x).count)),
-        repr.Tag.@"struct" => return wrap.fromInteger(@intCast(structs.head(wrap.toStruct(x)).length)),
+        repr.Tag.map => return wrap.fromInteger(@intCast(wrap.toMap(x).count)),
         repr.Tag.table => return wrap.fromInteger(@intCast(wrap.toTable(x).count)),
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(x);
@@ -390,18 +387,11 @@ pub fn next(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
 pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Error!repr.Value {
     const t = repr.typeOf(ds);
     switch (t) {
-        repr.Tag.table, repr.Tag.@"struct" => {
-            var cap: i32 = undefined;
-            var start: [*]const tables.Keyval = undefined;
-            if (t == repr.Tag.table) {
-                const tab = wrap.toTable(ds);
-                cap = @intCast(tab.capacity);
-                start = tab.data.?;
-            } else {
-                const st = wrap.toStruct(ds);
-                cap = @intCast(structs.head(st).capacity);
-                start = st;
-            }
+        repr.Tag.map => return maps.nextKey(@constCast(wrap.toMap(ds)), key),
+        repr.Tag.table => {
+            const tab = wrap.toTable(ds);
+            const cap: i32 = @intCast(tab.capacity);
+            const start: [*]const tables.Keyval = tab.data.?;
             const end = start + utils.asSize(cap);
             var kv: [*]const tables.Keyval = if (repr.checkType(key, repr.Tag.nil))
                 start

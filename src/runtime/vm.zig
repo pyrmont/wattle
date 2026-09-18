@@ -2,7 +2,7 @@
 //!
 //! `runVm` is the loop. `methodInvoke`, `callNonfn`, `resolveMethod`,
 //! `methodLookup`, `unaryCall`, `binopCall` and `mcall` are the call protocol,
-//! `fillTable`, `fillStruct` and `fillString` the three constructor loops, and
+//! `fillTable` and `fillString` the two constructor loops, and
 //! `traceFiber` and `traceArgv` what `(trace)` prints.
 //!
 //! The call protocol is imported by the loop as well as by the root, because
@@ -42,13 +42,13 @@ const fibers = @import("value/fibers.zig");
 const functions = @import("value/functions.zig");
 const gc_alloc = @import("gc.zig");
 const gc_mark = @import("gc/mark.zig");
+const maps = @import("value/maps.zig");
 const order = @import("value/helpers/order.zig");
 const pp_describe = @import("pp.zig");
 const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const stdio = @import("stdio.zig");
-const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
@@ -611,16 +611,6 @@ pub fn fillString(buffer: *buffers.Buffer, mem: []const repr.Value) raise.Error!
     for (mem) |x| try pp_describe.toStringB(buffer, x);
 }
 
-/// `.make_struct`, over a struct still under construction: `structs.put`
-/// writes into the buckets `structs.begin` allocated, and the caller calls
-/// `structs.end` afterwards.
-pub fn fillStruct(st: [*]tables.Keyval, mem: [*]const repr.Value, count: i32) void {
-    var i: i32 = 0;
-    while (i < count) : (i += 2) {
-        structs.put(st, mem[utils.asSize(i)], mem[utils.asSize(i + 1)]);
-    }
-}
-
 /// `.make_table` over a run of key and value pairs on the fiber stack.
 ///
 /// `tables.put` hashes and compares every key on the way in, so an abstract
@@ -679,7 +669,7 @@ pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Val
         repr.Tag.string,
         repr.Tag.buffer,
         repr.Tag.table,
-        repr.Tag.@"struct",
+        repr.Tag.map,
         repr.Tag.array,
         repr.Tag.vector,
         repr.Tag.tuple,
@@ -1510,16 +1500,22 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             continue :sw self.nextOp();
         },
 
-        .make_struct => {
+        .make_map => {
             const count = fiber.stacktop - fiber.stackstart;
             const mem = fiber.data.? + utils.asSize(fiber.stackstart);
             if (count & 1 != 0) {
                 self.commit();
-                return try self.raisef("expected even number of arguments to struct constructor, got %d", .{count});
+                return try self.raisef("expected even number of arguments to map constructor, got %d", .{count});
             }
-            const st = structs.begin(@intCast(@divTrunc(count, 2)));
-            vm_calls.fillStruct(st, mem, count);
-            self.stack[fD(self.pc)] = wrap.fromStruct(structs.end(st));
+            const entries = mem[0..utils.asSize(count)];
+            var i: usize = 0;
+            while (i < entries.len) : (i += 2) {
+                maps.checkKey(entries[i]) catch |err| {
+                    self.commit();
+                    return err;
+                };
+            }
+            self.stack[fD(self.pc)] = wrap.fromMap(maps.build(.map, entries));
             fiber.stacktop = fiber.stackstart;
             self.maybeCollect();
             self.pc += 1;

@@ -22,12 +22,12 @@
 (start-suite)
 
 # 3e1e25854
-(def test-struct {'def 1 'bork 2 'sam 3 'a 'b 'het @[1 2 3 4 5]})
-(assert (= (get test-struct 'def) 1) "struct get")
-(assert (= (get test-struct 'bork) 2) "struct get")
-(assert (= (get test-struct 'sam) 3) "struct get")
-(assert (= (get test-struct 'a) 'b) "struct get")
-(assert (= :array (type (get test-struct 'het))) "struct get")
+(def test-map {'def 1 'bork 2 'sam 3 'a 'b 'het @[1 2 3 4 5]})
+(assert (= (get test-map 'def) 1) "map get")
+(assert (= (get test-map 'bork) 2) "map get")
+(assert (= (get test-map 'sam) 3) "map get")
+(assert (= (get test-map 'a) 'b) "map get")
+(assert (= :array (type (get test-map 'het))) "map get")
 
 # Buffer stuff
 # 910cfd7dd
@@ -57,13 +57,12 @@
 (assert (< [1 2 3] [1 2 3 -1]) "tuple comparison 5")
 (assert (> [1 2 3] [1 2]) "tuple comparison 6")
 
-# Two equal structs over a prototype compare equal, and the elements after
-# them in a tuple still decide the order.
-(def proto-parent {:x 1})
-(def with-proto-1 (struct/with-proto proto-parent :k 1))
-(def with-proto-2 (struct/with-proto proto-parent :k 1))
-(assert (= -1 (cmp [with-proto-1 :a] [with-proto-2 :b]))
-        "tuple comparison past a struct's prototype")
+# Two equal maps compare equal, and the elements after them in a tuple still
+# decide the order.
+(def map-1 {:x 1 :k 1})
+(def map-2 {:k 1 :x 1})
+(assert (= -1 (cmp [map-1 :a] [map-2 :b]))
+        "tuple comparison past a map")
 
 # More numerical tests
 # e05022f

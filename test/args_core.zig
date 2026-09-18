@@ -62,7 +62,7 @@ const method_type = @import("subsystems").method_type;
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const subsystems = @import("subsystems");
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
@@ -185,7 +185,7 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Error!void {
     refuses(args.getKeyword, .{ a, 0 }, "bad slot #0, expected keyword, got nil");
     refuses(args.getSymbol, .{ a, 0 }, "bad slot #0, expected symbol, got nil");
     refuses(args.getTuple, .{ a, 0 }, "bad slot #0, expected tuple, got nil");
-    refuses(args.getStruct, .{ a, 0 }, "bad slot #0, expected struct, got nil");
+    refuses(args.getMap, .{ a, 0 }, "bad slot #0, expected map, got nil");
     refuses(args.getBoolean, .{ a, 0 }, "bad slot #0, expected boolean, got nil");
     refuses(args.getPointer, .{ a, 0 }, "bad slot #0, expected pointer, got nil");
 
@@ -963,15 +963,14 @@ fn anIndexedValueIsCheckedAndRefusedByTheProtocol() void {
     );
 }
 
-/// `checkdictionary` answers for a table, a struct and an abstract whose
+/// `checkdictionary` answers for a table, a map and an abstract whose
 /// contents are pairs, and for nothing else. `panicDictionary` names table and
-/// struct as `dictionary value`, after any other types the site accepts and
+/// map as `dictionary value`, after any other types the site accepts and
 /// after `indexed value` where the site accepts that too.
 fn aDictionaryIsCheckedAndRefusedByTheProtocol() void {
     expect(args.checkdictionary(wrap.fromAbstract(abstracts.newBytes(&pair_runs_at, @sizeOf(Runs)))));
     expect(args.checkdictionary(wrap.fromTable(tables.new(0))));
-    const constructed = structs.begin(0);
-    expect(args.checkdictionary(wrap.fromStruct(structs.end(constructed))));
+    expect(args.checkdictionary(wrap.fromMap(maps.build(.map, &.{}))));
     expect(!args.checkdictionary(wrap.fromNil()));
     expect(!args.checkdictionary(wrap.fromTuple(tuples.newFrom(&.{}))));
     expect(!args.checkdictionary(wrap.fromAbstract(abstracts.newBytes(&runs_at, @sizeOf(Runs)))));
@@ -1043,14 +1042,14 @@ fn keyvalsReadsEveryDictionary() raise.Error!void {
     expect((try table_runs.nextRun()).?.len == 2 * table.capacity);
     expect(try table_runs.nextRun() == null);
 
-    const constructed = structs.begin(2);
-    structs.put(constructed, value.fromBytes("a", .keyword), harness.wrapInteger(1));
-    structs.put(constructed, value.fromBytes("b", .keyword), harness.wrapInteger(2));
-    const structure = structs.end(constructed);
-    var from_struct = (try args.keyvals(wrap.fromStruct(structure))).?;
+    const built = maps.build(.map, &.{
+        value.fromBytes("a", .keyword), harness.wrapInteger(1),
+        value.fromBytes("b", .keyword), harness.wrapInteger(2),
+    });
+    var from_map = (try args.keyvals(wrap.fromMap(built))).?;
     var sum: i32 = 0;
     seen = 0;
-    while (try from_struct.next()) |kv| {
+    while (try from_map.next()) |kv| {
         expect(wrap.isKeyword(kv.key));
         sum += wrap.toInteger(kv.value);
         seen += 1;
@@ -1088,11 +1087,11 @@ fn keyvalsReadsEveryDictionary() raise.Error!void {
     const middle = try args.dictionaryChunk(pairs, 4, 10);
     expect(middle.start == 4 and middle.len == 4);
     refuses(args.dictionaryChunk, .{ pairs, 10, 10 }, "position 10 is past the end of args-core/pair-runs of 10 values");
-    refuses(args.dictionaryChunk, .{ wrap.fromNil(), 0, 2 }, "expected dictionary abstract, got nil");
+    refuses(args.dictionaryChunk, .{ wrap.fromNil(), 0, 2 }, "expected map or dictionary abstract, got nil");
     refusesWithPrefix(
         args.dictionaryChunk,
         .{ wrap.fromAbstract(abstracts.newBytes(&runs_at, @sizeOf(Runs))), 0, 2 },
-        "expected dictionary abstract, got <args-core/runs",
+        "expected map or dictionary abstract, got <args-core/runs",
     );
 
     runs.lie = .wrong_index;
@@ -1165,7 +1164,7 @@ fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Error!void {
     expect(try args.optFiber(a, 1, null) == null);
     expect(try args.optFunction(a, 1, null) == null);
     expect(try args.optTuple(a, 1, null) == null);
-    expect(try args.optStruct(a, 1, null) == null);
+    expect(try args.optMap(a, 1, null) == null);
     expect(try args.optKeyword(a, 1, null) == null);
     expect(try args.optSymbol(a, 1, null) == null);
 

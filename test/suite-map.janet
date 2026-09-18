@@ -5,7 +5,7 @@
 # Construction
 
 (def m (hash-map :a 1 :b 2 :c 3))
-(assert (= :core/map (type m)) "a map is a core/map")
+(assert (= :map (type m)) "a map is a map")
 (assert (= 3 (length m)) "map length")
 (assert (= 0 (length (hash-map))) "empty map length")
 (assert (= 2 (length (hash-map :a 1 :a 2 :b 3))) "a repeated key is one entry")
@@ -31,7 +31,7 @@
 (assert (nil? (get m :z)) "get a missing key")
 (assert (= :dflt (get m :z :dflt)) "get a missing key with a default")
 (assert (= 2 (in m :b)) "in")
-(assert (nil? (in m :z)) "in a missing key gives nil, as for a struct")
+(assert (nil? (in m :z)) "in a missing key gives nil, as for a table")
 (assert (nil? (get m nil)) "get nil")
 (assert (nil? (get m math/nan)) "get NaN")
 (assert (has-key? m :c) "has-key?")
@@ -79,7 +79,7 @@
 (assert (= m (dissoc m nil)) "dissoc nil")
 (assert (= (hash-map :a 1 :b 2 :c 3) m) "dissoc leaves the original")
 (assert-error-value "conj a map"
-  "bad slot #0, expected vector or core/set, got <core/map :a 1>"
+  "bad slot #0, expected vector or core/set, got <map :a 1>"
   (conj (hash-map :a 1) [:d 4]))
 (assert-error "dissoc a set" (dissoc s 1))
 
@@ -88,7 +88,7 @@
 (assert (= (hash-set 3) (disj s 1 2 9)) "disj")
 (assert-error-value "conj nil into a set" "cannot use nil as a key" (conj s nil))
 (assert-error-value "assoc a set"
-  "bad slot #0, expected vector or core/map, got <core/set 1>"
+  "bad slot #0, expected vector or map, got <core/set 1>"
   (assoc (hash-set 1) 1 2))
 (assert-error "disj a map" (disj m :a))
 
@@ -151,7 +151,7 @@
 (assert (= (hash-set 1 3 4) (persistent! ts)) "persistent! of a set")
 (assert-error "disj! after persistent!" (disj! ts 1))
 (assert-error-value "transient of a number"
-  "bad slot #0, expected vector, core/map or core/set, got 5"
+  "bad slot #0, expected vector, map or core/set, got 5"
   (transient 5))
 
 (def batch (transient (hash-map)))
@@ -175,14 +175,13 @@
 (assert (not= (hash-map :a 1) (hash-map :a 2)) "unequal values")
 (assert (not= (hash-map :a 1) (hash-map :b 1)) "unequal keys")
 (assert (not= (hash-map 1 1) (hash-set 1)) "a map is not a set")
-(assert (not= (hash-map :a 1) {:a 1}) "a map is not a struct")
 (assert (= (hash-set 1 2 3) (hash-set 3 2 1)) "sets equal in any order")
 (assert (= shrunk (hash-map ;(mapcat |[$ (* $ $)] (range 1 3000 2))))
   "a map shrunk by dissoc equals one built directly")
 (assert (= (hash shrunk) (hash (hash-map ;(mapcat |[$ (* $ $)] (range 1 3000 2)))))
   "and hashes alike")
 (assert (= :found (get {(hash-map :k [1 2]) :found} (hash-map :k [1 2])))
-  "a map as a struct key")
+  "a map as a map key")
 (assert (= :found (get @{(hash-set 1 2) :found} (hash-set 2 1)))
   "a set as a table key")
 (assert (= (hash-set (hash-map :a 1)) (hash-set (hash-map :a 1)))
@@ -198,7 +197,7 @@
 (assert (= m (round-trip m)) "marshal a map")
 (assert (= s (round-trip s)) "marshal a set")
 (assert (= (hash-map) (round-trip (hash-map))) "marshal an empty map")
-(assert (= :core/map (type (round-trip m))) "a marshalled map is a map")
+(assert (= :map (type (round-trip m))) "a marshalled map is a map")
 (assert (= :core/set (type (round-trip s))) "a marshalled set is a set")
 (assert (= big (round-trip big)) "marshal a large set")
 (assert (= (hash grown) (hash (round-trip grown))) "a marshalled map hashes alike")
@@ -221,11 +220,13 @@
 
 # Printing
 
-(assert (= "<core/map :a 1>" (describe (hash-map :a 1))) "describe a map")
+(assert (= "<map :a 1>" (describe (hash-map :a 1))) "describe a map")
 (assert (= "<core/set 1>" (describe (hash-set 1))) "describe a set")
-(assert (= "<core/map >" (describe (hash-map))) "describe an empty map")
+(assert (= "<map >" (describe (hash-map))) "describe an empty map")
 (assert (= "<core/set <vector 1>>" (describe (hash-set (vector 1))))
   "describe nested")
-(assert (= "<core/map :a 1>" (string/format "%q" (hash-map :a 1))) "format")
+(assert (= "{:a 1}" (string/format "%q" (hash-map :a 1))) "format is the map literal")
+(assert (= "{:a 1}" (string/format "%j" (hash-map :a 1))) "and so is JDN")
+(assert (= ":a 1" (string (hash-map :a 1))) "string gives the entries")
 
 (end-suite)

@@ -167,14 +167,14 @@
 (assert (= "bad slot #0, expected dictionary value, got \"x\"" (refusal tally "x"))
         "getDictionary refuses a string")
 
-# `getDictionary`, on a struct, a table and a map. The walk is `Dictionary`,
+# `getDictionary`, on a map and a table. The walk is `Dictionary`,
 # whose `next` answers one pair at a time, and the fixture refuses if its own
 # count disagrees with the `count` it was given.
-(assert (= 6 (tally {:a 1 :b 2 :c 3})) "getDictionary reads a struct")
+(assert (= 6 (tally {:a 1 :b 2 :c 3})) "getDictionary reads a map")
 (assert (= 6 (tally @{:a 1 :b 2 :c 3})) "and a table")
-(assert (= 6 (tally (hash-map :a 1 :b 2 :c 3))) "and a map")
-(assert (= 780 (tally (hash-map ;(mapcat |[(keyword "k" $) $] (range 40))))) "and a map of more than one leaf")
-(assert (= 0 (tally {})) "an empty struct walks to zero")
+(assert (= 780 (tally (hash-map ;(mapcat |[(keyword "k" $) $] (range 40)))))
+        "and a map of more than one leaf")
+(assert (= 0 (tally {})) "an empty map walks to zero")
 (assert (= 0 (tally @{})) "and an empty table")
 (assert (= 3 (tally {:a 1 :b :two :c 2})) "a non-numeric value is skipped, not refused")
 
@@ -225,7 +225,7 @@
 (assert (= "buffer" (classify @"b")))
 (assert (= "tuple" (classify [1])))
 (assert (= "array" (classify @[1])))
-(assert (= "struct" (classify {})))
+(assert (= "map" (classify {})))
 (assert (= "table" (classify @{})))
 (assert (= "function" (classify (fn [] nil))) "a function is the thirteenth")
 (assert (= "cfunction" (classify classify)) "a cfunction is the fourteenth")
@@ -286,10 +286,10 @@
 (assert (= "indexed 2" (viewed [1 2])) "toIndexed on a tuple")
 (assert (= "indexed 2" (viewed @[1 2])) "and on an array")
 (assert (= "indexed 0" (viewed @[])) "and on an empty array, whose data pointer is null")
-(assert (= "dictionary 2" (viewed {:a 1 :b 2})) "toDictionary on a struct")
+(assert (= "dictionary 2" (viewed {:a 1 :b 2})) "toDictionary on a map")
 (assert (= "dictionary 2" (viewed @{:a 1 :b 2})) "and on a table")
 (assert (= "dictionary 0" (viewed @{})) "an empty table has entries, and none of them")
-(assert (= "dictionary 0" (viewed {})) "and so does an empty struct")
+(assert (= "dictionary 0" (viewed {})) "and so does an empty map")
 (assert (= "dictionary 2" (viewed (hash-map :a 1 :b 2))) "and on a map")
 (assert (= "none" (viewed (hash-set 1 2))) "a set holds no pairs")
 (assert (= "none" (viewed 3)) "no Value-form getter reads a number, and that is not a refusal")
@@ -329,7 +329,7 @@
 (assert (= :tuple (type (parts 5))) "tuple")
 (assert (= :array (type (parts 6))) "array")
 (assert (= :buffer (type (parts 7))) "buffer")
-(assert (= :struct (type (parts 8))) "struct")
+(assert (= :map (type (parts 8))) "map")
 (assert (= :table (type (parts 9))) "table")
 
 # Interning: a symbol and a keyword the module made are the same object as the
@@ -364,11 +364,11 @@
 # `get` is Janet's own: a miss is nil and so is a value with no indexed
 # access. It does not refuse, which is what separates it from `put`.
 (assert (= 1 (fetch @{:x 1} :x)) "get reads a table")
-(assert (= 1 (fetch {:x 1} :x)) "and a struct")
+(assert (= 1 (fetch {:x 1} :x)) "and a map")
 (assert (= 2 (fetch [1 2 3] 1)) "and a tuple by index")
 (assert (nil? (fetch @{:x 1} :missing)) "a miss is nil")
 (assert (nil? (fetch 3 :x)) "and so is a number, which get does not refuse")
-(assert (= 1 (fetch (get (built "xy") 8) :a)) "get reads a struct the module built")
+(assert (= 1 (fetch (get (built "xy") 8) :a)) "get reads a map the module built")
 
 # `length` refuses what has none, and refuses a negative answer.
 (def size (from-module 'size))
@@ -378,7 +378,7 @@
 (assert (= 2 (size @[1 2])) "of an array")
 (assert (= 1 (size @{:a 1})) "of a table")
 (assert (= 6 (size k)) "and of an abstract with a length slot")
-(assert (= "expected buffer, string, array, vector, table, struct, symbol, keyword or tuple, got 3"
+(assert (= "expected buffer, string, array, vector, table, map, symbol, keyword or tuple, got 3"
            (refusal size 3))
         "length refuses a number with the runtime's own message")
 
@@ -433,9 +433,9 @@
 (assert (string/has-prefix? "expected function or cfunction, got <table 0x"
                             (refusal apply-fn @{:a 1} :a))
         "and a table")
-(assert (string/has-prefix? "expected function or cfunction, got <struct 0x"
+(assert (string/has-prefix? "expected function or cfunction, got <map "
                             (refusal apply-fn {:a 1} :a))
-        "and a struct")
+        "and a map")
 
 # `pcall` is narrower, and by the callee's nature rather than by a decision
 # here: a fiber runs a function and nothing else.
@@ -445,8 +445,8 @@
         "and a keyword")
 (assert (deep= [:error "expected function, got table" nil] (attempted @{:a 1} :a))
         "and a table")
-(assert (deep= [:error "expected function, got struct" nil] (attempted {:a 1} :a))
-        "and a struct")
+(assert (deep= [:error "expected function, got map" nil] (attempted {:a 1} :a))
+        "and a map")
 
 # `mcall` is `(:name ;args)`: the method is looked up in the receiver and
 # called with the receiver first.

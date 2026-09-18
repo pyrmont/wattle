@@ -41,7 +41,7 @@ const primitives = @import("subsystems").compiler_primitives;
 const registry = @import("subsystems").registry;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const symbols = @import("subsystems").value.symbols;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
@@ -371,12 +371,12 @@ fn theFourKindsOfForm() !void {
     expect(compiler.current_mapping.column == 34);
 
     // A struct of constants folds, so nothing is built at run time.
-    const constructed = structs.begin(1);
-    structs.put(constructed, value.fromBytes("key", .keyword), harness.wrapInteger(9));
-    var folded = wrap.fromStruct(structs.end(constructed));
+    var folded = wrap.fromMap(maps.build(.map, &.{
+        value.fromBytes("key", .keyword), harness.wrapInteger(9),
+    }));
     slot = try primitives.valueImpl(options, folded);
     expect(slot.flags.constant);
-    expect(harness.isType(slot.constant, repr.Tag.@"struct"));
+    expect(harness.isType(slot.constant, repr.Tag.map));
     expect(emittedCount() == 1);
 
     // A mutable structure cannot fold, so it is pushed and constructed.

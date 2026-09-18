@@ -21,7 +21,7 @@
            (set ,loaded true)
            (set ,state (do ,;forms)))))))
 
-# Use tuples instead of structs to save memory
+# Use tuples instead of maps to save memory
 (def- HEAD 0)
 (def- TAIL 1)
 

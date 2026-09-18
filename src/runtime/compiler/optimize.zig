@@ -579,7 +579,7 @@ fn markReads(registers: *regalloc.RegisterAllocator, instruction: u32) void {
         constants.Opcode.make_array,
         constants.Opcode.make_buffer,
         constants.Opcode.make_string,
-        constants.Opcode.make_struct,
+        constants.Opcode.make_map,
         constants.Opcode.make_table,
         constants.Opcode.make_tuple,
         constants.Opcode.make_bracket_tuple,

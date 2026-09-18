@@ -50,7 +50,7 @@
 (testmarsh @[1 2 3 4 5] "marshal array")
 (testmarsh [tuple 1 2 3 4 5] "marshal tuple")
 (testmarsh @{1 2 3 4}  "marshal table")
-(testmarsh {1 2 3 4}  "marshal struct")
+(testmarsh {1 2 3 4}  "marshal map")
 (testmarsh (fn [x] x) "marshal function 0")
 (testmarsh (fn name [x] x) "marshal function 1")
 (testmarsh (fn [x] (+ 10 x 2)) "marshal function 2")
@@ -61,9 +61,9 @@
 (testmarsh (fiber/new (fn [&] (yield 1) 2)) "marshal simple fiber 2")
 
 # issue #53 - 1147482e6
-(def strct {:a @[nil]})
-(put (strct :a) 0 strct)
-(testmarsh strct "cyclic struct")
+(def cyclic {:a @[nil]})
+(put (cyclic :a) 0 cyclic)
+(testmarsh cyclic "cyclic map")
 
 # More marshalling code
 # issue #53 - 1147482e6
@@ -299,19 +299,19 @@ neldb\0\0\0\xD8\x05printG\x01\0\xDE\xDE\xDE'\x03\0marshal_tes/\x02
 (assert (buffer? (marshal (unmarshal (marshal (nest-protos budget)))))
         "nested prototypes round-trip at the budget")
 
-# A struct prototype is a fourth path, and it is not the table's: the two are
-# read by separate arms and only a chain built from structs walks this one.
-(defn- nest-struct-protos [depth]
-  (var x (struct))
-  (repeat depth (set x (struct/with-proto x)))
+# A map value is a fourth path: a map is written entry by entry, so a chain of
+# nested maps recurses once per level as a chain of tables does.
+(defn- nest-maps [depth]
+  (var x {})
+  (repeat depth (set x {:v x}))
   x)
-(assert (buffer? (marshal (nest-struct-protos budget)))
-        "nested struct prototypes marshal at the budget")
-(assert-error "stack overflow" (marshal (nest-struct-protos over)))
-(assert (buffer? (marshal (unmarshal (marshal (nest-struct-protos budget)))))
-        "nested struct prototypes round-trip at the budget")
+(assert (buffer? (marshal (nest-maps budget)))
+        "nested maps marshal at the budget")
+(assert-error "stack overflow" (marshal (nest-maps over)))
+(assert (buffer? (marshal (unmarshal (marshal (nest-maps budget)))))
+        "nested maps round-trip at the budget")
 
-# A table key, which the chain above reaches only for a struct.
+# A table key, which is its own arm.
 (defn- nest-table-keys [depth]
   (var x 0)
   (repeat depth (set x @{x :v}))

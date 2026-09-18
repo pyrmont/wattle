@@ -57,6 +57,7 @@ const gc_alloc = @import("../gc.zig");
 const gc_mark = @import("../gc/mark.zig");
 const host = @import("host");
 const io = @import("../io.zig");
+const maps = @import("../value/maps.zig");
 const method_type = @import("../method_type.zig");
 const oa = @import("abi.zig");
 const pp_format = @import("../pp/format.zig");
@@ -64,7 +65,6 @@ const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const stdio = @import("../stdio.zig");
 const strings = @import("../value/strings.zig");
-const structs = @import("../value/structs.zig");
 const tables = @import("../value/tables.zig");
 const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
@@ -1212,13 +1212,13 @@ fn newProc() *Proc {
 
 /// The value the options dictionary `x` holds for the keyword `name`, or nil.
 ///
-/// A table's or a struct's own slots are read and its prototype is not, and a
+/// A table's own slots are read and its prototype is not, and a map or a
 /// dictionary abstract is read through its `get`.
 fn optionOf(x: repr.Value, comptime name: []const u8) raise.Error!repr.Value {
     const key = value.fromBytes(name, .keyword);
     return switch (repr.typeOf(x)) {
         .table => tables.rawget(wrap.toTable(x), key),
-        .@"struct" => structs.rawget(wrap.toStruct(x), key),
+        .map => maps.lookup(wrap.toMap(x), key),
         else => access.get(x, key),
     };
 }

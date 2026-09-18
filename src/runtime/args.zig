@@ -79,13 +79,13 @@ pub const arrays = @import("value/arrays.zig");
 pub const buffers = @import("value/buffers.zig");
 const fatal = @import("fatal.zig");
 const gc_alloc = @import("gc.zig");
+const maps = @import("value/maps.zig");
 const method_type = @import("method_type.zig");
 const options = @import("options");
 const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const repr = @import("repr");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 pub const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const utils = @import("utils.zig");
@@ -143,7 +143,7 @@ pub const getKeyword = GetKeyword.get;
 pub const getNumber = GetNumber.get;
 pub const getPointer = GetPointer.get;
 pub const getString = GetString.get;
-pub const getStruct = GetStruct.get;
+pub const getMap = GetMap.get;
 pub const getSymbol = GetSymbol.get;
 pub const getTable = GetTable.get;
 pub const getTuple = GetTuple.get;
@@ -213,7 +213,7 @@ pub const optKeyword = Opt(GetKeyword).get;
 pub const optNumber = Opt(GetNumber).get;
 pub const optPointer = Opt(GetPointer).get;
 pub const optString = Opt(GetString).get;
-pub const optStruct = Opt(GetStruct).get;
+pub const optMap = Opt(GetMap).get;
 pub const optSymbol = Opt(GetSymbol).get;
 pub const optTuple = Opt(GetTuple).get;
 
@@ -369,19 +369,39 @@ pub const Chunks = struct {
     }
 };
 
-/// A table's or a struct's slots, which `dictionaryView` returns.
+/// A table's slots, which `dictionaryView` returns.
 ///
 /// Three quantities rather than two: `kvs` is the whole hash array, `cap`
 /// long, and `len` is how many of its slots are occupied. A walk reads every
 /// slot and skips the empty ones, so neither number alone describes it.
 ///
-/// Only the compiler and the printer's `{}` arm read one, because both are
-/// reached by a table's or a struct's tag. Every other site reads a dictionary
-/// through `keyvals`.
+/// Only the compiler reads one, and only where a table's tag has already
+/// answered for the value. Every other site reads a dictionary through
+/// `keyvals`.
 pub const DictView = struct {
     kvs: ?[*]const abi.Keyval = null,
     len: usize = 0,
     cap: usize = 0,
+};
+
+/// A dictionary's pairs in one block, which `gatherPairs` returns.
+///
+/// `view` is the block and `copied` says whether it was made here. A table
+/// lends its own slots, empty ones included, and a map's entries are copied
+/// out of its leaves, so a map's view has no empty slot and `cap` equals
+/// `len`.
+pub const GatheredPairs = struct {
+    view: DictView,
+    /// Whether `view.kvs` is a copy this made or the value's own storage.
+    copied: bool,
+
+    /// Releases the copy where one was made, and does nothing where the pairs
+    /// were borrowed. Its callers `defer` it, because each of them can raise
+    /// between the gather and the release; a copy abandoned by a raise is on
+    /// the scratch heap either way, which the next collection reclaims.
+    pub fn free(self: *GatheredPairs) void {
+        if (self.copied) gc_alloc.scratch_heap.free(@constCast(self.view.kvs.?[0..self.view.cap]));
+    }
 };
 
 /// What a numeric kernel expected, and the only place the nouns are written.
@@ -486,10 +506,10 @@ pub const GetCFunction = TypeGetter(wrap.toCfunction, repr.Tag.cfunction, repr.T
 pub const GetFiber = TypeGetter(wrap.toFiber, repr.Tag.fiber, repr.TagSet.one(.fiber));
 pub const GetFunction = TypeGetter(wrap.toFunction, repr.Tag.function, repr.TagSet.one(.function));
 pub const GetKeyword = KindGetter(.keyword);
+pub const GetMap = TypeGetter(wrap.toMap, repr.Tag.map, repr.TagSet.one(.map));
 pub const GetNumber = TypeGetter(wrap.toNumber, repr.Tag.number, repr.TagSet.one(.number));
 pub const GetPointer = TypeGetter(wrap.toPointer, repr.Tag.pointer, repr.TagSet.one(.pointer));
 pub const GetString = TypeGetter(wrap.toString, repr.Tag.string, repr.TagSet.one(.string));
-pub const GetStruct = TypeGetter(wrap.toStruct, repr.Tag.@"struct", repr.TagSet.one(.@"struct"));
 pub const GetSymbol = KindGetter(.symbol);
 pub const GetTable = TypeGetter(wrap.toTable, repr.Tag.table, repr.TagSet.one(.table));
 pub const GetTuple = TypeGetter(wrap.toTuple, repr.Tag.tuple, repr.TagSet.one(.tuple));
@@ -514,12 +534,12 @@ pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 el
 /// The pairs of a table, a struct or an abstract whose contents are pairs,
 /// read one run or one pair at a time. `keyvals` returns a `Keyvals`.
 ///
-/// A run alternates keys and values. A table or a struct is one run, its
-/// slots read as values, so the run holds its empty slots, whose keys are nil.
-/// An abstract is as many runs as its `chunk` callback gives, each starting
-/// where the one before ended. `next` skips the empty slots and `nextRun`
-/// does not. A reader uses one or the other, since `next` keeps the part of a
-/// run it has not yet returned.
+/// A run alternates keys and values. A table is one run, its slots read as
+/// values, so the run holds its empty slots, whose keys are nil. A map is one
+/// run per leaf and an abstract as many runs as its `chunk` callback gives,
+/// each starting where the one before ended and neither holding an empty slot.
+/// `next` skips the empty slots and `nextRun` does not. A reader uses one or
+/// the other, since `next` keeps the part of a run it has not yet returned.
 ///
 /// A run stays valid as a `Chunks` run does.
 ///
@@ -534,18 +554,19 @@ pub const Keyvals = struct {
     source: Source,
     /// The number of pairs, empty slots not counted.
     count: usize,
-    /// The number of values: twice the slots of a table or a struct, or twice
-    /// an abstract's length.
+    /// The number of values: twice the slots of a table, or twice the number
+    /// of pairs a map or an abstract holds.
     len: usize,
     /// The position of the next run.
     index: usize = 0,
     /// What `next` has not yet returned of the run it read most recently.
     rest: []const repr.Value = &.{},
 
-    /// Where the values come from: a table's or a struct's slots, or an
+    /// Where the values come from: a table's slots, a map's leaves, or an
     /// abstract's runs.
     pub const Source = union(enum) {
         contiguous: []const repr.Value,
+        map: *const maps.Tree,
         abstract: struct { payload: *anyopaque, at: *const abi.AbstractType },
     };
 
@@ -573,6 +594,13 @@ pub const Keyvals = struct {
             .contiguous => |values| {
                 self.index = self.len;
                 return values;
+            },
+            .map => |t| {
+                // A leaf's entries, read with no callback. Every run is whole
+                // pairs and starts where the last ended, as an abstract's must.
+                const run = maps.chunkAt(t, self.index);
+                self.index += run.items.len;
+                return run.items;
             },
             .abstract => |a| {
                 const run = try pairsChunk(a.payload, a.at, self.index, self.len);
@@ -1180,34 +1208,34 @@ pub fn chunks(x: repr.Value) raise.Error!?Chunks {
 }
 
 /// What `x` holds: `elements` for an array, a vector, a tuple or an abstract
-/// that declares them, `pairs` for a table, a struct or an abstract that declares
+/// that declares them, `pairs` for a table, a map or an abstract that declares
 /// them, and `none` for everything else.
 ///
 /// It reads the tag and, for an abstract, its type, and calls no callback.
 pub fn contentsOf(x: repr.Value) abi.Contents {
     return switch (repr.typeOf(x)) {
         .array, .vector, .tuple => .elements,
-        .table, .@"struct" => .pairs,
+        .table, .map => .pairs,
         .abstract => abi.abstractHead(wrap.toAbstract(x)).type.contents,
         else => .none,
     };
 }
 
-/// The run of an abstract whose contents are pairs that starts at `position`.
+/// The run of a map or of an abstract whose contents are pairs that starts at
+/// `position`.
 ///
-/// `x` is the abstract, `position` the position of the pair asked for and
-/// `len` twice the length it reported.
+/// `x` is the map or the abstract, `position` the position of the pair asked
+/// for and `len` twice the number of pairs it reported.
 ///
-/// This function raises if `x` is not an abstract whose contents are pairs,
-/// if `position` is not below `len`, or where `Keyvals.nextRun` refuses the
-/// run.
+/// This function raises if `x` is neither, if `position` is not below `len`,
+/// or where `Keyvals.nextRun` refuses the run.
 pub fn dictionaryChunk(x: repr.Value, position: usize, len: usize) raise.Error!abi.Chunk {
-    if (!repr.checkType(x, repr.Tag.abstract)) {
-        return pp_format.panicf("expected dictionary abstract, got %v", .{x});
+    const map = repr.checkType(x, repr.Tag.map);
+    if (!map and (!repr.checkType(x, repr.Tag.abstract) or
+        abi.abstractHead(wrap.toAbstract(x)).type.contents != .pairs))
+    {
+        return pp_format.panicf("expected map or dictionary abstract, got %v", .{x});
     }
-    const abst = wrap.toAbstract(x);
-    const at = abi.abstractHead(abst).type;
-    if (at.contents != .pairs) return pp_format.panicf("expected dictionary abstract, got %v", .{x});
     if (position >= len) {
         return pp_format.panicf("position %u is past the end of %t of %u values", .{
             @as(u64, position),
@@ -1215,7 +1243,16 @@ pub fn dictionaryChunk(x: repr.Value, position: usize, len: usize) raise.Error!a
             @as(u64, len),
         });
     }
-    return pairsChunk(abst, at, position, len);
+    if (map) {
+        const t = wrap.toMap(x);
+        // A length the map does not have is refused as `pairsChunk` refuses a
+        // run past the end.
+        if (len > 2 * t.count) return pp_format.panicf("chunk of %t does not hold position %u", .{ x, @as(u64, position) });
+        const run = maps.chunkAt(t, position);
+        return .{ .items = run.items.ptr, .len = run.items.len, .start = run.start };
+    }
+    const abst = wrap.toAbstract(x);
+    return pairsChunk(abst, abi.abstractHead(abst).type, position, len);
 }
 
 /// `dictionaryChunk`, published.
@@ -1224,23 +1261,43 @@ pub fn dictionaryChunkAbi(x: repr.Value, position: usize, len: usize) callconv(.
     return dictionaryChunk(x, position, len) catch raise.reportToAbi(abi.Chunk);
 }
 
-/// The slots of a table or a struct, or nothing.
+/// The slots of a table, or nothing.
 pub fn dictionaryView(x: repr.Value) ?DictView {
     switch (repr.typeOf(x)) {
         .table => {
             const table = wrap.toTable(x);
             return .{ .kvs = table.data, .cap = table.capacity, .len = table.count };
         },
-        .@"struct" => {
-            const structure = wrap.toStruct(x);
-            return .{
-                .kvs = structure,
-                .cap = structs.head(structure).capacity,
-                .len = structs.head(structure).length,
-            };
-        },
         else => return null,
     }
+}
+
+/// The pairs of a table or a map in one block, or nothing.
+///
+/// It is for the two readers that sort a dictionary's keys, the compiler's
+/// `{}` literal and the printer, because a sort needs every pair at once and
+/// a map holds its entries one run per leaf.
+///
+/// The caller releases what this returns with `GatheredPairs.free`. This
+/// function returns null if `x` is neither.
+pub fn gatherPairs(x: repr.Value) ?GatheredPairs {
+    if (dictionaryView(x)) |view| return .{ .view = view, .copied = false };
+    if (!repr.checkType(x, repr.Tag.map)) return null;
+    const t = wrap.toMap(x);
+    const block = gc_alloc.scratch_heap.alloc(abi.Keyval, t.count) catch fatal.outOfMemory();
+    // A `Keyval` is two values with no padding, which `abi.zig` asserts, so a
+    // leaf's run is copied into the block as it stands.
+    const values: [*]repr.Value = @ptrCast(block.ptr);
+    var index: usize = 0;
+    while (index < 2 * t.count) {
+        const run = maps.chunkAt(t, index);
+        @memcpy(values[index..][0..run.items.len], run.items);
+        index += run.items.len;
+    }
+    return .{
+        .view = .{ .kvs = block.ptr, .len = t.count, .cap = t.count },
+        .copied = true,
+    };
 }
 
 /// The end of a slice argument at `n`, folded against `length`. An absent or
@@ -1592,7 +1649,7 @@ pub fn keyeq(x: repr.Value, cstring: [*:0]const u8) bool {
     return argStrlike(.keyword, x, cstring);
 }
 
-/// Returns the pairs of a table, a struct or an abstract whose contents are
+/// Returns the pairs of a table, a map or an abstract whose contents are
 /// pairs, read one run at a time or one pair at a time.
 ///
 /// `x` is the value. This function returns null if `x` is none of the three.
@@ -1606,10 +1663,9 @@ pub fn keyvals(x: repr.Value) raise.Error!?Keyvals {
             const data = table.data orelse return .{ .source = .{ .contiguous = &.{} }, .count = 0, .len = 0 };
             return slotsOf(data[0..table.capacity], table.count);
         },
-        .@"struct" => {
-            const structure = wrap.toStruct(x);
-            const hd = structs.head(structure);
-            return slotsOf(structure[0..hd.capacity], hd.length);
+        .map => {
+            const t = wrap.toMap(x);
+            return .{ .source = .{ .map = t }, .count = t.count, .len = 2 * t.count };
         },
         .abstract => {
             const abst = wrap.toAbstract(x);
@@ -1805,9 +1861,9 @@ fn dictionaryAbi(argv: []const repr.Value, n: usize) raise.Error!abi.Dictionary 
 
 /// A dictionary as the boundary gives it to a module, or nothing.
 ///
-/// A table's or a struct's slots are its own storage, read as values. An
+/// A table's slots are its own storage, read as values. A map's leaves and an
 /// abstract's runs are left to `dictionaryChunk`, so `items` is null and `len`
-/// is twice what its `length` callback reported.
+/// is twice the number of pairs.
 ///
 /// This function raises if an abstract's `length` callback raises.
 fn dictionaryOf(x: repr.Value) raise.Error!?abi.Dictionary {
@@ -1819,7 +1875,7 @@ fn dictionaryOf(x: repr.Value) raise.Error!?abi.Dictionary {
             .count = it.count,
             .value = x,
         },
-        .abstract => .{ .items = null, .len = it.len, .count = it.count, .value = x },
+        .map, .abstract => .{ .items = null, .len = it.len, .count = it.count, .value = x },
     };
 }
 

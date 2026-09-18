@@ -250,7 +250,7 @@ pub const Runtime = extern struct {
     new_buffer: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,
     new_keyword: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,
     new_string: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,
-    new_struct: *const fn (kvs: [*]const abi.Keyval, len: usize) callconv(.c) Value,
+    new_map: *const fn (kvs: [*]const abi.Keyval, len: usize) callconv(.c) Value,
     new_symbol: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,
     new_table: *const fn (kvs: [*]const abi.Keyval, len: usize) callconv(.c) Value,
     new_tuple: *const fn (items: [*]const Value, len: usize) callconv(.c) Value,

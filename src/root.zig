@@ -149,7 +149,6 @@ comptime {
     if (options.symbols) _ = @import("runtime/value/symbols.zig");
     if (options.tuples) _ = @import("runtime/value/tuples.zig");
     if (options.tables) _ = @import("runtime/value/tables.zig");
-    if (options.structs) _ = @import("runtime/value/structs.zig");
     if (options.order) _ = @import("runtime/value/helpers/order.zig");
     if (options.access) _ = @import("runtime/value/helpers/access.zig");
     if (options.abstracts) _ = @import("runtime/value/abstracts.zig");

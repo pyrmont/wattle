@@ -106,7 +106,7 @@
 (defn function? "Check if x is a function (not a cfunction)." [x] (= (type x) :function))
 (defn cfunction? "Check if x is a cfunction." [x] (= (type x) :cfunction))
 (defn table? "Check if x is a table." [x] (= (type x) :table))
-(defn struct? "Check if x is a struct." [x] (= (type x) :struct))
+(defn map? "Check if x is a map." [x] (= (type x) :map))
 (defn array? "Check if x is an array." [x] (= (type x) :array))
 (defn tuple? "Check if x is a tuple." [x] (= (type x) :tuple))
 (defn boolean? "Check if x is a boolean." [x] (= (type x) :boolean))
@@ -122,10 +122,11 @@
 (def- non-atomic-types
   {:array true
    :tuple true
+   :vector true
    :table true
+   :map true
    :buffer true
-   :symbol true
-   :struct true})
+   :symbol true})
 
 (defn idempotent?
   "Check if x is a value that evaluates to itself when compiled."
@@ -1307,7 +1308,7 @@
   (cond
     (indexed? ind) (drop-n-slice tuple/slice n ind)
     (bytes? ind) (drop-n-slice string/slice n ind)
-    (struct? ind) (drop-n-dict struct/to-table n ind)
+    (map? ind) (drop-n-dict map/to-table n ind)
     (table? ind) (drop-n-dict table/clone n ind)
     (do
       (var key nil)
@@ -1334,7 +1335,7 @@
   (cond
     (indexed? ind) (drop-until-slice tuple/slice pred ind)
     (bytes? ind) (drop-until-slice string/slice pred ind)
-    (struct? ind) (drop-until-dict struct/to-table pred ind)
+    (map? ind) (drop-until-dict map/to-table pred ind)
     (table? ind) (drop-until-dict table/clone pred ind)
     (do (find pred ind) ind)))
 
@@ -1513,12 +1514,12 @@
 (defn walk
   ``Iterate over the values in ast and apply `f`
   to them. Collect the results in a data structure. If ast is not a
-  table, struct, array, or tuple,
+  table, map, array, or tuple,
   returns form.``
   [f form]
   (case (type form)
     :table (walk-dict f form)
-    :struct (table/to-struct (walk-dict f form))
+    :map (table/to-map (walk-dict f form))
     :array (walk-ind f form)
     :tuple (keep-syntax! form (walk-ind f form))
     form))
@@ -1887,7 +1888,7 @@
   (flatten-into @[] ind))
 
 (defn kvs
-  ``Takes a table or struct and returns a new array of key value pairs
+  ``Takes a table or map and returns a new array of key value pairs
   like `@[k v k v ...]`.``
   [dict]
   (def ret @[])
@@ -2011,7 +2012,7 @@
     all of its elements match the corresponding elements in `x`.
     Use `& rest` at the end of an array or bracketed tuple to bind all remaining values to `rest`.
 
-  * table or struct -- a table or struct will match if all values match with
+  * table or map -- a table or map will match if all values match with
     the corresponding values in `x`.
 
   * tuple -- a tuple pattern will match if its first element matches, and the
@@ -2083,7 +2084,7 @@
       (break)
 
       # match data structure template
-      (or (= t :struct) (= t :table))
+      (or (= t :map) (= t :table))
       (eachp [i sub-pattern] pattern
         (visit-pattern-1 b2g s i sub-pattern))
 
@@ -2134,7 +2135,7 @@
     (cond
 
       # match data structure template
-      (or (= t :struct) (= t :table))
+      (or (= t :map) (= t :table))
       (eachp [i sub-pattern] pattern
         (array/push anda [not= nil (get-sym s i)])
         (visit-pattern-2 anda gun preds s i sub-pattern))
@@ -2245,7 +2246,7 @@
       :array (map expand-bindings x)
       :tuple (keep-syntax! x (map expand-bindings x))
       :table (dotable x expand-bindings)
-      :struct (table/to-struct (dotable x expand-bindings))
+      :map (table/to-map (dotable x expand-bindings))
       (recur x)))
 
   (defn expanddef [t]
@@ -2283,7 +2284,7 @@
                      (tuple/slice (map qq x)))))
         :array (map qq x)
         :table (table ;(map qq (kvs x)))
-        :struct (struct ;(map qq (kvs x)))
+        :map (hash-map ;(map qq (kvs x)))
         x))
     (tuple (in t 0) (qq (in t 1))))
 
@@ -2318,7 +2319,7 @@
                (tuple/brackets ;(map recur x))
                (dotup x))
       :array (map recur x)
-      :struct (table/to-struct (dotable x recur))
+      :map (table/to-map (dotable x recur))
       :table (dotable x recur)
       x))
   ret)
@@ -2365,7 +2366,7 @@
     (or (= tx :array) (= tx :tuple))
     (tuple/slice (map freeze x))
 
-    (or (= tx :table) (= tx :struct))
+    (or (= tx :table) (= tx :map))
     (let [temp-tab @{}]
       # Handle multiple unique keys that freeze. Result should
       # be independent of iteration order.
@@ -2375,7 +2376,7 @@
         (def old (get temp-tab kk))
         (def new (if (= nil old) vv (max vv old)))
         (put temp-tab kk new))
-      (table/to-struct temp-tab (freeze (getproto x))))
+      (table/to-map temp-tab))
 
     (= tx :buffer)
     (string x)
@@ -2393,20 +2394,20 @@
     :array (walk-ind thaw ds)
     :tuple (walk-ind thaw ds)
     :table (walk-dict thaw (table/proto-flatten ds))
-    :struct (walk-dict thaw (struct/proto-flatten ds))
+    :map (walk-dict thaw ds)
     :string (buffer ds)
     ds))
 
 (defn thaw-keep-keys
   ```
-  Similar to `thaw`, but do not modify table or struct keys.
+  Similar to `thaw`, but do not modify table or map keys.
   ```
   [ds]
   (case (type ds)
     :array (walk-ind thaw-keep-keys ds)
     :tuple (walk-ind thaw-keep-keys ds)
     :table (walk-dict-values thaw-keep-keys (table/proto-flatten ds))
-    :struct (walk-dict-values thaw-keep-keys (struct/proto-flatten ds))
+    :map (walk-dict-values thaw-keep-keys ds)
     :string (buffer ds)
     ds))
 
@@ -2428,10 +2429,10 @@
               (if (deep-not= xx yy)
                 (break (set ret true))))
             ret))
-      (or (= tx :struct) (= tx :table))
+      (or (= tx :map) (= tx :table))
       (or (not= (length x) (length y))
           (do
-            (def rawget (if (= tx :struct) struct/rawget table/rawget))
+            (def rawget (if (= tx :map) get table/rawget))
             (var ret false)
             (eachp [k v] x
               (if (deep-not= (rawget y k) v) (break (set ret true))))
@@ -2680,7 +2681,7 @@
   Run a context. This evaluates expressions in an environment,
   and encapsulates the parsing, compilation, and evaluation.
   Returns `(in environment :exit-value environment)` when complete.
-  `opts` is a table or struct of options. The options are as follows:
+  `opts` is a table or map of options. The options are as follows:
 
     * `:chunks` -- callback to read into a buffer - default is getline
 
@@ -3312,7 +3313,7 @@
   `module/paths`. Returns the new environment
   returned from compiling and running the file.``
   [path & args]
-  (require-1 path args (struct ;args)))
+  (require-1 path args (hash-map ;args)))
 
 (defn merge-module
   ``Merge a module source into the `target` environment with a `prefix`, as with the `import` macro.

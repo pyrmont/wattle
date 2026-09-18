@@ -1,4 +1,4 @@
-//! The runtime's shared substrate: the four head accessors, the name tables a
+//! The runtime's shared substrate: the three head accessors, the name tables a
 //! message prints from, the two string searches, the key sort, the host
 //! services and the allocator layer.
 //!
@@ -26,7 +26,6 @@ const fatal = @import("fatal.zig");
 const order = @import("value/helpers/order.zig");
 const repr = @import("repr");
 const strings = @import("value/strings.zig");
-const structs = @import("value/structs.zig");
 const tables = @import("value/tables.zig");
 const tuples = @import("value/tuples.zig");
 const vm_state = @import("vm/state.zig");
@@ -149,7 +148,7 @@ pub const typeNames: [16][:0]const u8 = .{
     "array",
     "vector",
     "table",
-    "struct",
+    "map",
     "symbol",
     "tuple",
     "fiber",
@@ -200,20 +199,17 @@ pub fn View(comptime Self: type, comptime T: type) type {
 // Public functions
 // ==========================================================================
 
-/// The four head accessors, each forwarding to the file that owns that head.
+/// The three head accessors, each forwarding to the file that owns that head.
 ///
-/// They are here so that a caller wanting one of the four need not import four
-/// files. The arithmetic and the offset are the owner's, in one place each.
+/// They are here so that a caller wanting one of the three need not import
+/// three files. The arithmetic and the offset are the owner's, in one place
+/// each.
 pub fn abstractHead(abstract: ?*const anyopaque) *abi.AbstractHead {
     return abi.abstractHead(abstract);
 }
 
 pub fn stringHead(s: [*]const u8) *strings.StringHead {
     return strings.head(s);
-}
-
-pub fn structHead(st: [*]const tables.Keyval) *structs.StructHead {
-    return structs.head(st);
 }
 
 pub fn tupleHead(tuple: [*]const repr.Value) *tuples.TupleHead {

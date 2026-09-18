@@ -345,7 +345,7 @@ fn callingANonFunction() void {
     // receiver by it.
     expectEqual("(:a @{:a 2})", "nil");
     expectEqual("(do (def t @{:go (fn [self x] [:went x])}) (:go t 7))", "[:went 7]");
-    // A keyword receiver rather than a table or a struct, because `%v` renders
+    // A keyword receiver rather than a table or a map, because `%v` renders
     // both of those by address and an address cannot be compared.
     expectError("(:nope :recv)", "unknown method :nope invoked on :recv");
 }
@@ -390,7 +390,7 @@ fn theStackLimitIsInclusive() void {
 /// `vm_assert_type` and `vm_assert_types` share one message and one formatter,
 /// and `%T` renders a bitmask of permitted types rather than a single one. A
 /// set that includes both array and tuple is rendered by `%K`, which names
-/// them `indexed value`, and so is one that includes both table and struct,
+/// them `indexed value`, and so is one that includes both table and map,
 /// which it names `dictionary value`.
 fn theTypeAssertions() void {
     // JOP_RESUME, JOP_CANCEL and JOP_PROPAGATE all assert a single type.
@@ -599,8 +599,8 @@ fn anOddConstructorArgumentCount() void {
         "expected even number of arguments to table constructor, got 1",
     );
     expectError(
-        "((asm '{:arity 0 :bytecode [(ldi 0 1) (push 0) (mkstu 0) (ret 0)]}))",
-        "expected even number of arguments to struct constructor, got 1",
+        "((asm '{:arity 0 :bytecode [(ldi 0 1) (push 0) (mkmap 0) (ret 0)]}))",
+        "expected even number of arguments to map constructor, got 1",
     );
 }
 

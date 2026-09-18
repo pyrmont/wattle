@@ -47,7 +47,6 @@ const harness = @import("harness.zig");
 const options = @import("options");
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
-const structs = @import("subsystems").value.structs;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
 const utils = @import("subsystems").utils;
@@ -245,12 +244,12 @@ fn theFuncframeVarargs(rest: *functions.Function) void {
     expect(tuples.head(wrap.toTuple(tail)).length == 0);
 }
 
-/// `&keys` sets the funcdef's `structarg` flag, and the tail is built with
-/// `structs.put` instead of `tuples.n`. An odd-length tail drops its last
-/// value, which is what `makeStructN`'s `i + 1 < len` decides: that loop
-/// condition is the whole difference between ignoring the value and pairing
-/// it with the slot past the arguments.
-fn theFuncframeStructargs(keyed: *functions.Function) void {
+/// `&keys` sets the funcdef's `maparg` flag, and the tail is built with
+/// `maps.build` instead of `tuples.n`. An odd-length tail drops its last
+/// value, which is what `makeMapN`'s even-length slice decides: that bound is
+/// the whole difference between ignoring the value and pairing it with the
+/// slot past the arguments.
+fn theFuncframeMapargs(keyed: *functions.Function) void {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
         value.fromBytes("a", .keyword),
@@ -261,20 +260,20 @@ fn theFuncframeStructargs(keyed: *functions.Function) void {
 
     var fiber = rootedFiber(keyed, args[0..5]);
     var tail = slot(fiber, fiber.frame + keyed.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.@"struct"));
-    const structure = wrap.toStruct(tail);
-    expect(structs.head(structure).length == 2);
-    expect(harness.integerIs(harness.field(structure, "a"), 7));
-    expect(harness.integerIs(harness.field(structure, "b"), 8));
+    expect(harness.isType(tail, repr.Tag.map));
+    const built = wrap.toMap(tail);
+    expect(built.count == 2);
+    expect(harness.integerIs(harness.field(built, "a"), 7));
+    expect(harness.integerIs(harness.field(built, "b"), 8));
 
     fiber = rootedFiber(keyed, args[0..1]);
     tail = slot(fiber, fiber.frame + keyed.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.@"struct"));
-    expect(structs.head(wrap.toStruct(tail)).length == 0);
+    expect(harness.isType(tail, repr.Tag.map));
+    expect(wrap.toMap(tail).count == 0);
 
     // An odd-length tail: the last key has no value, so it is dropped rather
     // than paired with whatever is in the slot past the arguments. Four
-    // arguments, one fixed and three keyed, so the struct is one pair.
+    // arguments, one fixed and three keyed, so the map is one pair.
     const odd = [_]repr.Value{
         harness.wrapInteger(1),
         value.fromBytes("a", .keyword),
@@ -283,11 +282,11 @@ fn theFuncframeStructargs(keyed: *functions.Function) void {
     };
     fiber = rootedFiber(keyed, odd[0..4]);
     tail = slot(fiber, fiber.frame + keyed.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.@"struct"));
-    const oddstruct = wrap.toStruct(tail);
-    expect(structs.head(oddstruct).length == 1);
-    expect(harness.integerIs(harness.field(oddstruct, "a"), 7));
-    expect(harness.isType(harness.field(oddstruct, "b"), repr.Tag.nil));
+    expect(harness.isType(tail, repr.Tag.map));
+    const odd_map = wrap.toMap(tail);
+    expect(odd_map.count == 1);
+    expect(harness.integerIs(harness.field(odd_map, "a"), 7));
+    expect(harness.isType(harness.field(odd_map, "b"), repr.Tag.nil));
 }
 
 /// A tail call reuses the current frame: the arguments move down over the
@@ -914,7 +913,7 @@ fn body() raise.Error!void {
     theFuncframeLayout(add);
     try theFuncframeArityRejection(add);
     theFuncframeVarargs(rest);
-    theFuncframeStructargs(keyed);
+    theFuncframeMapargs(keyed);
     try theFuncframeTail(add, other);
     try theFuncframeTailArityRejection(add, other);
     try theFuncframeTailVarargs(add, rest);

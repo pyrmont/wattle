@@ -22,10 +22,10 @@
 //! arity comes back as `error.Arity`, which is not a raise, because every
 //! caller decides for itself what to say about it and two of them say nothing.
 //!
-//! The struct packing and the varargs fill are here too, so that `funcframe`
+//! The map packing and the varargs fill are here too, so that `funcframe`
 //! and `funcframeTail` are whole instead of being a kernel in two halves with
 //! a packing step between them. Neither raises, and neither can be raised
-//! through: `structs.put` may run an abstract type's `hash` callback, and
+//! through: `maps.build` may run an abstract type's `hash` callback, and
 //! `abi.zig` declares that callback `callconv(.c)`.
 
 // ==========================================================================
@@ -48,11 +48,11 @@ const ev_stream = @import("../ev/stream.zig");
 const fatal = @import("../fatal.zig");
 const functions = @import("functions.zig");
 const gc_alloc = @import("../gc.zig");
+const maps = @import("maps.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const signal = @import("../signal.zig");
-const structs = @import("structs.zig");
 const tables = @import("tables.zig");
 const tuples = @import("tuples.zig");
 const utils = @import("../utils.zig");
@@ -820,16 +820,16 @@ inline fn fillNil(fiber: *Fiber, from: i32, to: i32) void {
 /// A count of zero is an empty tail rather than an empty range, so the source
 /// slice is empty there.
 fn fillVarargs(fiber: *Fiber, func: *functions.Function, slot: i32, count: i32) void {
-    const structarg = func.def.?.flags.structarg;
+    const maparg = func.def.?.flags.maparg;
     // The empty tail is an empty slice rather than a null pointer with a zero
     // count. `values.?[0..count]` here traps on the first varargs call with no
     // arguments: a `.?` is a claim about length, demonstrated.
-    const values: []const repr.Value = if (count != 0)
+    const values: []repr.Value = if (count != 0)
         dataAt(fiber, slot)[0..@intCast(count)]
     else
         &.{};
-    dataAt(fiber, slot)[0] = if (structarg)
-        makeStructN(values)
+    dataAt(fiber, slot)[0] = if (maparg)
+        makeMapN(values)
     else
         wrap.fromTuple(tuples.newFrom(values));
 }
@@ -965,20 +965,31 @@ fn grow(fiber: *Fiber, needed: i32) void {
     setcapacity(fiber, cap);
 }
 
-/// Builds a struct from `args` taken as alternating keys and values. An odd
+/// Builds a map from `args` taken as alternating keys and values. An odd
 /// count ignores the last value.
 ///
-/// It is here because `funcframe` is. `structs.put` hashes the caller's keys,
+/// It is here because `funcframe` is. `maps.build` hashes the caller's keys,
 /// so an abstract type's `hash` callback runs underneath it; `abi.zig`
 /// declares that callback `callconv(.c)`, so it has no way to raise, and this
 /// frame keeps nothing across it either way.
-fn makeStructN(args: []const repr.Value) repr.Value {
-    const st = structs.begin(args.len & ~@as(usize, 1));
+///
+/// A trailing argument with no value of its own is dropped, which is what the
+/// even-length slice is for, and so is a pair whose key a map cannot store.
+/// Neither is a refusal, because a frame push has no raise to propagate and
+/// two of its callers say nothing about an argument they will not take.
+///
+/// `args` is the fiber's own stack, above the frame being filled, and the
+/// compaction writes back over it, which nothing else is reading.
+fn makeMapN(args: []repr.Value) repr.Value {
+    var kept: usize = 0;
     var i: usize = 0;
     while (i + 1 < args.len) : (i += 2) {
-        structs.put(st, args[i], args[i + 1]);
+        if (!maps.storableKey(args[i])) continue;
+        args[kept] = args[i];
+        args[kept + 1] = args[i + 1];
+        kept += 2;
     }
-    return wrap.fromStruct(structs.end(st));
+    return wrap.fromMap(maps.build(.map, args[0..kept]));
 }
 
 /// Copies `fiber`'s stack into a fresh allocation and frees the old block, so

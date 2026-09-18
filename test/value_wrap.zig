@@ -73,7 +73,7 @@ const harness = @import("harness.zig");
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
 const strings = @import("subsystems").value.strings;
-const structs = @import("subsystems").value.structs;
+const maps = @import("subsystems").value.maps;
 const subsystems = @import("subsystems");
 const symbols = @import("subsystems").value.symbols;
 const tables = @import("subsystems").value.tables;
@@ -170,7 +170,7 @@ fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
     out[at(.array)] = wrap.abi.fromArray(arrays.new(0));
     out[at(.tuple)] = wrap.abi.fromTuple(tuples.newFrom(&.{}));
     out[at(.table)] = wrap.abi.fromTable(tables.new(0));
-    out[at(.@"struct")] = wrap.abi.fromStruct(structs.end(structs.begin(0)));
+    out[at(.map)] = wrap.fromMap(maps.build(.map, &.{}));
     out[at(.buffer)] = wrap.abi.fromBuffer(buffers.new(0));
     out[at(.function)] = wrap.abi.fromFunction(@ptrCast(@alignCast(pointerA())));
     out[at(.cfunction)] = wrap.abi.fromCfunction(theCFunction());
@@ -196,7 +196,7 @@ fn eachWrapperStampsItsType() void {
     expect(repr.typeOf(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == repr.Tag.array);
     expect(repr.typeOf(wrap.abi.fromTuple(@ptrCast(@alignCast(p)))) == repr.Tag.tuple);
     expect(repr.typeOf(wrap.fromVector(@ptrCast(@alignCast(p)))) == repr.Tag.vector);
-    expect(repr.typeOf(wrap.abi.fromStruct(@ptrCast(@alignCast(p)))) == repr.Tag.@"struct");
+    expect(repr.typeOf(wrap.abi.fromMap(@ptrCast(@alignCast(p)))) == repr.Tag.map);
     expect(repr.typeOf(wrap.abi.fromFiber(@ptrCast(@alignCast(p)))) == repr.Tag.fiber);
     expect(repr.typeOf(wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))) == repr.Tag.buffer);
     expect(repr.typeOf(wrap.abi.fromFunction(@ptrCast(@alignCast(p)))) == repr.Tag.function);
@@ -223,7 +223,7 @@ fn pointerRoundTrips() void {
         expect(wrap.toKeyword(wrap.abi.fromKeyword(@ptrCast(p))) == @as(strings.Keyword, @ptrCast(p)));
         expect(wrap.toArray(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == @as(*arrays.Array, @ptrCast(@alignCast(p))));
         expect(wrap.toTuple(wrap.abi.fromTuple(@ptrCast(@alignCast(p)))) == @as(tuples.Tuple, @ptrCast(@alignCast(p))));
-        expect(wrap.toStruct(wrap.abi.fromStruct(@ptrCast(@alignCast(p)))) == @as(structs.Struct, @ptrCast(@alignCast(p))));
+        expect(wrap.toMap(wrap.abi.fromMap(@ptrCast(@alignCast(p)))) == @as(*const maps.Tree, @ptrCast(@alignCast(p))));
         expect(wrap.toFiber(wrap.abi.fromFiber(@ptrCast(@alignCast(p)))) == @as(*fibers.Fiber, @ptrCast(@alignCast(p))));
         expect(wrap.toBuffer(wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))) == @as(*buffers.Buffer, @ptrCast(@alignCast(p))));
         expect(wrap.toFunction(wrap.abi.fromFunction(@ptrCast(@alignCast(p)))) == @as(*functions.Function, @ptrCast(@alignCast(p))));
@@ -456,7 +456,7 @@ fn theTwoSpellingsAgree() void {
     expect(sameValue(wrap.fromTable(@ptrCast(@alignCast(p))), wrap.abi.fromTable(@ptrCast(@alignCast(p)))));
     expect(sameValue(wrap.fromBuffer(@ptrCast(@alignCast(p))), wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))));
     expect(sameValue(wrap.fromFunction(@ptrCast(@alignCast(p))), wrap.abi.fromFunction(@ptrCast(@alignCast(p)))));
-    expect(sameValue(wrap.fromStruct(@ptrCast(@alignCast(p))), wrap.abi.fromStruct(@ptrCast(@alignCast(p)))));
+    expect(sameValue(wrap.fromMap(@ptrCast(@alignCast(p))), wrap.abi.fromMap(@ptrCast(@alignCast(p)))));
     expect(sameValue(wrap.fromTuple(@ptrCast(@alignCast(p))), wrap.abi.fromTuple(@ptrCast(@alignCast(p)))));
 
     // The one accessor with two implementations. `toIntegerAbi` truncates
