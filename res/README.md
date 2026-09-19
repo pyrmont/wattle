@@ -43,6 +43,7 @@ invocation, including one with an unrecognised argument, regenerates the file.
 | `references.janet` | comment identifiers no code declares    | `unresolved`  |
 | `docblocks.janet`  | `///` blocks not on their declaration   | `stranded`    |
 | `gates.janet`      | symbols a configuration does not export | —             |
+| `bench-arms.janet` | whether a corpus's two arms agree       | —             |
 
 The file is named after the script, except that `gates.janet` writes
 `gated.txt`; it builds every configuration it compares and takes about two
@@ -69,10 +70,15 @@ compare rows by file and name, so a line number that has moved does not fail
 
 `chronology.sh` and `swallowed.janet` are silent on a clean tree.
 `chronology.sh` looks for migration citations and `-D` options `build.zig` does
-not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and
-for names of files that do not exist anywhere in the tree. `comments.janet`
-extracts every Zig comment and Markdown paragraph to one file per source under
-`zig-out/comments` and gates nothing.
+not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and,
+across the whole tree including `DESIGN.md` and `res/`, for the four retired
+names its header lists. That third question is a fixed alternation rather than
+a derived one: its scope is the whole tree, but it is silent on any path
+retired since the list was written, and it is not the general question of
+whether a named file exists.
+
+`comments.janet` extracts every Zig comment and Markdown paragraph to one file
+per source under `zig-out/comments` and gates nothing.
 
 `image-diff.janet` counts the absolute host paths the image embeds, which must
 be zero; `--save FILE` on one host and `--against FILE` on another compare its
@@ -108,7 +114,10 @@ leaves its current mutant in the working tree. Read
 ## bench
 
 `layout.sh` runs one binary over a corpus across N stack layouts and reports the
-minimum per workload.
+minimum per workload. `yardstick.sh` is what produces the ratio against C
+Janet: it drives `layout.sh` once per arm and divides, comparing the name
+columns before dividing anything, so a corpus whose two arms report different
+workloads is caught rather than silently aligned.
 
 The goal is to run within 10% of the C implementation. Running `layout.sh` over
 this tree's binary and over a C Janet binary measures that goal, and running it
@@ -125,13 +134,15 @@ hash probe that way cost 1–4% on `methods`. The corpus cannot resolve a
 difference that small. An isolated benchmark of the one function and
 `otool -tV` on both binaries can.
 
-The corpora are beside the scripts: `interpreter/` is the general workload,
-`value/` is the value-access workload, `collections/` reads a collection's
-elements, `maps/` measures small persistent maps,
-`vectors/` measures persistent vectors against tuples and arrays, and
-`hashbench/` is a hash workload from upstream. A corpus is
-written for the increment that needed it and says so in its header, so reach
-for the one whose subject the change touches rather than the newest.
+Every corpus has two arms, a `.janet` for the C Janet binary and a `.wattle`
+for ours, and `res/check/bench-arms.janet` derives that the two are the same
+program. The corpora are beside the scripts: `interpreter/` is the general
+workload, `value/` is the value-access workload, `collections/` reads a
+collection's elements, `maps/` measures small persistent maps, `vectors/`
+measures persistent vectors against tuples and arrays, and `hashbench/` is a
+hash workload from upstream. A corpus is written for the increment that needed
+it and says so in its header, so reach for the one whose subject the change
+touches rather than the newest.
 
 ## repo
 
@@ -141,8 +152,9 @@ grammar, `removecr.janet` strips carriage returns, and
 
 **The instruments here stay Janet.** They run on whatever `janet` is on the
 PATH, never on the build under test, and nothing here is loaded by Wattle, so
-the parser swap does not reach them. `bench/`'s corpora are the exception: the
-wattle binary runs those, and they are `.wattle`.
+the parser swap does not reach them. `bench/`'s corpora are the exception: each
+has a `.wattle` arm the wattle binary runs, beside the `.janet` arm C Janet
+runs.
 
 `janet-to-wattle.janet FILE.janet ...` writes the `.wattle` file beside each
 and reports every site it changed in a way a reader should look at; `--dry-run`

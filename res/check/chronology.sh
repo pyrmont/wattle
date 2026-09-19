@@ -22,12 +22,20 @@
 # which almost none is a finding, and an instrument whose output is almost all
 # noise is one nobody reads.
 #
-# **A name for a file or directory that does not exist** — a retired
-# `types.zig`, `stretchy.zig`, `NAMESPACES.md`, and `src/zig`, which Phase 17
-# split into `src/api`, `src/host` and `src/runtime`. This one is asked
-# **everywhere**, the top-level documents, `DESIGN.md` and `res/` included,
-# because a document naming a path that is not there is wrong wherever it sits
-# and a reader cannot check it.
+# **One of four retired names** — `types.zig`, `stretchy.zig`, `NAMESPACES.md`,
+# and `src/zig`, which Phase 17 split into `src/api`, `src/host` and
+# `src/runtime`. This one is asked **everywhere**, the top-level documents,
+# `DESIGN.md` and `res/` included, because a document naming a path that is not
+# there is wrong wherever it sits and a reader cannot check it.
+#
+# The scope is the whole tree; the question is not. It is a hard-coded
+# alternation, so it is silent on every path retired since the list was
+# written, and it is not the general question "does this name a file that
+# exists". Deriving that question -- every backticked path in a Markdown
+# document, tested for existence -- is a separate instrument that has not been
+# written, and the reason it has not is that the answer is nearly all names of
+# things outside this tree, which a reader sorts in one pass and an instrument
+# has to be taught.
 #
 # **A `-D` option the build does not have** is the third question, and it is
 # derived rather than listed. `build.zig`'s own `b.option` calls are the set of

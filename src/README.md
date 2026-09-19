@@ -11,10 +11,10 @@ has the test strategy and what a change must pass before it is accepted.
 
 ## Overview
 
-`src/` is 93 `.zig` files and four hand-written headers. There is no C
-implementation to select and no Janet C to call. Any C that a Zig file reaches
-is libc's, through one of seven `@cImport` blocks. "No C in the tree" and "no
-libc" are different claims, and only the first is a goal.
+`src/` is 95 `.zig` files and four hand-written headers. There is no C
+implementation to select and no upstream Janet C to call. Any C that a Zig
+file reaches is libc's, through one of seven `@cImport` blocks. "No C in the
+tree" and "no libc" are different claims, and only the first is a goal.
 
 The rules that apply across the tree, each covered in its own section below:
 
@@ -45,7 +45,7 @@ must never reach `src/host/` or `src/runtime/`.
 | -------------- | ----- | --------------------------------------- |
 | `src/api/`     | 7     | a native module's `.so` and the runtime |
 | `src/host/`    | 2     | the runtime                             |
-| `src/runtime/` | 77    | the runtime, as a single compilation    |
+| `src/runtime/` | 79    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
 | `src/client/`  | 3     | the `wattle` and `quickbin` executables  |
 
@@ -75,7 +75,7 @@ imported back into it by name. That is possible, and not what the tree does.
 
 ### Inside `src/runtime/`
 
-A file exists when it has a name Janet publishes (a type, a cfunction family or
+A file exists when it has a name Wattle publishes (a type, a cfunction family or
 a module), or because the platform differs. Everything else goes in the file
 its callers already name. Each function has one spelling. There is no facade
 layer: the file tree and the namespace are the same, so `value/tables.zig`'s
@@ -84,7 +84,7 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 | directory        | files | contents                                   |
 | ---------------- | ----- | ------------------------------------------ |
 | `runtime/`       | 33    | subsystems with no subdirectory            |
-| `value/`         | 14    | a file per Janet value type                |
+| `value/`         | 13    | a file per Wattle value type               |
 | `value/helpers/` | 3     | operations on any value                    |
 | `vm/`            | 3     | `entry`, `lifecycle`, `state`              |
 | `gc/`            | 2     | `mark`, `sweep`                            |
@@ -138,7 +138,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
   from libc, because `std.c` declares glibc's `pthread_attr_t`, musl's is a
   different size, and `Vm` embeds it. `host` is a module rather than a file of
   `root` because `cabi` names the same six shapes, and `cabi` cannot import a
-  file of `root`. Every Janet aggregate is declared with the operations on it
+  file of `root`. Every Wattle aggregate is declared with the operations on it
   instead (`tables.Table`, `fibers.Fiber`, `functions.FuncDef`,
   `ev_stream.Stream`), as `DESIGN.md` section 11 describes.
 - `cabi` is the external declarations. It imports `config`, `host`, `repr` and
@@ -203,8 +203,8 @@ Three things cross a boundary, and each is checked differently.
 ### The module table
 
 Nothing in `src/` exports a `janet_*` symbol. `api/interface.zig`'s `Runtime` is
-an `extern struct` of 81 `callconv(.c)` function pointers, and both the runtime
-and a module compile that file. `runtime/capi.zig` has the 81 definitions, and
+an `extern struct` of 83 `callconv(.c)` function pointers, and both the runtime
+and a module compile that file. `runtime/capi.zig` has the 83 definitions, and
 its `table` fills the struct with them. `runtime/env.zig` passes the table's
 address to `_wattle_init`; `module.zig`'s shim stores it in `interface.rt`, and
 every call an author makes goes through that pointer. Each crossing is
@@ -239,7 +239,7 @@ produce a silent offset mismatch.
 
 ## Configuration
 
-`build.zig` derives two things from the `-D` options. `janetConfig()` returns
+`build.zig` derives two things from the `-D` options. `resolveConfig()` returns
 `Config`, the comptime facts a file reads as `config.<name>`, and
 `zigSelection()` derives `Selection` from it: the per-file booleans `root.zig`
 gates on as `options.<name>`. Both come from a single expression per fact, so a
@@ -282,7 +282,7 @@ The tests are steps under `test/`, with `test` running them all:
 | step                | what it runs                                        |
 | ------------------- | --------------------------------------------------- |
 | `test`              | the full test run, described below                  |
-| `test/contracts`    | the 65 contracts, in a second runtime compilation   |
+| `test/contracts`    | the 68 contracts, in a second runtime compilation   |
 | `test/subsystems`   | an alias of `test/contracts`                        |
 | `test/runtime`      | the in-file `test` blocks, rooted at `root.zig`     |
 
@@ -300,7 +300,7 @@ A step is run as `zig build <step>`, and `install` is the default, so
 
 `zig build test` runs the contracts, the in-file `test` blocks, the fuzz
 targets over their corpora, the module-error fixtures, the CLI checks and the
-34 Janet suites. On a native build it also runs `quickbin`.
+36 suites. On a native build it also runs `quickbin`.
 
 `test/runtime` prints `All N tests passed.` Add `--fuzz` to `zig build fuzz`
 for a campaign. `quickbin` builds `examples/quickbin/main.wattle` with
@@ -308,11 +308,13 @@ for a campaign. `quickbin` builds `examples/quickbin/main.wattle` with
 
 No header is installed.
 
-The contract driver is always installed. It takes a contract name, or no name to
-run all 65 in a single process. Running it with no name is the only thing in
-the tree that initialises and tears down the runtime 65 times in a row, and the
-only instrument that catches an edit breaking a contract the author was not
-thinking about. Run it with no argument before accepting a change.
+The contract driver is installed on every target but wasm, where none of its
+readers could run the file they would find. It takes a contract name, or no
+name to run all 68 in a single process. Running it with no name is the only
+thing in the tree that initialises and tears down the runtime 68 times in a
+row, and the only instrument that catches an edit breaking a contract the
+author was not thinking about. Run it with no argument before accepting a
+change.
 
 `build.zig` refuses to build on two hygiene failures: a `test/*.zig` that
 `test/contracts.zig` does not list and `checkContractsListed`'s `exempt` does
@@ -374,8 +376,8 @@ Guard regions rather than skipping a suite. A suite that does not run reports
 and subprocess regions separately, so its channel, fiber and deadline tests
 still run in both reduced configurations. Where a whole suite depends on the
 feature, it exits immediately after `start-suite` with `(compwhen (not (dyn
-'some/binding)) (end-suite) (os/exit 0))`. This works because Janet compiles and
-runs a file one top-level form at a time.
+'some/binding)) (end-suite) (os/exit 0))`. This works because Wattle compiles
+and runs a file one top-level form at a time.
 
 `-Dreduced-os=true` is a known gap and is deliberately not guarded. It leaves
 only `os/exit`, `os/which`, `os/arch` and `os/compiler`, which breaks
@@ -410,7 +412,8 @@ These constraints are invisible when building only for the development host.
 Two limitations qualify any result. A musl build links dynamically by default
 and loads native modules on a machine with the musl loader, but CI's musl jobs
 build with `-Dlinkage=static`, and musl's static `dlopen` is a stub that always
-fails, so CI does not run the native-module test on musl. Emulated x86-64 cannot run a NaN-boxed build,
-because Janet packs pointers into doubles and QEMU does not honour the
-address-space assumption that relies on. Use `-Dnanbox=false` there, and treat
-NaN-boxed x86-64 as untested until it runs on real hardware.
+fails, so CI does not run the native-module test on musl. Emulated x86-64
+cannot run a NaN-boxed build, because the NaN-boxed layout packs pointers into
+doubles and QEMU does not honour the address-space assumption that relies on.
+Use `-Dnanbox=false` there, and treat NaN-boxed x86-64 as untested until it
+runs on real hardware.
