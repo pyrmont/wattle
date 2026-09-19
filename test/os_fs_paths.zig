@@ -71,6 +71,7 @@ const harness = @import("harness.zig");
 /// Reading metadata and writing it are different kernels; what would be
 /// circular is using `statRead` to check `statRead`, and nothing here does.
 const host_stat = @import("subsystems").host_stat;
+const pp_describe = @import("subsystems").pp_describe;
 const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
 const utils = @import("subsystems").utils;
@@ -159,9 +160,20 @@ fn setErrno(code: c_int) void {
     std.c._errno().* = code;
 }
 
+/// Runs Wattle source, and says what the source said where it fails.
+///
+/// A bare `expect` on the status reports only that some assertion in the
+/// block failed, which on a host whose stack traces do not unwind past the
+/// panic frame leaves nothing to go on. `os_stat.zig` reports this way too.
 fn eval(source: [*:0]const u8) void {
     var result: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "os-fs-paths-contract", &result) == 0);
+    if (core_env.dostring(environment, source, "os-fs-paths-contract", &result) != 0) {
+        std.debug.print("os_fs_paths: eval raised\n{s}\n        got: {s}\n", .{
+            source,
+            pp_describe.toString(result),
+        });
+        expect(false);
+    }
 }
 
 /// One full listing, asserting the protocol as it goes: no entry repeats, and
@@ -299,12 +311,14 @@ fn theTimestamps() void {
     // A time no `time_t` holds saturates rather than trapping. 2^63 is the
     // edge: `maxInt(i64)` rounds to it as a double, and it is one more than an
     // `i64` holds. What the host then does with the saturated value is the
-    // host's: a POSIX filesystem stores it, and WASI, whose timestamps are
+    // host's: a POSIX filesystem stores it; WASI, whose timestamps are
     // unsigned nanoseconds in 64 bits, has no room for that many seconds and
-    // refuses it. The saturation is what this asserts either way -- the call
-    // returns rather than trapping on the conversion.
+    // refuses it; and Windows refuses it too, `_utime64` taking only the span
+    // it can hold as a file time. The saturation is what this asserts either
+    // way -- the call returns rather than trapping on the conversion.
     const saturated = fs.touch(file, true, 0x1p63, 0x1p63);
-    expect(if (builtin.os.tag == .wasi) saturated == -1 else saturated == 0);
+    const refuses_saturated = builtin.os.tag == .wasi or builtin.os.tag == .windows;
+    expect(if (refuses_saturated) saturated == -1 else saturated == 0);
 
     // With no times the host supplies the current one.
     expect(fs.touch(file, false, 0, 0) == 0);
