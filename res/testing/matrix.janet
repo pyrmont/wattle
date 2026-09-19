@@ -240,10 +240,28 @@
   # assembler` entry does; `io_core`, `os_fs`, `os_surface`, `filewatch_core`
   # and the ev pair still cannot be named, for the reasons above. The `full`
   # entries run all of them.
-  ["parser_core" "vectors" "maps" "math" "string_symbol"
-   "os_process" "net_sockets" "fiber_core" "emit_core" "compiler_primitives"
-   "specials_core" "verify" "vm_run" "asm_encode" "asm_decode" "disasm"
-   "pp_pretty" "pp_format" "pp_describe" "peg" "registry" "core_env"])
+  # The increments of 2026-09-17 to 19 replaced these, and this run is the
+  # matrix owed against step 7 as a whole and everything after it, deferred
+  # five times. The subjects are the value layer and the printer rather than
+  # the parser: the vector became a single block for a short tail and its
+  # inline leaf was misaligned on every 32-bit target (`vector`, `vectors`,
+  # `value_alloc`), which the collector walks rather than marks through a
+  # header (`gc_alloc`, `gc_mark`, `gc_sweep`); the set gained a literal in
+  # the writer and edn arrived as `%y` (`pp_format`, `pp_pretty`,
+  # `pp_describe`, `maps`); and the map, table and string constructors carry
+  # the rest of the value work (`tables`, `string_symbol`, `value_access`,
+  # `value_order`, `marsh`). Removing Janet is still under this run, so the
+  # parser, the compiler's three and the binding surface stay (`parser_core`,
+  # `compiler_primitives`, `emit_core`, `specials_core`, `registry`,
+  # `core_env`, `vm_run`).
+  #
+  # `gc_stress`, `io_core`, `os_fs`, `os_surface`, `filewatch_core` and the
+  # ev pair are subjects this cannot name, for the fixture and
+  # working-directory reasons above; the `full` entries run all 68.
+  ["vector" "vectors" "value_alloc" "value_access" "value_order"
+   "gc_alloc" "gc_mark" "gc_sweep" "maps" "tables" "string_symbol" "marsh"
+   "pp_format" "pp_pretty" "pp_describe" "parser_core" "compiler_primitives"
+   "emit_core" "specials_core" "registry" "core_env" "vm_run"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty
