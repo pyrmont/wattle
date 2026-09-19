@@ -34,6 +34,27 @@ machine, compiler and core library from the [Janet][] programming language in
 * Built-in C FFI for calling C ABI-compatible shared libraries
 * REPL development with debugger and inspectable runtime
 
+## Syntax
+
+Wattle has a syntax inspired by Clojure's:
+
+| source      | value                   | source        | value                |
+| ----------- | ----------------------- | ------------- | -------------------- |
+| `(f x)`     | tuple, the call form    | `#{a b}`      | set                  |
+| `[a b]`     | vector                  | `![a b]`      | array                |
+| `{:a 1}`    | map                     | `!{:a 1}`     | table                |
+| `"ab"`      | string                  | `!"ab"`       | buffer               |
+| `"""ab"""`  | string, raw             | `!"""ab"""`   | buffer, raw          |
+| `'x`        | quote                   | `~x`          | unquote              |
+| `` `x ``    | quasiquote              | `\|x`         | splice               |
+| `:ab`       | keyword                 | `#(+ $ 1)`    | short function       |
+| `;`         | comment                 |               |                      |
+
+A raw string is closed by a run of quotes as long as the one that opened it.
+Its first and last line breaks are dropped and the opening delimiter's
+indentation is removed from each line, so it can sit inside indented code
+without carrying that indentation into its value.
+
 ## Examples
 
 See the `examples/` directory for all provided example programs.
