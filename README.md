@@ -231,7 +231,7 @@ WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 | Linux, glibc     | built and fully tested                                         |
 | Windows          | cross-compiles; binaries have never been executed              |
 | wasm32-wasi      | built and fully tested under wasmtime, without the event loop  |
-| 32-bit (riscv32) | compiles only; wasm32-wasi is the 32-bit target that runs      |
+| 32-bit (riscv32) | built and tested under QEMU, without the FFI                   |
 
 ## Installing
 

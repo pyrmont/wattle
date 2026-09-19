@@ -198,20 +198,19 @@ jobs:
         run: zig build test
 
   # riscv32 under QEMU user-mode, which `-fqemu` invokes per artifact. The
-  # 32-bit entries in `cross` compile the 32-bit arms and nothing runs them;
-  # `wasm32-wasi` is the only 32-bit target that executes, and it has no event
-  # loop, so this is the only thing that would run the 32-bit layout with one.
+  # other 32-bit entries in `cross` only compile; `wasm32-wasi` runs but has
+  # no event loop, so this is the only thing anywhere that runs the 32-bit
+  # layout with one.
   #
-  # `test/README.md` rules out emulation for x86-64 because the NaN-boxed
-  # layout packs pointers into the low 47 bits and QEMU does not honour that.
-  # The 32-bit layout has no such assumption, so the objection may not carry
-  # over -- which is what this entry is for. `continue-on-error` until it
-  # proves out.
+  # `test/README.md` rules emulation out for x86-64, where the NaN-boxed
+  # layout packs pointers into the low 47 bits and QEMU does not honour the
+  # assumption. The 32-bit layout makes no such assumption and the objection
+  # does not carry over: this entry passes, which is the evidence for that
+  # rather than the argument.
   qemu:
     name: riscv32 (qemu)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
