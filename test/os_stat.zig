@@ -264,7 +264,11 @@ fn theCoreFunctions() void {
     // file" from "the call failed".
     eval("(assert (nil? (os/stat \"wattle-os-stat-4d71/missing\")))");
 
-    if (config.symlinks) {
+    // `config.symlinks` says the binding is registered, not that the platform
+    // has a symlink to make: `os/symlink` is registered on Windows and Plan 9
+    // and refuses there, which `os/link`'s own documentation states. Both
+    // conditions are needed, and `os/lstat` has nothing to report besides.
+    if (config.symlinks and builtin.os.tag != .windows and builtin.os.tag != .plan9) {
         // `os/lstat` reports the link, `os/stat` its target.
         eval(
             \\(os/symlink "file" "wattle-os-stat-4d71/link")
