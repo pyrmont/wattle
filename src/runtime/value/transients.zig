@@ -108,6 +108,11 @@ pub fn fromTree(t: *const maps.Tree, kind: maps.Kind) *Transient {
 pub fn fromVector(v: *const vectors.Vector) *Transient {
     const result = newTransient();
     result.* = .{ .vector = v.* };
+    // The payload copy brings the tail pointer with it, and an inline tail
+    // belongs to `v`'s block: the transient would be pointing into a vector it
+    // does not own, and marking from the transient would not keep that block
+    // alive. So it takes a copy of its own.
+    vectors.deinlineTail(&result.vector);
     return result;
 }
 

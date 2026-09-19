@@ -500,7 +500,13 @@ fn markVector(vm: *vm_state.Vm, v: *const vectors.Vector) void {
     if (gcReachable(head)) return;
     gcMark(head);
     if (v.root) |root| markNodeIn(vm, root);
-    if (v.tail) |tail| markNodeIn(vm, &tail.gc);
+    if (v.tail) |tail| {
+        // An inline tail shares the head's block, so it is not on the sweep's
+        // list and its `reachable` flag would never be cleared: marking it
+        // through `markNodeIn` would skip its elements on every collection
+        // after the first.
+        if (vectors.isInline(tail)) markMany(vm, vectors.items(tail)) else markNodeIn(vm, &tail.gc);
+    }
 }
 
 /// Marks every child of a vector's inner node. The node itself is already

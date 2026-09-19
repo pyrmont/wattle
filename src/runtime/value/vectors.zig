@@ -140,6 +140,16 @@ pub const own_editable: u6 = 1;
 const own_capacity_shift: u3 = 1;
 const own_capacity_mask: u6 = 0b1110;
 
+/// Bit 4 of a leaf's collector header: the leaf lives inside the vector's own
+/// `Head` block rather than in one of its own, which is what makes a short
+/// vector a single allocation.
+///
+/// It is on the leaf's header rather than the head's so that a holder of the
+/// leaf alone can tell: a transient copies the vector payload and so arrives
+/// with the tail pointer and nothing else. `allocLeaf` starts from a zeroed
+/// header, so a copy of an inline leaf does not inherit it.
+pub const own_inline: u6 = 0b10000;
+
 /// The number of slots in a node.
 pub const width = 1 << bits;
 
@@ -306,8 +316,18 @@ pub fn fromBuilt(built: Vector) *const Vector {
 /// a trie no vector refers to yet, so the graft changes the nodes it reaches
 /// rather than copying them.
 pub fn fromSlice(xs: []const repr.Value) *Vector {
-    const v = newVector();
     const n = xs.len;
+    // A vector that is its tail alone is one block, head and leaf together.
+    // Anything with a trie keeps the two-block shape: the tail is grafted in
+    // as the trie grows, and a leaf that moves cannot be part of the head.
+    if (n != 0 and n <= width) {
+        const v = newVectorInline(capacityFor(n));
+        fillLeaf(v.tail.?, xs);
+        v.count = n;
+        for (xs, 0..) |x, index| v.sum +%= term(index, x);
+        return v;
+    }
+    const v = newVector();
     if (n == 0) return v;
     const trie_len = ((n - 1) >> bits) << bits;
     var start: usize = 0;
@@ -374,7 +394,11 @@ pub fn lookup(v: *const Vector, key: repr.Value) ?repr.Value {
 /// payload that includes a `Vector`.
 pub fn mark(v: *const Vector) void {
     if (v.root) |root| gc_mark.markNode(root);
-    if (v.tail) |tail| gc_mark.markNode(&tail.gc);
+    if (v.tail) |tail| {
+        if (isInline(tail)) {
+            for (items(@constCast(tail))) |x| gc_mark.mark(x);
+        } else gc_mark.markNode(&tail.gc);
+    }
 }
 
 /// Returns the elements of `leaf`, all `capacity` of them.
@@ -505,6 +529,7 @@ pub fn unmarshalAppend(v: *Vector, x: repr.Value) void {
 
 /// Appends `x` to `v`, treating the nodes it changes as `mode` says.
 fn appendIn(v: *Vector, x: repr.Value, mode: Mode) void {
+    deinlineTail(v);
     const tail_count = v.count - tailOffset(v);
     if (tail_count == width) {
         pushLeaf(v, v.tail.?, v.count, mode);
@@ -697,6 +722,39 @@ fn newVector() *Vector {
     const block = gc_alloc.gcalloc(Head, .vector);
     block.vector = .{};
     return &block.vector;
+}
+
+/// Allocates a vector whose tail of `capacity` elements is inside its own
+/// block, and returns it with `tail` already pointing at that leaf.
+fn newVectorInline(capacity: u32) *Vector {
+    std.debug.assert(capacity >= 1 and capacity <= width);
+    std.debug.assert(std.math.isPowerOfTwo(capacity));
+    const size = @sizeOf(Head) + @offsetOf(Leaf, "_items") + @sizeOf(repr.Value) * capacity;
+    const block: *Head = @ptrCast(@alignCast(gc_alloc.gcallocBytes(.vector, size)));
+    block.vector = .{};
+    const leaf: *Leaf = @ptrCast(@alignCast(@as([*]u8, @ptrCast(block)) + @sizeOf(Head)));
+    leaf.gc = .{};
+    const exponent: u6 = @intCast(std.math.log2_int(u32, capacity));
+    leaf.gc.flags.own = (exponent << own_capacity_shift) | own_inline;
+    block.vector.tail = leaf;
+    return &block.vector;
+}
+
+/// Whether `leaf` lives inside a vector's head block.
+pub inline fn isInline(leaf: *const Leaf) bool {
+    return leaf.gc.flags.own & own_inline != 0;
+}
+
+/// Moves an inline tail into a block of its own, so that it may be grown,
+/// grafted, or held by something that does not own the head it sits in.
+///
+/// Every path that does more than read a tail calls this first. The copy is an
+/// ordinary leaf: `allocLeaf` starts from a zeroed header, so the flag does
+/// not travel.
+pub fn deinlineTail(v: *Vector) void {
+    const tail = v.tail orelse return;
+    if (!isInline(tail)) return;
+    v.tail = copyLeaf(tail, capacityOf(tail));
 }
 
 /// Returns the inner node `node` or a copy of it, whichever an update in `mode`
