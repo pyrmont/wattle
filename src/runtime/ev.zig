@@ -677,11 +677,11 @@ pub fn heapSiftUp(heap: []const Timeout, index: usize) isize {
     return @intCast(parent);
 }
 
-/// The completion port itself. The backend's `iocp` field is
-/// `?[*]?*anyopaque`, a pointer to the handle, where every Windows call takes
-/// the handle.
+/// The completion port itself. The backend's `iocp` field holds the handle
+/// that every Windows call takes, rather than a pointer to it, so this is a
+/// plain read.
 pub inline fn iocpHandle() ?*anyopaque {
-    return @ptrCast(vm_state.current().ev.backend.iocp);
+    return vm_state.current().ev.backend.iocp;
 }
 
 /// Clamps a kqueue interval to what the platform accepts, at both ends.

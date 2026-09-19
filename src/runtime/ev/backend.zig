@@ -206,12 +206,12 @@ const Epoll = struct {
 const Iocp = struct {
     fn init() raise.Error!void {
         const b = &vm_state.current().ev.backend;
-        b.iocp = @ptrCast(@alignCast(c.CreateIoCompletionPort(
+        b.iocp = c.CreateIoCompletionPort(
             @ptrFromInt(std.math.maxInt(usize)),
             null,
             0,
             0,
-        )));
+        );
         if (b.iocp == null) return raise.panic("could not create io completion port");
     }
 
@@ -647,7 +647,12 @@ const SelfPipe = struct {
 /// itself, and Windows does neither that way.
 pub const VmBackend = if (builtin.os.tag == .windows)
     struct {
-        iocp: ?[*]?*anyopaque = null,
+        // A Windows `HANDLE` is an opaque token rather than the address of
+        // anything, and the values the kernel hands back are small and
+        // arbitrary. It is `?*anyopaque`, which is byte-aligned, because any
+        // type with a stricter alignment makes storing one a lie that a
+        // safety-checked build catches at the assignment.
+        iocp: ?*anyopaque = null,
         connect_ex: ?*anyopaque = null,
         connect_ex_loaded: bool = false,
     }
