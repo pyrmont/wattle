@@ -67,6 +67,23 @@ fi
 # regression, whatever else changed in the same increment.
 excluded=""
 
+# **`MallocStackLogging` is inherited, and one contract asserts on a child's
+# stderr.** `os_surface`'s `theSpawnRedirection` spawns `/bin/sh` with
+# `:err :pipe` and asserts the pipe reads exactly `"e\n"`. Under the variable
+# the child's libmalloc announces itself on that same stderr --
+# `sh(1234) MallocStackLogging: recording malloc (and VM allocation) stacks
+# using lite mode`, and a second line about tagging -- so the assertion fails,
+# the contract aborts and this script reports `DIED before the pause`. The
+# defect is the instrument's: nothing about the contract is wrong, and it
+# passes in the driver.
+#
+# So the variable is dropped for the contracts below rather than the contracts
+# being dropped. `leaks` still counts a leak without it, as the header says;
+# what is lost is the allocation stack behind each one, so a *non-zero* count
+# here is read by re-running that contract by name in the driver under a
+# debugger rather than from this report.
+no_stack_logging="os_surface"
+
 if [ $# -gt 0 ]; then
     names=$*
 else
@@ -86,8 +103,20 @@ for name in $names; do
         exit 2
     fi
 
+    stacks=lite
+    for bare in $no_stack_logging; do
+        if [ "$name" = "$bare" ]; then
+            stacks=""
+            break
+        fi
+    done
+
     log=$(mktemp -t wattle-leaks)
-    WATTLE_CONTRACT_PAUSE=1 MallocStackLogging=lite "$driver" "$name" >"$log" 2>&1 &
+    if [ -n "$stacks" ]; then
+        WATTLE_CONTRACT_PAUSE=1 MallocStackLogging="$stacks" "$driver" "$name" >"$log" 2>&1 &
+    else
+        WATTLE_CONTRACT_PAUSE=1 "$driver" "$name" >"$log" 2>&1 &
+    fi
     pid=$!
 
     # Wait for the driver to stop itself. `ps -o stat=` reports `T` for a
