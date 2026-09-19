@@ -126,6 +126,17 @@ const wrap = @import("helpers/wrap.zig");
 /// The number of bits of an index one level of the trie consumes.
 const bits = 5;
 
+/// Where a vector's inline tail sits inside its `Head` block.
+///
+/// `Head`'s own size is rounded up to the leaf's alignment rather than used as
+/// it stands. A `Leaf`'s elements are eight-byte aligned at every pointer
+/// width, because `repr.Value` holds an `f64`, but `Head` is a pointer-width
+/// `Vector` behind a `GCObject` and so is twenty-eight bytes where a pointer
+/// is four. A leaf placed at that offset would start four bytes below its
+/// alignment. The rounding is a no-op at sixty-four bits, where `Head` is
+/// fifty-six bytes.
+const inline_leaf_offset: usize = std.mem.alignForward(usize, @sizeOf(Head), @alignOf(Leaf));
+
 /// The low `bits` bits of an index: the slot within one node.
 const mask: usize = width - 1;
 
@@ -729,10 +740,10 @@ fn newVector() *Vector {
 fn newVectorInline(capacity: u32) *Vector {
     std.debug.assert(capacity >= 1 and capacity <= width);
     std.debug.assert(std.math.isPowerOfTwo(capacity));
-    const size = @sizeOf(Head) + @offsetOf(Leaf, "_items") + @sizeOf(repr.Value) * capacity;
+    const size = inline_leaf_offset + @offsetOf(Leaf, "_items") + @sizeOf(repr.Value) * capacity;
     const block: *Head = @ptrCast(@alignCast(gc_alloc.gcallocBytes(.vector, size)));
     block.vector = .{};
-    const leaf: *Leaf = @ptrCast(@alignCast(@as([*]u8, @ptrCast(block)) + @sizeOf(Head)));
+    const leaf: *Leaf = @ptrCast(@alignCast(@as([*]u8, @ptrCast(block)) + inline_leaf_offset));
     leaf.gc = .{};
     const exponent: u6 = @intCast(std.math.log2_int(u32, capacity));
     leaf.gc.flags.own = (exponent << own_capacity_shift) | own_inline;
@@ -867,4 +878,30 @@ inline fn tailOffset(v: *const Vector) usize {
 inline fn term(index: usize, x: repr.Value) u32 {
     const position = fmix32(@as(u32, @truncate(index)) +% 0x9e3779b9);
     return fmix32(@as(u32, @bitCast(order.hash(x))) ^ position);
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+// A short vector's tail follows its `Head` in the same block, at
+// `inline_leaf_offset`.
+//
+// The first two assertions are facts this file does not choose: that the
+// compiler puts a leaf's elements at a multiple of their own alignment, as
+// `maps.zig` asserts of a node's, and that `malloc` returns a block aligned
+// for a leaf at all. The offset is measured from the block's base, and
+// `gcallocBytes` promises only a `GCObject`'s alignment, which is four bytes
+// where a pointer is four and below a leaf's eight.
+//
+// The last two are a regression guard. The current definition folds them to
+// true, so they are worth their lines only because an edit to it would not:
+// placing the leaf at `@sizeOf(Head)`, as this file did until 2026-09-19,
+// fails them at compile time on every 32-bit target rather than trapping at
+// run time on the one of the four that runs.
+comptime {
+    std.debug.assert(@offsetOf(Leaf, "_items") % @alignOf(repr.Value) == 0);
+    std.debug.assert(@alignOf(Leaf) <= @alignOf(std.c.max_align_t));
+    std.debug.assert(inline_leaf_offset >= @sizeOf(Head));
+    std.debug.assert(inline_leaf_offset % @alignOf(Leaf) == 0);
 }
