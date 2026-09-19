@@ -2150,7 +2150,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         // **512 on wasm, because a wasm host's call stack is smaller than a
         // native thread's and the guard is only a guard if it fires first.**
         // Measured 2026-09-12 under wasmtime's default stack, printing nested
-        // tables as wdn, which spends two native frames per level: a
+        // tables as source, which spends two native frames per level: a
         // ReleaseSmall build exhausted the stack at 777 levels, where the
         // Debug build reached the 1024th and raised. A guard of 512 fires
         // below both.

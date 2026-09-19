@@ -4336,7 +4336,7 @@
 
   (defn- get-manifest-filename
     [bundle-name]
-    (bundle-file bundle-name "manifest.wdn"))
+    (bundle-file bundle-name "manifest.edn"))
 
   (defn- prime-bundle-paths
     []
@@ -4394,9 +4394,13 @@
     (def bn (get manifest :name))
     (def manifest-name (get-manifest-filename bn))
     (def b !"")
-    (buffer/format b "%w" manifest) ; make sure it is valid Wattle source
+    ; Frozen on the way out: edn tags a mutable value and `parse` reads no
+    ; word tag, so what reaches disk is a map of vectors, which `%w` and `%y`
+    ; write identically and `parse` reads back unchanged.
+    (def frozen (freeze manifest))
+    (buffer/format b "%y" frozen) ; make sure it is valid edn
     (buffer/clear b)
-    (buffer/format b "%.99m\n" manifest)
+    (buffer/format b "%.99m\n" frozen)
     (spit manifest-name b))
 
   (defn bundle/manifest
@@ -4547,8 +4551,8 @@
     (def path (bundle-rpath path))
     (def s (sep))
     ; Detect bundle name
-    (def infofile-src1 (string path s "bundle" s "info.wdn"))
-    (def infofile-src2 (string path s "info.wdn"))
+    (def infofile-src1 (string path s "bundle" s "info.edn"))
+    (def infofile-src2 (string path s "info.edn"))
     (def infofile-src (cond
                         (fexists infofile-src1) infofile-src1
                         (fexists infofile-src2) infofile-src2))
@@ -4572,7 +4576,7 @@
     (os/mkdir (bundle-dir bundle-name))
     ; Copy aliased infofile
     (when (fexists infofile-src2)
-      (copyfile infofile-src2 (bundle-file bundle-name "info.wdn")))
+      (copyfile infofile-src2 (bundle-file bundle-name "info.edn")))
     ; Copy aliased bscript
     (when (fexists bscript-src2)
       (copyfile bscript-src2 (bundle-file bundle-name "init.wattle")))
