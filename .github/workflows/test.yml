@@ -197,10 +197,18 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+      # `zig build` on the arm64 entry exited 1 in half a second having
+      # printed nothing, with the cache left at 103 bytes, so nothing had
+      # compiled and nothing said why. These report what the build sees before
+      # it runs; drop them once the cause is known.
+      - name: Zig environment
+        run: |
+          zig version
+          zig env
       - name: Build
-        run: zig build
+        run: zig build --summary all
       - name: Test
-        run: zig build test
+        run: zig build test --summary all
 
   # riscv32 under QEMU user-mode, which `-fqemu` invokes per artifact. The
   # 32-bit entries in `cross` compile the 32-bit arms and nothing runs them;
@@ -226,8 +234,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static
+      # Static for the same reason the musl jobs are: QEMU reported
+      # `Could not open '/lib/ld-musl-riscv32.so.1'`, and there is no musl
+      # loader for this width on the runner for it to find.
       - name: Test
-        run: zig build test -Dtarget=riscv32-linux-musl -Dcpu=baseline -fqemu
+        run: >
+          zig build test -Dtarget=riscv32-linux-musl -Dcpu=baseline
+          -Dlinkage=static -fqemu
 
   # Build-only, and they are not a formality: Zig analyses only the comptime
   # branches it selects, so a 32-bit target is the only thing anywhere that
