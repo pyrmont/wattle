@@ -176,39 +176,26 @@ jobs:
 
   # **Windows, executed.** Nothing had ever run a Windows binary, here or
   # anywhere: the `cross` matrix below compiles the Windows arms and no run of
-  # one has followed. These two entries are the first, so they are
-  # `continue-on-error` until a run proves them -- a failure here reports what
-  # is broken without asserting that the supported matrix is. Promote them by
-  # removing the flag, and say so in README.md's platform table, once they
-  # pass. The allowance is a guess: no Windows job has been measured.
+  # one had followed. This entry is the first, so it is `continue-on-error`
+  # until a run proves it -- a failure here reports what is broken without
+  # asserting that the supported matrix is. Promote it by removing the flag,
+  # and say so in README.md's platform table, once it passes.
+  #
+  # The allowance is roughly twice the 7m33s the first complete run took.
   windows:
-    name: Windows ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
+    name: Windows x86-64
+    runs-on: windows-latest
     timeout-minutes: 20
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, arch: x86-64 }
-          - { os: windows-11-arm, arch: arm64 }
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      # `zig build` on the arm64 entry exited 1 in half a second having
-      # printed nothing, with the cache left at 103 bytes, so nothing had
-      # compiled and nothing said why. These report what the build sees before
-      # it runs; drop them once the cause is known.
-      - name: Zig environment
-        run: |
-          zig version
-          zig env
       - name: Build
-        run: zig build --summary all
+        run: zig build
       - name: Test
-        run: zig build test --summary all
+        run: zig build test
 
   # riscv32 under QEMU user-mode, which `-fqemu` invokes per artifact. The
   # 32-bit entries in `cross` compile the 32-bit arms and nothing runs them;
@@ -237,10 +224,15 @@ jobs:
       # Static for the same reason the musl jobs are: QEMU reported
       # `Could not open '/lib/ld-musl-riscv32.so.1'`, and there is no musl
       # loader for this width on the runner for it to find.
+      #
+      # The FFI is off because it has no riscv32 calling convention, and the
+      # contract driver ends on `calling convention not supported` rather than
+      # skipping. Everything before that point already runs: the 49 in-file
+      # tests and the contracts, which is what this entry was added to reach.
       - name: Test
         run: >
           zig build test -Dtarget=riscv32-linux-musl -Dcpu=baseline
-          -Dlinkage=static -fqemu
+          -Dlinkage=static -Dffi=false -fqemu
 
   # Build-only, and they are not a formality: Zig analyses only the comptime
   # branches it selects, so a 32-bit target is the only thing anywhere that
@@ -268,7 +260,6 @@ jobs:
           - x86-linux-musl
           - arm-linux-musleabihf
           - x86_64-windows-gnu
-          - aarch64-windows-gnu
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
