@@ -106,10 +106,19 @@ const windows = builtin.os.tag == .windows;
 // ==========================================================================
 
 /// mingw and Darwin both translate this completely; only musl does not, and
-/// the Linux arm never names it. On mingw `struct stat` and
-/// `struct _stat64i32` are the same 48 bytes, which is the pairing the header
-/// itself makes.
-const Stat = sys.struct_stat;
+/// the Linux arm never names it.
+///
+/// **Windows names `struct _stat64` rather than `struct stat`, and the reason
+/// is a rename this import cannot see.** mingw picks both the layout and the
+/// symbol from `_FILE_OFFSET_BITS`, which `wattle_features.h` sets to 64: the
+/// struct gets a 64-bit `off_t`, and `stat` is declared
+/// `__MINGW_ASM_CALL(stat64)` to match. `@cImport` does not carry an assembler
+/// label across, so a call to `sys.stat` emits the plain `stat` symbol, which
+/// fills the 48-byte `_stat64i32` layout instead. The mode word is at the same
+/// offset in both and survives; `st_size` does not, and reads the access time.
+/// Naming `_stat64` and `struct _stat64` pairs a symbol with the layout it
+/// actually fills, neither of them renamed.
+const Stat = if (windows) sys.struct__stat64 else sys.struct_stat;
 
 // ==========================================================================
 // Types
@@ -212,11 +221,12 @@ inline fn put(numbers: [*]f64, field: Field, value: f64) void {
 fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     var st: Stat = undefined;
     // Windows has no `lstat`, so `do_lstat` is ignored there and a symlink is
-    // followed. It also takes the translated declaration rather than
-    // the `@extern` below, because mingw has no renamed variants to choose
-    // between and translate-c gives the right symbol directly.
+    // followed. It takes the translated declaration rather than the `@extern`
+    // below, and names the variant itself: mingw's `stat` is an assembler
+    // label onto another symbol, which this import does not carry across.
+    // `Stat` above has the whole of it.
     const res = if (windows)
-        sys.stat(path, &st)
+        sys._stat64(path, &st)
     else if (do_lstat)
         c_lstat(path, &st)
     else
