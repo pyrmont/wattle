@@ -733,34 +733,55 @@ pub fn loop() raise.Error!void {
     }
 }
 
+/// Delivers an expired timeout's consequence, and whether it had one.
+///
+/// Two kinds expire without one: a deadline whose `tocheck` can no longer be
+/// resumed, and a timeout on a call whose fiber has been re-scheduled since it
+/// was armed. `loop1` uses the answer to decide whether to stop the scan, so
+/// "did nothing" and "cancelled a task" have to be distinguishable here.
+fn fireTimeout(to: Timeout) raise.Error!bool {
+    if (to.curr_fiber) |curr| {
+        if (!fibers.canResume(curr)) return false;
+        // The fiber is a task, so this cannot raise.
+        try cancel(to.fiber.?, value.fromBytes("deadline expired", .string));
+        return true;
+    }
+    // A timeout on a call rather than on a whole fiber.
+    if (to.fiber.?.sched_id != to.sched_id) return false;
+    if (to.is_error) {
+        try cancel(to.fiber.?, value.fromBytes("timeout", .string));
+    } else {
+        schedule(to.fiber.?, wrap.fromNil());
+    }
+    return true;
+}
+
 /// One turn of the loop: expired timers, then runnable fibers, then a poll.
 ///
 /// Gives back the fiber an interrupt stopped, or nothing. The three stages and
 /// their order are what a caller depends on, including that the poll is
 /// skipped when the timer scan drained the heap.
+///
+/// The scan stops after the first expired timer that schedules or cancels
+/// something. Draining every expired timer in one scan let a later timer's
+/// `cancel` supersede an earlier timer's `schedule`, because each bumps
+/// `sched_id` and the run stage drops the stale one: a sleep strictly due
+/// before a deadline lost to that deadline whenever the loop itself was late
+/// enough for both to expire together. Honouring one consequence per turn
+/// keeps expired timers in time order. Timers with no consequence are still
+/// drained, since deferring them costs a turn and changes nothing.
 pub fn loop1() raise.Error!?*fibers.Fiber {
     const v = vm_state.current();
     const sched = &v.ev;
 
-    // Schedule expired timers.
+    // Schedule expired timers, stopping after the first with a consequence.
     const now = tsNow();
     while (peekTimeout()) |to| {
         if (to.when > now) break;
         popTimeout(0);
-        if (to.curr_fiber) |curr| {
-            if (fibers.canResume(curr)) {
-                // The fiber is a task, so this cannot raise.
-                try cancel(to.fiber.?, value.fromBytes("deadline expired", .string));
-            }
-        } else if (to.fiber.?.sched_id == to.sched_id) {
-            // A timeout on a call rather than on a whole fiber.
-            if (to.is_error) {
-                try cancel(to.fiber.?, value.fromBytes("timeout", .string));
-            } else {
-                schedule(to.fiber.?, wrap.fromNil());
-            }
-        }
+        const acted = try fireTimeout(to);
         handleTimeoutWorker(to, false);
+        if (acted) break;
     }
 
     // Run scheduled fibers unless interrupts need to be handled.

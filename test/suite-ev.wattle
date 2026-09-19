@@ -953,19 +953,50 @@
 ; --- Second batch, closing what the first sweep over the four ev sources left
 ; alive. Each block names the decision it pins.
 
-; `janet_ev_mark` walks the timeout heap and marks each timeout's `curr_fiber`
-; -- the fiber `ev/deadline` was told to *check*, which is not the one it
-; cancels and which nothing else roots. A deadline whose `tocheck` is a fresh
-; fiber is the only way to hold one that the collector cannot otherwise see.
+; `evMark` walks the timeout heap and marks each timeout's `curr_fiber` -- the
+; fiber `ev/deadline` was told to *check*, which is not the one it cancels and
+; which nothing else roots. A deadline whose `tocheck` is a fresh fiber is the
+; only way to hold one that the collector cannot otherwise see.
+;
+; The collection has to happen while the deadline is in the heap, which means
+; inside the task and after the arming call. `ev/go` only queues, so a
+; collection on the main fiber before it yields runs before the `tocheck` fiber
+; exists and reaches nothing. The margin is wide because this block is about
+; the collector, not about timer order; the block below is the one that pins
+; the order.
+(do
+  (def out (ev/chan 8))
+  (ev/go (fn []
+           (ev/deadline 0.2 (fiber/root) (fiber/new (fn [] (forever (yield)))))
+           (gccollect)
+           (ev/sleep 0.01)
+           (ev/give out :survived)))
+  (ev/sleep 0.06)
+  (assert (= 1 (ev/count out)) "a deadline's tocheck fiber survives a collection")
+  (assert (= :survived (ev/take out)) "and the task reaches its give"))
+
+; An expired sleep and an expired deadline taken in one scan. The second task
+; blocks the loop thread past both due times, so the scan sees the pair
+; together. The sleep is due first and must win: the scan stops after the
+; timer it acts on, and the deadline is taken on a later turn, by which time
+; the task has given and the cancel is refused. Draining every expired timer
+; in one scan let the later cancel supersede the earlier wakeup, because each
+; bumps `sched_id` and the run stage drops the stale one -- so the loop's own
+; lateness, not the program, decided which timer won.
+;
+; `ev/count` rather than a bare `ev/take`: where this regresses the task is
+; cancelled before its give, and a take on an empty channel with no living
+; writer blocks forever rather than failing.
 (do
   (def out (ev/chan 8))
   (ev/go (fn []
            (ev/deadline 0.02 (fiber/root) (fiber/new (fn [] (forever (yield)))))
            (ev/sleep 0.01)
            (ev/give out :survived)))
-  (gccollect)
+  (ev/go (fn [] (ev/sleep 0.005) (os/sleep 0.03)))
   (ev/sleep 0.06)
-  (assert (= :survived (ev/take out)) "a deadline's tocheck fiber survives a collection"))
+  (assert (= 1 (ev/count out)) "an expired sleep is honoured before an expired deadline")
+  (assert (= :survived (ev/take out)) "and the sleeping task reaches its give"))
 
 ; `ev/all-tasks` is checked above *before* the scheduler has run the task, so
 ; only `janet_schedule_general`'s half of the bookkeeping was reached. Yielding
