@@ -2,16 +2,18 @@
 
 (def- window
   (seq [x :range [-1 2]
-         y :range [-1 2]
-         :when (not (and (zero? x) (zero? y)))]
-       [x y]))
+        y :range [-1 2]
+          :when (not (and (zero? x) (zero? y)))]
+    [x y]))
 
 (defn- neighbors
   [[x y]]
   (map (fn [[x1 y1]] [(+ x x1) (+ y y1)]) window))
 
 (defn tick
-  "Get the next state in the Game Of Life."
+  """
+  Get the next state in the Game of Life
+  """
   [state]
   (def cell-set (frequencies state))
   (def neighbor-set (frequencies (mapcat neighbors state)))
@@ -21,7 +23,9 @@
       coord))
 
 (defn draw
-  "Draw cells in the game of life from (x1, y1) to (x2, y2)"
+  """
+  Draw cells in the game of life from (x1, y1) to (x2, y2)
+  """
   [state x1 y1 x2 y2]
   (def cellset !{})
   (each cell state (put cellset cell true))
@@ -35,7 +39,7 @@
 ; Run the example
 ;
 
-(var *state* '[(0 0) (-1 0) (1 0) (1 1) (0 2)])
+(var *state* '[[0 0] [-1 0] [1 0] [1 1] [0 2]])
 
 (for i 0 20
   (print "generation " i)

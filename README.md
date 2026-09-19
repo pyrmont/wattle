@@ -9,54 +9,68 @@
 > Wattle is experimental. It was written primarily using LLM-based coding
 > agents.
 
-**Wattle** is a runtime for the [Janet](https://janet-lang.org) programming
-language, written in [Zig](https://ziglang.org). Janet is a language for system
-scripting and expressive automation. It has more built-in functionality and a
-richer core language than Lua, but is smaller than GNU Guile or Python.
+**Wattle** is a Lisp-like programming language. It reimplements the virtual
+machine, compiler and core library from the [Janet][] programming language in
+[Zig][] with a syntax inspired by [Clojure][].
 
-Wattle is its own language. It began as a runtime for
-[Janet](https://github.com/janet-lang/janet) and keeps Janet's virtual machine,
-compiler and core library, but it reads a syntax of its own, taken from
-[Claret](https://github.com/pyrmont/claret): source is `.wattle`, `[a b]` is a
-vector, `{:a 1}` is a map, `;` opens a comment and `!` opens a mutable
-container. `.janet` source is not loaded.
+## Language features
 
-There is a REPL for trying out the language, as well as the ability to run
-script files. Try Janet in your browser at <https://janet-lang.org>.
+* 700+ functions and macros in the core library
+* Built-in socket networking, threading, subprocesses and file system functions
+* Parsing Expression Grammars (PEG) engine
+* Macros and compile-time computation
+* Per-thread event loop for efficient IO (epoll/IOCP/kqueue)
+* First-class green threads (continuations) as well as OS threads
+* Erlang-style supervision trees that integrate with the event loop
+* First-class closures
+* Mutable and immutable indexed sequences (array/vector)
+* Mutable and immutable key-value sequences (table/map)
+* Mutable and immutable byte sequences (buffer/string)
+* Persistent immutable data structures (vector, map, set)
+* Garbage collection
+* Python-style generators (implemented as a plain macro)
+* Tail recursion
+* Native modules written in Zig and loaded dynamically
+* Built-in C FFI for calling C ABI-compatible shared libraries
+* REPL development with debugger and inspectable runtime
 
 ## Examples
 
-See the examples directory for all provided example programs.
+See the `examples/` directory for all provided example programs.
 
 ### Game of Life
 
-```janet
-# John Conway's Game of Life
+```clojure
+; A game of life implementation
 
 (def- window
   (seq [x :range [-1 2]
         y :range [-1 2]
-        :when (not (and (zero? x) (zero? y)))]
-       [x y]))
+          :when (not (and (zero? x) (zero? y)))]
+    [x y]))
 
 (defn- neighbors
   [[x y]]
   (map (fn [[x1 y1]] [(+ x x1) (+ y y1)]) window))
 
 (defn tick
-  "Get the next state in the Game Of Life."
+  """
+  Get the next state in the Game of Life
+  """
   [state]
   (def cell-set (frequencies state))
   (def neighbor-set (frequencies (mapcat neighbors state)))
   (seq [coord :keys neighbor-set
-         :let [count (get neighbor-set coord)]
-         :when (or (= count 3) (and (get cell-set coord) (= count 2)))]
+         :let [ncount (get neighbor-set coord)]
+         :when (or (= ncount 3) (and (get cell-set coord) (= ncount 2)))]
       coord))
 
 (defn draw
-  "Draw cells in the game of life from (x1, y1) to (x2, y2)"
+  """
+  Draw cells in the game of life from (x1, y1) to (x2, y2)
+  """
   [state x1 y1 x2 y2]
-  (def cellset @{})
+  (def cellset !{})
   (each cell state (put cellset cell true))
   (loop [x :range [x1 (+ 1 x2)]
          :after (print)
@@ -64,8 +78,12 @@ See the examples directory for all provided example programs.
     (file/write stdout (if (get cellset [x y]) "X " ". ")))
   (print))
 
-# Print the first 20 generations of a glider
-(var *state* '[(0 0) (-1 0) (1 0) (1 1) (0 2)])
+;
+; Run the example
+;
+
+(var *state* '[[0 0] [-1 0] [1 0] [1 1] [0 2]])
+
 (for i 0 20
   (print "generation " i)
   (draw *state* -7 -7 7 7)
@@ -74,15 +92,15 @@ See the examples directory for all provided example programs.
 
 ### TCP Echo Server
 
-```janet
-# A simple TCP echo server using the built-in socket networking and event loop.
-
+```clojure
 (defn handler
-  "Simple handler for connections."
+  """
+  Simple handler for connections
+  """
   [stream]
   (defer (:close stream)
     (def id (gensym))
-    (def b @"")
+    (def b !"")
     (print "Connection " id "!")
     (while (:read stream 1024 b)
       (printf " %v -> %v" id b)
@@ -94,10 +112,10 @@ See the examples directory for all provided example programs.
 (net/server "127.0.0.1" "8000" handler)
 ```
 
-### FFI Hello, World!
+### FFI
 
-```janet
-# Use the FFI to call into the C library - no C compiler required
+```clojure
+; Use the FFI to call into the C library - no C compiler required
 
 (ffi/context)
 
@@ -106,39 +124,16 @@ See the examples directory for all provided example programs.
 (print (strlen "Hello, World!"))
 ```
 
-## Language Features
-
-* 600+ functions and macros in the core library
-* Built-in socket networking, threading, subprocesses, and file system functions
-* Parsing Expression Grammars (PEG) engine as a more robust regex alternative
-* Macros and compile-time computation
-* Per-thread event loop for efficient IO (epoll/IOCP/kqueue)
-* First-class green threads (continuations) as well as OS threads
-* Erlang-style supervision trees that integrate with the event loop
-* First-class closures
-* Garbage collection
-* Python-style generators (implemented as a plain macro)
-* Mutable and immutable arrays (array/tuple)
-* Mutable and immutable hashtables (table/struct)
-* Mutable and immutable strings (buffer/string)
-* Tail recursion
-* Native modules written in Zig and loaded dynamically
-* Built-in C FFI for calling shared libraries without writing a native module
-* REPL development with debugger and inspectable runtime
-
 ## Documentation
 
-* For a quick tutorial, see the
-  [introduction](https://janet-lang.org/docs/index.html) for more details.
-* For the full API for all functions in the core library, see the [core API
-  doc](https://janet-lang.org/api/index.html).
+Wattle does not yet have a written manual.
 
-Documentation is also available locally in the REPL. Use the `(doc
-symbol-name)` macro to get API documentation for symbols in the core library.
+Documentation is available in the REPL. Use the `(doc symbol-name)` macro to
+get API documentation for symbols in the core library.
 
-For example:
+At the REPL
 
-```janet
+```clojure
 (doc apply)
 ```
 
@@ -150,14 +145,14 @@ if you are in the REPL to show bound symbols.
 
 ## Building
 
-Wattle is built with [Zig](https://ziglang.org). The version is pinned in
+Wattle is built with [Zig][]. The version is pinned in
 `.zigversion` and is currently **0.16.0**.
 
 ```sh
 git clone https://github.com/pyrmont/wattle
 cd wattle
 zig build              # the executable and the libraries
-zig build test         # the contracts and the Janet test suites
+zig build test         # the contracts and the test suites
 zig build run          # a REPL
 ```
 
@@ -177,9 +172,9 @@ zig build -Dtarget=wasm32-wasi            # a WASI command-line build
 Cross-compilation needs no extra toolchain: Zig ships the C headers and linkers
 for every supported target.
 
-A musl build is dynamically linked and loads native modules, and needs the musl
-loader (`/lib/ld-musl-<arch>.so.1`, standard on Alpine and installed on Debian
-and Ubuntu by the `musl` package) on the machine that runs it.
+A [musl][] build is dynamically linked and loads native modules, and needs the
+musl loader (`/lib/ld-musl-<arch>.so.1`, standard on Alpine and installed on
+Debian and Ubuntu by the `musl` package) on the machine that runs it.
 `-Dlinkage=static` builds a self-contained executable instead. A static musl
 executable loads no native module at run time, so that build turns dynamic
 modules off, and `-Ddynamic-modules=true` with it is a build error. A native is
@@ -218,16 +213,15 @@ WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 
 ## Installing
 
-If you just want to try out the language, you don't need to install anything.
-In this case you can also move the `wattle` executable wherever you want on your
-system and run it. However, for a fuller setup, please see the
-[Introduction](https://janet-lang.org/docs/index.html) for more details.
+If you just want to try out the language, you don't need to install anything:
+build the tree and run `zig-out/bin/wattle` where it is. The executable is
+self-contained and can be moved wherever you want on your system.
 
 ## Using
 
 A REPL is launched when the binary is invoked with no arguments. Pass the `-h`
 flag to display the usage information. Individual scripts can be run with
-`./wattle myscript.wattle`.
+`./wattle program.wattle`.
 
 If you are looking to explore, you can print a list of all available macros,
 functions, and constants by entering the command `(all-bindings)` into the
@@ -242,77 +236,45 @@ repl:2:> (print "Hello, World!")
 Hello, World!
 nil
 repl:3:> (os/exit)
-$ wattle -h
-usage: wattle [options] script args...
-Options are:
-  --help (-h)             : Show this help
-  --version (-v)          : Print the version string
-  --stdin (-s)            : Use raw stdin instead of getline like functionality
-  --eval (-e) code        : Execute a string of janet
-  --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
-  --debug (-d)            : Set the debug flag in the REPL
-  --repl (-r)             : Enter the REPL after running all scripts
-  --noprofile (-R)        : Disables loading profile.wattle when WATTLE_PROFILE is present
-  --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
-  --quiet (-q)            : Hide logo (quiet)
-  --flycheck (-k)         : Compile scripts but do not execute (flycheck)
-  --syspath (-m) syspath  : Set system path for loading global modules
-  --compile (-c) source output : Compile janet source code into an image
-  --image (-i)            : Load the script argument as an image file instead of source code
-  --nocolor (-n)          : Disable ANSI color output in the REPL
-  --color (-N)            : Enable ANSI color output in the REPL
-  --library (-l) lib      : Use a module before processing more arguments
-  --lint-warn (-w) level  : Set the lint warning level - default is "normal"
-  --lint-error (-x) level : Set the lint error level - default is "none"
-  --install (-b) dirpath  : Install a bundle from a directory
-  --reinstall (-B) name   : Reinstall a bundle by bundle name
-  --uninstall (-u) name   : Uninstall a bundle by bundle name
-  --update-all (-U)       : Reinstall all installed bundles
-  --prune (-P)            : Uninstall all bundles that are orphaned
-  --list (-L)             : List all installed bundles
-  --                      : Stop handling options
+$
 ```
 
-The manual page `wattle.1` is in the repository root. It is generated from
-`wattle.1.predoc` by [Predoc](https://github.com/pyrmont/predoc): edit the
-source and run `predoc wattle.1.predoc`. `zig build` does not install it;
-`man ./wattle.1` reads it in place.
+The man page `wattle.1` is in the repository root. It is generated from
+`wattle.1.predoc` by [Predoc][]. Read it in place with `man ./wattle.1`.
 
 ## Extending
 
-Wattle can be extended with _native modules_.  **The native-module interface is
-Zig.** `src/module.zig` is what a module imports. `examples/numarray/` is a
-worked example. A C program cannot define a cfunction for this runtime: a
-cfunction returns an error union over Zig's own calling convention, so no C
-body can have that type and no C caller can invoke one. The same applies to a
-`JanetAbstractType`'s callbacks. Native modules are therefore written in Zig.
+Wattle can be extended with _native modules_. The native-module interface is
+Zig. `examples/numarray/` is a worked example. A C program cannot define a
+cfunction for this runtime: a cfunction returns an error union over Zig's own
+calling convention, so no C body can have that type and no C caller can invoke
+one. The same applies to an `AbstractType`'s callbacks. Native modules are
+therefore written in Zig.
 
 A module records the interface it was built against as a fingerprint, and the
 loader refuses to load this unless that fingerprint, the configuration bits and
-the Zig version all match the runtime's own. `janet/api` is the runtime's
+the Zig version all match the runtime's own. `wattle/api` is the runtime's
 fingerprint. Wattle's version is not compared, so a module built against one
 release loads into another whose interface is the same.
 
 A module can also be linked into an executable, together with the runtime and
-an image of a Janet program, so that one file cross-compiles and runs with
-nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`, which links
-`examples/digest/` in, and `build.zig`'s `quickbin` function builds one from
-outside the tree (`examples/standalone/`).
-
-**No header is installed, and there is no amalgamated `janet.c`.** The client
-does not link against the library either: it imports the runtime as a Zig
-module.
+an image of a Wattle program, so that one file cross-compiles and runs with
+nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`,
+which links `examples/digest/` in, and `build.zig`'s `quickbin` function builds
+one from outside the tree (`examples/standalone/`).
 
 ## Contributing
 
-Wattle can be hacked on with pretty much any environment you like. VSCode, Vim,
-Emacs and Atom each have syntax packages for the Janet language, and any editor
-with Zig support will do for the runtime itself.
-
-`res/README.md` explains the development instruments used in porting — the
-acceptance matrix, the leak check and the checked inventories.
+Wattle can be hacked on with pretty much any environment you like. No editor
+yet has a syntax package for Wattle; a Clojure mode is the closest fit for
+`.wattle` source. Any editor with Zig support will do for runtime development.
 
 ## License
 
 Wattle is licensed under the MIT License. See [LICENSE](LICENSE) for more
 details.
+
+[Clojure]: https://clojure.org
+[Janet]: https://janet-lang.org
+[Predoc]: https://pyrmont.github.io/predoc
+[Zig]: https://ziglang.org

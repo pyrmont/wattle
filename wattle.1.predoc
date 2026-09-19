@@ -1,7 +1,7 @@
 ---
 Title: WATTLE(1)
 Authors: Michael Camilleri <mike@inqk.net>
-Date: 2026-09-15
+Date: 2026-09-19
 Project: Wattle
 Version: 0.1.0-dev
 ---
@@ -9,7 +9,7 @@ Version: 0.1.0-dev
 NAME
 ====
 
-**wattle** - run Janet programs and a Janet REPL
+**wattle** - run Wattle programs and a Wattle REPL
 
 SYNOPSIS
 ========
@@ -22,9 +22,11 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-**wattle** runs programs written in the Janet programming language. It is a
-Janet runtime written in Zig. With no _script_, and no option that does work of
-its own, it starts a REPL (read-eval-print loop).
+**wattle** runs programs written in Wattle, a Lisp-like programming language.
+Wattle reimplements the virtual machine, compiler and core library from the
+Janet programming language in Zig with a syntax inspired by Clojure. With no
+_script_, and no option that does work of its own, **wattle** starts a REPL
+(read-eval-print loop).
 
 Options are processed in order, so an option applies to the options and the
 _script_ that follow it. The first argument that does not begin with ``-`` is
@@ -45,7 +47,7 @@ Options
   Print the version of Wattle and exit.
 
 - **-e**, **--eval** _code_:
-  Evaluate _code_ as Janet source. The REPL is not started afterwards unless
+  Evaluate _code_ as Wattle source. The REPL is not started afterwards unless
   **-r** is also given.
 
 - **-E**, **--expression** _code_ [_arguments_ ...]:
@@ -158,7 +160,7 @@ ENVIRONMENT
   first. If unset, ``*syspath*`` is `/usr/local/lib/wattle`.
 
 - `WATTLE_PROFILE`:
-  A Janet file to load before the REPL starts. It is not loaded when a
+  A Wattle file to load before the REPL starts. It is not loaded when a
   _script_ runs without **-r**.
 
 - `NO_COLOR`:
@@ -211,14 +213,17 @@ $ wattle -k hello.wattle
 SEE ALSO
 ========
 
-The Janet language is documented at <https://janet-lang.org>.
+Wattle does not yet have a written manual. The core library documents itself:
+``(doc symbol)`` prints a binding's documentation in the REPL and ``(doc)``
+lists the bindings in scope. Example programs are distributed with the source
+at <https://github.com/pyrmont/wattle>.
 
 HISTORY
 =======
 
-Wattle is a fork of Janet, the language created by Calvin Rose. Its runtime is
-rewritten in Zig, and it has its own version numbering: the binding
-``janet/version`` reports the version of Janet it matches.
+Wattle began as a fork of Janet, the language created by Calvin Rose. It has
+its own version numbering: the binding ``wattle/version`` reports that
+version.
 
 COPYRIGHT
 =========

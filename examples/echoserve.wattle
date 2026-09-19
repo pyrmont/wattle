@@ -1,5 +1,7 @@
 (defn handler
-  "Simple handler for connections."
+  """
+  Simple handler for connections
+  """
   [stream]
   (defer (:close stream)
     (def id (gensym))

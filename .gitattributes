@@ -1,3 +1,5 @@
+*.wattle linguist-language=Clojure
+*.wattle text eol=lf
 *.janet linguist-language=Janet
 *.janet text eol=lf
 *.c text eol=lf
