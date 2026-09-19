@@ -767,7 +767,9 @@ fn tailEntries() []const corefn.Entry {
         };
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/getenv", &cfunGetenv, @src(), "(os/getenv variable &opt dflt)", "Get the string value of an environment variable."),
-            corefn.reg("os/setenv", &cfunSetenv, @src(), "(os/setenv variable value)", "Set an environment variable."),
+            corefn.reg("os/setenv", &cfunSetenv, @src(), "(os/setenv variable value)", "Set an environment variable. A nil value removes it. " ++
+                "On Windows an empty string removes it as well, because the platform has no way to hold a variable whose value is " ++
+                "empty; on every other platform an empty string is stored and read back."),
         };
         break :blk acc[0..acc.len].*;
     };

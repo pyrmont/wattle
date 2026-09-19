@@ -89,9 +89,18 @@ fn theHostOperations() void {
     expect(os.environSet(test_name, null) == 0);
     expect(os.environGet(test_name) == null);
 
+    // An empty value follows the platform rather than being emulated. POSIX
+    // stores it and gives it back; Windows has no way to hold one, because an
+    // empty value is `_putenv_s`'s instruction to remove the variable. Both
+    // answers are pinned rather than the case being skipped on Windows, which
+    // would leave the behaviour most easily changed by accident unpinned.
     expect(os.environSet(test_name, "") == 0);
-    const empty = os.environGet(test_name).?;
-    expect(empty[0] == 0);
+    if (builtin.os.tag == .windows) {
+        expect(os.environGet(test_name) == null);
+    } else {
+        const empty = os.environGet(test_name).?;
+        expect(empty[0] == 0);
+    }
 
     // A value containing the separator, which the scanner above has to split on
     // the first `=` rather than the last.
