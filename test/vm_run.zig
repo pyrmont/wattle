@@ -142,16 +142,21 @@ fn expectError(source: []const u8, message: [*:0]const u8) void {
     }
 }
 
-/// `expectError` for a message with two correct spellings.
-fn expectErrorEither(source: []const u8, message: [*:0]const u8, other: [*:0]const u8) void {
+/// `expectError` where more than one spelling of the message is correct.
+///
+/// A list rather than a pair because the count is the libc's, not the
+/// runtime's: the NaN case below has three and a fourth libc would add one.
+fn expectErrorAny(source: []const u8, messages: []const [*:0]const u8) void {
     const payload = raised(source);
-    if (!harness.stringValueIs(payload, message) and !harness.stringValueIs(payload, other)) {
-        std.debug.print("source:   {s}\n", .{source});
-        std.debug.print("expected: {s}\n", .{message});
-        std.debug.print("       or {s}\n", .{other});
-        std.debug.print("     got: {s}\n", .{pp_describe.toString(payload)});
-        expect(false);
+    for (messages) |message| {
+        if (harness.stringValueIs(payload, message)) return;
     }
+    std.debug.print("source:   {s}\n", .{source});
+    for (messages, 0..) |message, i| {
+        std.debug.print("{s} {s}\n", .{ if (i == 0) "expected:" else "       or", message });
+    }
+    std.debug.print("     got: {s}\n", .{pp_describe.toString(payload)});
+    expect(false);
 }
 
 /// Compares pretty-printed forms rather than values, because `order.equals` on
@@ -232,13 +237,20 @@ fn aBitwiseOperandOutOfRange() void {
     // own narrowing of a NaN constant is checked, and the literal form below
     // reaches the same message. The quotient is the FPU's default NaN, which
     // has the sign bit set on an x86-64 host, wasmtime's included, and clear
-    // on aarch64. The formatter passes it to `snprintf`, which prints the
-    // sign under musl and wasi-libc and omits it under Apple's libc. Either
-    // spelling is correct.
-    expectErrorEither(
+    // on aarch64.
+    //
+    // The formatter passes it to `snprintf`, and how a NaN is spelled is the
+    // libc's: Apple's omits the sign, musl and wasi-libc print it, and
+    // MSVCRT writes the quiet NaN as `-nan(ind)`. Every spelling is correct,
+    // so the contract takes a list rather than a pair -- a fourth libc would
+    // add a fourth.
+    expectErrorAny(
         "(do (defn f [a b] (band (/ a b) 1)) (f 0 0))",
-        "value nan out of range for 32-bit signed integers",
-        "value -nan out of range for 32-bit signed integers",
+        &.{
+            "value nan out of range for 32-bit signed integers",
+            "value -nan out of range for 32-bit signed integers",
+            "value -nan(ind) out of range for 32-bit signed integers",
+        },
     );
     expectError("(band math/nan 1)", "value nan out of range for 32-bit signed integers");
     // The range test at its ends: the largest and smallest values an `int32_t`
