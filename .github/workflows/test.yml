@@ -15,16 +15,36 @@ permissions:
 env:
   ZIG_VERSION: 0.16.0
 
+# Every job carries a `timeout-minutes`. The default is 360, and a suite that
+# deadlocks rather than failing holds the runner for all of it: a fiber parked
+# on a channel with no living writer keeps the event loop's listener count
+# non-zero, so the loop waits rather than reporting that nothing can progress.
+#
+# Every entry builds and tests in under five minutes from a cold `setup-zig`
+# cache, and the allowance is about twice that, so a job that overruns is
+# wedged rather than merely slow.
+#
+# Size these against a cold cache rather than a typical run: it is the slow
+# case, and it is the one a first run after a cache miss has to survive. A
+# warm cache is not reliably faster either -- between the first two runs
+# `macos-latest` fell from 3m39s to 1m11s while `glibc` rose from 3m51s to
+# 5m22s.
+
 jobs:
 
   # The whole graph: `zig build test` outright, as the `glibc` job runs it.
+  #
+  # arm64 only. The `macos-15-intel` entry was dropped: Apple no longer
+  # supports the platform, and the entry was three times slower than any other
+  # in the matrix. x86-64 still executes on the two native Linux jobs, and
+  # `res/testing/matrix.janet` keeps an `x86_64-macos` build-only entry, so the
+  # Darwin arms are still compiled at that width. What no longer runs anywhere
+  # is x86-64 *on Darwin*, which that entry declines to run in any case because
+  # it needs Rosetta.
   macos:
-    name: macOS (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ macos-latest, macos-15-intel ]
+    name: macOS
+    runs-on: macos-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -44,13 +64,19 @@ jobs:
 
   # Linux against **musl**. It is static (`-Dlinkage=static`) because the
   # runner image has no musl loader, so it runs natively with no container.
-  # Tests that load a library skip there, and `zig build test` cannot run, so
-  # the contracts and suites are run by hand. The `glibc` job below runs the
-  # rest. The two libcs are not interchangeable: glibc's allocator checks what
-  # musl's does not, so both are run (`test/README.md`).
+  # A static musl executable cannot load a native module at all -- musl's
+  # static `dlopen` is a stub that always fails -- so `zig build test` is not
+  # run here and its three parts are run by hand instead: the contracts, the
+  # in-file runtime tests, and the suites. `-Dinstall-tests=true` is what puts
+  # the runtime-test binary under `<prefix>/test` beside the contract driver;
+  # a plain build installs only the contract and fuzz drivers. The `glibc` job
+  # below runs the native-module half. The two libcs are not interchangeable:
+  # glibc's allocator checks what musl's does not, so both are run
+  # (`test/README.md`).
   linux:
     name: Linux ${{ matrix.arch }} (musl)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +89,9 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Dcpu=baseline -Dlinkage=static
+        run: >
+          zig build -Dtarget=${{ matrix.target }} -Dcpu=baseline
+          -Dlinkage=static -Dinstall-tests=true
       - name: Contracts
         run: |
           set -eu
@@ -86,6 +114,12 @@ jobs:
             fi
           done
           exit $fail
+      # The 49 in-file runtime tests, which `zig build test` would run and
+      # which the contract driver does not cover. Run bare rather than through
+      # the build runner: bare, the default test runner prints its count, and
+      # a set that has silently become empty is then visible as one.
+      - name: Runtime tests
+        run: ./zig-out/test/wattle-runtime-test
       - name: Suites
         run: |
           set -eu
@@ -108,6 +142,7 @@ jobs:
   glibc:
     name: Linux x86_64 (glibc)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -126,6 +161,7 @@ jobs:
   optimize:
     name: ${{ matrix.mode }}
     runs-on: macos-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -137,6 +173,61 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Test
         run: zig build test -Doptimize=${{ matrix.mode }}
+
+  # **Windows, executed.** Nothing had ever run a Windows binary, here or
+  # anywhere: the `cross` matrix below compiles the Windows arms and no run of
+  # one has followed. These two entries are the first, so they are
+  # `continue-on-error` until a run proves them -- a failure here reports what
+  # is broken without asserting that the supported matrix is. Promote them by
+  # removing the flag, and say so in README.md's platform table, once they
+  # pass. The allowance is a guess: no Windows job has been measured.
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x86-64 }
+          - { os: windows-11-arm, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Build
+        run: zig build
+      - name: Test
+        run: zig build test
+
+  # riscv32 under QEMU user-mode, which `-fqemu` invokes per artifact. The
+  # 32-bit entries in `cross` compile the 32-bit arms and nothing runs them;
+  # `wasm32-wasi` is the only 32-bit target that executes, and it has no event
+  # loop, so this is the only thing that would run the 32-bit layout with one.
+  #
+  # `test/README.md` rules out emulation for x86-64 because the NaN-boxed
+  # layout packs pointers into the low 47 bits and QEMU does not honour that.
+  # The 32-bit layout has no such assumption, so the objection may not carry
+  # over -- which is what this entry is for. `continue-on-error` until it
+  # proves out.
+  qemu:
+    name: riscv32 (qemu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+      - name: Test
+        run: zig build test -Dtarget=riscv32-linux-musl -Dcpu=baseline -fqemu
 
   # Build-only, and they are not a formality: Zig analyses only the comptime
   # branches it selects, so a 32-bit target is the only thing anywhere that
@@ -151,6 +242,7 @@ jobs:
   cross:
     name: cross ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -163,6 +255,7 @@ jobs:
           - x86-linux-musl
           - arm-linux-musleabihf
           - x86_64-windows-gnu
+          - aarch64-windows-gnu
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -183,6 +276,7 @@ jobs:
   wasi:
     name: wasm32-wasi (${{ matrix.mode }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

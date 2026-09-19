@@ -223,14 +223,15 @@ WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 
 ### Supported platforms
 
-| platform               | state                                                         |
-| ---------------------- | ------------------------------------------------------------- |
-| macOS arm64 and x86-64 | built and fully tested                                        |
-| Linux, musl            | built and fully tested; dynamic by default, needs musl loader |
-| Linux, glibc           | built and fully tested                                        |
-| Windows                | cross-compiles; binaries have never been executed             |
-| wasm32-wasi            | built and fully tested under wasmtime, without the event loop |
-| 32-bit (riscv32)       | compiles only; wasm32-wasi is the 32-bit target that runs     |
+| platform         | state                                                          |
+| ---------------- | -------------------------------------------------------------- |
+| macOS arm64      | built and fully tested                                         |
+| macOS x86-64     | compiles only; not executed since the Intel runner was dropped |
+| Linux, musl      | built and fully tested; dynamic by default, needs musl loader  |
+| Linux, glibc     | built and fully tested                                         |
+| Windows          | cross-compiles; binaries have never been executed              |
+| wasm32-wasi      | built and fully tested under wasmtime, without the event loop  |
+| 32-bit (riscv32) | compiles only; wasm32-wasi is the 32-bit target that runs      |
 
 ## Installing
 
