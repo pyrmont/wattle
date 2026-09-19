@@ -93,6 +93,13 @@ const soft = "wattle-os-paths-direct-6b1d/soft";
 const sub = "wattle-os-paths-direct-6b1d/inner";
 const unix = builtin.os.tag != .windows;
 
+/// Whether the platform has the link family, rather than merely the bindings.
+///
+/// `config.symlinks` says `os/link` and `os/symlink` are registered. They are
+/// registered on Windows and Plan 9 too and refuse there, which `os/link`'s
+/// own documentation states, so a block that calls one needs both conditions.
+const links = config.symlinks and builtin.os.tag != .windows and builtin.os.tag != .plan9;
+
 // ==========================================================================
 // Aliased types
 // ==========================================================================
@@ -375,7 +382,7 @@ fn theCoreFunctions() void {
         \\(assert (= :kept (first supplied)))
     );
 
-    if (config.symlinks) {
+    if (links) {
         // `os/link` is hard by default and symbolic when asked; `os/symlink`
         // is the same as passing true.
         eval(
@@ -448,8 +455,10 @@ fn theRefusals() void {
         expect(harness.raised(harness.core("os/realpath"), .{args[0..1]}) != null);
     }
 
-    if (config.symlinks) {
+    if (links) {
         // Reading a link that is not one, and linking onto a name that exists.
+        // Guarded on the platform as well: where the family is refused
+        // outright these would still raise, and pass for the wrong reason.
         args[0] = value.fromBytes(public_dir ++ "/file", .string);
         expect(harness.raised(harness.core("os/readlink"), .{args[0..1]}) != null);
         args[1] = args[0];
