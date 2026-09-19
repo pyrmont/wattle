@@ -1,6 +1,6 @@
 # numarray
 
-A native Janet module written in Zig, and the worked example of `DESIGN.md`
+A native Wattle module written in Zig, and the worked example of `DESIGN.md`
 sections 5 and 6.
 
 `numarray.zig` is the whole module. It imports `wattle` and nothing else, and its
@@ -10,7 +10,7 @@ the `JANET_ATEND_*` macro chain.
 
     zig build test
 
-builds it and runs `examples/numarray/test/numarray.janet` against it, which is
+builds it and runs `examples/numarray/test/numarray.wattle` against it, which is
 what makes "a sample module compiles and loads" a check rather than a claim.
 
 ## Building a module outside this repository

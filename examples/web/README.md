@@ -1,6 +1,6 @@
 # web
 
-Janet in a web page: the runtime built as a wasm32-wasi reactor, a page that
+Wattle in a web page: the runtime built as a wasm32-wasi reactor, a page that
 calls into it, and the JavaScript that supplies WASI in its place.
 
 - `main.zig` is the reactor's root. It exports `wattle_web_init`,
@@ -47,13 +47,13 @@ runtime is the same `subsystems` module the `wattle` client imports, unchanged.
 
 ### A submission runs as a REPL line
 
-`wattle_web_init` evaluates a short Janet function, `eval-line`, once, and
+`wattle_web_init` evaluates a short Wattle function, `eval-line`, once, and
 `wattle_web_eval` calls it with the submitted source. `eval-line` calls
 `run-context` as `repl` does, with the environment kept between calls and the
 REPL's `debugger-on-status`. Each form's value is printed with
 `*pretty-format*` and bound to `_`, and an error is printed with its stack
 trace. `wattle_web_eval` returns 0, or 1 when parsing, compiling or running
-failed. Written in Janet, the REPL's printing is reused rather than repeated
+failed. Written in Wattle, the REPL's printing is reused rather than repeated
 in Zig, and the Zig side is a call.
 
 The whole submission is one chunk, so a form left open is a parse error
@@ -77,14 +77,14 @@ There are no preopened directories. `fd_prestat_get` must say so with `EBADF`:
 wasi-libc's constructor, run by `_initialize`, treats any other error as fatal
 and exits with status 71. With no preopens, wasi-libc fails every path before
 reaching a `path_*` import, so `slurp`, `spit`, `os/dir` and `import` raise a
-Janet error.
+Wattle error.
 
 `poll_oneoff` returns at once, so `os/sleep` does not wait. `proc_exit` throws,
 so `os/exit` ends the instance.
 
 ### Unbounded recursion
 
-The `web` step builds with a Janet stack ceiling of 1000000 slots, where
+The `web` step builds with a Wattle stack ceiling of 1000000 slots, where
 `wattle.wasm` has the default 0x7fffffff. `-Dstack-max` overrides it.
 
 At the default, `(defn f [n] (+ 1 (f (inc n)))) (f 0)` exhausts wasm32's heap

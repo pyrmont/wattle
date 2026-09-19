@@ -1,12 +1,12 @@
 # quickbin
 
-A Janet program, the runtime and a native module in one executable, and the
+A Wattle program, the runtime and a native module in one executable, and the
 worked example of a build that cross-compiles it.
 
-`main.janet` is the whole program. It imports `examples/digest`, hashes one
+`main.wattle` is the whole program. It imports `examples/digest`, hashes one
 string and prints the result:
 
-```janet
+```clojure
 (import digest)
 
 (defn main [& args]
@@ -27,7 +27,7 @@ beside it.
 
 Three things, and nothing is read at run time. The runtime is the same
 `subsystems` module the `wattle` client imports. The program is a marshalled
-image of `main.janet`'s environment, embedded the way the core image is. The
+image of `main.wattle`'s environment, embedded the way the core image is. The
 module is `digest.zig` compiled into the same binary, so its cfunctions are
 addresses the linker resolved rather than symbols a loader looks up.
 
@@ -102,7 +102,7 @@ their names.
 
 `digest` schedules its work through the event loop, so this executable needs
 a build with the loop. Under `-Dev=false` the hash raises `event loop not
-enabled`, as `examples/digest/test/digest.janet` shows.
+enabled`, as `examples/digest/test/digest.wattle` shows.
 
 ## Building one outside this repository
 

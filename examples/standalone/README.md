@@ -23,7 +23,7 @@ registration. Its job is to fail when the interface changes, rather than to
 demonstrate anything `numarray` demonstrates better. It is built twice here: as
 the shared object `libgreet`, and linked into the executable `hello`.
 
-`main.janet` is the program inside `hello`. It imports `greet`, which needs no
+`main.wattle` is the program inside `hello`. It imports `greet`, which needs no
 file because the module is linked in, and prints the name of the abstract type
 `(greet/hello)` returns. `zig build test` in this directory runs the executable
 and checks that line.
@@ -38,7 +38,7 @@ requirement, because the module and the runtime inside it are one build.
 
 `build.zig` instantiates the `wattle` dependency twice. The first is built for
 the target and is what `hello` links. The second is built for the machine
-running the build, and its client is what makes the image of `main.janet`. An
+running the build, and its client is what makes the image of `main.wattle`. An
 image is architecture-neutral, so it is made once on the build machine and
 embedded into a binary for any target. On a native build both instances are
 built for the same machine. `examples/quickbin/README.md` explains what the

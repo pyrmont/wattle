@@ -1,6 +1,6 @@
 # url
 
-A native Janet module written in Zig, and the worked example of the built-in
+A native Wattle module written in Zig, and the worked example of the built-in
 types. `DESIGN.md` section 13 records the decision that a type crosses to a
 module author as a view or as a capability. This module is the view half and
 `examples/numarray` is the capability half.
@@ -13,18 +13,18 @@ needs from the runtime is the ability to read what it was given.
 
 `url.zig` is the whole module, and it owns nothing:
 
-```janet
+```clojure
 (import url)
 
-(url/slug "Hello, World!" [:lower])   # -> "hello-world"
-(url/query {:page 2 :sort :name})     # -> "sort=name&page=2", in hash order
-(url/cut "abcdef" 1 -1)               # -> "bcde"
-(url/parse-query "a=1&b=2")           # -> {:a "1" :b "2"}
+(url/slug "Hello, World!" [:lower])   ; -> "hello-world"
+(url/query {:page 2 :sort :name})     ; -> "sort=name&page=2", in hash order
+(url/cut "abcdef" 1 -1)               ; -> "bcdef"
+(url/parse-query "a=1&b=2")           ; -> {:a "1" :b "2"}
 ```
 
     zig build test
 
-builds it and runs `examples/url/test/url.janet` against it. That file is an
+builds it and runs `examples/url/test/url.wattle` against it. That file is an
 ordinary `import*` of the built shared object. The path is an argument only
 because `zig build` leaves the object in its cache rather than on `WATTLE_PATH`,
 and everything after the import is what someone who had installed the module
@@ -34,41 +34,41 @@ would write.
 
 ### The three getters
 
-Three getters cover every Janet aggregate an argument can be, and each reads a
+Three getters cover every Wattle aggregate an argument can be, and each reads a
 group of types identically:
 
 | the getter | the types | what the module gets |
 | --- | --- | --- |
 | `getBytes` | string, symbol, keyword, buffer | `[]const u8` |
-| `getIndexed` | tuple, array | `Indexed` |
-| `getDictionary` | struct, table, map | `Dictionary` |
+| `getIndexed` | array, vector, tuple | `Indexed` |
+| `getDictionary` | table, map | `Dictionary` |
 
 Each has a `Value` form beside it: `wattle.bytesView`, `wattle.toIndexed` and
 `wattle.toDictionary`, which return `null` where the getter would raise.
 
 `getIndexed` also reads an abstract whose contents are elements, and
-`getDictionary` one whose contents are pairs, such as a map. Their contents may
-be in more than one run, so `Indexed` is read with `next`, `get` or
-`nextChunk` rather than as a slice, and `Dictionary` with `next` or
-`nextChunk`.
+`getDictionary` one whose contents are pairs. A vector's elements, a map's
+pairs and an abstract's contents may be in more than one run, so `Indexed` is
+read with `next`, `get` or `nextChunk` rather than as a slice, and
+`Dictionary` with `next` or `nextChunk`.
 
 ### Construction as the getters run backwards
 
 A constructor takes exactly what the getter of the same type returns, so
-`wattle.string(try wattle.getBytes(argv, 0))` type-checks. `parse-query` is the worked
-instance. It reads the slice `getBytes` returns and builds a struct out of
-slices of it, with no copy and no length recomputed on the module's side.
-The runtime interns its own copy, so the struct outlives the argument. That
+`wattle.string(try wattle.getBytes(argv, 0))` type-checks. `parse-query` is
+the worked instance. It reads the slice `getBytes` returns and builds a map
+out of slices of it, with no copy and no length recomputed on the module's
+side. The runtime interns its own copy, so the map outlives the argument. That
 symmetry is what the rule in `DESIGN.md` section 13 implies, and it is the
 reason construction needed no new shared type.
 
 `slug` calls `getBytes` and `getIndexed`, `query` calls `getDictionary`, `cut`
-takes a range, and `parse-query` builds a struct. Nothing about a struct
-or a table promises an order, so `query` returns in hash order and a caller that
-needs a stable string sorts the result. The test file sorts it rather than
-pinning one arrangement. The test file asserts each cfunction on more than one
-of the types its getter reads, because a getter reads them identically: a module
-written for a tuple works on an array with no change.
+takes a range, and `parse-query` builds a map. Nothing about a map or a table
+promises an order, so `query` returns in hash order and a caller that needs a
+stable string sorts the result. The test file sorts it rather than pinning one
+arrangement. The test file asserts each cfunction on more than one of the
+types its getter reads, because a getter reads them identically: a module
+written for a tuple works on an array or a vector with no change.
 
 ### The lifetime of what a getter returns
 
@@ -86,7 +86,7 @@ refuse, and it does, with the same message a C module got:
 
 ```
 (url/slug 3)
-# bad slot #0, expected buffer, string, symbol or keyword, got 3
+; bad slot #0, expected buffer, string, symbol or keyword, got 3
 ```
 
 An unknown option is not a type error, and the runtime has nothing to say about
@@ -94,7 +94,7 @@ it. That refusal is the module's, through `wattle.panicFormat`:
 
 ```
 (url/slug "a b" [:bogus])
-# unknown option :bogus
+; unknown option :bogus
 ```
 
 ### The option table as a `std.StaticStringMap`
@@ -123,4 +123,4 @@ family of functions.
 
 The same way `numarray` does. `examples/numarray/README.md` has the
 `build.zig.zon` and `build.zig` an outside package needs, and `zig build
-standalone` is the proof that it works.
+examples/standalone` is the proof that it works.
