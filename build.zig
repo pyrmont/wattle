@@ -2046,7 +2046,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
     // the JANET_BSD and JANET_APPLE clauses, which define the same macro
     const ev_kqueue = (bsd or apple) and options.kqueue;
 
-    // Which targets NaN-box when `-Dnanbox` is unset, the list `janet.h`
+    // Which targets NaN-box when `-Dnanbox` is unset, the list C Janet
     // carries: every 32-bit target, and the three 64-bit architectures whose
     // user-space addresses fit in 47 bits. A NaN-boxed 64-bit value keeps a
     // pointer in the low 47 bits of a double's payload, and the tag is ORed

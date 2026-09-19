@@ -81,11 +81,13 @@
 # containing "does not exist" or "There is no" is dropped, which is
 # decidable by shape rather than by a list of exempt lines.
 #
-# **`src/core/` and `janet.h` name upstream C.** A comment comparing against
-# `janet.h`'s declarations names its subject rather than a stale reference, and
-# several under `test/` and in `build.zig` do. They stay in the shipped-source
-# question, where this project having had its own `janet.h` is what makes a
-# mention wrong.
+# **`src/core/` names a retired directory; `janet.h` no longer names
+# anything here.** The header was asked after because this project once had a
+# `janet.h` of its own, so a bare mention was ambiguous. Step 7 removed it,
+# and `res/check/seam.janet` fails on an `extern fn janet*` anywhere under
+# `src/`, so every remaining mention is upstream's and the question has
+# expired. It came out of the pattern on 2026-09-19; the comments that name
+# it say C Janet. `src/core/` stays.
 #
 # ## Why this is a script and not a build check
 #
@@ -103,7 +105,7 @@ status=0
 
 # ------------------------------------------------- chronology, shipped source
 
-if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|src/core/|janet\.h|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
+if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|src/core/|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
     --exclude-dir=.zig-cache --exclude-dir=zig-out \
     src test examples build.zig |
   grep -vE '^[^:]+:[0-9]+:.*(test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig|filewatch_flags\.zig|filewatch_core\.zig)'

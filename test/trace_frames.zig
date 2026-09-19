@@ -439,7 +439,7 @@ fn aBareCfunctionRenders() raise.Error!void {
 /// descriptor and the loop that consumes it agree about the frames of a live
 /// stack.
 ///
-/// `:err-color` is bound explicitly for the reason `test/suite-debug.janet`
+/// `:err-color` is bound explicitly for the reason `test/suite-debug.wattle`
 /// gives at `trace-of`: a truthy binding wraps the whole trace in escapes, and
 /// an assertion on the leading bytes then depends on ambient state. It is nil
 /// here because a contract runs no `cli-main`, which is precisely the kind of

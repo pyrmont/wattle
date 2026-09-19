@@ -10,7 +10,7 @@
 //! `os/compiler` registered, since `libOs` pushes `selfEntries()` and nothing
 //! else, and the kernels behind the rest are still compiled, which is what
 //! keeps them type-checked in a configuration that does not offer them.
-//! `boot.janet` substitutes a macro for `os/isatty` where the binding is
+//! `boot.wattle` substitutes a macro for `os/isatty` where the binding is
 //! absent, which is the one place the reduced build behaves differently from a
 //! binding that simply is not there.
 //!

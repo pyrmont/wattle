@@ -1,9 +1,9 @@
-//! A native Janet module written in Zig: the worked example of scheduling
+//! A native Wattle module written in Zig: the worked example of scheduling
 //! work through the event loop.
 //!
 //! `url` is the worked example of the views and `numarray` is the worked
 //! example of the abstract type. This module imports `wattle` and `std` and
-//! nothing else. `build.zig` builds it and `examples/digest/test/digest.janet`
+//! nothing else. `build.zig` builds it and `examples/digest/test/digest.wattle`
 //! loads it, which `zig build test` runs.
 //!
 //! ```janet
@@ -38,10 +38,10 @@
 //! ## What the worker thread may call
 //!
 //! The worker thread touches nothing in `janet.*` but `wattle.post`, which
-//! is the one function on the surface a thread that is not running Janet may
+//! is the one function on the surface a thread that is not running Wattle may
 //! call. Every other function finds the runtime through a thread-local that
 //! thread does not have. Calling any of them aborts with `called from a
-//! thread that is not running Janet` rather than reading null state.
+//! thread that is not running Wattle` rather than reading null state.
 
 const std = @import("std");
 const wattle = @import("wattle");
@@ -103,10 +103,10 @@ const hash_type = wattle.define(Hash, .{
 ///
 /// This function cannot raise.
 ///
-/// This function runs on a thread that is not running Janet.
+/// This function runs on a thread that is not running Wattle.
 fn hashOnThread(job: *Hash) void {
     std.crypto.hash.sha2.Sha256.hash(job.bytes, &job.digest, .{});
-    // The one crossing a thread that is not running Janet may call.
+    // The one crossing a thread that is not running Wattle may call.
     wattle.post(job.loop, &hashDone, job);
 }
 

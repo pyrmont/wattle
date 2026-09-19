@@ -31,7 +31,7 @@
 //! macOS and NULL on glibc, and the second of those ends the process the same
 //! way. So the zero case is asserted only after probing the allocator for
 //! which it does, and the negative case is not asserted at all. `array/ensure`
-//! rejects both before they get here, which `suite-corelib.janet` pins.
+//! rejects both before they get here, which `suite-corelib.wattle` pins.
 //!
 //! The overflow refusals are asserted on both sides of their boundaries by
 //! `theCeilings` and `theReservedCeilings`, on containers built by hand with a
@@ -270,7 +270,7 @@ fn bufferEnsureAppliesTheGrowthFactor() !void {
 ///
 /// There is no negative-count case: `setcount` takes a `usize`, and the one
 /// Janet path that could produce a negative is `os/cryptorand`, which rejects
-/// it before it gets here. `test/suite-os.janet` pins that refusal.
+/// it before it gets here. `test/suite-os.wattle` pins that refusal.
 fn bufferSetcountZeroFills() !void {
     const b = buffers.new(4);
     try buffers.pushCString(b, "xy");
@@ -593,7 +593,7 @@ fn reallocZeroReturnsABlock() bool {
 /// already rejected a count below one, because `Array.count` is `usize` and a
 /// negative capacity has nowhere to go. `arrays.ensure` itself takes the
 /// factor on trust, every in-tree caller passing 1 or 2, so this asserts
-/// what the internal entry point does, and `suite-corelib.janet` asserts the
+/// what the internal entry point does, and `suite-corelib.wattle` asserts the
 /// refusal on the other side of the wall.
 /// See the note at the head of this file about why the allocator is probed
 /// first.

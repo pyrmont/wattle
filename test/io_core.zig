@@ -832,7 +832,7 @@ fn theCoreFunctions() void {
     // through `getfile`, which is outside this file's own closed-flag tests,
     // and `fileno` of a null stream has no defined result.
     //
-    // `-Dreduced-os=true` registers no `os/isatty`, `boot.janet` substituting
+    // `-Dreduced-os=true` registers no `os/isatty`, `boot.wattle` substituting
     // a macro that is true where the binding is absent, so the getfile
     // half is gated on the binding being the runtime's. The flusher half below
     // reaches the same closed stream by another route and runs everywhere.

@@ -9,7 +9,7 @@
 //!
 //! `wrong_bits.zig`, `wrong_zig.zig` and `wrong_api.zig` are the three
 //! fixtures, one per field the loader compares, and
-//! `test/zig-native-refused.janet` loads each of them.
+//! `test/zig-native-refused.wattle` loads each of them.
 
 const std = @import("std");
 

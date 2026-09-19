@@ -3,7 +3,7 @@
 //!
 //! ## What the Janet suites cannot reach
 //!
-//! `test/suite-ffi.janet` exercises the type system and a spike corpus drives
+//! `test/suite-ffi.wattle` exercises the type system and a spike corpus drives
 //! real calls against real C. Six things have no Janet spelling:
 //!
 //!  - The primitive size and alignment table. `ffi_types.zig`'s `primInfo` is

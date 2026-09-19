@@ -1,6 +1,6 @@
 //! Behavioral contract for the marshalling protocol.
 //!
-//! The reason this file exists rather than leaning on `test/suite-marsh.janet`:
+//! The reason this file exists rather than leaning on `test/suite-marsh.wattle`:
 //! the suite reaches `marshal` and `unmarshal`, and those two cfunctions use a
 //! strict subset of the subsystem. Everything below is either unreachable from
 //! Janet or unobservable there.

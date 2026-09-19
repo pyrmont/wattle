@@ -3,7 +3,7 @@
 //!
 //! `cli.zig` calls `setIo` before anything else, takes `lineGetterValue` for
 //! the value it binds over `getline`, and calls `register` to define the
-//! builtins. `test/suite-zig-interop.janet` is what calls those builtins, and
+//! builtins. `test/suite-zig-interop.wattle` is what calls those builtins, and
 //! nothing else does. A native module author reaches the runtime through
 //! `module.zig` rather than through anything here.
 //!

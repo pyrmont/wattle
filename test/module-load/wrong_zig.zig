@@ -5,7 +5,7 @@
 //! passes, and `api` is left at zero, so a refusal naming `api version` is the
 //! comparisons running out of order.
 //!
-//! Loaded by `test/zig-native-refused.janet`. `report.zig` says why a fixture
+//! Loaded by `test/zig-native-refused.wattle`. `report.zig` says why a fixture
 //! exports the loader symbols itself.
 
 const config = @import("config");

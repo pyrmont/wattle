@@ -7,7 +7,7 @@
 //! are the host's own, so a refusal naming either of those two is the
 //! comparisons running out of order.
 //!
-//! Loaded by `test/zig-native-refused.janet`. `report.zig` says why a fixture
+//! Loaded by `test/zig-native-refused.wattle`. `report.zig` says why a fixture
 //! exports the loader symbols itself.
 
 const builtin = @import("builtin");

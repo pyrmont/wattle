@@ -395,7 +395,7 @@ fn cfunArrayInsert(argv: []repr.Value) raise.Error!repr.Value {
     }
     // Guarded, because `(array/insert a n)` inserts nothing. With no values to
     // copy, `ensure` may not have allocated at all, so `data` is still null and
-    // unwrapping it panics. `test/suite-array.janet` pins the case.
+    // unwrapping it panics. `test/suite-array.wattle` pins the case.
     if (inserted != 0) {
         @memcpy(array.data.?[@intCast(at)..][0..inserted], argv[2..]);
     }

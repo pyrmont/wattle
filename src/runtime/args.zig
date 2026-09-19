@@ -531,7 +531,7 @@ pub const GetUInteger8 = ArgGetter(u8, argUinteger8);
 pub const GetInteger64 = Wide(i64, if (int_types_enabled) inttypes.unwrapS64 else {}, argInteger64);
 pub const GetUInteger64 = Wide(u64, if (int_types_enabled) inttypes.unwrapU64 else {}, argUinteger64);
 
-/// The pairs of a table, a struct or an abstract whose contents are pairs,
+/// The pairs of a table, a map or an abstract whose contents are pairs,
 /// read one run or one pair at a time. `keyvals` returns a `Keyvals`.
 ///
 /// A run alternates keys and values. A table is one run, its slots read as
@@ -1066,7 +1066,7 @@ pub fn checkabstract(x: repr.Value, at: *const abi.AbstractType) ?*anyopaque {
     return argAbstract(&argv, 0, at, &fault);
 }
 
-/// Whether `x` is a table, a struct or an abstract whose contents are pairs.
+/// Whether `x` is a table, a map or an abstract whose contents are pairs.
 ///
 /// It reads the tag and, for an abstract, its type, and calls no callback.
 pub fn checkdictionary(x: repr.Value) bool {
@@ -1512,7 +1512,7 @@ pub fn getIndexed(argv: []const repr.Value, n: usize) raise.Error![]const repr.V
 /// The pairs of the dictionary at `n`, read as `keyvals` reads them.
 ///
 /// This function raises `panicDictionary`'s refusal where the slot is not a
-/// table, a struct or an abstract whose contents are pairs, and raises where
+/// table, a map or an abstract whose contents are pairs, and raises where
 /// `keyvals` does.
 pub fn getKeyvals(argv: []const repr.Value, n: usize) raise.Error!Keyvals {
     const x = argSlot(argv, n);
@@ -1724,7 +1724,7 @@ pub fn panicAbstractAbi(x: repr.Value, n: i32, at: *const abi.AbstractType) void
 ///
 /// `x` is the value in slot `n`, and `also` is the other types the site
 /// accepts, empty where it reads a dictionary alone. The refusal names
-/// `dictionary value` where `panicType` would name table and struct.
+/// `dictionary value` where `panicType` would name table and map.
 pub fn panicDictionary(x: repr.Value, n: i32, also: repr.TagSet) raise.Error {
     return pp_format.panicf("bad slot #%d, expected %K, got %v", .{ n, also.with(repr.TagSet.dictionary), x });
 }
@@ -1852,7 +1852,7 @@ fn checkindexedAbstract(x: repr.Value) bool {
 /// The dictionary at `n` as the struct the boundary accepts.
 ///
 /// The published `getdictionary`. It raises `panicDictionary`'s refusal for
-/// anything but a table, a struct or an abstract whose contents are pairs.
+/// anything but a table, a map or an abstract whose contents are pairs.
 /// `module.getDictionary` builds a `module.Dictionary` from the result.
 fn dictionaryAbi(argv: []const repr.Value, n: usize) raise.Error!abi.Dictionary {
     const x = argSlot(argv, n);
@@ -2063,8 +2063,11 @@ fn range(
     return @intCast(not_raw);
 }
 
-/// A table's or a struct's slots as one run of values, key then value, of
-/// which `count` are occupied.
+/// A table's slots as one run of values, key then value, of which `count`
+/// are occupied.
+///
+/// A table alone: `keyvals` gives a map a walk over its leaves rather than a
+/// contiguous run, so a map never reaches here.
 fn slotsOf(slots: []const abi.Keyval, count: usize) Keyvals {
     const values: [*]const repr.Value = @ptrCast(slots.ptr);
     const len = 2 * slots.len;

@@ -1,6 +1,6 @@
 //! A native module, written in Zig against the published interface.
 //!
-//! `build.zig` builds this module and `examples/numarray/test/numarray.janet`
+//! `build.zig` builds this module and `examples/numarray/test/numarray.wattle`
 //! loads it. `zig build test` runs that test file.
 //!
 //! ## Differences with the C version
@@ -79,7 +79,7 @@ fn numArrayGet(self: *NumArray, key: wattle.Value) wattle.Error!?wattle.Value {
 
 /// Returns `i` as an index into `self`, or null if `i` addresses no element.
 ///
-/// `i` is a Janet index and may be negative.
+/// `i` is a Wattle index and may be negative.
 ///
 /// This function returns null if `i` is negative or if `i` is not below
 /// `self.size`.

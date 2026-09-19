@@ -516,7 +516,7 @@ fn aTypeCheckPassesAnIndexedAbstract() void {
 }
 
 /// `indexed?` answers true for an abstract with a `chunk` callback, so the
-/// functions `boot.janet` writes over it read one.
+/// functions `boot.wattle` writes over it read one.
 ///
 /// Each expected result is written out. These functions reach `tuple/slice`
 /// and `indexed?` for a tuple as well, so a result built from a tuple would

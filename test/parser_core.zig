@@ -8,10 +8,9 @@
 //!
 //! ## One parser, one contract
 //!
-//! Step 7 removed Janet's parser, so `parserInit` is the only way to start
-//! one and there is no dialect to name. This file is `parser_wattle.zig` and
-//! the old `parser_core.zig` merged: the machinery cases came from the
-//! second and the syntax cases from the first.
+//! There is one parser and no dialect to name, so `parserInit` is the only
+//! way to start one and this file carries both halves: the machinery cases
+//! and the syntax cases.
 //!
 //! ## The oracle is the printer, not a second parser
 //!

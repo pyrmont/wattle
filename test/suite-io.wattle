@@ -258,7 +258,7 @@
 ; `compwhen` rather than `when`: a `-Dprocesses=false` build has no `os/spawn`
 ; to *compile* against, and a runtime guard does not stop the compiler
 ; resolving the symbol inside its body. Exactly the shape of the `peg/find`
-; guard in `test/suite-debug.janet`, and found the same way: by a matrix entry
+; guard in `test/suite-debug.wattle`, and found the same way: by a matrix entry
 ; running `zig build test -Dprocesses=false`.
 (compwhen (dyn 'os/spawn)
  (when (os/stat "/dev/fd")

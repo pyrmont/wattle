@@ -1031,7 +1031,7 @@ pub fn run() void {
     if (reduced_os) {
         // A reduced-OS build compiles four `os/` functions and none of this
         // file's subjects. The Janet suites cannot run against such a build at
-        // all, `test/helper.janet` itself needing `os/getenv`, so the
+        // all, `test/helper.wattle` itself needing `os/getenv`, so the
         // library linking and the contracts passing is the whole of what that
         // configuration claims.
         std.debug.print("os_surface contract skipped (reduced OS)\n", .{});

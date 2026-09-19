@@ -1,7 +1,7 @@
 //! Behavioral contract for `bytecode.assembleValue`: an assembly source turned
 //! into a `functions.FuncDef`, and the twenty ways it refuses.
 //!
-//! `test/suite-asm.janet` runs nine assemblies and checks that they execute.
+//! `test/suite-asm.wattle` runs nine assemblies and checks that they execute.
 //! What it cannot check is the *bytecode words*, a wrong operand encoding that
 //! happens to run being indistinguishable from a right one, or any of the
 //! refusal messages, because `asm` raises and a suite that raises stops.

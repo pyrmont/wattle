@@ -3,7 +3,7 @@
 //!
 //! ## What the Janet suites cannot reach
 //!
-//! `test/suite-ev.janet` has 742 assertions and every one of them goes through
+//! `test/suite-ev.wattle` has 742 assertions and every one of them goes through
 //! the thirty `ev/` bindings. Five areas have no Janet spelling at all:
 //!
 //!  - The embedder's channel API. `channel.channelMake`,

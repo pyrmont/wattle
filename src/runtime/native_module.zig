@@ -13,7 +13,7 @@
 //! `examples/numarray/numarray.zig` is the worked example an author reads; it
 //! sets the seven a numeric array has a use for, and the rest are here.
 //!
-//! Loaded by `test/zig-native.janet`, which `zig build test` runs.
+//! Loaded by `test/zig-native.wattle`, which `zig build test` runs.
 
 // ==========================================================================
 // Standard library imports
@@ -918,7 +918,7 @@ fn tally(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// Nothing asserts that this fails, and nothing can: a collection freeing a
 /// value this frame still refers to is undefined behaviour, not an outcome. It
 /// is here so that the two read side by side and the one line of difference is
-/// visible. `test/zig-native.janet` calls it and looks at nothing it gives
+/// visible. `test/zig-native.wattle` calls it and looks at nothing it gives
 /// back.
 fn unkeptAcross(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);

@@ -3,7 +3,7 @@
 //!
 //! ## What the Janet suites cannot reach
 //!
-//! `test/suite-filewatch.janet` drives a real watcher over a real directory,
+//! `test/suite-filewatch.wattle` drives a real watcher over a real directory,
 //! which is what it is for. Five things have no Janet spelling at all:
 //!
 //!  - The abstract type's callback set. `filewatch.watcherType` has a mark

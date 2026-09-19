@@ -4,7 +4,7 @@
 //! Nothing here reaches into the runtime's build. This file depends on the
 //! `wattle` package and reaches it through its two public functions:
 //! `wattleModule` for the module a shared object imports, and `quickbin` for
-//! an executable that carries the runtime, an image of `main.janet` and the
+//! an executable that carries the runtime, an image of `main.wattle` and the
 //! module linked statically. There is no `RuntimeGraph`, no generated
 //! configuration, and no `types`, `raise`, `constants` or `abstract_type`.
 //! Those are private, and a package that required them would not be

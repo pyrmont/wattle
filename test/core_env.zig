@@ -2,7 +2,7 @@
 //! in it, the lookup table the image is unmarshalled against, and the three
 //! entry points an embedder reaches that Janet source cannot.
 //!
-//! `test/suite-corelib.janet` covers the cfunctions, because every one of them
+//! `test/suite-corelib.wattle` covers the cfunctions, because every one of them
 //! has a Janet spelling. What it cannot reach is everything around them:
 //!
 //!  - `coreEnv`'s `replacements` parameter has no Janet spelling at all.
@@ -130,7 +130,7 @@ fn doString(source: [:0]const u8, path: ?[*:0]const u8, out: ?*repr.Value) raise
 }
 
 //
-// `gcinterval` is the substitution target because nothing in `boot.janet`
+// `gcinterval` is the substitution target because nothing in `boot.wattle`
 // calls it while the image is loading, so replacing it cannot affect anything
 // but the one call this file makes.
 
@@ -519,7 +519,7 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
 }
 
 /// `wattle/config-bits` is `api/constants.zig`'s `current_config_bits`, which a
-/// module and the runtime compare at load. janet.h's bits are 0x1 for a
+/// module and the runtime compare at load. C Janet's bits are 0x1 for a
 /// NaN-boxed value, 0x2 for a single-threaded build, and `0x4 << shift` for a
 /// 64-bit NaN box whose pointers are shifted. A NaN-boxed value is eight bytes
 /// and the tagged one sixteen, so the layout says which this build has.

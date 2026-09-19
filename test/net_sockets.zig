@@ -2,7 +2,7 @@
 //!
 //! ## What the Janet suites cannot reach
 //!
-//! `test/suite-net.janet` and the `net/` assertions in `test/suite-ev.janet`
+//! `test/suite-net.wattle` and the `net/` assertions in `test/suite-ev.wattle`
 //! drive real sockets over the loopback interface, which is what they are for.
 //! Five things have no Janet spelling at all:
 //!
@@ -30,7 +30,7 @@
 //! It does not open a connection. `net/connect` and `net/accept` end by
 //! suspending the calling fiber on the event loop, so driving either from here
 //! means running the loop, and a contract that waits on the kernel is a
-//! contract that hangs when it is wrong. `test/suite-ev.janet` runs them inside
+//! contract that hangs when it is wrong. `test/suite-ev.wattle` runs them inside
 //! the loop, where they belong. What is checked here is everything before the
 //! suspension: the argument decoding, the address lookup, the socket setup and
 //! every raise on the way.

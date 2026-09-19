@@ -6,7 +6,7 @@
 //!
 //! The Janet-level behaviour these kernels produce, channel ordering across a
 //! resize and deadlines firing in time order, is covered by
-//! `test/suite-ev.janet` rather than here, and deliberately so.
+//! `test/suite-ev.wattle` rather than here, and deliberately so.
 //!
 //! `ev/give`, `ev/take` and `ev/sleep` all end in `ev.awaitEvent`, which
 //! suspends the calling fiber whether or not the operation could be satisfied
@@ -443,7 +443,7 @@ fn theKqueueInterval() void {
 /// `has_interrupt` is what `ev/deadline` reads before it starts a timer
 /// thread, and it is the one decision in this file no Janet program can put a
 /// value on: a build without the interrupt refuses the request, a build with
-/// it grants it, and `test/suite-ev.janet` accepts either because it cannot
+/// it grants it, and `test/suite-ev.wattle` accepts either because it cannot
 /// tell which build it is running on. The oracle is the build option itself
 /// rather than `constants.zig`'s restatement of it, so the two derivations are
 /// written independently.

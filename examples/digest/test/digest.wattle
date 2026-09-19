@@ -52,7 +52,7 @@
 ; --------------------------------------------- it does not block the loop
 ;
 ; **This is what the example is for**, and it is the one property the fixture
-; in `test/zig-native.janet` cannot show on its own: the loop keeps turning
+; in `test/zig-native.wattle` cannot show on its own: the loop keeps turning
 ; while a hash is in flight.
 
 (def big (string/repeat "0123456789abcdef" 524288))   ; 8 MiB
@@ -72,7 +72,7 @@
 ; `ev/cancel` between the `await` and the wake. The fiber answers the
 ; cancellation; the wake that arrives afterwards finds a fiber it cannot resume
 ; and answers false, which is the branch the module unroots its job on.
-; Nothing here can observe that unroot -- `test/zig-native.janet` is where the
+; Nothing here can observe that unroot -- `test/zig-native.wattle` is where the
 ; false branch is counted -- and this is the same code path in a module someone
 ; would write.
 ;

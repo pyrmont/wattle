@@ -7,7 +7,7 @@
 ; names the field that differed. `test/module-load/report.zig` says how a
 ; fixture lies.
 ;
-; `test/zig-native.janet` and the three examples are the positive case: a
+; `test/zig-native.wattle` and the three examples are the positive case: a
 ; module built through `module.entry` reports what it was built with and
 ; loads.
 

@@ -1035,7 +1035,7 @@
 (assert-error "grammar error in (constant), arity mismatch, expected at least 1, got 0"
               (peg/compile '(constant)))
 
-; Phase 20 batch 2d found these unmeasured. Each block names what it pins.
+; Each block below names what it pins.
 
 ; peg/find and peg/find-all stop at the last character rather than at the
 ; position after it, so a pattern that matches only at the end of the text

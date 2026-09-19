@@ -596,7 +596,7 @@ fn atomicsReturnTheNewValue() void {
     x = 41;
     expect(abstracts.atomicInc(&x) == 42);
 
-    // The refcount is 32 bits on every target: janet.h declares
+    // The refcount is 32 bits on every target: C Janet declares
     // `JanetAtomicInt` as `int32_t`, or as a 32-bit `long` on Windows. So the
     // count wraps at 2^31.
     x = std.math.maxInt(i32);

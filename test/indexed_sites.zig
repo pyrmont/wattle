@@ -3,17 +3,17 @@
 //! would not hand out.
 //!
 //! The sites themselves are pinned where their subjects are: the splice
-//! opcode in `vm_run.zig`, `array/concat` and `array/join` in
-//! `buffer_array.zig`. What is here is `tuple/join`, which has no contract of
-//! its own because every other thing it does has a Janet spelling and
-//! `suite-corelib.janet` covers it.
+//! opcode in `test/vm_run.zig`, `array/concat` and `array/join` in
+//! `test/buffer_array.zig`. What is here is `tuple/join`, which has no
+//! contract of its own because every other thing it does has a Wattle
+//! spelling and `test/suite-corelib.wattle` covers it.
 //!
-//! What no Janet suite can cover is a type whose runs a real collection would
+//! What no suite can cover is a type whose runs a real collection would
 //! not hand out. A run is valid only until the next run is taken from the same
 //! value, so the probes here reuse one buffer for every run, and a site that
 //! holds two runs of one value at once reads the wrong elements. That cannot
 //! be reached from Janet, because nothing a Janet program can make implements
-//! the callback at all, nor from `test/zig-native.janet`, whose module hands
+//! the callback at all, nor from `test/zig-native.wattle`, whose module hands
 //! out stable runs.
 //!
 //! A `length` callback may not call into Janet code, so nothing here drives

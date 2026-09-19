@@ -7,7 +7,7 @@
 //! `api/fingerprint.zig` is a file of the module a real author imports, and a
 //! fixture imports neither that module nor the runtime.
 //!
-//! Loaded by `test/zig-native-refused.janet`. `report.zig` says why a fixture
+//! Loaded by `test/zig-native-refused.wattle`. `report.zig` says why a fixture
 //! exports the loader symbols itself.
 
 const builtin = @import("builtin");

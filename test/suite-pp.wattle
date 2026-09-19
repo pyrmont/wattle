@@ -155,7 +155,7 @@
          "?? at [bc] (index 2)\nstack [5]:\n  [0]: \"a\"\n  [1]: 1\n  [2]: true\n  [3]: {}\n  [4]: ![]\n")
         "pretty format should not eat explicit newlines")
 
-; Phase 20 batch 2d found these unmeasured. Each block names what it pins.
+; Each block below names what it pins.
 
 ; `%w` refuses a value it cannot write as data, and the refusal has to travel
 ; out of whatever container the value was found in. Each of the five below

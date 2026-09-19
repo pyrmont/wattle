@@ -481,7 +481,7 @@
 (assert (= "mismatched delimiter ], ( opened at line 1, column 1" (parser/error pgc))
         "a generated message survives a collection")
 
-; Phase 20 batch 2c found these unmeasured. Each block names what it pins.
+; Each block below names what it pins.
 
 (defn parse-error-of
   "The parser's message after consuming `input`, or nil."

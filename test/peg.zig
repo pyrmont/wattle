@@ -1,6 +1,6 @@
 //! Behavioral contract for the PEG engine.
 //!
-//! The reason this file exists rather than leaning on `test/suite-peg.janet`:
+//! The reason this file exists rather than leaning on `test/suite-peg.wattle`:
 //! that suite has 366 assertions and every one of them is about what a pattern
 //! *matches*. Three things it cannot see:
 //!

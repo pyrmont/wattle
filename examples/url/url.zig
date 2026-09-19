@@ -1,9 +1,9 @@
-//! A native Janet module written in Zig: the worked example of the built-in
+//! A native Wattle module written in Zig: the worked example of the built-in
 //! types.
 //!
 //! `numarray` is the worked example of the abstract type. This module
 //! imports `wattle` and `std` and nothing else. `build.zig` builds it and
-//! `examples/url/test/url.janet` loads it, which `zig build test` runs.
+//! `examples/url/test/url.wattle` loads it, which `zig build test` runs.
 //!
 //! ## A module that owns nothing
 //!
@@ -17,17 +17,17 @@
 //!
 //! ## What that shape needs, and what it does not
 //!
-//! Three getters cover every Janet aggregate an argument can be:
-//! `getBytes`, `getIndexed` and `getDictionary`. Each reads a pair of types
-//! the same way: a string or a buffer, a tuple or an array, a map, a
-//! table or a map. `slug` calls `getBytes` and `getIndexed`, `query` calls
-//! `getDictionary`, and `cut` takes a range over a length of its own. Between them that is the whole of what
-//! this module asks the runtime for.
+//! Three getters cover every aggregate an argument can be: `getBytes`,
+//! `getIndexed` and `getDictionary`. Each reads a group of types the same
+//! way: a string or a buffer; an array, a vector or a tuple; a table or a
+//! map. `slug` calls `getBytes` and `getIndexed`, `query` calls
+//! `getDictionary`, and `cut` takes a range over a length of its own.
+//! Between them that is the whole of what this module asks the runtime for.
 //!
 //! ## The lookup table resolved at compile time
 //!
 //! `option_names` is a `std.StaticStringMap`. A C module of this shape
-//! allocates a Janet table at first use, roots it against the collector so
+//! allocates a table at first use, roots it against the collector so
 //! it survives the program, and looks a keyword up in it. That is a table, a
 //! root, one put per option and a get, all to map a name known at compile
 //! time to a value known at compile time. Zig has that map already, so none
@@ -164,7 +164,7 @@ fn slug(argv: []wattle.Value) wattle.Error!wattle.Value {
 ///
 /// `argv` slot 0 is a dictionary. Every key must be a keyword and
 /// every value must be a number or a byte value. The result is in hash order,
-/// the order Janet's own `pairs` gives; a caller that needs a stable string
+/// the order `pairs` itself gives; a caller that needs a stable string
 /// sorts it.
 ///
 /// This function raises if the arity is wrong, if slot 0 is not a
@@ -246,7 +246,7 @@ fn cut(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// `(url/parse-query query)`.
 ///
 /// `argv` slot 0 is the query string. A repeated key keeps the last, which
-/// is what a struct literal does and what `wattle.mapOf` documents.
+/// is what a map literal does and what `wattle.mapOf` documents.
 ///
 /// This function raises if the arity is wrong, if slot 0 is not a string,
 /// symbol, keyword or buffer, if there are more than thirty-two fields, or

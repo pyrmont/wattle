@@ -1224,7 +1224,7 @@ fn imageCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     overwriteBinding(env, "wattle/config-bits", wrap.fromInteger(constants.current_config_bits));
     overwriteBinding(env, "wattle/api", value.fromBytes(&api_z, .string));
 
-    // Invert the image dict here rather than in `boot.janet`, where it would
+    // Invert the image dict here rather than in `boot.wattle`, where it would
     // break deterministic builds.
     const lidv = registry.resolve(env, symbols.csymbol("load-image-dict")).value;
     const midv = registry.resolve(env, symbols.csymbol("make-image-dict")).value;
