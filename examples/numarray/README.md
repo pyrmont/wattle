@@ -1,7 +1,7 @@
 # numarray
 
-A native Wattle module written in Zig, and the worked example of `DESIGN.md`
-sections 5 and 6.
+A native Wattle module written in Zig, and the worked example of an abstract
+type.
 
 `numarray.zig` is the whole module. It imports `wattle` and nothing else, and its
 header comment says what the interface takes away from the C original it

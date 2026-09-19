@@ -14,9 +14,8 @@
 //!
 //! ## Taking part in the event loop
 //!
-//! `DESIGN.md` section 15 reduces the loop to one sentence: when something
-//! happens, resume a fiber with a value. It gives a module three operations to
-//! take part in it. `wattle.await` suspends, `wattle.post` queues a callback for
+//! The loop is one sentence: when something happens, resume a fiber with a
+//! value. A module has three operations for taking part in it. `wattle.await` suspends, `wattle.post` queues a callback for
 //! the loop thread, and `wattle.wake` resumes. This module uses all three. It
 //! hashes bytes, which is work with no I/O in it, on a thread of its own, so
 //! the calling fiber waits and every other fiber in the program keeps running.
@@ -83,7 +82,8 @@ const Hash = struct {
 /// waits for a hash still in flight, whose `wattle.post` reaches a loop that
 /// teardown has not yet released.
 ///
-/// This function cannot raise. `DESIGN.md` section 5 gives the reason.
+/// This function cannot raise, as `module.zig`'s `define` records: a
+/// finalizer runs inside a collection, where nothing could act on a report.
 fn hashGc(self: *Hash, _: usize) void {
     if (self.thread) |thread| thread.join();
 }

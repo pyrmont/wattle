@@ -1,8 +1,7 @@
 # digest
 
-A native Wattle module written in Zig, and the worked example of scheduling work
-through the event loop. `DESIGN.md` section 15 records the
-decision behind that shape.
+A native Wattle module written in Zig, and the worked example of scheduling
+work through the event loop.
 
 `examples/numarray` is the example of a module that owns something, and
 `examples/url` is the example of a module that only reads. This module does
@@ -151,7 +150,8 @@ the same rule, met here at the point where the wait makes it apply.
 
 The runtime's thread pool, its timers, its streams and async listeners, and its
 channels. A module brings its own thread and posts, as a C library with a loop
-of its own already does. `DESIGN.md` section 15 says why each of them waits.
+of its own already does. Each of them waits on a decision that has not been
+taken.
 
 ## Building a module outside this repository
 

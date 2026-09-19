@@ -4,17 +4,17 @@ How the source under `src/` is documented. `AGENTS.md` says how a pass over a
 file is verified; this file says what the result looks like.
 
 The sentence rules, and the rule that a block is dry, also govern the
-READMEs under `src/`, `test/`, `res/` and `examples/`, the example sources,
-and `DESIGN.md`. The header and layout rules are for Zig source. A pass over
+READMEs under `src/`, `test/`, `res/` and `examples/`, and the example
+sources. The header and layout rules are for Zig source. A pass over
 a document changes its shape and not its facts: every count, measurement,
 citation and decision stays, and a reason for a decision is a fact. What a
 pass deletes is a sentence that only appraises.
 
-`DESIGN.md` states each decision and its reasons as they stand. When a
-decision was taken, which phase or increment applied it, what a section used
-to say, and the implementation status of each section are the port's record
-and belong in `port/`, not in the design. A date appears in `DESIGN.md` only
-inside a fact that needs it, such as an upstream commit's title.
+A document states each decision and its reasons as they stand. When a
+decision was taken, which increment applied it, and what a section used to say
+are the working record's, and belong in `notes/`, which is not tracked. A date
+appears in a tracked document only inside a fact that needs it, such as an
+upstream commit's title.
 
 ## Where explanation goes
 
@@ -22,8 +22,9 @@ inside a fact that needs it, such as an upstream commit's title.
 brought to its shape. The rules below are read off it.
 
 **A doc comment says how to call the declaration.** Why the declaration is
-shaped as it is goes in `DESIGN.md`, and how it came to be goes in `port/`.
-A doc comment cites no `DESIGN.md` section, phase, date or measurement. An
+shaped as it is goes in the file's own header or in `src/README.md`, and how
+it came to be goes in `notes/`. A doc comment cites no increment, phase, date
+or measurement, and no untracked document. An
 invariant the file maintains is a rule in the file header, not a story told
 on the function that happens to depend on it.
 
@@ -267,12 +268,13 @@ language with "the runtime" for the implementation (`module.zig` `call`:
 "Janet code"; `abi.zig` `AbstractType`: "Janet supports user-defined
 abstract types"), and "machine word" for the unit a `Value` occupies, never
 "word" alone in that sense; "flag word" names the collector header's field
-and "a Janet word" a name in the language (`DESIGN.md` section 1).
+and "a Janet word" a name in the language.
 
 ## Rules read off the examples and the documents
 
 The rules below were read off the pass of 2026-09-07 over the example
-sources, the READMEs and `DESIGN.md`, and off the user's own edit to
+sources, the READMEs and the since-retired design document, and off the
+user's own edit to
 `examples/numarray/numarray.zig`. Each cites the site it was read from.
 
 **The header says how the file is reached before its first topic, and does
@@ -302,8 +304,8 @@ check". `numarray.zig` `inRange`, the two sentences the user marked.
 **A sentence does not comment on the sentence before it.** A sentence
 beginning "That is" or "This is", or a clause beginning ", which is what" or
 ", which is why", restates or appraises what came before. It is merged into
-the sentence before it or deleted. `DESIGN.md` section 4: "That is what
-settles it." went; section 11: "That is what `raise.fromAbi` exists for" is
+the sentence before it or deleted. In the retired design document, "That is
+what settles it." went, and "That is what `raise.fromAbi` exists for" was
 merged into the sentence before it.
 
 **A block does not close by restating its point or narrating the code
@@ -318,14 +320,16 @@ check is a `//` comment on the line that does it, in one or two sentences,
 in the interface's own words: above the allocation, "Allocated before
 `wattle.pullAbstract`: from the moment that returns, the block is on the
 collector's heap list and `numArrayGc` may run on it." A reason for the
-interface's own shape belongs to the interface's block or to `DESIGN.md`
-and is not restated; a term from the runtime's interior ("the reference
+interface's own shape belongs to the interface's own block and is not
+restated; a term from the runtime's interior ("the reference
 table", "an entry point on the boundary") is replaced by what it means for
 the author. `numarray.zig` `numArrayMarshal` and `new`.
 
-**In an example, a reason recorded in `DESIGN.md` is cited and not
-restated.** The pointer is the whole paragraph: "This function cannot
-raise. `DESIGN.md` section 5 gives the reason." `numarray.zig`
+**In an example, a reason recorded elsewhere in the tree is cited and not
+restated.** The citation names a tracked file a reader can open, and carries
+enough of the reason to be worth reading on its own: "This function cannot
+raise, as `module.zig`'s `define` records: a finalizer runs inside a
+collection, where nothing could act on a report." `numarray.zig`
 `numArrayGc`.
 
 **A cfunction's block names its Janet call shape, and a callback's block
@@ -357,14 +361,14 @@ dashes is about sentences.
 **Quoted text keeps its own shape.** A block quote or an inline quotation
 of upstream text, of a retired file or of a superseded paragraph keeps its
 bold, its dashes and its spelling, because it is evidence. A block quote
-that is the document's own rule follows the rules. `DESIGN.md`: the
-`janet.h` comment in section 4 is unchanged; the crossing rule in section
-15 lost its bold.
+that is the document's own rule follows the rules. In the retired design
+document the quoted `janet.h` comment was unchanged, and the crossing rule
+lost its bold.
 
 **A claim-shaped heading becomes a topic, and the claim becomes the first
-sentence of its section.** A numbered section keeps its number, because the
-tree cites `DESIGN.md` by section number and never by title. `DESIGN.md`
-section 2: "The tag's type" over "The tag is an `enum` rather than a `u4`."
+sentence of its section.** A numbered section keeps its number, because a
+citation of it names the number and never the title. From the retired design
+document: "The tag's type" over "The tag is an `enum` rather than a `u4`."
 
 **In a Markdown document, a bold lead-in becomes a heading where it opens a
 topic and a plain sentence where it does not; italics define a term and do
@@ -378,17 +382,14 @@ for the headings; `examples/numarray/README.md` for the fence comment.
 (write "return" or "pass"), "answer" (write "return" or "report"), "wear",
 "dissolve", "knock", "bite" and "decide" of anything but a person. A
 metaphor that is not a personification goes too: "a knot to untie", "the
-other side of the same wall", "rotted away". `DESIGN.md` section 9,
-`examples/standalone/build.zig`.
+other side of the same wall", "rotted away". `examples/standalone/build.zig`.
 
 **Only a person decides.** A document or a section "records the decision
 that". A configuration, an option, a rule or a constraint "determines",
 "selects" or "sets". A function or a mechanism is described by what it does:
 it checks, points, resolves at compile time, propagates or flattens. A
 passive ("how nullability is decided") may stand where no actor is named,
-and "wanted" in a passive becomes "needed" or "required". `DESIGN.md`
-section 13: "`DESIGN.md` section 13 records the decision that a type
-crosses to a module author as a view or as a capability";
+and "wanted" in a passive becomes "needed" or "required".
 `examples/numarray/README.md`: "`config` determines `Value`'s layout".
 
 ## Open questions

@@ -4,7 +4,7 @@
 ; `zig build test` runs this with the built module's path as its argument.
 ; `examples/numarray` is the worked example an author reads; this file carries
 ; the slots a numeric array has no use for, and is what makes "all fifteen are
-; writable" a check rather than a sentence in `DESIGN.md` section 13.
+; writable" a check rather than a sentence in a document.
 
 (def module-path (get (dyn *args*) 1))
 (def module-env !{})

@@ -520,8 +520,8 @@ pub fn build(b: *std.Build) void {
 
     // **The client imports the runtime rather than linking it.** It was an
     // embedder -- it took the object and reached `janet_init` and its
-    // neighbours through the symbol table -- and `DESIGN.md` section 10 is the
-    // decision that ended that: there is no C API to be an embedder of. The
+    // neighbours through the symbol table -- and that ended when the C API
+    // did: there is no C API left to be an embedder of. The
     // import is what lets `cli.zig` write `try` at a raise and hold a
     // `raise.CFunction` rather than an `.auto`-convention pointer across a
     // compilation boundary.
@@ -613,7 +613,7 @@ pub fn build(b: *std.Build) void {
     installTest(b, options, native_module);
 
     // `examples/numarray`, the sample an author reads: the worked example of
-    // `DESIGN.md` section 5, which `zig build test` loads and runs.
+    // an abstract type, which `zig build test` loads and runs.
     const numarray_module = nativeModule(
         b,
         runtime_graph,
@@ -628,7 +628,7 @@ pub fn build(b: *std.Build) void {
 
     // `examples/url`, the worked example of the built-in types: a module that
     // owns nothing, reads every shape an argument can be -- bytes, elements,
-    // entries and a range -- and returns a string. `DESIGN.md` section 13.
+    // entries and a range -- and returns a string.
     const url_module = nativeModule(
         b,
         runtime_graph,
@@ -643,7 +643,7 @@ pub fn build(b: *std.Build) void {
 
     // `examples/digest`, the worked example of scheduling work through the
     // event loop: one cfunction that hashes on a thread of its own, so the
-    // loop is never blocked. `DESIGN.md` section 15.
+    // loop is never blocked.
     const digest_module = nativeModule(
         b,
         runtime_graph,

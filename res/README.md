@@ -71,11 +71,11 @@ compare rows by file and name, so a line number that has moved does not fail
 `chronology.sh` and `swallowed.janet` are silent on a clean tree.
 `chronology.sh` looks for migration citations and `-D` options `build.zig` does
 not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and,
-across the whole tree including `DESIGN.md` and `res/`, for the four retired
-names its header lists. That third question is a fixed alternation rather than
-a derived one: its scope is the whole tree, but it is silent on any path
-retired since the list was written, and it is not the general question of
-whether a named file exists.
+across the whole tree including the top-level documents and `res/`, for the
+four retired names its header lists. That third question is a fixed
+alternation rather than a derived one: its scope is the whole tree, but it is
+silent on any path retired since the list was written, and it is not the
+general question of whether a named file exists.
 
 `comments.janet` extracts every Zig comment and Markdown paragraph to one file
 per source under `zig-out/comments` and gates nothing.

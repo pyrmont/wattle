@@ -9,8 +9,8 @@
 # ## Why this exists
 #
 # A definition carries `callconv(.c)` only if `capi.zig` exports it, libc or
-# the loader calls it back, or it fills an erased slot; `DESIGN.md` section 7
-# has the boundary decision behind that rule. That is a rule about
+# the loader calls it back, or it fills an erased slot, which is the boundary
+# `src/README.md` states the conventions for. That is a rule about
 # *definitions*, and Phase 15 Part 5 met it **by reading**: a person went
 # through the sites and reported them clean. A rule met by reading is a claim,
 # and Phase 15's own hand-offs say twice what happens to those -- `zig build

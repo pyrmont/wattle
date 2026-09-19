@@ -6,7 +6,7 @@
 //! ## Differences with the C version
 //!
 //! This file is `numarray.c`, the sample that shipped with Janet, brought
-//! over to the interface recorded in `DESIGN.md` sections 5 and 6. Two things
+//! over to the interface `module.zig` documents. Two things
 //! the C original contains are absent from the Zig version.
 //!
 //! ### Type casting
@@ -55,7 +55,8 @@ const NumArray = struct {
 
 /// Frees the elements of `self`. Implements the `gc` callback.
 ///
-/// This function cannot raise. `DESIGN.md` section 5 gives the reason.
+/// This function cannot raise, as `module.zig`'s `define` records: a
+/// finalizer runs inside a collection, where nothing could act on a report.
 fn numArrayGc(self: *NumArray, _: usize) void {
     wattle.free(self.data);
 }

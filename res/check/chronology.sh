@@ -13,9 +13,8 @@
 # being moved and is false or meaningless now that it has been. Asked of the
 # **shipped source**: `src`, `test`, `examples`, `build.zig`.
 #
-# It is *not* asked of `DESIGN.md` or `res/`, and that is a decision rather
-# than an omission. A decision record that says "decided 2026-08-31, measured at
-# Phase 14 increment 4a" is stating its evidence; an instrument's header that
+# It is *not* asked of `res/`, and that is a decision rather than an omission.
+# An instrument's header that
 # says "it reported four of sixteen until Phase 15 Part 1b" is stating why the
 # instrument has the shape it has. Those are the citations the repository rules
 # ask *for*. Asking this question of those files returns hundreds of lines of
@@ -25,8 +24,8 @@
 # **One of four retired names** — `types.zig`, `stretchy.zig`, `NAMESPACES.md`,
 # and `src/zig`, which Phase 17 split into `src/api`, `src/host` and
 # `src/runtime`. This one is asked **everywhere**, the top-level documents,
-# `DESIGN.md` and `res/` included, because a document naming a path that is not
-# there is wrong wherever it sits and a reader cannot check it.
+# `res/` included, because a document naming a path that is not there is wrong
+# wherever it sits and a reader cannot check it.
 #
 # The scope is the whole tree; the question is not. It is a hard-coded
 # alternation, so it is silent on every path retired since the list was
@@ -78,14 +77,15 @@
 # still a finding.
 #
 # **A line saying the file is gone is not a reference to it.** A document has
-# to be able to record that a file was retired, as `DESIGN.md` and the READMEs
-# do. A line containing "does not exist" or "There is no" is dropped, which is
+# to be able to record that a file was retired, as the READMEs do. A line
+# containing "does not exist" or "There is no" is dropped, which is
 # decidable by shape rather than by a list of exempt lines.
 #
-# **`src/core/` and `janet.h` name upstream C.** `DESIGN.md` compares against
-# `janet.h`'s declarations, which is the subject rather than a stale reference.
-# They stay in the shipped-source question, where this project having had its
-# own `janet.h` is what makes a mention wrong.
+# **`src/core/` and `janet.h` name upstream C.** A comment comparing against
+# `janet.h`'s declarations names its subject rather than a stale reference, and
+# several under `test/` and in `build.zig` do. They stay in the shipped-source
+# question, where this project having had its own `janet.h` is what makes a
+# mention wrong.
 #
 # ## Why this is a script and not a build check
 #
@@ -116,7 +116,7 @@ fi
 
 if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md|src/zig' \
     --exclude-dir=.zig-cache --exclude-dir=zig-out \
-    src test examples build.zig res DESIGN.md AGENTS.md README.md \
+    src test examples build.zig res AGENTS.md README.md \
     2>/dev/null |
   grep -vE '\.zig-cache|ffi_types\.zig|^src/runtime/ffi/|^res/check/chronology\.sh' |
   grep -vE 'does not exist|There is no'

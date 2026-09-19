@@ -1,9 +1,8 @@
 # url
 
 A native Wattle module written in Zig, and the worked example of the built-in
-types. `DESIGN.md` section 13 records the decision that a type crosses to a
-module author as a view or as a capability. This module is the view half and
-`examples/numarray` is the capability half.
+types. A type crosses to a module author as a view or as a capability. This
+module is the view half and `examples/numarray` is the capability half.
 
 `examples/numarray` is the example of a module that owns something: it declares
 an abstract type, allocates a payload and fills in the type's slots. Most native
@@ -59,8 +58,8 @@ A constructor takes exactly what the getter of the same type returns, so
 the worked instance. It reads the slice `getBytes` returns and builds a map
 out of slices of it, with no copy and no length recomputed on the module's
 side. The runtime interns its own copy, so the map outlives the argument. That
-symmetry is what the rule in `DESIGN.md` section 13 implies, and it is the
-reason construction needed no new shared type.
+symmetry is what a view-or-capability crossing implies, and it is the reason
+construction needed no new shared type.
 
 `slug` calls `getBytes` and `getIndexed`, `query` calls `getDictionary`, `cut`
 takes a range, and `parse-query` builds a map. Nothing about a map or a table

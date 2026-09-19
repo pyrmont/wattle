@@ -4,10 +4,11 @@ Wattle's runtime, written in Zig. This file is for a reader who is reading or
 changing the runtime: where things are, the rules the tree follows, and how to
 add to it.
 
-Two other documents cover the rest. [`../DESIGN.md`](../DESIGN.md) records the
-decisions about what the runtime is: the value representation, the module
-interface and the pointer conventions. [`../test/README.md`](../test/README.md)
-has the test strategy and what a change must pass before it is accepted.
+Two other documents cover the rest. [`module.zig`](module.zig) is the author
+package's root and documents what a native module sees: the interface, the
+abstract-type callbacks and which of them may raise.
+[`../test/README.md`](../test/README.md) has the test strategy and what a
+change must pass before it is accepted.
 
 ## Overview
 
@@ -25,8 +26,8 @@ The rules that apply across the tree, each covered in its own section below:
   through a table of function pointers, and a file reaches its neighbours by
   `@import`. See [Boundaries](#boundaries).
 
-- Pointers state what is true. `DESIGN.md` section 7 has the conventions and
-  the exceptions: no `[*c]` outside the boundary, a counted byte range is a
+- Pointers state what is true, with one set of conventions and no exceptions
+  outside them: no `[*c]` outside the boundary, a counted byte range is a
   slice, a pointer to a single object is `*T`, or `?*T` where absence is a state
   the code tests, and a C string is `[*:0]const u8` only where the NUL is
   demonstrably read.
@@ -140,7 +141,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
   `root` because `cabi` names the same six shapes, and `cabi` cannot import a
   file of `root`. Every Wattle aggregate is declared with the operations on it
   instead (`tables.Table`, `fibers.Fiber`, `functions.FuncDef`,
-  `ev_stream.Stream`), as `DESIGN.md` section 11 describes.
+  `ev_stream.Stream`).
 - `cabi` is the external declarations. It imports `config`, `host`, `repr` and
   `constants`.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only

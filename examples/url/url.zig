@@ -7,9 +7,8 @@
 //!
 //! ## A module that owns nothing
 //!
-//! `DESIGN.md` section 13 records the decision that a type crosses to a
-//! module author as a read-only view or as a capability, never as a pointer
-//! to the aggregate.
+//! A built-in type crosses to a module author as a read-only view or as a
+//! capability, never as a pointer to the aggregate.
 //! `numarray` is the capability half: it owns a payload and fills in the
 //! abstract type's slots. This module owns nothing. It reads its arguments,
 //! does its work in plain Zig and returns a string. That is the shape most

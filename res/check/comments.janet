@@ -68,7 +68,7 @@
   because its own sources are Janet.``
   []
   (array/concat @["src" "test" "examples" "build.zig"
-                  "DESIGN.md" "AGENTS.md" "res/STYLE_GUIDE.md"]
+                  "AGENTS.md" "res/STYLE_GUIDE.md"]
                 (readmes-under "res")))
 
 (defn- extractable? [path]
