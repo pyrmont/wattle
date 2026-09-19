@@ -48,6 +48,7 @@ const host_stat = @import("subsystems").host_stat;
 
 /// The field registry, by import.
 const os_stat = @import("subsystems").stat;
+const pp_describe = @import("subsystems").pp_describe;
 const repr = @import("repr");
 const tables = @import("subsystems").value.tables;
 const value = @import("subsystems").value;
@@ -90,9 +91,21 @@ fn modeNameIs(mode: u32, expected: []const u8) bool {
     return std.mem.eql(u8, std.mem.span(os_stat.hostModeName(mode)), expected);
 }
 
+/// Runs Wattle source, and says what the source said where it fails.
+///
+/// A bare `expect` on the status reports only that some assertion in the
+/// block failed, which on a host whose stack traces do not unwind past the
+/// panic frame leaves nothing to go on. `harness.inFiber` reports this way
+/// for the same reason.
 fn eval(source: [*:0]const u8) void {
     var result: repr.Value = undefined;
-    expect(core_env.dostring(environment, source, "os-stat-contract", &result) == 0);
+    if (core_env.dostring(environment, source, "os-stat-contract", &result) != 0) {
+        std.debug.print("os_stat: eval raised\n{s}\n        got: {s}\n", .{
+            source,
+            pp_describe.toString(result),
+        });
+        expect(false);
+    }
 }
 
 fn cleanPaths() void {
