@@ -1160,7 +1160,7 @@ fn getStream(argv: []const repr.Value, n: usize) raise.Error!*ev_stream.Stream {
 /// `ConnectEx` is not exported by any import library and has to be asked for
 /// by GUID, once per VM.
 fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
-    if (vm_state.current().ev.backend.connect_ex_loaded) return @ptrCast(vm_state.current().ev.backend.connect_ex);
+    if (vm_state.current().ev.backend.connect_ex_loaded) return @ptrCast(@alignCast(vm_state.current().ev.backend.connect_ex));
     var guid = net_abi.wsaid_connectex;
     var connect_ex_ptr: h.LPFN_CONNECTEX = null;
     var byte_len: h.DWORD = 0;
@@ -1177,7 +1177,7 @@ fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
     );
     vm_state.current().ev.backend.connect_ex = if (success != 0) null else @ptrCast(@constCast(connect_ex_ptr));
     vm_state.current().ev.backend.connect_ex_loaded = true;
-    return @ptrCast(vm_state.current().ev.backend.connect_ex);
+    return @ptrCast(@alignCast(vm_state.current().ev.backend.connect_ex));
 }
 
 /// Builds a stream over a socket and registers it with the event loop.
