@@ -48,7 +48,7 @@ must never reach `src/host/` or `src/runtime/`.
 | `src/host/`    | 2     | the runtime                             |
 | `src/runtime/` | 79    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 3     | the `wattle` and `quickbin` executables  |
+| `src/client/`  | 3     | the `wattle` and `quickbin` executables |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
@@ -82,22 +82,22 @@ its callers already name. Each function has one spelling. There is no facade
 layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 `get` is `tables.get` and is not re-exported anywhere.
 
-| directory        | files | contents                                   |
-| ---------------- | ----- | ------------------------------------------ |
-| `runtime/`       | 33    | subsystems with no subdirectory            |
-| `value/`         | 13    | a file per Wattle value type               |
-| `value/helpers/` | 3     | operations on any value                    |
-| `vm/`            | 3     | `entry`, `lifecycle`, `state`              |
-| `gc/`            | 2     | `mark`, `sweep`                            |
-| `compiler/`      | 4     | `specials`, `emit`, `optimize`, `regalloc` |
-| `bytecode/`      | 2     | `verify`, `disasm`                         |
-| `os/`            | 4     | the host interface                         |
-| `os/fs/`         | 3     | the file-system interface                  |
-| `ev/`            | 4     | `backend`, `stream`, `channel`, `locks`    |
-| `net/`           | 1     | the host-header translation                |
-| `filewatch/`     | 1     | the host-header translation                |
-| `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`     |
-| `pp/`            | 2     | `format`, `pretty`                         |
+| directory        | files | contents                                            |
+| ---------------- | ----- | --------------------------------------------------- |
+| `runtime/`       | 32    | subsystems with no subdirectory                     |
+| `value/`         | 13    | a file per Wattle value type                        |
+| `value/helpers/` | 3     | operations on any value                             |
+| `vm/`            | 3     | `entry`, `lifecycle`, `state`                       |
+| `gc/`            | 2     | `mark`, `sweep`                                     |
+| `compiler/`      | 4     | `specials`, `emit`, `optimize`, `regalloc`          |
+| `bytecode/`      | 2     | `verify`, `disasm`                                  |
+| `os/`            | 4     | the host interface                                  |
+| `os/fs/`         | 3     | the file-system interface                           |
+| `ev/`            | 5     | `backend`, `stream`, `channel`, `dispatch`, `locks` |
+| `net/`           | 1     | the host-header translation                         |
+| `filewatch/`     | 1     | the host-header translation                         |
+| `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`              |
+| `pp/`            | 2     | `format`, `pretty`                                  |
 
 Every directory below `runtime/` is relative to it.
 
@@ -172,6 +172,21 @@ its signal in `Vm`'s `pending_signal` and returns `error.Signal`. A
 protected scope is `signal.tryInit` and `signal.restore` with the call between
 them. `signal.tryInit` points `return_reg` at the scope's payload, which is what
 makes a raise catchable.
+
+Every loop entry runs under a protected scope or ends the process on a raise.
+The source environment and the Windows cancellation drain are unprotected
+entries. They write a host-stderr diagnostic and end the process when their
+loop raises. A caller with a scope receives the original signal and payload.
+
+The diagnostic names the dispatch the turn was in. Every event a callback may
+raise from goes through `ev/dispatch.zig`'s `dispatch`, which records the
+callback, the event and the operation serial before the call and puts back the
+record it found when the call returns. So a raise leaves the record of the
+innermost dispatch that made it, and a failure outside a callback -- an
+expired timeout, a supervisor delivery, the `checkToClose` after a callback
+returned -- leaves none and is reported without one. The callback is its
+address: an operation carries a function pointer, including one a native
+module supplied, and the runtime has no table of names to look it up in.
 
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
 A cfunction is a Zig function: `raise.CFunction` takes `[]Value` and returns

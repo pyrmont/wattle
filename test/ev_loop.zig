@@ -58,6 +58,8 @@ const builtin = @import("builtin");
 
 /// `boundary` rather than `abi`, which a local below binds to a raise report.
 const boundary = @import("abi");
+const abstract_type = subsystems.abstract_type;
+const abstracts = @import("subsystems").value.abstracts;
 const buffers = @import("subsystems").value.buffers;
 const c = @import("cabi");
 const capi = @import("subsystems").capi;
@@ -65,6 +67,7 @@ const channel = subsystems.ev_channel;
 const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const ev = subsystems.ev;
+const ev_dispatch = subsystems.ev_dispatch;
 const expect = @import("expect.zig").expect;
 const fibers = @import("subsystems").value.fibers;
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -121,6 +124,11 @@ const ProbeStream = extern struct {
     marker: u64,
 };
 
+const loud_report = abstract_type.define(anyopaque, .{
+    .name = "ev-loop/loud-report",
+    .tostring = &loudReportTostring,
+});
+
 // ==========================================================================
 // Cases
 // ==========================================================================
@@ -139,6 +147,40 @@ fn payloadIs(payload: repr.Value, text: []const u8) bool {
     const s = wrap.toString(payload);
     const length: usize = strings.head(s).length;
     return std.mem.eql(u8, s[0..length], text);
+}
+
+fn loudReportTostring(_: *anyopaque, _: *boundary.Render) raise.Error!void {
+    return raise.panic("report formatter raised");
+}
+
+/// Uses the fixed diagnostic when formatting a terminal failure raises.
+fn theLoopFailureReporterFallback() void {
+    if (windows) return;
+
+    const payload = wrap.fromAbstract(abstracts.newBytes(&loud_report, 1));
+    gc_alloc.gcroot(payload);
+    defer _ = gc_alloc.gcunroot(payload);
+
+    var pipe: [2]c_int = undefined;
+    expect(c.pipe(&pipe) == 0);
+    const pid = std.c.fork();
+    expect(pid >= 0);
+    if (pid == 0) {
+        _ = c.close(pipe[0]);
+        _ = std.c.dup2(pipe[1], 2);
+        _ = c.close(pipe[1]);
+        ev.loopFailure(payload);
+    }
+    _ = c.close(pipe[1]);
+    var output: [64]u8 = undefined;
+    const count = c.read(pipe[0], &output, output.len);
+    _ = c.close(pipe[0]);
+    var status: c_int = -1;
+    _ = std.c.waitpid(pid, &status, 0);
+    const wait_status: u32 = @bitCast(status);
+    expect(std.c.W.IFEXITED(wait_status));
+    expect(std.c.W.EXITSTATUS(wait_status) == 1);
+    expect(std.mem.eql(u8, output[0..@intCast(count)], "event loop failure\n"));
 }
 
 /// One Janet source string, evaluated for its value. Every use here builds
@@ -719,6 +761,144 @@ fn theLoopExitCondition() void {
     ev.evDecRefcount();
     expect(!ev.loopDone());
     ev.evDecRefcount();
+    expect(ev.loopDone());
+}
+
+/// Returns a loop raise through its protected boundary.
+fn theLoopProtectedBoundary() void {
+    const fval = doString("(fn [] 1)");
+    gc_alloc.gcroot(fval);
+    defer _ = gc_alloc.gcunroot(fval);
+    const fiber = fibers.new(wrap.toFunction(fval), 64, &.{}) catch unreachable;
+    const fiberv = wrap.fromFiber(fiber);
+    gc_alloc.gcroot(fiberv);
+    defer _ = gc_alloc.gcunroot(fiberv);
+
+    const supervisor = channel.channelMake(1).?;
+    const supervisorv = wrap.fromAbstract(supervisor);
+    gc_alloc.gcroot(supervisorv);
+    defer _ = gc_alloc.gcunroot(supervisorv);
+    supervisor.closed = true;
+    fiber.supervisor_channel = @ptrCast(supervisor);
+    ev.schedule(fiber, wrap.fromNil());
+
+    var payload = wrap.fromNil();
+    const sig = ev.loopProtect(&payload);
+    expect(sig == boundary.Signal.@"error");
+    expect(payloadIs(payload, "cannot write to closed channel"));
+    expect(ev.loopDone());
+
+    // Supervisor delivery is not a dispatch, so the failure carries no
+    // callback context to report.
+    expect(ev_dispatch.dispatchContext() == null);
+}
+
+/// An event callback that refuses a close, which is the one raise it makes.
+/// `init`, `mark` and `deinit` return, because the first two are asserted
+/// against elsewhere and the third cannot take a raise.
+fn refusingClose(_: *stream.Operation, event: ev.AsyncEvent) raise.Error!void {
+    if (event == constants.AsyncEvent.close) return raise.panic("callback refused the close");
+}
+
+/// Names the callback, the event and the operation a failed dispatch was in.
+///
+/// The oracle is the operation read before the dispatch, which is what a
+/// report of the dispatch is compared against: the helper copies its record
+/// before the call, and a callback that has ended its operation has freed the
+/// record's subject.
+fn theDispatchContextOfACallbackFailure() void {
+    const handles = probePipe();
+    const s = try_(stream.makeStream(handles[0], @intCast(constants.stream_readable), null));
+    const sv = wrap.fromAbstract(s);
+    gc_alloc.gcroot(sv);
+    defer _ = gc_alloc.gcunroot(sv);
+
+    const fval = doString("(fiber/new (fn [] nil))");
+    gc_alloc.gcroot(fval);
+    defer _ = gc_alloc.gcunroot(fval);
+    const fiber = wrap.toFiber(fval);
+    try_(ev.asyncStartFiber(fiber, s, constants.AsyncMode.reading, &refusingClose, null));
+    const op = fiber.ev_op.?;
+    const serial = op.serial;
+
+    ev_dispatch.clearDispatchContext();
+    expect(ev_dispatch.dispatchContext() == null);
+
+    const raised = harness.raised(stream.streamClose, .{s}).?;
+    expect(raised.signal == boundary.Signal.@"error");
+    expect(payloadIs(raised.payload, "callback refused the close"));
+
+    const context = ev_dispatch.dispatchContext().?;
+    expect(context.callback == &refusingClose);
+    expect(context.event == constants.AsyncEvent.close);
+    expect(context.serial == serial);
+
+    // The terminal diagnostic names that record ahead of the payload. The
+    // child process is what `loopFailure` ending the process requires.
+    if (!windows) {
+        var pipe: [2]c_int = undefined;
+        expect(c.pipe(&pipe) == 0);
+        const pid = std.c.fork();
+        expect(pid >= 0);
+        if (pid == 0) {
+            _ = c.close(pipe[0]);
+            _ = std.c.dup2(pipe[1], 2);
+            _ = c.close(pipe[1]);
+            ev.loopFailure(wrap.fromNil());
+        }
+        _ = c.close(pipe[1]);
+        var output: [256]u8 = undefined;
+        // Host stderr is unbuffered, so the two lines arrive as two writes
+        // and one read returns the first of them.
+        var filled: usize = 0;
+        while (filled < output.len) {
+            const count = c.read(pipe[0], output[filled..].ptr, output.len - filled);
+            if (count <= 0) break;
+            filled += @intCast(count);
+        }
+        _ = c.close(pipe[0]);
+        var status: c_int = -1;
+        _ = std.c.waitpid(pid, &status, 0);
+        const text = output[0..filled];
+        var line: [128]u8 = undefined;
+        const tail = std.fmt.bufPrint(
+            &line,
+            " raised on the close event of operation {d}\nevent loop failure: nil\n",
+            .{serial},
+        ) catch unreachable;
+        expect(std.c.W.IFEXITED(@bitCast(status)));
+        expect(std.c.W.EXITSTATUS(@bitCast(status)) == 1);
+        expect(std.mem.startsWith(u8, text, "event callback 0x"));
+        expect(std.mem.endsWith(u8, text, tail));
+    }
+
+    ev.asyncEnd(op);
+    try_(stream.streamClose(s));
+    closeFarEnd(handles);
+    ev_dispatch.clearDispatchContext();
+}
+
+/// Returns a loop raise through the caller's protected scope.
+fn theLoopPropagatesThroughAnOuterScope() void {
+    const fval = doString("(fn [] 1)");
+    gc_alloc.gcroot(fval);
+    defer _ = gc_alloc.gcunroot(fval);
+    const fiber = fibers.new(wrap.toFunction(fval), 64, &.{}) catch unreachable;
+    const fiberv = wrap.fromFiber(fiber);
+    gc_alloc.gcroot(fiberv);
+    defer _ = gc_alloc.gcunroot(fiberv);
+
+    const supervisor = channel.channelMake(1).?;
+    const supervisorv = wrap.fromAbstract(supervisor);
+    gc_alloc.gcroot(supervisorv);
+    defer _ = gc_alloc.gcunroot(supervisorv);
+    supervisor.closed = true;
+    fiber.supervisor_channel = @ptrCast(supervisor);
+    ev.schedule(fiber, wrap.fromNil());
+
+    const raised = harness.raised(ev.loop, .{}).?;
+    expect(raised.signal == boundary.Signal.@"error");
+    expect(payloadIs(raised.payload, "cannot write to closed channel"));
     expect(ev.loopDone());
 }
 
@@ -1314,7 +1494,11 @@ pub fn run() void {
         inCase("theLastError", theLastError);
     }
 
+    inCase("theDispatchContextOfACallbackFailure", theDispatchContextOfACallbackFailure);
     inCase("theLoopExitCondition", theLoopExitCondition);
+    inCase("theLoopFailureReporterFallback", theLoopFailureReporterFallback);
+    inCase("theLoopProtectedBoundary", theLoopProtectedBoundary);
+    inCase("theLoopPropagatesThroughAnOuterScope", theLoopPropagatesThroughAnOuterScope);
     inCase("thePostedEventRoundTrip", thePostedEventRoundTrip);
     inCase("theNullCallback", theNullCallback);
     inCase("theThreadedReplyTags", theThreadedReplyTags);

@@ -22,7 +22,7 @@
 //! `gcmark`, and every operation on a stream with `constants.AsyncEvent.mark`.
 //! `abi.zig` declares `gcmark` as `callconv(.c) void`, so it has no way to
 //! raise. The callback's type does admit a raise, and
-//! `callback_type.dispatchTotal` is what the walk reaches it through: a raise
+//! `ev/dispatch.zig`'s `dispatchTotal` is what the walk reaches it through: a raise
 //! from the mark event aborts there rather than travelling. Either way the
 //! frames of the walk own nothing.
 //!

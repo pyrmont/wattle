@@ -3,7 +3,7 @@
 //! A method table is an array of rows, a name beside a cfunction, terminated
 //! by a row whose name is null. Typing the row's function is what makes a
 //! method's `try` a compile error to omit, exactly as `abstract_type.zig` does
-//! for a finalizer and `callback_type.zig` for an event callback.
+//! for a finalizer and `ev/dispatch.zig` for an event callback.
 //!
 //! The layout is one row in both forms, a name and a pointer, and the pointer
 //! is the same pointer. What differs is the declared type of the function it

@@ -41,6 +41,7 @@ const abstracts = @import("../value/abstracts.zig");
 const config = @import("config");
 const constants = @import("constants");
 const ev_backend = @import("../ev/backend.zig");
+const ev_dispatch = @import("../ev/dispatch.zig");
 const ev_loop = @import("../ev.zig");
 const fatal = @import("../fatal.zig");
 const fibers = @import("../value/fibers.zig");
@@ -158,6 +159,9 @@ pub const Vm = struct {
 pub const VmEv = if (config.ev)
     struct {
         spawn: ev_loop.Queue(ev_loop.Task) = .{},
+        /// What the event dispatch in progress is doing, which `ev.zig`
+        /// reports when a loop with no protected caller fails.
+        dispatch_context: ?ev_dispatch.DispatchContext = null,
         /// The timer queue, a min heap ordered by `when`.
         tq: std.ArrayListUnmanaged(ev_loop.Timeout) = .empty,
         ev_rng: math.Rng = .{},

@@ -1219,7 +1219,7 @@ fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
 /// Raising, and it must be: `registerStream` refuses a descriptor the backend
 /// will not take, and every caller below is inside a raise-capable function,
 /// the four cfunctions and both halves of the accept callback, because
-/// `ev_callback.EVCallback` is `raise.Error!void` too. A reporting form here
+/// `ev_dispatch.EVCallback` is `raise.Error!void` too. A reporting form here
 /// would leave the refusal as a report nobody consumes, with a null stream
 /// pointer dereferenced on top of it.
 fn makeStream(handle: JSock, flags: u32) raise.Error!*ev_stream.Stream {

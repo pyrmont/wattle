@@ -38,7 +38,7 @@ const c = @import("cabi");
 pub const channel = @import("ev/channel.zig");
 const constants = @import("constants");
 const corefn = @import("corefn.zig");
-const ev_callback = @import("callback_type.zig");
+const ev_dispatch = @import("ev/dispatch.zig");
 const fibers = @import("value/fibers.zig");
 const gc_alloc = @import("gc.zig");
 const gc_mark = @import("gc/mark.zig");
@@ -429,10 +429,10 @@ pub fn asyncEnd(op: *stream.Operation) void {
         if (op.state) |state| {
             _ = c.CancelIoEx(op.stream.handle, @ptrCast(@alignCast(state)));
         }
-        ev_callback.dispatchTotal(op.callback, op, constants.AsyncEvent.deinit);
+        ev_dispatch.dispatchTotal(op.callback, op, constants.AsyncEvent.deinit);
         return;
     }
-    ev_callback.dispatchTotal(op.callback, op, constants.AsyncEvent.deinit);
+    ev_dispatch.dispatchTotal(op.callback, op, constants.AsyncEvent.deinit);
     asyncRelease(op);
 }
 
@@ -473,7 +473,7 @@ pub fn asyncRelease(op: *stream.Operation) void {
 pub fn asyncStart(
     s: *stream.Stream,
     mode: constants.AsyncMode,
-    callback: ev_callback.EVCallback,
+    callback: ev_dispatch.EVCallback,
     state: ?*anyopaque,
 ) raise.Error {
     asyncStartFiber(vm_state.current().root_fiber, s, mode, callback, state) catch |err| return err;
@@ -496,7 +496,7 @@ pub fn asyncStartFiber(
     fiber: ?*fibers.Fiber,
     s: *stream.Stream,
     mode: constants.AsyncMode,
-    callback: ev_callback.EVCallback,
+    callback: ev_dispatch.EVCallback,
     state: ?*anyopaque,
 ) raise.Error!void {
     const f = fiber.?;
@@ -515,7 +515,7 @@ pub fn asyncStartFiber(
     f.ev_op = op;
     evIncRefcount();
     gc_alloc.gcroot(wrap.fromAbstract(s));
-    try callback(op, constants.AsyncEvent.init);
+    try ev_dispatch.dispatch(op, constants.AsyncEvent.init);
 }
 
 /// Releases the stream root added by `asyncStartFiber`.
@@ -642,9 +642,17 @@ pub fn teardownOperations() void {
                 wrap.toAbstract(roots.items[i]) == stream_root)) i += 1;
     }
     if (windows) {
-        while (operationsOutstanding()) backend.loop1(false, 0) catch
-            exitWith(@src(), "failed to drain cancelled operations");
+        var payload = wrap.fromNil();
+        if (protect(&payload, drainCancelledOperations) != .ok) loopFailure(payload);
     }
+}
+
+/// Drains completion packets for cancelled Windows transfers.
+///
+/// This function raises if the completion backend raises.
+fn drainCancelledOperations() raise.Error!void {
+    ev_dispatch.clearDispatchContext();
+    while (operationsOutstanding()) try backend.loop1(false, 0);
 }
 
 /// Whether a rooted stream still holds an operation during teardown.
@@ -843,7 +851,107 @@ pub fn libEv(env: *tables.Table) raise.Error!void {
 }
 
 /// Runs the loop until nothing is left to wait for.
+///
+/// This function raises if the caller has a protected scope and the loop
+/// raises. It ends the process if the caller has no protected scope and the
+/// loop raises.
 pub fn loop() raise.Error!void {
+    if (vm_state.current().return_reg != null) return loopBody();
+
+    var payload = wrap.fromNil();
+    if (loopProtect(&payload) != .ok) {
+        loopFailure(payload);
+    }
+}
+
+/// Runs the loop under a protected scope and writes a raised value to
+/// `payload`.
+///
+/// `payload` changes only if the loop raises. The result is `.ok` if the loop
+/// completed.
+pub fn loopProtect(payload: *repr.Value) abi.Signal {
+    return protect(payload, loopBody);
+}
+
+/// Runs `body` in a protected scope and writes its raised value to `payload`.
+///
+/// `payload` changes only when `body` raises. The result is `.ok` when `body`
+/// returns.
+fn protect(payload: *repr.Value, comptime body: anytype) abi.Signal {
+    var state: vm_state.TryState = undefined;
+    signal_core.tryInit(&state);
+    var sig: abi.Signal = .ok;
+    @call(.auto, body, .{}) catch {
+        sig = vm_state.current().pending_signal;
+    };
+    if (sig != .ok) payload.* = state.payload;
+    signal_core.restore(&state);
+    return sig;
+}
+
+/// Reports an unprotected loop failure and ends the process.
+///
+/// This function cannot raise. It writes to host stderr because formatting a
+/// value can raise after the loop's protected scope has closed.
+pub fn loopFailure(payload: repr.Value) noreturn {
+    reportLoopFailure(payload);
+    c.exit(1);
+}
+
+/// Reports an unprotected loop failure to host stderr.
+///
+/// `payload` is the loop's raised value. This function cannot raise. It
+/// formats `payload` in a protected scope and uses a fixed message if that
+/// formatting raises.
+fn reportLoopFailure(payload: repr.Value) void {
+    reportDispatchContext();
+    gc_alloc.gcroot(payload);
+    defer _ = gc_alloc.gcunroot(payload);
+
+    var state: vm_state.TryState = undefined;
+    signal_core.tryInit(&state);
+    const rendered = pp_format.formatc("event loop failure: %v\n", .{payload}) catch {
+        signal_core.restore(&state);
+        reportLoopFailureFallback();
+        return;
+    };
+    const rooted = wrap.fromString(rendered);
+    gc_alloc.gcroot(rooted);
+    signal_core.restore(&state);
+    _ = c.fputs(@ptrCast(rendered), stdio.err());
+    _ = c.fflush(stdio.err());
+    _ = gc_alloc.gcunroot(rooted);
+}
+
+/// Names the dispatch a failed loop turn was in, when it was in one.
+///
+/// The event and the operation serial identify the transfer, and the callback
+/// is its address: a callback is a function pointer the operation carries,
+/// including one a native module supplied, and the runtime has no table of
+/// their names to look it up in. This function cannot raise.
+fn reportDispatchContext() void {
+    const ctx = ev_dispatch.dispatchContext() orelse return;
+    var buf: [128]u8 = undefined;
+    const text = std.fmt.bufPrint(
+        &buf,
+        "event callback 0x{x} raised on the {s} event of operation {d}\n",
+        .{ @intFromPtr(ctx.callback), @tagName(ctx.event), ctx.serial },
+    ) catch return;
+    _ = c.fwrite(text.ptr, 1, text.len, stdio.err());
+}
+
+/// Reports a loop failure after formatting its payload raised.
+///
+/// This function cannot raise.
+fn reportLoopFailureFallback() void {
+    const message = "event loop failure\n";
+    _ = c.fwrite(message.ptr, 1, message.len, stdio.err());
+    _ = c.fflush(stdio.err());
+}
+
+/// Runs the loop body with any protected scope already established by its
+/// caller.
+fn loopBody() raise.Error!void {
     while (!loopDone()) {
         if (try loop1()) |interrupted| schedule(interrupted, wrap.fromNil());
     }
@@ -872,11 +980,15 @@ fn fireTimeout(to: Timeout) raise.Error!bool {
     return true;
 }
 
-/// One turn of the loop: expired timers, then runnable fibers, then a poll.
+/// Runs one turn of the loop: expired timers, then runnable fibers, then a
+/// poll.
 ///
 /// Gives back the fiber an interrupt stopped, or nothing. The three stages and
 /// their order are what a caller depends on, including that the poll is
 /// skipped when the timer scan drained the heap.
+///
+/// This function ends the process if the caller has no protected scope and a
+/// turn raises.
 ///
 /// The scan stops after the first expired timer that schedules or cancels
 /// something. Draining every expired timer in one scan let a later timer's
@@ -887,8 +999,38 @@ fn fireTimeout(to: Timeout) raise.Error!bool {
 /// keeps expired timers in time order. Timers with no consequence are still
 /// drained, since deferring them costs a turn and changes nothing.
 pub fn loop1() raise.Error!?*fibers.Fiber {
+    if (vm_state.current().return_reg != null) return loop1Body();
+
+    var payload = wrap.fromNil();
+    var interrupted: ?*fibers.Fiber = null;
+    if (loop1Protect(&payload, &interrupted) != .ok) loopFailure(payload);
+    return interrupted;
+}
+
+/// Runs one loop turn under a protected scope.
+///
+/// `payload` changes only if the turn raises. `interrupted` receives the
+/// returned fiber when the turn completes. The result is `.ok` when the turn
+/// returns.
+fn loop1Protect(payload: *repr.Value, interrupted: *?*fibers.Fiber) abi.Signal {
+    var state: vm_state.TryState = undefined;
+    signal_core.tryInit(&state);
+    var sig: abi.Signal = .ok;
+    interrupted.* = loop1Body() catch blk: {
+        sig = vm_state.current().pending_signal;
+        break :blk null;
+    };
+    if (sig != .ok) payload.* = state.payload;
+    signal_core.restore(&state);
+    return sig;
+}
+
+/// Runs one loop turn with any protected scope already established by its
+/// caller.
+fn loop1Body() raise.Error!?*fibers.Fiber {
     const v = vm_state.current();
     const sched = &v.ev;
+    ev_dispatch.clearDispatchContext();
 
     // Schedule expired timers, stopping after the first with a consequence.
     const now = tsNow();

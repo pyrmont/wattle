@@ -33,6 +33,7 @@ const c = @import("cabi");
 const config = @import("config");
 const constants = @import("constants");
 const ev = @import("../ev.zig");
+const ev_dispatch = @import("dispatch.zig");
 const host = @import("host");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
@@ -311,7 +312,7 @@ const Iocp = struct {
         }
         op.in_flight = false;
         jo.bytes_transfered = num_bytes_transferred;
-        try op.callback(op, if (result != 0)
+        try ev_dispatch.dispatch(op, if (result != 0)
             constants.AsyncEvent.complete
         else
             constants.AsyncEvent.failed);
@@ -466,18 +467,18 @@ const Kqueue = struct {
                 while (stream_mod.opTakePending(s, reading)) |op| {
                     const serial = op.serial;
                     if (has_err) {
-                        try op.callback(op, constants.AsyncEvent.err);
+                        try ev_dispatch.dispatch(op, constants.AsyncEvent.err);
                         if (!stream_mod.opListening(s, reading, op, serial)) continue;
                     }
                     if (ready) {
-                        try op.callback(op, if (reading)
+                        try ev_dispatch.dispatch(op, if (reading)
                             constants.AsyncEvent.read
                         else
                             constants.AsyncEvent.write);
                         if (!stream_mod.opListening(s, reading, op, serial)) continue;
                     }
                     if (has_hup) {
-                        try op.callback(op, constants.AsyncEvent.hup);
+                        try ev_dispatch.dispatch(op, constants.AsyncEvent.hup);
                     }
                 }
             }
@@ -791,23 +792,23 @@ fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bo
         while (stream_mod.opTakePending(s, reading)) |op| {
             if (else_chain) {
                 if (ready) {
-                    try op.callback(op, ready_event);
+                    try ev_dispatch.dispatch(op, ready_event);
                 } else if (has_hup) {
-                    try op.callback(op, constants.AsyncEvent.hup);
+                    try ev_dispatch.dispatch(op, constants.AsyncEvent.hup);
                 } else if (has_err) {
-                    try op.callback(op, constants.AsyncEvent.err);
+                    try ev_dispatch.dispatch(op, constants.AsyncEvent.err);
                 }
             } else {
                 const serial = op.serial;
                 if (ready) {
-                    try op.callback(op, ready_event);
+                    try ev_dispatch.dispatch(op, ready_event);
                     if (!stream_mod.opListening(s, reading, op, serial)) continue;
                 }
                 if (has_err) {
-                    try op.callback(op, constants.AsyncEvent.err);
+                    try ev_dispatch.dispatch(op, constants.AsyncEvent.err);
                     if (!stream_mod.opListening(s, reading, op, serial)) continue;
                 }
-                if (has_hup) try op.callback(op, constants.AsyncEvent.hup);
+                if (has_hup) try ev_dispatch.dispatch(op, constants.AsyncEvent.hup);
             }
         }
     }

@@ -440,7 +440,10 @@ pub fn dobytesImpl(
         // Enter the event loop if we are not already in it.
         if (vm_state.current().stackn == 0) {
             if (fiber) |f| gc_alloc.gcroot(wrap.fromFiber(f));
-            try ev_loop.loop();
+            var loop_payload = wrap.fromNil();
+            if (ev_loop.loopProtect(&loop_payload) != .ok) {
+                ev_loop.loopFailure(loop_payload);
+            }
             if (fiber) |f| {
                 _ = gc_alloc.gcunroot(wrap.fromFiber(f));
                 if (errflags == 0) ret = f.last_value;

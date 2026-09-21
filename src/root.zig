@@ -46,6 +46,7 @@ pub const env = @import("runtime/env.zig");
 pub const ev = @import("runtime/ev.zig");
 pub const ev_backend = @import("runtime/ev/backend.zig");
 pub const ev_channel = @import("runtime/ev/channel.zig");
+pub const ev_dispatch = @import("runtime/ev/dispatch.zig");
 pub const ev_stream = @import("runtime/ev/stream.zig");
 pub const fatal = @import("runtime/fatal.zig");
 pub const ffi = @import("runtime/ffi.zig");

@@ -60,7 +60,7 @@ const c = @import("cabi");
 const constants = @import("constants");
 const corefn = @import("../corefn.zig");
 const ev = @import("../ev.zig");
-const ev_callback = @import("../callback_type.zig");
+const ev_dispatch = @import("dispatch.zig");
 const fibers = @import("../value/fibers.zig");
 const gc_mark = @import("../gc/mark.zig");
 const host = @import("host");
@@ -236,7 +236,7 @@ pub const Operation = struct {
     next: ?*Operation = null,
     stream: *Stream,
     fiber: *fibers.Fiber,
-    callback: ev_callback.EVCallback,
+    callback: ev_dispatch.EVCallback,
     state: ?*anyopaque = null,
     serial: u64 = 0,
     reading: bool = false,
@@ -690,10 +690,10 @@ pub fn streamClose(s: *Stream) raise.Error!void {
     // may release others through a nested close.
     opMarkPending(s);
     while (opTakePending(s, true)) |op| {
-        try op.callback(op, constants.AsyncEvent.close);
+        try ev_dispatch.dispatch(op, constants.AsyncEvent.close);
     }
     while (opTakePending(s, false)) |op| {
-        try op.callback(op, constants.AsyncEvent.close);
+        try ev_dispatch.dispatch(op, constants.AsyncEvent.close);
     }
     try closeImplHandle(s);
 }
@@ -1186,7 +1186,7 @@ fn streamMark(stream: *Stream, _: usize) void {
         var it = list;
         while (it) |op| : (it = op.next) {
             gc_mark.mark(wrap.fromFiber(op.fiber));
-            ev_callback.dispatchTotal(op.callback, op, constants.AsyncEvent.mark);
+            ev_dispatch.dispatchTotal(op.callback, op, constants.AsyncEvent.mark);
         }
     }
 }

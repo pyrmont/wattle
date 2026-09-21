@@ -1313,6 +1313,24 @@
     (assert (or (nil? err) (empty? err))
             "an interrupted task prints no stack trace")))
 
+; An unprotected loop ends the source run after supervisor delivery fails. The
+; second task is queued after the one that fails. Its marker must not reach
+; stderr.
+(compwhen (dyn 'os/spawn)
+  (def loop-failure-code
+    '(do (def ch (ev/chan))
+         (ev/chan-close ch)
+         (ev/go (fn [] 1) nil ch)
+         (ev/go (fn [] (eprint "after")))))
+  (def p (os/spawn [|run wattle "-e" (string/format "%w" loop-failure-code)]
+                   :p {:err :pipe}))
+  (def [status err] (ev/gather (os/proc-wait p) (ev/read (p :err) :all)))
+  (assert (= 1 status) "an unprotected loop failure exits nonzero")
+  (assert (string/has-prefix? "event loop failure: \"cannot write to closed channel\"" err)
+          "an unprotected loop failure names its payload")
+  (assert (not (string/find "after" err))
+          "an unprotected loop failure stops later tasks"))
+
 ; Cancelling a fiber that is already cancelled is ignored, so the value the
 ; first cancellation carried is the one that arrives.
 (do
