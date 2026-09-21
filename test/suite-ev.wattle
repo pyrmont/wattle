@@ -1391,7 +1391,13 @@
 
 ; A read that finishes on a stream leaves a write parked on that same stream
 ; registered. Nothing above puts both directions of one stream in flight.
-(compwhen (dyn 'net/server)
+;
+; Off Windows: the parked write is what puts the second direction in flight,
+; and an overlapped send does not park. It completes once the transport has
+; accepted the bytes, with the peer having read none of them, which is the
+; behaviour suite-net records for two 32MB floods. A pipe parks at 2MB there,
+; but a pipe is one direction and this needs both on one stream.
+(compwhen (and (dyn 'net/server) (not= :windows (os/which)))
   (do
     (def marks ![])
     (def both-port (string (+ 4 (scan-number test-port))))
@@ -1419,7 +1425,11 @@
 ; A hangup on a stream reaches both the write fiber and the read fiber, and
 ; each ends in an error. The order they are woken in is the backend's, so it is
 ; not asserted.
-(compwhen (dyn 'net/server)
+;
+; Off Windows, for the reason the block above gives: the write has to still be
+; in flight when the peer goes away, and an overlapped send has already
+; completed by then.
+(compwhen (and (dyn 'net/server) (not= :windows (os/which)))
   (do
     (def woken !{})
     (def hup-port (string (+ 3 (scan-number test-port))))

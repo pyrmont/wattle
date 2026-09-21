@@ -773,6 +773,26 @@ const win = struct {
             },
             constants.AsyncEvent.close => {
                 _ = tables.remove(ow.watcher.watch_descriptors.?, wrap.fromString(ow.dir_path));
+                // The operation ends here, as it does in the other three
+                // backends and in `ev/stream.zig`'s own read callback.
+                // `streamClose` delivers `close` to each operation before it
+                // closes the handle, and a callback that takes `close`
+                // releases what it holds. Without this the operation outlived
+                // the handle: the completion for the outstanding
+                // `ReadDirectoryChangesW` still arrived, the `complete` arm
+                // below re-armed on a closed handle, and
+                // `ERROR_INVALID_HANDLE` raised from a loop callback. That
+                // raise has no interpreter frame to return to, so
+                // `signal.zig`'s `signalPlan` reads it as `.top_level` and
+                // the process ends with no report of the suite that was
+                // running.
+                //
+                // `asyncEnd` cancels the transfer with `CancelIoEx` and
+                // leaves the operation abandoned until the completion port
+                // releases it, which is why the handle is still open at this
+                // point and the cancel reaches the host.
+                ev_loop.schedule(op.fiber, wrap.fromNil());
+                ev_loop.asyncEnd(op);
             },
             constants.AsyncEvent.err, constants.AsyncEvent.failed => try ev_loop.streamClose(ow.stream.?),
             constants.AsyncEvent.complete => {

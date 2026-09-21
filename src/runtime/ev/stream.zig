@@ -116,7 +116,7 @@ const O_RDONLY: c_int = 0;
 const O_RDWR: c_int = 2;
 const O_WRONLY: c_int = 1;
 
-/// The fixed buffer an asynchronous transfer copies through. Windows only:
+/// The length a chunked transfer copies through at a time. Windows only:
 /// only the completion-port arm copies.
 const chunk_size_windows: i32 = 4096;
 
@@ -247,13 +247,18 @@ pub const Operation = struct {
 
 /// What a read in progress needs to resume: the mode, the destination, and how
 /// many bytes are still outstanding.
+///
+/// On Windows `chunk_buf` follows the state in the same allocation and
+/// `chunk_cap` is its length. `readGeneric` sizes it: `chunk_size_windows`
+/// for a chunked read, and the whole request for an unchunked one.
 const StateRead = struct {
     overlapped: if (windows) Overlapped else void align(if (windows) @alignOf(Overlapped) else 1),
     flags: if (windows) u32 else c_int,
     wbuf: if (windows and has_net) c.WSABUF else void,
     from: if (windows and has_net) [128]u8 else void,
     fromlen: if (windows and has_net) i32 else void,
-    chunk_buf: if (windows) [chunk_size_windows]u8 else void,
+    chunk_buf: if (windows) [*]u8 else void,
+    chunk_cap: if (windows) i32 else void,
     bytes_left: i32,
     bytes_read: i32,
     buf: *buffers.Buffer,
@@ -652,8 +657,22 @@ pub fn readGeneric(
     mode: c_int,
     flags: c_int,
 ) raise.Error {
-    const state: *StateRead = @ptrCast(@alignCast(utils.malloc(@sizeOf(StateRead)) orelse
+    // Windows copies each transfer through a buffer that follows the state in
+    // this allocation. A chunked read fills it `chunk_size_windows` bytes at
+    // a time; an unchunked one asks for the whole request in one transfer, as
+    // the POSIX arm does, so the buffer is as long as the request. One
+    // allocation keeps the single `free` that releases the state.
+    const chunk_cap: i32 = if (is_chunked or nbytes < chunk_size_windows)
+        chunk_size_windows
+    else
+        nbytes;
+    const extra: usize = if (windows) @intCast(chunk_cap) else 0;
+    const state: *StateRead = @ptrCast(@alignCast(utils.malloc(@sizeOf(StateRead) + extra) orelse
         ev.outOfMemory(@src())));
+    if (windows) {
+        state.chunk_buf = @as([*]u8, @ptrCast(state)) + @sizeOf(StateRead);
+        state.chunk_cap = chunk_cap;
+    }
     state.is_chunk = @intFromBool(is_chunked);
     state.buf = buf;
     state.bytes_left = nbytes;
@@ -996,7 +1015,7 @@ fn readPosix(op: *Operation, s: *Stream, state: *StateRead, event: ev.AsyncEvent
     }
 }
 
-/// One pass of the completion-port read, which copies through a fixed
+/// One pass of the completion-port read, which copies through the state's
 /// buffer.
 ///
 /// Reports whether the transfer completed without a packet, which is the case
@@ -1041,12 +1060,12 @@ fn readWindowsOnce(op: *Operation, s: *Stream, state: *StateRead, event: ev.Asyn
     }
     if (!start_transfer) return false;
 
-    const chunk = if (state.bytes_left > chunk_size_windows) chunk_size_windows else state.bytes_left;
+    const chunk = if (state.bytes_left > state.chunk_cap) state.chunk_cap else state.bytes_left;
     state.overlapped = std.mem.zeroes(Overlapped);
     state.overlapped.op = op;
     if (has_net and state.mode == read_mode_recvfrom) {
         state.wbuf.len = @intCast(chunk);
-        state.wbuf.buf = &state.chunk_buf;
+        state.wbuf.buf = state.chunk_buf;
         state.fromlen = @intCast(state.from.len);
         const status = c.WSARecvFrom(
             @intFromPtr(s.handle),
@@ -1072,7 +1091,7 @@ fn readWindowsOnce(op: *Operation, s: *Stream, state: *StateRead, event: ev.Asyn
         // packet follows a pending operation is stated for the Winsock calls.
         // There is no offset: a socket has no position to read from.
         state.wbuf.len = @intCast(chunk);
-        state.wbuf.buf = &state.chunk_buf;
+        state.wbuf.buf = state.chunk_buf;
         const status = c.WSARecv(
             @intFromPtr(s.handle),
             @ptrCast(&state.wbuf),
@@ -1095,7 +1114,7 @@ fn readWindowsOnce(op: *Operation, s: *Stream, state: *StateRead, event: ev.Asyn
         // head of the file. The stream's position is the one that persists.
         setOffset(&state.overlapped, s.position);
         var transferred: u32 = 0;
-        const status = c.ReadFile(s.handle, &state.chunk_buf, @intCast(chunk), &transferred, &state.overlapped.as);
+        const status = c.ReadFile(s.handle, state.chunk_buf, @intCast(chunk), &transferred, &state.overlapped.as);
         if (status == 0 and c.GetLastError() != ERROR_IO_PENDING) {
             // `ERROR_HANDLE_EOF` is a file at its end and `ERROR_BROKEN_PIPE`
             // a pipe whose writer has gone. Both are the end of the input
@@ -1125,12 +1144,12 @@ fn readWindowsOnce(op: *Operation, s: *Stream, state: *StateRead, event: ev.Asyn
     return false;
 }
 
-/// The completion-port read, which copies through a fixed buffer.
+/// The completion-port read, which copies through the state's buffer.
 ///
 /// A stream the port did not take completes each transfer inline, so the
-/// passes are a loop here rather than a packet each. `chunk_size_windows` is
-/// 4096, so a large read is thousands of passes and recursion is not an
-/// option.
+/// passes are a loop here rather than a packet each. A chunked read of a
+/// large request is thousands of passes at `chunk_size_windows` each, and
+/// recursion is not an option.
 fn readWindows(op: *Operation, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
     var pending = event;
     while (try readWindowsOnce(op, s, state, pending)) {
@@ -1353,6 +1372,17 @@ fn writeWindows(op: *Operation, s: *Stream, state: *StateWrite, event: ev.AsyncE
                 bytes = state.src.str;
                 len = @intCast(strings.head(bytes).length);
             }
+
+            // A write of nothing is not a transfer. `WriteFile` and the two
+            // socket calls each report zero bytes transferred for one, which
+            // the completion arm below reads as a disconnect. `writePosix`
+            // makes no system call for the same length, in either mode.
+            if (len == 0) {
+                ev.schedule(op.fiber, wrap.fromNil());
+                ev.asyncEnd(op);
+                return;
+            }
+
             state.overlapped = std.mem.zeroes(Overlapped);
             state.overlapped.op = op;
 
