@@ -185,7 +185,7 @@ jobs:
   windows:
     name: Windows x86-64
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

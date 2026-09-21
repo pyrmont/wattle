@@ -75,13 +75,16 @@
   (def result (compile form))
   (assert (table? result) (string/format "expected compilation error for %w, but compiled without error" form)))
 
+; A failure names the error as well as the label. Without it the report is
+; the label and `false`, which does not say what was raised, and on a host
+; the tree cannot be run on that costs a whole run to learn.
 (defmacro assert-no-error
   [msg & forms]
   (def e (gensym))
   (def f (gensym))
   (if is-verbose
-  `(try (do ~|forms (as-macro ~assert true ~msg)) ([~e ~f] (as-macro ~assert false ~msg) (~debug/stacktrace ~f ~e "\e[31m✘\e[0m ")))
-  `(try (do ~|forms (as-macro ~assert true ~msg)) ([_] (as-macro ~assert false ~msg)))))
+  `(try (do ~|forms (as-macro ~assert true ~msg)) ([~e ~f] (as-macro ~assert false (string ~msg ": " (describe ~e))) (~debug/stacktrace ~f ~e "\e[31m✘\e[0m ")))
+  `(try (do ~|forms (as-macro ~assert true ~msg)) ([~e] (as-macro ~assert false (string ~msg ": " (describe ~e)))))))
 
 (defn start-suite [&opt x]
   (default x (dyn :current-file))

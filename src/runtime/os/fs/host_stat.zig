@@ -236,6 +236,10 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
     zeroAll(numbers);
     mode.* = @intCast(st.st_mode);
     put(numbers, .dev, @floatFromInt(st.st_dev));
+    // Windows writes a zero here. Its `_ino_t` is sixteen bits and its
+    // filesystems do not fill the field, so the identity a POSIX caller reads
+    // from `inode` is not one this platform reports; the zero is copied
+    // rather than invented, and `test/os_surface.zig` pins it.
     put(numbers, .inode, @floatFromInt(st.st_ino));
     put(numbers, .uid, @floatFromInt(st.st_uid));
     put(numbers, .gid, @floatFromInt(st.st_gid));

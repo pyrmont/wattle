@@ -31,6 +31,7 @@
 // Standard library imports
 // ==========================================================================
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 // ==========================================================================
@@ -266,6 +267,25 @@ pub const vector = struct {
 /// reporting what this was asked.
 ///
 /// Use `raised` instead wherever the subject is a Zig function.
+/// Names the case about to run, on the host that cannot say which it was.
+///
+/// Windows does not unwind past the panic frame: every line of a trace there
+/// reads `expect.zig:30`, so a bare `expect` reports that some assertion in
+/// the contract failed and nothing more. Printing the case before it runs is
+/// what says which one. Everywhere else the trace already names it, so this
+/// costs an `if` on a comptime-known value and no output at all.
+///
+/// One mechanism rather than one per contract. `core_env`, `os_surface` and
+/// `ev_loop` each grew a private copy of this print as Windows reached them
+/// in turn, which is three places to keep the same reasoning in.
+///
+/// It is scaffolding. A contract that has stopped needing it can drop the
+/// call, and the failure it was added for is the thing to fix.
+pub inline fn announce(comptime contract: []const u8, name: []const u8) void {
+    if (builtin.os.tag != .windows) return;
+    std.debug.print("{s}: {s}\n", .{ contract, name });
+}
+
 pub fn abiRaised(abi: anytype, args: anytype) ?Raise {
     var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);

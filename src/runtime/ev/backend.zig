@@ -219,13 +219,34 @@ const Iocp = struct {
         _ = c.CloseHandle(ev.iocpHandle());
     }
 
+    /// Associates the handle with this VM's completion port, keyed by the
+    /// stream's address.
+    ///
+    /// This function raises when the association fails for a stream that is
+    /// readable, writable or acceptable. Any other stream is marked
+    /// `stream_unregistered`, and no completion packet arrives for it.
+    ///
+    /// `CreateIoCompletionPort` gives `ERROR_INVALID_PARAMETER` for a handle
+    /// the port cannot watch and for a handle already associated with another
+    /// port alike, so this function cannot tell the two apart. The second is
+    /// reached only through an unsafe marshal, and `ev/stream.zig` refuses
+    /// that on this platform before a handle arrives here.
+    ///
+    /// `stream_unregistered` is an argument as well as a result. A caller
+    /// that sets it before this runs states that the handle may not be one
+    /// the port takes, and no raise follows for a stream that is readable or
+    /// writable. The flag is cleared where the association is made, so it
+    /// reports what happened rather than what was expected.
     fn register(s: *stream_mod.Stream) raise.Error!void {
+        const unregistered: u32 = @intCast(constants.stream_unregistered);
         if (c.CreateIoCompletionPort(s.handle, ev.iocpHandle(), @intFromPtr(s), 0) == null) {
             const listenable: u32 = @intCast(constants.stream_readable | constants.stream_writable | constants.stream_acceptable);
-            if (s.flags & listenable != 0) {
+            if (s.flags & unregistered == 0 and s.flags & listenable != 0) {
                 return pp_format.panicf("failed to listen for events: %V", .{stream_mod.evLasterr()});
             }
-            s.flags |= @intCast(constants.stream_unregistered);
+            s.flags |= unregistered;
+        } else {
+            s.flags &= ~unregistered;
         }
     }
 
@@ -275,15 +296,25 @@ const Iocp = struct {
         // Normal event.
         const jo: *stream_mod.Overlapped = @ptrCast(@alignCast(overlapped));
         const s: *stream_mod.Stream = @ptrFromInt(completion_key);
+        // The transfer carries the fiber it belongs to, so a completion
+        // reaches that fiber whatever the stream's two slots hold by the time
+        // it arrives. They held the match before, and a stream keeps one
+        // waiting fiber per direction: a second transfer in the same
+        // direction replaces the slot, and the transfer already issued then
+        // had no way back to its fiber.
+        //
+        // The two tests are what the fiber has done since. A cleared callback
+        // is `ev.zig`'s `asyncEnd` having stopped delivering to it, which a
+        // timeout, a cancel and a close each do. A different state is a
+        // transfer it started after this one. Neither is a fiber this
+        // completion may be delivered to.
         const fiber: ?*fibers.Fiber = blk: {
-            if (s.read_fiber) |f| {
-                if (f.ev_state == @as(?*anyopaque, jo)) break :blk f;
-            }
-            if (s.write_fiber) |f| {
-                if (f.ev_state == @as(?*anyopaque, jo)) break :blk f;
-            }
-            break :blk null;
+            const owner = jo.fiber orelse break :blk null;
+            if (owner.ev_callback == null) break :blk null;
+            if (owner.ev_state != @as(?*anyopaque, jo)) break :blk null;
+            break :blk owner;
         };
+        const abandoned = fiber == null;
         if (fiber) |waiting| {
             waiting.flags.setEvInFlight(false);
             jo.bytes_transfered = num_bytes_transferred;
@@ -295,6 +326,11 @@ const Iocp = struct {
             utils.free(jo);
             ev.evDecRefcount();
         }
+        // `asyncEnd` leaves the root on an abandoned transfer's stream, since
+        // the completion key is that stream's address and the lines above
+        // read it. The `defer` releases the root after
+        // `stream_mod.checkToClose`, which reads it again and can raise.
+        defer if (abandoned) ev.asyncUnroot(s);
         try stream_mod.checkToClose(s);
     }
 };

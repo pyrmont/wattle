@@ -39,6 +39,11 @@
 
 ; The client's getline reads one line into the buffer it is given, prompt on
 ; stderr, and leaves the buffer empty at the end of input.
+;
+; The child writes its answer to stdout, which is the C library's own and in
+; text mode on Windows, so each newline reaches the parent as CRLF. Only
+; file/open opens binary there; the standard streams are left as the host has
+; them.
 (compwhen (dyn 'os/spawn)
   (def child
     """(def b !"old")
@@ -52,7 +57,11 @@
   (def out (:read (p :out) :all))
   (def err (:read (p :err) :all))
   (assert (= 0 (os/proc-wait p)) "the getline child exits cleanly")
-  (assert (= "same|hello\n|world\n|0" (string out)) "getline reads a line at a time")
+  (assert (= (if (= :windows (os/which))
+               "same|hello\r\n|world\r\n|0"
+               "same|hello\n|world\n|0")
+             (string out))
+          "getline reads a line at a time")
   (assert (= "p> q> " (string err)) "and writes each prompt"))
 
 (end-suite)

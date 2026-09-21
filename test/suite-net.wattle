@@ -42,15 +42,29 @@
 
 ; net/socket, and what an unbound one reports
 (assert (= :core/stream (type (net/socket))) "net/socket defaults to a stream")
-(assert (= ["0.0.0.0" 0] (net/localname (net/socket :datagram :ipv4)))
-        "an unbound datagram socket has the wildcard address")
+; POSIX answers a local name for a socket nothing has bound, the wildcard
+; address on port zero. Windows wants a bound socket and refuses with
+; WSAEINVAL, so the claim there is the refusal, matched by prefix: the tail
+; names the stream and then gives the host's own wording, and neither is this
+; runtime's to pin.
+(if (= :windows (os/which))
+  (assert (string/has-prefix?
+            "Failed to get localname on "
+            (in (protect (net/localname (net/socket :datagram :ipv4))) 1))
+          "an unbound datagram socket has no local name on Windows")
+  (assert (= ["0.0.0.0" 0] (net/localname (net/socket :datagram :ipv4)))
+          "an unbound datagram socket has the wildcard address"))
 (assert-error "net/socket rejects an unknown type" (net/socket :tcp))
 (assert-no-error "an unknown address family is not an error" (net/socket :stream :ipx))
 
-; net/setsockopt's vocabulary
+; net/setsockopt's vocabulary. so-keepalive is a TCP option and goes to a
+; stream socket: Windows refuses it on a datagram socket with
+; WSAENOPROTOOPT, where POSIX accepts it.
+(def keepalive-socket (net/socket :stream :ipv4))
 (assert-no-error "so-broadcast" (net/setsockopt s :so-broadcast true))
 (assert-no-error "so-reuseaddr" (net/setsockopt s :so-reuseaddr true))
-(assert-no-error "so-keepalive" (net/setsockopt s :so-keepalive false))
+(assert-no-error "so-keepalive"
+                 (net/setsockopt keepalive-socket :so-keepalive false))
 (assert-error "unknown socket option" (net/setsockopt s :nope 1))
 (assert-error "so-broadcast wants a boolean" (net/setsockopt s :so-broadcast "yes"))
 (assert-error "ip-multicast-ttl wants a number" (net/setsockopt s :ip-multicast-ttl :x))
@@ -239,28 +253,68 @@
 
 ; net/chunk collects its whole count, and net/read of :all reads to the end of
 ; the stream, across writes that arrive apart.
+;
+; Both reads are bounded, for the reason the deadline comment above gives. A
+; read that never completes stops the suite with no further output, and the
+; runner kills the job at its allowance, so the line is never reported.
+; Each read is given its own buffer and the buffer is reported beside the
+; result. Both time out on Windows, and how much they collected first tells
+; the two candidate causes apart: bytes in the buffer mean a first transfer
+; completed and a later one did not, an empty buffer that none did.
 (ev/spawn (net/write peer "abc") (ev/sleep 0.05) (net/write peer "def"))
-(assert (= "abcdef" (string (net/chunk client 6))) "net/chunk waits for every byte")
+(def chunk-buf !"")
+(def chunk-got (timed-out #(net/chunk client 6 chunk-buf)))
+(assert (= "abcdef" (string chunk-got))
+        (string/format "net/chunk waits for every byte, got %w collecting %w"
+                       chunk-got chunk-buf))
 (ev/spawn (net/write peer "ab") (ev/sleep 0.05) (net/write peer "cd") (:close peer))
-(assert (= "abcd" (string (net/read client :all))) "net/read of :all reads to the end")
+(def all-buf !"")
+(def all-got (timed-out #(net/read client :all all-buf)))
+(assert (= "abcd" (string all-got))
+        (string/format "net/read of :all reads to the end, got %w collecting %w"
+                       all-got all-buf))
 
 ; A connection that is not a datagram socket refuses the datagram calls.
 (assert (= "bad stream, expected datagram socket"
            (in (protect (net/recv-from client 1 !"" 0.05)) 1))
         "net/recv-from on a stream connection is refused")
 
-; net/shutdown hands back the stream it shut
+; Flushed progress messages locate a native failure between assertions.
+(defn net-progress [message]
+  (when (os/getenv "WATTLE_NET_DIAGNOSTICS")
+    (eprint "suite-net: " message)
+    (eflush)))
+
+; net/shutdown returns the stream it shut
 (assert (= client (net/shutdown client :w)) "net/shutdown returns the stream")
+(net-progress "before client close")
 (:close client)
+(net-progress "after client close")
 
 ; A write that has to wait, because the peer never reads, times out too, for
 ; bytes and for a buffer.
+(net-progress "before flood connection")
 (with [writer (net/connect "127.0.0.1" conn-port)]
+  (net-progress "after flood connection; before 32 MB allocation")
   (def flood (string/repeat "x" (* 32 1024 1024)))
-  (assert (= "timeout" (timed-out #(net/write writer flood 0.1)))
-          "net/write of bytes times out")
-  (assert (= "timeout" (timed-out #(net/write writer (buffer flood) 0.1)))
-          "net/write of a buffer times out"))
+  ; Windows takes both floods rather than waiting: an overlapped WSASend
+  ; completes once the transport has accepted the bytes, and it accepted 32MB
+  ; twice over. net/write reports nil for that, which is its success. Both
+  ; values stay in the messages, since what a transport accepts is its own
+  ; business and may change.
+  (net-progress "after 32 MB allocation; before bytes write")
+  (def expected-write (if (= :windows (os/which)) nil "timeout"))
+  (def bytes-got (timed-out #(net/write writer flood 0.1)))
+  (net-progress "after bytes write")
+  (assert (= expected-write bytes-got)
+          (string/format "net/write of bytes times out, got %w" bytes-got))
+  (net-progress "before buffer allocation and write")
+  (def buffer-got (timed-out #(net/write writer (buffer flood) 0.1)))
+  (net-progress "after buffer write")
+  (assert (= expected-write buffer-got)
+          (string/format "net/write of a buffer times out, got %w" buffer-got))
+  (net-progress "before writer close"))
+(net-progress "after writer close")
 
 ; A connection binds its bindhost, and one that cannot be bound is refused.
 (with [bound (net/connect "127.0.0.1" conn-port :stream "127.0.0.1" 0)]

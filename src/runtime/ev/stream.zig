@@ -58,8 +58,8 @@ const wrap = @import("../value/helpers/wrap.zig");
 
 /// The Win32 constants the completion-port arm and the named-pipe constructor
 /// name, each written out rather than translated.
-const DUPLICATE_SAME_ACCESS: u32 = 0x2;
 const ERROR_BROKEN_PIPE: u32 = 109;
+const ERROR_HANDLE_EOF: u32 = 38;
 const ERROR_IO_PENDING: u32 = 997;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const FILE_FLAG_OVERLAPPED: u32 = 0x40000000;
@@ -160,11 +160,23 @@ pub const write_mode_write: c_int = 0;
 // Types
 // ==========================================================================
 
-/// An `OVERLAPPED` with the transfer count beside it. The head of this file
-/// says why it is restated rather than translated.
+/// An `OVERLAPPED`, the transfer count beside it, and the fiber the transfer
+/// belongs to.
+///
+/// This is the only declaration of the shape in the tree. `net.zig` and
+/// `filewatch.zig` embed this one, each as the first member of a state they
+/// hand to a Windows call, so the cast `ev/backend.zig`'s `Iocp.loop1` makes
+/// on a completion is to the type the state was built from.
+///
+/// `fiber` is what that function matches a completion by. A stream holds one
+/// waiting fiber per direction and a second transfer in the same direction
+/// replaces it, so the stream is not where the fiber of a transfer already
+/// issued can be read. Each site that issues a transfer sets this, after the
+/// zeroing that precedes it.
 pub const Overlapped = extern struct {
     as: c.OVERLAPPED,
     bytes_transfered: u32,
+    fiber: ?*fibers.Fiber,
 };
 
 /// What a read in progress needs to resume: the mode, the destination, and how
@@ -213,7 +225,26 @@ pub const Stream = extern struct {
     read_fiber: ?*fibers.Fiber = null,
     write_fiber: ?*fibers.Fiber = null,
     methods: ?*const anyopaque = null,
+    /// Where the next read or write begins, which on Windows is the only
+    /// place that answer lives: a handle opened `FILE_FLAG_OVERLAPPED` has no
+    /// kernel file pointer, and the offset is whatever the `OVERLAPPED` says.
+    /// One position serves both directions, as a POSIX descriptor's does.
+    ///
+    /// Windows ignores the offset for a handle that cannot seek, so a pipe
+    /// advances this and is unaffected by it. Sockets never reach here at all:
+    /// they take the `WSA` calls, which have no offset.
+    ///
+    /// `void` away from Windows, so the layout, the payload offset behind
+    /// `makeStreamExt` and every wire width there are exactly what they were.
+    position: if (windows) u64 else void = if (windows) 0 else {},
 };
+
+/// Points an overlapped structure at `position`, which Windows splits across
+/// two 32-bit words.
+fn setOffset(ov: *Overlapped, position: u64) void {
+    ov.as.Offset = @truncate(position);
+    ov.as.OffsetHigh = @truncate(position >> 32);
+}
 
 // ==========================================================================
 // Public functions
@@ -439,6 +470,12 @@ pub fn makeStreamExt(
     s.write_fiber = null;
     s.methods = methods orelse &default_methods;
     s.index = 0;
+    // `newBytes` does not zero, which is why every field above is written
+    // rather than left to the declaration's default: those defaults serve a
+    // struct literal and this is a cast over raw memory. A position left
+    // unwritten is an arbitrary offset, and a read at one answers nil because
+    // it is past the end of the file.
+    if (windows) s.position = 0;
     try backend.registerStream(s);
     return s;
 }
@@ -776,18 +813,28 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
     }
 }
 
-/// The completion-port read, which copies through a fixed buffer.
-fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
+/// One pass of the completion-port read, which copies through a fixed
+/// buffer.
+///
+/// Reports whether the transfer completed without a packet, which is the case
+/// for a stream the completion port did not take. `readWindows` calls this
+/// again with `complete` where it does, because no packet will arrive to do
+/// it.
+fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!bool {
     var start_transfer = false;
     switch (event) {
         constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
             // Called when the read finished.
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);
             state.bytes_read += @intCast(ev_bytes);
+            // What was consumed is consumed, so the next operation on this
+            // stream starts after it. A chunked read comes back here between
+            // chunks and the next one is placed by the same advance.
+            s.position += ev_bytes;
             if (state.bytes_read == 0 and state.mode != read_mode_recvfrom) {
                 ev.schedule(fiber, wrap.fromNil());
                 ev.asyncEnd(fiber);
-                return;
+                return false;
             }
             _ = try buffers.pushBytes(state.buf, state.chunk_buf[0..@intCast(ev_bytes)]);
             state.bytes_left -= @intCast(ev_bytes);
@@ -802,17 +849,18 @@ fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.As
                 }
                 ev.schedule(fiber, resume_val);
                 ev.asyncEnd(fiber);
-                return;
+                return false;
             }
             start_transfer = true;
         },
         constants.AsyncEvent.init => start_transfer = true,
         else => {},
     }
-    if (!start_transfer) return;
+    if (!start_transfer) return false;
 
     const chunk = if (state.bytes_left > chunk_size_windows) chunk_size_windows else state.bytes_left;
     state.overlapped = std.mem.zeroes(Overlapped);
+    state.overlapped.fiber = fiber;
     if (has_net and state.mode == read_mode_recvfrom) {
         state.wbuf.len = @intCast(chunk);
         state.wbuf.buf = &state.chunk_buf;
@@ -831,16 +879,46 @@ fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.As
         if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
             try ev.cancel(fiber, evLasterr());
             ev.asyncEnd(fiber);
-            return;
+            return false;
+        }
+    } else if (has_net and s.flags & stream_socket != 0) {
+        // A socket reads through Winsock's own call. `ReadFile` accepts a
+        // socket handle, and Microsoft's Socket Handles page recommends
+        // against it: a non-Winsock call propagates error codes that are not
+        // always mapped to Winsock ones, and the guarantee that a completion
+        // packet follows a pending operation is stated for the Winsock calls.
+        // There is no offset: a socket has no position to read from.
+        state.wbuf.len = @intCast(chunk);
+        state.wbuf.buf = &state.chunk_buf;
+        const status = c.WSARecv(
+            @intFromPtr(s.handle),
+            @ptrCast(&state.wbuf),
+            1,
+            null,
+            &state.flags,
+            &state.overlapped.as,
+            null,
+        );
+        if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
+            try ev.cancel(fiber, evLasterr());
+            ev.asyncEnd(fiber);
+            return false;
         }
     } else {
         // Some handles (not all) read from the offset in lpOverlapped; if it
         // is not set before calling ReadFile those streams always read from
-        // offset 0.
-        state.overlapped.as.Offset = @bitCast(state.bytes_read);
-        const status = c.ReadFile(s.handle, &state.chunk_buf, @intCast(chunk), null, &state.overlapped.as);
+        // offset 0. `state.bytes_read` stood here and is the progress of *this
+        // read*, which begins at zero every time, so every read started at the
+        // head of the file. The stream's position is the one that persists.
+        setOffset(&state.overlapped, s.position);
+        var transferred: u32 = 0;
+        const status = c.ReadFile(s.handle, &state.chunk_buf, @intCast(chunk), &transferred, &state.overlapped.as);
         if (status == 0 and c.GetLastError() != ERROR_IO_PENDING) {
-            if (c.GetLastError() == ERROR_BROKEN_PIPE) {
+            // `ERROR_HANDLE_EOF` is a file at its end and `ERROR_BROKEN_PIPE`
+            // a pipe whose writer has gone. Both are the end of the input
+            // rather than a failure. Only a registered stream reached here
+            // before, and a registered stream is never a file.
+            if (c.GetLastError() == ERROR_BROKEN_PIPE or c.GetLastError() == ERROR_HANDLE_EOF) {
                 if (state.bytes_read != 0) {
                     ev.schedule(fiber, wrap.fromBuffer(state.buf));
                 } else {
@@ -850,10 +928,31 @@ fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.As
                 try ev.cancel(fiber, evLasterr());
             }
             ev.asyncEnd(fiber);
-            return;
+            return false;
+        }
+        if (status != 0 and s.flags & stream_unregistered != 0) {
+            // The port never took this handle, so it queues no packet and
+            // the read is already done. The caller re-enters the state
+            // machine with what `ReadFile` reported.
+            state.overlapped.bytes_transfered = transferred;
+            return true;
         }
     }
     ev.asyncInFlight(fiber);
+    return false;
+}
+
+/// The completion-port read, which copies through a fixed buffer.
+///
+/// A stream the port did not take completes each transfer inline, so the
+/// passes are a loop here rather than a packet each. `chunk_size_windows` is
+/// 4096, so a large read is thousands of passes and recursion is not an
+/// option.
+fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
+    var pending = event;
+    while (try readWindowsOnce(fiber, s, state, pending)) {
+        pending = constants.AsyncEvent.complete;
+    }
 }
 
 /// The collector finalising a stream: closes the handle and lets it go.
@@ -884,38 +983,33 @@ fn streamMarshal(s: *Stream, m: *abi.Marshal) raise.Error!void {
     if (marsh.marshalFlags(m) & constants.marshal_unsafe == 0) {
         return raise.panic("can only marshal stream with unsafe flag");
     }
+    if (windows) {
+        // A completion port association is a property of the file object, and
+        // `DuplicateHandle` returns a second handle to the same file object,
+        // so the duplicate is already associated and this runtime has no call
+        // that moves it to another port. Skipping the registration in the
+        // receiving VM is not an alternative: the association fixes a
+        // completion key, set to this stream's address, and `ev/backend.zig`
+        // reconstructs the stream from that key. An operation the receiving
+        // VM started would complete into this VM's loop against this stream,
+        // freeing an overlapped allocation still in use and decrementing the
+        // wrong VM's refcount. The provenance is known here and not in
+        // `ev/backend.zig`, where `CreateIoCompletionPort` gives
+        // `ERROR_INVALID_PARAMETER` for a handle the port cannot watch and
+        // for one already associated alike.
+        return raise.panic("a stream does not marshal on Windows: this runtime does not move a registered handle to another completion port");
+    }
     // This stream might now be duplicated, which invalidates some EV
     // optimizations.
     s.flags &= ~stream_nodups;
     marsh.marshalAbstract(m, s);
     try marsh.marshalInt(m, @bitCast(s.flags));
     try marsh.marshalPtr(m, s.methods);
-    if (windows) {
-        // Unresolved: there is no reference counting to stop a handle being
-        // closed or collected in transit, and `c.DuplicateHandle` does not
-        // work for sockets.
-        var duph: ?*anyopaque = invalidHandle();
-        if (s.flags & stream_socket != 0) {
-            duph = s.handle;
-        } else {
-            _ = c.DuplicateHandle(
-                c.GetCurrentProcess(),
-                s.handle,
-                c.GetCurrentProcess(),
-                &duph,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            );
-        }
-        try marsh.marshalInt64(m, @bitCast(@intFromPtr(duph)));
-    } else {
-        // Marshal after dup because it is easier than maintaining our own
-        // reference counting.
-        const duph = c.dup(s.handle);
-        if (duph < 0) return pp_format.panicf("failed to duplicate stream handle: %V", .{evLasterr()});
-        try marsh.marshalInt(m, duph);
-    }
+    // Marshal after dup because it is easier than maintaining our own
+    // reference counting.
+    const duph = c.dup(s.handle);
+    if (duph < 0) return pp_format.panicf("failed to duplicate stream handle: %V", .{evLasterr()});
+    try marsh.marshalInt(m, duph);
 }
 
 /// The iteration order behind `next` and `(keys s)`.
@@ -942,24 +1036,29 @@ fn streamUnmarshal(u: *abi.Unmarshal) raise.Error!*Stream {
     if (marsh.unmarshalFlags(u) & constants.marshal_unsafe == 0) {
         return raise.panic("can only unmarshal stream with unsafe flag");
     }
+    // Symmetrical with the marshal, which refuses on the same platform for
+    // the same reason. Nothing can have written these bytes on Windows, so
+    // reading them would be reading something else.
+    if (windows) return raise.panic("a stream does not marshal on Windows: this runtime does not move a registered handle to another completion port");
     const p: *Stream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Stream))));
     // Listening state cannot be shared across threads.
     p.read_fiber = null;
     p.write_fiber = null;
     p.flags = @bitCast(try marsh.unmarshalInt(u));
     p.methods = try marsh.unmarshalPtr(u);
-    if (windows) {
-        p.handle = @ptrFromInt(@as(usize, @bitCast(try marsh.unmarshalInt64(u))));
-    } else {
-        p.handle = try marsh.unmarshalInt(u);
-    }
+    p.handle = try marsh.unmarshalInt(u);
     // The descriptor is this VM's own, from the `dup` the marshal made, so it
-    // is registered here the way `makeStreamExt` registers a fresh one. Every
-    // backend needs that: a kqueue filter, an `epoll_ctl` registration and a
-    // completion port association are each keyed by descriptor, and `poll`
-    // keeps a table of its own. Without it the speculative operation
-    // `asyncStart` performs is the only one that can complete, and a read that
-    // has to wait never wakes.
+    // is registered here the way `makeStreamExt` registers a fresh one. The
+    // backends that reach this need it: a kqueue filter and an `epoll_ctl`
+    // registration are keyed by descriptor, so a duplicate carries neither,
+    // and `poll` keeps a table of its own. Without it the speculative
+    // operation `asyncStart` performs is the only one that can complete, and
+    // a read that has to wait never wakes.
+    //
+    // A completion port is not keyed by descriptor. It keys by the file
+    // object a duplicate shares, so a duplicate is already associated and
+    // cannot be re-associated, and the refusal above stops Windows reaching
+    // this line.
     try backend.registerStream(p);
     return p;
 }
@@ -1035,6 +1134,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
     switch (event) {
         constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);
+            s.position += ev_bytes;
             if (ev_bytes == 0 and state.mode != write_mode_sendto) {
                 try ev.cancel(fiber, value.fromBytes("disconnect", .string));
                 ev.asyncEnd(fiber);
@@ -1060,6 +1160,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                 len = @intCast(strings.head(bytes).length);
             }
             state.overlapped = std.mem.zeroes(Overlapped);
+            state.overlapped.fiber = fiber;
 
             if (has_net and state.mode == write_mode_sendto) {
                 state.wbuf.buf = @constCast(bytes);
@@ -1077,32 +1178,63 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                     &state.overlapped.as,
                     null,
                 );
-                if (status != 0) {
-                    if (c.WSAGetLastError() == WSA_IO_PENDING) {
-                        ev.asyncInFlight(fiber);
-                    } else {
-                        try ev.cancel(fiber, evLasterr());
-                        ev.asyncEnd(fiber);
-                        return;
-                    }
+                if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
+                    try ev.cancel(fiber, evLasterr());
+                    ev.asyncEnd(fiber);
+                    return;
+                }
+            } else if (has_net and s.flags & stream_socket != 0) {
+                // A socket writes through Winsock's own call, for the reason
+                // `readWindowsOnce` gives for reading through one.
+                state.wbuf.buf = @constCast(bytes);
+                state.wbuf.len = @intCast(len);
+                const status = c.WSASend(
+                    @intFromPtr(s.handle),
+                    @ptrCast(&state.wbuf),
+                    1,
+                    null,
+                    state.flags,
+                    &state.overlapped.as,
+                    null,
+                );
+                if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
+                    try ev.cancel(fiber, evLasterr());
+                    ev.asyncEnd(fiber);
+                    return;
                 }
             } else {
-                // File handles in IOCP need this to write to the end of a
-                // file. Where the underlying resource cannot seek, the byte
-                // offsets are ignored.
-                state.overlapped.as.Offset = 0xFFFFFFFF;
-                state.overlapped.as.OffsetHigh = 0xFFFFFFFF;
-                const status = c.WriteFile(s.handle, bytes, @intCast(len), null, &state.overlapped.as);
-                if (status == 0) {
-                    if (c.GetLastError() == ERROR_IO_PENDING) {
-                        ev.asyncInFlight(fiber);
-                    } else {
-                        try ev.cancel(fiber, evLasterr());
-                        ev.asyncEnd(fiber);
-                        return;
-                    }
+                // The append sentinel, `0xFFFFFFFF` in both words, stood
+                // here unconditionally, so every write to a file went to its
+                // end and `:rw` could not be told from `:wa`. Append is the
+                // job of `FILE_APPEND_DATA`, which `:a` sets and which makes
+                // Windows ignore the offset; what belongs here is the
+                // position. Where the resource cannot seek the offset is
+                // ignored either way.
+                setOffset(&state.overlapped, s.position);
+                var transferred: u32 = 0;
+                const status = c.WriteFile(s.handle, bytes, @intCast(len), &transferred, &state.overlapped.as);
+                if (status == 0 and c.GetLastError() != ERROR_IO_PENDING) {
+                    try ev.cancel(fiber, evLasterr());
+                    ev.asyncEnd(fiber);
+                    return;
+                }
+                if (status != 0 and s.flags & stream_unregistered != 0) {
+                    // The port never took this handle, so it queues no packet
+                    // and the write is already done. One re-entry finishes
+                    // it, and the `complete` arm has no second transfer to
+                    // start, so this does not nest further.
+                    state.overlapped.bytes_transfered = transferred;
+                    return writeWindows(fiber, s, state, constants.AsyncEvent.complete);
                 }
             }
+            // The port owes a completion for every call above that it
+            // accepted, whether that call reported `WSA_IO_PENDING` or
+            // finished where it stood: a handle the port took queues a packet
+            // either way, and nothing here asks it not to. Marking only the
+            // pending ones left `asyncEnd` releasing a state a packet still
+            // named, and `gc/sweep.zig` releasing it again through the fiber.
+            // `readWindowsOnce` marks the same way, at its own foot.
+            ev.asyncInFlight(fiber);
         },
         else => {},
     }

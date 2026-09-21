@@ -720,10 +720,9 @@ const win = struct {
     /// hands the address of this structure to the IOCP and reads the
     /// `OVERLAPPED` back out of the completion.
     const OverlappedWatch = extern struct {
-        overlapped: fw_abi.Overlapped,
+        overlapped: ev_stream.Overlapped,
         stream: ?*ev_stream.Stream,
         watcher: *Watcher,
-        fiber: ?*fibers.Fiber,
         dir_path: [*:0]const u8,
         flags: u32,
         /// `uint64_t` rather than a byte array, to ensure alignment.
@@ -762,7 +761,7 @@ const win = struct {
             constants.AsyncEvent.init => ev_loop.asyncInFlight(fiber),
             constants.AsyncEvent.mark => {
                 gc_mark.mark(wrap.fromAbstract(ow.stream.?));
-                if (ow.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
+                if (ow.overlapped.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
                 gc_mark.mark(wrap.fromAbstract(watcher));
                 gc_mark.mark(wrap.fromString(ow.dir_path));
             },
@@ -828,7 +827,7 @@ const win = struct {
         // arguments.
         const fiber = fibers.new(thunk, 64, &.{}) catch unreachable;
         fiber.supervisor_channel = fibers.root().?.supervisor_channel;
-        ow.fiber = fiber;
+        ow.overlapped.fiber = fiber;
         try ev_loop.asyncStartFiber(fiber, stream.?, constants.AsyncMode.reading, &callbackRead, ow);
     }
 
@@ -848,7 +847,7 @@ const win = struct {
         @memset(std.mem.asBytes(ow), 0);
         ow.stream = stream;
         ow.dir_path = strings.cstring(path);
-        ow.fiber = null;
+        ow.overlapped.fiber = null;
         ow.flags = flags | watcher.default_flags;
         ow.watcher = watcher;
         // Do we need this?
@@ -928,7 +927,7 @@ const win = struct {
     }
 
     fn markWatch(ow: *OverlappedWatch) void {
-        if (ow.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
+        if (ow.overlapped.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
         gc_mark.mark(wrap.fromAbstract(ow.stream.?));
         gc_mark.mark(wrap.fromString(ow.dir_path));
     }

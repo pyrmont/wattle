@@ -193,7 +193,7 @@ const NetStateAccept = if (windows) extern struct {
     // gives: the `OVERLAPPED` this opens with is handed to `AcceptEx` and read
     // back by the completion port, so the field must be first and must be
     // where the ABI says.
-    overlapped: Overlapped,
+    overlapped: ev_stream.Overlapped,
     function: ?*functions.Function,
     lstream: ?*ev_stream.Stream,
     astream: ?*ev_stream.Stream,
@@ -205,18 +205,7 @@ const NetStateAccept = if (windows) extern struct {
 /// The connect callback's state. Only the `ConnectEx` path uses it; the POSIX
 /// path passes a null state and reads everything it needs off the stream.
 const NetStateConnect = struct {
-    overlapped: Overlapped,
-};
-
-/// Windows' `OVERLAPPED`, declared here because Zig 0.16's `std.os.windows` no
-/// longer does. `WSAOVERLAPPED` has the same layout, so one declaration serves
-/// the socket calls as well as the file ones.
-const OVERLAPPED = extern struct {
-    Internal: usize,
-    InternalHigh: usize,
-    Offset: u32,
-    OffsetHigh: u32,
-    hEvent: ?*anyopaque,
+    overlapped: ev_stream.Overlapped,
 };
 
 /// The `union` `net/setsockopt` builds its value in. `struct ipv6_mreq` is a
@@ -227,12 +216,6 @@ const OptValue = extern union {
     v_int: c_int,
     v_mreq: h.struct_ip_mreq,
     v_mreq6: h.struct_ipv6_mreq,
-};
-
-/// An `OVERLAPPED` with the transfer count beside it.
-const Overlapped = extern struct {
-    as: OVERLAPPED,
-    bytes_transfered: u32,
 };
 
 /// One row of the socket-option table. `kind` is a `repr.Tag`, and
@@ -659,6 +642,30 @@ fn addressAbstract(from: ?*const anyopaque, len: usize) repr.Value {
     return wrap.fromAbstract(abst);
 }
 
+/// Binds `sock` to the wildcard address of `family` on port 0, reporting
+/// whether the bind succeeded.
+///
+/// `family` is `AF_INET` or `AF_INET6`, and any other family reports false
+/// without a call. A zeroed `sockaddr` of either family is already the
+/// wildcard address on port 0, so only the family field is written.
+/// `cfunConnect` calls this on Windows, where `ConnectEx` requires a bound
+/// socket. This function cannot raise.
+fn bindWildcard(sock: JSock, family: c_int) bool {
+    if (family == h.AF_INET) {
+        var sin = std.mem.zeroes(h.struct_sockaddr_in);
+        sin.sin_family = @intCast(family);
+        return net_abi.bind(sock, @ptrCast(&sin), @sizeOf(h.struct_sockaddr_in)) == 0;
+    }
+    if (has_ipv6) {
+        if (family == h.AF_INET6) {
+            var sin6 = std.mem.zeroes(net_abi.SockAddrIn6);
+            sin6.sin6_family = @intCast(family);
+            return net_abi.bind(sock, @ptrCast(&sin6), @sizeOf(net_abi.SockAddrIn6)) == 0;
+        }
+    }
+    return false;
+}
+
 /// `(net/accept stream &opt timeout)`.
 fn cfunAccept(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
@@ -788,6 +795,16 @@ fn cfunConnect(argv: []repr.Value) raise.Error!repr.Value {
             net_abi.sockClose(sock);
             return pp_format.panicf("could not bind outgoing address: %V", .{v});
         }
+    } else if (windows and socktype == h.SOCK_STREAM) {
+        // `ConnectEx` below requires a bound socket and reports `WSAEINVAL`
+        // for one that is not bound. `connect` binds the socket as part of
+        // connecting, so no other platform reaches this. Port 0 leaves the
+        // port to the host.
+        if (!bindWildcard(sock, sa.?.sa_family)) {
+            const v = ev_stream.evLasterr();
+            net_abi.sockClose(sock);
+            return pp_format.panicf("could not bind socket before connect: %V", .{v});
+        }
     }
 
     // Wrap the socket in the stream abstract type.
@@ -806,6 +823,9 @@ fn cfunConnect(argv: []repr.Value) raise.Error!repr.Value {
                     utils.malloc(@sizeOf(NetStateConnect)) orelse outOfMemory(@src()),
                 ));
                 state.* = std.mem.zeroes(NetStateConnect);
+                // `schedConnect` below registers this transfer on the root
+                // fiber, which `ev.zig`'s `asyncStart` reads for itself.
+                state.overlapped.fiber = fibers.root();
                 const success = connect_ex(sock, sa, @intCast(addrlen), null, 0, null, @ptrCast(&state.overlapped.as));
                 if (success == 0 and h.WSAGetLastError() != h.ERROR_IO_PENDING) {
                     utils.free(state);
@@ -1032,7 +1052,11 @@ fn cfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
     assert(@src(), optlen != 0, "invalid socket option value");
 
     if (net_abi.setSockOpt(sockOf(stream), st.level, st.optname, &val, optlen) == -1) {
-        return pp_format.panicf("setsockopt(%q): %s", .{ argv[1], utils.strerrorSafe(c.errno()) });
+        // `evLasterr` rather than `strerror`: Winsock reports through
+        // `WSAGetLastError` and sets no `errno`, so `strerror` described a
+        // number the call never set. Away from Windows the two are the same
+        // text.
+        return pp_format.panicf("setsockopt(%q): %V", .{ argv[1], ev_stream.evLasterr() });
     }
 
     return wrap.fromNil();
@@ -1224,14 +1248,30 @@ fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Er
 }
 
 /// What the loop calls when a connect completes.
+///
+/// On Windows the result comes from the completion event for the `ConnectEx`
+/// that `cfunConnect` started. Elsewhere it comes from `SO_ERROR` after a
+/// writability event on a non-blocking `connect`. The two arms share only the
+/// event dispatch.
 fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
     const stream: *ev_stream.Stream = fiber.ev_stream.?;
     switch (event) {
-        // Windows does not support an async connect through this path and
-        // just tries immediately; everywhere else, wait for a real event
-        // before looking at the result.
-        constants.AsyncEvent.init => if (!windows) return,
-        constants.AsyncEvent.deinit => return,
+        // `cfunConnect` issued the `ConnectEx` before this, so the port owes
+        // a completion for it and the flag is what leaves the state for that
+        // completion. A state is what distinguishes that path: the blocking
+        // fallback this file keeps, and every other platform, schedule with
+        // none and have no overlapped transfer outstanding.
+        constants.AsyncEvent.init => {
+            if (fiber.ev_state != null) ev_loop.asyncInFlight(fiber);
+            return;
+        },
+        // Neither of these two has a result to read. `NetStateConnect` holds
+        // an `OVERLAPPED` alone, and the fiber in its header is the one the
+        // collector is tracing to reach this callback, so `mark` has nothing
+        // to trace.
+        constants.AsyncEvent.mark,
+        constants.AsyncEvent.deinit,
+        => return,
         constants.AsyncEvent.close => {
             try ev_loop.cancel(fiber, value.fromBytes("stream closed", .string));
             ev_loop.asyncEnd(fiber);
@@ -1240,22 +1280,33 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.E
         else => {},
     }
 
-    var res: c_int = 0;
-    var size: SockLen = @sizeOf(c_int);
-    var r: c_int = undefined;
-    var no_error: c_int = undefined;
     if (windows) {
-        // We should be using ConnectEx here.
-        r = net_abi.getSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_CONNECT_TIME, &res, &size);
-        // This apparently indicates we haven't yet gotten a connection.
-        if (r == h.NO_ERROR and res == -1) return;
-        no_error = h.NO_ERROR;
-    } else {
-        r = net_abi.getSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_ERROR, &res, &size);
-        no_error = 0;
+        switch (event) {
+            constants.AsyncEvent.complete => {
+                // `ConnectEx` does not set the socket's connected state.
+                // Until `SO_UPDATE_CONNECT_CONTEXT` is set, `getpeername`,
+                // `shutdown` and the other calls that read that state fail.
+                // The option takes no value, so the length is zero and the
+                // pointer is not read.
+                const unused: c_int = 0;
+                _ = net_abi.setSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_UPDATE_CONNECT_CONTEXT, &unused, 0);
+                ev_loop.schedule(fiber, wrap.fromAbstract(stream));
+            },
+            else => {
+                // `GetQueuedCompletionStatus` set the thread's last error
+                // to the failure reason, and `ev/backend.zig` calls this
+                // before any other call replaces it.
+                try ev_loop.cancel(fiber, ev_stream.evLasterr());
+                stream.flags |= stream_toclose;
+            },
+        }
+        ev_loop.asyncEnd(fiber);
+        return;
     }
 
-    if (r == no_error) {
+    var res: c_int = 0;
+    var size: SockLen = @sizeOf(c_int);
+    if (net_abi.getSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_ERROR, &res, &size) == 0) {
         if (res == 0) {
             ev_loop.schedule(fiber, wrap.fromAbstract(stream));
         } else {
@@ -1316,15 +1367,17 @@ fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Valu
     // registration already has its own message.
     state.astream = try makeStream(asock, stream_readable | stream_writable);
     const socksize: h.DWORD = @sizeOf(h.SOCKADDR_STORAGE) + 16;
-    if (h.AcceptEx(lsock, asock, &state.buf, 0, socksize, socksize, null, @ptrCast(&state.overlapped.as)) == 0) {
-        if (h.WSAGetLastError() == h.WSA_IO_PENDING) {
-            // Indicates io is happening async.
-            ev_loop.asyncInFlight(fiber);
-            return false;
-        }
+    state.overlapped.fiber = fiber;
+    if (h.AcceptEx(lsock, asock, &state.buf, 0, socksize, socksize, null, @ptrCast(&state.overlapped.as)) == 0 and
+        h.WSAGetLastError() != h.WSA_IO_PENDING)
+    {
         err.* = ev_stream.evLasterr();
         return true;
     }
+    // A call the port accepted queues a completion whether it reported
+    // `WSA_IO_PENDING` or finished where it stood, and the flag is what
+    // `ev.zig`'s `asyncEnd` reads to leave the state for that completion.
+    ev_loop.asyncInFlight(fiber);
     return false;
 }
 

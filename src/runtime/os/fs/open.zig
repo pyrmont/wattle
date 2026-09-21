@@ -224,6 +224,17 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!WindowsOpe
             else => {},
         }
     }
+    // Append is `FILE_APPEND_DATA`'s job, and Windows only lets it do that job
+    // when `FILE_WRITE_DATA` is *absent*: with both granted a write goes to
+    // whatever offset the `OVERLAPPED` names, which is the stream's position.
+    // `:wa` sets both, `'w'` bringing `GENERIC_WRITE` and with it
+    // `FILE_WRITE_DATA`, so the write landed at the head of the file rather
+    // than its end. Dropping the generic right leaves exactly the access
+    // `O_WRONLY | O_APPEND` grants, which is what `:a` is documented to mean
+    // here. A reader keeps `GENERIC_READ`, which `'r'` sets separately.
+    if (w.desired_access & h.FILE_APPEND_DATA != 0) {
+        w.desired_access &= ~@as(u32, h.GENERIC_WRITE);
+    }
     w.creation_disp = switch (creat_unix) {
         0 => h.OPEN_EXISTING,
         o_creat => h.OPEN_ALWAYS,

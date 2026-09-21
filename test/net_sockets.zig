@@ -83,10 +83,14 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-/// Ten on Windows, which reaches neither the unix-domain bindhost refusal nor
-/// anything else this file guards. The count is asserted at the end, because a
-/// case that silently stopped raising would otherwise pass.
-const expected_raises: u32 = if (windows) 10 else 11;
+/// Eleven either way, and the two platforms do not get there by the same
+/// route. Windows reaches neither the unix-domain bindhost refusal nor
+/// anything else this file guards, and reaches the unbound-socket refusal,
+/// which POSIX does not because it answers a name instead. The two cancel.
+///
+/// The count is asserted at the end, because a case that silently stopped
+/// raising would otherwise pass.
+const expected_raises: u32 = 11;
 const has_ipv6 = config.ipv6;
 
 /// Every name `net.libNet` registers, in the order it registers them. The
@@ -513,14 +517,23 @@ fn theStreamFaults() void {
 }
 
 fn theUnboundSocket() void {
-    // `net/socket` binds nothing, so its local name is the wildcard address on
-    // port zero, which is the one decode a live socket cannot produce.
+    // `net/socket` binds nothing. POSIX still answers a local name, the
+    // wildcard address on port zero, which is the one decode a live socket
+    // cannot otherwise produce. Windows refuses instead: `getsockname` there
+    // wants a socket that has been bound and answers `WSAEINVAL` without one,
+    // so the claim on that host is the refusal.
     {
         var argv = [_]repr.Value{ value.fromBytes("datagram", .keyword), value.fromBytes("ipv4", .keyword) };
         const sock = callCore("net/socket", &argv);
         expect(harness.isType(sock, repr.Tag.abstract));
         var name_argv = [_]repr.Value{sock};
-        expect(tupleIs2(callCore("net/localname", &name_argv), "0.0.0.0", 0));
+        if (windows) {
+            // By prefix: the tail names the stream and then carries the
+            // host's own wording, and neither is this runtime's to pin.
+            expectRaisePrefix("net/localname", &name_argv, "Failed to get localname on ");
+        } else {
+            expect(tupleIs2(callCore("net/localname", &name_argv), "0.0.0.0", 0));
+        }
         raise.toAbi(ev_stream.streamClose(@ptrCast(@alignCast(wrap.toAbstract(sock)))));
     }
 

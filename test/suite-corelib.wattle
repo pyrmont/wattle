@@ -567,9 +567,13 @@
 
 ; A backslash is a path separator on Windows and an ordinary character
 ; everywhere else, and `is_path_sep` is the only place that distinction lives.
+; The normaliser writes a forward slash for every separator it recognises, so
+; a backslash is recognised and rewritten on Windows and survives as itself
+; everywhere else. The pair below is where the same distinction collapses a
+; segment as well.
 (assert (= (string (module/expand-path "a\\b" ":all:"))
-           (if (= :windows (os/which)) "a\\b" "a\\b"))
-        "expand-path leaves a backslash alone off Windows")
+           (if (= :windows (os/which)) "a/b" "a\\b"))
+        "a backslash is rewritten as a separator on Windows")
 (assert (= (string (module/expand-path "a\\../b" ":all:"))
            (if (= :windows (os/which)) "b" "a\\../b"))
         "a backslash does not open a path segment off Windows")

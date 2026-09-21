@@ -4317,7 +4317,7 @@
 
 (compwhen (dyn 'os/stat)
 
-  (def- seps {:windows "\\" :mingw "\\" :cygwin "\\"})
+  (def- seps {:windows "\\" :cygwin "\\"})
   (defn- sep [] (get seps (os/which) "/"))
 
   (defn- bundle-rpath
@@ -4886,7 +4886,7 @@
   (var expect-image false)
 
   (when-let [jp (getenv-alias "WATTLE_PATH")]
-    (def path-sep (if (index-of (os/which) [:windows :mingw]) ";" ":"))
+    (def path-sep (if (= :windows (os/which)) ";" ":"))
     (def paths (reverse! (string/split path-sep jp)))
     (for i 1 (length paths)
       (module/add-syspath (get paths i)))

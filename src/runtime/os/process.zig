@@ -202,6 +202,7 @@ const spawn_chdir = oa.spawn_chdir;
 /// The three `ev_stream.Stream` flags this file reads.
 const stream_closed: u32 = 0x1;
 const stream_readable: u32 = 0x200;
+const stream_unregistered: u32 = 0x4;
 const stream_writable: u32 = 0x400;
 
 /// What `wait` reports, and the whole of that vocabulary. The cfunctions turn
@@ -1141,7 +1142,18 @@ fn getStdioForHandle(handle: host.Handle, orig: ?*anyopaque, iswrite: bool) rais
                 if (c.DuplicateHandle(prochandle, handle, prochandle, &new_handle, 0, 0, 0x2) == 0) {
                     return null;
                 }
-                return try ev_stream.makeStream(new_handle, flags, null);
+                // A `core/file`'s handle comes from the C library and is
+                // not opened `FILE_FLAG_OVERLAPPED`, so the completion port
+                // does not take it and `CreateIoCompletionPort` gives
+                // `ERROR_INVALID_PARAMETER`. `stream_unregistered` says so in
+                // advance, so `ev/backend.zig`'s `register` does not raise
+                // for a stream that is readable or writable, and the read and
+                // write paths complete each transfer inline rather than
+                // waiting for a packet that does not come.
+                //
+                // The flags are the file's own, as on every other platform,
+                // so this process can read the stream it gives the child.
+                return try ev_stream.makeStream(new_handle, flags | stream_unregistered, null);
             }
             const new_handle = c.dup(handle);
             if (new_handle < 0) return null;

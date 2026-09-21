@@ -131,23 +131,34 @@
 ;
 ; The wait is bounded so that a regression fails here rather than hanging the
 ; suite.
+;
+; Windows refuses the crossing instead. A completion port association is a
+; property of the file object, and the duplicate the marshal would make names
+; the same file object, so the receiving VM cannot associate it with its own
+; port. This is the spelling a program reaches that refusal by; the `ev_loop`
+; contract has the same refusal at the ABI.
 (do
   (def [r w] (os/pipe))
   (def replies (ev/thread-chan 2))
-  (ev/thread (fn [carried]
-               (def [stream reply] carried)
-               (ev/give reply (string (ev/read stream 3))))
-             [r replies]
-             :n)
-  (ev/sleep 0.2)
-  (ev/write w "abc")
-  (var got nil)
-  (var tries 0)
-  (while (and (nil? got) (< tries 300))
-    (ev/sleep 0.01)
-    (set tries (+ tries 1))
-    (when (> (ev/count replies) 0) (set got (ev/take replies))))
-  (assert (= "abc" got) "a stream that crossed into a thread wakes on a later write")
+  (def reader-body (fn [carried]
+                     (def [stream reply] carried)
+                     (ev/give reply (string (ev/read stream 3)))))
+  (if (= :windows (os/which))
+    (assert-error-value
+      "a stream does not cross into a thread on Windows"
+      "a stream does not marshal on Windows: this runtime does not move a registered handle to another completion port"
+      (ev/thread reader-body [r replies] :n))
+    (do
+      (ev/thread reader-body [r replies] :n)
+      (ev/sleep 0.2)
+      (ev/write w "abc")
+      (var got nil)
+      (var tries 0)
+      (while (and (nil? got) (< tries 300))
+        (ev/sleep 0.01)
+        (set tries (+ tries 1))
+        (when (> (ev/count replies) 0) (set got (ev/take replies))))
+      (assert (= "abc" got) "a stream that crossed into a thread wakes on a later write")))
   (:close r)
   (:close w))
 

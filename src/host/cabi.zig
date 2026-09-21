@@ -148,6 +148,8 @@ pub extern fn AcquireSRWLockExclusive(lock: *SrwLock) callconv(.winapi) void;
 
 pub extern fn AcquireSRWLockShared(lock: *SrwLock) callconv(.winapi) void;
 
+pub extern "kernel32" fn CancelIoEx(h: ?*anyopaque, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
+
 pub extern "kernel32" fn CloseHandle(h: ?*anyopaque) callconv(.winapi) c_int;
 
 pub extern "kernel32" fn CreateEventA(attrs: ?*anyopaque, manual: c_int, initial: c_int, name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
@@ -260,7 +262,11 @@ pub extern fn VirtualProtect(addr: *anyopaque, size: usize, protect: u32, old: *
 
 pub extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
 
+pub extern "ws2_32" fn WSARecv(s: usize, bufs: [*]WSABUF, count: u32, received: ?*u32, flags: *u32, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
+
 pub extern "ws2_32" fn WSARecvFrom(s: usize, bufs: [*]WSABUF, count: u32, received: ?*u32, flags: *u32, from: ?*anyopaque, fromlen: ?*i32, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
+
+pub extern "ws2_32" fn WSASend(s: usize, bufs: [*]WSABUF, count: u32, sent: ?*u32, flags: u32, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
 
 pub extern "ws2_32" fn WSASendTo(s: usize, bufs: [*]WSABUF, count: u32, sent: ?*u32, flags: u32, to: ?*const anyopaque, tolen: c_int, ov: ?*OVERLAPPED, routine: ?*anyopaque) callconv(.winapi) c_int;
 

@@ -784,10 +784,11 @@ fn theCoreFunctions() void {
     //
     // The count is `os/dir` over `/dev/fd`, and `-Dreduced-os=true` registers
     // no `os/dir`, so this case has no instrument there rather than a
-    // weaker one. WASI has no `/dev` at all, which leaves it without the
-    // instrument for the same reason. The refusal itself is asserted above in
-    // every configuration; what is gated is the leak check behind it.
-    if (!config.reduced_os and builtin.os.tag != .wasi) {
+    // weaker one. WASI has no `/dev` at all and Windows has no `/dev/fd` to
+    // count, which leaves both without the instrument for the same reason.
+    // The refusal itself is asserted above in every configuration; what is
+    // gated is the leak check behind it.
+    if (!config.reduced_os and builtin.os.tag != .wasi and builtin.os.tag != .windows) {
         doString(env,
             \\(defn nfds [] (length (os/dir "/dev/fd")))
             \\(def before (nfds))

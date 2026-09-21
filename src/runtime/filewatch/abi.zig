@@ -65,25 +65,6 @@ pub const invalid_handle_value: ?*anyopaque = @ptrFromInt(std.math.maxInt(usize)
 /// The four implementations a target can compile.
 pub const Backend = enum { none, inotify, windows, kqueue };
 
-/// `OVERLAPPED`, restated for the reason `net.zig` and `ev/stream.zig` restate
-/// it: Zig 0.16's `std.os.windows` no longer declares it, and no system header
-/// this file translates has it.
-pub const OVERLAPPED = extern struct {
-    Internal: usize,
-    InternalHigh: usize,
-    Offset: u32,
-    OffsetHigh: u32,
-    hEvent: ?*anyopaque,
-};
-
-/// An `OVERLAPPED` with the transfer count beside it, which is what an
-/// asynchronous read or write on Windows needs. `WSAOVERLAPPED` has the same
-/// layout, so one member serves the socket calls too.
-pub const Overlapped = extern struct {
-    as: OVERLAPPED,
-    bytes_transfered: u32,
-};
-
 // ==========================================================================
 // Public functions
 // ==========================================================================

@@ -136,6 +136,11 @@ pub const mode_bad_length: i32 = 1;
 pub const mode_ok: i32 = 0;
 pub const mode_repeated: i32 = 4;
 
+/// The most bytes a mode string handed to `fopen` occupies, including the `b`
+/// Windows adds to it and the terminator. `scanMode` bounds a mode keyword at
+/// ten.
+const mode_buf_len: usize = 12;
+
 /// Whether this is a Plan 9 build. `c.dup` takes a second argument there and
 /// `c.fopen` needs no close-on-exec fixup; both branches are unreachable from
 /// Zig, because Plan 9 is not one of this project's targets, and are recorded
@@ -291,7 +296,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "* w - allow writing to the file\n\n" ++
             "* a - append to the file\n\n" ++
             "Following one of the initial flags, 0 or more of the following flags can be appended:\n\n" ++
-            "* b - open the file in binary mode (rather than text mode)\n\n" ++
+            "* b - accepted and has no effect: a file is always opened in binary mode\n\n" ++
             "* + - append to the file instead of overwriting it\n\n" ++
             "* n - error if the file cannot be opened instead of returning nil\n\n" ++
             "See fopen (<stdio.h>, C99) for further details."),
@@ -586,6 +591,27 @@ fn XPrintf(comptime newline: bool) type {
     };
 }
 
+/// Copies a mode keyword into `out` with a `b` appended where it has none,
+/// and returns the copy.
+///
+/// `given` is a mode `scanMode` accepted, so it is at most ten bytes and the
+/// copy, the `b` and the terminator fit. A mode already naming `b` is copied
+/// unchanged. This function cannot raise.
+fn binaryMode(given: [*:0]const u8, out: *[mode_buf_len]u8) [*:0]const u8 {
+    var len: usize = 0;
+    var has_binary = false;
+    while (given[len] != 0 and len < out.len - 2) : (len += 1) {
+        out[len] = given[len];
+        if (out[len] == 'b') has_binary = true;
+    }
+    if (!has_binary) {
+        out[len] = 'b';
+        len += 1;
+    }
+    out[len] = 0;
+    return @ptrCast(out);
+}
+
 /// `(file/close f)`.
 fn cfunFclose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
@@ -610,6 +636,10 @@ fn cfunFflush(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(file/open path &opt mode buffer-size)`.
+///
+/// The file is opened in binary mode on every platform. On Windows the `b`
+/// a mode keyword lacks is added before `fopen` sees it, so the `b` flag is
+/// accepted and changes nothing.
 fn cfunFopen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fname = try args_core.getString(argv, 0);
@@ -629,14 +659,31 @@ fn cfunFopen(argv: []repr.Value) raise.Error!repr.Value {
         try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
         flags = file_read;
     }
-    const f = open(@ptrCast(fname), @ptrCast(fmode));
+    var mode_ptr: [*:0]const u8 = @ptrCast(fmode);
+    var mode_buf: [mode_buf_len]u8 = undefined;
+    // Windows opens binary whatever the mode asked for. The C library's text
+    // mode there writes a newline as CRLF, and `slurp` and `spit` open
+    // binary, so a text-mode file would not read back what it wrote.
+    if (windows) mode_ptr = binaryMode(mode_ptr, &mode_buf);
+    const f = open(@ptrCast(fname), mode_ptr);
+    // Windows fails the open for a directory instead of opening one, so the
+    // check below never sees it and the path is asked about here. Only where
+    // the open already failed, so a successful one pays nothing.
+    if (f == null and pathIsDirectory(@ptrCast(fname))) {
+        return pp_format.panicf("cannot open directory: %s", .{fname});
+    }
     var bufsize: usize = bufsiz;
     if (f) |handle| {
+        // The open file is this function's until `makef` below takes it, and
+        // each of the three lines between here and there can raise, so one
+        // `errdefer` closes it rather than a line at each site. Without it a
+        // refused buffer size leaves the file open, which POSIX still unlinks
+        // and Windows refuses to.
+        errdefer _ = close(streamOfHandle(handle));
         // A directory that `c.fopen` accepted is rejected here. The test is
         // `host_stat.zig`'s rather than this file's: see the note there for
         // why a `struct stat` is read in one place for all four targets.
         if (host_stat.isDirectory(handle)) {
-            _ = close(streamOfHandle(handle));
             return pp_format.panicf("cannot open directory: %s", .{fname});
         }
         bufsize = try args_core.optSize(argv, 2, bufsiz);
@@ -954,6 +1001,23 @@ fn makef(f: ?*FILE, flags: i32, bufsize: usize) *File {
     return iof;
 }
 
+/// Whether `path` names a directory, asked of the filesystem rather than of an
+/// open descriptor.
+///
+/// Reports false away from Windows, which is the one platform that calls it:
+/// `cfunFopen` asks it where `fopen` failed, and `host_stat.isDirectory`
+/// needs a stream that a directory there never yields. This function cannot
+/// raise.
+fn pathIsDirectory(path: [*:0]const u8) bool {
+    if (!windows) return false;
+    // `INVALID_FILE_ATTRIBUTES` is `0xFFFF_FFFF` and
+    // `FILE_ATTRIBUTE_DIRECTORY` is `0x10`. `os/fs.zig` spells the first as
+    // the number too.
+    const attributes = c.GetFileAttributesA(path);
+    if (attributes == 0xFFFF_FFFF) return false;
+    return attributes & 0x10 != 0;
+}
+
 /// The body `print` and its three siblings share, reading the destination from
 /// a dynamic binding.
 fn print(
@@ -1264,4 +1328,21 @@ test "mode reconstruction collapses append over write" {
 
     try std.testing.expectEqual(@as(i32, 0), modeFromFlags(file_binary, &out));
     try std.testing.expectEqual(@as(u8, 0), out[0]);
+}
+
+test "a mode gains the b it lacks and keeps the one it has" {
+    var out: [mode_buf_len]u8 = undefined;
+    try std.testing.expectEqualStrings("rb", std.mem.span(binaryMode("r", &out)));
+    try std.testing.expectEqualStrings("wb", std.mem.span(binaryMode("w", &out)));
+    try std.testing.expectEqualStrings("ab", std.mem.span(binaryMode("a", &out)));
+    try std.testing.expectEqualStrings("r+b", std.mem.span(binaryMode("r+", &out)));
+    try std.testing.expectEqualStrings("rnb", std.mem.span(binaryMode("rn", &out)));
+
+    try std.testing.expectEqualStrings("rb", std.mem.span(binaryMode("rb", &out)));
+    try std.testing.expectEqualStrings("wb+", std.mem.span(binaryMode("wb+", &out)));
+
+    // Ten bytes is the most `scanMode` lets past its length check, so a copy
+    // of ten plus the `b` and the terminator is what the buffer is sized for.
+    try std.testing.expectEqualStrings("rbnnnnnnnn", std.mem.span(binaryMode("rbnnnnnnnn", &out)));
+    try std.testing.expectEqualStrings("rnnnnnnnnnb", std.mem.span(binaryMode("rnnnnnnnnn", &out)));
 }

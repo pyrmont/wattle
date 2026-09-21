@@ -410,12 +410,26 @@ pub inline fn assert(comptime where: std.builtin.SourceLocation, cond: bool, com
 /// Stops sending events to a fiber's callback and releases what it had.
 pub fn asyncEnd(fiber: *fibers.Fiber) void {
     if (fiber.ev_callback) |cb| {
+        // A transfer still in flight is being abandoned rather than finished,
+        // which a timeout or a cancel does. On Windows it is outstanding with
+        // the host until it is cancelled: it would take its bytes off the
+        // stream and copy them into a state nothing reads any more, because
+        // `ev/backend.zig`'s loop matches a completion by the fiber's state
+        // and this fiber's is about to stop being that. `CancelIoEx` still
+        // queues a completion, so the refcount and the state are released on
+        // the same path as before. The state's first field is its
+        // `OVERLAPPED`, which is what the loop matches and what this cancels.
+        if (windows and fiber.flags.evInFlight()) {
+            if (fiber.ev_state) |state| {
+                _ = c.CancelIoEx(fiber.ev_stream.?.handle, @ptrCast(@alignCast(state)));
+            }
+        }
         if (fiber.ev_stream.?.read_fiber == fiber) fiber.ev_stream.?.read_fiber = null;
         if (fiber.ev_stream.?.write_fiber == fiber) fiber.ev_stream.?.write_fiber = null;
         ev_callback.dispatchTotal(ev_callback.of(cb), fiber, constants.AsyncEvent.deinit);
-        _ = gc_alloc.gcunroot(wrap.fromAbstract(fiber.ev_stream.?));
         fiber.ev_callback = null;
         if (!fiber.flags.evInFlight()) {
+            asyncUnroot(fiber.ev_stream.?);
             if (fiber.ev_state) |state| {
                 utils.free(state);
                 fiber.ev_state = null;
@@ -460,6 +474,15 @@ pub fn asyncStartFiber(
     gc_alloc.gcroot(wrap.fromAbstract(s));
     fiber.?.ev_state = state;
     try callback(fiber.?, constants.AsyncEvent.init);
+}
+
+/// Releases the stream root added by `asyncStartFiber`.
+///
+/// Called by `asyncEnd` when no transfer is in flight, or by the unmatched
+/// IOCP completion path. The root remains after `asyncEnd` for an abandoned
+/// transfer because its completion key is the address of `s`.
+pub fn asyncUnroot(s: *stream.Stream) void {
+    _ = gc_alloc.gcunroot(wrap.fromAbstract(s));
 }
 
 /// Yields to the event loop: a raise with the `.event` signal, returned rather

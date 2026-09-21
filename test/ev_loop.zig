@@ -329,6 +329,13 @@ fn theStreamExtension() void {
     expect(s.flags == @as(u32, @intCast(constants.stream_readable)));
     expect(s.read_fiber == null and s.write_fiber == null);
     expect(@intFromPtr(s.methods) == @intFromPtr(&probe_methods));
+    // A fresh stream starts at the head of the file. `makeStreamExt` casts
+    // over memory `newBytes` does not zero, so every field it means to define
+    // it must write: a declaration's default serves a struct literal and this
+    // is not one. The field exists only on Windows, so only Windows can be
+    // asked -- which is the whole reason it is asked here rather than left to
+    // a read somewhere returning nil for a reason nobody would guess.
+    if (windows) expect(s.position == 0);
 
     // The abstract's size is the caller's, not the header's.
     expect(boundary.abstractHead(ps).size == @sizeOf(ProbeStream));
@@ -458,9 +465,9 @@ fn theNotCloseableStream() void {
 
 /// A stream is a file descriptor, so both directions refuse to work without
 /// `marshal_unsafe`, and the refusal reaches an embedder as the report
-/// `marsh.marshalAbi` leaves. `ev/thread` is the only thing in Janet that
-/// marshals unsafely, and it never marshals a bare stream, so neither the
-/// refusal nor the success path has a Janet spelling.
+/// `marsh.marshalAbi` leaves. `ev/thread` and a threaded channel both marshal
+/// unsafely, and either of them can be given a stream, so the Windows refusal
+/// has a Janet spelling too. `suite-ev2` has it.
 fn theStreamMarshalling() void {
     const handles = probePipe();
     const s = try_(stream.makeStream(handles[0], @intCast(constants.stream_readable), null));
@@ -472,6 +479,22 @@ fn theStreamMarshalling() void {
     {
         const r = harness.abiRaised(subsystems.marsh.marshalAbi, .{ buffer, streamv, null, 0 }).?;
         expect(r.says("can only marshal stream with unsafe flag"));
+    }
+
+    // Windows stops here, and the refusal is the claim. A completion port
+    // association is a property of the file object, and a duplicate names the
+    // same file object, so the receiving VM cannot associate it with its own
+    // port. Tolerating that would leave the receiving VM's completions
+    // arriving at this VM's loop under this stream's key.
+    if (windows) {
+        const r = harness.abiRaised(
+            subsystems.marsh.marshalAbi,
+            .{ buffer, streamv, null, constants.marshal_unsafe },
+        ).?;
+        expect(r.says("a stream does not marshal on Windows: this runtime does not move a registered handle to another completion port"));
+        try_(stream.streamClose(s));
+        closeFarEnd(handles);
+        return;
     }
 
     // With the flag, it marshals, and duplicates the descriptor on the way
@@ -508,8 +531,9 @@ fn theStreamMarshalling() void {
     expect(back.flags == s.flags);
     expect(back.read_fiber == null and back.write_fiber == null);
 
-    if (!windows) {
-        // Both ends really do read the same pipe.
+    // Both ends really do read the same pipe. No guard: Windows returned
+    // above, so everything from here is POSIX.
+    {
         var byte: u8 = 'z';
         var got: u8 = 0;
         expect(c.write(handles[1], @ptrCast(&byte), 1) == 1);
@@ -988,6 +1012,48 @@ fn theLoopWaitsForASleepingTask() void {
     expect(ev.loopDone());
 }
 
+/// A chunked read over a pipe that cannot be satisfied when it is issued.
+///
+/// The writer sends three bytes, sleeps, and sends three more, so the read
+/// waits on the backend at least once before it has its six. `suite-net` has
+/// the same shape over a socket and it does not complete on Windows. A
+/// failure here is the read path, and a pass narrows it to the socket.
+///
+/// The read is bounded by a deadline, so a backend that never wakes it fails
+/// this case rather than hanging the driver.
+fn theChunkedReadThatWaits() void {
+    const out = doString(
+        \\(def out (ev/chan 8))
+        \\(def [r w] (os/pipe))
+        \\(def reader
+        \\  (fiber/new
+        \\    (fn []
+        \\      (ev/give out (in (protect (ev/with-deadline 1 (string (ev/chunk r 6)))) 1))
+        \\      (:close r))
+        \\    :e))
+        \\(def writer
+        \\  (fiber/new
+        \\    (fn [] (ev/write w "abc") (ev/sleep 0.05) (ev/write w "def") (:close w))
+        \\    :e))
+        \\[out reader writer]
+    );
+    gc_alloc.gcroot(out);
+    defer _ = gc_alloc.gcunroot(out);
+    const tup = harness.elems(out);
+    const chan = try_(channel.getChannel(tup[0..1], 0)).?;
+
+    ev.schedule(wrap.toFiber(tup[1]), wrap.fromNil());
+    ev.schedule(wrap.toFiber(tup[2]), wrap.fromNil());
+    raise.toAbi(ev.loop());
+
+    // The reader reports the deadline's message where the read did not
+    // finish, so the channel holds one or the other and never nothing.
+    var got = wrap.fromNil();
+    expect(try_(channel.channelTake(chan, &got)));
+    expect(harness.stringValueIs(got, "abcdef"));
+    expect(ev.loopDone());
+}
+
 /// `cancel` appends too, and nothing above distinguishes that from prepending.
 /// Both fibers report into the same channel, so the order they reach it in is
 /// the assertion, and the cancel's `sched_id` bump means the schedule that
@@ -1111,46 +1177,57 @@ fn theWrongArgumentIsNotAChannel() void {
 // Entry
 // ==========================================================================
 
+/// Runs one case, naming it first on the host that cannot say which it was.
+///
+/// `harness.announce` carries the reasoning. This contract keeps its own VM
+/// for the whole run, so unlike `os_surface`'s `section` there is nothing to
+/// open or close around the body.
+fn inCase(comptime name: []const u8, comptime body: fn () void) void {
+    harness.announce("ev_loop", name);
+    body();
+}
+
 pub fn run() void {
     harness.init();
     defer vm_lifecycle.deinit();
 
-    theProtectedScope();
+    inCase("theProtectedScope", theProtectedScope);
 
-    theEmbedderChannelApi();
-    theThreadedChannel();
-    theChannelCapacityBound();
-    theClosedChannel();
-    theChannelGetters();
+    inCase("theEmbedderChannelApi", theEmbedderChannelApi);
+    inCase("theThreadedChannel", theThreadedChannel);
+    inCase("theChannelCapacityBound", theChannelCapacityBound);
+    inCase("theClosedChannel", theClosedChannel);
+    inCase("theChannelGetters", theChannelGetters);
 
-    theStreamExtension();
-    theDefaultMethods();
-    theStreamRendering();
-    theStreamFlagMessages();
-    theNotCloseableStream();
-    theStreamMarshalling();
+    inCase("theStreamExtension", theStreamExtension);
+    inCase("theDefaultMethods", theDefaultMethods);
+    inCase("theStreamRendering", theStreamRendering);
+    inCase("theStreamFlagMessages", theStreamFlagMessages);
+    inCase("theNotCloseableStream", theNotCloseableStream);
+    inCase("theStreamMarshalling", theStreamMarshalling);
 
     if (!windows) {
-        thePipeModes();
-        theLastError();
+        inCase("thePipeModes", thePipeModes);
+        inCase("theLastError", theLastError);
     }
 
-    theLoopExitCondition();
-    thePostedEventRoundTrip();
-    theNullCallback();
-    theThreadedReplyTags();
+    inCase("theLoopExitCondition", theLoopExitCondition);
+    inCase("thePostedEventRoundTrip", thePostedEventRoundTrip);
+    inCase("theNullCallback", theNullCallback);
+    inCase("theThreadedReplyTags", theThreadedReplyTags);
 
-    theOrderedTimeouts();
-    theTwoTimeoutConstructors();
-    theCancelOfANonTask();
-    theWakeAnswers();
-    theScheduleSoonOrder();
-    theScheduleSignalOrder();
-    theScheduleSignalIsFifo();
-    theMarkedTaskValues();
-    theLoopWaitsForASleepingTask();
-    theCancelAppends();
-    theThreadedFlag();
-    theOptChannelBoundary();
-    theWrongArgumentIsNotAChannel();
+    inCase("theOrderedTimeouts", theOrderedTimeouts);
+    inCase("theTwoTimeoutConstructors", theTwoTimeoutConstructors);
+    inCase("theCancelOfANonTask", theCancelOfANonTask);
+    inCase("theWakeAnswers", theWakeAnswers);
+    inCase("theScheduleSoonOrder", theScheduleSoonOrder);
+    inCase("theScheduleSignalOrder", theScheduleSignalOrder);
+    inCase("theScheduleSignalIsFifo", theScheduleSignalIsFifo);
+    inCase("theMarkedTaskValues", theMarkedTaskValues);
+    inCase("theLoopWaitsForASleepingTask", theLoopWaitsForASleepingTask);
+    inCase("theChunkedReadThatWaits", theChunkedReadThatWaits);
+    inCase("theCancelAppends", theCancelAppends);
+    inCase("theThreadedFlag", theThreadedFlag);
+    inCase("theOptChannelBoundary", theOptChannelBoundary);
+    inCase("theWrongArgumentIsNotAChannel", theWrongArgumentIsNotAChannel);
 }

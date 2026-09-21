@@ -138,7 +138,8 @@ const expected_bindings: []const [*:0]const u8 = blk: {
 
 /// Whether the process functions are compiled *and* reachable. Every one of
 /// them is POSIX-only in this contract's assertions.
-const has_processes = !no_processes and !windows;
+const has_processes = !no_processes;
+
 const no_cryptorand = !config.cryptorand;
 const no_docstrings = !config.docstrings;
 const no_locales = !config.locales;
@@ -149,22 +150,147 @@ const no_symlinks = os_files.no_symlinks;
 /// The two the surface itself reads, so that this file cannot disagree with
 /// its subject about which entry points exist.
 const no_umask = os_files.no_umask;
+/// Whether the cases that need POSIX itself run, rather than merely a process.
+///
+/// Windows spawns and waits, so the process type is exercised there. What it
+/// has no answer for is the rest: `theSignalTable` and `theSigaction` name
+/// POSIX signals and assert 128 plus the signal number, `theTrampolines`
+/// raises `SIGUSR1` and `SIGUSR2` directly, and `thePosixFork` forks.
+/// `theSpawnRedirection` and `theExecuteEnvironment` could be adapted and have
+/// not been: `echo` ends a line with CRLF on Windows and `/bin/cat` has no
+/// plain equivalent, so their expectations need splitting per platform first.
+const posix_processes = has_processes and !windows;
 const reduced_os = config.reduced_os;
-/// The directory the sources below write in, which each of them names as
-/// `<scratch>` and `scratchPath` splices this into.
+/// Binds `scratch`, the directory the sources below write in, which each of
+/// them names and `withScratch` prepends this to.
+///
+/// It is an expression the source evaluates rather than a literal spliced into
+/// it, because one of the three answers is not known until the program runs.
 ///
 /// `/tmp` rather than the working directory, for the reason
-/// `theOptionalArguments` gives. WASI is the exception: a WASI program reaches
-/// only the directories its host maps in, and the run step maps in the working
-/// directory alone. The hazard that sends the others to `/tmp` is not there --
-/// a mode-0000 file needs an `os/chmod` that does something, and on WASI it
-/// does not.
-const scratch = if (builtin.os.tag == .wasi)
-    "wattle-os-surface-contract"
+/// `theOptionalArguments` gives: a run that stops part way can leave a file
+/// behind that a later run cannot delete, and it should not leave it in the
+/// tree. Windows has the same hazard in its own spelling -- `_chmod` sets the
+/// read-only attribute and Windows refuses to delete a read-only file -- but
+/// it has no `/tmp`, so the directory is the one `TEMP` names. That variable
+/// is per-user and always set there, which a fixed path such as `C:/tmp` is
+/// not: it would have to be created, and on a drive root that is not always
+/// writable.
+///
+/// WASI is the exception that skips all of this: a WASI program reaches only
+/// the directories its host maps in, the run step maps in the working
+/// directory alone, and the hazard is not there either -- a mode-0000 file
+/// needs an `os/chmod` that does something, and on WASI it does not.
+const scratch_def = if (windows)
+    \\(def scratch (string (or (os/getenv "TEMP") (os/getenv "TMP") ".")
+    \\                    "/wattle-os-surface-contract"))
+else if (builtin.os.tag == .wasi)
+    \\(def scratch "wattle-os-surface-contract")
 else
-    "/tmp/wattle-os-surface-contract";
+    \\(def scratch "/tmp/wattle-os-surface-contract")
+;
 
 const windows = builtin.os.tag == .windows;
+
+/// The `(os/setenv "TZ" ...)` the DST assertions run under, which has to name
+/// a zone the *host's* `tzset` can parse or the slot is not observable.
+///
+/// POSIX takes the switch rules in the string itself, which is what makes it
+/// the same zone on every host: Alpine ships no zoneinfo, and musl and Darwin
+/// both parse the rules natively. The Windows CRT reads only
+/// `tzn[+|-]hh[:mm[:ss]][dzn]` and has no comma-rule syntax at all -- it
+/// supplies the United States' rules itself once `dzn` is present -- so the
+/// rules have to come *off* there. A run with them on reported `dst span 0`:
+/// the string was not parsed, no daylight rule was in effect, and `mktime`
+/// shifted nothing.
+/// What `:dst` does to `os/mktime`, which is not the same question on every
+/// host.
+///
+/// POSIX reads the slot as an override: `tm_isdst` of 1 asserts that daylight
+/// time is in effect whatever the date says, and `mktime` moves the hour to
+/// match. The Windows CRT derives the answer from the date and the slot moves
+/// nothing, so the span there is zero rather than an hour.
+///
+/// Measured, after two readings of Microsoft's documentation had produced two
+/// wrong guesses at the `TZ` spelling. The run reported
+/// `dst span 0 tz=EST5EDT zone=EST local-hours=19 utc-hours=0`: the variable
+/// had arrived, `%Z` resolved to EST, and the five hours between the local and
+/// UTC renderings are the offset EST owes. The zone had taken hold entirely
+/// and only the override was missing, which no `TZ` spelling would have
+/// supplied.
+///
+/// **The Windows arm asserts the zone before the span.** A span of zero is
+/// also what a host that ignored `TZ` altogether would report, so asserting it
+/// alone would pass for the wrong reason -- which is the failure mode two
+/// other blocks in this file were repaired for.
+const the_dst_span = if (windows)
+    \\  (assert (= "EST" (os/strftime "%Z" 0 true)) (tz-evidence dst-span))
+    \\  (assert (= 19 ((os/date 0 true) :hours)) (tz-evidence dst-span))
+    \\  (assert (= 0 dst-span) (tz-evidence dst-span))
+    \\  (assert (= 0 dst-span-hash) (tz-evidence dst-span-hash))
+else
+    \\  (assert (= 3600 dst-span) (tz-evidence dst-span))
+    \\  (assert (= 3600 dst-span-hash) (tz-evidence dst-span-hash))
+;
+
+/// Opens `rw` with the stream mode turned off, which each platform spells
+/// with the letter for the thing being turned off: `N` is `O_NONBLOCK` and
+/// `V` is `FILE_FLAG_OVERLAPPED`. `os/open`'s docstring lists them under
+/// "Posix-only" and "Windows-only" respectively, and an unknown letter is
+/// ignored rather than refused -- so `:rN` on Windows opened an ordinary
+/// readable stream and the refusal asserted below never came.
+///
+/// They are the same test either way: both set `disable_stream_mode`, and
+/// that is what zeroes the stream's flags (`os/fs/open.zig:114`), leaving it
+/// neither readable nor writable.
+/// The exclusive-create refusal. POSIX reports `strerror(EEXIST)`, which is
+/// `File exists` and is the runtime's to keep stable. Windows reports whatever
+/// `FormatMessageA` gives for `ERROR_FILE_EXISTS`
+/// (`ev/stream.zig`'s `evLasterr`), which is the *operating system's* wording
+/// and is localised, so asserting its text would pin an English-language
+/// host. What is the runtime's claim either way is that the second create is
+/// refused, and that is what the Windows arm asserts.
+const the_exclusive_refusal = if (windows)
+    \\  (assert (not (first (protect (os/open (p "ce") :wce))))
+    \\          (string "exclusive " (describe (protect (os/open (p "ce") :wce)))))
+else
+    \\  (assert (= "File exists" (in (protect (os/open (p "ce") :wce)) 1))
+    \\          (string "exclusive " (describe (in (protect (os/open (p "ce") :wce)) 1))))
+;
+
+/// The permissions a file created with `8r640` reports back.
+///
+/// POSIX applies the mode and reports it. Windows never sees it: `cfunOpen`
+/// reads the mode but passes it only to `c.open`, and the `CreateFileA` arm
+/// takes file attributes instead (`os/fs/open.zig:111`). So the file arrives
+/// with the ordinary attributes, readable and writable.
+///
+/// What comes back then is not `rw-------` either. Windows has three mode bits
+/// and `hostPermToUnix` spreads each across all three triads
+/// (`os/fs/stat.zig:291`), so readable plus writable is `0o666` and the three
+/// triads are always identical. The executable bit is not set: the CRT sets it
+/// by file extension, and `md` has none.
+const the_create_mode = if (windows)
+    \\  (assert (= "rw-rw-rw-" (os/stat (p "md") :permissions))
+    \\          (string "create mode " (os/stat (p "md") :permissions)
+    \\                  " int " (os/stat (p "md") :int-permissions)))
+else
+    \\  (assert (= "rw-r-----" (os/stat (p "md") :permissions))
+    \\          (string "create mode " (os/stat (p "md") :permissions)
+    \\                  " int " (os/stat (p "md") :int-permissions)))
+;
+
+const open_no_stream_mode = if (windows)
+    \\(def s (os/open (p "rw") :rV))
+else
+    \\(def s (os/open (p "rw") :rN))
+;
+
+const set_contract_tz = if (windows)
+    \\  (os/setenv "TZ" "EST5EDT")
+else
+    \\  (os/setenv "TZ" "EST5EDT,M3.2.0,M11.1.0")
+;
 
 // ==========================================================================
 // Aliased types
@@ -197,21 +323,33 @@ const Field = struct {
 // Cases
 // ==========================================================================
 
-/// One source with every `<scratch>` in it replaced by `scratch`.
+/// One source with `scratch_def` in front of it and every `"<scratch>"` in it
+/// turned into a reference to the binding that defines.
 ///
-/// The sources are comptime strings, so the splice is comptime too and each
-/// call site still reads as one literal.
-fn scratchPath(comptime source: []const u8) []const u8 {
+/// `"<scratch>/"` is rewritten to `scratch "/"` so that a placeholder written
+/// inside a `(string ...)` form becomes two arguments to it rather than one
+/// string that happens to contain the name.
+///
+/// The sources are comptime strings, so all of this is comptime and each call
+/// site still reads as one literal.
+fn withScratch(comptime source: []const u8) []const u8 {
     return comptime blk: {
         // One scan of each source, which is longer than the default quota.
         @setEvalBranchQuota(20000);
-        var spliced: []const u8 = "";
+        var out: []const u8 = scratch_def ++ "\n";
         var rest: []const u8 = source;
-        while (std.mem.indexOf(u8, rest, "<scratch>")) |at| {
-            spliced = spliced ++ rest[0..at] ++ scratch;
-            rest = rest[at + "<scratch>".len ..];
+        while (std.mem.indexOf(u8, rest, "\"<scratch>")) |at| {
+            out = out ++ rest[0..at] ++ "scratch";
+            rest = rest[at + "\"<scratch>".len ..];
+            // Either `"<scratch>/..."`, whose remainder stays a string, or
+            // `"<scratch>"`, whose closing quote is now spare.
+            if (std.mem.startsWith(u8, rest, "\"")) {
+                rest = rest[1..];
+            } else {
+                out = out ++ " \"";
+            }
         }
-        break :blk spliced ++ rest;
+        break :blk out ++ rest;
     };
 }
 
@@ -256,8 +394,17 @@ fn theStatRead() void {
     expect(numbers[Field.permissions] == 0.0);
     expect(numbers[Field.size] > 0.0);
     expect(numbers[Field.nlink] >= 1.0);
-    expect(numbers[Field.inode] > 0.0);
     expect(numbers[Field.modified] > 0.0);
+    // The inode is a file's identity everywhere but Windows, where `_ino_t`
+    // is sixteen bits wide and the filesystems do not fill it: the reader
+    // copies the zero `_stat64` wrote. That is a slot written with a zero
+    // rather than one left at the array's, which is why it is asserted apart
+    // from the pair below.
+    if (windows) {
+        expect(numbers[Field.inode] == 0.0);
+    } else {
+        expect(numbers[Field.inode] > 0.0);
+    }
     if (windows) {
         // The two slots no Windows stat has. They are zero because the array
         // is zeroed, not because anything wrote them.
@@ -453,24 +600,37 @@ fn theClock() void {
 
 /// The environment lock is a no-op in every build this tree can produce, so
 /// what is left to assert is the shape of what crosses it: `os/environ` must
-/// preserve a value containing `=`, and an empty value is a value rather than
-/// an absence.
+/// preserve a value containing `=`, and what an empty value means.
+///
+/// The empty value is where the two platforms part, and both are asserted
+/// rather than one skipped. POSIX holds one, so it is a value and not an
+/// absence and `os/getenv`'s default is not reached for it. The Windows CRT
+/// cannot hold one: `_putenv_s` *spells* removal as an empty value
+/// (`src/runtime/os.zig:222`), so there setting a variable to `""` and
+/// unsetting it are the same call, and the default is reached.
 fn theEnvironment() void {
     const env: *tables.Table = harness.coreEnv();
     harness.inFiber(env,
         \\(os/setenv "WATTLE_OS_SURFACE_A" "x=y=z")
         \\(assert (= "x=y=z" (os/getenv "WATTLE_OS_SURFACE_A")))
         \\(assert (= "x=y=z" (get (os/environ) "WATTLE_OS_SURFACE_A")))
+    );
+    if (windows) harness.inFiber(env,
+        \\(os/setenv "WATTLE_OS_SURFACE_A" "")
+        \\(assert (nil? (os/getenv "WATTLE_OS_SURFACE_A")))
+        \\(assert (nil? (get (os/environ) "WATTLE_OS_SURFACE_A")))
+        \\(assert (= :d (os/getenv "WATTLE_OS_SURFACE_A" :d)))
+    ) else harness.inFiber(env,
         \\(os/setenv "WATTLE_OS_SURFACE_A" "")
         \\(assert (= "" (os/getenv "WATTLE_OS_SURFACE_A")))
         \\(assert (= "" (get (os/environ) "WATTLE_OS_SURFACE_A")))
+        \\(assert (= "" (os/getenv "WATTLE_OS_SURFACE_A" :d)))
+    );
+    harness.inFiber(env,
         \\(os/setenv "WATTLE_OS_SURFACE_A")
         \\(assert (nil? (os/getenv "WATTLE_OS_SURFACE_A")))
         \\(assert (nil? (get (os/environ) "WATTLE_OS_SURFACE_A")))
         \\(assert (= :d (os/getenv "WATTLE_OS_SURFACE_A" :d)))
-        \\(os/setenv "WATTLE_OS_SURFACE_A" "")
-        \\(assert (= "" (os/getenv "WATTLE_OS_SURFACE_A" :d)))
-        \\(os/setenv "WATTLE_OS_SURFACE_A")
     );
 }
 
@@ -542,22 +702,40 @@ fn theOptionalArguments() void {
         \\; in a container, where the zone is UTC and forcing DST changes
         \\; nothing.
         \\;
-        \\; A POSIX TZ string supplies the rule without tzdata, so it is the same
-        \\; zone on every host -- Alpine ships no zoneinfo and musl parses the
-        \\; string natively, as does Darwin. That makes the difference exactly
-        \\; one hour rather than merely non-zero, which is the stronger claim and
-        \\; the one the slot is actually for.
+        \\; A TZ string supplies the rule without tzdata, so the zone does not
+        \\; depend on what the host has installed -- Alpine ships no zoneinfo and
+        \\; musl parses the string natively, as does Darwin. That makes the
+        \\; difference exactly one hour rather than merely non-zero, which is the
+        \\; stronger claim and the one the slot is actually for.
+        \\;
+        \\; The string itself is not the same on every host: `set_contract_tz`
+        \\; above is spliced in below, and says why Windows takes a shorter one.
         \\;
         \\; WASI is where that argument runs out: it has no time zones and no
         \\; `tzset`, local time is UTC, and `TZ` names nothing. The slot is not
         \\; observable there at all.
         \\(unless (= :wasi (os/which))
         \\  (def saved-tz (os/getenv "TZ"))
-        \\  (os/setenv "TZ" "EST5EDT,M3.2.0,M11.1.0")
-        \\  (assert (= 3600 (- (os/mktime (merge base {:dst false}) true)
-        \\                     (os/mktime (merge base {:dst true}) true))))
-        \\  (assert (= 3600 (- (os/mktime (hash-map |(kvs base) :dst false) true)
-        \\                     (os/mktime (hash-map |(kvs base) :dst true) true))))
+    ++ "\n" ++ set_contract_tz ++ "\n" ++
+        \\  ; Each span is bound before it is asserted so that a host which
+        \\  ; disagrees reports the value it produced, and the message carries
+        \\  ; the rest of the reading: whether the variable is set at all, what
+        \\  ; zone the *other* code path resolved from it -- `os/strftime` and
+        \\  ; `os/date` reach `tzset` through `timeToTm` -- and the local and
+        \\  ; UTC renderings of one instant, whose difference is the zone's
+        \\  ; base offset. Two readings of the Windows CRT's documentation
+        \\  ; produced two wrong guesses here before this was measured instead.
+        \\  (def dst-span (- (os/mktime (merge base {:dst false}) true)
+        \\                   (os/mktime (merge base {:dst true}) true)))
+        \\  (def dst-span-hash (- (os/mktime (hash-map |(kvs base) :dst false) true)
+        \\                        (os/mktime (hash-map |(kvs base) :dst true) true)))
+        \\  (defn tz-evidence [span]
+        \\    (string "dst span " span
+        \\            " tz=" (os/getenv "TZ")
+        \\            " zone=" (os/strftime "%Z" 0 true)
+        \\            " local-hours=" ((os/date 0 true) :hours)
+        \\            " utc-hours=" ((os/date 0) :hours)))
+    ++ "\n" ++ the_dst_span ++ "\n" ++
         \\  (assert (= (os/mktime base true)
         \\             (os/mktime (merge base {:dst false}) true)))
         \\  (assert (= (os/mktime base true) (os/mktime (merge-into !{} base) true)))
@@ -605,7 +783,7 @@ fn theOptionalArguments() void {
 fn theOpenFlags() void {
     if (!harness.has_ev) return;
     var env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env, scratchPath(
+    harness.inFiber(env, withScratch(
         \\(os/mkdir "<scratch>")
         \\(defn p [n] (string "<scratch>/" n))
         \\(each n (os/dir "<scratch>") (os/rm (p n)))
@@ -617,6 +795,18 @@ fn theOpenFlags() void {
         \\(assert (= "bad stream, expected writable stream"
         \\           (in (protect (:write s "z")) 1)))
         \\(:close s)
+        \\; A stream has one position and it persists between operations. Three
+        \\; reads of one byte must give three different bytes: nothing else in
+        \\; the tree asserts this, which is how a Windows stream that began
+        \\; every read at the head of the file went unnoticed.
+        \\;
+        \\; After the close, not beside it. `os/open` takes no share flags here,
+        \\; and a Windows handle opened without them is exclusive: a second
+        \\; open of a file already open is refused, where POSIX allows it.
+        \\(def sq (os/open (p "ro") :r))
+        \\(def seq (string (:read sq 1) (:read sq 1) (:read sq 1)))
+        \\(assert (= "abc" seq) (string "sequential reads " (describe seq)))
+        \\(:close sq)
         \\(def s2 (os/open (p "wo") :w))
         \\(:write s2 "z")
         \\(assert (= "bad stream, expected readable stream"
@@ -624,29 +814,36 @@ fn theOpenFlags() void {
         \\(:close s2)
         \\(def s3 (os/open (p "rw") :rw))
         \\(:write s3 "Q")
+        \\; The same position serves both directions: the write left it after
+        \\; the byte it replaced, so the read continues from there.
+        \\(def rest (string (:read s3 2)))
+        \\(assert (= "bc" rest) (string "read after write " (describe rest)))
         \\(:close s3)
-        \\(assert (= "Qbc" (string (slurp (p "rw")))))
+        \\(assert (= "Qbc" (string (slurp (p "rw"))))
+        \\          (string "rw after write " (describe (string (slurp (p "rw"))))))
     ));
     vm_lifecycle.deinit();
 
     harness.init();
     env = harness.coreEnv();
-    harness.inFiber(env, scratchPath(
+    harness.inFiber(env, withScratch(
         \\(defn p [n] (string "<scratch>/" n))
-        \\(def s (os/open (p "rw") :rN))
+    ++ "\n" ++ open_no_stream_mode ++ "\n" ++
         \\(assert (= "bad stream, expected readable stream"
         \\           (in (protect (:read s 1)) 1)))
         \\(:close s)
         \\(spit (p "ap") "1")
         \\(def a (os/open (p "ap") :wa)) (:write a "2") (:close a)
-        \\(assert (= "12" (string (slurp (p "ap")))))
+        \\(assert (= "12" (string (slurp (p "ap"))))
+        \\          (string "append " (describe (string (slurp (p "ap"))))))
         \\(spit (p "tr") "xyz")
         \\(:close (os/open (p "tr") :wt))
-        \\(assert (= 0 (length (slurp (p "tr")))))
+        \\(assert (= 0 (length (slurp (p "tr"))))
+        \\          (string "truncate " (describe (string (slurp (p "tr"))))))
         \\(:close (os/open (p "ce") :wce))
-        \\(assert (= "File exists" (in (protect (os/open (p "ce") :wce)) 1)))
+    ++ "\n" ++ the_exclusive_refusal ++ "\n" ++
         \\(:close (os/open (p "md") :wc 8r640))
-        \\(assert (= "rw-r-----" (os/stat (p "md") :permissions)))
+    ++ "\n" ++ the_create_mode ++ "\n" ++
         \\(def z (os/open (p "rw") :rZ)) (:close z)
     ));
 }
@@ -661,12 +858,12 @@ fn theOpenFlags() void {
 /// assert `fs_read`.
 ///
 /// `sandbox` is irreversible within a VM, so this runs in a VM of its own and
-/// does its setup before forbidding anything. The file it leaves
-/// behind is cleaned by `theLinks`, which runs after it and removes the whole
+/// does its setup before forbidding anything. The file it leaves behind is
+/// cleaned by `theScratchCleanup`, which runs after it and removes the whole
 /// scratch directory.
 fn theRemoveSandbox() void {
     var env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env, scratchPath(
+    harness.inFiber(env, withScratch(
         \\(protect (os/mkdir "<scratch>"))
         \\(def victim (string "<scratch>/victim"))
         \\(spit victim "x")
@@ -687,7 +884,7 @@ fn theRemoveSandbox() void {
     // must not have changed.
     harness.init();
     env = harness.coreEnv();
-    harness.inFiber(env, scratchPath(
+    harness.inFiber(env, withScratch(
         \\(def victim (string "<scratch>/victim"))
         \\(assert (os/stat victim))
         \\(os/rm victim)
@@ -704,7 +901,7 @@ fn theRemoveSandbox() void {
 fn theLinks() void {
     if (windows) return;
     const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env, scratchPath(
+    harness.inFiber(env, withScratch(
         \\(protect (os/mkdir "<scratch>"))
         \\(defn p [n] (string "<scratch>/" n))
         \\(defn rm [n] (protect (os/rm (p n))))
@@ -730,8 +927,33 @@ fn theLinks() void {
         \\(rm "s")
         \\(os/symlink target (p "s"))
         \\(assert (= :link (os/lstat (p "s") :mode)))
-        \\(each n (os/dir "<scratch>") (protect (os/rm (p n))))
-        \\(os/rmdir "<scratch>")
+    ));
+}
+
+/// Removes the scratch directory, whatever the sections above left in it.
+///
+/// This was the tail of `theLinks` until `theLinks` grew an early return on
+/// Windows and took the cleanup out with it, which left the directory behind
+/// on the one platform that had just been taught to reach it. A section that
+/// every platform runs owns it now, and no section owns another's leftovers.
+///
+/// The mode is cleared before each remove because a file the sections above
+/// made unwritable is one the platform may refuse to delete: `os/chmod` sets
+/// the read-only attribute on Windows, and Windows will not remove a
+/// read-only file. Both calls are `protect`ed -- this runs to leave the
+/// directory gone, not to assert anything about what was in it.
+fn theScratchCleanup() void {
+    const env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env, withScratch(
+        \\(defn p [n] (string "<scratch>/" n))
+        \\; `protect` answers `[ok value]`, so the listing is its second slot
+        \\; and iterating the pair itself walks `true` and the array.
+        \\(def listing (protect (os/dir "<scratch>")))
+        \\(when (first listing)
+        \\  (each n (in listing 1)
+        \\    (protect (os/chmod (p n) 8r666))
+        \\    (protect (os/rm (p n)))))
+        \\(protect (os/rmdir "<scratch>"))
     ));
 }
 
@@ -773,14 +995,23 @@ fn thePipe() void {
 /// pass every suite.
 fn theProcessType() void {
     const env: *tables.Table = harness.coreEnv();
-    harness.inFiber(env,
-        \\(def null (file/open "/dev/null" :w))
-        \\; `/usr/bin/true` stood here and at one site below. Alpine is busybox
-        \\; and puts it at `/bin/true`, so both spawns died with ENOENT the first
-        \\; time this contract ran off macOS.
-        \\; `/bin/sh` is already this file's dependency a dozen lines down and is
-        \\; the one path every POSIX host agrees on.
-        \\(def p (os/spawn ["/bin/sh" "-c" "exit 0"] :p {:out null :err null}))
+    // The null device and a command that exits zero, each under the name its
+    // platform has.
+    //
+    // `/usr/bin/true` stood here and at one site below. Alpine is busybox and
+    // puts it at `/bin/true`, so both spawns died with ENOENT the first time
+    // this contract ran off macOS. `/bin/sh` is already this file's dependency
+    // and is the one path every POSIX host agrees on. Windows has neither that
+    // nor `/dev`: `cmd.exe` is on the PATH of every install and `exit` is one
+    // of its builtins.
+    const null_device = if (windows) "NUL" else "/dev/null";
+    const exit_zero = if (windows)
+        "\"cmd.exe\" \"/c\" \"exit 0\""
+    else
+        "\"/bin/sh\" \"-c\" \"exit 0\"";
+    harness.inFiber(env, std.fmt.comptimePrint(
+        \\(def null (file/open "{s}" :w))
+        \\(def p (os/spawn [{s}] :p {{:out null :err null}}))
         \\(def at (type p))
         \\(assert (= :core/process at))
         \\(assert (= 0 (os/proc-wait p)))
@@ -788,7 +1019,7 @@ fn theProcessType() void {
         \\(assert (string/has-prefix? "<core/process " (string p)))
         \\(assert (deep= ![:wait :kill :close :in :out :err] (keys p)))
         \\(file/close null)
-    );
+    , .{ null_device, exit_zero }));
 }
 
 /// The signal table: a name the platform defines resolves, and one it does not
@@ -1021,7 +1252,8 @@ fn thePosixFork() void {
 
 /// One section, each in a VM of its own so that none inherits another's heap
 /// or, for the two that sandbox themselves, another's sandbox.
-fn section(comptime body: fn () void) void {
+fn section(comptime name: []const u8, comptime body: fn () void) void {
+    harness.announce("os_surface", name);
     harness.init();
     body();
     vm_lifecycle.deinit();
@@ -1038,27 +1270,28 @@ pub fn run() void {
         return;
     }
 
-    section(theStatRead);
-    section(theRegistration);
-    section(theCalendar);
-    section(thePermissions);
-    section(theClock);
-    section(theEnvironment);
-    section(thePlatform);
-    section(theOptionalArguments);
+    section("theStatRead", theStatRead);
+    section("theRegistration", theRegistration);
+    section("theCalendar", theCalendar);
+    section("thePermissions", thePermissions);
+    section("theClock", theClock);
+    section("theEnvironment", theEnvironment);
+    section("thePlatform", thePlatform);
+    section("theOptionalArguments", theOptionalArguments);
     // Each of these ends in a VM it opened itself; `section` closes that one.
-    section(theOpenFlags);
-    section(theRemoveSandbox);
-    section(theLinks);
-    section(thePipe);
+    section("theOpenFlags", theOpenFlags);
+    section("theRemoveSandbox", theRemoveSandbox);
+    section("theLinks", theLinks);
+    section("theScratchCleanup", theScratchCleanup);
+    section("thePipe", thePipe);
 
-    if (has_processes) {
-        section(theProcessType);
-        section(theSignalTable);
-        section(theSpawnRedirection);
-        section(theExecuteEnvironment);
-        section(theSigaction);
-        section(theTrampolines);
-        section(thePosixFork);
+    if (has_processes) section("theProcessType", theProcessType);
+    if (posix_processes) {
+        section("theSignalTable", theSignalTable);
+        section("theSpawnRedirection", theSpawnRedirection);
+        section("theExecuteEnvironment", theExecuteEnvironment);
+        section("theSigaction", theSigaction);
+        section("theTrampolines", theTrampolines);
+        section("thePosixFork", thePosixFork);
     }
 }

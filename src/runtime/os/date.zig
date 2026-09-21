@@ -160,6 +160,13 @@ fn cfunMktime(argv: []repr.Value) raise.Error!repr.Value {
 
     var t: h.time_t = undefined;
     if (argv.len >= 2 and repr.truthy(argv[1])) {
+        // POSIX requires `mktime` to act as though `tzset` had been called,
+        // so on those hosts a `TZ` set since start-up is already in effect.
+        // The Windows CRT reads the variable only when `_tzset` asks it to,
+        // which is why `timeToTm` calls it on the `os/date` side; without the
+        // same call here the two disagree, `os/date` following a changed `TZ`
+        // and `os/mktime` still in the zone the process started in.
+        if (windows) c._tzset();
         t = oa.mktime(&t_info);
     } else if (no_utc_mktime) {
         return raise.panic("os/mktime UTC not supported on this platform");

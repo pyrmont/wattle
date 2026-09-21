@@ -33,7 +33,7 @@
   (os/exit 0))
 
 (def chan (ev/chan 1000))
-(var is-win (or (= :mingw (os/which)) (= :windows (os/which))))
+(var is-win (= :windows (os/which)))
 (var is-linux (= :linux (os/which)))
 (def bsds [:freebsd :macos :openbsd :bsd :dragonfly :netbsd])
 (var is-kqueue (index-of (os/which) bsds))

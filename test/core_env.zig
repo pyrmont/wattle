@@ -480,15 +480,21 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // stream open only for writing fails every read with its error indicator
     // set and its end-of-file indicator clear.
     {
-        // `/dev/null` is the write-only stream everywhere there is one. WASI
-        // has no device files, so there this contract writes its own and
-        // unlinks it, the file staying open behind the name for as long as the
-        // handle does.
+        // The null device, under the name the platform gives it: `/dev/null`
+        // on a POSIX host and `NUL` on Windows, which has no `/dev` to put one
+        // in. WASI has no device files at all, so there this contract writes
+        // its own and unlinks it, the file staying open behind the name for as
+        // long as the handle does.
+        //
+        // The device is a convenience rather than the subject: what the case
+        // needs is a stream opened for writing, and the mode is what makes
+        // every read of it fail.
         const write_only_path = "wattle-core-env-write-only";
-        const write_only = if (builtin.os.tag == .wasi)
-            c.fopen(write_only_path, "w")
-        else
-            c.fopen("/dev/null", "w");
+        const write_only = switch (builtin.os.tag) {
+            .wasi => c.fopen(write_only_path, "w"),
+            .windows => c.fopen("NUL", "w"),
+            else => c.fopen("/dev/null", "w"),
+        };
         expect(write_only != null);
         if (builtin.os.tag == .wasi) expect(c.unlink(write_only_path) == 0);
         const write_only_handle = io_core.makefile(write_only, constants.file_write);
@@ -605,6 +611,14 @@ fn nativeIsBehindTheSandbox() void {
 // Entry
 // ==========================================================================
 
+/// Names the case about to run, where the host's stack traces are no use.
+///
+/// `harness.announce` carries the reasoning; this fixes the contract's name so
+/// that every case does not repeat it.
+inline fn inCase(comptime name: []const u8) void {
+    harness.announce("core_env", name);
+}
+
 fn body() raise.Error!void {
     // `coreEnv` memoizes into `vm.core_env`, so the replacement table
     // has to arrive on the very first call or it is ignored. That one-shot is
@@ -640,25 +654,45 @@ fn body() raise.Error!void {
         expect(try core_env.coreEnv(null) == test_env);
     }
 
+    inCase("aCleanRunReportsNoFlags");
     try aCleanRunReportsNoFlags();
+    inCase("theLengthParameterTruncatesTheSource");
     try theLengthParameterTruncatesTheSource();
+    inCase("aParseOrCompileFailureStopsTheStream");
     try aParseOrCompileFailureStopsTheStream();
+    inCase("aCompileErrorPrefersTheSourceMapping");
     try aCompileErrorPrefersTheSourceMapping();
+    inCase("aParseErrorNamesAPosition");
     try aParseErrorNamesAPosition();
+    inCase("aCompileErrorNamesAPosition");
     try aCompileErrorNamesAPosition();
+    inCase("aMacroExpansionErrorPrintsATrace");
     try aMacroExpansionErrorPrintsATrace();
+    inCase("aRuntimeErrorReportsTheValue");
     try aRuntimeErrorReportsTheValue();
+    inCase("aFailureStopsTheStream");
     try aFailureStopsTheStream();
+    inCase("aNullSourcePathIsNamedUnknown");
     try aNullSourcePathIsNamedUnknown();
+    inCase("loopFiberReportsAStatus");
     try loopFiberReportsAStatus();
+    inCase("theImageIsConsumedExactly");
     try theImageIsConsumedExactly();
+    inCase("theLookupTableIsKeyedBySymbol");
     try theLookupTableIsKeyedBySymbol();
+    inCase("theLookupTableTakesReplacements");
     try theLookupTableTakesReplacements();
+    inCase("getlineReadsALineThroughTheDyn");
     try getlineReadsALineThroughTheDyn();
+    inCase("theConfigBitsAreTheBuildsOwn");
     try theConfigBitsAreTheBuildsOwn();
+    inCase("theApiVersionIsTheFingerprint");
     try theApiVersionIsTheFingerprint();
+    inCase("nativeReportsALoaderError");
     nativeReportsALoaderError();
+    inCase("sandboxAccumulatesEveryCapability");
     try sandboxAccumulatesEveryCapability();
+    inCase("nativeIsBehindTheSandbox");
     nativeIsBehindTheSandbox();
 }
 

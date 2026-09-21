@@ -123,10 +123,14 @@ const no_processes = !config.processes;
 /// The operating system name `os/which` reports, derived from the target
 /// unless the build overrode it.
 const os_name = switch (builtin.os.tag) {
-    .windows => switch (builtin.abi) {
-        .gnu => "mingw",
-        else => "windows",
-    },
+    // One name for the platform, where Janet reported the ABI as well and
+    // answered `mingw` on a gnu build. `os/which` names an operating system;
+    // which C library reached it is a different question, and this tree
+    // builds `x86_64-windows-gnu` alone (`os/abi.zig` says so where it picks
+    // the `time_t` width). Two names meant every guard had to spell both, and
+    // the ones that spelled only `:windows` were false on the host they
+    // named.
+    .windows => "windows",
     .macos, .ios, .tvos, .watchos, .visionos => "macos",
     .emscripten => "web",
     .wasi => "wasi",
@@ -217,6 +221,13 @@ pub fn environSeparator(entry: [*:0]const u8) i32 {
 }
 
 /// Replaces the environment vector.
+///
+/// **On Windows an empty value and an absence are the same thing**, and the
+/// two arms differ for that reason rather than by taste. The CRT spells
+/// removal *as* an empty value, so `_putenv_s` serves both cases and a
+/// variable set to `""` cannot be read back: `os/getenv` reports it missing
+/// and reaches its default. POSIX keeps the two apart, which is what
+/// `unsetenv` is for. `test/os_surface.zig` asserts each platform's rule.
 pub fn environSet(name: [*:0]const u8, val: ?[*:0]const u8) i32 {
     if (builtin.os.tag == .windows) {
         return c._putenv_s(name, val orelse "");
@@ -722,7 +733,7 @@ fn selfEntries() []const corefn.Entry {
                 "exits with status 1. If `force` is truthy will exit immediately and " ++
                 "skip cleanup code."),
             corefn.reg("os/which", &cfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
-                "* :windows\n\n* :mingw\n\n* :cygwin\n\n* :macos\n\n" ++
+                "* :windows\n\n* :cygwin\n\n* :macos\n\n" ++
                 "* :web - Web assembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
                 "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
                 "* :dragonfly\n\n* :bsd\n\n" ++

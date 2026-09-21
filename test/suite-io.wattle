@@ -189,6 +189,14 @@
     (assert-error-value "xprint to a read-only file" "file is not writeable" (xprint f "x"))
     (assert-error-value "xprintf to a read-only file" "file is not writeable" (xprintf f "%s" "x"))))
 
+; A newline written through file/open is one byte on every platform. Windows
+; opens binary whatever the mode says, so what a text mode there would have
+; written as CRLF comes back as it was written.
+(defer (os/rm path)
+  (with [f (file/open path :w)]
+    (file/write f "a\nb"))
+  (assert (= "a\nb" (string (slurp path))) "file/open does not translate a newline"))
+
 ; A closed file reports itself differently to the two families, which is what
 ; the C original did and is pinned here rather than smoothed over
 (def closed (file/temp))
@@ -229,9 +237,18 @@
 (def buffered "wattle-suite-io-11-buffered")
 (defer (os/rm buffered)
   (spit buffered "sized")
-  (each n [0 1 8192]
-    (with [f (file/open buffered :r n)]
-      (assert (= "sized" (string (file/read f :all))) (string "buffer size " n))))
+  ; Which sizes the C library accepts is the C library's business. Windows
+  ; refuses 1 and accepts 0 and 8192, measured on that platform; where its
+  ; boundary lies is not. Each open reports its size, so a size refused later
+  ; names itself instead of ending the suite.
+  (each n (if (= :windows (os/which)) [0 8192] [0 1 8192])
+    (assert-no-error (string "buffer size " n " opens")
+      (with [f (file/open buffered :r n)]
+        (assert (= "sized" (string (file/read f :all))) (string "buffer size " n)))))
+  (when (= :windows (os/which))
+    (assert-error-value "a buffer size of 1 is refused on Windows"
+                        "failed to set buffer size for file"
+                        (file/open buffered :r 1)))
   (with [f (file/open buffered :w 8192)]
     (file/write f "written"))
   (assert (= "written" (string (slurp buffered))) "a buffer size keeps the write mode")

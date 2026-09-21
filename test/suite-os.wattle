@@ -185,7 +185,7 @@
     (assert-no-error "IO redirection"
                      (defn devnull []
                        (def os (os/which))
-                       (def path (if (or (= os :mingw) (= os :windows))
+                       (def path (if (= os :windows)
                                    "NUL"
                                    "/dev/null"))
                        (os/open path :w))
@@ -202,7 +202,7 @@
     (assert-no-error "IO redirection more windows flags"
                      (defn devnull []
                        (def os (os/which))
-                       (def path (if (or (= os :mingw) (= os :windows))
+                       (def path (if (= os :windows)
                                    "NUL"
                                    "/dev/null"))
                        (os/open path (if (= os :windows) :wWI :wW)))
@@ -231,10 +231,18 @@
     [(os/proc-wait p) out])
 
   ; An exit flushes what the child printed, and a forced exit skips the
-  ; flush, so output still in the buffer is lost.
+  ; flush, so output still in the buffer is discarded. This runtime does not
+  ; call setvbuf on stdout, so the buffering is the C library's default.
+  ;
+  ; Windows has nothing in the buffer to discard. The child's byte has
+  ; reached the pipe before the exit runs, so the forced exit reports the
+  ; same pair as the ordinary one. The expected pair there was measured on
+  ; that platform, not assumed: the assertion reported [0 "x"] before this
+  ; arm was written, and the pair stays in the message.
   (assert (= [0 "x"] (child """(prin "x") (os/exit 0)""")) "an exit flushes stdout")
-  (assert (= [0 ""] (child """(prin "x") (os/exit 0 true)"""))
-          "a forced exit does not flush stdout")
+  (def forced (child """(prin "x") (os/exit 0 true)"""))
+  (assert (= (if (= :windows (os/which)) [0 "x"] [0 ""]) forced)
+          (string/format "a forced exit discards only what is still buffered, got %w" forced))
 
   ; Each redirection reaches the descriptor it names and no other. The child
   ; reports a descriptor by the inode behind it.
@@ -274,11 +282,14 @@
           "os/execute refuses :pipe")
 
   ; A file given to os/spawn becomes a stream the process keeps, readable or
-  ; writable as the file was opened.
+  ; writable as the file was opened. The null device and the child are named
+  ; per platform rather than skipped: Windows spells the device NUL and has no
+  ; /bin/sh, and Windows is where a redirect handle is hardest to get right.
   (compwhen (dyn 'ev/to-file)
-    (with [rf (file/open "/dev/null" :r)]
-      (with [wf (file/open "/dev/null" :w)]
-        (def p (os/spawn ["/bin/sh" "-c" "exit 0"] :p {:in rf :out wf}))
+    (def null-device (if (= :windows (os/which)) "NUL" "/dev/null"))
+    (with [rf (file/open null-device :r)]
+      (with [wf (file/open null-device :w)]
+        (def p (os/spawn [|run wattle "-e" "nil"] :p {:in rf :out wf}))
         (os/proc-wait p)
         (assert (= :core/stream (type (p :in))) "a file for stdin is kept as a stream")
         (assert (= :core/stream (type (p :out))) "and so is a file for stdout")
@@ -296,21 +307,36 @@
   (assert-error "os/posix-chroot is refused"
                 (os/posix-chroot "/wattle-suite-os-absent"))
 
-  ; A failed exec names the reason the host gave for it.
-  (assert (= "/: Permission denied" (in (protect (os/posix-exec ["/"])) 1))
+  ; A failed exec names the reason the host gave for it. Windows has no
+  ; execve, so os/posix-exec refuses there before it looks at the path.
+  (assert (= (if (= :windows (os/which))
+               "not supported on Windows"
+               "/: Permission denied")
+             (in (protect (os/posix-exec ["/"])) 1))
           "os/posix-exec of a directory is refused")
 
   ; A failed spawn names its own reason, and not the last one an earlier call
-  ; left behind.
+  ; left behind. The reason's wording is the host's, so on Windows only the
+  ; prefix this runtime supplies is pinned.
   (protect (os/rmdir "/"))
-  (assert (string/has-suffix? "No such file or directory"
-                              (in (protect (os/spawn ["/wattle-suite-os-absent"])) 1))
-          "a failed os/spawn names why it failed")
+  (def spawn-failure (in (protect (os/spawn ["/wattle-suite-os-absent"])) 1))
+  (assert (if (= :windows (os/which))
+            (string/has-prefix? "failed to create process: " spawn-failure)
+            (string/has-suffix? "No such file or directory" spawn-failure))
+          (string/format "a failed os/spawn names why it failed, got %w"
+                         spawn-failure))
 
   ; The client starts under whatever environment it is handed. os/spawn gives
-  ; an empty name as `=x`, and the child reads it back.
-  (assert (= [0 "x"] (child """(prin (get (os/environ) ""))""" :pe {"" "x"}))
-          "a child is started with an empty name in its environment")
+  ; an empty name as `=x`, and the child reads it back. Windows reserves an
+  ; environment entry beginning `=` for a drive-relative path and refuses the
+  ; block, which it reported as `The parameter is incorrect`.
+  (if (= :windows (os/which))
+    (assert (string/has-prefix?
+              "failed to create process: "
+              (in (protect (child """(prin (get (os/environ) ""))""" :pe {"" "x"})) 1))
+            "an empty name in the environment is refused on Windows")
+    (assert (= [0 "x"] (child """(prin (get (os/environ) ""))""" :pe {"" "x"}))
+            "a child is started with an empty name in its environment"))
 
   ; A map gives the options and the environment as a table does.
   (let [p (os/spawn [|run wattle "-e" """(prin (os/getenv "WATTLE_MAP"))"""] :pe
@@ -323,20 +349,21 @@
   ; A process collected without being waited for is killed and reaped, and
   ; one spawned with :d is left alone. `kill -0` asks whether a pid is still a
   ; process, which a zombie is.
-  (defn alive? [pid]
-    (= 0 (os/execute ["/bin/sh" "-c" (string "kill -0 " pid " 2>/dev/null")])))
-  (with [null (file/open "/dev/null" :w)]
-    (defn sleeper [flags]
-      ((os/spawn ["/bin/sh" "-c" "exec sleep 10"] flags {:out null :err null}) :pid))
-    (def dropped (sleeper :p))
-    (def kept (sleeper :pd))
-    (gccollect)
-    (def dropped-alive (alive? dropped))
-    (def kept-alive (alive? kept))
-    (each pid [dropped kept]
-      (os/execute ["/bin/sh" "-c" (string "kill -9 " pid " 2>/dev/null")]))
-    (assert (not dropped-alive) "a collected process is killed and reaped")
-    (assert kept-alive "a process spawned with :d is not"))
+  (compwhen (not= :windows (os/which))
+    (defn alive? [pid]
+      (= 0 (os/execute ["/bin/sh" "-c" (string "kill -0 " pid " 2>/dev/null")])))
+    (with [null (file/open "/dev/null" :w)]
+      (defn sleeper [flags]
+        ((os/spawn ["/bin/sh" "-c" "exec sleep 10"] flags {:out null :err null}) :pid))
+      (def dropped (sleeper :p))
+      (def kept (sleeper :pd))
+      (gccollect)
+      (def dropped-alive (alive? dropped))
+      (def kept-alive (alive? kept))
+      (each pid [dropped kept]
+        (os/execute ["/bin/sh" "-c" (string "kill -9 " pid " 2>/dev/null")]))
+      (assert (not dropped-alive) "a collected process is killed and reaped")
+      (assert kept-alive "a process spawned with :d is not")))
 
   ; A file given to os/spawn stays open in this process as the process's own
   ; stream, and that stream is closed on exec. Three spawns with the same file
