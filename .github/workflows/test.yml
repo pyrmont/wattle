@@ -42,7 +42,7 @@ jobs:
   # is x86-64 *on Darwin*, which that entry declines to run in any case because
   # it needs Rosetta.
   macos:
-    name: macOS
+    name: Runs macOS
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
@@ -74,15 +74,15 @@ jobs:
   # glibc's allocator checks what musl's does not, so both are run
   # (`test/README.md`).
   linux:
-    name: Linux ${{ matrix.arch }} (musl)
+    name: Runs ${{ matrix.target }} (static)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,     arch: x86_64,  target: x86_64-linux-musl }
-          - { os: ubuntu-24.04-arm,  arch: aarch64, target: aarch64-linux-musl }
+          - { os: ubuntu-latest,    target: x86_64-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-linux-musl }
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -140,7 +140,7 @@ jobs:
   # covers what the static musl jobs cannot: module loading, the examples and
   # the runtime unit tests. glibc's allocator also checks what musl's does not.
   glibc:
-    name: Linux x86_64 (glibc)
+    name: Runs x86_64-linux-gnu
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -159,7 +159,7 @@ jobs:
   # and defects have been found that only a release mode exposed, so these are
   # not a formality.
   optimize:
-    name: ${{ matrix.mode }}
+    name: Runs macOS (${{ matrix.mode }})
     runs-on: macos-latest
     timeout-minutes: 10
     strategy:
@@ -174,19 +174,15 @@ jobs:
       - name: Test
         run: zig build test -Doptimize=${{ matrix.mode }}
 
-  # **Windows, executed.** Nothing had ever run a Windows binary, here or
-  # anywhere: the `cross` matrix below compiles the Windows arms and no run of
-  # one had followed. This entry is the first, so it is `continue-on-error`
-  # until a run proves it -- a failure here reports what is broken without
-  # asserting that the supported matrix is. Promote it by removing the flag,
-  # and say so in README.md's platform table, once it passes.
+  # **Windows, executed.** The `cross` matrix below compiles the Windows arms
+  # and this entry runs them. A failure here fails the run, as every other
+  # entry's does.
   #
   # The allowance is roughly twice the 7m33s the first complete run took.
   windows:
-    name: Windows x86-64
+    name: Runs Windows x86_64
     runs-on: windows-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -208,7 +204,7 @@ jobs:
   # does not carry over: this entry passes, which is the evidence for that
   # rather than the argument.
   qemu:
-    name: riscv32 (qemu)
+    name: Runs riscv32-linux-musl (qemu, without the FFI)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -235,30 +231,35 @@ jobs:
 
   # Build-only, and they are not a formality: Zig analyses only the comptime
   # branches it selects, so a 32-bit target is the only thing anywhere that
-  # type-checks the `JANET_NANBOX_32` and 32-bit paths, and the Windows entry
-  # is the only thing that sees the Windows arms at all. `test/README.md` has
+  # type-checks the `JANET_NANBOX_32` and 32-bit paths. `test/README.md` has
   # the reasoning.
+  #
+  # Each name says what its entry covers that no other does, and the
+  # configuration counts as much as the target. The two musl entries and the
+  # riscv32 one build triples a running job also builds, but those jobs build
+  # them `-Dlinkage=static`, and the riscv32 job builds it `-Dffi=false`, so
+  # the FFI is compiled for a 32-bit target only here.
   #
   # There are three 32-bit entries rather than one as of Part 25. `x86` and
   # `arm` were recorded as impossible -- musl's 32-bit `time64` `__REDIR`
   # declarations were blamed -- and the real cause was this tree shadowing
   # musl's `features.h` with its own. Renaming ours opened both.
   cross:
-    name: cross ${{ matrix.target }}
+    name: Builds ${{ matrix.target }} (${{ matrix.covers }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-linux-musl
-          - aarch64-linux-musl
-          - x86_64-linux-gnu
-          - aarch64-linux-gnu
-          - riscv32-linux-musl
-          - x86-linux-musl
-          - arm-linux-musleabihf
-          - x86_64-windows-gnu
+        include:
+          - { target: x86_64-linux-musl,    covers: "dynamic linkage" }
+          - { target: aarch64-linux-musl,   covers: "dynamic linkage" }
+          - { target: x86_64-linux-gnu,     covers: "baseline ISA" }
+          - { target: aarch64-linux-gnu,    covers: "only glibc on aarch64" }
+          - { target: riscv32-linux-musl,   covers: "32-bit with the FFI" }
+          - { target: x86-linux-musl,       covers: "only 32-bit x86" }
+          - { target: arm-linux-musleabihf, covers: "only 32-bit ARM" }
+          - { target: x86_64-windows-gnu,   covers: "the Windows arms" }
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -277,7 +278,7 @@ jobs:
   # The `standalone` step the macOS job runs builds a native module, and a
   # WASI build loads none, so it is not part of this one.
   wasi:
-    name: wasm32-wasi (${{ matrix.mode }})
+    name: Runs wasm32-wasi (${{ matrix.mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:

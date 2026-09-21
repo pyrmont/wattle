@@ -255,7 +255,7 @@ identical to a test that passed.
 | macOS ARM64          | native                            | Full: four optimize modes, every feature flag, both value layouts                                                                                       |
 | Linux aarch64 musl   | cross-compile, native container   | All 68 contracts, all 49 in-file tests, and 36 of 36 suites with one assertion skipped, NaN-boxed default. The skip is named below. Also the second host for the image comparison, and the only thing that has ever executed a Zig contract off macOS   |
 | Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only, and each contract is run by name, because `peg` ends the process under emulation. `peg`, `vm_run` and `ffi_core` fail there, and `suite-peg` with them. An `x86_64-macos` build with the same representation passes all four under Rosetta. The cause is not established without x86-64 hardware |
-| Windows x86-64 MinGW | cross-compile                     | Builds, and is a matrix entry. Binaries have never been executed                                                                                    |
+| Windows x86-64       | native                            | `zig build test` runs every suite and every contract on `windows-latest`, `suite-ev` at 892 of 892. Two blocks in that suite are guarded off Windows: an overlapped send to a loopback peer does not park, so neither block's parked socket write happens. `x86_64-windows-gnu` remains a build-only matrix entry |
 | Linux riscv32 musl   | cross-compile                     | Builds only, with `x86-linux-musl` and `arm-linux-musleabihf`. Those three compile the 32-bit NaN-boxing and pointer-width branches against musl's 32-bit headers, and the Linux host layer at a four-byte pointer. `wasm32-wasi` is the 32-bit target that runs |
 | wasm32-wasi          | cross-compile, wasmtime           | `zig build test` runs every suite and the 59 contracts this configuration registers, in Debug and in ReleaseSmall, in CI. 32-bit NaN-boxed layout, single-threaded, no event loop; networking, the FFI, the file watcher and processes are off with it, which is what leaves nine contracts unregistered. The fork cases in `value_alloc` and `os_surface` are skipped by their own guards |
 | Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 68 of 68 by name, all 49 in-file tests, 36 of 36 suites with the same assertion skipped as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. CI runs `zig build test` on x86-64 glibc natively |
@@ -347,18 +347,19 @@ Five limitations constrain this, none of which are Wattle defects:
    `full` job because of this; it was a `contracts` job while every suite there
    failed to compile.
 
-5. No Windows binary has ever been executed, here or anywhere.
-   `x86_64-windows-gnu` is a `build` entry of `res/testing/matrix.janet` and
-   it passes, so the target compiles and links an `.exe`; nothing has run one.
-   Treat Windows as compile-checked and untested.
+5. Two blocks in `suite-ev` do not run on Windows. An overlapped send to a
+   loopback peer does not park: the transport accepts the bytes with the peer
+   having read none of them, so the two blocks that need a parked socket write
+   are guarded off. `suite-net` records the same behaviour for two 32MB
+   floods. Everything else in the suites and the contracts runs there.
 
-   This item used to say the opposite, that the Windows cross-compile could not
-   build at all, because the translation failed on MinGW's bounds-checked
-   `wchar.h` inlines. It stayed on the list after a Zig release fixed it and
-   after two increments had recorded an `.exe` coming out. A limitation that has
-   quietly stopped being a limitation gives no signal, as a broken instrument
-   gives none, and the sign is the same: a finding nobody re-read is not
-   evidence that nothing changed.
+   This item has twice stated something that had stopped being true: first
+   that the Windows cross-compile could not build at all, after a Zig release
+   had fixed the translation of MinGW's bounds-checked `wchar.h` inlines, and
+   then that no Windows binary had ever been executed, after CI had run one.
+   A limitation that has quietly stopped being a limitation gives no signal,
+   as a broken instrument gives none, and the sign is the same: a finding
+   nobody re-read is not evidence that nothing changed.
 
 Because of (2), predictions about x86-64 trap behaviour remain inferred rather
 than observed. They should be confirmed on real hardware before any decision

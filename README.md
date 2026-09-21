@@ -229,7 +229,7 @@ WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 | macOS x86-64     | compiles only; not executed since the Intel runner was dropped |
 | Linux, musl      | built and fully tested; dynamic by default, needs musl loader  |
 | Linux, glibc     | built and fully tested                                         |
-| Windows          | cross-compiles; binaries have never been executed              |
+| Windows          | built and fully tested                                         |
 | wasm32-wasi      | built and fully tested under wasmtime, without the event loop  |
 | 32-bit (riscv32) | built and tested under QEMU, without the FFI                   |
 
