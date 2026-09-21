@@ -547,7 +547,9 @@ fn cfunExit(argv: []repr.Value) raise.Error!repr.Value {
     }
     const force = argv.len >= 2 and repr.truthy(argv[1]);
     vm_lifecycle.deinitAbi();
-    if (force) c._Exit(status);
+    if (force) {
+        c._Exit(status);
+    }
     c.exit(status);
 }
 

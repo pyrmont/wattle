@@ -1102,33 +1102,55 @@
 ; ev/to-file had no test. The mode string it builds, the two sandbox
 ; permissions it asserts and the descriptor it duplicates are reached through
 ; this binding and through nothing else.
-(do
-  (def path "wattle-suite-tofile.txt")
-  (spit path "hello\n")
+;
+; The transfers below are POSIX-only, for the handle `os/open` returns.
+; Windows opens every one of those `FILE_FLAG_OVERLAPPED`, and the C library
+; reads a file synchronously, so `ReadFile` is given no `OVERLAPPED` and
+; reports `ERROR_INVALID_PARAMETER`: `errno` 22 and last error 87, which
+; `io.zig` prints under `WATTLE_NET_DIAGNOSTICS`. The conversion succeeds and
+; the first transfer raises, so Windows pins that raise and leaves the rest.
+; A synchronous handle converts everywhere, and `suite-os` covers the one
+; `file/open` returns, through `os/spawn`.
+(if (= :windows (os/which))
+  (do
+    (def path "wattle-suite-tofile.txt")
+    (spit path "hello\n")
+    (def rs (os/open path :r))
+    (def rf (ev/to-file rs))
+    (assert rf "ev/to-file converts an asynchronous stream")
+    (assert-error-value "and the transfer it cannot make names the file"
+                        "could not read file"
+                        (:read rf :all))
+    (:close rf)
+    (:close rs)
+    (os/rm path))
+  (do
+    (def path "wattle-suite-tofile.txt")
+    (spit path "hello\n")
 
-  (def rs (os/open path :r))
-  (def rf (ev/to-file rs))
-  (assert (= "hello\n" (string (:read rf :all))) "ev/to-file reads a readable stream")
-  (:close rf)
-  (:close rs)
+    (def rs (os/open path :r))
+    (def rf (ev/to-file rs))
+    (assert (= "hello\n" (string (:read rf :all))) "ev/to-file reads a readable stream")
+    (:close rf)
+    (:close rs)
 
-  (def ws (os/open path :wt))
-  (def wf (ev/to-file ws))
-  (:write wf "written\n")
-  (:close wf)
-  (:close ws)
-  (assert (= "written\n" (string (slurp path))) "ev/to-file writes a writable stream")
+    (def ws (os/open path :wt))
+    (def wf (ev/to-file ws))
+    (:write wf "written\n")
+    (:close wf)
+    (:close ws)
+    (assert (= "written\n" (string (slurp path))) "ev/to-file writes a writable stream")
 
-  (def rws (os/open path :rw))
-  (def rwf (ev/to-file rws))
-  (assert (= "written\n" (string (:read rwf :all))) "ev/to-file reads a read-write stream")
-  (:seek rwf :end)
-  (:write rwf "more\n")
-  (:close rwf)
-  (:close rws)
-  (assert (= "written\nmore\n" (string (slurp path))) "ev/to-file writes a read-write stream")
+    (def rws (os/open path :rw))
+    (def rwf (ev/to-file rws))
+    (assert (= "written\n" (string (:read rwf :all))) "ev/to-file reads a read-write stream")
+    (:seek rwf :end)
+    (:write rwf "more\n")
+    (:close rwf)
+    (:close rws)
+    (assert (= "written\nmore\n" (string (slurp path))) "ev/to-file writes a read-write stream")
 
-  (os/rm path))
+    (os/rm path)))
 
 ; ev/chunk collects the whole count before it returns, where ev/read gives
 ; back whatever one read produced.
@@ -1185,6 +1207,80 @@
     (do
       (ev/write w "")
       (ev/write w !"")))
+  (:close r)
+  (:close w))
+
+; Several fibers may have a read outstanding on one stream at once. A stream
+; holds every operation started on it in a direction rather than only the last,
+; so the fiber whose read a second one followed is still resumed. The two
+; compete for the input: which bytes reach which fiber is not settled, and that
+; both are resumed and between them take all six is.
+(do
+  (def [r w] (os/pipe))
+  (def got (ev/gather
+             (ev/read r 3)
+             (do (ev/sleep 0.01) (ev/read r 3))
+             (do (ev/sleep 0.05) (ev/write w "abcdef") nil)))
+  (def first-read (string (got 0)))
+  (def second-read (string (got 1)))
+  (assert (= 6 (+ (length first-read) (length second-read)))
+          "two reads outstanding on one stream both take input")
+  (assert (= "abcdef" (string first-read second-read))
+          "two reads outstanding on one stream take the input in start order")
+  (:close r)
+  (:close w))
+
+; The same for writes. Two writes outstanding on one stream both complete, and
+; the reader sees every byte. No order is promised across the two calls, so the
+; count is what this asserts.
+(do
+  (def [r w] (os/pipe))
+  (def got (ev/gather
+             (ev/write w "aaaa")
+             (do (ev/sleep 0.01) (ev/write w "bbbb"))
+             (do (ev/sleep 0.05) (ev/chunk r 8))))
+  (assert (= 8 (length (got 2))) "two writes outstanding on one stream both complete")
+  (:close r)
+  (:close w))
+
+; Closing a stream ends every operation outstanding on it, not just the last
+; one started in a direction.
+(do
+  (def [r w] (os/pipe))
+  (def got (ev/gather
+             (ev/read r 3)
+             (do (ev/sleep 0.01) (ev/read r 3))
+             (do (ev/sleep 0.05) (:close r) nil)))
+  (assert (nil? (got 0)) "closing ends the first of two reads")
+  (assert (nil? (got 1)) "closing ends the second of two reads")
+  (:close w))
+
+; A collection while two reads are outstanding reaches both. The stream traces
+; every operation on it, so neither the fiber waiting nor the buffer it reads
+; into is collected while the operation is outstanding.
+(do
+  (def [r w] (os/pipe))
+  (def got (ev/gather
+             (ev/read r 3)
+             (do (ev/sleep 0.01) (ev/read r 3))
+             (do (ev/sleep 0.02) (gccollect) (gccollect) (ev/sleep 0.03)
+                 (ev/write w "abcdef") nil)))
+  (assert (= 6 (+ (length (got 0)) (length (got 1))))
+          "a collection during two outstanding reads loses neither")
+  (:close r)
+  (:close w))
+
+; A read whose timeout expires ends that read alone. The operation it left
+; outstanding on the same stream is still there afterwards and still takes its
+; input, which is the lifetime a cancelled operation must not take with it.
+(do
+  (def [r w] (os/pipe))
+  (def got (ev/gather
+             (protect (ev/read r 3 !"" 0.05))
+             (do (ev/sleep 0.01) (ev/read r 3))
+             (do (ev/sleep 0.2) (ev/write w "abc") nil)))
+  (assert (= false (get (got 0) 0)) "a read's timeout ends that read")
+  (assert (= "abc" (string (got 1))) "a read's timeout leaves the other read on the stream")
   (:close r)
   (:close w))
 

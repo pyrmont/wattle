@@ -250,8 +250,9 @@ pub const AsyncEvent = enum(u32) {
     failed = 9,
 };
 
-/// Which half of a stream a listener is waiting on. Two independent bits, so
-/// waiting on both is the two set rather than a third value.
+/// Which half of a stream an operation is waiting on. Two independent bits,
+/// and an operation sets exactly one of them: it is linked into the stream's
+/// list for that direction, and `ev.zig`'s `asyncStartFiber` asserts it.
 pub const AsyncMode = packed struct(u32) {
     read: bool = false,
     write: bool = false,
@@ -259,7 +260,6 @@ pub const AsyncMode = packed struct(u32) {
 
     pub const reading: AsyncMode = .{ .read = true };
     pub const writing: AsyncMode = .{ .write = true };
-    pub const both: AsyncMode = .{ .read = true, .write = true };
 };
 
 /// An instruction's operand shape, which the verifier, the two assembler

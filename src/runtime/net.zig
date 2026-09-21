@@ -466,6 +466,10 @@ pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
         .{ where.file, where.line },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
+    // Flushed here rather than left to `exit`. A report that reaches the
+    // stream and not the file is a report a later reader takes for silence,
+    // and silence is what this one is read against.
+    _ = c.fflush(stdio.err());
     c.exit(1);
 }
 
@@ -561,9 +565,9 @@ pub fn socketType(argv: []repr.Value, n: usize) raise.Error!c_int {
 /// Raising, as `acceptWindows` beside it is. An accept callback returns
 /// `raise.Error!void`, so an accept whose stream the backend refuses reports
 /// `failed to accept connection` rather than going on with a null stream.
-fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
+fn acceptPosix(op: *ev_stream.Operation, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
     if (event != constants.AsyncEvent.init and event != constants.AsyncEvent.read) return;
-    const stream: *ev_stream.Stream = fiber.ev_stream.?;
+    const stream: *ev_stream.Stream = op.stream;
     const connfd: JSock = if (builtin.os.tag == .linux)
         net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
     else
@@ -582,21 +586,21 @@ fn acceptPosix(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.Asyn
         // here, which would be at the first connection, with no caller left to
         // tell.
         const sub_fiber = fibers.new(f, 64, (&streamv)[0..1]) catch unreachable;
-        sub_fiber.supervisor_channel = fiber.supervisor_channel;
+        sub_fiber.supervisor_channel = op.fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
     } else {
-        ev_loop.schedule(fiber, streamv);
-        ev_loop.asyncEnd(fiber);
+        ev_loop.schedule(op.fiber, streamv);
+        ev_loop.asyncEnd(op);
     }
 }
 
 /// The Windows accept: takes the connection the completion port reported.
-fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
+fn acceptWindows(op: *ev_stream.Operation, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
     if (event != constants.AsyncEvent.complete) return;
     const astream = state.astream.?;
     if (astream.flags & stream_closed != 0) {
-        try ev_loop.cancel(fiber, value.fromBytes("failed to accept connection", .string));
-        ev_loop.asyncEnd(fiber);
+        try ev_loop.cancel(op.fiber, value.fromBytes("failed to accept connection", .string));
+        ev_loop.asyncEnd(op);
         return;
     }
     const lsock = sockOf(state.lstream.?);
@@ -607,8 +611,8 @@ fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.As
         &lsock,
         @sizeOf(JSock),
     ) != h.NO_ERROR) {
-        try ev_loop.cancel(fiber, value.fromBytes("failed to accept connection", .string));
-        ev_loop.asyncEnd(fiber);
+        try ev_loop.cancel(op.fiber, value.fromBytes("failed to accept connection", .string));
+        ev_loop.asyncEnd(op);
         return;
     }
 
@@ -619,16 +623,16 @@ fn acceptWindows(fiber: *fibers.Fiber, state: *NetStateAccept, event: ev_loop.As
         // `net/accept-loop` refused any handler whose arity cannot take
         // exactly this one argument.
         const sub_fiber = fibers.new(f, 64, (&streamv)[0..1]) catch unreachable;
-        sub_fiber.supervisor_channel = fiber.supervisor_channel;
+        sub_fiber.supervisor_channel = op.fiber.supervisor_channel;
         ev_loop.schedule(sub_fiber, wrap.fromNil());
         var err: repr.Value = undefined;
-        if (try schedAcceptImpl(state, fiber, &err)) {
-            try ev_loop.cancel(fiber, err);
-            ev_loop.asyncEnd(fiber);
+        if (try schedAcceptImpl(state, op, &err)) {
+            try ev_loop.cancel(op.fiber, err);
+            ev_loop.asyncEnd(op);
         }
     } else {
-        ev_loop.schedule(fiber, streamv);
-        ev_loop.asyncEnd(fiber);
+        ev_loop.schedule(op.fiber, streamv);
+        ev_loop.asyncEnd(op);
     }
 }
 
@@ -823,9 +827,10 @@ fn cfunConnect(argv: []repr.Value) raise.Error!repr.Value {
                     utils.malloc(@sizeOf(NetStateConnect)) orelse outOfMemory(@src()),
                 ));
                 state.* = std.mem.zeroes(NetStateConnect);
-                // `schedConnect` below registers this transfer on the root
-                // fiber, which `ev.zig`'s `asyncStart` reads for itself.
-                state.overlapped.fiber = fibers.root();
+                // The operation does not exist yet, and
+                // `net_callback_connect` names it from its init event.
+                // The loop cannot dequeue a completion before this fiber
+                // suspends, which `schedConnect` below is what does.
                 const success = connect_ex(sock, sa, @intCast(addrlen), null, 0, null, @ptrCast(&state.overlapped.as));
                 if (success == 0 and h.WSAGetLastError() != h.ERROR_IO_PENDING) {
                     utils.free(state);
@@ -1223,8 +1228,8 @@ fn makeStream(handle: JSock, flags: u32) raise.Error!*ev_stream.Stream {
 }
 
 /// What the loop calls when an accepting socket has a connection.
-fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
-    const state: *NetStateAccept = @ptrCast(@alignCast(fiber.ev_state));
+fn net_callback_accept(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+    const state: *NetStateAccept = @ptrCast(@alignCast(op.state));
     switch (event) {
         constants.AsyncEvent.mark => {
             if (windows) {
@@ -1234,14 +1239,27 @@ fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Er
             if (state.function) |f| gc_mark.mark(wrap.fromFunction(f));
         },
         constants.AsyncEvent.close => {
-            ev_loop.schedule(fiber, wrap.fromNil());
-            ev_loop.asyncEnd(fiber);
+            ev_loop.schedule(op.fiber, wrap.fromNil());
+            ev_loop.asyncEnd(op);
+        },
+        constants.AsyncEvent.init => {
+            if (windows) {
+                // `schedAccept` issued the `AcceptEx` before this, with no
+                // operation to name yet: the loop cannot dequeue a completion
+                // until the fiber that called it suspends, which is after
+                // this. The port owes a completion whether the call reported
+                // `WSA_IO_PENDING` or finished where it stood.
+                state.overlapped.op = op;
+                ev_loop.asyncInFlight(op);
+            } else {
+                try acceptPosix(op, state, event);
+            }
         },
         else => {
             if (windows) {
-                try acceptWindows(fiber, state, event);
+                try acceptWindows(op, state, event);
             } else {
-                try acceptPosix(fiber, state, event);
+                try acceptPosix(op, state, event);
             }
         },
     }
@@ -1253,8 +1271,8 @@ fn net_callback_accept(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Er
 /// that `cfunConnect` started. Elsewhere it comes from `SO_ERROR` after a
 /// writability event on a non-blocking `connect`. The two arms share only the
 /// event dispatch.
-fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
-    const stream: *ev_stream.Stream = fiber.ev_stream.?;
+fn net_callback_connect(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+    const stream: *ev_stream.Stream = op.stream;
     switch (event) {
         // `cfunConnect` issued the `ConnectEx` before this, so the port owes
         // a completion for it and the flag is what leaves the state for that
@@ -1262,7 +1280,13 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.E
         // fallback this file keeps, and every other platform, schedule with
         // none and have no overlapped transfer outstanding.
         constants.AsyncEvent.init => {
-            if (fiber.ev_state != null) ev_loop.asyncInFlight(fiber);
+            if (op.state) |state| {
+                if (windows) {
+                    const connect: *NetStateConnect = @ptrCast(@alignCast(state));
+                    connect.overlapped.op = op;
+                }
+                ev_loop.asyncInFlight(op);
+            }
             return;
         },
         // Neither of these two has a result to read. `NetStateConnect` holds
@@ -1273,8 +1297,8 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.E
         constants.AsyncEvent.deinit,
         => return,
         constants.AsyncEvent.close => {
-            try ev_loop.cancel(fiber, value.fromBytes("stream closed", .string));
-            ev_loop.asyncEnd(fiber);
+            try ev_loop.cancel(op.fiber, value.fromBytes("stream closed", .string));
+            ev_loop.asyncEnd(op);
             return;
         },
         else => {},
@@ -1290,17 +1314,17 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.E
                 // pointer is not read.
                 const unused: c_int = 0;
                 _ = net_abi.setSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_UPDATE_CONNECT_CONTEXT, &unused, 0);
-                ev_loop.schedule(fiber, wrap.fromAbstract(stream));
+                ev_loop.schedule(op.fiber, wrap.fromAbstract(stream));
             },
             else => {
                 // `GetQueuedCompletionStatus` set the thread's last error
                 // to the failure reason, and `ev/backend.zig` calls this
                 // before any other call replaces it.
-                try ev_loop.cancel(fiber, ev_stream.evLasterr());
+                try ev_loop.cancel(op.fiber, ev_stream.evLasterr());
                 stream.flags |= stream_toclose;
             },
         }
-        ev_loop.asyncEnd(fiber);
+        ev_loop.asyncEnd(op);
         return;
     }
 
@@ -1308,16 +1332,16 @@ fn net_callback_connect(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.E
     var size: SockLen = @sizeOf(c_int);
     if (net_abi.getSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_ERROR, &res, &size) == 0) {
         if (res == 0) {
-            ev_loop.schedule(fiber, wrap.fromAbstract(stream));
+            ev_loop.schedule(op.fiber, wrap.fromAbstract(stream));
         } else {
-            try ev_loop.cancel(fiber, value.fromBytes(std.mem.span(utils.strerrorSafe(res)), .string));
+            try ev_loop.cancel(op.fiber, value.fromBytes(std.mem.span(utils.strerrorSafe(res)), .string));
             stream.flags |= stream_toclose;
         }
     } else {
-        try ev_loop.cancel(fiber, ev_stream.evLasterr());
+        try ev_loop.cancel(op.fiber, ev_stream.evLasterr());
         stream.flags |= stream_toclose;
     }
-    ev_loop.asyncEnd(fiber);
+    ev_loop.asyncEnd(op);
 }
 
 /// `socket(2)`, spelled as each platform's socket layer takes it. Windows
@@ -1340,7 +1364,7 @@ fn schedAccept(stream: *ev_stream.Stream, fun: ?*functions.Function) raise.Error
     if (windows) {
         state.lstream = stream;
         var err: repr.Value = undefined;
-        if (try schedAcceptImpl(state, fibers.root().?, &err)) {
+        if (try schedAcceptImpl(state, null, &err)) {
             utils.free(state);
             return raise.panicv(err);
         }
@@ -1355,7 +1379,7 @@ fn schedAccept(stream: *ev_stream.Stream, fun: ?*functions.Function) raise.Error
 
 /// The Windows half: puts an accepting socket and a buffer in flight. True on
 /// failure, with `*err` set.
-fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Value) raise.Error!bool {
+fn schedAcceptImpl(state: *NetStateAccept, op: ?*ev_stream.Operation, err: *repr.Value) raise.Error!bool {
     const lsock = sockOf(state.lstream.?);
     const asock = h.WSASocketW(h.AF_INET, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
     if (asock == h.INVALID_SOCKET) {
@@ -1367,7 +1391,7 @@ fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Valu
     // registration already has its own message.
     state.astream = try makeStream(asock, stream_readable | stream_writable);
     const socksize: h.DWORD = @sizeOf(h.SOCKADDR_STORAGE) + 16;
-    state.overlapped.fiber = fiber;
+    state.overlapped.op = op;
     if (h.AcceptEx(lsock, asock, &state.buf, 0, socksize, socksize, null, @ptrCast(&state.overlapped.as)) == 0 and
         h.WSAGetLastError() != h.WSA_IO_PENDING)
     {
@@ -1376,8 +1400,10 @@ fn schedAcceptImpl(state: *NetStateAccept, fiber: *fibers.Fiber, err: *repr.Valu
     }
     // A call the port accepted queues a completion whether it reported
     // `WSA_IO_PENDING` or finished where it stood, and the flag is what
-    // `ev.zig`'s `asyncEnd` reads to leave the state for that completion.
-    ev_loop.asyncInFlight(fiber);
+    // `ev.zig`'s `asyncEnd` reads to leave the state for that completion. The
+    // first call has no operation yet and `net_callback_accept` marks that
+    // one from its init event.
+    if (op) |waiting| ev_loop.asyncInFlight(waiting);
     return false;
 }
 

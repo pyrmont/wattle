@@ -59,6 +59,7 @@ const builtin = @import("builtin");
 // ==========================================================================
 
 const options = @import("options");
+const config = @import("config");
 
 // ==========================================================================
 // Compile-time imports
@@ -167,7 +168,10 @@ const contracts: []const Contract = blk: {
     if (options.filewatch) list = with(list, "filewatch_flags", @import("filewatch_flags.zig"));
     if (options.filewatch) list = with(list, "filewatch_core", @import("filewatch_core.zig"));
     if (options.net) list = with(list, "net_sockets", @import("net_sockets.zig"));
-    if (options.ev) list = with(list, "ev_loop", @import("ev_loop.zig"));
+    // `ev_loop`'s pipe fixture needs `os/pipe`, which reduced-os does not
+    // register. The event-loop configurations that publish the OS still run
+    // this contract.
+    if (options.ev and !config.reduced_os) list = with(list, "ev_loop", @import("ev_loop.zig"));
     break :blk list;
 };
 

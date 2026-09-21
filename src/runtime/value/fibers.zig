@@ -43,7 +43,6 @@ const args_core = @import("../args.zig");
 const config = @import("config");
 const constants = @import("constants");
 const corefn = @import("../corefn.zig");
-const ev_loop = @import("../ev.zig");
 const ev_stream = @import("../ev/stream.zig");
 const fatal = @import("../fatal.zig");
 const functions = @import("functions.zig");
@@ -127,8 +126,9 @@ pub const EvFlags = packed struct(u6) {
 /// offset 8. `extern` fixes the declaration order, and the assertion then
 /// is true on every target rather than on the ones that happen to agree.
 ///
-/// The last five fields matter only for a fiber the event loop has scheduled
-/// as a root fiber.
+/// The last three fields matter only for a fiber the event loop has scheduled
+/// as a root fiber. `ev_op` is the operation the fiber is waiting on, which
+/// `ev/stream.zig` declares and a stream's own list owns.
 pub const Fiber = if (config.ev) extern struct {
     gc: abi.GCObject = .{},
     flags: FiberFlags = .{},
@@ -142,9 +142,7 @@ pub const Fiber = if (config.ev) extern struct {
     child: ?*Fiber = null,
     last_value: repr.Value = std.mem.zeroes(repr.Value),
     sched_id: u32 = 0,
-    ev_callback: ev_loop.EVCallback = null,
-    ev_stream: ?*ev_stream.Stream = null,
-    ev_state: ?*anyopaque = null,
+    ev_op: ?*ev_stream.Operation = null,
     supervisor_channel: ?*anyopaque = null,
 } else extern struct {
     gc: abi.GCObject = .{},
@@ -184,20 +182,6 @@ pub const FiberFlags = packed struct(u32) {
     did_raise: bool = false,
     /// Bits 28-31. Bits 29 and 30 are `marsh.zig`'s wire-only overlay.
     _wire: u4 = 0,
-
-    /// The event loop's in-flight bit, which is bit 0, the bit a signal set
-    /// spends on `ok`. `ok` is not a signal a fiber traps, so the event loop
-    /// uses that bit for its own purpose and the two alias deliberately. These
-    /// two accessors are the only correct readers of it; reading it as a trap
-    /// would be a category error, and naming it here is what stops one.
-    pub inline fn evInFlight(self: FiberFlags) bool {
-        return self.traps.ok;
-    }
-
-    /// Sets the event loop's in-flight bit. See `evInFlight`.
-    pub inline fn setEvInFlight(self: *FiberFlags, in_flight: bool) void {
-        self.traps.ok = in_flight;
-    }
 
     /// The four resume-state bits, as one mask.
     ///
@@ -1044,9 +1028,7 @@ fn resetState(fiber: *Fiber) void {
     fiber.last_value = wrap.fromNil();
     if (has_ev) {
         fiber.sched_id = 0;
-        fiber.ev_callback = null;
-        fiber.ev_state = null;
-        fiber.ev_stream = null;
+        fiber.ev_op = null;
         fiber.supervisor_channel = null;
     }
     setStatus(fiber, FiberStatus.new);

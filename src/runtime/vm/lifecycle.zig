@@ -131,6 +131,7 @@ pub const Sandbox = packed struct(u32) {
 /// it has to see the root set and the registry still standing. Everything
 /// after that call is release and reset.
 pub fn deinit() void {
+    if (has_ev) ev_loop.teardownOperations();
     gc_sweep.clearMemory();
     symbols.cacheDeinit();
     gc_alloc.rootsDeinit(&vm_state.current().roots);

@@ -1894,9 +1894,7 @@ fn unmarshalOneFiber(
     if (has_ev) {
         fiber.sched_id = 0;
         fiber.supervisor_channel = null;
-        fiber.ev_state = null;
-        fiber.ev_callback = null;
-        fiber.ev_stream = null;
+        fiber.ev_op = null;
     }
 
     scratch_vector.push(&st.lookup, wrap.fromFiber(fiber));

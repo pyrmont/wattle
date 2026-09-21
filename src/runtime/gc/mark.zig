@@ -19,7 +19,7 @@
 //! ## Nothing here is stranded by a raise
 //!
 //! Two calls reach code this runtime does not own: an abstract type's
-//! `gcmark`, and a root fiber's `ev_callback` with `constants.AsyncEvent.mark`.
+//! `gcmark`, and every operation on a stream with `constants.AsyncEvent.mark`.
 //! `abi.zig` declares `gcmark` as `callconv(.c) void`, so it has no way to
 //! raise. The callback's type does admit a raise, and
 //! `callback_type.dispatchTotal` is what the walk reaches it through: a raise
@@ -53,7 +53,6 @@ const arrays = @import("../value/arrays.zig");
 const buffers = @import("../value/buffers.zig");
 const config = @import("config");
 const constants = @import("constants");
-const ev_callback = @import("../callback_type.zig");
 const ev_loop = @import("../ev.zig");
 const fibers = @import("../value/fibers.zig");
 const functions = @import("../value/functions.zig");
@@ -312,10 +311,10 @@ fn markFiber(vm: *vm_state.Vm, fiber_in: *fibers.Fiber) void {
 
         if (has_ev) {
             if (fiber.supervisor_channel) |ch| markAbstract(vm, ch);
-            if (fiber.ev_stream) |s| markAbstract(vm, s);
-            if (fiber.ev_callback) |callback| {
-                ev_callback.dispatchTotal(ev_callback.of(callback), fiber, constants.AsyncEvent.mark);
-            }
+            // The stream's own mark traces the operation, its fiber and
+            // whatever its state names, so a fiber reached first needs only
+            // the stream traced from here.
+            if (fiber.ev_op) |op| markAbstract(vm, op.stream);
         }
 
         if (fiber.child) |child| {

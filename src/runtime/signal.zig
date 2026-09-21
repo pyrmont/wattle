@@ -331,6 +331,11 @@ pub fn signalRecord(sig: abi.Signal, message: repr.Value) void {
 /// way, with the status the other ending uses.
 pub fn topLevelSignal(msg: [*]const u8) noreturn {
     _ = c.fputs(@ptrCast(msg), stdio.out());
+    // Flushed here rather than left to the ending below. `pthread_exit` drains
+    // no C stream, and `stdout` is block-buffered when it is a file, so on
+    // that ending the message never reaches the file and the run reads as a
+    // silent exit.
+    _ = c.fflush(stdio.out());
     if (builtin.os.tag == .wasi) {
         c.exit(1);
     } else {

@@ -258,10 +258,27 @@
   # `gc_stress`, `io_core`, `os_fs`, `os_surface`, `filewatch_core` and the
   # ev pair are subjects this cannot name, for the fixture and
   # working-directory reasons above; the `full` entries run all 68.
-  ["vector" "vectors" "value_alloc" "value_access" "value_order"
-   "gc_alloc" "gc_mark" "gc_sweep" "maps" "tables" "string_symbol" "marsh"
-   "pp_format" "pp_pretty" "pp_describe" "parser_core" "compiler_primitives"
-   "emit_core" "specials_core" "registry" "core_env" "vm_run"])
+  #
+  # The outstanding-operations increment replaced these with the contracts
+  # over what it moved off the fiber. A stream now holds a list of operations
+  # per direction and a fiber holds one `ev_op` in place of its three event
+  # fields, so the fiber's own layout and its reset are here (`value_alloc`,
+  # `fiber_core`, `marsh`), and so is the collector, which traces an operation
+  # from the stream rather than from the fiber and no longer frees an
+  # event-loop allocation in the sweep (`gc_alloc`, `gc_mark`, `gc_sweep`).
+  # Every event callback changed its first parameter, so a raise flattened
+  # through one would show as a wrong signal rather than a compile error
+  # (`signal_core`), and three stream docstrings changed, which is the
+  # published surface (`registry`, `core_env`). `vm_run` is the interpreter
+  # the scheduler resumes through.
+  #
+  # `ev_loop`, `ev_core`, `net_sockets` and `filewatch_core` are the
+  # increment's own subjects and none can be named: the ev pair is not listed
+  # at all under `-Dev=false` or `-Dsingle-threaded=true`, and the other two
+  # own fixtures two concurrent entries would share. The `full` entries run
+  # all 68 and cover them.
+  ["value_alloc" "fiber_core" "marsh" "gc_alloc" "gc_mark" "gc_sweep"
+   "signal_core" "registry" "core_env" "vm_run"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty

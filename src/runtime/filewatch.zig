@@ -276,15 +276,15 @@ const inotify = struct {
     /// here raises: the event loop calls it
     /// with no protected scope of its own, and every failure is reported by
     /// scheduling or cancelling the waiting fiber.
-    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
-        const stream = fiber.ev_stream.?;
-        const watcher: *Watcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(fiber.ev_state))).*);
+    fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+        const stream = op.stream;
+        const watcher: *Watcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(op.state))).*);
         var buf: [1024]u8 = undefined;
         switch (event) {
             constants.AsyncEvent.mark => gc_mark.mark(wrap.fromAbstract(watcher)),
             constants.AsyncEvent.close, constants.AsyncEvent.err => {
-                ev_loop.schedule(fiber, wrap.fromNil());
-                ev_loop.asyncEnd(fiber);
+                ev_loop.schedule(op.fiber, wrap.fromNil());
+                ev_loop.asyncEnd(op);
             },
             constants.AsyncEvent.hup, constants.AsyncEvent.init, constants.AsyncEvent.read => {
                 // The loop re-enters the whole block, so `name` is reset once
@@ -302,9 +302,9 @@ const inotify = struct {
 
                     if (nread == -1) {
                         if (c.errno() == h.EAGAIN or c.errno() == h.EWOULDBLOCK) break :read_more;
-                        try ev_loop.cancel(fiber, ev_stream.evLasterr());
-                        fiber.ev_state = null;
-                        ev_loop.asyncEnd(fiber);
+                        try ev_loop.cancel(op.fiber, ev_stream.evLasterr());
+                        op.state = null;
+                        ev_loop.asyncEnd(op);
                         break :read_more;
                     }
                     if (nread < @sizeOf(h.struct_inotify_event)) break :read_more;
@@ -508,15 +508,15 @@ const kqueue = struct {
         tables.put(watcher.watch_descriptors.?, wrap.fromInteger(wd), wrap.fromNil());
     }
 
-    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
-        const stream = fiber.ev_stream.?;
-        const state: *State = @ptrCast(@alignCast(fiber.ev_state));
+    fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+        const stream = op.stream;
+        const state: *State = @ptrCast(@alignCast(op.state));
         const watcher = state.watcher;
         switch (event) {
             constants.AsyncEvent.mark => gc_mark.mark(wrap.fromAbstract(watcher)),
             constants.AsyncEvent.close, constants.AsyncEvent.err => {
-                ev_loop.schedule(fiber, wrap.fromNil());
-                ev_loop.asyncEnd(fiber);
+                ev_loop.schedule(op.fiber, wrap.fromNil());
+                ev_loop.asyncEnd(op);
             },
             constants.AsyncEvent.hup, constants.AsyncEvent.init => {},
             constants.AsyncEvent.read => {
@@ -527,8 +527,8 @@ const kqueue = struct {
                 const kq = stream.handle;
                 const status = c.retryIntr(h.kevent, .{ kq, null, 0, &events, num_events, null });
                 if (status == -1) {
-                    ev_loop.schedule(fiber, wrap.fromNil());
-                    ev_loop.asyncEnd(fiber);
+                    ev_loop.schedule(op.fiber, wrap.fromNil());
+                    ev_loop.asyncEnd(op);
                     return;
                 }
                 for (events[0..@intCast(status)]) |kev| {
@@ -754,14 +754,20 @@ const win = struct {
         if (result == 0) return raise.panicv(ev_stream.evLasterr());
     }
 
-    fn callbackRead(fiber: *fibers.Fiber, event: ev_loop.AsyncEvent) raise.Error!void {
-        const ow: *OverlappedWatch = @ptrCast(@alignCast(fiber.ev_state));
+    fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+        const ow: *OverlappedWatch = @ptrCast(@alignCast(op.state));
         const watcher = ow.watcher;
         switch (event) {
-            constants.AsyncEvent.init => ev_loop.asyncInFlight(fiber),
+            // `startListening` issued the `ReadDirectoryChangesW` before
+            // this, with no operation to name yet: the loop cannot dequeue a
+            // completion until the fiber that called it suspends, which is
+            // after this.
+            constants.AsyncEvent.init => {
+                ow.overlapped.op = op;
+                ev_loop.asyncInFlight(op);
+            },
             constants.AsyncEvent.mark => {
                 gc_mark.mark(wrap.fromAbstract(ow.stream.?));
-                if (ow.overlapped.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
                 gc_mark.mark(wrap.fromAbstract(watcher));
                 gc_mark.mark(wrap.fromString(ow.dir_path));
             },
@@ -811,7 +817,7 @@ const win = struct {
                 // from inside the event loop, and the raise is returned
                 // through `try` like any other.
                 try readDirChanges(ow);
-                ev_loop.asyncInFlight(fiber);
+                ev_loop.asyncInFlight(op);
             },
             else => {},
         }
@@ -827,7 +833,6 @@ const win = struct {
         // arguments.
         const fiber = fibers.new(thunk, 64, &.{}) catch unreachable;
         fiber.supervisor_channel = fibers.root().?.supervisor_channel;
-        ow.overlapped.fiber = fiber;
         try ev_loop.asyncStartFiber(fiber, stream.?, constants.AsyncMode.reading, &callbackRead, ow);
     }
 
@@ -847,7 +852,7 @@ const win = struct {
         @memset(std.mem.asBytes(ow), 0);
         ow.stream = stream;
         ow.dir_path = strings.cstring(path);
-        ow.overlapped.fiber = null;
+        ow.overlapped.op = null;
         ow.flags = flags | watcher.default_flags;
         ow.watcher = watcher;
         // Do we need this?
@@ -927,7 +932,8 @@ const win = struct {
     }
 
     fn markWatch(ow: *OverlappedWatch) void {
-        if (ow.overlapped.fiber) |f| gc_mark.mark(wrap.fromFiber(f));
+        // The stream's own mark traces the operation and the fiber it
+        // resumes, so this traces the stream and what the watch alone holds.
         gc_mark.mark(wrap.fromAbstract(ow.stream.?));
         gc_mark.mark(wrap.fromString(ow.dir_path));
     }

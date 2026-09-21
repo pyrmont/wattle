@@ -240,16 +240,13 @@ fn deinitBlock(mem: *abi.GCObject) void {
         gc_alloc.MemoryType.fiber => {
             const f: *fibers.Fiber = @alignCast(@fieldParentPtr("gc", mem));
             if (has_ev) {
-                // The two flags live in different words, deliberately: the
-                // in-flight bit is in the fiber's own flags and the suspended
-                // bit is in the GC header's, and this reads each where it is
-                // written.
-                if (f.ev_state != null and !f.flags.evInFlight()) {
-                    ev.evDecRefcount();
-                    utils.free(f.ev_state);
-                } else if (fibers.evFlags(f).suspended) {
-                    ev.evDecRefcount();
-                }
+                // No event-loop allocation is freed here. An operation is
+                // owned by the stream's list and released by `ev.zig`'s
+                // `asyncRelease`, and a fiber with one is traced from that
+                // list, so a fiber reaching this sweep has none. The
+                // suspended bit is the GC header's and is the one reference
+                // this fiber still holds.
+                if (fibers.evFlags(f).suspended) ev.evDecRefcount();
             }
             utils.free(@ptrCast(f.data));
         },

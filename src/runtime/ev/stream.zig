@@ -7,6 +7,37 @@
 //! have the same layout and one member is enough. And the socket calls take a
 //! `struct sockaddr *`, which crosses as an opaque pointer over a byte buffer:
 //! the address abstract has the bytes and nothing here reads a field.
+//!
+//! ## Operations outstanding on a stream
+//!
+//! An _operation_ is one asynchronous read or write a fiber has started on a
+//! stream. `Operation` is the record, and a stream holds a list of them per
+//! direction: `read_ops` and `write_ops`, in the order they were started. A
+//! fiber has at most one operation, which is what `ev.zig`'s `asyncStartFiber`
+//! asserts, and an operation has exactly one direction.
+//!
+//! The rules the list keeps:
+//!
+//! - A stream takes any number of operations in a direction. A second read
+//!   does not displace the first, because the first still has a fiber waiting
+//!   on it and, on Windows, a transfer the host owes a completion for.
+//!
+//! - Concurrent reads compete for the input. Each readiness event is offered
+//!   to every operation in the direction, in start order, and an operation
+//!   takes what is there when it runs. A program that needs a particular byte
+//!   to reach a particular fiber coordinates for itself.
+//!
+//! - Concurrent writes have no order and no atomicity across calls. Two
+//!   writes started on one stream may reach the handle in either order and
+//!   may interleave, because each is a separate host call.
+//!
+//! - Closing a stream ends every operation outstanding on it. `streamClose`
+//!   delivers `close` to each, and the handle is closed after.
+//!
+//! - An operation keeps its fiber, its stream and the values its state names
+//!   reachable until its use ends. `streamMark` traces every operation in both
+//!   lists, including one the fiber has stopped listening to while the host
+//!   still owes a completion for it.
 
 // ==========================================================================
 // Standard library imports
@@ -102,6 +133,10 @@ const default_methods = [_]method_type.Method{
 /// address abstract above is ever named.
 const has_net = ev.has_net;
 
+/// The serial counter `opLink` draws from, which distinguishes an operation
+/// from a later one the allocator puts at the same address.
+var op_serial: u64 = 0;
+
 /// The pipe name counter `makePipe` uses on Windows.
 ///
 /// `InterlockedIncrement` is the Win32 spelling, and mingw supplies it as a
@@ -160,23 +195,54 @@ pub const write_mode_write: c_int = 0;
 // Types
 // ==========================================================================
 
-/// An `OVERLAPPED`, the transfer count beside it, and the fiber the transfer
-/// belongs to.
+/// An `OVERLAPPED`, the transfer count beside it, and the operation the
+/// transfer belongs to.
 ///
 /// This is the only declaration of the shape in the tree. `net.zig` and
 /// `filewatch.zig` embed this one, each as the first member of a state they
 /// hand to a Windows call, so the cast `ev/backend.zig`'s `Iocp.loop1` makes
 /// on a completion is to the type the state was built from.
 ///
-/// `fiber` is what that function matches a completion by. A stream holds one
-/// waiting fiber per direction and a second transfer in the same direction
-/// replaces it, so the stream is not where the fiber of a transfer already
-/// issued can be read. Each site that issues a transfer sets this, after the
-/// zeroing that precedes it.
+/// `op` is what that function matches a completion by. A stream holds every
+/// operation outstanding in a direction, and the operation an already issued
+/// transfer belongs to is not recoverable from the stream, so each site that
+/// issues a transfer sets this after the zeroing that precedes it. An
+/// operation is freed only by `ev.zig`'s `asyncRelease`, which an in-flight
+/// transfer's completion is what reaches, so this pointer is live when the
+/// loop reads it.
 pub const Overlapped = extern struct {
     as: c.OVERLAPPED,
     bytes_transfered: u32,
-    fiber: ?*fibers.Fiber,
+    op: ?*Operation,
+};
+
+/// One asynchronous read or write a fiber has started on a stream.
+///
+/// `ev.zig`'s `asyncStartFiber` allocates an operation and links it into
+/// `stream`'s list for its direction; `asyncRelease` unlinks and frees it
+/// along with `state`. The callbacks in this file, in `net.zig` and in
+/// `filewatch.zig` take one, and `ev.zig`'s `asyncEnd` and `asyncInFlight`
+/// take one.
+///
+/// `next` is the link in the stream's list and `reading` says which list.
+/// `fiber` is the fiber the operation resumes and `callback` the function the
+/// loop delivers its events to. `state` is the subsystem's own allocation.
+/// `serial` distinguishes this operation from a later one the allocator puts
+/// at the same address, which a dispatch walk compares after delivering an
+/// event. `in_flight` says the host owes a completion, and `abandoned` says
+/// the fiber has stopped listening while the host still owes one. `pending`
+/// is one dispatch walk's mark, described on `opTakePending`.
+pub const Operation = struct {
+    next: ?*Operation = null,
+    stream: *Stream,
+    fiber: *fibers.Fiber,
+    callback: ev_callback.EVCallback,
+    state: ?*anyopaque = null,
+    serial: u64 = 0,
+    reading: bool = false,
+    in_flight: bool = false,
+    abandoned: bool = false,
+    pending: bool = false,
 };
 
 /// What a read in progress needs to resume: the mode, the destination, and how
@@ -211,7 +277,7 @@ const StateWrite = struct {
     dest_abst: ?*anyopaque,
 };
 
-/// A `core/stream`: the handle, the flag word, the two waiting fibers and the
+/// A `core/stream`: the handle, the flag word, the two operation lists and the
 /// backend's own bookkeeping.
 ///
 /// `extern` is earned: `makeStreamExt` allocates `@sizeOf(Stream)` plus a
@@ -222,8 +288,8 @@ pub const Stream = extern struct {
     handle: host.Handle = std.mem.zeroes(host.Handle),
     flags: u32 = 0,
     index: u32 = 0,
-    read_fiber: ?*fibers.Fiber = null,
-    write_fiber: ?*fibers.Fiber = null,
+    read_ops: ?*Operation = null,
+    write_ops: ?*Operation = null,
     methods: ?*const anyopaque = null,
     /// Where the next read or write begins, which on Windows is the only
     /// place that answer lives: a handle opened `FILE_FLAG_OVERLAPPED` has no
@@ -303,7 +369,7 @@ pub fn cfunStreamWrite(argv: []repr.Value) raise.Error!repr.Value {
 /// Closes a stream marked `constants.stream_toclose`, once nothing is
 /// listening on it.
 pub fn checkToClose(s: *Stream) raise.Error!void {
-    if ((s.flags & stream_toclose != 0) and s.read_fiber == null and s.write_fiber == null) {
+    if ((s.flags & stream_toclose != 0) and !opWaiting(s, true) and !opWaiting(s, false)) {
         try streamClose(s);
     }
 }
@@ -313,18 +379,24 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/close", &cfunStreamClose, @src(), "(ev/close stream)", "Close a stream. This should be the same as calling (:close stream) for all streams."),
+            corefn.reg("ev/close", &cfunStreamClose, @src(), "(ev/close stream)", "Close a stream. This should be the same as calling (:close stream) for all streams. " ++
+                "Closing ends every read and write outstanding on the stream."),
             corefn.reg("ev/read", &cfunStreamRead, @src(), "(ev/read stream n &opt buffer timeout)", "Read up to n bytes into a buffer asynchronously from a stream. `n` can also be the keyword " ++
                 "`:all` to read into the buffer until end of stream. " ++
                 "Optionally provide a buffer to write into " ++
                 "as well as a timeout in seconds after which to cancel the operation and raise an error. " ++
                 "Returns the buffer if the read was successful or nil if end-of-stream reached. Will raise an " ++
-                "error if there are problems with the IO operation."),
+                "error if there are problems with the IO operation. " ++
+                "Several fibers may read one stream at once. They compete for the input, so which bytes " ++
+                "reach which fiber is not settled here, and a program that needs a particular assignment " ++
+                "coordinates for itself."),
             corefn.reg("ev/chunk", &cfunStreamChunk, @src(), "(ev/chunk stream n &opt buffer timeout)", "Same as ev/read, but will not return early if less than n bytes are available. If an end of " ++
                 "stream is reached, will also return early with the collected bytes."),
             corefn.reg("ev/write", &cfunStreamWrite, @src(), "(ev/write stream data &opt timeout)", "Write data to a stream, suspending the current fiber until the write " ++
                 "completes. Takes an optional timeout in seconds, after which will return nil. " ++
-                "Returns nil, or raises an error if the write failed."),
+                "Returns nil, or raises an error if the write failed. " ++
+                "Several fibers may write one stream at once. No order and no atomicity is promised " ++
+                "across the calls, since each is a separate host call."),
         };
         break :blk acc;
     };
@@ -466,8 +538,8 @@ pub fn makeStreamExt(
     const s: *Stream = @ptrCast(@alignCast(abstracts.newBytes(&streamType, size)));
     s.handle = handle;
     s.flags = flags;
-    s.read_fiber = null;
-    s.write_fiber = null;
+    s.read_ops = null;
+    s.write_ops = null;
     s.methods = methods orelse &default_methods;
     s.index = 0;
     // `newBytes` does not zero, which is why every field above is written
@@ -478,6 +550,97 @@ pub fn makeStreamExt(
     if (windows) s.position = 0;
     try backend.registerStream(s);
     return s;
+}
+
+/// Links an operation into its stream's list for its direction, at the end,
+/// and gives it the serial a dispatch walk identifies it by.
+///
+/// `op` is the operation, with `stream` and `reading` already set. The end
+/// rather than the head, so the list is in the order the operations were
+/// started and a dispatch walk offers an event in that order. This function
+/// cannot raise.
+pub fn opLink(op: *Operation) void {
+    op_serial += 1;
+    op.serial = op_serial;
+    op.next = null;
+    var slot: *?*Operation = if (op.reading) &op.stream.read_ops else &op.stream.write_ops;
+    while (slot.*) |cur| slot = &cur.next;
+    slot.* = op;
+}
+
+/// Reports whether `op` is still listening on `s` in direction `reading`.
+///
+/// `serial` is the serial read before an event was delivered. The address
+/// alone does not settle it: an operation that event released may be followed
+/// by a new operation the allocator puts where it was. A caller delivering a
+/// second event to the same operation calls this between the two. This
+/// function cannot raise.
+pub fn opListening(s: *Stream, reading: bool, op: *Operation, serial: u64) bool {
+    var it = if (reading) s.read_ops else s.write_ops;
+    while (it) |cur| : (it = cur.next) {
+        if (cur == op and cur.serial == serial) return !cur.abandoned;
+    }
+    return false;
+}
+
+/// Marks every listening operation on `s` for one dispatch walk.
+///
+/// An abandoned operation is left unmarked: its fiber has stopped listening
+/// and only the completion that releases it may still reach it. This function
+/// cannot raise. See `opTakePending`, which consumes the marks.
+pub fn opMarkPending(s: *Stream) void {
+    for ([2]?*Operation{ s.read_ops, s.write_ops }) |list| {
+        var it = list;
+        while (it) |op| : (it = op.next) op.pending = !op.abandoned;
+    }
+}
+
+/// The next operation `opMarkPending` marked in direction `reading`, with its
+/// mark cleared, or null where the walk is done.
+///
+/// The walk restarts from the head of the list on each call, so a released
+/// operation is gone rather than followed, which is what makes a callback
+/// free to release its own operation and others. An operation started during
+/// the walk is unmarked and is not visited. This function cannot raise.
+pub fn opTakePending(s: *Stream, reading: bool) ?*Operation {
+    var it = if (reading) s.read_ops else s.write_ops;
+    while (it) |op| : (it = op.next) {
+        if (op.pending) {
+            op.pending = false;
+            return op;
+        }
+    }
+    return null;
+}
+
+/// Removes `op` from its stream's list.
+///
+/// `op` is the operation, which need not be in the list. This function cannot
+/// raise.
+pub fn opUnlink(op: *Operation) void {
+    var slot: *?*Operation = if (op.reading) &op.stream.read_ops else &op.stream.write_ops;
+    while (slot.*) |cur| {
+        if (cur == op) {
+            slot.* = cur.next;
+            op.next = null;
+            return;
+        }
+        slot = &cur.next;
+    }
+}
+
+/// Reports whether any operation on `s` in direction `reading` is still
+/// listening.
+///
+/// An abandoned operation does not count: nothing is waiting on it, and the
+/// handle may be closed while the host still owes its completion. This
+/// function cannot raise.
+pub fn opWaiting(s: *const Stream, reading: bool) bool {
+    var it = if (reading) s.read_ops else s.write_ops;
+    while (it) |op| : (it = op.next) {
+        if (!op.abandoned) return true;
+    }
+    return false;
 }
 
 /// The read state machine, over whichever of the three calls the mode names.
@@ -502,21 +665,38 @@ pub fn readGeneric(
 
 /// Closes a stream from Janet, which is what `(:close s)` reaches.
 pub fn streamClose(s: *Stream) raise.Error!void {
-    const rf = s.read_fiber;
-    const wf = s.write_fiber;
-    if (rf) |f| {
-        if (f.ev_callback != null) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.close);
-            s.read_fiber = null;
-        }
+    // Every operation outstanding on the stream ends, in both directions and
+    // in start order. The walk restarts from the head after each delivery,
+    // because a callback that takes `close` releases its own operation and
+    // may release others through a nested close.
+    opMarkPending(s);
+    while (opTakePending(s, true)) |op| {
+        try op.callback(op, constants.AsyncEvent.close);
     }
-    if (wf) |f| {
-        if (f.ev_callback != null) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.close);
-            s.write_fiber = null;
-        }
+    while (opTakePending(s, false)) |op| {
+        try op.callback(op, constants.AsyncEvent.close);
     }
     try closeImplHandle(s);
+}
+
+/// Ends every operation on `s` while the VM is tearing down.
+///
+/// A teardown cannot deliver `close`: callbacks may schedule a fiber, while
+/// the scheduler is being dismantled. `asyncEnd` instead gives each callback
+/// `deinit`, releases a POSIX operation immediately, and cancels a Windows
+/// transfer while retaining its state for the completion port. The caller
+/// drains those completions before it frees the collector heap.
+pub fn teardownOperations(s: *Stream) void {
+    for ([2]?*Operation{ s.read_ops, s.write_ops }) |list| {
+        var it = list;
+        while (it) |op| {
+            // `asyncEnd` frees a POSIX operation, and on Windows leaves an
+            // abandoned one linked until the completion port releases it.
+            // Take the link before either path changes the allocation.
+            it = op.next;
+            ev.asyncEnd(op);
+        }
+    }
 }
 
 /// Checks that a stream is open and has every capability the caller needs.
@@ -541,7 +721,11 @@ pub fn toFileEntries() []const corefn.Entry {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("ev/to-file", &cfunToFile, @src(), "(ev/to-file)", "Create core/file copy of the stream. This value can be used " ++
-                "when blocking IO behavior is needed."),
+                "when blocking IO behavior is needed. On Windows the stream's handle has to be a synchronous one. " ++
+                "A handle opened FILE_FLAG_OVERLAPPED, which is every handle os/open returns, converts and then " ++
+                "refuses each transfer: the C library reads and writes a file synchronously, and those calls " ++
+                "report ERROR_INVALID_PARAMETER against an overlapped handle. A handle file/open produced is " ++
+                "synchronous and converts on every platform."),
         };
         break :blk acc;
     };
@@ -610,29 +794,29 @@ fn closeImplHandle(s: *Stream) raise.Error!void {
 }
 
 /// What the loop calls when a stream a read is waiting on becomes ready.
-fn ev_callback_read(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Error!void {
-    const s: *Stream = fiber.ev_stream.?;
-    const state: *StateRead = @ptrCast(@alignCast(fiber.ev_state));
+fn ev_callback_read(op: *Operation, event: ev.AsyncEvent) raise.Error!void {
+    const s: *Stream = op.stream;
+    const state: *StateRead = @ptrCast(@alignCast(op.state));
     switch (event) {
         constants.AsyncEvent.mark => gc_mark.mark(wrap.fromBuffer(state.buf)),
         constants.AsyncEvent.close => {
-            ev.schedule(fiber, wrap.fromNil());
-            ev.asyncEnd(fiber);
+            ev.schedule(op.fiber, wrap.fromNil());
+            ev.asyncEnd(op);
         },
         else => {
             if (windows) {
-                try readWindows(fiber, s, state, event);
+                try readWindows(op, s, state, event);
             } else {
-                try readPosix(fiber, s, state, event);
+                try readPosix(op, s, state, event);
             }
         },
     }
 }
 
 /// What the loop calls when a stream a write is waiting on becomes ready.
-fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Error!void {
-    const s: *Stream = fiber.ev_stream.?;
-    const state: *StateWrite = @ptrCast(@alignCast(fiber.ev_state));
+fn ev_callback_write(op: *Operation, event: ev.AsyncEvent) raise.Error!void {
+    const s: *Stream = op.stream;
+    const state: *StateWrite = @ptrCast(@alignCast(op.state));
     switch (event) {
         constants.AsyncEvent.mark => {
             gc_mark.mark(if (state.is_buffer != 0)
@@ -644,14 +828,14 @@ fn ev_callback_write(fiber: *fibers.Fiber, event: ev.AsyncEvent) raise.Error!voi
             }
         },
         constants.AsyncEvent.close => {
-            try ev.cancel(fiber, value.fromBytes("stream closed", .string));
-            ev.asyncEnd(fiber);
+            try ev.cancel(op.fiber, value.fromBytes("stream closed", .string));
+            ev.asyncEnd(op);
         },
         else => {
             if (windows) {
-                try writeWindows(fiber, s, state, event);
+                try writeWindows(op, s, state, event);
             } else {
-                try writePosix(fiber, s, state, event);
+                try writePosix(op, s, state, event);
             }
         },
     }
@@ -728,16 +912,15 @@ inline fn nextPipeSerial() u32 {
 }
 
 /// The POSIX read, straight into the caller's buffer.
-fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
+fn readPosix(op: *Operation, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
     switch (event) {
         constants.AsyncEvent.err => {
             if (state.bytes_read != 0) {
-                ev.schedule(fiber, wrap.fromBuffer(state.buf));
+                ev.schedule(op.fiber, wrap.fromBuffer(state.buf));
             } else {
-                ev.schedule(fiber, wrap.fromNil());
+                ev.schedule(op.fiber, wrap.fromNil());
             }
-            s.read_fiber = null;
-            ev.asyncEnd(fiber);
+            ev.asyncEnd(op);
         },
         constants.AsyncEvent.hup, constants.AsyncEvent.init, constants.AsyncEvent.read => {
             // The loop the tail of this body re-enters when a chunked read
@@ -774,8 +957,8 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
                     if (c.errno() == ev.EPIPE and state.mode != read_mode_recvfrom) {
                         nread = 0;
                     } else {
-                        try ev.cancel(fiber, evLasterr());
-                        ev.asyncEnd(fiber);
+                        try ev.cancel(op.fiber, evLasterr());
+                        ev.asyncEnd(op);
                         return;
                     }
                 }
@@ -784,8 +967,8 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
                 // protocol a zero-length packet is end of stream.
                 state.bytes_read += @intCast(nread);
                 if (state.bytes_read == 0 and state.mode != read_mode_recvfrom) {
-                    ev.schedule(fiber, wrap.fromNil());
-                    ev.asyncEnd(fiber);
+                    ev.schedule(op.fiber, wrap.fromNil());
+                    ev.asyncEnd(op);
                     return;
                 }
 
@@ -802,8 +985,8 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
                     } else {
                         resume_val = wrap.fromBuffer(buffer);
                     }
-                    ev.schedule(fiber, resume_val);
-                    ev.asyncEnd(fiber);
+                    ev.schedule(op.fiber, resume_val);
+                    ev.asyncEnd(op);
                     return;
                 }
                 // Read some more if possible.
@@ -820,7 +1003,7 @@ fn readPosix(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.Asyn
 /// for a stream the completion port did not take. `readWindows` calls this
 /// again with `complete` where it does, because no packet will arrive to do
 /// it.
-fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!bool {
+fn readWindowsOnce(op: *Operation, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!bool {
     var start_transfer = false;
     switch (event) {
         constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
@@ -832,8 +1015,8 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
             // chunks and the next one is placed by the same advance.
             s.position += ev_bytes;
             if (state.bytes_read == 0 and state.mode != read_mode_recvfrom) {
-                ev.schedule(fiber, wrap.fromNil());
-                ev.asyncEnd(fiber);
+                ev.schedule(op.fiber, wrap.fromNil());
+                ev.asyncEnd(op);
                 return false;
             }
             _ = try buffers.pushBytes(state.buf, state.chunk_buf[0..@intCast(ev_bytes)]);
@@ -847,8 +1030,8 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
                 } else {
                     resume_val = wrap.fromBuffer(state.buf);
                 }
-                ev.schedule(fiber, resume_val);
-                ev.asyncEnd(fiber);
+                ev.schedule(op.fiber, resume_val);
+                ev.asyncEnd(op);
                 return false;
             }
             start_transfer = true;
@@ -860,7 +1043,7 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
 
     const chunk = if (state.bytes_left > chunk_size_windows) chunk_size_windows else state.bytes_left;
     state.overlapped = std.mem.zeroes(Overlapped);
-    state.overlapped.fiber = fiber;
+    state.overlapped.op = op;
     if (has_net and state.mode == read_mode_recvfrom) {
         state.wbuf.len = @intCast(chunk);
         state.wbuf.buf = &state.chunk_buf;
@@ -877,8 +1060,8 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
             null,
         );
         if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
-            try ev.cancel(fiber, evLasterr());
-            ev.asyncEnd(fiber);
+            try ev.cancel(op.fiber, evLasterr());
+            ev.asyncEnd(op);
             return false;
         }
     } else if (has_net and s.flags & stream_socket != 0) {
@@ -900,8 +1083,8 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
             null,
         );
         if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
-            try ev.cancel(fiber, evLasterr());
-            ev.asyncEnd(fiber);
+            try ev.cancel(op.fiber, evLasterr());
+            ev.asyncEnd(op);
             return false;
         }
     } else {
@@ -920,14 +1103,14 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
             // before, and a registered stream is never a file.
             if (c.GetLastError() == ERROR_BROKEN_PIPE or c.GetLastError() == ERROR_HANDLE_EOF) {
                 if (state.bytes_read != 0) {
-                    ev.schedule(fiber, wrap.fromBuffer(state.buf));
+                    ev.schedule(op.fiber, wrap.fromBuffer(state.buf));
                 } else {
-                    ev.schedule(fiber, wrap.fromNil());
+                    ev.schedule(op.fiber, wrap.fromNil());
                 }
             } else {
-                try ev.cancel(fiber, evLasterr());
+                try ev.cancel(op.fiber, evLasterr());
             }
-            ev.asyncEnd(fiber);
+            ev.asyncEnd(op);
             return false;
         }
         if (status != 0 and s.flags & stream_unregistered != 0) {
@@ -938,7 +1121,7 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
             return true;
         }
     }
-    ev.asyncInFlight(fiber);
+    ev.asyncInFlight(op);
     return false;
 }
 
@@ -948,9 +1131,9 @@ fn readWindowsOnce(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: e
 /// passes are a loop here rather than a packet each. `chunk_size_windows` is
 /// 4096, so a large read is thousands of passes and recursion is not an
 /// option.
-fn readWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
+fn readWindows(op: *Operation, s: *Stream, state: *StateRead, event: ev.AsyncEvent) raise.Error!void {
     var pending = event;
-    while (try readWindowsOnce(fiber, s, state, pending)) {
+    while (try readWindowsOnce(op, s, state, pending)) {
         pending = constants.AsyncEvent.complete;
     }
 }
@@ -972,10 +1155,21 @@ fn streamGetter(stream: *Stream, key: repr.Value) raise.Error!?repr.Value {
     return args_core.findMethod(key, @ptrCast(@alignCast(stream.methods)));
 }
 
-/// Traces the two waiting fibers.
+/// Traces every operation outstanding on the stream, in both directions.
+///
+/// Each operation's fiber is traced, and its callback is given the mark
+/// event so that the values its state names are traced too. An abandoned
+/// operation is traced the same way: the host may still be reading or writing
+/// the memory its state names, and the completion that releases it has not
+/// arrived.
 fn streamMark(stream: *Stream, _: usize) void {
-    if (stream.read_fiber) |rf| gc_mark.mark(wrap.fromFiber(rf));
-    if (stream.write_fiber) |wf| gc_mark.mark(wrap.fromFiber(wf));
+    for ([2]?*Operation{ stream.read_ops, stream.write_ops }) |list| {
+        var it = list;
+        while (it) |op| : (it = op.next) {
+            gc_mark.mark(wrap.fromFiber(op.fiber));
+            ev_callback.dispatchTotal(op.callback, op, constants.AsyncEvent.mark);
+        }
+    }
 }
 
 /// Writes the descriptor and the flags, which only an unsafe marshal may do.
@@ -1042,8 +1236,8 @@ fn streamUnmarshal(u: *abi.Unmarshal) raise.Error!*Stream {
     if (windows) return raise.panic("a stream does not marshal on Windows: this runtime does not move a registered handle to another completion port");
     const p: *Stream = @ptrCast(@alignCast(try marsh.unmarshalAbstract(u, @sizeOf(Stream))));
     // Listening state cannot be shared across threads.
-    p.read_fiber = null;
-    p.write_fiber = null;
+    p.read_ops = null;
+    p.write_ops = null;
     p.flags = @bitCast(try marsh.unmarshalInt(u));
     p.methods = try marsh.unmarshalPtr(u);
     p.handle = try marsh.unmarshalInt(u);
@@ -1064,15 +1258,15 @@ fn streamUnmarshal(u: *abi.Unmarshal) raise.Error!*Stream {
 }
 
 /// The POSIX write, straight from the caller's bytes.
-fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Error!void {
+fn writePosix(op: *Operation, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Error!void {
     switch (event) {
         constants.AsyncEvent.err => {
-            try ev.cancel(fiber, value.fromBytes("stream err", .string));
-            ev.asyncEnd(fiber);
+            try ev.cancel(op.fiber, value.fromBytes("stream err", .string));
+            ev.asyncEnd(op);
         },
         constants.AsyncEvent.hup => {
-            try ev.cancel(fiber, value.fromBytes("stream hup", .string));
-            ev.asyncEnd(fiber);
+            try ev.cancel(op.fiber, value.fromBytes("stream hup", .string));
+            ev.asyncEnd(op);
         },
         constants.AsyncEvent.init, constants.AsyncEvent.write => {
             var len: i32 = undefined;
@@ -1101,15 +1295,15 @@ fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.As
 
                 if (nwrote == -1) {
                     if (c.errno() == ev.EAGAIN or c.errno() == ev.EWOULDBLOCK) return;
-                    try ev.cancel(fiber, evLasterr());
-                    ev.asyncEnd(fiber);
+                    try ev.cancel(op.fiber, evLasterr());
+                    ev.asyncEnd(op);
                     return;
                 }
 
                 // Unless using datagrams, an empty message is a disconnect.
                 if (nwrote == 0 and dest_abst == null) {
-                    try ev.cancel(fiber, value.fromBytes("disconnect", .string));
-                    ev.asyncEnd(fiber);
+                    try ev.cancel(op.fiber, value.fromBytes("disconnect", .string));
+                    ev.asyncEnd(op);
                     return;
                 }
 
@@ -1121,8 +1315,8 @@ fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.As
             }
             state.start = start;
             if (start >= len) {
-                ev.schedule(fiber, wrap.fromNil());
-                ev.asyncEnd(fiber);
+                ev.schedule(op.fiber, wrap.fromNil());
+                ev.asyncEnd(op);
             }
         },
         else => {},
@@ -1130,18 +1324,18 @@ fn writePosix(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.As
 }
 
 /// The completion-port write, which copies through a fixed buffer.
-fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Error!void {
+fn writeWindows(op: *Operation, s: *Stream, state: *StateWrite, event: ev.AsyncEvent) raise.Error!void {
     switch (event) {
         constants.AsyncEvent.failed, constants.AsyncEvent.complete => {
             const ev_bytes: u32 = @truncate(state.overlapped.bytes_transfered);
             s.position += ev_bytes;
             if (ev_bytes == 0 and state.mode != write_mode_sendto) {
-                try ev.cancel(fiber, value.fromBytes("disconnect", .string));
-                ev.asyncEnd(fiber);
+                try ev.cancel(op.fiber, value.fromBytes("disconnect", .string));
+                ev.asyncEnd(op);
                 return;
             }
-            ev.schedule(fiber, wrap.fromNil());
-            ev.asyncEnd(fiber);
+            ev.schedule(op.fiber, wrap.fromNil());
+            ev.asyncEnd(op);
         },
         constants.AsyncEvent.init => {
             var len: i32 = undefined;
@@ -1160,7 +1354,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                 len = @intCast(strings.head(bytes).length);
             }
             state.overlapped = std.mem.zeroes(Overlapped);
-            state.overlapped.fiber = fiber;
+            state.overlapped.op = op;
 
             if (has_net and state.mode == write_mode_sendto) {
                 state.wbuf.buf = @constCast(bytes);
@@ -1179,8 +1373,8 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                     null,
                 );
                 if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
-                    try ev.cancel(fiber, evLasterr());
-                    ev.asyncEnd(fiber);
+                    try ev.cancel(op.fiber, evLasterr());
+                    ev.asyncEnd(op);
                     return;
                 }
             } else if (has_net and s.flags & stream_socket != 0) {
@@ -1198,8 +1392,8 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                     null,
                 );
                 if (status != 0 and c.WSAGetLastError() != WSA_IO_PENDING) {
-                    try ev.cancel(fiber, evLasterr());
-                    ev.asyncEnd(fiber);
+                    try ev.cancel(op.fiber, evLasterr());
+                    ev.asyncEnd(op);
                     return;
                 }
             } else {
@@ -1214,8 +1408,8 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                 var transferred: u32 = 0;
                 const status = c.WriteFile(s.handle, bytes, @intCast(len), &transferred, &state.overlapped.as);
                 if (status == 0 and c.GetLastError() != ERROR_IO_PENDING) {
-                    try ev.cancel(fiber, evLasterr());
-                    ev.asyncEnd(fiber);
+                    try ev.cancel(op.fiber, evLasterr());
+                    ev.asyncEnd(op);
                     return;
                 }
                 if (status != 0 and s.flags & stream_unregistered != 0) {
@@ -1224,7 +1418,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
                     // it, and the `complete` arm has no second transfer to
                     // start, so this does not nest further.
                     state.overlapped.bytes_transfered = transferred;
-                    return writeWindows(fiber, s, state, constants.AsyncEvent.complete);
+                    return writeWindows(op, s, state, constants.AsyncEvent.complete);
                 }
             }
             // The port owes a completion for every call above that it
@@ -1234,7 +1428,7 @@ fn writeWindows(fiber: *fibers.Fiber, s: *Stream, state: *StateWrite, event: ev.
             // pending ones left `asyncEnd` releasing a state a packet still
             // named, and `gc/sweep.zig` releasing it again through the fiber.
             // `readWindowsOnce` marks the same way, at its own foot.
-            ev.asyncInFlight(fiber);
+            ev.asyncInFlight(op);
         },
         else => {},
     }

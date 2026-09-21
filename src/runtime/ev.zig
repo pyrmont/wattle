@@ -156,10 +156,6 @@ pub const windows = builtin.os.tag == .windows;
 /// What an asynchronous event is, which is `constants`'.
 pub const AsyncEvent = constants.AsyncEvent;
 
-/// What a stream's event callback is at the ABI, where `callback_type.zig` has
-/// the raising form the runtime uses.
-pub const EVCallback = ?*const fn (fiber: *fibers.Fiber, event: AsyncEvent) callconv(.c) void;
-
 /// What the loop calls on the main thread when a threaded subroutine finishes.
 pub const ThreadedCallback = ?*const fn (return_value: GenericMessage) callconv(.c) void;
 
@@ -407,45 +403,73 @@ pub inline fn assert(comptime where: std.builtin.SourceLocation, cond: bool, com
     if (!cond) exitWith(where, message);
 }
 
-/// Stops sending events to a fiber's callback and releases what it had.
-pub fn asyncEnd(fiber: *fibers.Fiber) void {
-    if (fiber.ev_callback) |cb| {
-        // A transfer still in flight is being abandoned rather than finished,
-        // which a timeout or a cancel does. On Windows it is outstanding with
-        // the host until it is cancelled: it would take its bytes off the
-        // stream and copy them into a state nothing reads any more, because
-        // `ev/backend.zig`'s loop matches a completion by the fiber's state
-        // and this fiber's is about to stop being that. `CancelIoEx` still
-        // queues a completion, so the refcount and the state are released on
-        // the same path as before. The state's first field is its
-        // `OVERLAPPED`, which is what the loop matches and what this cancels.
-        if (windows and fiber.flags.evInFlight()) {
-            if (fiber.ev_state) |state| {
-                _ = c.CancelIoEx(fiber.ev_stream.?.handle, @ptrCast(@alignCast(state)));
-            }
+/// Stops delivering events to an operation and releases what it had.
+///
+/// `op` is the operation, which is what a callback is given and what
+/// `asyncStartFiber` made. On Windows an operation the host still owes a
+/// completion for is abandoned instead of released: `CancelIoEx` is issued
+/// and the state, the stream's root and the loop's reference stay for the
+/// completion that follows. Calling this twice on one operation is a no-op
+/// the second time. This function cannot raise.
+///
+/// See `asyncRelease`, which is what frees an operation, and `asyncEndFiber`,
+/// which ends whichever operation a fiber is waiting on.
+pub fn asyncEnd(op: *stream.Operation) void {
+    if (op.abandoned) return;
+    if (op.fiber.ev_op == op) op.fiber.ev_op = null;
+    // A transfer still in flight is being abandoned rather than finished,
+    // which a timeout, a cancel and a close each do. It is outstanding with
+    // the host until it is cancelled: it would take its bytes off the stream
+    // and copy them into a state nothing reads any more. `CancelIoEx` still
+    // queues a completion, so the state, the root and the reference are
+    // released on that path. The state's first field is its `OVERLAPPED`,
+    // which is what the loop matches and what this cancels.
+    if (windows and op.in_flight) {
+        op.abandoned = true;
+        if (op.state) |state| {
+            _ = c.CancelIoEx(op.stream.handle, @ptrCast(@alignCast(state)));
         }
-        if (fiber.ev_stream.?.read_fiber == fiber) fiber.ev_stream.?.read_fiber = null;
-        if (fiber.ev_stream.?.write_fiber == fiber) fiber.ev_stream.?.write_fiber = null;
-        ev_callback.dispatchTotal(ev_callback.of(cb), fiber, constants.AsyncEvent.deinit);
-        fiber.ev_callback = null;
-        if (!fiber.flags.evInFlight()) {
-            asyncUnroot(fiber.ev_stream.?);
-            if (fiber.ev_state) |state| {
-                utils.free(state);
-                fiber.ev_state = null;
-            }
-            evDecRefcount();
-        }
+        ev_callback.dispatchTotal(op.callback, op, constants.AsyncEvent.deinit);
+        return;
     }
+    ev_callback.dispatchTotal(op.callback, op, constants.AsyncEvent.deinit);
+    asyncRelease(op);
 }
 
-/// Marks a fiber as waiting on a completion that has not been delivered yet.
-/// A no-op away from Windows, where there is no in-flight state to track.
-pub fn asyncInFlight(fiber: *fibers.Fiber) void {
-    if (windows) fiber.flags.setEvInFlight(true);
+/// Ends the operation `fiber` is waiting on, where it has one.
+///
+/// `fiber` is the fiber. This is what the scheduler calls after a fiber has
+/// been resumed, which is the one site that reaches an operation through its
+/// fiber rather than the other way round. This function cannot raise.
+pub fn asyncEndFiber(fiber: *fibers.Fiber) void {
+    if (fiber.ev_op) |op| asyncEnd(op);
 }
 
-/// Starts an asynchronous listener on the current fiber.
+/// Marks an operation as one the host owes a completion for.
+///
+/// `op` is the operation. A no-op away from Windows, where no transfer is
+/// outstanding with the host. This function cannot raise.
+pub fn asyncInFlight(op: *stream.Operation) void {
+    if (windows) op.in_flight = true;
+}
+
+/// Unlinks an operation, frees it and its state, and gives back the stream
+/// root and the loop reference `asyncStartFiber` took.
+///
+/// `op` is the operation. `asyncEnd` releases an operation the host owes
+/// nothing for, and `ev/backend.zig`'s completion path releases an abandoned
+/// one. This function cannot raise.
+pub fn asyncRelease(op: *stream.Operation) void {
+    const s = op.stream;
+    stream.opUnlink(op);
+    if (op.fiber.ev_op == op) op.fiber.ev_op = null;
+    if (op.state) |state| utils.free(state);
+    utils.free(@ptrCast(op));
+    asyncUnroot(s);
+    evDecRefcount();
+}
+
+/// Starts an asynchronous operation on the current fiber.
 pub fn asyncStart(
     s: *stream.Stream,
     mode: constants.AsyncMode,
@@ -456,8 +480,18 @@ pub fn asyncStart(
     return awaitEvent();
 }
 
-/// Starts an asynchronous listener on `fiber`, with the callback the loop will
-/// deliver events to.
+/// Starts an asynchronous operation on `fiber`, with the callback the loop
+/// will deliver its events to.
+///
+/// `fiber` is the fiber, `s` the stream, `mode` the one direction the
+/// operation waits on, `callback` the function events go to and `state` the
+/// subsystem's own allocation. The operation is linked at the end of the
+/// stream's list for its direction, so a stream carries as many operations in
+/// a direction as have been started on it.
+///
+/// This function raises where the callback raises from the init event. A
+/// fiber waits on at most one operation, and a mode naming neither direction
+/// or both is a defect at the call site; both are asserted.
 pub fn asyncStartFiber(
     fiber: ?*fibers.Fiber,
     s: *stream.Stream,
@@ -465,22 +499,30 @@ pub fn asyncStartFiber(
     callback: ev_callback.EVCallback,
     state: ?*anyopaque,
 ) raise.Error!void {
-    assert(@src(), fiber.?.ev_callback == null, "double async on fiber");
-    if (mode.read) s.read_fiber = fiber;
-    if (mode.write) s.write_fiber = fiber;
-    fiber.?.ev_callback = ev_callback.stored(callback);
-    fiber.?.ev_stream = s;
+    const f = fiber.?;
+    assert(@src(), f.ev_op == null, "double async on fiber");
+    assert(@src(), mode.read != mode.write, "an operation waits on one direction");
+    const op: *stream.Operation = @ptrCast(@alignCast(utils.malloc(@sizeOf(stream.Operation)) orelse
+        outOfMemory(@src())));
+    op.* = .{
+        .stream = s,
+        .fiber = f,
+        .callback = callback,
+        .state = state,
+        .reading = mode.read,
+    };
+    stream.opLink(op);
+    f.ev_op = op;
     evIncRefcount();
     gc_alloc.gcroot(wrap.fromAbstract(s));
-    fiber.?.ev_state = state;
-    try callback(fiber.?, constants.AsyncEvent.init);
+    try callback(op, constants.AsyncEvent.init);
 }
 
 /// Releases the stream root added by `asyncStartFiber`.
 ///
-/// Called by `asyncEnd` when no transfer is in flight, or by the unmatched
-/// IOCP completion path. The root remains after `asyncEnd` for an abandoned
-/// transfer because its completion key is the address of `s`.
+/// Called by `asyncRelease`. The root remains after `asyncEnd` has abandoned
+/// an operation, because the completion key of the transfer still outstanding
+/// is the address of `s`.
 pub fn asyncUnroot(s: *stream.Stream) void {
     _ = gc_alloc.gcunroot(wrap.fromAbstract(s));
 }
@@ -569,6 +611,57 @@ pub fn evDeinitCommon() void {
     tables.deinit(&sched.active_tasks);
     tables.deinit(&sched.signal_handlers);
     if (!windows) _ = c.pthread_attr_destroy(&sched.backend.new_thread_attr);
+}
+
+/// Ends every stream operation before VM teardown frees the collector heap.
+///
+/// Each operation roots its stream. Ending the operations removes every POSIX
+/// root at once; on Windows it cancels each transfer and leaves its root,
+/// state and operation until IOCP reports the completion. Draining that port
+/// before `gc/sweep.zig` frees the stream is what keeps an overlapped call
+/// from retaining a pointer into freed memory. This function cannot raise.
+pub fn teardownOperations() void {
+    const roots = &vm_state.current().roots;
+    var i: usize = 0;
+    while (i < roots.items.len) {
+        const item = roots.items[i];
+        var stream_root: ?*anyopaque = null;
+        if (repr.checkType(item, repr.Tag.abstract) and
+            abi.abstractHead(wrap.toAbstract(item)).type == &stream.streamType)
+        {
+            const s: *stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(item)));
+            stream_root = @ptrCast(s);
+            stream.teardownOperations(s);
+        }
+        // `asyncEnd` removes an operation's stream root by swapping a later
+        // entry into this position, so the next iteration must read it again.
+        // A second root of this same stream needs no second teardown: every
+        // operation on it ended above.
+        if (stream_root == null or i >= roots.items.len or
+            (repr.checkType(roots.items[i], repr.Tag.abstract) and
+                wrap.toAbstract(roots.items[i]) == stream_root)) i += 1;
+    }
+    if (windows) {
+        while (operationsOutstanding()) backend.loop1(false, 0) catch
+            exitWith(@src(), "failed to drain cancelled operations");
+    }
+}
+
+/// Whether a rooted stream still holds an operation during teardown.
+///
+/// After `teardownOperations` runs, only a Windows transfer awaiting its
+/// cancellation completion remains. The root set is its complete population:
+/// every operation roots exactly its stream until `asyncRelease` removes it.
+fn operationsOutstanding() bool {
+    for (vm_state.current().roots.items) |item| {
+        if (repr.checkType(item, repr.Tag.abstract) and
+            abi.abstractHead(wrap.toAbstract(item)).type == &stream.streamType)
+        {
+            const s: *stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(item)));
+            if (s.read_ops != null or s.write_ops != null) return true;
+        }
+    }
+    return false;
 }
 
 /// Takes a reference that keeps the loop alive.
@@ -664,7 +757,7 @@ pub fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []
 
 /// What the scheduler does after a fiber has been resumed.
 pub fn fiberDidResume(fiber: *fibers.Fiber) void {
-    asyncEnd(fiber);
+    asyncEndFiber(fiber);
 }
 
 /// `ev/channel.zig`'s `getChannel`, re-exported.
@@ -906,6 +999,10 @@ pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
         .{ where.file, where.line },
     );
     _ = c.fwrite(line.ptr, 1, line.len, stdio.err());
+    // Flushed here rather than left to `exit`. A report that reaches the
+    // stream and not the file is a report a later reader takes for silence,
+    // and silence is what this one is read against.
+    _ = c.fflush(stdio.err());
     c.exit(1);
 }
 

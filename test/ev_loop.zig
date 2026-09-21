@@ -66,6 +66,7 @@ const constants = @import("constants");
 const core_env = @import("subsystems").env;
 const ev = subsystems.ev;
 const expect = @import("expect.zig").expect;
+const fibers = @import("subsystems").value.fibers;
 const gc_alloc = @import("subsystems").gc_alloc;
 const gc_mark = @import("subsystems").gc_mark;
 const harness = @import("harness.zig");
@@ -327,7 +328,7 @@ fn theStreamExtension() void {
     const s = &ps.stream;
     expect(s.handle == handles[0]);
     expect(s.flags == @as(u32, @intCast(constants.stream_readable)));
-    expect(s.read_fiber == null and s.write_fiber == null);
+    expect(s.read_ops == null and s.write_ops == null);
     expect(@intFromPtr(s.methods) == @intFromPtr(&probe_methods));
     // A fresh stream starts at the head of the file. `makeStreamExt` casts
     // over memory `newBytes` does not zero, so every field it means to define
@@ -529,7 +530,7 @@ fn theStreamMarshalling() void {
     // A different descriptor for the same pipe: `dup` was called.
     expect(back.handle != s.handle);
     expect(back.flags == s.flags);
-    expect(back.read_fiber == null and back.write_fiber == null);
+    expect(back.read_ops == null and back.write_ops == null);
 
     // Both ends really do read the same pipe. No guard: Windows returned
     // above, so everything from here is POSIX.
@@ -547,6 +548,107 @@ fn theStreamMarshalling() void {
     // backend: it is the state the call is trying to reach.
     try_(stream.streamClose(back));
     try_(stream.streamClose(s));
+    closeFarEnd(handles);
+}
+
+/// The fibers `probeOperation` names its two operations by.
+var probe_fibers: [2]?*fibers.Fiber = .{ null, null };
+
+/// What `probeOperation` recorded: two characters per event, the operation
+/// and then the event, in the order the events arrived.
+var probe_log: [64]u8 = undefined;
+var probe_log_len: usize = 0;
+
+/// An event callback that records what it was given and ends its operation on
+/// a close, which is what every callback in the runtime does with that event.
+fn probeOperation(op: *stream.Operation, event: ev.AsyncEvent) raise.Error!void {
+    const which: u8 = if (op.fiber == probe_fibers[0])
+        '0'
+    else if (op.fiber == probe_fibers[1])
+        '1'
+    else
+        '?';
+    const tag: u8 = switch (event) {
+        constants.AsyncEvent.init => 'i',
+        constants.AsyncEvent.deinit => 'd',
+        constants.AsyncEvent.mark => 'm',
+        constants.AsyncEvent.close => 'c',
+        else => 'x',
+    };
+    if (probe_log_len + 2 <= probe_log.len) {
+        probe_log[probe_log_len] = which;
+        probe_log[probe_log_len + 1] = tag;
+        probe_log_len += 2;
+    }
+    if (event == constants.AsyncEvent.close) ev.asyncEnd(op);
+}
+
+/// Two operations outstanding on one stream in one direction. No Wattle
+/// program can see the list itself, so the order, the marking and the close
+/// are asserted here.
+///
+/// The oracle is the log the callback writes, which is derived from the events
+/// it is given rather than from the list it is being asserted about.
+fn theOperationsOnOneStream() void {
+    const handles = probePipe();
+    const s = try_(stream.makeStream(handles[0], @intCast(constants.stream_readable), &probe_methods));
+    const sv = wrap.fromAbstract(s);
+    gc_alloc.gcroot(sv);
+    defer _ = gc_alloc.gcunroot(sv);
+
+    const pair = doString("[(fiber/new (fn [] nil)) (fiber/new (fn [] nil))]");
+    gc_alloc.gcroot(pair);
+    defer _ = gc_alloc.gcunroot(pair);
+    const tup = harness.elems(pair);
+    probe_fibers = .{ wrap.toFiber(tup[0]), wrap.toFiber(tup[1]) };
+    probe_log_len = 0;
+
+    try_(ev.asyncStartFiber(probe_fibers[0], s, constants.AsyncMode.reading, &probeOperation, null));
+    try_(ev.asyncStartFiber(probe_fibers[1], s, constants.AsyncMode.reading, &probeOperation, null));
+    const first = probe_fibers[0].?.ev_op.?;
+    const second = probe_fibers[1].?.ev_op.?;
+
+    // The second read does not displace the first. Both are on the stream, in
+    // the order they were started, and neither is in the other direction.
+    expect(s.read_ops == first);
+    expect(first.next == second);
+    expect(second.next == null);
+    expect(s.write_ops == null);
+    expect(first.stream == s and second.stream == s);
+    expect(first.serial != second.serial);
+
+    // A dispatch walk offers an event to both, in that order, and stops.
+    stream.opMarkPending(s);
+    expect(stream.opTakePending(s, true) == first);
+    expect(stream.opTakePending(s, true) == second);
+    expect(stream.opTakePending(s, true) == null);
+    expect(stream.opTakePending(s, false) == null);
+    expect(stream.opWaiting(s, true) and !stream.opWaiting(s, false));
+
+    // A collection reaches both, because the stream traces every operation on
+    // it rather than one fiber per direction.
+    gc_mark.collect();
+    expect(std.mem.indexOf(u8, probe_log[0..probe_log_len], "0m") != null);
+    expect(std.mem.indexOf(u8, probe_log[0..probe_log_len], "1m") != null);
+
+    // Ending the first leaves the second, and the stream's head is now the
+    // second rather than nothing.
+    probe_log_len = 0;
+    ev.asyncEnd(first);
+    expect(s.read_ops == second);
+    expect(second.next == null);
+    expect(probe_fibers[0].?.ev_op == null);
+    expect(probe_fibers[1].?.ev_op == second);
+    expect(std.mem.eql(u8, probe_log[0..probe_log_len], "0d"));
+
+    // Closing ends every operation left, not only the last started.
+    probe_log_len = 0;
+    try_(stream.streamClose(s));
+    expect(s.read_ops == null and s.write_ops == null);
+    expect(probe_fibers[1].?.ev_op == null);
+    expect(std.mem.eql(u8, probe_log[0..probe_log_len], "1c1d"));
+
+    probe_fibers = .{ null, null };
     closeFarEnd(handles);
 }
 
@@ -1205,6 +1307,7 @@ pub fn run() void {
     inCase("theStreamFlagMessages", theStreamFlagMessages);
     inCase("theNotCloseableStream", theNotCloseableStream);
     inCase("theStreamMarshalling", theStreamMarshalling);
+    inCase("theOperationsOnOneStream", theOperationsOnOneStream);
 
     if (!windows) {
         inCase("thePipeModes", thePipeModes);

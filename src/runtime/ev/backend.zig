@@ -33,8 +33,6 @@ const c = @import("cabi");
 const config = @import("config");
 const constants = @import("constants");
 const ev = @import("../ev.zig");
-const ev_callback = @import("../callback_type.zig");
-const fibers = @import("../value/fibers.zig");
 const host = @import("host");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
@@ -296,41 +294,27 @@ const Iocp = struct {
         // Normal event.
         const jo: *stream_mod.Overlapped = @ptrCast(@alignCast(overlapped));
         const s: *stream_mod.Stream = @ptrFromInt(completion_key);
-        // The transfer carries the fiber it belongs to, so a completion
-        // reaches that fiber whatever the stream's two slots hold by the time
-        // it arrives. They held the match before, and a stream keeps one
-        // waiting fiber per direction: a second transfer in the same
-        // direction replaces the slot, and the transfer already issued then
-        // had no way back to its fiber.
-        //
-        // The two tests are what the fiber has done since. A cleared callback
-        // is `ev.zig`'s `asyncEnd` having stopped delivering to it, which a
-        // timeout, a cancel and a close each do. A different state is a
-        // transfer it started after this one. Neither is a fiber this
-        // completion may be delivered to.
-        const fiber: ?*fibers.Fiber = blk: {
-            const owner = jo.fiber orelse break :blk null;
-            if (owner.ev_callback == null) break :blk null;
-            if (owner.ev_state != @as(?*anyopaque, jo)) break :blk null;
-            break :blk owner;
-        };
-        const abandoned = fiber == null;
-        if (fiber) |waiting| {
-            waiting.flags.setEvInFlight(false);
-            jo.bytes_transfered = num_bytes_transferred;
-            try ev_callback.of(waiting.ev_callback)(waiting, if (result != 0)
-                constants.AsyncEvent.complete
-            else
-                constants.AsyncEvent.failed);
-        } else {
-            utils.free(jo);
-            ev.evDecRefcount();
+        // Every site that issues a transfer sets this field, and an
+        // operation is freed only by `ev.zig`'s `asyncRelease`, which for a
+        // transfer the host owes a completion for is reached from here. A
+        // completion naming no operation is a defect at one of those sites.
+        const op = jo.op orelse unreachable;
+        if (op.abandoned) {
+            // `asyncEnd` stopped delivering to this operation while the host
+            // still owed this packet, and left the state, the stream's root
+            // and the loop's reference for it. The release gives back the
+            // root, and the completion key is the only reference left to the
+            // stream, so it follows `checkToClose` rather than preceding it.
+            defer ev.asyncRelease(op);
+            try stream_mod.checkToClose(s);
+            return;
         }
-        // `asyncEnd` leaves the root on an abandoned transfer's stream, since
-        // the completion key is that stream's address and the lines above
-        // read it. The `defer` releases the root after
-        // `stream_mod.checkToClose`, which reads it again and can raise.
-        defer if (abandoned) ev.asyncUnroot(s);
+        op.in_flight = false;
+        jo.bytes_transfered = num_bytes_transferred;
+        try op.callback(op, if (result != 0)
+            constants.AsyncEvent.complete
+        else
+            constants.AsyncEvent.failed);
         try stream_mod.checkToClose(s);
     }
 };
@@ -470,23 +454,31 @@ const Kqueue = struct {
             const filt = event.filter;
             const has_err = event.flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
             const has_hup = event.flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
-            // The walk takes the write fiber first, and both directions see
-            // an ERR and a HUP. A program can observe the order, and it is
-            // this backend's: `stepMasked`, which poll and epoll share, takes
-            // the read fiber first.
-            for (0..2) |j| {
-                const f = (if (j != 0) s.read_fiber else s.write_fiber) orelse continue;
-                if (f.ev_callback != null and has_err) {
-                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-                }
-                if (f.ev_callback != null and filt == EVFILT_READ and f == s.read_fiber) {
-                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.read);
-                }
-                if (f.ev_callback != null and filt == EVFILT_WRITE and f == s.write_fiber) {
-                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.write);
-                }
-                if (f.ev_callback != null and has_hup) {
-                    try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
+            // The walk takes the writing operations first, and both
+            // directions see an ERR and a HUP. A program can observe the
+            // order, and it is this backend's: `stepMasked`, which poll and
+            // epoll share, takes the reading ones first. Within a direction
+            // the operations are offered the event in the order they were
+            // started, and each takes what is there when it runs.
+            stream_mod.opMarkPending(s);
+            for ([2]bool{ false, true }) |reading| {
+                const ready = if (reading) filt == EVFILT_READ else filt == EVFILT_WRITE;
+                while (stream_mod.opTakePending(s, reading)) |op| {
+                    const serial = op.serial;
+                    if (has_err) {
+                        try op.callback(op, constants.AsyncEvent.err);
+                        if (!stream_mod.opListening(s, reading, op, serial)) continue;
+                    }
+                    if (ready) {
+                        try op.callback(op, if (reading)
+                            constants.AsyncEvent.read
+                        else
+                            constants.AsyncEvent.write);
+                        if (!stream_mod.opListening(s, reading, op, serial)) continue;
+                    }
+                    if (has_hup) {
+                        try op.callback(op, constants.AsyncEvent.hup);
+                    }
                 }
             }
             try stream_mod.checkToClose(s);
@@ -580,12 +572,8 @@ const Poll = struct {
             const pfd = &fds()[i + 1];
             pfd.events = 0;
             pfd.revents = 0;
-            if (s.read_fiber) |f| {
-                if (f.ev_callback != null) pfd.events |= POLLIN;
-            }
-            if (s.write_fiber) |f| {
-                if (f.ev_callback != null) pfd.events |= POLLOUT;
-            }
+            if (stream_mod.opWaiting(s, true)) pfd.events |= POLLIN;
+            if (stream_mod.opWaiting(s, false)) pfd.events |= POLLOUT;
             // Ignore a descriptor by making it negative, which is what `poll`
             // documents as "skip this entry".
             if (pfd.events == 0) pfd.fd = -pfd.fd;
@@ -786,35 +774,41 @@ pub inline fn unregisterStream(s: *stream_mod.Stream) raise.Error!void {
 // Private functions
 // ==========================================================================
 
-/// Delivers one event to whichever fiber is waiting on `s`, for the two
+/// Delivers one event to every operation outstanding on `s`, for the two
 /// backends that report a bare readiness mask.
+///
+/// The reading operations take the event first and the writing ones after,
+/// and within a direction they take it in the order they were started. Each
+/// walk restarts from the head of the list, so an operation a delivery
+/// released is gone and one started during the walk is not visited.
+/// `else_chain` is poll's shape, where a direction takes one event of the
+/// three; epoll takes readiness and then each of ERR and HUP.
 fn stepMasked(s: *stream_mod.Stream, readable: bool, writable: bool, has_err: bool, has_hup: bool, comptime else_chain: bool) raise.Error!void {
-    const rf = s.read_fiber;
-    const wf = s.write_fiber;
-    if (rf) |f| {
-        if (f.ev_callback != null and readable) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.read);
-        } else if (else_chain and f.ev_callback != null and has_hup) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        } else if (else_chain and f.ev_callback != null and has_err) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-        }
-        if (!else_chain) {
-            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        }
-    }
-    if (wf) |f| {
-        if (f.ev_callback != null and writable) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.write);
-        } else if (else_chain and f.ev_callback != null and has_hup) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
-        } else if (else_chain and f.ev_callback != null and has_err) {
-            try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-        }
-        if (!else_chain) {
-            if (f.ev_callback != null and has_err) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.err);
-            if (f.ev_callback != null and has_hup) try ev_callback.of(f.ev_callback)(f, constants.AsyncEvent.hup);
+    stream_mod.opMarkPending(s);
+    for ([2]bool{ true, false }) |reading| {
+        const ready = if (reading) readable else writable;
+        const ready_event = if (reading) constants.AsyncEvent.read else constants.AsyncEvent.write;
+        while (stream_mod.opTakePending(s, reading)) |op| {
+            if (else_chain) {
+                if (ready) {
+                    try op.callback(op, ready_event);
+                } else if (has_hup) {
+                    try op.callback(op, constants.AsyncEvent.hup);
+                } else if (has_err) {
+                    try op.callback(op, constants.AsyncEvent.err);
+                }
+            } else {
+                const serial = op.serial;
+                if (ready) {
+                    try op.callback(op, ready_event);
+                    if (!stream_mod.opListening(s, reading, op, serial)) continue;
+                }
+                if (has_err) {
+                    try op.callback(op, constants.AsyncEvent.err);
+                    if (!stream_mod.opListening(s, reading, op, serial)) continue;
+                }
+                if (has_hup) try op.callback(op, constants.AsyncEvent.hup);
+            }
         }
     }
     try stream_mod.checkToClose(s);

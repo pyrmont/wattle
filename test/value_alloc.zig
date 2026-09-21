@@ -182,9 +182,7 @@ fn assertNewborn(fiber: *fibers.Fiber, expect_stacktop: i32) void {
     expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
     if (with_ev) {
         expect(fiber.sched_id == 0);
-        expect(fiber.ev_callback == null);
-        expect(fiber.ev_state == null);
-        expect(fiber.ev_stream == null);
+        expect(fiber.ev_op == null);
         expect(fiber.supervisor_channel == null);
     }
 }
@@ -207,9 +205,7 @@ fn dirty(fiber: *fibers.Fiber, child: *fibers.Fiber, env: *tables.Table) void {
     };
     if (with_ev) {
         fiber.sched_id = 29;
-        fiber.ev_callback = null;
-        fiber.ev_state = @ptrCast(fiber);
-        fiber.ev_stream = null;
+        fiber.ev_op = @ptrCast(@alignCast(fiber));
         fiber.supervisor_channel = @ptrCast(fiber);
     }
 }

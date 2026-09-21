@@ -30,7 +30,7 @@ fixed    CMethod                      runtime/method_type.zig:58         abi,fie
 fixed    Chunk                        api/abi.zig:232                    abi,field
 fixed    Dictionary                   api/abi.zig:283                    abi,field
 fixed    FILETIME                     host/cabi.zig:100                  host
-fixed    Fiber                        runtime/value/fibers.zig:132       abi,field
+fixed    Fiber                        runtime/value/fibers.zig:132       field
 residue  FramePc                      runtime/vm/state.zig:98            
 fixed    FuncEnvRef                   runtime/value/functions.zig:216    abi,repr
 fixed    Function                     runtime/value/functions.zig:228    field,repr
