@@ -85,6 +85,7 @@ const stream = subsystems.ev_stream;
 const subsystems = @import("subsystems");
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
+const vm_entry = @import("subsystems").vm_entry;
 const vm_lifecycle = @import("subsystems").lifecycle;
 const wrap = @import("subsystems").value.wrap;
 
@@ -817,6 +818,14 @@ fn theDispatchContextOfACallbackFailure() void {
     gc_alloc.gcroot(fval);
     defer _ = gc_alloc.gcunroot(fval);
     const fiber = wrap.toFiber(fval);
+
+    // Compiled before the operation starts. A source run evaluates its form
+    // and then runs the loop, which an outstanding listener would keep from
+    // returning, so nothing below may reach `doString`.
+    const raiser = doString("(fn [] (error :consumed))");
+    gc_alloc.gcroot(raiser);
+    defer _ = gc_alloc.gcunroot(raiser);
+
     try_(ev.asyncStartFiber(fiber, s, constants.AsyncMode.reading, &refusingClose, null));
     const op = fiber.ev_op.?;
     const serial = op.serial;
@@ -874,7 +883,8 @@ fn theDispatchContextOfACallbackFailure() void {
 
     // A resume that ends on a raise consumes it, and the record goes with it.
     // Without this the caught failure would name the turn's next one.
-    _ = doString("(try (error :consumed) ([e] e))");
+    const resumed = vm_entry.pcall(wrap.toFunction(raiser), &.{}, null);
+    expect(resumed.signal == boundary.Signal.@"error");
     expect(ev_dispatch.dispatchContext() == null);
 
     ev.asyncEnd(op);
