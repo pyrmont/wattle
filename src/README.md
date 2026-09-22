@@ -197,6 +197,15 @@ callback is its address: an operation carries a function pointer, including
 one a native module supplied, and the runtime has no table of names to look
 it up in.
 
+A failure a callback cannot raise is scheduled instead. `ev.cancel` refuses a
+fiber the loop has never scheduled, `root` being set only by
+`ev.scheduleGeneral`, and a file watcher's fiber is one: `filewatch.zig` builds
+it and hands it to `asyncStartFiber` without scheduling it.
+`ev.scheduleSignal` with the `error` signal reaches the same resume without
+that precondition. The three filewatch backends report a failed read that way
+and end the watch, so a watcher that dies is something a program learns about
+rather than a channel that goes quiet.
+
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
 A cfunction is a Zig function: `raise.CFunction` takes `[]Value` and returns
 `raise.Error!Value` in Zig's calling convention, so `argv[n]` is bounds-checked.

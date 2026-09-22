@@ -70,10 +70,16 @@ const abi = @import("abi");
 const abstracts = @import("subsystems").value.abstracts;
 const args_core = @import("subsystems").args;
 const core_env = @import("subsystems").env;
+const c = @import("cabi");
+const constants = @import("constants");
 const ev_channel = @import("subsystems").ev_channel;
+const ev_loop = @import("subsystems").ev;
+const ev_stream = @import("subsystems").ev_stream;
+const fibers = @import("subsystems").value.fibers;
 const expect = @import("expect.zig").expect;
 const filewatch_core = subsystems.filewatch;
 const gc_alloc = @import("subsystems").gc_alloc;
+const utils = @import("subsystems").utils;
 const harness = @import("harness.zig");
 const order = @import("subsystems").value.order;
 const pp_describe = @import("subsystems").pp_describe;
@@ -177,6 +183,114 @@ fn makeChannel() repr.Value {
     expect(status == 0);
     expect(args_core.checkabstract(chan, &ev_channel.channelType) != null);
     return chan;
+}
+
+/// A backend read failure ends the watch and reports the error, rather than
+/// raising where a raise would take the loop down with it.
+///
+/// The failure is a real one, not an injected flag: the operation is started
+/// over a pipe descriptor, which is neither an inotify descriptor nor a
+/// kqueue, so `read(2)` and `kevent(2)` both refuse it with `EBADF`. That is
+/// one of the errnos the arm exists for, and it is what makes this a test of
+/// the branch rather than of a fixture.
+///
+/// The fiber is built the way `listen` builds one and never scheduled, which
+/// is the state that made `ev.cancel` raise here. `test/ev_loop.zig`'s
+/// `theErrorScheduledOnANonTask` pins the scheduler half; what is pinned here
+/// is that the backend reaches it, and that the operation is released rather
+/// than left on the fiber.
+///
+/// The supervisor is what makes the report a value. A watcher's own fiber has
+/// one only on Windows, where `startListening` copies the root fiber's; on
+/// these two backends the loop prints the failure instead, and the channel is
+/// attached here to read what is delivered rather than to reproduce a
+/// watcher.
+fn theReadFailureEndsTheWatch(chan: repr.Value) void {
+    const watcher = callCore("filewatch/new", @constCast(&[_]repr.Value{chan}));
+    gc_alloc.gcroot(watcher);
+    defer _ = gc_alloc.gcunroot(watcher);
+
+    var fiberv = wrap.fromNil();
+    expect(core_env.dostring(harness.coreEnv(), "(fiber/new (fn [] 1) :e)", "filewatch_core", &fiberv) == 0);
+    gc_alloc.gcroot(fiberv);
+    defer _ = gc_alloc.gcunroot(fiberv);
+    const fiber = wrap.toFiber(fiberv);
+
+    const supervisor = makeChannel();
+    gc_alloc.gcroot(supervisor);
+    defer _ = gc_alloc.gcunroot(supervisor);
+    fiber.supervisor_channel = @ptrCast(wrap.toAbstract(supervisor));
+
+    var fds: [2]c_int = undefined;
+    expect(c.pipe(&fds) == 0);
+    // The read end has no owner, so this file closes it. The write end goes
+    // to the stream below, and a stream owns its descriptor: closing it here
+    // as well would leave the stream's own close to reach a number the host
+    // has since given to something else.
+    defer _ = c.close(fds[0]);
+
+    // The write end: `read(2)` on a descriptor not open for reading is
+    // `EBADF`, and `kevent(2)` refuses anything that is not a kqueue.
+    const s = ev_stream.makeStream(fds[1], @intCast(constants.stream_readable), null) catch
+        @panic("filewatch_core: a stream that should have been made raised");
+    const sv = wrap.fromAbstract(s);
+    gc_alloc.gcroot(sv);
+    defer _ = gc_alloc.gcunroot(sv);
+    defer expect(harness.raised(ev_stream.streamClose, .{s}) == null);
+
+    // The backend is chosen at compile time, not from `platform`: a runtime
+    // switch analyses both arms, and each names a callback that compiles on
+    // one host only.
+    const callback = if (builtin.os.tag == .linux)
+        &filewatch_core.inotify.callbackRead
+    else
+        &filewatch_core.kqueue.callbackRead;
+
+    // The state each backend hands its callback, allocated as `listen`
+    // allocates it: `asyncRelease` frees it, so it is the runtime's.
+    const state: ?*anyopaque = if (builtin.os.tag == .linux) blk: {
+        const cell: *?*anyopaque = @ptrCast(@alignCast(utils.malloc(@sizeOf(?*anyopaque))));
+        cell.* = wrap.toAbstract(watcher);
+        break :blk @ptrCast(cell);
+    } else blk: {
+        const st: *filewatch_core.kqueue.State =
+            @ptrCast(@alignCast(utils.malloc(@sizeOf(filewatch_core.kqueue.State))));
+        st.watcher = @ptrCast(@alignCast(wrap.toAbstract(watcher)));
+        st.cookie = 0;
+        break :blk @ptrCast(st);
+    };
+
+    // Which event reaches the failure differs by backend, and the difference
+    // is the backends' own. `asyncStartFiber` dispatches `init`, and the
+    // inotify callback reads on that event as well as on `read`, so the watch
+    // is already over when it returns. The kqueue callback does nothing on
+    // `init`, so its failure waits for the `read` this dispatches.
+    ev_loop.asyncStartFiber(fiber, s, constants.AsyncMode.reading, callback, state) catch
+        @panic("filewatch_core: starting the operation raised");
+    if (builtin.os.tag != .linux) {
+        expect(fiber.ev_op != null);
+        // It raises nothing: the arm reports and ends the watch.
+        expect(harness.raised(callback, .{ fiber.ev_op.?, constants.AsyncEvent.read }) == null);
+    }
+
+    // The operation is over, and the fiber carries the failure.
+    expect(fiber.ev_op == null);
+    expect(fibers.evFlags(fiber).canceled);
+
+    // The loop delivers the failure to the supervisor and returns. A raise
+    // here would be the loop's own and not the watch's.
+    expect(harness.raised(ev_loop.loop, .{}) == null);
+    expect(ev_loop.loopDone());
+
+    var event = wrap.fromNil();
+    expect(ev_channel.channelTake(ev_channel.unwrap(wrap.toAbstract(supervisor)), &event) catch false);
+    const tup = harness.elems(event);
+    expect(tup.len == 3);
+    expect(harness.keywordIs(tup[0], "error"));
+    expect(wrap.toFiber(tup[1]) == fiber);
+    // The message is the host's rendering of its own errno, so what is checked
+    // is that a value arrived and that it is the text a string carries.
+    expect(harness.isType(fiber.last_value, repr.Tag.string));
 }
 
 fn theRegistration() void {
@@ -515,6 +629,7 @@ pub fn run() void {
         theFlagTableHalves(chan, be.platform, be.word);
         theAbstractType(chan);
         if (!windows) theLifecycle(chan);
+        if (!windows and be.platform != .windows) theReadFailureEndsTheWatch(chan);
         if (be.platform == .kqueue and harness.coreOptional("os/mkdir") != null) {
             theEventNamesAWatchedDirectory();
         }

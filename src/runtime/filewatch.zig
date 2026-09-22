@@ -17,6 +17,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
 const abstract_type = @import("../api/abstract_type.zig");
 const abstracts = @import("value/abstracts.zig");
 const args_core = @import("args.zig");
@@ -205,7 +206,7 @@ const Watcher = struct {
 };
 
 /// The inotify backend.
-const inotify = struct {
+pub const inotify = struct {
     /// inotify's flag values, in the order `linux_names` below lists them.
     /// The two arrays are one table split in half,
     /// so an edit to either has to be an edit to both; the assertion below
@@ -272,11 +273,17 @@ const inotify = struct {
         // descriptor mapping. That is what a program observes.
     }
 
-    /// The event-loop callback that drains a watcher's descriptor. Nothing
-    /// here raises: the event loop calls it
-    /// with no protected scope of its own, and every failure is reported by
-    /// scheduling or cancelling the waiting fiber.
-    fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+    /// The event-loop callback that drains a watcher's descriptor.
+    ///
+    /// A failed `read(2)` does not raise. It goes to `reportFailure`, which
+    /// ends the watch and leaves the loop running, because a raise here would
+    /// end the whole loop invocation and every other watch and task with it.
+    /// What does raise is `channelGive` on a closed channel, and that raise
+    /// propagates to the scope the loop entry opened.
+    ///
+    /// Not exported, and `pub` for `test/filewatch_core.zig`, which drives the
+    /// failure arm over a descriptor `read(2)` refuses.
+    pub fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
         const stream = op.stream;
         const watcher: *Watcher = watcherOf(@as(*?*anyopaque, @ptrCast(@alignCast(op.state))).*);
         var buf: [1024]u8 = undefined;
@@ -302,8 +309,12 @@ const inotify = struct {
 
                     if (nread == -1) {
                         if (c.errno() == h.EAGAIN or c.errno() == h.EWOULDBLOCK) break :read_more;
-                        try ev_loop.cancel(op.fiber, ev_stream.evLasterr());
-                        op.state = null;
+                        // The state is left in place for `asyncEnd` to free.
+                        // Clearing it first leaked the pointer and left the
+                        // `deinit` dispatch below to read a watcher through
+                        // it, which is a null dereference this arm never
+                        // reached while it raised.
+                        reportFailure(op.fiber, ev_stream.evLasterr());
                         ev_loop.asyncEnd(op);
                         break :read_more;
                     }
@@ -393,7 +404,7 @@ const inotify = struct {
 };
 
 /// The kqueue backend, for macOS and the BSDs.
-const kqueue = struct {
+pub const kqueue = struct {
     /// Janet's own flag rather than one of the platform's: it is not a
     /// `NOTE_*` value and is masked out before `kevent(2)` sees it. Only the
     /// Windows backend has one; kqueue's table is entirely the host's.
@@ -438,7 +449,7 @@ const kqueue = struct {
     /// events this watcher has reported, rather than being an inotify cookie:
     /// allocating the state without setting it would derive every cookie from
     /// whatever was in the heap block.
-    const State = extern struct {
+    pub const State = extern struct {
         watcher: *Watcher,
         cookie: u32,
     };
@@ -508,7 +519,14 @@ const kqueue = struct {
         tables.put(watcher.watch_descriptors.?, wrap.fromInteger(wd), wrap.fromNil());
     }
 
-    fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
+    /// The event-loop callback that drains a watcher's kqueue.
+    ///
+    /// A failed `kevent(2)` ends the watch through `reportFailure`, for the
+    /// reason `inotify.callbackRead` gives.
+    ///
+    /// Not exported, and `pub` for `test/filewatch_core.zig`, which drives the
+    /// failure arm over a descriptor that is not a kqueue.
+    pub fn callbackRead(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
         const stream = op.stream;
         const state: *State = @ptrCast(@alignCast(op.state));
         const watcher = state.watcher;
@@ -527,7 +545,7 @@ const kqueue = struct {
                 const kq = stream.handle;
                 const status = c.retryIntr(h.kevent, .{ kq, null, 0, &events, num_events, null });
                 if (status == -1) {
-                    ev_loop.schedule(op.fiber, wrap.fromNil());
+                    reportFailure(op.fiber, ev_stream.evLasterr());
                     ev_loop.asyncEnd(op);
                     return;
                 }
@@ -794,7 +812,15 @@ const win = struct {
                 ev_loop.schedule(op.fiber, wrap.fromNil());
                 ev_loop.asyncEnd(op);
             },
-            constants.AsyncEvent.err, constants.AsyncEvent.failed => try ev_loop.streamClose(ow.stream.?),
+            constants.AsyncEvent.err, constants.AsyncEvent.failed => {
+                // Reported before the close, and the close is what ends the
+                // operation: `asyncEnd` frees the state, and `ow` is that
+                // state, so this arm cannot read `ow.stream` after it. The
+                // `close` arm's own `schedule` is dropped, a cancelled fiber
+                // being one `scheduleGeneral` returns from.
+                reportFailure(op.fiber, ev_stream.evLasterr());
+                try ev_loop.streamClose(ow.stream.?);
+            },
             constants.AsyncEvent.complete => {
                 if (watcher.is_watching == 0) {
                     try ev_loop.streamClose(ow.stream.?);
@@ -1242,6 +1268,25 @@ fn namesFor(platform: Platform) []const [:0]const u8 {
         .windows => &windows_names,
         .kqueue => &kqueue_names,
     };
+}
+
+/// Reports a backend failure to the fiber a watch runs on, and cancels it.
+///
+/// `fiber` is the watch's fiber and `err` the value describing the failure.
+/// The three backends agree on this: a failure that ends a watch reaches the
+/// program, rather than the watch going quiet. With no supervisor the loop
+/// prints the error and the stack, and the loop runs on.
+///
+/// Not `ev.cancel`, which is otherwise the idiom for this. A watch's fiber is
+/// built by `listen` and handed to `asyncStartFiber` without being scheduled,
+/// so `root` is never set and `cancel` refuses it as a fiber that is not a
+/// task. `scheduleSignal` decides the same thing: a resume with the `error`
+/// signal, which `scheduleGeneral` marks as cancelled on the way through.
+///
+/// The caller ends the operation, because when it may do so differs by
+/// backend.
+fn reportFailure(fiber: *fibers.Fiber, err: repr.Value) void {
+    ev_loop.scheduleSignal(fiber, err, abi.Signal.@"error");
 }
 
 /// The dirname and basename split that inotify and kqueue both make on a path

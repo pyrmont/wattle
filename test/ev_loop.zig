@@ -1258,6 +1258,58 @@ fn theCancelOfANonTask() void {
     expect(!try_(channel.channelTake(sup, &event)));
 }
 
+/// An error delivered to a fiber the loop has never seen, which is what a
+/// watcher's failure is.
+///
+/// `filewatch.zig` builds its watch fiber with `fibers.new` and hands it to
+/// `asyncStartFiber` without scheduling it, so `root` is never set and the
+/// case above refuses it. `scheduleSignal` decides what `cancel` would have
+/// decided -- a resume with the `error` signal -- and takes no such
+/// precondition.
+///
+/// Scheduling rather than raising is the point. A raise from a callback now
+/// reaches the scope the loop entry opened, so it ends the whole loop
+/// invocation and every other watch and task with it; one watch's read
+/// failing is not grounds for that.
+///
+/// The supervisor is what makes the delivery a value rather than a line on
+/// stderr. Only the Windows watch fiber has one, `startListening` copying the
+/// root fiber's, so on the other two backends a watch failure is the stack
+/// trace the loop prints. The channel is attached here to read what is
+/// delivered. `test/filewatch_core.zig`'s `theReadFailureEndsTheWatch` drives
+/// a backend arm into this.
+fn theErrorScheduledOnANonTask() void {
+    const fiberv = doString("(fiber/new (fn [] 1) :e)");
+    gc_alloc.gcroot(fiberv);
+    defer _ = gc_alloc.gcunroot(fiberv);
+    const fiber = wrap.toFiber(fiberv);
+
+    const sup = channel.channelMake(4).?;
+    const supv = wrap.fromAbstract(sup);
+    gc_alloc.gcroot(supv);
+    defer _ = gc_alloc.gcunroot(supv);
+    fiber.supervisor_channel = @ptrCast(sup);
+
+    // Never scheduled, so `cancel` refuses it. The refusal is read back here
+    // rather than assumed, because it is the precondition the delivery below
+    // is chosen for.
+    expect(harness.raised(ev.cancel, .{ fiber, value.fromBytes("nope", .string) }) != null);
+    expect(!fibers.evFlags(fiber).root);
+
+    ev.scheduleSignal(fiber, value.fromBytes("read failed", .string), boundary.Signal.@"error");
+    raise.toAbi(ev.loop());
+    expect(ev.loopDone());
+
+    var event = wrap.fromNil();
+    expect(try_(channel.channelTake(sup, &event)));
+    const tup = harness.elems(event);
+    expect(tup.len == 3);
+    expect(harness.keywordIs(tup[0], "error"));
+    expect(wrap.toFiber(tup[1]) == fiber);
+    expect(payloadIs(fiber.last_value, "read failed"));
+    expect(!try_(channel.channelTake(sup, &event)));
+}
+
 /// A module's `wake` answers whether the fiber will be resumed, which is how
 /// the module learns whether to free its context. It is false for a value that
 /// is not a fiber and for a fiber a cancel has already scheduled, and true for
@@ -1641,6 +1693,7 @@ pub fn run() void {
     inCase("theOrderedTimeouts", theOrderedTimeouts);
     inCase("theTwoTimeoutConstructors", theTwoTimeoutConstructors);
     inCase("theCancelOfANonTask", theCancelOfANonTask);
+    inCase("theErrorScheduledOnANonTask", theErrorScheduledOnANonTask);
     inCase("theWakeAnswers", theWakeAnswers);
     inCase("theScheduleSoonOrder", theScheduleSoonOrder);
     inCase("theScheduleSignalOrder", theScheduleSignalOrder);
