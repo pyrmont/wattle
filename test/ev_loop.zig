@@ -959,7 +959,9 @@ fn theNullCallback() void {
     const msg = std.mem.zeroes(ev.GenericMessage);
     ev.evPostEvent(null, null, msg);
     expect(!ev.loopDone());
-    _ = raise.toAbi(ev.loop1());
+    // The scope is the caller's: `loop1` requires one and ends the process
+    // without it, so a case that drives a single turn opens one.
+    expect(harness.raised(ev.loop1, .{}) == null);
     expect(ev.loopDone());
 }
 

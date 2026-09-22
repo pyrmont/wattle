@@ -1209,12 +1209,12 @@ fn theTrampolines() void {
 
     _ = raise(signalNumber(std.c.SIG.USR1));
     expect(vm.auto_suspend == before);
-    _ = ev.loop1() catch @panic("os_surface: the loop raised on a signal");
+    expect(harness.raised(ev.loop1, .{}) == null);
     expect(vm.auto_suspend == before);
 
     _ = raise(signalNumber(std.c.SIG.USR2));
     expect(vm.auto_suspend == before + 1);
-    _ = ev.loop1() catch @panic("os_surface: the loop raised on a signal");
+    expect(harness.raised(ev.loop1, .{}) == null);
     expect(vm.auto_suspend == before);
 
     // The two handlers the callbacks scheduled run with the next fiber.

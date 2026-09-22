@@ -987,8 +987,12 @@ fn fireTimeout(to: Timeout) raise.Error!bool {
 /// their order are what a caller depends on, including that the poll is
 /// skipped when the timer scan drained the heap.
 ///
-/// This function ends the process if the caller has no protected scope and a
-/// turn raises.
+/// The caller supplies the protected scope. A turn resumes fibers and runs
+/// event callbacks, so it can raise, and it returns `error.Signal` to that
+/// scope. There is no unprotected form: `loop` is the entry that has one,
+/// and a caller driving single turns is an embedder that can open a scope of
+/// its own, so a missing scope is a mistake rather than a policy to apply.
+/// This function ends the process when there is none.
 ///
 /// The scan stops after the first expired timer that schedules or cancels
 /// something. Draining every expired timer in one scan let a later timer's
@@ -999,36 +1003,9 @@ fn fireTimeout(to: Timeout) raise.Error!bool {
 /// keeps expired timers in time order. Timers with no consequence are still
 /// drained, since deferring them costs a turn and changes nothing.
 pub fn loop1() raise.Error!?*fibers.Fiber {
-    if (vm_state.current().return_reg != null) return loop1Body();
-
-    var payload = wrap.fromNil();
-    var interrupted: ?*fibers.Fiber = null;
-    if (loop1Protect(&payload, &interrupted) != .ok) loopFailure(payload);
-    return interrupted;
-}
-
-/// Runs one loop turn under a protected scope.
-///
-/// `payload` changes only if the turn raises. `interrupted` receives the
-/// returned fiber when the turn completes. The result is `.ok` when the turn
-/// returns.
-fn loop1Protect(payload: *repr.Value, interrupted: *?*fibers.Fiber) abi.Signal {
-    var state: vm_state.TryState = undefined;
-    signal_core.tryInit(&state);
-    var sig: abi.Signal = .ok;
-    interrupted.* = loop1Body() catch blk: {
-        sig = vm_state.current().pending_signal;
-        break :blk null;
-    };
-    if (sig != .ok) payload.* = state.payload;
-    signal_core.restore(&state);
-    return sig;
-}
-
-/// Runs one loop turn with any protected scope already established by its
-/// caller.
-fn loop1Body() raise.Error!?*fibers.Fiber {
     const v = vm_state.current();
+    if (v.return_reg == null)
+        exitWith(@src(), "a loop turn was entered without a protected scope");
     const sched = &v.ev;
     ev_dispatch.clearDispatchContext();
 

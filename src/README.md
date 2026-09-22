@@ -178,6 +178,12 @@ The source environment and the Windows cancellation drain are unprotected
 entries. They write a host-stderr diagnostic and end the process when their
 loop raises. A caller with a scope receives the original signal and payload.
 
+A single turn is the caller's to protect. `ev.loop1` returns `error.Signal`
+to the scope its caller opened and ends the process when there is none,
+rather than applying a policy of its own. A caller driving turns one at a
+time is an embedder, which can open a scope, so a missing one is a mistake
+to report and not a case to handle.
+
 The diagnostic names the dispatch the turn was in. Every event a callback may
 raise from goes through `ev/dispatch.zig`'s `dispatch`, which records the
 callback, the event and the operation serial before the call and puts back the
