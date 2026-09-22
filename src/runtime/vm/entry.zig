@@ -48,6 +48,7 @@ const abi = @import("abi");
 const config = @import("config");
 const constants = @import("constants");
 const ev = @import("../ev.zig");
+const ev_dispatch = @import("../ev/dispatch.zig");
 const fibers = @import("../value/fibers.zig");
 const functions = @import("../value/functions.zig");
 const gc_alloc = @import("../gc.zig");
@@ -458,6 +459,13 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
     signal_core.restore(&tstate);
     if (fiber_rooted) _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     fiber.last_value = tstate.payload;
+
+    // A fiber that ends on a raise has consumed it, whether a `try` reads the
+    // payload or the loop reports it. The raise is no longer in flight, so an
+    // event dispatch it came from can no longer name a later failure.
+    if (has_ev) {
+        if (sig != abi.Signal.ok) ev_dispatch.clearDispatchContext();
+    }
 
     return .{ .signal = sig, .value = tstate.payload };
 }

@@ -872,6 +872,11 @@ fn theDispatchContextOfACallbackFailure() void {
         expect(std.mem.endsWith(u8, text, tail));
     }
 
+    // A resume that ends on a raise consumes it, and the record goes with it.
+    // Without this the caught failure would name the turn's next one.
+    _ = doString("(try (error :consumed) ([e] e))");
+    expect(ev_dispatch.dispatchContext() == null);
+
     ev.asyncEnd(op);
     try_(stream.streamClose(s));
     closeFarEnd(handles);
