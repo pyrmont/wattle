@@ -58,13 +58,14 @@ pub const EVCallback = *const fn (*ev_stream.Operation, ev_loop.AsyncEvent) rais
 // Public functions
 // ==========================================================================
 
-/// Forgets the callback context of an earlier failure.
+/// Forgets the record of a dispatch that raised.
 ///
-/// `ev.zig` calls this at the start of a loop turn and of the Windows
-/// cancellation drain. A dispatch outside the loop leaves its record behind
-/// when a program catches the raise -- `(:close s)` delivers `close` to every
-/// operation on a stream -- and this bounds how long such a record can be
-/// mistaken for the current turn's.
+/// `vm/entry.zig` calls this when a fiber resume ends on a raise, which is
+/// where a raise stops being in flight: a `try` around `(ev/read ...)` reads
+/// the payload of a dispatch that raised, and the record must not then name
+/// the next failure of that same turn. `ev.zig` calls it again at the start
+/// of a loop turn and of the Windows cancellation drain, so that a record no
+/// resume consumed cannot outlive the turn it was made in.
 pub fn clearDispatchContext() void {
     vm_state.current().ev.dispatch_context = null;
 }
@@ -75,7 +76,8 @@ pub fn clearDispatchContext() void {
 /// in place before the call and put back on return, so a raise leaves the
 /// record of the innermost dispatch that made it: a callback taking `close`
 /// may close a second stream, and that nested dispatch is the one that names
-/// the failure.
+/// the failure. The record outlives the call only while the raise does, which
+/// is what `clearDispatchContext` keeps true.
 pub inline fn dispatch(
     op: *ev_stream.Operation,
     event: ev_loop.AsyncEvent,

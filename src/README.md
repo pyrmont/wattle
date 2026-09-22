@@ -184,9 +184,12 @@ callback, the event and the operation serial before the call and puts back the
 record it found when the call returns. So a raise leaves the record of the
 innermost dispatch that made it, and a failure outside a callback -- an
 expired timeout, a supervisor delivery, the `checkToClose` after a callback
-returned -- leaves none and is reported without one. The callback is its
-address: an operation carries a function pointer, including one a native
-module supplied, and the runtime has no table of names to look it up in.
+returned -- leaves none and is reported without one. A record lasts only as
+long as the raise: a fiber resume that ends on one clears it, so a dispatch
+failure a program caught cannot name the next failure of that turn. The
+callback is its address: an operation carries a function pointer, including
+one a native module supplied, and the runtime has no table of names to look
+it up in.
 
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
 A cfunction is a Zig function: `raise.CFunction` takes `[]Value` and returns

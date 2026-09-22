@@ -1331,6 +1331,37 @@
   (assert (not (string/find "after" err))
           "an unprotected loop failure stops later tasks"))
 
+; A dispatch failure a program caught does not name the turn's next failure.
+; The read's init callback raises, the try consumes it, and the supervisor
+; delivery that fails after it is outside any callback.
+;
+; The provocation is the POSIX read arm's, not the property's. That arm calls
+; buffers.extra for the whole request from the init event, so an oversized
+; read raises before any transfer starts. The completion-port arm sizes a
+; chunk instead and issues the read, so the same form there starts a transfer
+; that never completes and the child never exits. The contract case
+; theDispatchContextOfACallbackFailure pins the property itself on every
+; platform.
+(compwhen (and (dyn 'os/spawn) (not= :windows (os/which)))
+  (def caught-callback-code
+    '(do (def [r w] (os/pipe))
+         (def ch (ev/chan))
+         (ev/chan-close ch)
+         (ev/go (fn []
+                  (try (ev/read r 2147483647 !"x") ([e] (eprint "caught: " e)))
+                  1)
+                nil ch)))
+  (def p (os/spawn [|run wattle "-e" (string/format "%w" caught-callback-code)]
+                   :p {:err :pipe}))
+  (def [status err] (ev/gather (os/proc-wait p) (ev/read (p :err) :all)))
+  (assert (= 1 status) "a caught callback failure still exits nonzero")
+  (assert (string/find "caught: buffer overflow" err)
+          "the program sees the callback failure it caught")
+  (assert (string/find "event loop failure: \"cannot write to closed channel\"" err)
+          "the terminal failure is the supervisor delivery")
+  (assert (not (string/find "event callback" err))
+          "a caught callback failure names no callback in the diagnostic"))
+
 ; Cancelling a fiber that is already cancelled is ignored, so the value the
 ; first cancellation carried is the one that arrives.
 (do
