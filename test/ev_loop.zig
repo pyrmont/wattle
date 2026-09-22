@@ -794,6 +794,123 @@ fn theLoopProtectedBoundary() void {
     expect(ev_dispatch.dispatchContext() == null);
 }
 
+/// The five saved VM fields come back to what they were, on the loop
+/// invocation that completes and on the one that raises.
+///
+/// `test/signal_core.zig` asserts `tryInit` and `restore` as a pair, over a
+/// body this contract writes. What is asserted here is the same five fields
+/// across a loop invocation whose body is the runtime: it resumes a fiber,
+/// delivers a posted event and, in the second half, unwinds from a
+/// supervisor delivery.
+///
+/// Each field is separated from the value a broken restore would leave, and
+/// the three groups need different handling. `stackn`, `return_reg` and
+/// `fiber` are the entry's own, which the loop writes and has to put back.
+/// `coerce_error` is set before the entry and then left alone: `tryInit`
+/// clears it on the way in, so the live value already differs from the saved
+/// one. Collector suspension is the field `tryInit` only records, so setting
+/// it before the entry is not enough -- nothing in an ordinary loop body
+/// changes it, and an omitted restore would leave the value this case had
+/// just written. The callback below changes it inside the scope.
+///
+/// `c_raised` is neither saved nor restored. It is the C ABI report flag,
+/// and both `tryInit` and `restore` end the process on one outstanding, so
+/// what is asserted is the quiet case: a loop invocation leaves no report
+/// behind for the next scope to find.
+fn theLoopBoundaryRestoresVmState() void {
+    const v = harness.vm();
+    const old_suspend = v.gc.suspend_count;
+    const old_coerce_error = v.coerce_error;
+
+    const stackn = v.stackn;
+    const return_reg = v.return_reg;
+    const fiber = v.fiber;
+    v.gc.suspend_count = old_suspend + 2;
+    v.coerce_error = true;
+
+    // An invocation that completes. The posted event gives the loop a
+    // callback to run and a listener to release, so the scope closes over
+    // work rather than over an immediate `loopDone`.
+    boundary_record = .{};
+    const msg = std.mem.zeroes(ev.GenericMessage);
+    ev.evPostEvent(null, &suspendsDuringATurn, msg);
+
+    var payload = wrap.fromNil();
+    expect(ev.loopProtect(&payload) == boundary.Signal.ok);
+    expect(boundary_record.calls == 1);
+
+    expect(v.stackn == stackn);
+    expect(v.return_reg == return_reg);
+    expect(v.fiber == fiber);
+    expect(v.gc.suspend_count == old_suspend + 2);
+    expect(v.coerce_error);
+    expect(!v.c_raised);
+
+    // An invocation that raises. The fiber's supervisor channel is closed,
+    // so the loop unwinds out of the delivery rather than out of a callback.
+    const fval = doString("(fn [] 1)");
+    gc_alloc.gcroot(fval);
+    defer _ = gc_alloc.gcunroot(fval);
+    const failing = fibers.new(wrap.toFunction(fval), 64, &.{}) catch unreachable;
+    const failingv = wrap.fromFiber(failing);
+    gc_alloc.gcroot(failingv);
+    defer _ = gc_alloc.gcunroot(failingv);
+
+    const supervisor = channel.channelMake(1).?;
+    const supervisorv = wrap.fromAbstract(supervisor);
+    gc_alloc.gcroot(supervisorv);
+    defer _ = gc_alloc.gcunroot(supervisorv);
+    supervisor.closed = true;
+    failing.supervisor_channel = @ptrCast(supervisor);
+
+    // Scheduled by the callback rather than here, so that the collector
+    // suspension and the coercion state are changed inside the scope before
+    // the raise unwinds it. A fiber scheduled before the entry is resumed on
+    // the first turn, and the raise would precede the callback.
+    boundary_record = .{};
+    boundary_record.fiber = failing;
+    ev.evPostEvent(null, &suspendsDuringATurn, msg);
+
+    expect(ev.loopProtect(&payload) == boundary.Signal.@"error");
+    expect(payloadIs(payload, "cannot write to closed channel"));
+    expect(boundary_record.calls == 1);
+
+    expect(v.stackn == stackn);
+    expect(v.return_reg == return_reg);
+    expect(v.fiber == fiber);
+    expect(v.gc.suspend_count == old_suspend + 2);
+    expect(v.coerce_error);
+    expect(!v.c_raised);
+
+    v.gc.suspend_count = old_suspend;
+    v.coerce_error = old_coerce_error;
+    ev_dispatch.clearDispatchContext();
+}
+
+/// What `suspendsDuringATurn` was told to do and what it did.
+var boundary_record: struct { calls: u32 = 0, fiber: ?*fibers.Fiber = null } = .{};
+
+/// Locks the collector, and schedules the failing fiber when it was given
+/// one.
+///
+/// It runs inside the loop's protected scope, which is the whole point: the
+/// count it locks is what `restore` has to undo, and the fiber it schedules
+/// is what raises before the scope closes.
+///
+/// It leaves `coerce_error` alone. `tryInit` clears that flag on the way in,
+/// so it already differs inside the scope from the value the entry saved, and
+/// a callback that set it back to the saved value would hide an omitted
+/// restore rather than expose one.
+///
+/// The collector is left suspended. `restore` releasing the lock a body took
+/// is the asymmetry `signal.restore` documents, so this callback is written
+/// to rely on it rather than to unwind itself.
+fn suspendsDuringATurn(_: ev.GenericMessage) callconv(.c) void {
+    boundary_record.calls += 1;
+    harness.vm().gc.suspend_count += 1;
+    if (boundary_record.fiber) |f| ev.schedule(f, wrap.fromNil());
+}
+
 /// An event callback that refuses a close, which is the one raise it makes.
 /// `init`, `mark` and `deinit` return, because the first two are asserted
 /// against elsewhere and the third cannot take a raise.
@@ -1515,6 +1632,7 @@ pub fn run() void {
     inCase("theLoopExitCondition", theLoopExitCondition);
     inCase("theLoopFailureReporterFallback", theLoopFailureReporterFallback);
     inCase("theLoopProtectedBoundary", theLoopProtectedBoundary);
+    inCase("theLoopBoundaryRestoresVmState", theLoopBoundaryRestoresVmState);
     inCase("theLoopPropagatesThroughAnOuterScope", theLoopPropagatesThroughAnOuterScope);
     inCase("thePostedEventRoundTrip", thePostedEventRoundTrip);
     inCase("theNullCallback", theNullCallback);
