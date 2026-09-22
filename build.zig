@@ -1084,10 +1084,42 @@ pub fn build(b: *std.Build) void {
         runtime_tests_step.dependOn(&run.step);
     }
 
+    // The line editor's module, which imports nothing from the runtime. Its
+    // `test` blocks run in a test binary of their own, and
+    // `res/tools/layout.zig` is built against it. Neither is built for wasm,
+    // where the client has no terminal to edit on.
+    const lineedit_tests_step = b.step("test/lineedit", "Run the line editor's in-file `test` blocks");
+    if (!wasm) {
+        const lineedit_module = b.createModule(.{
+            .root_source_file = b.path("src/client/lineedit.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        const lineedit_tests = selectBackend(b.addTest(.{ .name = "wattle-lineedit-test", .root_module = lineedit_module }));
+        installTest(b, options, lineedit_tests);
+        // Run bare for the same reason as `wattle-runtime-test`: the default
+        // runner then prints its count.
+        const run = std.Build.Step.Run.create(b, "run wattle-lineedit-test");
+        run.addArtifactArg(lineedit_tests);
+        lineedit_tests_step.dependOn(&run.step);
+
+        const layout_module = b.createModule(.{
+            .root_source_file = b.path("res/tools/layout.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        layout_module.addImport("lineedit", lineedit_module);
+        const layout_tool = selectBackend(b.addExecutable(.{ .name = "wattle-layout", .root_module = layout_module }));
+        b.getInstallStep().dependOn(&b.addInstallArtifact(layout_tool, .{
+            .dest_dir = .{ .override = .{ .custom = "test" } },
+        }).step);
+    }
+
     const test_step = b.step("test", "Run Wattle's contracts and test suites");
     test_step.dependOn(subsystem_step);
     test_step.dependOn(fuzz_step);
     test_step.dependOn(runtime_tests_step);
+    test_step.dependOn(lineedit_tests_step);
     test_step.dependOn(module_errors_step);
     addCliChecks(b, test_step, client);
 

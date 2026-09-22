@@ -12,7 +12,7 @@ change must pass before it is accepted.
 
 ## Overview
 
-`src/` is 95 `.zig` files and four hand-written headers. There is no C
+`src/` is 99 `.zig` files and four hand-written headers. There is no C
 implementation to select and no upstream Janet C to call. Any C that a Zig
 file reaches is libc's, through one of seven `@cImport` blocks. "No C in the
 tree" and "no libc" are different claims, and only the first is a goal.
@@ -48,10 +48,16 @@ must never reach `src/host/` or `src/runtime/`.
 | `src/host/`    | 2     | the runtime                             |
 | `src/runtime/` | 79    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 3     | the `wattle` and `quickbin` executables |
+| `src/client/`  | 7     | the `wattle` and `quickbin` executables |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
+
+Four of the seven files in `src/client/` are the line editor:
+`src/client/lineedit.zig` and the three files under `src/client/lineedit/`.
+`build.zig` builds them as a module named `lineedit`, which imports nothing
+from the runtime and is not built for wasm. The `test/lineedit` step and
+`res/tools/layout.zig` import it, and the client does not import it yet.
 
 Two files sit at `src/` itself. `src/root.zig` is the runtime's module root. It
 names every file the configuration compiles and reaches all three directories.
@@ -319,6 +325,7 @@ The tests are steps under `test/`, with `test` running them all:
 | `test/contracts`    | the 68 contracts, in a second runtime compilation   |
 | `test/subsystems`   | an alias of `test/contracts`                        |
 | `test/runtime`      | the in-file `test` blocks, rooted at `root.zig`     |
+| `test/lineedit`     | the line editor's in-file `test` blocks             |
 
 The examples have steps of their own, named under `examples/`:
 
@@ -332,13 +339,13 @@ The examples have steps of their own, named under `examples/`:
 A step is run as `zig build <step>`, and `install` is the default, so
 `zig build` alone runs it. `install` builds the static and shared libraries.
 
-`zig build test` runs the contracts, the in-file `test` blocks, the fuzz
-targets over their corpora, the module-error fixtures, the CLI checks and the
-36 suites. On a native build it also runs `quickbin`.
+`zig build test` runs the contracts, both sets of in-file `test` blocks, the
+fuzz targets over their corpora, the module-error fixtures, the CLI checks and
+the 36 suites. On a native build it also runs `quickbin`.
 
-`test/runtime` prints `All N tests passed.` Add `--fuzz` to `zig build fuzz`
-for a campaign. `quickbin` builds `examples/quickbin/main.wattle` with
-`examples/digest` linked in.
+`test/runtime` and `test/lineedit` each print `All N tests passed.` Add
+`--fuzz` to `zig build fuzz` for a campaign. `quickbin` builds
+`examples/quickbin/main.wattle` with `examples/digest` linked in.
 
 No header is installed.
 

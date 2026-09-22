@@ -1,13 +1,15 @@
 # Resources
 
 The development instruments, and the shell completions. Every instrument is run
-by hand, with one exception: `zig build` compiles `check/wasm_imports.zig` and
-runs it against each wasm32-wasi binary it produces.
+by hand, with two exceptions: `zig build` compiles `check/wasm_imports.zig` and
+runs it against each wasm32-wasi binary it produces, and it compiles
+`tools/layout.zig` into `<prefix>/test`.
 
 | directory     | contents                                            |
 | ------------- | --------------------------------------------------- |
 | `check/`      | checked-in inventories, and reports on the tree     |
 | `testing/`    | drivers that build and run the runtime              |
+| `tools/`      | programs that run client code without the runtime   |
 | `bench/`      | benchmarks and their corpora                        |
 | `repo/`       | chores about the repository rather than the runtime |
 | `completion/` | shell completions for the `wattle` command          |
@@ -110,6 +112,22 @@ one warm-up and one log; `--all` sweeps every source under `src/` and takes
 about thirty hours. A bare invocation prints its usage. An interrupted sweep
 leaves its current mutant in the working tree. Read
 [`mutation.md`](testing/mutation.md) first.
+
+## tools
+
+`layout.zig` is built as `<prefix>/test/wattle-layout` on every target but
+wasm. It reads a buffer on standard input and prints the line editor's layout
+of it as a picture, one bracketed row per terminal row, placed by
+`layout.position` alone:
+
+```sh
+printf '(defn f [x]\n  (+ x 1))\n' | zig-out/test/wattle-layout -w 20 -p 9 -o 11
+```
+
+It imports the `lineedit` module rather than a copy of it, so it runs the code
+the editor runs, without a terminal and without the runtime. Its header has the
+flags and the output format. The layout's `test` blocks use the same picture,
+through `picture.draw`.
 
 ## bench
 

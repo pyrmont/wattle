@@ -16,8 +16,9 @@ Six layers, and a change is believed when the layers it touches pass:
   copy of the runtime, so it calls its subject by import and a raise arrives as
   a value.
 - The in-file `test` blocks under `src/`, run by `zig build test` as
-  `wattle-runtime-test`. Interior facts with no runtime under them: a
-  classification table, a mode-string parser.
+  `wattle-runtime-test`, and those under `src/client/lineedit/` as
+  `wattle-lineedit-test`. Interior facts with no runtime under them: a
+  classification table, a mode-string parser, the line editor's layout.
 - The fuzz targets, `test/fuzz.zig`: parser, compiler, marshalling and bytecode,
   run once over their corpora by `zig build test` and as a campaign by
   `zig build fuzz --fuzz`.
