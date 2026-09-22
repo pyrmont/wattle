@@ -163,6 +163,14 @@ const whence_names = [_][:0]const u8{ "cur", "set", "end" };
 /// differently.
 const windows = builtin.os.tag == .windows;
 
+/// The function writes to standard output and standard error are passed to
+/// in place of the stream, or null for none. `divert` sets it.
+///
+/// Thread-local, because a line editor holds the terminal for the thread that
+/// runs its REPL, and a write from another thread goes to its stream as it
+/// would with no editor.
+threadlocal var diverted: ?Diversion = null;
+
 // ==========================================================================
 // Aliased types
 // ==========================================================================
@@ -173,6 +181,12 @@ const windows = builtin.os.tag == .windows;
 /// type, and nothing would compare the two. Naming the one declaration is what
 /// keeps the question from arising.
 pub const FILE = host.FILE;
+
+/// A function that writes bytes meant for standard output or standard error.
+///
+/// `divert` takes a `Diversion`. It is passed the stream and the bytes, and
+/// returns whether it wrote them, or null to leave them to the stream.
+pub const Diversion = *const fn (stream: Standard, bytes: []const u8) ?bool;
 
 // ==========================================================================
 // Types
@@ -185,6 +199,11 @@ pub const File = struct {
     flags: i32 = 0,
     vbufsize: usize = 0,
 };
+
+/// Which of the two standard output streams a write is for.
+///
+/// A `Diversion` is passed a `Standard`.
+pub const Standard = enum { out, err };
 
 // ==========================================================================
 // Public functions
@@ -206,6 +225,21 @@ pub fn checkfile(j: repr.Value) ?abstracts.Abstract {
 /// `fclose`.
 pub fn close(file: ?*FILE) i32 {
     return c.fclose(file);
+}
+
+/// Passes writes to standard output and standard error to `diversion`, or
+/// passes them to the streams again when `diversion` is null.
+///
+/// Both streams are flushed first, so bytes they buffered before the call are
+/// written before any the diversion writes. The diversion applies to `write`
+/// and `putChar` on the calling thread. This function cannot raise.
+///
+/// A line editor installs a diversion while it holds a line, so that output
+/// is written above the line rather than into it.
+pub fn divert(diversion: ?Diversion) void {
+    _ = c.fflush(stdoutFile());
+    _ = c.fflush(stderrFile());
+    diverted = diversion;
 }
 
 /// The stream a dynamic binding names, or `def` where it names anything but a
@@ -372,8 +406,15 @@ pub fn open(path: [*:0]const u8, mode: [*:0]const u8) ?*FILE {
     return c.fopen(path, mode);
 }
 
-/// `fputc`.
+/// `fputc`, or the diversion `divert` installed when `file` is standard
+/// output or standard error.
 pub fn putChar(file: ?*FILE, ch: i32) i32 {
+    if (diverted) |diversion| {
+        if (standardOf(file)) |stream| {
+            const byte = [1]u8{@truncate(@as(u32, @bitCast(ch)))};
+            if (diversion(stream, &byte)) |wrote| return if (wrote) ch else eof;
+        }
+    }
     return c.fputc(ch, file);
 }
 
@@ -531,7 +572,15 @@ pub fn unwrapfile(j: repr.Value, flags: ?*i32) ?*FILE {
 
 /// Writes `count` bytes as a single item, so the result is 1 on success and 0
 /// on failure, which is what callers compare against.
+///
+/// The bytes go to the diversion `divert` installed when `file` is standard
+/// output or standard error and the diversion writes them.
 pub fn write(file: ?*FILE, src: [*]const u8, count: usize) i32 {
+    if (diverted) |diversion| {
+        if (standardOf(file)) |stream| {
+            if (diversion(stream, src[0..count])) |wrote| return @intFromBool(wrote);
+        }
+    }
     return @intCast(c.fwrite(src, count, 1, file));
 }
 
@@ -1215,6 +1264,14 @@ fn setCloexecStream(file: ?*FILE) i32 {
 /// Stores a stream into a `File`, the inverse of `streamOf`.
 inline fn setStreamOf(iof: *File, file: ?*FILE) void {
     iof.file = file;
+}
+
+/// Returns which standard output stream `file` is, or null when it is
+/// neither.
+fn standardOf(file: ?*FILE) ?Standard {
+    if (file == stdoutFile()) return .out;
+    if (file == stderrFile()) return .err;
+    return null;
 }
 
 /// The standard error stream as this file's `FILE`.

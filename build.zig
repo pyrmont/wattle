@@ -23,14 +23,20 @@ const build_name = "zig";
 /// lost with it.
 ///
 /// `needs_os` is the only condition so far. `-Dreduced-os=true` registers four
-/// `os` bindings and no more, and these seven suites reach past them:
-/// `suite-os` is *about* the OS library, and the other six use the filesystem,
-/// the environment or a subprocess to build their fixtures. Everything else
-/// runs unchanged, which is 29 of the 36, the population this gate is worth
-/// having for.
+/// `os` bindings and no more, and these eight suites reach past them:
+/// `suite-os` is *about* the OS library, and the other seven use the
+/// filesystem, the environment or a subprocess to build their fixtures.
+/// Everything else runs unchanged, which is 29 of the 37, the population this
+/// gate is worth having for.
+///
+/// `pty` is not a condition. It passes the suite the path of `wattle-pty`,
+/// the pseudo-terminal harness, as its argument, where the target has the
+/// harness and the client has the line editor. The suite guards the cases
+/// that need the harness on the argument.
 const Suite = struct {
     path: []const u8,
     needs_os: bool = false,
+    pty: bool = false,
 };
 
 const test_suites = &[_]Suite{
@@ -50,6 +56,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-filewatch.wattle", .needs_os = true },
     .{ .path = "test/suite-inttypes.wattle" },
     .{ .path = "test/suite-io.wattle", .needs_os = true },
+    .{ .path = "test/suite-lineedit.wattle", .needs_os = true, .pty = true },
     .{ .path = "test/suite-map.wattle" },
     .{ .path = "test/suite-map-literal.wattle" },
     .{ .path = "test/suite-marsh.wattle" },
@@ -113,6 +120,7 @@ const BuildOptions = struct {
     ffi_jit: bool,
     filewatch: bool,
     cryptorand: bool,
+    lineedit: bool,
     recursion_guard: ?i32,
     max_proto_depth: i32,
     max_macro_expand: i32,
@@ -531,8 +539,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, client_module, target, options, config);
+    client_module.addImport("lineedit", lineeditModule(b, target, optimize));
     if (runtime_graph) |g| {
         client_module.addImport("subsystems", g.subsystems);
+        client_module.addImport("cabi", g.cabi);
         client_module.addImport("host", g.host);
         client_module.addImport("abi", g.abi);
         client_module.addImport("repr", g.repr);
@@ -1089,12 +1099,9 @@ pub fn build(b: *std.Build) void {
     // `res/tools/layout.zig` is built against it. Neither is built for wasm,
     // where the client has no terminal to edit on.
     const lineedit_tests_step = b.step("test/lineedit", "Run the line editor's in-file `test` blocks");
+    var pty_tool: ?*std.Build.Step.Compile = null;
     if (!wasm) {
-        const lineedit_module = b.createModule(.{
-            .root_source_file = b.path("src/client/lineedit.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
+        const lineedit_module = lineeditModule(b, target, optimize);
         const lineedit_tests = selectBackend(b.addTest(.{ .name = "wattle-lineedit-test", .root_module = lineedit_module }));
         installTest(b, options, lineedit_tests);
         // Run bare for the same reason as `wattle-runtime-test`: the default
@@ -1113,6 +1120,23 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&b.addInstallArtifact(layout_tool, .{
             .dest_dir = .{ .override = .{ .custom = "test" } },
         }).step);
+
+        // The pseudo-terminal harness `test/suite-lineedit.wattle` drives the
+        // client through. It opens a pty with `posix_openpt`, so it is not
+        // built for Windows.
+        if (target.result.os.tag != .windows) {
+            const pty_module = b.createModule(.{
+                .root_source_file = b.path("res/tools/pty.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            });
+            const tool = selectBackend(b.addExecutable(.{ .name = "wattle-pty", .root_module = pty_module }));
+            b.getInstallStep().dependOn(&b.addInstallArtifact(tool, .{
+                .dest_dir = .{ .override = .{ .custom = "test" } },
+            }).step);
+            pty_tool = tool;
+        }
     }
 
     const test_step = b.step("test", "Run Wattle's contracts and test suites");
@@ -1313,10 +1337,26 @@ pub fn build(b: *std.Build) void {
             const run_suite = b.addRunArtifact(client);
             run_suite.setCwd(b.path("."));
             run_suite.addArg(suite.path);
+            if (suite.pty and config.lineedit) {
+                if (pty_tool) |tool| run_suite.addArtifactArg(tool);
+            }
             for (suites_after) |step| run_suite.step.dependOn(step);
             test_step.dependOn(&run_suite.step);
         }
     }
+}
+
+/// The line editor's module, rooted at `src/client/lineedit.zig`.
+///
+/// It imports nothing from the runtime, so it is the same module whatever the
+/// configuration. The client imports it on every target, and a client built
+/// with `lineedit` false references none of it.
+fn lineeditModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/client/lineedit.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 }
 
 /// A native module compiled against `graph`: a shared library the loader
@@ -1505,6 +1545,8 @@ fn quickbinExecutable(
     module.addImport("repr", graph.repr);
     module.addImport("constants", graph.constants);
     module.addImport("config", graph.config);
+    module.addImport("lineedit", lineeditModule(b, target_side.target, target_side.optimize));
+    module.addImport("cabi", graph.cabi);
 
     // `preload.wattle` sits beside a copy of each host library, so it finds
     // them from its own path.
@@ -1882,6 +1924,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .ffi_jit = b.option(bool, "ffi-jit", "Enable the FFI JIT") orelse true,
         .filewatch = b.option(bool, "filewatch", "Enable file watching") orelse true,
         .cryptorand = b.option(bool, "cryptorand", "Enable cryptographic random bytes") orelse true,
+        .lineedit = b.option(bool, "lineedit", "Enable the REPL's line editor: off selects the plain line reader") orelse true,
         .recursion_guard = b.option(i32, "recursion-guard", "Native recursion guard (default 1024, or 512 on wasm)"),
         .max_proto_depth = b.option(i32, "max-proto-depth", "Maximum prototype lookup depth") orelse 200,
         .max_macro_expand = b.option(i32, "max-macro-expand", "Maximum macro expansion depth") orelse 200,
@@ -1973,6 +2016,12 @@ const Config = struct {
     ev_kqueue: bool,
     ev_poll: bool,
     ipv6: bool,
+
+    /// Whether the client edits a line on the terminal. `-Dlineedit` sets it,
+    /// and a wasm target turns it off, because the client there has no
+    /// terminal to edit on. Independent of `ev`: without the loop the editor
+    /// reads with a blocking read.
+    lineedit: bool,
 
     /// Two facts a dozen files read. They are fields for the same reason the
     /// rest are: configuration is resolved here, so a file that needs to know
@@ -2132,6 +2181,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         .ffi_jit = ffi and options.ffi_jit,
         .filewatch = options.filewatch,
         .cryptorand = options.cryptorand,
+        .lineedit = options.lineedit and !wasm_target,
         .reduced_os = options.reduced_os,
         .processes = options.processes and !wasi,
         .realpath = options.realpath,

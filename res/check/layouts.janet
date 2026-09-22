@@ -40,7 +40,7 @@
 # detected: `OVERLAPPED` is Win32's whatever file spells it.
 (def foreign
   {"OVERLAPPED" true "Overlapped" true "OverlappedWatch" true
-   "WSABUF" true "FILETIME" true
+   "WSABUF" true "FILETIME" true "ConsoleScreenBufferInfo" true
    "SecurityAttributes" true "ITimerSpec" true "utimbuf" true
    "pthread_attr_t" true "pthread_mutex_t" true
    "Sysv64IntReturn" true "Sysv64SseReturn" true "Sysv64IntSseReturn" true

@@ -48,16 +48,34 @@ must never reach `src/host/` or `src/runtime/`.
 | `src/host/`    | 2     | the runtime                             |
 | `src/runtime/` | 79    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 7     | the `wattle` and `quickbin` executables |
+| `src/client/`  | 13    | the `wattle` and `quickbin` executables |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
 
-Four of the seven files in `src/client/` are the line editor:
-`src/client/lineedit.zig` and the three files under `src/client/lineedit/`.
-`build.zig` builds them as a module named `lineedit`, which imports nothing
-from the runtime and is not built for wasm. The `test/lineedit` step and
-`res/tools/layout.zig` import it, and the client does not import it yet.
+Ten of the thirteen files in `src/client/` are the REPL's line editor.
+`src/client/lineedit.zig` and the seven files under `src/client/lineedit/`
+are a module named `lineedit`, which imports nothing from the runtime and
+never reads or writes the terminal: it takes the bytes a terminal sends and
+returns the bytes to draw. The client, the `test/lineedit` step and
+`res/tools/layout.zig` import it. `src/client/terminal.zig` is the terminal
+itself, raw mode and the reads and writes, for POSIX and the Windows console.
+`src/client/prompt.zig` connects the two to the runtime: `getline` reads
+through the editor when standard input and standard error are a terminal, and
+through the plain reader otherwise.
+
+`-Dlineedit`, on by default and off on wasm, selects the editor. It is
+independent of `-Dev`. With the event loop the editor waits on the loop for
+input, so other fibers run while a line is being edited; without the loop it
+reads with a blocking read. Windows reads with the blocking read whether or
+not the loop is compiled, because a console handle cannot be waited on through
+a completion port, so on Windows the loop does not run while a line is open.
+
+While a line is open, `runtime/io.zig`'s `divert` passes every `write` and
+`putChar` to standard output or standard error to the editor, which writes
+the output above the line and draws the line again beneath it. The diversion
+is thread-local and is removed when the line ends, so a build without the
+editor, and a moment with no line open, write to the streams directly.
 
 Two files sit at `src/` itself. `src/root.zig` is the runtime's module root. It
 names every file the configuration compiles and reaches all three directories.
@@ -341,7 +359,7 @@ A step is run as `zig build <step>`, and `install` is the default, so
 
 `zig build test` runs the contracts, both sets of in-file `test` blocks, the
 fuzz targets over their corpora, the module-error fixtures, the CLI checks and
-the 36 suites. On a native build it also runs `quickbin`.
+the 37 suites. On a native build it also runs `quickbin`.
 
 `test/runtime` and `test/lineedit` each print `All N tests passed.` Add
 `--fuzz` to `zig build fuzz` for a campaign. `quickbin` builds

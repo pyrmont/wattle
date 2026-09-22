@@ -8,9 +8,15 @@
 //! ## Where the widths come from
 //!
 //! The two range tables are Bestline's `bestlineCharacterWidth` at `395fa5d`.
-//! Control characters, combining marks and format characters have width 0.
-//! East Asian wide and fullwidth characters and emoji presentation characters
-//! have width 2. Everything else has width 1.
+//! Combining marks, format characters and C1 control characters have width
+//! 0. East Asian wide and fullwidth characters and emoji presentation
+//! characters have width 2. Everything else has width 1, except as below.
+//!
+//! - A C0 control character and DEL have width 2, because the editor draws
+//!   each in caret notation, `^I` for a tab. A terminal acts on a control
+//!   character it is sent, so drawing one as itself would put the screen and
+//!   the layout out of step. `caret` returns the two bytes. The newline is
+//!   the exception: `layout.zig` ends a row at it and never measures it.
 //!
 //! - A byte that does not begin a valid UTF-8 sequence is a rune of its own,
 //!   with width 1, because a terminal draws U+FFFD in its place. A truncated
@@ -173,11 +179,24 @@ pub fn decode(bytes: []const u8) Rune {
     return .{ .codepoint = codepoint, .len = len };
 }
 
+/// Returns the caret notation the editor draws a C0 control character or
+/// DEL as.
+///
+/// The result is null for every other rune. It is `^` followed by the
+/// character the control is the Ctrl form of, which is `?` for DEL.
+pub fn caret(rune: Rune) ?[2]u8 {
+    const c = rune.codepoint orelse return null;
+    if (c >= 0x20 and c != 0x7f) return null;
+    return .{ '^', @as(u8, @intCast(c)) ^ 0x40 };
+}
+
 /// Returns the number of terminal columns `rune` occupies.
 ///
-/// The result is 0, 1 or 2, and 1 for a rune with no codepoint.
+/// The result is 0, 1 or 2, and 1 for a rune with no codepoint. A C0 control
+/// character and DEL have width 2, the width of `caret`'s result.
 pub fn width(rune: Rune) u2 {
     const c = rune.codepoint orelse return 1;
+    if (caret(rune) != null) return 2;
     if (within(&zero, c)) return 0;
     if (within(&wide, c)) return 2;
     return 1;
@@ -234,15 +253,26 @@ test "decode: each invalid form is one byte with no codepoint" {
 test "width: one example of each class" {
     try std.testing.expectEqual(1, width(decode("a")));
     try std.testing.expectEqual(1, width(decode("é")));
-    try std.testing.expectEqual(0, width(decode("\t")));
-    try std.testing.expectEqual(0, width(decode("\x1b")));
-    try std.testing.expectEqual(0, width(decode("\u{7f}")));
+    try std.testing.expectEqual(2, width(decode("\t")));
+    try std.testing.expectEqual(2, width(decode("\x1b")));
+    try std.testing.expectEqual(2, width(decode("\u{7f}")));
+    try std.testing.expectEqual(0, width(decode("\u{85}")));
     try std.testing.expectEqual(0, width(decode("\u{301}")));
     try std.testing.expectEqual(0, width(decode("\u{200b}")));
     try std.testing.expectEqual(2, width(decode("度")));
     try std.testing.expectEqual(2, width(decode("😀")));
     try std.testing.expectEqual(2, width(decode("Ａ")));
     try std.testing.expectEqual(1, width(decode("\x80")));
+}
+
+test "caret: C0 controls and DEL, and nothing else" {
+    try std.testing.expectEqualStrings("^I", &caret(decode("\t")).?);
+    try std.testing.expectEqualStrings("^@", &caret(decode("\x00")).?);
+    try std.testing.expectEqualStrings("^[", &caret(decode("\x1b")).?);
+    try std.testing.expectEqualStrings("^?", &caret(decode("\u{7f}")).?);
+    try std.testing.expectEqual(null, caret(decode(" ")));
+    try std.testing.expectEqual(null, caret(decode("\u{85}")));
+    try std.testing.expectEqual(null, caret(decode("\x80")));
 }
 
 test "width: the ends of a range and the codepoints either side" {

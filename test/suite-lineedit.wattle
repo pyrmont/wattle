@@ -1,0 +1,161 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; The REPL's line editor, driven through a pseudo-terminal.
+;
+; `zig build test` passes the path of `wattle-pty`, the harness under
+; `res/tools/`, as this suite's argument where the target has the harness and
+; the client has the editor. The cases that need a terminal are guarded on the
+; argument, and the plain reader's case runs in every build that can start a
+; process.
+;
+; Each case starts the client with `-q -n -R`: no banner, no colour and no
+; profile, so the screen is the same on every host.
+
+; Every case starts the client as a process, so a build without `os/spawn`
+; has nothing here to run. A missing binding is a compile error, and the
+; suite leaves before the compiler reaches one.
+(compwhen (not (dyn 'os/spawn))
+  (end-suite)
+  (os/exit 0))
+
+(def harness (get (dyn *args*) 1))
+
+(defn- run
+  "Runs `argv` with `TERM` set, writes `input` to its standard input, and returns what it wrote to standard output and standard error."
+  [argv &opt input]
+  (def env (merge (os/environ) {"TERM" "xterm-256color" :in :pipe :out :pipe :err :pipe}))
+  (def p (os/spawn argv :pe env))
+  (when input (:write (p :in) input))
+  (:close (p :in))
+  (def out (string (or (:read (p :out) :all) "")))
+  (def err (string (or (:read (p :err) :all) "")))
+  (os/proc-wait p)
+  [out err])
+
+; Without a terminal the plain reader runs: the prompt is written to standard
+; error and nothing is redrawn.
+(let [[out err] (run [(dyn *executable*) "-q" "-n" "-R"] "(+ 1 2)\n")]
+  (assert (= "3\n" out) "the plain reader evaluates a line from a pipe")
+  (assert (= "repl:1:> repl:2:> " err) "the plain reader writes each prompt once"))
+
+; `compwhen` rather than `when`: `harness` is known when the form is
+; compiled, and a `when` on a constant nil is dead code to the linter.
+(compwhen harness
+
+  (defn- drive
+    "Types `input` at the client behind the harness, and returns what the harness printed. The input waits for `:marker`, `repl:1:> ` by default. `:screen` asks for the screen rather than the bytes and `:cursor` for the cursor after it, and `:exit` for the command's exit and the terminal's modes, with the wait for the exit bounded at three seconds. `:cols` and `:rows` size the terminal, and `:args` are the client's arguments after `-q -n -R`."
+    [input &named marker screen cursor exit cols rows args]
+    (def argv [harness "-w" (or marker "repl:1:> ") "-i" input
+               "-c" (string (or cols 100)) "-r" (string (or rows 30))
+               |(if screen ["-s"] []) |(if cursor ["-k"] [])
+               |(if exit ["-x" "-t" "3000"] [])
+               "--" (dyn *executable*) "-q" "-n" "-R" |(or args [])])
+    (def [out err] (run argv))
+    (assert (= "" err) (string "the harness reports nothing: " err))
+    out)
+
+  (defn- from-last
+    "The part of `capture` from the last occurrence of `marker`."
+    [marker capture]
+    (def at (last (string/find-all marker capture)))
+    (if at (string/slice capture at) capture))
+
+  ; A line typed with Left, an insertion, Home, End and a Backspace, then
+  ; submitted. A frame clears from its first row and then draws, the last
+  ; frame has the cursor at the line's end, the row break is `\r\n`, and the
+  ; next prompt is a frame of its own. Frames drawn before the last are not
+  ; compared, because how many there are depends on how the keys were split
+  ; across reads.
+  (assert (= "\r\e[Jrepl:1:> (+ 1 2)\r\n3\r\n\r\e[Jrepl:2:> "
+             (from-last "\r\e[Jrepl:1:> "
+                        (drive """(+ 2\e[D1 \e[H\e[Fx\x7f)\r""")))
+          "a line edited with the cursor keys is submitted whole")
+
+  ; Ctrl-C draws `^C`, abandons the line, and prompts again at the same line
+  ; number.
+  (assert (= "repl:1:> (+ 1^C\nrepl:1:> (+ 2 2)\n4\nrepl:2:>\n"
+             (drive """(+ 1\x03(+ 2 2)\r""" :screen true))
+          "Ctrl-C cancels the line")
+
+  ; A tab is drawn in caret notation, the width the layout measures it at.
+  (assert (= "repl:1:> a^Ib\n"
+             (drive """a\tb""" :screen true))
+          "a tab is drawn as ^I")
+
+  ; A prompt with colour sequences is measured by the columns it occupies,
+  ; so after `abc` and Left the cursor is in column 4: two for `> ` and two
+  ; for `ab`.
+  (assert (= "\r\e[J\e[31m> \e[0mabc\r\e[4C"
+             (from-last "\r\e[J\e[31m"
+                        (drive """abc\e[D""" :marker "> "
+                               :args ["-e" """(getline "\e[31m> \e[0m")"""])))
+          "a coloured prompt places the cursor by its visible width")
+
+  ; A line taller than the terminal. On three rows of 20 columns a line of 62
+  ; runes occupies four rows after the prompt. Home shows the prompt's row and
+  ; the two after it with the cursor after the prompt, and End then shows the
+  ; last three rows with the cursor after the last rune.
+  (def tall "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+  (assert (= "repl:1:> abcdefghijk\nlmnopqrstuvwxyzABCDE\nFGHIJKLMNOPQRSTUVWXY\n@0,9\n"
+             (drive (string tall """\m{6789}\e[H""")
+                    :screen true :cursor true :cols 20 :rows 3))
+          "Home in a line taller than the terminal shows the line's start")
+  (assert (= "lmnopqrstuvwxyzABCDE\nFGHIJKLMNOPQRSTUVWXY\nZ0123456789\n@2,11\n"
+             (drive (string tall """\m{6789}\e[H\m{> abc}\e[F""")
+                    :screen true :cursor true :cols 20 :rows 3))
+          "End in a line taller than the terminal shows the line's end")
+
+  ; A task waiting in `getline` is cancelled. The loop ends the operation the
+  ; task waits on, and the line is abandoned at once: `^C` is drawn and the
+  ; terminal is restored. In the first case the program reads nothing more,
+  ; prints and exits, and the harness reports the exit and the terminal's
+  ; modes before it closes the pty. In the second `getline` is called again
+  ; and reads a line whole, and the cancelled task ends once, with the
+  ; cancellation's error. Windows has no case here: it reads with the
+  ; blocking feed, where nothing runs while a line is open.
+  (compwhen (dyn 'ev/spawn)
+    (def cancel-only
+      """
+      (def t (ev/spawn (try (getline "a> ") ([e] nil))))
+      (ev/sleep 0.2)
+      (ev/cancel t "stop")
+      (ev/sleep 0.1)
+      (print "DONE")
+      """)
+    (assert (= "a> ^C\nDONE\n@exit 0\n@modes echo icanon\n"
+               (drive "" :marker "a> " :screen true :exit true
+                      :args ["-e" cancel-only]))
+            "a cancelled getline restores the terminal and lets the program exit")
+    (def cancel-then-read
+      """
+      (var result nil)
+      (def t (ev/spawn (set result (try (getline "a> ") ([e] e)))))
+      (ev/sleep 0.2)
+      (ev/cancel t "stop")
+      (ev/sleep 0.1)
+      (def line (getline "b> "))
+      (print "got " (string/trim line))
+      (print result " " (fiber/status t))
+      """)
+    (assert (= "a> ^C\nb> xyz\ngot xyz\nstop dead\n"
+               (drive """xyz\r""" :marker "b> " :screen true
+                      :args ["-e" cancel-then-read]))
+            "a getline after a cancelled one reads a line whole")
+
+    ; A fiber that prints while a line is being edited. The timer's output is
+    ; written above the line, and the line is drawn again beneath it with
+    ; nothing of the output inside it. The input waits for the echo of
+    ; `(+ 40` and then for `tick` before it types the rest.
+    (assert (= (string "repl:1:> (do (ev/spawn (ev/sleep 0.3) (print \"tick\")) nil)\n"
+                       "nil\n"
+                       "tick\n"
+                       "repl:2:> (+ 40 2)\n"
+                       "42\n"
+                       "repl:3:>\n")
+               (drive (string """(do (ev/spawn (ev/sleep 0.3) (print "tick")) nil)\r"""
+                              """\m{repl:2:> }(+ 40\m{(+ 40}\m{tick} 2)\r""")
+                      :screen true))
+            "output from a timer is written above the line being edited")))
+
+(end-suite)

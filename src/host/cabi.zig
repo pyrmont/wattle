@@ -1,15 +1,15 @@
 //! The C-ABI namespace, in Zig.
 //!
 //! `c` is this file. Every name in it is genuinely external: what libc and the
-//! Windows API provide and a runtime file calls. That is functions, a few
-//! variables, and the host types and constants those declarations name.
+//! Windows API provide and a runtime or client file calls. That is functions,
+//! a few variables, and the host types and constants those declarations name.
 //! Nothing of Janet's is declared here, and no Janet type is re-exported: a
 //! type is imported from the file that owns it, by the file that names it.
 //!
 //! `build.zig` roots a module at this file, because its `@cImport` needs the C
 //! include path and a file of `root` cannot be imported by it. Every
-//! declaration is here because a runtime file calls it, and which file that is
-//! is a grep away.
+//! declaration is here because a runtime or client file calls it, and which
+//! file that is is a grep away.
 //!
 //! The eight crossings this file once declared went with the module symbol
 //! boundary. A native module reaches the runtime
@@ -95,6 +95,16 @@ pub const pid_t = if (builtin.os.tag == .windows) c_int else std.c.pid_t;
 // ==========================================================================
 // Types
 // ==========================================================================
+
+/// `CONSOLE_SCREEN_BUFFER_INFO`, which `GetConsoleScreenBufferInfo` fills.
+/// `src/client/terminal.zig` reads the window's width from `srWindow`.
+pub const ConsoleScreenBufferInfo = extern struct {
+    dwSize: [2]i16,
+    dwCursorPosition: [2]i16,
+    wAttributes: u16,
+    srWindow: [4]i16,
+    dwMaximumWindowSize: [2]i16,
+};
 
 /// `FILETIME`, the 64-bit tick count Windows reports times in.
 pub const FILETIME = extern struct {
@@ -197,6 +207,14 @@ pub extern "kernel32" fn FormatMessageA(
 
 pub extern "kernel32" fn FreeLibrary(module: ?*anyopaque) callconv(.winapi) c_int;
 
+pub extern "kernel32" fn GetConsoleCP() callconv(.winapi) u32;
+
+pub extern "kernel32" fn GetConsoleMode(h: ?*anyopaque, mode: *u32) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) u32;
+
+pub extern "kernel32" fn GetConsoleScreenBufferInfo(h: ?*anyopaque, info: *ConsoleScreenBufferInfo) callconv(.winapi) c_int;
+
 pub extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
 
 pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
@@ -214,6 +232,8 @@ pub extern "kernel32" fn GetProcAddress(module: ?*anyopaque, name: [*:0]const u8
 pub extern "kernel32" fn GetProcessTimes(?*anyopaque, *FILETIME, *FILETIME, *FILETIME, *FILETIME) callconv(.winapi) c_int;
 
 pub extern "kernel32" fn GetQueuedCompletionStatus(port: ?*anyopaque, bytes: *u32, key: *usize, overlapped: *?*OVERLAPPED, ms: u32) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn GetStdHandle(which: u32) callconv(.winapi) ?*anyopaque;
 
 pub extern "kernel32" fn GetSystemTimeAsFileTime(*FILETIME) callconv(.winapi) void;
 
@@ -245,6 +265,12 @@ pub extern fn ReleaseSRWLockExclusive(lock: *SrwLock) callconv(.winapi) void;
 pub extern fn ReleaseSRWLockShared(lock: *SrwLock) callconv(.winapi) void;
 
 pub extern "kernel32" fn ResumeThread(h: ?*anyopaque) callconv(.winapi) u32;
+
+pub extern "kernel32" fn SetConsoleCP(code_page: u32) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn SetConsoleMode(h: ?*anyopaque, mode: u32) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn SetConsoleOutputCP(code_page: u32) callconv(.winapi) c_int;
 
 pub extern "kernel32" fn SetEvent(h: ?*anyopaque) callconv(.winapi) c_int;
 
@@ -340,6 +366,8 @@ pub extern fn atan(f64) f64;
 pub extern fn atan2(f64, f64) f64;
 
 pub extern fn atanh(f64) f64;
+
+pub extern fn atexit(function: *const fn () callconv(.c) void) callconv(.c) c_int;
 
 pub extern fn cbrt(f64) f64;
 

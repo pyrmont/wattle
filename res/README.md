@@ -1,15 +1,17 @@
 # Resources
 
 The development instruments, and the shell completions. Every instrument is run
-by hand, with two exceptions: `zig build` compiles `check/wasm_imports.zig` and
-runs it against each wasm32-wasi binary it produces, and it compiles
-`tools/layout.zig` into `<prefix>/test`.
+by hand, with three exceptions: `zig build` compiles `check/wasm_imports.zig`
+and runs it against each wasm32-wasi binary it produces, it compiles
+`tools/layout.zig` into `<prefix>/test`, and it compiles `tools/pty.zig` into
+`<prefix>/test`, which `zig build test` runs through
+`test/suite-lineedit.wattle`.
 
 | directory     | contents                                            |
 | ------------- | --------------------------------------------------- |
 | `check/`      | checked-in inventories, and reports on the tree     |
 | `testing/`    | drivers that build and run the runtime              |
-| `tools/`      | programs that run client code without the runtime   |
+| `tools/`      | programs that run the client's line editor          |
 | `bench/`      | benchmarks and their corpora                        |
 | `repo/`       | chores about the repository rather than the runtime |
 | `completion/` | shell completions for the `wattle` command          |
@@ -128,6 +130,21 @@ It imports the `lineedit` module rather than a copy of it, so it runs the code
 the editor runs, without a terminal and without the runtime. Its header has the
 flags and the output format. The layout's `test` blocks use the same picture,
 through `picture.draw`.
+
+`pty.zig` is built as `<prefix>/test/wattle-pty` on every target but wasm and
+Windows. It runs a command behind a pseudo-terminal, types at it, and prints
+the bytes the command wrote, or with `-s` the screen those bytes draw:
+
+```sh
+zig-out/test/wattle-pty -s -w 'repl:1:> ' -i '(+ 1 2)\r' -- zig-out/bin/wattle -q -n -R
+```
+
+Input waits for text in the output, with `-w` and with `\m{text}` inside the
+input, rather than for a duration, because an editor that has not yet set raw
+mode discards what it is sent. The screen is a model of a terminal written for
+the harness, and it does not import the `lineedit` module, so a case compares
+the editor against a separate account of what its bytes draw. Its header has
+the flags, the input escapes and what the model applies.
 
 ## bench
 

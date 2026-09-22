@@ -1,5 +1,6 @@
 //! The interop proof: the `zig/*` builtins the Janet suite exercises, and the
-//! `getline` replacement the client binds.
+//! `getline` replacement the client binds, which reads with `prompt.zig`'s
+//! editor on a terminal and with `readline` otherwise.
 //!
 //! `cli.zig` calls `setIo` before anything else, takes `lineGetterValue` for
 //! the value it binds over `getline`, and calls `register` to define the
@@ -28,11 +29,13 @@ const access = subsystems.value.access;
 const args = subsystems.args;
 const arrays = subsystems.value.arrays;
 const buffers = subsystems.value.buffers;
+const config = @import("config");
 const fibers = @import("subsystems").value.fibers;
 const functions = @import("subsystems").value.functions;
 const gc_alloc = subsystems.gc_alloc;
 const gc_mark = subsystems.gc_mark;
 const raise = @import("subsystems").raise;
+const prompt_editor = @import("prompt.zig");
 const registry = subsystems.registry;
 const repr = @import("repr");
 const signal_core = subsystems.signal;
@@ -239,8 +242,10 @@ fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Error!repr.Value {
 ///
 /// The arguments are a prompt, a buffer to fill and a third Janet ignores
 /// here, all optional. The buffer is truncated and then filled with one line
-/// including its newline, or left empty at end of input. This function raises
-/// on a wrong argument type and returns the buffer.
+/// including its newline, or left empty at end of input. On a terminal the
+/// line is read by `prompt.zig`'s editor, which also returns `:cancel` after
+/// Ctrl-C. This function raises on a wrong argument type and where the editor
+/// raises, and returns the buffer.
 fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     try args.checkArity(@intCast(argv.len), 0, 3);
     const prompt: [*:0]const u8 = if (argv.len >= 1) try args.GetString.get(argv, 0) else "";
@@ -248,6 +253,9 @@ fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     var line: WattleLine = .{ .bytes = null, .length = 0 };
 
     buffer.*.count = 0;
+    if (config.lineedit) {
+        if (try prompt_editor.read(std.mem.span(prompt), buffer)) |result| return result;
+    }
     if (readline(prompt, &line) != 0 and line.length > 0) {
         try buffers.pushBytes(buffer, line.bytes.?[0..@intCast(line.length)]);
     }

@@ -10,6 +10,11 @@ Six layers, and a change is believed when the layers it touches pass:
 
 - The suites, `test/suite-*.wattle`, run by `zig build test`. What a Wattle
   program can observe, asserted the way a Wattle program would.
+  `suite-lineedit.wattle` observes the REPL through a pseudo-terminal, with
+  `res/tools/pty.zig`, whose path `zig build test` passes it as an argument.
+  Without the argument, which is the case on Windows and under
+  `-Dlineedit=false`, its terminal cases are skipped and its plain-reader case
+  still runs.
 - The contracts, `test/*.zig`, one per subject, run by the driver `zig build`
   installs. What no Wattle program can reach: an argument fault's exact message,
   a flag table's order, a collector's block list. Each is compiled into a second

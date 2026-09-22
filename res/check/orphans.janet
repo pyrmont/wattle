@@ -105,7 +105,11 @@
   (os/cd tools/root)
 
   (def sources @{})
+  # `src/client` is read for references and not for declarations: the
+  # client is not the runtime, and a runtime declaration only it calls, such
+  # as `io.divert`, is still in use.
   (each path (array/concat @[] (tools/src-files)
+                           (tools/zig-files "src/client")
                            (tools/zig-files "test")
                            (tools/zig-files "examples")
                            @["build.zig"])

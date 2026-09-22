@@ -17,9 +17,10 @@
 //! - A wide rune fills its first cell, and the cell it covers is written as
 //!   nothing, so the row is as wide on the screen as the terminal.
 //!
-//! - A zero-width rune is appended to the cell before its column. A control
-//!   character is not drawn. A newline is not drawn, because the break is the
-//!   picture's own line break.
+//! - A zero-width rune is appended to the cell before its column. A C0
+//!   control character or DEL is drawn as `rune.caret` returns it, across two
+//!   cells, and a C1 control character is not drawn. A newline is not drawn,
+//!   because the break is the picture's own line break.
 //!
 //! - A byte that does not begin a valid UTF-8 sequence is drawn as U+FFFD.
 //!
@@ -76,7 +77,8 @@ pub fn draw(allocator: std.mem.Allocator, geometry: layout.Geometry, buffer: []c
         if (buffer[i] == '\n') continue;
         const p = layout.position(geometry, buffer, i);
         const w = rune.width(r);
-        const text: []const u8 = if (r.codepoint == null) "\u{fffd}" else buffer[i..][0..r.len];
+        const shown = rune.caret(r);
+        const text: []const u8 = if (r.codepoint == null) "\u{fffd}" else if (shown) |*s| s else buffer[i..][0..r.len];
         if (w == 0) {
             if (control(r) or p.column == 0 or p.column > geometry.columns) continue;
             try grid[p.row * geometry.columns + p.column - 1].bytes.appendSlice(allocator, text);
@@ -107,10 +109,10 @@ pub fn draw(allocator: std.mem.Allocator, geometry: layout.Geometry, buffer: []c
 // Private functions
 // ==========================================================================
 
-/// Checks whether `r` is a C0 or C1 control character, or DEL.
+/// Checks whether `r` is a C1 control character, the controls of width 0.
 fn control(r: rune.Rune) bool {
     const c = r.codepoint orelse return false;
-    return c < 0x20 or (c >= 0x7f and c <= 0x9f);
+    return c >= 0x80 and c <= 0x9f;
 }
 
 // ==========================================================================
