@@ -25,6 +25,8 @@
 //!   and that byte is decoded on its own. A byte that begins no valid
 //!   sequence is inserted on its own, and `rune.zig` gives it width 1.
 //!
+//! - Shift-Tab arrives as the CSI `ESC [ Z`, which is the key `back_tab`.
+//!
 //! - Enter arrives as CR and Ctrl-J as LF, because raw mode clears `ICRNL`.
 //!   They are separate keys.
 //!
@@ -61,10 +63,12 @@ const max_parameters = 16;
 /// UTF-8 sequence. `interrupt` is Ctrl-C and `eof` is Ctrl-D.
 /// `paste_start` and `paste_end` are the markers around a bracketed paste.
 /// `tab` is Tab, which the editor inserts as a tab and the session takes for
-/// completion on a line that completes.
+/// completion on a line that completes. `back_tab` is Shift-Tab, which the
+/// session takes for completion in reverse and the editor ignores.
 pub const Key = union(enum) {
     insert: Rune,
     tab,
+    back_tab,
     left,
     right,
     up,
@@ -246,6 +250,7 @@ fn final(byte: u8, parameters: []const u8) Key {
         'D' => return .left,
         'F' => return .end,
         'H' => return .home,
+        'Z' => return .back_tab,
         '~' => {
             if (std.mem.eql(u8, parameters, "1") or std.mem.eql(u8, parameters, "7")) return .home;
             if (std.mem.eql(u8, parameters, "4") or std.mem.eql(u8, parameters, "8")) return .end;
@@ -340,6 +345,10 @@ test "feed: the bracketed paste markers are keys of their own" {
 test "feed: an unrecognised CSI is consumed whole" {
     try expectKeys(&.{ .ignored, ins("a") }, "\x1b[99~a");
     try expectKeys(&.{ .ignored, ins("a") }, "\x1b[1;5Za");
+}
+
+test "feed: Shift-Tab is a key of its own" {
+    try expectKeys(&.{ .back_tab, ins("a") }, "\x1b[Za");
 }
 
 test "feed: a modified cursor key is ignored rather than moving" {

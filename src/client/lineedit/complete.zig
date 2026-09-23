@@ -17,7 +17,8 @@
 //! With more than one candidate, each call to `Cycle.advance` returns the
 //! next candidate, and the call after the last returns the token as it was
 //! typed, with no candidate selected. The call after that returns the first
-//! again.
+//! again. `Cycle.retreat` goes through the same cycle in reverse, so from the
+//! token as typed it returns the last candidate.
 
 // ==========================================================================
 // Standard library imports
@@ -138,6 +139,19 @@ pub const Cycle = struct {
         cycle.selected = next;
         return if (next) |i| names[i] else cycle.typed;
     }
+
+    /// Selects the previous candidate, and returns the text the buffer is to
+    /// have in place of the token.
+    ///
+    /// Before the first candidate the result is the token as typed and
+    /// nothing is selected, and before that the result is the last
+    /// candidate. The result is valid while the cycle is.
+    pub fn retreat(cycle: *Cycle) []const u8 {
+        const names = cycle.candidates.names.items;
+        const previous: ?usize = if (cycle.selected) |i| (if (i > 0) i - 1 else null) else names.len - 1;
+        cycle.selected = previous;
+        return if (previous) |i| names[i] else cycle.typed;
+    }
 };
 
 // ==========================================================================
@@ -206,6 +220,21 @@ test "advance: each candidate in turn, then the token as typed, then the first" 
     try std.testing.expectEqualStrings("ma", cycle.advance());
     try std.testing.expectEqual(null, cycle.selected);
     try std.testing.expectEqualStrings("maa", cycle.advance());
+}
+
+test "retreat: the last candidate, each before it in turn, then the token as typed" {
+    var candidates = Candidates.init(std.testing.allocator);
+    for ([_][]const u8{ "mab", "maa" }) |name| try candidates.add(name);
+    candidates.settle();
+    var cycle = try Cycle.init(candidates, "ma", 4);
+    defer cycle.deinit();
+    try std.testing.expectEqualStrings("mab", cycle.retreat());
+    try std.testing.expectEqual(1, cycle.selected.?);
+    try std.testing.expectEqualStrings("maa", cycle.retreat());
+    try std.testing.expectEqualStrings("ma", cycle.retreat());
+    try std.testing.expectEqual(null, cycle.selected);
+    try std.testing.expectEqualStrings("mab", cycle.retreat());
+    try std.testing.expectEqualStrings("ma", cycle.advance());
 }
 
 test "tokenStart and tokenEnd: the run of symbol bytes around an offset" {

@@ -39,9 +39,11 @@
 //! `begin` takes a `Source` for a line that reads source, or null. With its
 //! `symbol` and `gather` functions, Tab completes the token before the
 //! cursor, as `complete.zig` describes, and draws the candidates beneath the
-//! line while a completion is in progress. Any key other than Tab ends the
+//! line while a completion is in progress. Shift-Tab goes through the
+//! candidates in reverse. Any key other than Tab and Shift-Tab ends the
 //! completion with the buffer as it stands, and is then applied. Without
-//! them, or inside a bracketed paste, Tab inserts a tab.
+//! them, or inside a bracketed paste, Tab inserts a tab and Shift-Tab changes
+//! nothing.
 //!
 //! A `gather` that fails is taken as giving no candidates, and what it added
 //! is freed, so the line stays open.
@@ -230,9 +232,10 @@ pub const Session = struct {
         var changed = false;
         for (bytes, 0..) |byte, i| {
             const key = session.decoder.feed(byte) orelse continue;
-            if (key != .tab and session.endCycle()) changed = true;
+            if (key != .tab and key != .back_tab and session.endCycle()) changed = true;
             const outcome = switch (key) {
-                .tab => try session.tab(),
+                .tab => try session.tab(true),
+                .back_tab => try session.tab(false),
                 .up => try session.vertical(true),
                 .down => try session.vertical(false),
                 else => try session.editor.apply(key),
@@ -354,20 +357,25 @@ pub const Session = struct {
         return hint(text[start..cursor]) orelse "";
     }
 
-    /// Applies Tab: completes the token before the cursor, or inserts a tab
-    /// on a line that does not complete and inside a bracketed paste.
-    fn tab(session: *Session) error{OutOfMemory}!editor_mod.Outcome {
+    /// Applies Tab, when `forward`, or Shift-Tab: completes the token before
+    /// the cursor, or on a line that does not complete and inside a
+    /// bracketed paste applies the key to the editor.
+    ///
+    /// Tab selects the next candidate and Shift-Tab the previous, so a
+    /// completion that Shift-Tab begins selects the last.
+    fn tab(session: *Session, forward: bool) error{OutOfMemory}!editor_mod.Outcome {
         const editor = &session.editor;
+        const key: keys.Key = if (forward) .tab else .back_tab;
         if (session.cycle) |*cycle| {
-            const text = cycle.advance();
+            const text = if (forward) cycle.advance() else cycle.retreat();
             try editor.splice(cycle.start, cycle.start + cycle.length, text);
             cycle.length = text.len;
             return .edited;
         }
-        const source = session.source orelse return editor.apply(.tab);
-        const symbol = source.symbol orelse return editor.apply(.tab);
-        const gather = source.gather orelse return editor.apply(.tab);
-        if (editor.pasting) return editor.apply(.tab);
+        const source = session.source orelse return editor.apply(key);
+        const symbol = source.symbol orelse return editor.apply(key);
+        const gather = source.gather orelse return editor.apply(key);
+        if (editor.pasting) return editor.apply(key);
         const text = editor.buffer.items;
         const end = complete.tokenEnd(text, editor.cursor, symbol);
         const start = complete.tokenStart(text, end, symbol);
@@ -399,7 +407,7 @@ pub const Session = struct {
                     return err;
                 };
                 errdefer cycle.deinit();
-                const first = cycle.advance();
+                const first = if (forward) cycle.advance() else cycle.retreat();
                 try editor.splice(start, end, first);
                 cycle.length = first.len;
                 session.cycle = cycle;
@@ -784,6 +792,26 @@ test "feed: Tab with three candidates cycles through each and back to the token"
     try expectCompleted("ma\t\t\t\t\t", "map");
 }
 
+test "feed: Shift-Tab cycles through the candidates in reverse" {
+    try expectCompleted("ma\x1b[Z", "max");
+    try expectCompleted("ma\x1b[Z\x1b[Z", "mapcat");
+    try expectCompleted("ma\x1b[Z\x1b[Z\x1b[Z", "map");
+    try expectCompleted("ma\x1b[Z\x1b[Z\x1b[Z\x1b[Z", "ma");
+    try expectCompleted("ma\x1b[Z\x1b[Z\x1b[Z\x1b[Z\x1b[Z", "max");
+    try expectCompleted("ma\t\t\x1b[Z", "map");
+    try expectCompleted("ma\t\x1b[Z", "ma");
+    try expectCompleted("(stri\x1b[Z", "(string/find");
+}
+
+test "feed: Shift-Tab where Tab inserts a tab changes nothing" {
+    try expectCompleted("\x1b[200~ma\x1b[Z\x1b[201~", "ma");
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, null, null);
+    _ = try session.feed("ma\x1b[Z", w80);
+    try std.testing.expectEqualStrings("ma", session.line());
+}
+
 test "feed: a key other than Tab keeps the candidate and is applied" {
     try expectCompleted("ma\t\t ", "mapcat ");
     try expectCompleted("ma\t\tx", "mapcatx");
@@ -849,7 +877,7 @@ fn completeWith(allocator: std.mem.Allocator, bytes: []const u8) !void {
 }
 
 test "feed: a completion that fails to allocate frees each allocation once" {
-    for ([_][]const u8{ "zz\t", "yy\t", "yy\t\t\t\t" }) |bytes| {
+    for ([_][]const u8{ "zz\t", "yy\t", "yy\t\t\t\t", "yy\x1b[Z", "yy\x1b[Z\x1b[Z\x1b[Z\x1b[Z" }) |bytes| {
         var fail_index: usize = 0;
         while (true) : (fail_index += 1) {
             var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });

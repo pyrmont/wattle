@@ -317,6 +317,17 @@
                           :args ["-e" three]))
                 "Tab after the last candidate puts back the token as typed"))
 
+  ; Shift-Tab goes through the same cycle in reverse: it begins a completion
+  ; with the last candidate, and from the first it puts back the token.
+  (task (assert (= "a> zzc\nzza  zzb  zzc\n@0,6\n"
+                   (drive """zz\e[Z""" :marker "a> " :screen true :cursor true
+                          :args ["-e" three]))
+                "Shift-Tab begins a completion with the last candidate"))
+  (task (assert (= "a> zz\nzza  zzb  zzc\n@0,5\n"
+                   (drive """zz\t\m{zzc}\e[Z""" :marker "a> " :screen true :cursor true
+                          :args ["-e" three]))
+                "Shift-Tab from the first candidate puts back the token as typed"))
+
   ; A key other than Tab keeps the candidate and ends the completion, and
   ; the next frame has no listing. The screen has no trailing spaces, so the
   ; cursor shows the space.

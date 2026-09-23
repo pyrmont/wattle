@@ -131,7 +131,8 @@ pub const Editor = struct {
 
     /// Applies `key` to the buffer and the cursor, and returns what it did.
     ///
-    /// Up and Down change nothing here; `vertical` applies them. This
+    /// Up and Down change nothing here; `vertical` applies them. Shift-Tab
+    /// changes nothing; the session applies it to a completion. This
     /// function returns `error.OutOfMemory` when an insertion cannot grow the
     /// buffer, and the buffer is then unchanged.
     pub fn apply(editor: *Editor, key: keys.Key) error{OutOfMemory}!Outcome {
@@ -150,7 +151,7 @@ pub const Editor = struct {
             },
             .left => return editor.moveTo(previous(text, editor.cursor)),
             .right => return editor.moveTo(next(text, editor.cursor)),
-            .up, .down => return .unchanged,
+            .up, .down, .back_tab => return .unchanged,
             .home => return editor.moveTo(lineStart(text, editor.cursor)),
             .end => return editor.moveTo(lineEnd(text, editor.cursor)),
             .backspace => {
