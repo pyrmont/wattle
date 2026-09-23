@@ -46,6 +46,21 @@
   (assert (= "repl:1:> repl:2:(> repl:3:> " err)
           "the plain reader shows the open delimiter in the prompt"))
 
+; Each case waits in the harness for the client to go quiet, so with the
+; event loop the cases run as tasks, at most `case-limit` at a time, once
+; every case has been queued. Without the loop each runs where it is
+; written. The macro is defined here rather than in the block below because
+; the block is compiled whole, before any definition in it runs.
+(def- case-limit 8)
+(def- cases ![])
+
+(defmacro- task
+  "Queues `body` to run as a task when the event loop is compiled, and runs it at once otherwise."
+  [& body]
+  (if (dyn 'ev/go-gather)
+    `(array/push cases (fn [] ~|body))
+    `(do ~|body)))
+
 ; `compwhen` rather than `when`: `harness` is known when the form is
 ; compiled, and a `when` on a constant nil is dead code to the linter.
 (compwhen harness
@@ -68,6 +83,18 @@
     (def at (last (string/find-all marker capture)))
     (if at (string/slice capture at) capture))
 
+  (compwhen (dyn 'ev/go-gather)
+    (defn- run-cases
+      "Runs the queued cases, `case-limit` at a time, and returns when all have ended."
+      []
+      (var taken 0)
+      (defn- worker []
+        (while (< taken (length cases))
+          (def queued (get cases taken))
+          (++ taken)
+          (queued)))
+      (ev/go-gather (seq [_ :range [0 case-limit]] worker))))
+
   ; A line typed with Left, an insertion, Home, End and a Backspace, then
   ; submitted. A frame clears from its first row and then draws, the last
   ; frame has the cursor at the line's end, the row break is `\r\n`, and the
@@ -75,84 +102,84 @@
   ; the line ends and on again with the next prompt. Frames drawn before the
   ; last are not compared, because how many there are depends on how the keys
   ; were split across reads.
-  (assert (= "\r\e[Jrepl:1:> (+ 1 2)\r\n\e[?2004l3\r\n\e[?2004h\r\e[Jrepl:2:> "
-             (from-last "\r\e[Jrepl:1:> "
-                        (drive """(+ 2\e[D1 \e[H\e[Fx\x7f)\r""")))
-          "a line edited with the cursor keys is submitted whole")
+  (task (assert (= "\r\e[Jrepl:1:> (+ 1 2)\r\n\e[?2004l3\r\n\e[?2004h\r\e[Jrepl:2:> "
+                   (from-last "\r\e[Jrepl:1:> "
+                              (drive """(+ 2\e[D1 \e[H\e[Fx\x7f)\r""")))
+                "a line edited with the cursor keys is submitted whole"))
 
   ; Ctrl-C draws `^C`, abandons the line, and prompts again at the same line
   ; number.
-  (assert (= "repl:1:> (+ 1^C\nrepl:1:> (+ 2 2)\n4\nrepl:2:>\n"
-             (drive """(+ 1\x03(+ 2 2)\r""" :screen true))
-          "Ctrl-C cancels the line")
+  (task (assert (= "repl:1:> (+ 1^C\nrepl:1:> (+ 2 2)\n4\nrepl:2:>\n"
+                   (drive """(+ 1\x03(+ 2 2)\r""" :screen true))
+                "Ctrl-C cancels the line"))
 
   ; Enter on an unfinished form opens a row under the marker, which is as
   ; wide as the prompt, and the prompt shows no delimiter. The line number
   ; advances by the two lines the form occupied.
-  (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:>\n"
-             (drive """(+ 1\r2)\r""" :screen true))
-          "Enter opens a row in an unfinished form")
+  (task (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:>\n"
+                   (drive """(+ 1\r2)\r""" :screen true))
+                "Enter opens a row in an unfinished form"))
 
   ; Up moves to the row above, End to the end of that line, and Enter there
   ; submits the whole form.
-  (assert (= "repl:1:> (+ 1 10\n         2)\n13\nrepl:3:>\n"
-             (drive """(+ 1\r2)\e[A\e[F 10\r""" :screen true))
-          "a form is edited on an earlier row and submitted whole")
+  (task (assert (= "repl:1:> (+ 1 10\n         2)\n13\nrepl:3:>\n"
+                   (drive """(+ 1\r2)\e[A\e[F 10\r""" :screen true))
+                "a form is edited on an earlier row and submitted whole"))
 
   ; An opened row copies the indentation of the row above.
-  (assert (= (string "repl:1:> (do\n"
-                     "           (print 1)\n"
-                     "           (print 2))\n"
-                     "1\n2\nnil\nrepl:4:>\n")
-             (drive """(do\r  (print 1)\r(print 2))\r""" :screen true))
-          "an opened row copies the indentation above it")
+  (task (assert (= (string "repl:1:> (do\n"
+                           "           (print 1)\n"
+                           "           (print 2))\n"
+                           "1\n2\nnil\nrepl:4:>\n")
+                   (drive """(do\r  (print 1)\r(print 2))\r""" :screen true))
+                "an opened row copies the indentation above it"))
 
   ; A pasted form carries its own indentation, and none is added to it.
-  (assert (= (string "repl:1:> (do\n"
-                     "           (print 1)\n"
-                     "           (print 2))\n"
-                     "1\n2\nnil\nrepl:4:>\n")
-             (drive """\e[200~(do\r  (print 1)\r  (print 2))\e[201~\r""" :screen true))
-          "a pasted form is not indented twice")
+  (task (assert (= (string "repl:1:> (do\n"
+                           "           (print 1)\n"
+                           "           (print 2))\n"
+                           "1\n2\nnil\nrepl:4:>\n")
+                   (drive """\e[200~(do\r  (print 1)\r  (print 2))\e[201~\r""" :screen true))
+                "a pasted form is not indented twice"))
 
   ; A paste can submit a form and go on, and its rest can arrive in a later
   ; read. The input waits for the second prompt after the first form, so the
   ; paste is split there, and the second form still has only the pasted
   ; indentation.
-  (assert (= (string "repl:1:> (print 0)\n0\nnil\n"
-                     "repl:2:> (do\n"
-                     "           (print 1)\n"
-                     "           (print 2))\n"
-                     "1\n2\nnil\nrepl:5:>\n")
-             (drive (string """\e[200~(print 0)\r\m{repl:2:> }"""
-                            """(do\r  (print 1)\r  (print 2))\e[201~\r""")
-                    :screen true))
-          "a paste split across reads is not indented twice")
+  (task (assert (= (string "repl:1:> (print 0)\n0\nnil\n"
+                           "repl:2:> (do\n"
+                           "           (print 1)\n"
+                           "           (print 2))\n"
+                           "1\n2\nnil\nrepl:5:>\n")
+                   (drive (string """\e[200~(print 0)\r\m{repl:2:> }"""
+                                  """(do\r  (print 1)\r  (print 2))\e[201~\r""")
+                          :screen true))
+                "a paste split across reads is not indented twice"))
 
   ; A form the parser rejects is submitted, and the REPL reports the error.
-  (assert (= (string "repl:1:> (+ 1 2]\n"
-                     "repl:1:7: parse error: mismatched delimiter ], ( opened at line 1, column 1\n"
-                     "repl:2:>\n")
-             (drive """(+ 1 2]\r""" :screen true))
-          "a form with a parse error is submitted")
+  (task (assert (= (string "repl:1:> (+ 1 2]\n"
+                           "repl:1:7: parse error: mismatched delimiter ], ( opened at line 1, column 1\n"
+                           "repl:2:>\n")
+                   (drive """(+ 1 2]\r""" :screen true))
+                "a form with a parse error is submitted"))
 
   ; A long string is pending until the byte after its closing run, so Enter
   ; asks the parser about the buffer and a newline.
-  (assert (= "repl:1:> \"\"\"a\"\"\"\n\"a\"\nrepl:2:>\n"
-             (drive "\"\"\"a\"\"\"\r" :screen true))
-          "a closed long string is submitted")
+  (task (assert (= "repl:1:> \"\"\"a\"\"\"\n\"a\"\nrepl:2:>\n"
+                   (drive "\"\"\"a\"\"\"\r" :screen true))
+                "a closed long string is submitted"))
 
   ; A getline given no environment is not reading source, and Enter
   ; submits whatever is typed.
-  (assert (= "a> (x\n(x\n"
-             (drive """(x\r""" :marker "a> " :screen true
-                    :args ["-e" """(print (string/trim (getline "a> ")))"""]))
-          "Enter submits in a getline without an environment")
+  (task (assert (= "a> (x\n(x\n"
+                   (drive """(x\r""" :marker "a> " :screen true
+                          :args ["-e" """(print (string/trim (getline "a> ")))"""]))
+                "Enter submits in a getline without an environment"))
 
   ; Ctrl-C on a form of two rows draws both and prompts again.
-  (assert (= "repl:1:> (+ 1\n         2^C\nrepl:1:>\n"
-             (drive """(+ 1\r2\x03""" :screen true))
-          "Ctrl-C cancels a form of several rows")
+  (task (assert (= "repl:1:> (+ 1\n         2^C\nrepl:1:>\n"
+                   (drive """(+ 1\r2\x03""" :screen true))
+                "Ctrl-C cancels a form of several rows"))
 
   ; History. Each case names its own file in the temporary directory, and
   ; the file is removed after it.
@@ -177,86 +204,86 @@
   ; A form of two rows is recalled whole by Up, drawn under the marker at the
   ; next prompt, and written to the file on one line with its newline
   ; escaped.
-  (let [path (history-file)]
-    (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:> (+ 1\n         2)\n"
-               (drive """(+ 1\r2)\r\m{repl:3:> }\e[A"""
-                      :screen true :env {"WATTLE_HISTFILE" path}))
-            "Up recalls a form of two rows")
-    (assert (= "(+ 1\\n2)\n" (slurp-and-remove path))
-            "the history file holds the form on one line"))
+  (task (let [path (history-file)]
+          (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:> (+ 1\n         2)\n"
+                     (drive """(+ 1\r2)\r\m{repl:3:> }\e[A"""
+                            :screen true :env {"WATTLE_HISTFILE" path}))
+                  "Up recalls a form of two rows")
+          (assert (= "(+ 1\\n2)\n" (slurp-and-remove path))
+                  "the history file holds the form on one line")))
 
   ; A recalled form is submitted again, and is not recorded twice.
-  (let [path (history-file)]
-    (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:> (+ 1\n         2)\n3\nrepl:5:>\n"
-               (drive """(+ 1\r2)\r\m{repl:3:> }\e[A\r"""
-                      :screen true :env {"WATTLE_HISTFILE" path}))
-            "a recalled form is submitted again")
-    (assert (= "(+ 1\\n2)\n" (slurp-and-remove path))
-            "a form submitted twice in a row is recorded once"))
+  (task (let [path (history-file)]
+          (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:> (+ 1\n         2)\n3\nrepl:5:>\n"
+                     (drive """(+ 1\r2)\r\m{repl:3:> }\e[A\r"""
+                            :screen true :env {"WATTLE_HISTFILE" path}))
+                  "a recalled form is submitted again")
+          (assert (= "(+ 1\\n2)\n" (slurp-and-remove path))
+                  "a form submitted twice in a row is recorded once")))
 
   ; Up leaves the line being typed, and Down past the newest entry brings it
   ; back.
-  (let [path (history-file)]
-    (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:> abc\n"
-               (drive """(+ 1 2)\r\m{repl:2:> }abc\e[A\m{> (+ 1 2)}\e[B"""
-                      :screen true :env {"WATTLE_HISTFILE" path}))
-            "Down past the newest entry brings back the line being typed")
-    (slurp-and-remove path))
+  (task (let [path (history-file)]
+          (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:> abc\n"
+                     (drive """(+ 1 2)\r\m{repl:2:> }abc\e[A\m{> (+ 1 2)}\e[B"""
+                            :screen true :env {"WATTLE_HISTFILE" path}))
+                  "Down past the newest entry brings back the line being typed")
+          (slurp-and-remove path)))
 
   ; An escaped entry in a file written beforehand is read as a form of two
   ; rows.
-  (let [path (history-file "(+ 1\\n2)\n")]
-    (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:>\n"
-               (drive """\e[A\r""" :screen true :env {"WATTLE_HISTFILE" path}))
-            "an entry read from the file is recalled as two rows")
-    (slurp-and-remove path))
+  (task (let [path (history-file "(+ 1\\n2)\n")]
+          (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:>\n"
+                     (drive """\e[A\r""" :screen true :env {"WATTLE_HISTFILE" path}))
+                  "an entry read from the file is recalled as two rows")
+          (slurp-and-remove path)))
 
   ; A history file that cannot be read or written is taken as empty, and the
   ; line is read and evaluated. A directory opens and fails at the read.
-  (let [path (history-file)]
-    (os/mkdir path)
-    (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:>\n"
-               (drive """\e[A(+ 1 2)\r""" :screen true :env {"WATTLE_HISTFILE" path}))
-            "a history file that cannot be read does not stop the line")
-    (os/rmdir path))
+  (task (let [path (history-file)]
+          (os/mkdir path)
+          (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:>\n"
+                     (drive """\e[A(+ 1 2)\r""" :screen true :env {"WATTLE_HISTFILE" path}))
+                  "a history file that cannot be read does not stop the line")
+          (os/rmdir path)))
 
   ; At most the last megabyte of the file is read, from the first line that
   ; starts in it. A longer file is written again with what was read, so its
   ; oldest entries are gone and its newest remain.
-  (let [pad (string/repeat "x" 2000)
-        older (seq [i :range [0 600]] (string "(comment " i " " pad ")\n"))
-        path (history-file (string |older "(+ 1 2)\n"))]
-    (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:>\n"
-               (drive """\e[A\r""" :screen true :env {"WATTLE_HISTFILE" path}))
-            "the newest entry of a long file is recalled")
-    (def contents (slurp-and-remove path))
-    (assert (<= (length contents) (* 1024 1024))
-            "a long file is written again within a megabyte")
-    (assert (string/has-suffix? (string (last older) "(+ 1 2)\n") contents)
-            "the rewritten file keeps the newest entries")
-    (assert (not (string/has-prefix? "(comment 0 " contents))
-            "the rewritten file drops the oldest entries"))
+  (task (let [pad (string/repeat "x" 2000)
+              older (seq [i :range [0 600]] (string "(comment " i " " pad ")\n"))
+              path (history-file (string |older "(+ 1 2)\n"))]
+          (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:>\n"
+                     (drive """\e[A\r""" :screen true :env {"WATTLE_HISTFILE" path}))
+                  "the newest entry of a long file is recalled")
+          (def contents (slurp-and-remove path))
+          (assert (<= (length contents) (* 1024 1024))
+                  "a long file is written again within a megabyte")
+          (assert (string/has-suffix? (string (last older) "(+ 1 2)\n") contents)
+                  "the rewritten file keeps the newest entries")
+          (assert (not (string/has-prefix? "(comment 0 " contents))
+                  "the rewritten file drops the oldest entries")))
 
   ; A file whose only entry is longer than a megabyte loads nothing, and is
   ; left as it is rather than written empty.
-  (let [entry (string "(comment " (string/repeat "x" (* 1100 1024)) ")\n")
-        path (history-file entry)]
-    (assert (= "repl:1:>\n"
-               (drive """\e[A""" :screen true :env {"WATTLE_HISTFILE" path}))
-            "an entry longer than the bytes read is not recalled")
-    (assert (= entry (slurp-and-remove path))
-            "a file with no whole entry in the bytes read is left as it is"))
+  (task (let [entry (string "(comment " (string/repeat "x" (* 1100 1024)) ")\n")
+              path (history-file entry)]
+          (assert (= "repl:1:>\n"
+                     (drive """\e[A""" :screen true :env {"WATTLE_HISTFILE" path}))
+                  "an entry longer than the bytes read is not recalled")
+          (assert (= entry (slurp-and-remove path))
+                  "a file with no whole entry in the bytes read is left as it is")))
 
   ; A getline without an environment does not browse the history, and its
   ; line is not recorded.
-  (let [path (history-file "(old)\n")]
-    (assert (= "a> x\nx\n"
-               (drive """\e[Ax\r""" :marker "a> " :screen true
-                      :env {"WATTLE_HISTFILE" path}
-                      :args ["-e" """(print (string/trim (getline "a> ")))"""]))
-            "Up in a getline without an environment recalls nothing")
-    (assert (= "(old)\n" (slurp-and-remove path))
-            "a getline without an environment records nothing"))
+  (task (let [path (history-file "(old)\n")]
+          (assert (= "a> x\nx\n"
+                     (drive """\e[Ax\r""" :marker "a> " :screen true
+                            :env {"WATTLE_HISTFILE" path}
+                            :args ["-e" """(print (string/trim (getline "a> ")))"""]))
+                  "Up in a getline without an environment recalls nothing")
+          (assert (= "(old)\n" (slurp-and-remove path))
+                  "a getline without an environment records nothing")))
 
   ; Completion and hints. Each case reads a line with `getline` given an
   ; environment the case builds, so the candidates are fixed. The
@@ -268,170 +295,170 @@
             """(print (string/trim (getline "a> " (buffer) e)))"""))
 
   ; Tab with one candidate replaces the token.
-  (assert (= "a> zzsolo-name\nzzsolo-name\n"
-             (drive """zzs\t\r""" :marker "a> " :screen true
-                    :args ["-e" (completing "'zzsolo-name 1")]))
-          "Tab with one candidate completes the token")
+  (task (assert (= "a> zzsolo-name\nzzsolo-name\n"
+                   (drive """zzs\t\r""" :marker "a> " :screen true
+                          :args ["-e" (completing "'zzsolo-name 1")]))
+                "Tab with one candidate completes the token"))
 
   ; Tab with three candidates puts the first in the line and lists all three
   ; beneath it. Three more Tabs select the other two and then put back the
   ; token as typed, and the listing is still drawn.
   (def three (completing "'zzc 1 'zza 2 'zzb 3"))
-  (assert (= "a> zza\nzza  zzb  zzc\n@0,6\n"
-             (drive """zz\t""" :marker "a> " :screen true :cursor true
-                    :args ["-e" three]))
-          "Tab with three candidates lists them beneath the line")
-  (assert (= "a> zz\nzza  zzb  zzc\n@0,5\n"
-             (drive """zz\t\m{zzc}\t\t\t""" :marker "a> " :screen true :cursor true
-                    :args ["-e" three]))
-          "Tab after the last candidate puts back the token as typed")
+  (task (assert (= "a> zza\nzza  zzb  zzc\n@0,6\n"
+                   (drive """zz\t""" :marker "a> " :screen true :cursor true
+                          :args ["-e" three]))
+                "Tab with three candidates lists them beneath the line"))
+  (task (assert (= "a> zz\nzza  zzb  zzc\n@0,5\n"
+                   (drive """zz\t\m{zzc}\t\t\t""" :marker "a> " :screen true :cursor true
+                          :args ["-e" three]))
+                "Tab after the last candidate puts back the token as typed"))
 
   ; A key other than Tab keeps the candidate and ends the completion, and
   ; the next frame has no listing. The screen has no trailing spaces, so the
   ; cursor shows the space.
-  (assert (= "a> zza\n@0,7\n"
-             (drive """zz\t\m{zzc} """ :marker "a> " :screen true :cursor true
-                    :args ["-e" three]))
-          "a space after Tab keeps the candidate and erases the listing")
+  (task (assert (= "a> zza\n@0,7\n"
+                   (drive """zz\t\m{zzc} """ :marker "a> " :screen true :cursor true
+                          :args ["-e" three]))
+                "a space after Tab keeps the candidate and erases the listing"))
 
   ; Enter while the candidates are listed submits the candidate, and the
   ; frame at submission has no listing beneath the line.
-  (assert (= "a> zza\nzza\n"
-             (drive """zz\t\m{zzc}\r""" :marker "a> " :screen true
-                    :args ["-e" three]))
-          "Enter during a completion submits the line without the listing")
+  (task (assert (= "a> zza\nzza\n"
+                   (drive """zz\t\m{zzc}\r""" :marker "a> " :screen true
+                          :args ["-e" three]))
+                "Enter during a completion submits the line without the listing"))
 
   ; Twelve candidates in columns of six on 20 columns are three across and
   ; need four rows, and four rows of terminal leave three beneath the line:
   ; a page of two rows and its footer. The seventh Tab selects the seventh
   ; candidate, which is on the second page.
   (def twelve (completing (string/join (map (fn [i] (string/format "'zz%02d %d" i i)) (range 1 13)) " ")))
-  (assert (= "a> zz01\nzz01  zz03  zz05\nzz02  zz04  zz06\n1-6 of 12\n"
-             (drive """zz\t""" :marker "a> " :screen true :cols 20 :rows 4
-                    :args ["-e" twelve]))
-          "a listing longer than the room left draws the first page")
-  (assert (= "a> zz07\nzz07  zz09  zz11\nzz08  zz10  zz12\n7-12 of 12\n"
-             (drive """zz\t\m{of 12}\t\t\t\t\t\t""" :marker "a> " :screen true :cols 20 :rows 4
-                    :args ["-e" twelve]))
-          "the listing draws the page with the selected candidate")
+  (task (assert (= "a> zz01\nzz01  zz03  zz05\nzz02  zz04  zz06\n1-6 of 12\n"
+                   (drive """zz\t""" :marker "a> " :screen true :cols 20 :rows 4
+                          :args ["-e" twelve]))
+                "a listing longer than the room left draws the first page"))
+  (task (assert (= "a> zz07\nzz07  zz09  zz11\nzz08  zz10  zz12\n7-12 of 12\n"
+                   (drive """zz\t\m{of 12}\t\t\t\t\t\t""" :marker "a> " :screen true :cols 20 :rows 4
+                          :args ["-e" twelve]))
+                "the listing draws the page with the selected candidate"))
 
   ; A hint is the first two paragraphs of the docstring, three columns after
   ; the cursor, cut before the last column with an ellipsis. A space after
   ; the token ends it.
   (def documented
     (completing "'zzdoc (table :doc \"(zzdoc x y)\\n\\nDoes a long thing to x and y.\\n\\nNot shown.\")"))
-  (assert (= "a> zzdoc   (zzdoc x y) Does a long thi…\n@0,8\n"
-             (drive """zzdoc""" :marker "a> " :screen true :cursor true :cols 40
-                    :args ["-e" documented]))
-          "the hint for a documented binding is drawn and cut")
-  (assert (= "a> zzdoc\n@0,9\n"
-             (drive """zzdoc\m{thi} """ :marker "a> " :screen true :cursor true :cols 40
-                    :args ["-e" documented]))
-          "a space after the token removes the hint")
+  (task (assert (= "a> zzdoc   (zzdoc x y) Does a long thi…\n@0,8\n"
+                   (drive """zzdoc""" :marker "a> " :screen true :cursor true :cols 40
+                          :args ["-e" documented]))
+                "the hint for a documented binding is drawn and cut"))
+  (task (assert (= "a> zzdoc\n@0,9\n"
+                   (drive """zzdoc\m{thi} """ :marker "a> " :screen true :cursor true :cols 40
+                          :args ["-e" documented]))
+                "a space after the token removes the hint"))
 
   ; A blank line that ends a paragraph may have a carriage return or spaces
   ; on it, as in a docstring from a file with CRLF line ends.
-  (assert (= "a> zzdoc   (zzdoc x) First.\n"
-             (drive """zzdoc""" :marker "a> " :screen true
-                    :args ["-e" (completing "'zzdoc (table :doc \"(zzdoc x)\\r\\n\\r\\nFirst.\\r\\n  \\r\\nThird.\")")]))
-          "a blank line with a carriage return or spaces ends a paragraph")
+  (task (assert (= "a> zzdoc   (zzdoc x) First.\n"
+                   (drive """zzdoc""" :marker "a> " :screen true
+                          :args ["-e" (completing "'zzdoc (table :doc \"(zzdoc x)\\r\\n\\r\\nFirst.\\r\\n  \\r\\nThird.\")")]))
+                "a blank line with a carriage return or spaces ends a paragraph"))
 
   ; Completion in the REPL's own environment: the first of `string/find` and
   ; `string/find-all`, and the form is evaluated.
-  (assert (= "repl:1:> (string/find \"a\" \"cat\")\n1\nrepl:2:>\n"
-             (drive """(string/fi\t "a" "cat")\r""" :screen true))
-          "a symbol completed in the REPL is evaluated")
+  (task (assert (= "repl:1:> (string/find \"a\" \"cat\")\n1\nrepl:2:>\n"
+                   (drive """(string/fi\t "a" "cat")\r""" :screen true))
+                "a symbol completed in the REPL is evaluated"))
 
   ; A getline without an environment inserts a tab, which is drawn in caret
   ; notation at the width the layout measures it at, and draws no hint.
-  (assert (= "a> map^Ib\n"
-             (drive """map\tb""" :marker "a> " :screen true
-                    :args ["-e" """(getline "a> ")"""]))
-          "Tab in a getline without an environment inserts a tab")
+  (task (assert (= "a> map^Ib\n"
+                   (drive """map\tb""" :marker "a> " :screen true
+                          :args ["-e" """(getline "a> ")"""]))
+                "Tab in a getline without an environment inserts a tab"))
 
   ; A prompt with colour sequences is measured by the columns it occupies,
   ; so after `abc` and Left the cursor is in column 4: two for `> ` and two
   ; for `ab`.
-  (assert (= "\r\e[J\e[31m> \e[0mabc\r\e[4C"
-             (from-last "\r\e[J\e[31m"
-                        (drive """abc\e[D""" :marker "> "
-                               :args ["-e" """(getline "\e[31m> \e[0m")"""])))
-          "a coloured prompt places the cursor by its visible width")
+  (task (assert (= "\r\e[J\e[31m> \e[0mabc\r\e[4C"
+                   (from-last "\r\e[J\e[31m"
+                              (drive """abc\e[D""" :marker "> "
+                                     :args ["-e" """(getline "\e[31m> \e[0m")"""])))
+                "a coloured prompt places the cursor by its visible width"))
 
   ; Highlighting. Each case compares the bytes of the last frame, with the
   ; client given `-N` so that it colours its output.
-  (assert (= (string "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;35m\"a\"\e[0m \e[0;33m:k\e[0m "
-                     "\e[0;32m1\e[0m \e[0;36mnil\e[0m) \e[0;38;5;246m; c\e[0m")
-             (from-last "\r\e[Jrepl:1:> "
-                        (drive """(def x "a" :k 1 nil) ; c""" :color true)))
-          "each class is drawn in its colour")
+  (task (assert (= (string "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;35m\"a\"\e[0m \e[0;33m:k\e[0m "
+                           "\e[0;32m1\e[0m \e[0;36mnil\e[0m) \e[0;38;5;246m; c\e[0m")
+                   (from-last "\r\e[Jrepl:1:> "
+                              (drive """(def x "a" :k 1 nil) ; c""" :color true)))
+                "each class is drawn in its colour"))
 
   ; A raw string across a wrap and a newline. The style is reset before each
   ; row break and written again after it, after the marker on a row a newline
   ; opens.
-  (assert (= (string "\e[Jrepl:1:> \e[0;35m\"\"\"abcdefgh\e[0m\r\n"
-                     "\e[0;35mijklmnop\e[0m\r\n"
-                     "         \e[0;35mxy\e[0m")
-             (from-last "\e[Jrepl:1:> "
-                        (drive "\"\"\"abcdefghijklmnop\nxy" :color true :cols 20)))
-          "a string's style is written again on each row it occupies")
+  (task (assert (= (string "\e[Jrepl:1:> \e[0;35m\"\"\"abcdefgh\e[0m\r\n"
+                           "\e[0;35mijklmnop\e[0m\r\n"
+                           "         \e[0;35mxy\e[0m")
+                   (from-last "\e[Jrepl:1:> "
+                              (drive "\"\"\"abcdefghijklmnop\nxy" :color true :cols 20)))
+                "a string's style is written again on each row it occupies"))
 
   ; A closing delimiter that does not match is drawn as an error before
   ; Enter.
-  (assert (= "\r\e[Jrepl:1:> (\e[0;94m+\e[0m \e[0;32m1\e[0m \e[0;32m2\e[0;31m]\e[0m"
-             (from-last "\r\e[Jrepl:1:> " (drive "(+ 1 2]" :color true)))
-          "a mismatched delimiter is drawn as an error")
+  (task (assert (= "\r\e[Jrepl:1:> (\e[0;94m+\e[0m \e[0;32m1\e[0m \e[0;32m2\e[0;31m]\e[0m"
+                   (from-last "\r\e[Jrepl:1:> " (drive "(+ 1 2]" :color true)))
+                "a mismatched delimiter is drawn as an error"))
 
   ; A symbol bound in the environment is drawn in bright blue, and one that
   ; is not is drawn plain. The bound names are
   ; collected for each line, so a name defined on one line is coloured on
   ; the next, with its type as the hint.
-  (assert (= "\r\e[Jrepl:1:> (\e[0;94mmap\e[0m zzq)"
-             (from-last "\r\e[Jrepl:1:> " (drive "(map zzq)" :color true)))
-          "a bound symbol is coloured and an unbound one is not")
-  (assert (= "\r\e[Jrepl:2:> \e[0;94mzzq\e[0m\e[3C\e[90m:number\e[0m\r\e[12C"
-             (from-last "\r\e[Jrepl:2:> "
-                        (drive "(def zzq 1)\r\\m{repl:2:> }zzq" :color true)))
-          "a name defined on one line is coloured on the next")
+  (task (assert (= "\r\e[Jrepl:1:> (\e[0;94mmap\e[0m zzq)"
+                   (from-last "\r\e[Jrepl:1:> " (drive "(map zzq)" :color true)))
+                "a bound symbol is coloured and an unbound one is not"))
+  (task (assert (= "\r\e[Jrepl:2:> \e[0;94mzzq\e[0m\e[3C\e[90m:number\e[0m\r\e[12C"
+                   (from-last "\r\e[Jrepl:2:> "
+                              (drive "(def zzq 1)\r\\m{repl:2:> }zzq" :color true)))
+                "a name defined on one line is coloured on the next"))
 
   ; A special form bound in the environment has a hint, and the style is
   ; reset before the hint's own.
-  (assert (= "\r\e[Ja> \e[0;93mif\e[0m\e[3C\e[90m(if c t f)\e[0m\r\e[5C"
-             (from-last "\r\e[Ja> "
-                        (drive "if" :marker "a> " :color true
-                               :args ["-e" (completing "'if (table :doc \"(if c t f)\")")])))
-          "a highlighted token is followed by its hint")
+  (task (assert (= "\r\e[Ja> \e[0;93mif\e[0m\e[3C\e[90m(if c t f)\e[0m\r\e[5C"
+                   (from-last "\r\e[Ja> "
+                              (drive "if" :marker "a> " :color true
+                                     :args ["-e" (completing "'if (table :doc \"(if c t f)\")")])))
+                "a highlighted token is followed by its hint"))
 
   ; A getline without an environment is not highlighted, and neither is the
   ; REPL without colour.
-  (assert (= "\r\e[Ja> (def 1)"
-             (from-last "\r\e[Ja> "
-                        (drive "(def 1)" :marker "a> " :color true
-                               :args ["-e" """(getline "a> ")"""])))
-          "a getline without an environment is not highlighted")
-  (assert (= "\r\e[Jrepl:1:> (def 1)"
-             (from-last "\r\e[Jrepl:1:> " (drive "(def 1)")))
-          "the REPL without colour is not highlighted")
+  (task (assert (= "\r\e[Ja> (def 1)"
+                   (from-last "\r\e[Ja> "
+                              (drive "(def 1)" :marker "a> " :color true
+                                     :args ["-e" """(getline "a> ")"""])))
+                "a getline without an environment is not highlighted"))
+  (task (assert (= "\r\e[Jrepl:1:> (def 1)"
+                   (from-last "\r\e[Jrepl:1:> " (drive "(def 1)")))
+                "the REPL without colour is not highlighted"))
 
   ; The frame at submission is highlighted, so the line keeps its colours.
-  (assert (= "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;32m1\e[0m)\r\n"
-             (string/slice (from-last "\r\e[Jrepl:1:> " (drive "(def x 1)\r" :color true))
-                           0 (length "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;32m1\e[0m)\r\n")))
-          "the frame at submission is highlighted")
+  (task (assert (= "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;32m1\e[0m)\r\n"
+                   (string/slice (from-last "\r\e[Jrepl:1:> " (drive "(def x 1)\r" :color true))
+                                 0 (length "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;32m1\e[0m)\r\n")))
+                "the frame at submission is highlighted"))
 
   ; A line taller than the terminal. On three rows of 20 columns a line of 62
   ; runes occupies four rows after the prompt. Home shows the prompt's row and
   ; the two after it with the cursor after the prompt, and End then shows the
   ; last three rows with the cursor after the last rune.
   (def tall "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-  (assert (= "repl:1:> abcdefghijk\nlmnopqrstuvwxyzABCDE\nFGHIJKLMNOPQRSTUVWXY\n@0,9\n"
-             (drive (string tall """\m{6789}\e[H""")
-                    :screen true :cursor true :cols 20 :rows 3))
-          "Home in a line taller than the terminal shows the line's start")
-  (assert (= "lmnopqrstuvwxyzABCDE\nFGHIJKLMNOPQRSTUVWXY\nZ0123456789\n@2,11\n"
-             (drive (string tall """\m{6789}\e[H\m{> abc}\e[F""")
-                    :screen true :cursor true :cols 20 :rows 3))
-          "End in a line taller than the terminal shows the line's end")
+  (task (assert (= "repl:1:> abcdefghijk\nlmnopqrstuvwxyzABCDE\nFGHIJKLMNOPQRSTUVWXY\n@0,9\n"
+                   (drive (string tall """\m{6789}\e[H""")
+                          :screen true :cursor true :cols 20 :rows 3))
+                "Home in a line taller than the terminal shows the line's start"))
+  (task (assert (= "lmnopqrstuvwxyzABCDE\nFGHIJKLMNOPQRSTUVWXY\nZ0123456789\n@2,11\n"
+                   (drive (string tall """\m{6789}\e[H\m{> abc}\e[F""")
+                          :screen true :cursor true :cols 20 :rows 3))
+                "End in a line taller than the terminal shows the line's end"))
 
   ; A task waiting in `getline` is cancelled. The loop ends the operation the
   ; task waits on, and the line is abandoned at once: `^C` is drawn and the
@@ -450,10 +477,10 @@
       (ev/sleep 0.1)
       (print "DONE")
       """)
-    (assert (= "a> ^C\nDONE\n@exit 0\n@modes echo icanon\n"
-               (drive "" :marker "a> " :screen true :exit true
-                      :args ["-e" cancel-only]))
-            "a cancelled getline restores the terminal and lets the program exit")
+    (task (assert (= "a> ^C\nDONE\n@exit 0\n@modes echo icanon\n"
+                     (drive "" :marker "a> " :screen true :exit true
+                            :args ["-e" cancel-only]))
+                  "a cancelled getline restores the terminal and lets the program exit"))
     (def cancel-then-read
       """
       (var result nil)
@@ -465,24 +492,27 @@
       (print "got " (string/trim line))
       (print result " " (fiber/status t))
       """)
-    (assert (= "a> ^C\nb> xyz\ngot xyz\nstop dead\n"
-               (drive """xyz\r""" :marker "b> " :screen true
-                      :args ["-e" cancel-then-read]))
-            "a getline after a cancelled one reads a line whole")
+    (task (assert (= "a> ^C\nb> xyz\ngot xyz\nstop dead\n"
+                     (drive """xyz\r""" :marker "b> " :screen true
+                            :args ["-e" cancel-then-read]))
+                  "a getline after a cancelled one reads a line whole"))
 
     ; A fiber that prints while a line is being edited. The timer's output is
     ; written above the line, and the line is drawn again beneath it with
     ; nothing of the output inside it. The input waits for the echo of
     ; `(+ 40` and then for `tick` before it types the rest.
-    (assert (= (string "repl:1:> (do (ev/spawn (ev/sleep 0.3) (print \"tick\")) nil)\n"
-                       "nil\n"
-                       "tick\n"
-                       "repl:2:> (+ 40 2)\n"
-                       "42\n"
-                       "repl:3:>\n")
-               (drive (string """(do (ev/spawn (ev/sleep 0.3) (print "tick")) nil)\r"""
-                              """\m{repl:2:> }(+ 40\m{(+ 40}\m{tick} 2)\r""")
-                      :screen true))
-            "output from a timer is written above the line being edited")))
+    (task (assert (= (string "repl:1:> (do (ev/spawn (ev/sleep 0.3) (print \"tick\")) nil)\n"
+                             "nil\n"
+                             "tick\n"
+                             "repl:2:> (+ 40 2)\n"
+                             "42\n"
+                             "repl:3:>\n")
+                     (drive (string """(do (ev/spawn (ev/sleep 0.3) (print "tick")) nil)\r"""
+                                    """\m{repl:2:> }(+ 40\m{(+ 40}\m{tick} 2)\r""")
+                            :screen true))
+                  "output from a timer is written above the line being edited")))
+
+  (compwhen (dyn 'ev/go-gather)
+    (run-cases)))
 
 (end-suite)
