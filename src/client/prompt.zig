@@ -175,11 +175,11 @@ var bound_collected = false;
 /// `getline` was given an environment, which makes Enter ask the parser
 /// whether the buffer is finished, and makes the line browse the history and
 /// record a submission in it. `env` is that environment where it is a table,
-/// and the line then completes and hints from it. The result is `buffer`,
-/// which is empty at end of input, or the keyword `:cancel` after Ctrl-C.
-/// The result is null when the editor is not used, and the caller then reads
-/// without it. With the event loop, the calling fiber is suspended until the
-/// line ends.
+/// and the line then completes and hints from it, and is highlighted when
+/// `*err-color*` is truthy. The result is `buffer`, which is empty at end of
+/// input, or the keyword `:cancel` after Ctrl-C. The result is null when the
+/// editor is not used, and the caller then reads without it. With the event
+/// loop, the calling fiber is suspended until the line ends.
 ///
 /// This function raises when another line is open, and when an allocation
 /// fails.

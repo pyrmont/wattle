@@ -243,10 +243,17 @@ fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Error!repr.Value {
 /// The arguments are a prompt, a buffer to fill and an environment, all
 /// optional. The buffer is truncated and then filled with one line including
 /// its newline, or left empty at end of input. On a terminal the line is read
-/// by `prompt.zig`'s editor, which also returns `:cancel` after Ctrl-C. An
-/// environment other than nil says the caller is reading source, and the
-/// editor then returns a whole form, which may be several lines. This function raises on a wrong argument type and where the editor
-/// raises, and returns the buffer.
+/// by `prompt.zig`'s editor, which also returns `:cancel` after Ctrl-C.
+///
+/// An environment other than nil says the caller is reading source. The
+/// editor then returns a whole form, which may be several lines, and the
+/// line browses and records the history. An environment that is a table also
+/// gives the line completion and hints from its bindings, and highlighting
+/// when `*err-color*` is truthy. Without an environment Enter always ends the
+/// line, and the line has none of these.
+///
+/// This function raises on a wrong argument type and where the editor raises,
+/// and returns the buffer.
 fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     try args.checkArity(@intCast(argv.len), 0, 3);
     const prompt: [*:0]const u8 = if (argv.len >= 1) try args.GetString.get(argv, 0) else "";
