@@ -539,7 +539,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     configureCModule(b, client_module, target, options, config);
-    client_module.addImport("lineedit", lineeditModule(b, target, optimize));
+    const client_lexicon = if (runtime_graph) |g| g.lexicon else lexiconModule(b, target, optimize);
+    client_module.addImport("lexicon", client_lexicon);
+    client_module.addImport("lineedit", lineeditModule(b, target, optimize, client_lexicon));
     if (runtime_graph) |g| {
         client_module.addImport("subsystems", g.subsystems);
         client_module.addImport("cabi", g.cabi);
@@ -804,7 +806,8 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
-        module.addImport("lineedit", lineeditModule(b, target, optimize));
+        module.addImport("lexicon", graph.lexicon);
+        module.addImport("lineedit", lineeditModule(b, target, optimize, graph.lexicon));
         const exe = selectBackend(b.addExecutable(.{ .name = "wattle-contract-test", .root_module = module }));
         applyLinkage(exe, options, target);
         // A contract may load the native-module fixture, and a contract that
@@ -1102,7 +1105,7 @@ pub fn build(b: *std.Build) void {
     const lineedit_tests_step = b.step("test/lineedit", "Run the line editor's in-file `test` blocks");
     var pty_tool: ?*std.Build.Step.Compile = null;
     if (!wasm) {
-        const lineedit_module = lineeditModule(b, target, optimize);
+        const lineedit_module = lineeditModule(b, target, optimize, lexiconModule(b, target, optimize));
         const lineedit_tests = selectBackend(b.addTest(.{ .name = "wattle-lineedit-test", .root_module = lineedit_module }));
         installTest(b, options, lineedit_tests);
         // Run bare for the same reason as `wattle-runtime-test`: the default
@@ -1351,12 +1354,26 @@ pub fn build(b: *std.Build) void {
 ///
 /// It imports nothing from the runtime, so it is the same module whatever the
 /// configuration. The client imports it on every target, and a client built
-/// with `lineedit` false references none of it.
-fn lineeditModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    return b.createModule(.{
+/// with `lineedit` false references none of it. `lexicon` is the `lexicon`
+/// module of the runtime graph it is compiled with, or one of its own where
+/// there is no graph.
+fn lineeditModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, lexicon: *std.Build.Module) *std.Build.Module {
+    const module = b.createModule(.{
         .root_source_file = b.path("src/client/lineedit.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    module.addImport("lexicon", lexicon);
+    return module;
+}
+
+/// The lexical tables of source, rooted at `src/lexicon.zig`.
+fn lexiconModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/lexicon.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
     });
 }
 
@@ -1546,7 +1563,8 @@ fn quickbinExecutable(
     module.addImport("repr", graph.repr);
     module.addImport("constants", graph.constants);
     module.addImport("config", graph.config);
-    module.addImport("lineedit", lineeditModule(b, target_side.target, target_side.optimize));
+    module.addImport("lexicon", graph.lexicon);
+    module.addImport("lineedit", lineeditModule(b, target_side.target, target_side.optimize, graph.lexicon));
     module.addImport("cabi", graph.cabi);
 
     // `preload.wattle` sits beside a copy of each host library, so it finds
@@ -2592,6 +2610,12 @@ const RuntimeGraph = struct {
     /// representation module does not import allocation, tables, the VM or the
     /// collector" a build error rather than a review comment.
     repr: *std.Build.Module,
+    /// The lexical tables of source, `src/lexicon.zig`. The parser and the
+    /// printer import it, and so does the line editor's module, which may
+    /// import nothing from the runtime. One instance per graph, because a
+    /// compilation with the runtime and the line editor in it may have the file
+    /// in only one module.
+    lexicon: *std.Build.Module,
 };
 
 /// Builds the graph for one configuration.
@@ -2713,6 +2737,9 @@ fn makeRuntimeGraph(
     applyFramePointer(selection_module, options, optimize);
     module.addImport("options", selection_module);
     module.addImport("config", config_module);
+    const lexicon_module = lexiconModule(b, target, optimize);
+    applyFramePointer(lexicon_module, options, optimize);
+    module.addImport("lexicon", lexicon_module);
 
     // The core image, which `core_env.zig` reads with `@embedFile`. It arrives
     // as an import rather than as a linked-in translation unit, which is what
@@ -2765,6 +2792,7 @@ fn makeRuntimeGraph(
         .constants = constants_module,
         .cabi = cabi_module,
         .repr = repr_module,
+        .lexicon = lexicon_module,
     };
 }
 

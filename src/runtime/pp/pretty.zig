@@ -38,6 +38,7 @@ const buffers = @import("../value/buffers.zig");
 const describe = @import("../pp.zig");
 const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
+const lexicon = @import("lexicon");
 const maps = @import("../value/maps.zig");
 const numscan = @import("../scan.zig");
 const order = @import("../value/helpers/order.zig");
@@ -347,9 +348,9 @@ fn backtrackNewlines(S: *const Pretty) void {
 fn containsBadChars(sym: strings.String, issym: bool) bool {
     const len = strings.head(sym).length;
     if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
-    if (!numscan.validUtf8(sym[0..@intCast(len)])) return true;
+    if (!lexicon.validUtf8(sym[0..@intCast(len)])) return true;
     for (sym[0..len]) |ch| {
-        if (!numscan.isSymbolChar(ch)) return true;
+        if (!lexicon.isSymbolChar(ch)) return true;
     }
     return false;
 }

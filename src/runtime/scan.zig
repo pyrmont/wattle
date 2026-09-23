@@ -5,9 +5,6 @@
 //! the three a `:n`, `:s` or `:u` suffix names. Each reports a string that is
 //! not a number as a null optional. `bufferDtostr` is the way back, appending
 //! a double to a buffer.
-//!
-//! `isSymbolChar` and `validUtf8` are the character classification the parser
-//! and the pretty printer share.
 
 // ==========================================================================
 // Standard library imports
@@ -67,13 +64,6 @@ const max_literal_length = 0xffff;
 /// Rejects an absurd input outright rather than auditing every exponent for
 /// overflow, matching `JANET_NUMBER_LENGTH_RIDICULOUS`.
 const ridiculous_length: i32 = 0xFFFF;
-
-/// One bit per byte value, set where that byte may appear in a symbol.
-/// `isSymbolChar` indexes it.
-const symbol_characters = [8]u32{
-    0x00000000, 0xf7ffec72, 0xc7ffffff, 0x07fffffe,
-    0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
-};
 
 // ==========================================================================
 // Types
@@ -228,11 +218,6 @@ pub fn isNumber(str: []const u8) bool {
         'u' => scanUint64(digits) != null,
         else => false,
     };
-}
-
-/// Whether `character` may appear in a symbol.
-pub fn isSymbolChar(character: u8) bool {
-    return symbol_characters[character >> 5] & (@as(u32, 1) << @intCast(character & 0x1f)) != 0;
 }
 
 /// Scans a signed 64-bit integer from `string`, or nothing where the string is
@@ -420,37 +405,6 @@ pub fn scanUint64(string: []const u8) ?u64 {
     const parsed = scanUnsigned(string) orelse return null;
     if (parsed.negative) return null;
     return parsed.value;
-}
-
-/// Whether `string` is well-formed UTF-8, rejecting an overlong encoding as
-/// well as a malformed one.
-pub fn validUtf8(string: []const u8) bool {
-    const bytes = string;
-    var index: usize = 0;
-    while (index < bytes.len) {
-        const first = bytes[index];
-        const width: usize = if (first < 0x80)
-            1
-        else if (first >> 5 == 0x06)
-            2
-        else if (first >> 4 == 0x0e)
-            3
-        else if (first >> 3 == 0x1e)
-            4
-        else
-            return false;
-
-        const next = index + width;
-        if (next > bytes.len) return false;
-        for (bytes[index + 1 .. next]) |continuation| {
-            if (continuation >> 6 != 2) return false;
-        }
-        if (width == 2 and first < 0xc2) return false;
-        if (first == 0xe0 and bytes[index + 1] < 0xa0) return false;
-        if (first == 0xf0 and bytes[index + 1] < 0x90) return false;
-        index = next;
-    }
-    return true;
 }
 
 // ==========================================================================

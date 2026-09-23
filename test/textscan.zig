@@ -1,5 +1,5 @@
 //! Behavioral contract for the two text predicates the parser reaches:
-//! `validUtf8` and `isSymbolChar`.
+//! `validUtf8` and `isSymbolChar`, in `src/lexicon.zig`.
 //!
 //! Both are reached from the parser rather than from Janet, and the inputs
 //! that matter are exactly the ones no Janet program can give them: a source
@@ -23,18 +23,18 @@
 // ==========================================================================
 
 const expect = @import("expect.zig").expect;
-const scan = @import("subsystems").scan;
+const lexicon = @import("lexicon");
 
 // ==========================================================================
 // Cases
 // ==========================================================================
 
 fn valid(bytes: []const u8) bool {
-    return scan.validUtf8(bytes);
+    return lexicon.validUtf8(bytes);
 }
 
 fn symbolChar(byte: u8) bool {
-    return scan.isSymbolChar(byte);
+    return lexicon.isSymbolChar(byte);
 }
 
 fn theWellFormedEncodings() void {

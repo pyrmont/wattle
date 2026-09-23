@@ -6,15 +6,15 @@
 //!
 //! ## A second description of the syntax
 //!
-//! `src/runtime/parser.zig` is the first description of the lexical syntax
-//! and this file is the second. The parser stops at its first error, and a
-//! buffer being typed has to be classified to its end, so the classifier
-//! cannot be the parser. What it takes from the runtime is given to it in a
-//! `Lexicon`: which bytes are symbol bytes, which tokens are numbers, which
-//! are special forms and which are bound. What it copies is the whitespace set with the comma,
-//! the escapes, the hex digits, the UTF-8 check, dispatch, the `!` lookahead,
-//! the run of quotes and the adjacency of a prefix. `test/highlight.zig`
-//! compares the classifier with the parser.
+//! `src/runtime/parser.zig` is the first description of the grammar and this
+//! file is the second. The parser stops at its first error, and a buffer
+//! being typed has to be classified to its end, so the classifier cannot be
+//! the parser. The two share the tables in `src/lexicon.zig`: the whitespace
+//! and symbol bytes, the escapes, the hex digits and the UTF-8 check. The
+//! runtime gives the classifier `Predicates`: which tokens are numbers, which
+//! are special forms and which are bound. What the classifier describes again
+//! is dispatch, the `!` lookahead, the run of quotes and the adjacency of a
+//! prefix. `test/highlight.zig` compares the classifier with the parser.
 //!
 //! ## Errors
 //!
@@ -39,7 +39,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
-const complete = @import("complete.zig");
+const lexicon = @import("lexicon");
 
 // ==========================================================================
 // Constants
@@ -55,18 +55,18 @@ const depth_limit = 256;
 
 /// Returns whether the symbol `token` is bound.
 ///
-/// `Lexicon` has a `Bound`.
+/// `Predicates` has a `Bound`.
 pub const Bound = *const fn (token: []const u8) bool;
 
 /// Returns whether `token` is a number.
 ///
-/// `Lexicon` has a `Number`. `token` is a run of symbol bytes that begins
+/// `Predicates` has a `Number`. `token` is a run of symbol bytes that begins
 /// with a digit, `-`, `+` or `.`.
 pub const Number = *const fn (token: []const u8) bool;
 
 /// Returns whether `token` is the name of a special form.
 ///
-/// `Lexicon` has a `Special`.
+/// `Predicates` has a `Special`.
 pub const Special = *const fn (token: []const u8) bool;
 
 // ==========================================================================
@@ -92,13 +92,12 @@ pub const Class = enum(u8) {
     @"error",
 };
 
-/// The functions the classifier takes from the runtime.
+/// The tests of a token the classifier takes from the runtime.
 ///
-/// `classify` takes a `Lexicon`. `symbol` reports which bytes a token has,
-/// `number` which tokens are numbers, `special` which are special forms, and
-/// `bound` which symbols are bound, or null for none.
-pub const Lexicon = struct {
-    symbol: complete.Symbol,
+/// `classify` takes a `Predicates`. `number` reports which tokens are
+/// numbers, `special` which are special forms, and `bound` which symbols are
+/// bound, or null for none.
+pub const Predicates = struct {
     number: Number,
     special: Special,
     bound: ?Bound = null,
@@ -113,7 +112,7 @@ pub const Lexicon = struct {
 const Scanner = struct {
     text: []const u8,
     classes: []Class,
-    lexicon: Lexicon,
+    predicates: Predicates,
     at: usize = 0,
     closers: [depth_limit]u8 = undefined,
     depth: usize = 0,
@@ -130,7 +129,6 @@ const Scanner = struct {
                     s.pending = null;
                     s.at += 1;
                 },
-                ' ', '\t', 0, 11, 12, ',' => s.at += 1,
                 '\'', '`', '~', '|' => {
                     if (s.pending == null) s.pending = s.at;
                     s.at += 1;
@@ -149,7 +147,11 @@ const Scanner = struct {
                 '{' => s.open('}', 1),
                 ')', ']', '}' => s.close(c),
                 else => {
-                    if (!s.lexicon.symbol(c)) {
+                    if (lexicon.isWhitespace(c)) {
+                        s.at += 1;
+                        continue;
+                    }
+                    if (!lexicon.isSymbolChar(c)) {
                         s.refuse();
                         continue;
                     }
@@ -219,7 +221,7 @@ const Scanner = struct {
             else => {
                 // A word tag is refused, and the word is classed with the `#`.
                 var end = start + 1;
-                while (end < s.text.len and s.lexicon.symbol(s.text[end])) end += 1;
+                while (end < s.text.len and lexicon.isSymbolChar(s.text[end])) end += 1;
                 s.paint(start, @max(end, start + 1), .@"error");
                 s.at = @max(end, start + 1);
             },
@@ -251,8 +253,8 @@ const Scanner = struct {
     /// read from `from`, and returns the offset after it.
     fn token(s: *Scanner, start: usize, from: usize) usize {
         var end = from;
-        while (end < s.text.len and s.lexicon.symbol(s.text[end])) end += 1;
-        var class = tokenClass(s.text[start..end], s.lexicon);
+        while (end < s.text.len and lexicon.isSymbolChar(s.text[end])) end += 1;
+        var class = tokenClass(s.text[start..end], s.predicates);
         // The parser checks a token when a byte after it ends it.
         if (class == .@"error" and end == s.text.len) class = if (s.text[start] == ':') .keyword else .plain;
         s.paint(start, end, class);
@@ -304,20 +306,16 @@ const Scanner = struct {
         s.paint(start, @min(start + 2, len), .string);
         if (start + 1 >= len) return len;
         const letter = s.text[start + 1];
-        const digits: usize = switch (letter) {
-            'x' => 2,
-            'u' => 4,
-            'U' => 6,
-            'n', 't', 'r', '0', 'z', 'f', 'v', 'a', 'b', '\'', '?', 'e', '"', '\\' => return start + 2,
-            '\n', '\r' => {
-                // The newline is left to end the string.
-                s.paint(start, start + 1, .@"error");
-                return start + 1;
-            },
-            else => {
-                s.paint(start, start + 2, .@"error");
-                return start + 2;
-            },
+        const escaped = lexicon.escape(letter) orelse {
+            // A newline after the backslash is left to end the string.
+            const newline = letter == '\n' or letter == '\r';
+            const end = if (newline) start + 1 else start + 2;
+            s.paint(start, end, .@"error");
+            return end;
+        };
+        const digits = switch (escaped) {
+            .byte => return start + 2,
+            .digits => |count| count,
         };
         var codepoint: u32 = 0;
         var k = start + 2;
@@ -326,7 +324,7 @@ const Scanner = struct {
                 s.paint(start, len, .string);
                 return len;
             }
-            const digit = std.fmt.charToDigit(s.text[k], 16) catch {
+            const digit = lexicon.hexDigit(s.text[k]) orelse {
                 const newline = s.text[k] == '\n' or s.text[k] == '\r';
                 const end = if (newline) k else k + 1;
                 s.paint(start, end, .@"error");
@@ -334,7 +332,7 @@ const Scanner = struct {
             };
             codepoint = codepoint * 16 + digit;
         }
-        const class: Class = if (letter == 'U' and codepoint > 0x10ffff) .@"error" else .string;
+        const class: Class = if (codepoint > lexicon.max_codepoint) .@"error" else .string;
         s.paint(start, k, class);
         return k;
     }
@@ -375,13 +373,12 @@ const Scanner = struct {
 
 /// Writes the class of each byte of `text` to `classes`.
 ///
-/// `classes` has the length of `text`. `lexicon` reports which bytes are
-/// symbol bytes and which tokens are numbers and special forms. This
-/// function cannot fail.
-pub fn classify(text: []const u8, classes: []Class, lexicon: Lexicon) void {
+/// `classes` has the length of `text`. `predicates` reports which tokens are
+/// numbers, special forms and bound symbols. This function cannot fail.
+pub fn classify(text: []const u8, classes: []Class, predicates: Predicates) void {
     std.debug.assert(classes.len == text.len);
     @memset(classes, .plain);
-    var scanner: Scanner = .{ .text = text, .classes = classes, .lexicon = lexicon };
+    var scanner: Scanner = .{ .text = text, .classes = classes, .predicates = predicates };
     scanner.scan();
 }
 
@@ -393,58 +390,23 @@ pub fn classify(text: []const u8, classes: []Class, lexicon: Lexicon) void {
 ///
 /// The order is the parser's: a keyword, a number, `nil`, `true` or `false`,
 /// and otherwise a symbol, which may not begin with a digit.
-fn tokenClass(text: []const u8, lexicon: Lexicon) Class {
+fn tokenClass(text: []const u8, predicates: Predicates) Class {
     const first = text[0];
-    if (first == ':') return if (validUtf8(text[1..])) .keyword else .@"error";
+    if (first == ':') return if (lexicon.validUtf8(text[1..])) .keyword else .@"error";
     const digit = first >= '0' and first <= '9';
-    if ((digit or first == '-' or first == '+' or first == '.') and lexicon.number(text)) return .number;
+    if ((digit or first == '-' or first == '+' or first == '.') and predicates.number(text)) return .number;
     if (std.mem.eql(u8, text, "nil") or std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) return .constant;
-    if (digit or !validUtf8(text)) return .@"error";
-    if (lexicon.special(text)) return .special;
-    if (lexicon.bound) |bound| {
+    if (digit or !lexicon.validUtf8(text)) return .@"error";
+    if (predicates.special(text)) return .special;
+    if (predicates.bound) |bound| {
         if (bound(text)) return .bound;
     }
     return .plain;
 }
 
-/// Returns whether `text` is UTF-8 as the parser checks it: well-formed, with
-/// no overlong encoding of two, three or four bytes.
-fn validUtf8(text: []const u8) bool {
-    var i: usize = 0;
-    while (i < text.len) {
-        const first = text[i];
-        const width: usize = if (first < 0x80)
-            1
-        else if (first >> 5 == 0x06)
-            2
-        else if (first >> 4 == 0x0e)
-            3
-        else if (first >> 3 == 0x1e)
-            4
-        else
-            return false;
-        if (i + width > text.len) return false;
-        for (text[i + 1 .. i + width]) |continuation| {
-            if (continuation >> 6 != 2) return false;
-        }
-        if (width == 2 and first < 0xc2) return false;
-        if (first == 0xe0 and text[i + 1] < 0xa0) return false;
-        if (first == 0xf0 and text[i + 1] < 0x90) return false;
-        i += width;
-    }
-    return true;
-}
-
 // ==========================================================================
 // Tests
 // ==========================================================================
-
-/// The symbol bytes of the tests: the parser's set.
-fn testSymbol(byte: u8) bool {
-    if (byte >= 0x80) return true;
-    if (std.ascii.isAlphanumeric(byte)) return true;
-    return std.mem.indexOfScalar(u8, "!$%&*+-./:<=>?@^_", byte) != null;
-}
 
 /// The numbers of the tests: a sign or none, then digits with at most one
 /// `.`, and at least one digit.
@@ -473,7 +435,7 @@ fn testSpecial(token: []const u8) bool {
     return std.mem.eql(u8, token, "def") or std.mem.eql(u8, token, "fn") or std.mem.eql(u8, token, "if");
 }
 
-const test_lexicon: Lexicon = .{ .symbol = &testSymbol, .number = &testNumber, .special = &testSpecial, .bound = &testBound };
+const test_predicates: Predicates = .{ .number = &testNumber, .special = &testSpecial, .bound = &testBound };
 
 /// Checks the classes of `text` against `expected`, one letter for each byte:
 /// `.` plain, `c` comment, `s` string, `n` number, `k` keyword, `o`
@@ -481,7 +443,7 @@ const test_lexicon: Lexicon = .{ .symbol = &testSymbol, .number = &testNumber, .
 fn expectClasses(text: []const u8, expected: []const u8) !void {
     try std.testing.expectEqual(text.len, expected.len);
     var classes: [256]Class = undefined;
-    classify(text, classes[0..text.len], test_lexicon);
+    classify(text, classes[0..text.len], test_predicates);
     var got: [256]u8 = undefined;
     for (classes[0..text.len], 0..) |class, i| {
         got[i] = switch (class) {
@@ -563,6 +525,6 @@ test "classify: a closing delimiter beyond the depth limit is not checked" {
     @memset(text[0 .. depth_limit + 1], '(');
     text[depth_limit + 1] = ']';
     var classes: [depth_limit + 2]Class = undefined;
-    classify(&text, &classes, test_lexicon);
+    classify(&text, &classes, test_predicates);
     try std.testing.expectEqual(Class.plain, classes[depth_limit + 1]);
 }

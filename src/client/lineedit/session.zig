@@ -53,9 +53,9 @@
 //!
 //! ## Highlighting
 //!
-//! With its `symbol`, `number` and `special` functions, each frame draws the
-//! buffer in the classes `highlight.classify` gives it, the frame at the end
-//! of a line included, so the line keeps its colours on the screen.
+//! With its `number` and `special` functions, each frame draws the buffer in
+//! the classes `highlight.classify` gives it, the frame at the end of a line
+//! included, so the line keeps its colours on the screen.
 //!
 //! ## Bracketed paste
 //!
@@ -112,7 +112,7 @@ pub const End = enum { submit, eof, cancel };
 /// hint. `number` and `special` report which tokens are numbers and special
 /// forms, and `bound` which symbols are bound. Tab completes only with
 /// `symbol` and `gather`, a frame draws a hint only with `symbol` and `hint`,
-/// and a frame is highlighted only with `symbol`, `number` and `special`.
+/// and a frame is highlighted only with `number` and `special`.
 pub const Source = struct {
     finished: ?editor_mod.Finished = null,
     symbol: ?complete.Symbol = null,
@@ -305,15 +305,14 @@ pub const Session = struct {
     /// `error.OutOfMemory` when the classes cannot be allocated.
     fn classify(session: *Session) error{OutOfMemory}![]const highlight.Class {
         const source = session.source orelse return &.{};
-        const lexicon: highlight.Lexicon = .{
-            .symbol = source.symbol orelse return &.{},
+        const predicates: highlight.Predicates = .{
             .number = source.number orelse return &.{},
             .special = source.special orelse return &.{},
             .bound = source.bound,
         };
         const text = session.editor.buffer.items;
         try session.classes.resize(session.allocator, text.len);
-        highlight.classify(text, session.classes.items, lexicon);
+        highlight.classify(text, session.classes.items, predicates);
         return session.classes.items;
     }
 

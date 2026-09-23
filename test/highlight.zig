@@ -1,9 +1,10 @@
 //! The contract between the line editor's classifier and the parser.
 //!
-//! `lineedit/highlight.zig` is a second description of the lexical syntax,
-//! and `runtime/parser.zig` is the first. This contract compares the two. It
-//! reads the tree's `.wattle` files from the working directory, which is the
-//! repository's root when `build.zig` or a developer runs the driver.
+//! `lineedit/highlight.zig` is a second description of the grammar, and
+//! `runtime/parser.zig` is the first. The two share the tables in
+//! `src/lexicon.zig`, and this contract compares what each builds on them.
+//! It reads the tree's `.wattle` files from the working directory, which is
+//! the repository's root when `build.zig` or a developer runs the driver.
 //!
 //! ## The rule
 //!
@@ -17,7 +18,7 @@
 //! The rule holds in one direction only: the parser also refuses a map with
 //! an odd number of forms, and the classifier does not check the count. The
 //! other direction is checked case by case, over one source for each lexical
-//! refusal the classifier copies.
+//! refusal the classifier describes.
 
 // ==========================================================================
 // Standard library imports
@@ -72,8 +73,7 @@ fn special(token: []const u8) bool {
     return false;
 }
 
-const lexicon: highlight.Lexicon = .{
-    .symbol = &scan.isSymbolChar,
+const predicates: highlight.Predicates = .{
     .number = &scan.isNumber,
     .special = &special,
 };
@@ -84,7 +84,7 @@ var classes: [buffer_limit]highlight.Class = undefined;
 /// an error, or null for none.
 fn firstError(text: []const u8) ?usize {
     const found = classes[0..text.len];
-    highlight.classify(text, found, lexicon);
+    highlight.classify(text, found, predicates);
     return std.mem.indexOfScalar(highlight.Class, found, .@"error");
 }
 

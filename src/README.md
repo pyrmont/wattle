@@ -12,7 +12,7 @@ change must pass before it is accepted.
 
 ## Overview
 
-`src/` is 99 `.zig` files and four hand-written headers. There is no C
+`src/` is 109 `.zig` files and four hand-written headers. There is no C
 implementation to select and no upstream Janet C to call. Any C that a Zig
 file reaches is libc's, through one of seven `@cImport` blocks. "No C in the
 tree" and "no libc" are different claims, and only the first is a goal.
@@ -54,15 +54,23 @@ The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
 
 Thirteen of the sixteen files in `src/client/` are the REPL's line editor.
-`src/client/lineedit.zig` and the ten files under `src/client/lineedit/`
-are a module named `lineedit`, which imports nothing from the runtime and
-never reads or writes the terminal: it takes the bytes a terminal sends and
-returns the bytes to draw. The client, the `test/lineedit` step and
+`src/client/lineedit.zig` and the ten files under `src/client/lineedit/` are a
+module named `lineedit`, which imports nothing from the runtime and never reads
+or writes the terminal: it takes the bytes a terminal sends and returns the
+bytes to draw. The client, the `test/lineedit` step, the contract driver and
 `res/tools/layout.zig` import it. `src/client/terminal.zig` is the terminal
 itself, raw mode and the reads and writes, for POSIX and the Windows console.
-`src/client/prompt.zig` connects the two to the runtime: `getline` reads
-through the editor when standard input and standard error are a terminal, and
-through the plain reader otherwise.
+`src/client/prompt.zig` connects the two to the runtime: `getline` reads through
+the editor when standard input and standard error are a terminal, and through
+the plain reader otherwise.
+
+The line editor's classifier, `lineedit/highlight.zig`, gives each byte of a
+line the class it is drawn in, and is a second description of the grammar
+`runtime/parser.zig` reads. The two share the lexical tables in
+`src/lexicon.zig`. Each describes dispatch, the `!` lookahead, the run of
+quotes and the adjacency of a prefix on its own, so a change to that grammar
+in the parser is made in the classifier too. `test/highlight.zig` is the
+contract between them.
 
 `-Dlineedit`, on by default and off on wasm, selects the editor. It is
 independent of `-Dev`. With the event loop the editor waits on the loop for
@@ -77,12 +85,13 @@ the output above the line and draws the line again beneath it. The diversion
 is thread-local and is removed when the line ends, so a build without the
 editor, and a moment with no line open, write to the streams directly.
 
-Two files sit at `src/` itself. `src/root.zig` is the runtime's module root. It
-names every file the configuration compiles and reaches all three directories.
-`src/module.zig` is the root of the author package, and is the only name an
-author writes: a module imports `wattle` and nothing else. Zig limits a module's
-relative imports to the directory of its root file, so both roots sit above the
-directories they reach.
+Three files sit at `src/` itself. `src/root.zig` is the runtime's module root.
+It names every file the configuration compiles and reaches all three
+directories. `src/module.zig` is the root of the author package, and is the only
+name an author writes: a module imports `wattle` and nothing else. Zig limits a
+module's relative imports to the directory of its root file, so both roots sit
+above the directories they reach. `src/lexicon.zig` is the lexical tables of
+source, a module of its own that the runtime and the line editor both import.
 
 `src/api/` is what a module author reads: `abstract_type.zig`, `abi.zig`,
 `constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and `repr.zig`.
@@ -143,7 +152,7 @@ translations.
 import list is everything it can reach, so the compiler enforces the direction:
 
 ```
-config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
+config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  root
 ```
 
 - `config` is the build's settings, as comptime values. A module build gets a
@@ -170,6 +179,11 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root
   `constants`.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only
   reader.
+- `lexicon` is the lexical tables of source: the whitespace and symbol bytes,
+  the escapes, the hex digits and the UTF-8 check. It imports nothing. `root`
+  imports it, and so does the line editor's module, which may import nothing
+  from the runtime. A compilation with both in it has one `lexicon`, because
+  a file may belong to only one module in a compilation.
 - `root` is the runtime. Everything else is a file of it, including
   `api/raise.zig`, `runtime/corefn.zig` and the three host-header translations.
 

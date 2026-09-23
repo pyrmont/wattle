@@ -97,6 +97,7 @@ const ev = subsystems.ev;
 const ev_stream = subsystems.ev_stream;
 const gc_alloc = subsystems.gc_alloc;
 const io = subsystems.io;
+const lexicon = @import("lexicon");
 const lineedit = @import("lineedit");
 const parser = subsystems.parser;
 const raise = subsystems.raise;
@@ -195,7 +196,7 @@ pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool, env: ?*ta
     if (env) |table| {
         gc_alloc.gcroot(wrap.fromTable(table));
         source_env = table;
-        functions.?.symbol = &scan.isSymbolChar;
+        functions.?.symbol = &lexicon.isSymbolChar;
         functions.?.gather = &gather;
         functions.?.hint = &hint;
         if (repr.truthy(vm_state.dyn("err-color"))) {

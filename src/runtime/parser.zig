@@ -35,6 +35,7 @@ const fatal = @import("fatal.zig");
 const gc_mark = @import("gc/mark.zig");
 const maps = @import("value/maps.zig");
 const method_type = @import("method_type.zig");
+const lexicon = @import("lexicon");
 const numscan = @import("scan.zig");
 const pp_describe = @import("pp.zig");
 const pp_format = @import("pp/format.zig");
@@ -619,8 +620,8 @@ pub fn wattleRoot(
             return true;
         },
         else => {
-            if (character == ',' or isWhitespace(character)) return true;
-            if (!numscan.isSymbolChar(character)) {
+            if (lexicon.isWhitespace(character)) return true;
+            if (!lexicon.isSymbolChar(character)) {
                 parser.@"error" = "unexpected character";
                 return true;
             }
@@ -743,7 +744,7 @@ fn wattleDispatch(
             return true;
         },
         else => {
-            if (numscan.isSymbolChar(character)) {
+            if (lexicon.isSymbolChar(character)) {
                 parser.@"error" = "word tags are not implemented";
                 return true;
             }
@@ -851,7 +852,7 @@ pub fn parserTokenchar(
     state: *ParseState,
     character: u8,
 ) raise.Error!bool {
-    if (numscan.isSymbolChar(character)) {
+    if (lexicon.isSymbolChar(character)) {
         parserPushBuf(parser, character);
         if (character > 127) state.argn = 1;
         return true;
@@ -865,7 +866,7 @@ pub fn parserTokenchar(
     var parsed_number = false;
 
     if (parser.buf.items[0] == ':') {
-        if (state.argn != 0 and !numscan.validUtf8(parser.buf.items[1..@intCast(length)])) {
+        if (state.argn != 0 and !lexicon.validUtf8(parser.buf.items[1..@intCast(length)])) {
             parser.@"error" = "invalid utf-8 in keyword";
             return false;
         }
@@ -897,7 +898,7 @@ pub fn parserTokenchar(
                     parser.@"error" = "symbol literal cannot start with a digit";
                     return false;
                 }
-                if (state.argn != 0 and !numscan.validUtf8(parser.buf.items[0..@intCast(length)])) {
+                if (state.argn != 0 and !lexicon.validUtf8(parser.buf.items[0..@intCast(length)])) {
                     parser.@"error" = "invalid utf-8 in symbol";
                     return false;
                 }
@@ -1108,28 +1109,6 @@ fn checkDead(parser: *Parser) raise.Error!void {
     if (parser.@"error" != null) return raise.panic("parser has unchecked error, cannot consume");
 }
 
-/// The byte a simple escape stands for, 1 for the three escapes that take
-/// digits after them, or -1 where the character is no escape.
-fn checkEscape(character: u8) i32 {
-    return switch (character) {
-        'x', 'u', 'U' => 1,
-        'n' => '\n',
-        't' => '\t',
-        'r' => '\r',
-        '0', 'z' => 0,
-        'f' => 12,
-        'v' => 11,
-        'a' => 7,
-        'b' => 8,
-        '\'' => '\'',
-        '?' => '?',
-        'e' => 27,
-        '"' => '"',
-        '\\' => '\\',
-        else => -1,
-    };
-}
-
 /// Closes the top container on a `)`, `]` or `}`, or reports the delimiter as
 /// unexpected or mismatched.
 fn closeDelimiter(parser: *Parser, state: *ParseState, character: u8) raise.Error!bool {
@@ -1309,22 +1288,6 @@ fn getParser(argv: []repr.Value, n: usize) raise.Error!*Parser {
     return try args_core.getAbstract(Parser, argv, n, &parserType);
 }
 
-/// The value of a hex digit, or -1.
-fn hexDigit(character: u8) i32 {
-    if (character >= '0' and character <= '9') return character - '0';
-    if (character >= 'A' and character <= 'F') return 10 + character - 'A';
-    if (character >= 'a' and character <= 'f') return 10 + character - 'a';
-    return -1;
-}
-
-/// Whether `character` separates forms. NUL, vertical tab and form feed do.
-fn isWhitespace(character: u8) bool {
-    return switch (character) {
-        ' ', '\t', '\n', '\r', 0, 11, 12 => true,
-        else => false,
-    };
-}
-
 /// Ends the source: a newline is fed, an unclosed form becomes a delimiter
 /// error, and the parser is left dead. The line and column are put back, so
 /// `parser/where` still reports where the source ended.
@@ -1346,20 +1309,20 @@ fn parserEscape1(
     state: *ParseState,
     character: u8,
 ) raise.Error!bool {
-    const escaped = checkEscape(character);
-    if (escaped < 0) {
+    const escaped = lexicon.escape(character) orelse {
         parser.@"error" = "invalid string escape sequence";
-    } else if (character == 'x') {
-        state.counter = 2;
-        state.argn = 0;
-        state.consumer = parserEscapeHex;
-    } else if (character == 'u' or character == 'U') {
-        state.counter = if (character == 'u') 4 else 6;
-        state.argn = 0;
-        state.consumer = parserEscapeUnicode;
-    } else {
-        parserPushBuf(parser, @intCast(escaped));
-        state.consumer = wattleStringchar;
+        return true;
+    };
+    switch (escaped) {
+        .digits => |count| {
+            state.counter = count;
+            state.argn = 0;
+            state.consumer = if (character == 'x') parserEscapeHex else parserEscapeUnicode;
+        },
+        .byte => |byte| {
+            parserPushBuf(parser, byte);
+            state.consumer = wattleStringchar;
+        },
     }
     return true;
 }
@@ -1370,11 +1333,10 @@ fn parserEscapeHex(
     state: *ParseState,
     character: u8,
 ) raise.Error!bool {
-    const digit = hexDigit(character);
-    if (digit < 0) {
+    const digit = lexicon.hexDigit(character) orelse {
         parser.@"error" = "invalid hex digit in hex escape";
         return true;
-    }
+    };
     state.argn = (state.argn << 4) + digit;
     state.counter -= 1;
     if (state.counter == 0) {
@@ -1392,15 +1354,14 @@ fn parserEscapeUnicode(
     state: *ParseState,
     character: u8,
 ) raise.Error!bool {
-    const digit = hexDigit(character);
-    if (digit < 0) {
+    const digit = lexicon.hexDigit(character) orelse {
         parser.@"error" = "invalid hex digit in unicode escape";
         return true;
-    }
+    };
     state.argn = (state.argn << 4) + digit;
     state.counter -= 1;
     if (state.counter == 0) {
-        if (state.argn > 0x10ffff) {
+        if (state.argn > lexicon.max_codepoint) {
             parser.@"error" = "invalid unicode codepoint";
             return true;
         }
