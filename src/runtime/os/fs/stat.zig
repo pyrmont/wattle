@@ -16,8 +16,8 @@
 //!
 //! The six entry points here are reached by import; none is a symbol.
 //!
-//! A cfunction that decides to raise is raising, and one that makes no such
-//! decision is a plain `raise.CFunction`. Every cfunction in this file
+//! An nfunction that decides to raise is raising, and one that makes no such
+//! decision is a plain `raise.NFunction`. Every nfunction in this file
 //! decides, because every one of them reports a host failure.
 
 // ==========================================================================
@@ -153,12 +153,12 @@ pub const Field = enum(i32) {
 // ==========================================================================
 
 /// `(os/lstat path &opt tab-or-key)`.
-pub fn cfunLstat(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunLstat(argv: []repr.Value) raise.Error!repr.Value {
     return statOrLstat(true, argv);
 }
 
 /// `(os/stat path &opt tab-or-key)`.
-pub fn cfunStat(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunStat(argv: []repr.Value) raise.Error!repr.Value {
     return statOrLstat(false, argv);
 }
 
@@ -193,7 +193,7 @@ pub fn getMode(argv: []const repr.Value, n: usize) raise.Error!jmode_t {
 /// A permission argument: an integer in `[0, 8r777]` or a nine-byte `rwx`
 /// string.
 ///
-/// Reached by five cfunctions: `os/perm-int` and `os/perm-string` call this
+/// Reached by five nfunctions: `os/perm-int` and `os/perm-string` call this
 /// directly, `os/chmod` and `os/umask` through `getMode`, and `os/open`
 /// through `optMode`. The head of this file says why that is an ordinary Zig
 /// call rather than a seam.

@@ -1,5 +1,5 @@
-; An example file that errors out. Run with ./janet examples/error.janet
-; to see stack trace for runtime errors.
+; An example file that errors out. Run it with `wattle examples/error.wattle`
+; to see the stack trace of a runtime error.
 
 (defn bork [x]
 

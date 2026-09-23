@@ -267,8 +267,8 @@ The man page `wattle.1` is in the repository root. It is generated from
 ## Extending
 
 Wattle can be extended with _native modules_. The native-module interface is
-Zig. `examples/numarray/` is a worked example. A C program cannot define a
-cfunction for this runtime: a cfunction returns an error union over Zig's own
+Zig. `examples/numarray/` is a worked example. A C program cannot define an
+nfunction for this runtime: an nfunction returns an error union over Zig's own
 calling convention, so no C body can have that type and no C caller can invoke
 one. The same applies to an `AbstractType`'s callbacks. Native modules are
 therefore written in Zig.

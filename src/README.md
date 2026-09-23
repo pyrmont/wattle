@@ -109,7 +109,7 @@ imported back into it by name. That is possible, and not what the tree does.
 
 ### Inside `src/runtime/`
 
-A file exists when it has a name Wattle publishes (a type, a cfunction family or
+A file exists when it has a name Wattle publishes (a type, an nfunction family or
 a module), or because the platform differs. Everything else goes in the file
 its callers already name. Each function has one spelling. There is no facade
 layer: the file tree and the namespace are the same, so `value/tables.zig`'s
@@ -245,7 +245,7 @@ and end the watch, so a watcher that dies is something a program learns about
 rather than a channel that goes quiet.
 
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
-A cfunction is a Zig function: `raise.CFunction` takes `[]Value` and returns
+An nfunction is a Zig function: `raise.NFunction` takes `[]Value` and returns
 `raise.Error!Value` in Zig's calling convention, so `argv[n]` is bounds-checked.
 
 A caller that can propagate the error writes `try`. A caller that cannot
@@ -283,7 +283,7 @@ every call an author makes goes through that pointer. Each crossing is
 described once, and the compiler checks every field against the definition it
 names in the initializer.
 
-Every field has the same type as its definition. `cfuns_ext`, `def` and
+Every field has the same type as its definition. `nfuns_ext`, `def` and
 `buffer_push_bytes` take `abi.Env` or `abi.Render` and cast on their first line,
 as `runtime/marsh.zig`'s entry points take `abi.Marshal`.
 

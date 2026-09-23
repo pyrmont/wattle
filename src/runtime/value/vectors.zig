@@ -380,10 +380,10 @@ pub fn hash(v: *const Vector) i32 {
 /// `env` is the environment.
 pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("vector", &cfunVector, @src(), "(vector & xs)", "Create a new persistent vector containing the elements xs."),
-        corefn.reg("vec", &cfunVec, @src(), "(vec ind)", "Create a persistent vector with the elements of the indexed value `ind`. A vector is returned unchanged."),
-        corefn.reg("conj", &cfunConj, @src(), "(conj coll & xs)", "Return a new collection with the elements xs added to `coll`, a vector or a set. For a vector, the elements are added at the end."),
-        corefn.reg("assoc", &cfunAssoc, @src(), "(assoc coll key val & kvs)", "Return a new collection in which each key is associated with the value that follows it, in the vector or map `coll`. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a map, a nil value removes the key."),
+        corefn.reg("vector", &nfunVector, @src(), "(vector & xs)", "Create a new persistent vector containing the elements xs."),
+        corefn.reg("vec", &nfunVec, @src(), "(vec ind)", "Create a persistent vector with the elements of the indexed value `ind`. A vector is returned unchanged."),
+        corefn.reg("conj", &nfunConj, @src(), "(conj coll & xs)", "Return a new collection with the elements xs added to `coll`, a vector or a set. For a vector, the elements are added at the end."),
+        corefn.reg("assoc", &nfunAssoc, @src(), "(assoc coll key val & kvs)", "Return a new collection in which each key is associated with the value that follows it, in the vector or map `coll`. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a map, a nil value removes the key."),
     };
     corefn.install(env, entries);
 }
@@ -607,7 +607,7 @@ inline fn asLeaf(node: *abi.GCObject) *Leaf {
 
 /// `assoc`: for a vector, a new vector with each key's element replaced, or
 /// appended where the key is the length. A map goes to `maps.assocMap`.
-fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
     if (maps.toTree(argv[0], .map) != null) return maps.assocMap(argv);
     var v = toVector(argv[0]) orelse
@@ -623,7 +623,7 @@ fn cfunAssoc(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `conj`: for a vector, a new vector with the elements appended. A set goes
 /// to `maps.conjSet`.
-fn cfunConj(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunConj(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     if (maps.toTree(argv[0], .set) != null) return maps.conjSet(argv);
     var v = toVector(argv[0]) orelse
@@ -633,7 +633,7 @@ fn cfunConj(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `vec`: a vector of an indexed value's elements.
-fn cfunVec(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunVec(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], .vector)) return argv[0];
     // Gathered rather than read a run at a time, because building allocates
@@ -645,7 +645,7 @@ fn cfunVec(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `vector`: a vector of the arguments.
-fn cfunVector(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunVector(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromVector(fromSlice(argv));
 }
 

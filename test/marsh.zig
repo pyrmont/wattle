@@ -1,21 +1,21 @@
 //! Behavioral contract for the marshalling protocol.
 //!
 //! The reason this file exists rather than leaning on `test/suite-marsh.wattle`:
-//! the suite reaches `marshal` and `unmarshal`, and those two cfunctions use a
+//! the suite reaches `marshal` and `unmarshal`, and those two nfunctions use a
 //! strict subset of the subsystem. Everything below is either unreachable from
 //! Janet or unobservable there.
 //!
-//!  - `marshal_unsafe` has no Janet spelling. `cfun_marshal` never sets
-//!    it and `cfun_unmarshal` passes a hard zero, so five of the twenty-nine
+//!  - `marshal_unsafe` has no Janet spelling. `nfunMarshal` never sets
+//!    it and `nfunUnmarshal` passes a hard zero, so five of the twenty-nine
 //!    lead bytes are reachable only from a caller inside the runtime:
-//!    pointers, cfunctions, pointer-backed buffers and threaded abstracts.
+//!    pointers, nfunctions, pointer-backed buffers and threaded abstracts.
 //!  - The twenty-function marshal context API is called from an abstract
 //!    type's `marshal` and `unmarshal` callbacks and from nowhere else. The
 //!    core types that have such callbacks exercise four of the twenty between
 //!    them.
 //!  - `marsh.envLookupInto`'s `prefix` and `recurse` parameters are both
 //!    fixed by `marsh.envLookup`, which is what `env-lookup` calls.
-//!  - `unmarshal`'s `next` out-parameter is dropped by `cfun_unmarshal`.
+//!  - `unmarshal`'s `next` out-parameter is dropped by `nfunUnmarshal`.
 //!
 //! The wire format is the other reason. A marshalled stream is a file format,
 //! so its bytes are the contract rather than an implementation detail, and the
@@ -79,7 +79,7 @@ const lb_funcdef_ref: u8 = 220;
 const lb_funcenv_ref: u8 = 219;
 const lb_real: u8 = 200;
 const lb_symbol: u8 = 207;
-const lb_unsafe_cfunction: u8 = 221;
+const lb_unsafe_nfunction: u8 = 221;
 const lb_unsafe_pointer: u8 = 222;
 
 /// The seven weak-container lead bytes are 226 through 232, and they are that
@@ -490,21 +490,21 @@ fn theUnsafeGateOnTheContextApi() raise.Error!void {
     ).?.says("size_t too large to fit in buffer"));
 }
 
-/// A cfunction that exists to be a value with an address.
-fn aCfunction(argv: []repr.Value) raise.Error!repr.Value {
+/// An nfunction that exists to be a value with an address.
+fn aNfunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return harness.wrapInteger(1729);
 }
 
-fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Error!void {
+fn pointersAndNfunctionsNeedTheUnsafeFlag() raise.Error!void {
     const ptr = wrap.fromPointer(@ptrCast(@constCast(stored(&probe_at))));
-    const cfun = wrap.fromCfunction(raise.stored(&aCfunction));
+    const nfun = wrap.fromNfunction(raise.stored(&aNfunction));
 
     expect(harness.raised(marshalled, .{ ptr, @as(?*tables.Table, null), @as(c_int, 0) }).?
         .beginsWith("no registry value and cannot marshal <pointer 0x"));
-    expect(harness.raised(marshalled, .{ cfun, @as(?*tables.Table, null), @as(c_int, 0) }).?
-        .beginsWith("no registry value and cannot marshal <cfunction 0x"));
+    expect(harness.raised(marshalled, .{ nfun, @as(?*tables.Table, null), @as(c_int, 0) }).?
+        .beginsWith("no registry value and cannot marshal <nfunction 0x"));
 
     var b = try marshalled(ptr, null, constants.marshal_unsafe);
     expect(b.slice()[0] == lb_unsafe_pointer);
@@ -514,10 +514,10 @@ fn pointersAndCfunctionsNeedTheUnsafeFlag() raise.Error!void {
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal raw pointer at index 1"));
 
-    b = try marshalled(cfun, null, constants.marshal_unsafe);
-    expect(b.slice()[0] == lb_unsafe_cfunction);
+    b = try marshalled(nfun, null, constants.marshal_unsafe);
+    expect(b.slice()[0] == lb_unsafe_nfunction);
     const back = try unmarshalled(b, constants.marshal_unsafe);
-    expect(wrap.toCfunction(back) == raise.stored(&aCfunction));
+    expect(wrap.toNfunction(back) == raise.stored(&aNfunction));
     expect(harness.raised(unmarshalled, .{ b, @as(c_int, 0) }).?
         .says("unsafe flag not given, will not unmarshal function pointer at index 1"));
 }
@@ -822,7 +822,7 @@ fn aLiveFiberCannotBeMarshalled() raise.Error!void {
         .says("invalid fiber status"));
 }
 
-/// `cfun_unmarshal` drops the out-parameter, so this is the only caller that
+/// `nfunUnmarshal` drops the out-parameter, so this is the only caller that
 /// can see where a value ended, which is what makes a stream of concatenated
 /// values readable at all.
 fn nextPointsPastTheValue() raise.Error!void {
@@ -865,7 +865,7 @@ fn body() raise.Error!void {
     try anAbstractCanContainItself();
     try theAbstractProtocolIsEnforced();
     try theUnsafeGateOnTheContextApi();
-    try pointersAndCfunctionsNeedTheUnsafeFlag();
+    try pointersAndNfunctionsNeedTheUnsafeFlag();
     try theWeakLeadBytesAreTheSameInEveryConfiguration();
     try whenAValueBecomesAReference();
     aReferenceIndexIsBoundsChecked();

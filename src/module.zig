@@ -113,8 +113,8 @@
 //!
 //! Garbage collection runs at the interpreter's safe points: between
 //! instructions, and in the `gccollect` builtin. Allocating does not trigger
-//! collection so a value a cfunction builds is safe for as long as that
-//! cfunction's frame is live.
+//! collection so a value an nfunction builds is safe for as long as that
+//! nfunction's frame is live.
 //!
 //! Re-entering Janet code stops this being true. Three functions callable by a
 //! module author may re-enter: `call`, `mcall` and `pcall`. Four rules apply
@@ -166,7 +166,7 @@ const repr = @import("repr");
 // Constants
 // ==========================================================================
 
-/// The most rows `cfuns`, `getMethod` and `nextMethod` accept in one table.
+/// The most rows `nfuns`, `getMethod` and `nextMethod` accept in one table.
 pub const max_table_rows = 128;
 
 /// Raises an error with a string as its message. See `panicFormat` for a
@@ -222,8 +222,8 @@ pub const Marshal = abi.Marshal;
 /// ```
 pub const Range = abi.Range;
 
-/// One registration row: a name, a cfunction and three pieces of metadata.
-/// `reg` returns a `Reg` and `cfuns` takes a table of `Reg`.
+/// One registration row: a name, an nfunction and three pieces of metadata.
+/// `reg` returns a `Reg` and `nfuns` takes a table of `Reg`.
 pub const Reg = abi.Reg;
 
 /// The capability to append bytes to the buffer a value is being rendered
@@ -260,12 +260,12 @@ pub const Wake = abi.Wake;
 /// this file apply.
 pub const Called = struct { signal: Signal, value: Value, fiber: Value };
 
-/// The type of a cfunction.
+/// The type of an nfunction.
 ///
-/// A cfunction takes its arguments as one slice and returns a `Value` or
+/// An nfunction takes its arguments as one slice and returns a `Value` or
 /// raises. `reg` takes a function of this type; a function of any other shape
 /// is a compile error.
-pub const CFunction = *const fn ([]Value) Error!Value;
+pub const NFunction = *const fn ([]Value) Error!Value;
 
 /// The return type of an abstract type's `chunk` callback.
 ///
@@ -456,18 +456,18 @@ pub const Indexed = struct {
     }
 };
 
-/// One row of a method table: a name and a cfunction that raises.
+/// One row of a method table: a name and an nfunction that raises.
 ///
 /// `getMethod` and `nextMethod` take a slice of `Method`. `name` is the
-/// method's name without its colon, and `cfun` is a pointer to a cfunction of
-/// the shape `CFunction` describes. A row is written:
+/// method's name without its colon, and `nfun` is a pointer to an nfunction of
+/// the shape `NFunction` describes. A row is written:
 ///
 /// ```zig
-/// .{ .name = "scale", .cfun = &scale }
+/// .{ .name = "scale", .nfun = &scale }
 /// ```
 pub const Method = extern struct {
     name: ?[*:0]const u8 = null,
-    cfun: ?CFunction = null,
+    nfun: ?NFunction = null,
 };
 
 /// The callback that `post` queues for the loop thread.
@@ -627,10 +627,10 @@ pub fn arrayPush(v: Value, x: Value) Error!void {
 
 /// Suspends the fiber running this function.
 ///
-/// The suspension is a raise with the event signal, so a cfunction ends
+/// The suspension is a raise with the event signal, so an nfunction ends
 /// with `return wattle.await()`. Whatever will wake the fiber, usually a worker
 /// thread, should be started first. This does not cause a race: the loop is
-/// single-threaded, so a `post` made before the cfunction returns is not
+/// single-threaded, so a `post` made before the nfunction returns is not
 /// processed until the fiber has suspended.
 pub fn await() Error {
     return raise.signal(.event, nil());
@@ -662,8 +662,8 @@ pub fn bytesView(v: Value) ?[]const u8 {
 
 /// Calls `f` with `args` on the Janet VM.
 ///
-/// `f` is a function or a cfunction. Any other value raises "expected
-/// function or cfunction, got x". A method call on a keyword is `mcall`.
+/// `f` is a function or an nfunction. Any other value raises "expected
+/// function or nfunction, got x". A method call on a keyword is `mcall`.
 ///
 /// This function raises on anything but a return. An error from Janet code
 /// arrives as `Error.Signal` with the error's payload. A yield or a
@@ -679,14 +679,14 @@ pub fn call(f: Value, args: []const Value) Error!Value {
     return fromAbi(interface.rt.call_value(f, args.ptr, args.len));
 }
 
-/// Installs a table of cfunctions into an environment.
+/// Installs a table of nfunctions into an environment.
 ///
 /// `env` is the environment passed to the module's `defs` function. The
-/// `native` cfunction either creates it or takes it from the second argument
+/// `native` nfunction either creates it or takes it from the second argument
 /// of `(native path env)`, then passes it to `_wattle_init`.
-pub fn cfuns(env: *Env, prefix: ?[*:0]const u8, regs: []const Reg) void {
+pub fn nfuns(env: *Env, prefix: ?[*:0]const u8, regs: []const Reg) void {
     const terminated = terminate(Reg, regs);
-    interface.rt.cfuns_ext(env, prefix, @ptrCast(&terminated));
+    interface.rt.nfuns_ext(env, prefix, @ptrCast(&terminated));
 }
 
 /// Wraps a NUL-terminated slice of `u8` as a string.
@@ -1038,9 +1038,9 @@ pub fn isBuffer(v: Value) bool {
     return checkTag(v, .buffer);
 }
 
-/// Returns whether a wrapped value is a cfunction.
-pub fn isCFunction(v: Value) bool {
-    return checkTag(v, .cfunction);
+/// Returns whether a wrapped value is an nfunction.
+pub fn isNFunction(v: Value) bool {
+    return checkTag(v, .nfunction);
 }
 
 /// Returns whether a wrapped value is a function.
@@ -1145,7 +1145,7 @@ pub fn length(v: Value) Error!usize {
     return @intCast(try fromAbi(interface.rt.length(v)));
 }
 
-/// Returns the event loop on which a cfunction is running.
+/// Returns the event loop on which an nfunction is running.
 ///
 /// The result may be used from any thread. It is valid until the VM that
 /// provided the result shuts down, and a `post` after that point reads state
@@ -1256,7 +1256,7 @@ pub fn panicFormat(comptime fmt: []const u8, args: anytype) Error {
 /// seen by the caller. `call` runs on the caller's fiber and shares its
 /// bindings.
 ///
-/// `f` is a function, because a fiber runs nothing else. A cfunction, a
+/// `f` is a function, because a fiber runs nothing else. An nfunction, a
 /// keyword or any other value is reported as `.error` with the message
 /// "expected function, got <type>" and a nil `.fiber`.
 ///
@@ -1464,13 +1464,13 @@ pub fn put(d: Value, key: Value, x: Value) Error!void {
 
 /// Builds one registration row.
 ///
-/// `cfun` must be of type `fn (argv: []Value) Error!Value`. A function of any
+/// `nfun` must be of type `fn (argv: []Value) Error!Value`. A function of any
 /// other shape is a compile error describing what is wrong with it.
-pub fn reg(comptime name: [:0]const u8, cfun: anytype, comptime doc: ?[:0]const u8) Reg {
-    comptime checkCFunction(name, @TypeOf(cfun));
+pub fn reg(comptime name: [:0]const u8, nfun: anytype, comptime doc: ?[:0]const u8) Reg {
+    comptime checkNFunction(name, @TypeOf(nfun));
     return .{
         .name = name.ptr,
-        .cfun = raise.stored(cfun),
+        .nfun = raise.stored(nfun),
         .documentation = if (doc) |d| d.ptr else null,
     };
 }
@@ -1683,11 +1683,11 @@ pub fn wake(w: *Wake, fiber: Value, value: Value) bool {
 // Private functions
 // ==========================================================================
 
-/// Checks that `Given` is a function of the shape a cfunction must have.
+/// Checks that `Given` is a function of the shape an nfunction must have.
 ///
 /// `name` is the registered name of the function.
-fn checkCFunction(comptime name: []const u8, comptime Given: type) void {
-    const where = "cfunction '" ++ name ++ "': ";
+fn checkNFunction(comptime name: []const u8, comptime Given: type) void {
+    const where = "nfunction '" ++ name ++ "': ";
     const wanted = "It must be `fn (argv: []Value) Error!Value`";
 
     const fn_info = switch (@typeInfo(Given)) {
@@ -1708,7 +1708,7 @@ fn checkCFunction(comptime name: []const u8, comptime Given: type) void {
         // broader error set reinterpreted at the call rather than diagnosed at
         // the definition, which is the one place it can be.
         @compileError(where ++ "its return type is `" ++ @typeName(R) ++
-            "`. A cfunction returns a `Value` or raises, so the type is exactly " ++
+            "`. An nfunction returns a `Value` or raises, so the type is exactly " ++
             "`Error!Value`: a wider error set is reinterpreted at the call rather " ++
             "than diagnosed here.");
     }
@@ -1754,7 +1754,7 @@ fn indexedOf(view: abi.Indexed) Indexed {
 
 /// Appends a null-name row to a table.
 ///
-/// `cfuns_ext`, `getmethod` and `nextmethod` each take a table that ends with
+/// `nfuns_ext`, `getmethod` and `nextmethod` each take a table that ends with
 /// a null-name row.
 fn terminate(comptime Row: type, rows: []const Row) [max_table_rows + 1]Row {
     std.debug.assert(rows.len <= max_table_rows);

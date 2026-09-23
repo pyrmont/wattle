@@ -337,13 +337,13 @@ fn theCallArityMessage() void {
     expectError("(do (defn f [x y] x) (defn g [] (+ 1 (f 1))) (g))", "<function f> called with 1 argument, expected 2");
 }
 
-fn callingACfunction() void {
+fn callingANfunction() void {
     expectEqual("(+ (length ![1 2 3]) 0)", "3");
     // In tail position, which pops two frames rather than one.
     expectEqual("(do (defn f [] (length ![1 2])) (f))", "2");
 }
 
-/// A callee that is neither a function nor a cfunction goes to `callNonfn`,
+/// A callee that is neither a function nor an nfunction goes to `callNonfn`,
 /// which is `vm_calls`'; what is asserted here is that both call opcodes reach
 /// it and place the result.
 fn callingANonFunction() void {
@@ -478,7 +478,7 @@ fn runsLength(self: *Runs, _: usize) raise.Error!usize {
     return self.count;
 }
 
-fn cfunRuns(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRuns(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixarity(argv, 1);
     const count = try args.getInteger(argv, 0);
     const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
@@ -734,9 +734,9 @@ fn aFiberResumedAfterARaise() void {
     );
 }
 
-/// A raise inside a cfunction leaves a C frame on the fiber, which the head of
+/// A raise inside an nfunction leaves a C frame on the fiber, which the head of
 /// the loop pops before it can restore anything.
-fn aFiberResumedAfterARaiseInsideACfunction() void {
+fn aFiberResumedAfterARaiseInsideANfunction() void {
     const fiberv = eval("(fiber/new (fn [] (yield (length 5))) :ey)");
     const resumed = resumeFiber(fiberv, wrap.fromNil());
     expect(resumed.signal == abi.Signal.@"error");
@@ -856,7 +856,7 @@ fn theRemainingOpcodes() void {
     // JOP_NOOP is written by the dead-write optimizer and then deleted by
     // no-op removal before the function is ever run, so no compiled function
     // contains one. JOP_MAKE_STRING has no emitter anywhere in the compiler:
-    // `(string ...)` compiles to a call of the `string` cfunction.
+    // `(string ...)` compiles to a call of the `string` nfunction.
     if (has_assembler) {
         expectEqual("((asm '{:arity 0 :bytecode [(noop) (ldi 0 7) (noop) (ret 0)]}))", "7");
         expectEqual(
@@ -1040,9 +1040,9 @@ fn anOperandPastItsTable() void {
 }
 
 /// The collector runs when the bytes allocated since the last collection
-/// reach the interval, not only when they pass it. The first cfunction sets
+/// reach the interval, not only when they pass it. The first nfunction sets
 /// the interval to exactly that count and allocates nothing, the call opcode
-/// checks the two on its return, and the second cfunction reads the count.
+/// checks the two on its return, and the second nfunction reads the count.
 fn theCollectionThresholdIsInclusive() void {
     const saved = harness.vm().gc.interval;
     const after = eval("(do (vmrun/arm-collection) (vmrun/allocated))");
@@ -1051,22 +1051,22 @@ fn theCollectionThresholdIsInclusive() void {
     expect(harness.integerIs(after, 0));
 }
 
-fn cfunArmCollection(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunArmCollection(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
     armed_at = harness.vm().gc.next_collection;
     harness.vm().gc.interval = armed_at;
     return wrap.fromNil();
 }
 
-fn cfunAllocated(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAllocated(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
     return wrap.fromNumber(@floatFromInt(harness.vm().gc.next_collection));
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "vmrun/arm-collection", .cfun = raise.stored(&cfunArmCollection), .documentation = null },
-    .{ .name = "vmrun/allocated", .cfun = raise.stored(&cfunAllocated), .documentation = null },
-    .{ .name = "vmrun/runs", .cfun = raise.stored(&cfunRuns), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "vmrun/arm-collection", .nfun = raise.stored(&nfunArmCollection), .documentation = null },
+    .{ .name = "vmrun/allocated", .nfun = raise.stored(&nfunAllocated), .documentation = null },
+    .{ .name = "vmrun/runs", .nfun = raise.stored(&nfunRuns), .documentation = null },
 };
 
 // ==========================================================================
@@ -1075,7 +1075,7 @@ const cfuns = [_]abi.Reg{
 
 fn body() raise.Error!void {
     test_env = harness.coreEnv();
-    registry.cfuns(test_env, null, &cfuns);
+    registry.nfuns(test_env, null, &nfuns);
     has_assembler = harness.coreOptional("asm") != null;
 
     arithmeticTakesTheNumericPath();
@@ -1086,7 +1086,7 @@ fn body() raise.Error!void {
     comparison();
 
     theCallArityMessage();
-    callingACfunction();
+    callingANfunction();
     callingANonFunction();
     stackOverflow();
     theStackLimitIsInclusive();
@@ -1107,7 +1107,7 @@ fn body() raise.Error!void {
     aResumedFiberReceivesItsValue();
     aNewFiberReceivesItsValueAsAnArgument();
     aFiberResumedAfterARaise();
-    aFiberResumedAfterARaiseInsideACfunction();
+    aFiberResumedAfterARaiseInsideANfunction();
     anInjectedSignal();
 
     try aBreakpointReachesTheUnknownOpcodeArm();

@@ -5,8 +5,8 @@
 //! trace every Janet user reads, and the decoding under test decides every
 //! part of each line except the punctuation. The suites cover two common
 //! shapes, a named Janet function with a source map and a registered
-//! cfunction, and nothing else, because the remaining shapes need a funcdef or
-//! a registry entry that the compiler and `registry.cfuns` never produce.
+//! nfunction, and nothing else, because the remaining shapes need a funcdef or
+//! a registry entry that the compiler and `registry.nfuns` never produce.
 //!
 //! So the cases are enumerated here rather than sampled, and the awkward one
 //! is what the file exists for: the name and the location are classified
@@ -85,13 +85,13 @@ fn frameOfFunction(frame: *vm_state.StackFrame, func: *functions.Function, pc_of
     frame.pc = .{ .bytecode = if (pc_offset < 0) null else func.def.?.bytecode.? + @as(usize, @intCast(pc_offset)) };
 }
 
-fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
+fn frameOfNfunction(frame: *vm_state.StackFrame, nfun: abi.NFunction) void {
     frame.* = std.mem.zeroes(vm_state.StackFrame);
     frame.func = null;
-    frame.pc = .{ .cfunction = cfun };
+    frame.pc = .{ .nfunction = nfun };
 }
 
-/// Three cfunctions used only as registry keys. They are never called; what
+/// Three nfunctions used only as registry keys. They are never called; what
 /// matters is that each is a distinct address the registry can be keyed on,
 /// and each has the type a builtin has.
 ///
@@ -99,7 +99,7 @@ fn frameOfCfunction(frame: *vm_state.StackFrame, cfun: abi.CFunction) void {
 /// decorative. Three identical bodies would be folded into one function by
 /// every optimize mode above Debug, so all three keys would become one
 /// address, the registry lookup for `probeUnregistered` would find the entry
-/// planted for `probeNamed`, and `anUnregisteredCfunction` would fail in every
+/// planted for `probeNamed`, and `anUnregisteredNfunction` would fail in every
 /// release build while passing in Debug. Distinct returns make the folding
 /// illegal and cost nothing, since nothing calls these.
 fn probeNamed(argv: []repr.Value) raise.Error!repr.Value {
@@ -131,7 +131,7 @@ fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
 
 /// `raise.stored` is the cast from one of the three probes into the `Row` key
 /// the registry is indexed by.
-fn keyOf(probe: raise.CFunction) abi.CFunction {
+fn keyOf(probe: raise.NFunction) abi.NFunction {
     return raise.stored(probe);
 }
 
@@ -224,7 +224,7 @@ fn aFunctionWithoutASourcemap(named: *functions.Function) void {
 }
 
 /// A function frame whose program counter is null reports no location at all:
-/// not offset zero, and not the registry line a cfunction would report.
+/// not offset zero, and not the registry line an nfunction would report.
 fn aFunctionWithoutAPc(named: *functions.Function) void {
     var frame: vm_state.StackFrame = undefined;
     frameOfFunction(&frame, named, -1);
@@ -244,42 +244,42 @@ fn theTailCallFlag(named: *functions.Function) void {
     expect(desc.tail == 1);
     expect(desc.name_kind == constants.trace_name_function);
 
-    frameOfCfunction(&frame, keyOf(&probeNamed));
+    frameOfNfunction(&frame, keyOf(&probeNamed));
     frame.flags.tailcall = true;
     desc = decode(&frame);
     expect(desc.tail == 1);
 }
 
-/// A registered cfunction reports its prefix, its name, its file, and its
+/// A registered nfunction reports its prefix, its name, its file, and its
 /// line. This is every core function that appears in a trace.
-fn aRegisteredCfunction() void {
+fn aRegisteredNfunction() void {
     var frame: vm_state.StackFrame = undefined;
-    frameOfCfunction(&frame, keyOf(&probeNamed));
+    frameOfNfunction(&frame, keyOf(&probeNamed));
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.trace_name_cfunction);
+    expect(desc.name_kind == constants.trace_name_nfunction);
     expect(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
     expect(std.mem.orderZ(u8, desc.name_prefix.?, "trace") == .eq);
     expect(std.mem.orderZ(u8, desc.source.?, "trace_frames.zig") == .eq);
-    expect(desc.loc_kind == constants.trace_loc_cfun_line);
+    expect(desc.loc_kind == constants.trace_loc_nfun_line);
     expect(desc.line == probe_line);
     expect(desc.pc == 0);
     expect(desc.column == 0);
 }
 
-/// A cfunction the registry has never heard of renders as a bare
-/// `<cfunction>` with no source and no location. Reaching this from Janet
-/// needs a cfunction installed without `registry.cfuns`, which nothing in the
+/// An nfunction the registry has never heard of renders as a bare
+/// `<nfunction>` with no source and no location. Reaching this from Janet
+/// needs an nfunction installed without `registry.nfuns`, which nothing in the
 /// core does, and the decoder must not dereference the null the registry
 /// returns.
-fn anUnregisteredCfunction() void {
+fn anUnregisteredNfunction() void {
     expect(registry.registryGet(keyOf(&probeUnregistered)) == null);
 
     var frame: vm_state.StackFrame = undefined;
-    frameOfCfunction(&frame, keyOf(&probeUnregistered));
+    frameOfNfunction(&frame, keyOf(&probeUnregistered));
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.trace_name_cfunction_bare);
+    expect(desc.name_kind == constants.trace_name_nfunction_bare);
     expect(desc.name == null);
     expect(desc.name_prefix == null);
     expect(desc.source == null);
@@ -288,40 +288,40 @@ fn anUnregisteredCfunction() void {
 
 /// The case the two-field descriptor exists for. A registry entry with no name
 /// fails the name test and still passes the location test, so the frame
-/// renders as `<cfunction> on line 99`, a bare name with a real location. One
+/// renders as `<nfunction> on line 99`, a bare name with a real location. One
 /// tag covering both would have to choose, and either choice changes a line of
 /// output the runtime prints today.
-fn aRegisteredCfunctionWithoutAName() void {
+fn aRegisteredNfunctionWithoutAName() void {
     const reg = registry.registryGet(keyOf(&probeUnnamed));
     expect(reg != null);
     expect(reg.?.name == null);
     expect(reg.?.source_line == 99);
 
     var frame: vm_state.StackFrame = undefined;
-    frameOfCfunction(&frame, keyOf(&probeUnnamed));
+    frameOfNfunction(&frame, keyOf(&probeUnnamed));
     const desc = decode(&frame);
 
-    expect(desc.name_kind == constants.trace_name_cfunction_bare);
+    expect(desc.name_kind == constants.trace_name_nfunction_bare);
     expect(desc.name == null);
     // Not reported, even though the entry has one: a source is printed only in
     // the branch that printed a name.
     expect(desc.source == null);
-    expect(desc.loc_kind == constants.trace_loc_cfun_line);
+    expect(desc.loc_kind == constants.trace_loc_nfun_line);
     expect(desc.line == 99);
 }
 
 /// A registry entry whose source line is zero or negative reports no location.
-/// `registry.cfuns` installs exactly this for every function registered
+/// `registry.nfuns` installs exactly this for every function registered
 /// without source information.
-fn aRegisteredCfunctionWithoutALine() void {
+fn aRegisteredNfunctionWithoutALine() void {
     const reg = registry.registryGet(keyOf(&probeNamed));
     const saved = reg.?.source_line;
     var frame: vm_state.StackFrame = undefined;
 
     reg.?.source_line = 0;
-    frameOfCfunction(&frame, keyOf(&probeNamed));
+    frameOfNfunction(&frame, keyOf(&probeNamed));
     var desc = decode(&frame);
-    expect(desc.name_kind == constants.trace_name_cfunction);
+    expect(desc.name_kind == constants.trace_name_nfunction);
     expect(desc.loc_kind == constants.trace_loc_none);
 
     reg.?.source_line = -1;
@@ -331,30 +331,30 @@ fn aRegisteredCfunctionWithoutALine() void {
     reg.?.source_line = saved;
 }
 
-/// A registered cfunction with no prefix reports a null prefix rather than an
+/// A registered nfunction with no prefix reports a null prefix rather than an
 /// empty string, because the caller branches on it to choose between `%s/%s`
 /// and `%s`.
-fn aRegisteredCfunctionWithoutAPrefix() void {
+fn aRegisteredNfunctionWithoutAPrefix() void {
     const reg = registry.registryGet(keyOf(&probeNamed));
     const saved = reg.?.name_prefix;
     var frame: vm_state.StackFrame = undefined;
 
     reg.?.name_prefix = null;
-    frameOfCfunction(&frame, keyOf(&probeNamed));
+    frameOfNfunction(&frame, keyOf(&probeNamed));
     const desc = decode(&frame);
-    expect(desc.name_kind == constants.trace_name_cfunction);
+    expect(desc.name_kind == constants.trace_name_nfunction);
     expect(desc.name_prefix == null);
     expect(std.mem.orderZ(u8, desc.name.?, "probe") == .eq);
 
     reg.?.name_prefix = saved;
 }
 
-/// Neither a function nor a cfunction: the frame contributes a bare `  in`
-/// line. A cframe pushed with a null cfunction produces this, and
+/// Neither a function nor an nfunction: the frame contributes a bare `  in`
+/// line. A cframe pushed with a null nfunction produces this, and
 /// `vm_entry.call` pushes one whenever it has to clear a dirty stack.
 fn anEmptyFrame() void {
     var frame: vm_state.StackFrame = undefined;
-    frameOfCfunction(&frame, null);
+    frameOfNfunction(&frame, null);
     const desc = decode(&frame);
 
     expect(desc.name_kind == constants.trace_name_none);
@@ -366,17 +366,17 @@ fn anEmptyFrame() void {
 }
 
 /// The `%s/%s` branch, which no suite can reach: it is taken only when a
-/// registered cfunction has a *prefix*, and every core registration passes
+/// registered nfunction has a *prefix*, and every core registration passes
 /// null for one. A native module registering with a prefix gets one, and so
 /// does the registry entry this file plants by hand.
-fn aPrefixedCfunctionRenders() raise.Error!void {
+fn aPrefixedNfunctionRenders() raise.Error!void {
     const sink = buffers.new(256);
     gc_alloc.gcroot(wrap.fromBuffer(sink));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
 
-    // A fiber whose only frame is a cframe for the prefixed cfunction. The
+    // A fiber whose only frame is a cframe for the prefixed nfunction. The
     // frame is written directly because there is no way to stop a real fiber
-    // inside a cfunction that does not itself error.
+    // inside an nfunction that does not itself error.
     const fiber = fibers.new(compileFunction("(fn [] nil)"), 32, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
     defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
@@ -384,7 +384,7 @@ fn aPrefixedCfunctionRenders() raise.Error!void {
     fiber.stackstart = constants.frame_size;
     fiber.stacktop = constants.frame_size;
     const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data));
-    frameOfCfunction(frame, keyOf(&probeNamed));
+    frameOfNfunction(frame, keyOf(&probeNamed));
     frame.prevframe = 0;
 
     try traceInto(sink, fiber, value.fromBytes("prefixed", .string), "P");
@@ -407,10 +407,10 @@ fn aPrefixedCfunctionRenders() raise.Error!void {
     expect(std.mem.endsWith(u8, contents(sink), "\x1b[0m"));
 }
 
-/// A cfunction the registry cannot name prints as `<cfunction>`, with the
+/// An nfunction the registry cannot name prints as `<nfunction>`, with the
 /// line when the registry has one and nothing more when it has no entry.
-/// The frames are written by hand, as in `aPrefixedCfunctionRenders`.
-fn aBareCfunctionRenders() raise.Error!void {
+/// The frames are written by hand, as in `aPrefixedNfunctionRenders`.
+fn aBareNfunctionRenders() raise.Error!void {
     const sink = buffers.new(256);
     gc_alloc.gcroot(wrap.fromBuffer(sink));
     defer _ = gc_alloc.gcunroot(wrap.fromBuffer(sink));
@@ -423,15 +423,15 @@ fn aBareCfunctionRenders() raise.Error!void {
     fiber.stacktop = constants.frame_size;
     const frame: *vm_state.StackFrame = @ptrCast(@alignCast(fiber.data));
 
-    frameOfCfunction(frame, keyOf(&probeUnregistered));
+    frameOfNfunction(frame, keyOf(&probeUnregistered));
     frame.prevframe = 0;
     try traceInto(sink, fiber, value.fromBytes("bare", .string), null);
-    expect(std.mem.eql(u8, contents(sink), "  in <cfunction>\n"));
+    expect(std.mem.eql(u8, contents(sink), "  in <nfunction>\n"));
 
-    frameOfCfunction(frame, keyOf(&probeUnnamed));
+    frameOfNfunction(frame, keyOf(&probeUnnamed));
     frame.prevframe = 0;
     try traceInto(sink, fiber, value.fromBytes("bare", .string), null);
-    expect(std.mem.eql(u8, contents(sink), "  in <cfunction> on line 99\n"));
+    expect(std.mem.eql(u8, contents(sink), "  in <nfunction> on line 99\n"));
 }
 
 /// The decoder is one half of a printer, so the printer runs too, over a real
@@ -492,15 +492,15 @@ fn body() raise.Error!void {
     aFunctionWithoutAPc(named);
     theTailCallFlag(named);
 
-    aRegisteredCfunction();
-    anUnregisteredCfunction();
-    aRegisteredCfunctionWithoutAName();
-    aRegisteredCfunctionWithoutALine();
-    aRegisteredCfunctionWithoutAPrefix();
+    aRegisteredNfunction();
+    anUnregisteredNfunction();
+    aRegisteredNfunctionWithoutAName();
+    aRegisteredNfunctionWithoutALine();
+    aRegisteredNfunctionWithoutAPrefix();
     anEmptyFrame();
 
-    try aPrefixedCfunctionRenders();
-    try aBareCfunctionRenders();
+    try aPrefixedNfunctionRenders();
+    try aBareNfunctionRenders();
     try aStacktraceOverARealFiber(failing);
 }
 

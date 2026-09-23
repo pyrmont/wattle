@@ -55,7 +55,7 @@ slot      runtime/capi.zig:315                         call_value
 slot      runtime/capi.zig:325                         mcall
 slot      runtime/capi.zig:331                         calloc
 slot      runtime/capi.zig:336                         free
-slot      runtime/capi.zig:343                         cfuns_ext
+slot      runtime/capi.zig:343                         nfuns_ext
 slot      runtime/capi.zig:348                         def
 slot      runtime/capi.zig:354                         checkint
 slot      runtime/capi.zig:360                         cstring

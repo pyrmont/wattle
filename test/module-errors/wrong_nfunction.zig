@@ -1,6 +1,6 @@
-//! A cfunction with the wrong shape, registered.
+//! An nfunction with the wrong shape, registered.
 //!
-//! The runtime stores a cfunction in a slot typed by the C ABI, so putting one
+//! The runtime stores an nfunction in a slot typed by the C ABI, so putting one
 //! there is a `@ptrCast`, and a cast accepts anything. `module.reg` checks the
 //! shape at the registration, which is the last place the mistake can still be
 //! diagnosed. Without it the wrong pointer surfaces as a crash inside the
@@ -18,7 +18,7 @@ fn oldShape(argc: i32, argv: [*]wattle.Value) wattle.Value {
 }
 
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.cfuns(env, "wrong", &.{
+    wattle.nfuns(env, "wrong", &.{
         wattle.reg("identity", &oldShape, null),
     });
 }

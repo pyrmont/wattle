@@ -770,7 +770,7 @@ fn theCollectorReclaimsBoth() !void {
 
 /// The standard library reaches this code through the core environment, so the
 /// two halves have to agree from Janet as well as from Zig. This also
-/// exercises `cfun_buffer_trim`, which calls `canRealloc`.
+/// exercises `nfunBufferTrim`, which calls `canRealloc`.
 fn fromWattle() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
@@ -833,7 +833,7 @@ fn runsLength(self: *Runs, _: usize) raise.Error!usize {
     return self.count;
 }
 
-fn cfunRuns(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRuns(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixarity(argv, 1);
     const count = try args.getInteger(argv, 0);
     const raw = abstracts.newBytes(&runs_at, @sizeOf(Runs));
@@ -842,8 +842,8 @@ fn cfunRuns(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(raw);
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "bufarr/runs", .cfun = raise.stored(&cfunRuns), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "bufarr/runs", .nfun = raise.stored(&nfunRuns), .documentation = null },
 };
 
 /// `array/concat` and `array/join` read an abstract type with a `chunk`
@@ -861,7 +861,7 @@ const cfuns = [_]abi.Reg{
 fn concatReadsAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
-    registry.cfuns(env, null, &cfuns);
+    registry.nfuns(env, null, &nfuns);
     const source =
         \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))

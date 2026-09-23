@@ -181,7 +181,7 @@ const num_array_type = wattle.define(NumArray, .{
 });
 
 // ==========================================================================
-// The cfunctions
+// The nfunctions
 // ==========================================================================
 
 /// Creates a numarray of `size` zeroed elements. Implements
@@ -254,16 +254,16 @@ fn length(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// The method table `numArrayGet` looks a keyword key up in, with a row for
 /// `scale`, `sum` and `length`.
 const methods = [_]wattle.Method{
-    .{ .name = "scale", .cfun = &scale },
-    .{ .name = "sum", .cfun = &sum },
-    .{ .name = "length", .cfun = &length },
+    .{ .name = "scale", .nfun = &scale },
+    .{ .name = "sum", .nfun = &sum },
+    .{ .name = "length", .nfun = &length },
 };
 
 // ==========================================================================
 // The module
 // ==========================================================================
 
-/// Registers the abstract type and defines the module's four cfunctions.
+/// Registers the abstract type and defines the module's four nfunctions.
 ///
 /// `env` is the capability to define a binding in the environment the module
 /// is loading into. `wattle.entry` below passes `defs` to the loader.
@@ -273,7 +273,7 @@ fn defs(env: *wattle.Env) wattle.Error!void {
     // A marshalled abstract names its type, and unmarshalling a name the
     // registry does not have raises `unknown abstract type`.
     try wattle.registerAbstract(&num_array_type);
-    wattle.cfuns(env, "numarray", &.{
+    wattle.nfuns(env, "numarray", &.{
         wattle.reg("new", &new, "(numarray/new size)\n\nCreate new numarray"),
         wattle.reg("scale", &scale, "(numarray/scale numarray factor)\n\nScale numarray by factor"),
         wattle.reg("sum", &sum, "(numarray/sum numarray)\n\nSum numarray"),

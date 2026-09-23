@@ -65,7 +65,7 @@ construction needed no new shared type.
 takes a range, and `parse-query` builds a map. Nothing about a map or a table
 promises an order, so `query` returns in hash order and a caller that needs a
 stable string sorts the result. The test file sorts it rather than pinning one
-arrangement. The test file asserts each cfunction on more than one of the
+arrangement. The test file asserts each nfunction on more than one of the
 types its getter reads, because a getter reads them identically: a module
 written for a tuple works on an array or a vector with no change.
 
@@ -76,7 +76,7 @@ keyword's bytes are stable while the value is reachable. A buffer's, an array's
 and a table's are not: they are `data[0..count]`, and a push or a put may move
 them. Every getter's doc comment says which of the two kinds it returns. The
 rule is to finish with what it returned inside the call that obtained it, and
-all three cfunctions do so.
+all three nfunctions do so.
 
 ### Where a refusal comes from
 

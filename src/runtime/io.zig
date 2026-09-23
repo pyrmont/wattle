@@ -1,11 +1,11 @@
 //! Files: the `core/file` abstract type and its five callbacks, the
-//! twenty-two cfunctions of the `file/` and `print`/`printf` families, the
+//! twenty-two nfunctions of the `file/` and `print`/`printf` families, the
 //! public `File` entry points, the mode-string kernels, the stream host
 //! operations, and the registration.
 //!
-//! Every raise here is an error return: a cfunction that decides to raise
+//! Every raise here is an error return: an nfunction that decides to raise
 //! returns `raise.Error!Value`, and one that makes no such decision is
-//! written as the plain `raise.CFunction` it is. Twenty of the twenty-two
+//! written as the plain `raise.NFunction` it is. Twenty of the twenty-two
 //! raise; the two that cannot are `flush` and `eflush`, whose three arms are
 //! flush it, flush the default handle, and do nothing.
 //!
@@ -24,7 +24,7 @@
 //! reader of a host stat structure, and this file imports it.
 //!
 //! The sixteen stream kernels are ordinary Zig functions. Each wraps one libc
-//! call, so that a cfunction deals in a `?*FILE` and the Windows arm of a call
+//! call, so that an nfunction deals in a `?*FILE` and the Windows arm of a call
 //! is written once. The stream is optional throughout them, because a closed
 //! `File` stores a null, and no caller here reaches one: `flusher` skips a
 //! closed file rather than handing `c.fflush` a null, which would flush every
@@ -114,13 +114,13 @@ const file_serializable: i32 = 128;
 /// `findMethod` scans it linearly, so the order here is the order `nextmethod`
 /// reports and a caller may depend on it.
 const file_methods = [_]method_type.Method{
-    .{ .name = "close", .cfun = cfunFclose },
-    .{ .name = "flush", .cfun = cfunFflush },
-    .{ .name = "read", .cfun = cfunFread },
-    .{ .name = "seek", .cfun = cfunFseek },
-    .{ .name = "tell", .cfun = cfunFtell },
-    .{ .name = "write", .cfun = cfunFwrite },
-    .{ .name = null, .cfun = null },
+    .{ .name = "close", .nfun = nfunFclose },
+    .{ .name = "flush", .nfun = nfunFflush },
+    .{ .name = "read", .nfun = nfunFread },
+    .{ .name = "seek", .nfun = nfunFseek },
+    .{ .name = "tell", .nfun = nfunFtell },
+    .{ .name = "write", .nfun = nfunFwrite },
+    .{ .name = null, .nfun = null },
 };
 
 /// Full buffering and no buffering, as `setvbuf` spells them. `_IONBF` is 2 in
@@ -276,7 +276,7 @@ pub fn getChar(file: ?*FILE) i32 {
 /// The stream of a file argument, or a raise where there is none.
 ///
 /// A closed file has no stream, and this is where that is said. Closing nulls
-/// the pointer deliberately, and every cfunction in this file tests the closed
+/// the pointer deliberately, and every nfunction in this file tests the closed
 /// flag before it touches a stream, but a caller outside the file reaching
 /// through this accessor has no flag word unless it asks for one, so without
 /// the test a caller that does not ask hands `fileno` a null. The test belongs
@@ -298,30 +298,30 @@ pub fn getjfile(argv: []const repr.Value, n: usize) raise.Error!*File {
 /// streams.
 pub fn libIo(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("print", &Print(true, "out", stdoutFile).cfun, @src(), "(print & xs)", "Print values to the console (standard out). Value are converted " ++
+        corefn.reg("print", &Print(true, "out", stdoutFile).nfun, @src(), "(print & xs)", "Print values to the console (standard out). Value are converted " ++
             "to strings if they are not already. After printing all values, a " ++
             "newline character is printed. Use the value of `(dyn :out stdout)` to determine " ++
             "what to push characters to. Expects `(dyn :out stdout)` to be either a core/file or " ++
             "a buffer. Returns nil."),
-        corefn.reg("prin", &Print(false, "out", stdoutFile).cfun, @src(), "(prin & xs)", "Same as `print`, but does not add trailing newline."),
-        corefn.reg("printf", &Printf(true, "out", stdoutFile).cfun, @src(), "(printf fmt & xs)", "Prints output formatted as if with `(string/format fmt ;xs)` to `(dyn :out stdout)` with a trailing newline."),
-        corefn.reg("prinf", &Printf(false, "out", stdoutFile).cfun, @src(), "(prinf fmt & xs)", "Like `printf` but with no trailing newline."),
-        corefn.reg("eprin", &Print(false, "err", stderrFile).cfun, @src(), "(eprin & xs)", "Same as `prin`, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
-        corefn.reg("eprint", &Print(true, "err", stderrFile).cfun, @src(), "(eprint & xs)", "Same as `print`, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
-        corefn.reg("eprintf", &Printf(true, "err", stderrFile).cfun, @src(), "(eprintf fmt & xs)", "Prints output formatted as if with `(string/format fmt ;xs)` to `(dyn :err stderr)` with a trailing newline."),
-        corefn.reg("eprinf", &Printf(false, "err", stderrFile).cfun, @src(), "(eprinf fmt & xs)", "Like `eprintf` but with no trailing newline."),
-        corefn.reg("xprint", &XPrint(true).cfun, @src(), "(xprint to & xs)", "Print to a file or other value explicitly (no dynamic bindings) with a trailing " ++
+        corefn.reg("prin", &Print(false, "out", stdoutFile).nfun, @src(), "(prin & xs)", "Same as `print`, but does not add trailing newline."),
+        corefn.reg("printf", &Printf(true, "out", stdoutFile).nfun, @src(), "(printf fmt & xs)", "Prints output formatted as if with `(string/format fmt ;xs)` to `(dyn :out stdout)` with a trailing newline."),
+        corefn.reg("prinf", &Printf(false, "out", stdoutFile).nfun, @src(), "(prinf fmt & xs)", "Like `printf` but with no trailing newline."),
+        corefn.reg("eprin", &Print(false, "err", stderrFile).nfun, @src(), "(eprin & xs)", "Same as `prin`, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
+        corefn.reg("eprint", &Print(true, "err", stderrFile).nfun, @src(), "(eprint & xs)", "Same as `print`, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
+        corefn.reg("eprintf", &Printf(true, "err", stderrFile).nfun, @src(), "(eprintf fmt & xs)", "Prints output formatted as if with `(string/format fmt ;xs)` to `(dyn :err stderr)` with a trailing newline."),
+        corefn.reg("eprinf", &Printf(false, "err", stderrFile).nfun, @src(), "(eprinf fmt & xs)", "Like `eprintf` but with no trailing newline."),
+        corefn.reg("xprint", &XPrint(true).nfun, @src(), "(xprint to & xs)", "Print to a file or other value explicitly (no dynamic bindings) with a trailing " ++
             "newline character. The value to print " ++
             "to is the first argument, and is otherwise the same as `print`. Returns nil."),
-        corefn.reg("xprin", &XPrint(false).cfun, @src(), "(xprin to & xs)", "Print to a file or other value explicitly (no dynamic bindings). The value to print " ++
+        corefn.reg("xprin", &XPrint(false).nfun, @src(), "(xprin to & xs)", "Print to a file or other value explicitly (no dynamic bindings). The value to print " ++
             "to is the first argument, and is otherwise the same as `prin`. Returns nil."),
-        corefn.reg("xprintf", &XPrintf(true).cfun, @src(), "(xprintf to fmt & xs)", "Like `printf` but prints to an explicit file or value `to`. Returns nil."),
-        corefn.reg("xprinf", &XPrintf(false).cfun, @src(), "(xprinf to fmt & xs)", "Like `prinf` but prints to an explicit file or value `to`. Returns nil."),
-        corefn.reg("flush", &Flush("out", stdoutFile).cfun, @src(), "(flush)", "Flush `(dyn :out stdout)` if it is a file, otherwise do nothing."),
-        corefn.reg("eflush", &Flush("err", stderrFile).cfun, @src(), "(eflush)", "Flush `(dyn :err stderr)` if it is a file, otherwise do nothing."),
-        corefn.reg("file/temp", &cfunTemp, @src(), "(file/temp)", "Open an anonymous temporary file that is removed on close. " ++
+        corefn.reg("xprintf", &XPrintf(true).nfun, @src(), "(xprintf to fmt & xs)", "Like `printf` but prints to an explicit file or value `to`. Returns nil."),
+        corefn.reg("xprinf", &XPrintf(false).nfun, @src(), "(xprinf to fmt & xs)", "Like `prinf` but prints to an explicit file or value `to`. Returns nil."),
+        corefn.reg("flush", &Flush("out", stdoutFile).nfun, @src(), "(flush)", "Flush `(dyn :out stdout)` if it is a file, otherwise do nothing."),
+        corefn.reg("eflush", &Flush("err", stderrFile).nfun, @src(), "(eflush)", "Flush `(dyn :err stderr)` if it is a file, otherwise do nothing."),
+        corefn.reg("file/temp", &nfunTemp, @src(), "(file/temp)", "Open an anonymous temporary file that is removed on close. " ++
             "Raises an error on failure."),
-        corefn.reg("file/open", &cfunFopen, @src(), "(file/open path &opt mode buffer-size)", "Open a file. `path` is an absolute or relative path, and " ++
+        corefn.reg("file/open", &nfunFopen, @src(), "(file/open path &opt mode buffer-size)", "Open a file. `path` is an absolute or relative path, and " ++
             "`mode` is a set of flags indicating the mode to open the file in. " ++
             "`mode` is a keyword where each character represents a flag. If the file " ++
             "cannot be opened, returns nil, otherwise returns the new file handle. " ++
@@ -334,10 +334,10 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "* + - append to the file instead of overwriting it\n\n" ++
             "* n - error if the file cannot be opened instead of returning nil\n\n" ++
             "See fopen (<stdio.h>, C99) for further details."),
-        corefn.reg("file/close", &cfunFclose, @src(), "(file/close f)", "Close a file and release all related resources. When you are " ++
+        corefn.reg("file/close", &nfunFclose, @src(), "(file/close f)", "Close a file and release all related resources. When you are " ++
             "done reading a file, close it to prevent a resource leak and let " ++
             "other processes read the file."),
-        corefn.reg("file/read", &cfunFread, @src(), "(file/read f what &opt buf)", "Read a number of bytes from a file `f` into a buffer. A buffer `buf` can " ++
+        corefn.reg("file/read", &nfunFread, @src(), "(file/read f what &opt buf)", "Read a number of bytes from a file `f` into a buffer. A buffer `buf` can " ++
             "be provided as an optional third argument, otherwise a new buffer " ++
             "is created. `what` can either be an integer or a keyword. Returns the " ++
             "buffer with file contents. " ++
@@ -345,18 +345,18 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "* :all - read the whole file\n\n" ++
             "* :line - read up to and including the next newline character\n\n" ++
             "* n (integer) - read up to n bytes from the file"),
-        corefn.reg("file/write", &cfunFwrite, @src(), "(file/write f & bytes)", "Writes to a file `f`. Each value of `bytes` must be a " ++
+        corefn.reg("file/write", &nfunFwrite, @src(), "(file/write f & bytes)", "Writes to a file `f`. Each value of `bytes` must be a " ++
             "string, buffer, symbol, or keyword. Returns the file."),
-        corefn.reg("file/flush", &cfunFflush, @src(), "(file/flush f)", "Flush any buffered bytes to the file system. In most files, writes are " ++
+        corefn.reg("file/flush", &nfunFflush, @src(), "(file/flush f)", "Flush any buffered bytes to the file system. In most files, writes are " ++
             "buffered for efficiency reasons. Returns the file handle."),
-        corefn.reg("file/seek", &cfunFseek, @src(), "(file/seek f &opt whence n)", "Jump to a relative location in the file `f`. `whence` must be one of:\n\n" ++
+        corefn.reg("file/seek", &nfunFseek, @src(), "(file/seek f &opt whence n)", "Jump to a relative location in the file `f`. `whence` must be one of:\n\n" ++
             "* :cur - jump relative to the current file location\n\n" ++
             "* :set - jump relative to the beginning of the file\n\n" ++
             "* :end - jump relative to the end of the file\n\n" ++
             "By default, `whence` is :cur. Optionally a value `n` may be passed " ++
             "for the relative number of bytes to seek in the file. `n` may be a real " ++
             "number to handle large files of more than 4GB. Returns the file handle."),
-        corefn.reg("file/tell", &cfunFtell, @src(), "(file/tell f)", "Get the current value of the file position for file `f`."),
+        corefn.reg("file/tell", &nfunFtell, @src(), "(file/tell f)", "Get the current value of the file position for file `f`."),
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&fileType);
@@ -591,7 +591,7 @@ pub fn write(file: ?*FILE, src: [*]const u8, count: usize) i32 {
 /// `flush` and `eflush` differ only in the dynamic binding they read.
 fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 0);
 
             flusher(name.ptr, handle());
@@ -604,7 +604,7 @@ fn Flush(comptime name: [:0]const u8, comptime handle: anytype) type {
 /// they read and whether they end with a newline.
 fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             return print(argv, newline, name.ptr, handle());
         }
     };
@@ -613,7 +613,7 @@ fn Print(comptime newline: bool, comptime name: [:0]const u8, comptime handle: a
 /// `printf`, `prinf`, `eprintf` and `eprinf`, the same four differences.
 fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             return printf(argv, newline, name.ptr, handle());
         }
     };
@@ -623,7 +623,7 @@ fn Printf(comptime newline: bool, comptime name: [:0]const u8, comptime handle: 
 /// and have no default handle to fall back on.
 fn XPrint(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.arity(argv, 1, -1);
             return printImplX(argv, newline, null, 1, argv[0]);
         }
@@ -633,7 +633,7 @@ fn XPrint(comptime newline: bool) type {
 /// `xprintf` and `xprinf`, the same again with a format string.
 fn XPrintf(comptime newline: bool) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.arity(argv, 2, -1);
             return printfImplX(argv, newline, null, 1, argv[0]);
         }
@@ -662,7 +662,7 @@ fn binaryMode(given: [*:0]const u8, out: *[mode_buf_len]u8) [*:0]const u8 {
 }
 
 /// `(file/close f)`.
-fn cfunFclose(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFclose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return wrap.fromNil();
@@ -676,7 +676,7 @@ fn cfunFclose(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(file/flush f)`.
-fn cfunFflush(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFflush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     try assertWriteable(iof);
@@ -689,7 +689,7 @@ fn cfunFflush(argv: []repr.Value) raise.Error!repr.Value {
 /// The file is opened in binary mode on every platform. On Windows the `b`
 /// a mode keyword lacks is added before `fopen` sees it, so the `b` flag is
 /// accepted and changes nothing.
-fn cfunFopen(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFopen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fname = try args_core.getString(argv, 0);
     var fmode: strings.String = undefined;
@@ -757,7 +757,7 @@ fn cfunFopen(argv: []repr.Value) raise.Error!repr.Value {
 /// `readChunk` would leave `:line` giving back `nil` on a write-only file, and
 /// that `nil` is not an empty line: it is `getc` on a stream opened for
 /// writing, which C99 leaves undefined.
-fn cfunFread(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFread(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -801,7 +801,7 @@ fn cfunFread(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(file/seek f whence &opt n)`.
-fn cfunFseek(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFseek(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -818,7 +818,7 @@ fn cfunFseek(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(file/tell f)`.
-fn cfunFtell(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFtell(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -829,7 +829,7 @@ fn cfunFtell(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(file/write f & xs)`. Every argument is checked before any byte is
 /// written, so a bad argument leaves the file untouched.
-fn cfunFwrite(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFwrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const iof = try getFile(argv, 0);
     if (iof.flags & file_closed != 0) return raise.panic("file is closed");
@@ -850,7 +850,7 @@ fn cfunFwrite(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(file/temp)`.
-fn cfunTemp(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTemp(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_temp"}));
 
     try args_core.fixarity(argv, 0);
@@ -1054,7 +1054,7 @@ fn makef(f: ?*FILE, flags: i32, bufsize: usize) *File {
 /// open descriptor.
 ///
 /// Reports false away from Windows, which is the one platform that calls it:
-/// `cfunFopen` asks it where `fopen` failed, and `host_stat.isDirectory`
+/// `nfunFopen` asks it where `fopen` failed, and `host_stat.isDirectory`
 /// needs a stream that a directory there never yields. This function cannot
 /// raise.
 fn pathIsDirectory(path: [*:0]const u8) bool {
@@ -1233,7 +1233,7 @@ fn printfImplX(
 /// A short read is not by itself a failure, since it is how the end of the
 /// file is reached, so the error indicator decides.
 ///
-/// The readability test is kept here as well as at `cfunFread`'s head, because
+/// The readability test is kept here as well as at `nfunFread`'s head, because
 /// this is reachable from `io.zig`'s other readers and a check at one caller
 /// is a check one caller can be added beside.
 fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: usize) raise.Error!void {

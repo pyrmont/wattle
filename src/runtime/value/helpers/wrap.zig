@@ -147,8 +147,8 @@ pub const abi = struct {
         return outer.fromFunction(x);
     }
 
-    pub fn fromCfunction(x: boundary.CFunction) repr.Value {
-        return outer.fromCfunction(x);
+    pub fn fromNfunction(x: boundary.NFunction) repr.Value {
+        return outer.fromNfunction(x);
     }
 
     pub fn fromTable(x: *tables.Table) repr.Value {
@@ -195,8 +195,8 @@ pub inline fn fromBuffer(x: *buffers.Buffer) repr.Value {
     return repr.wrapPointer(x, repr.Tag.buffer);
 }
 
-pub inline fn fromCfunction(x: boundary.CFunction) repr.Value {
-    return repr.wrapPointer(@ptrCast(@constCast(x)), repr.Tag.cfunction);
+pub inline fn fromNfunction(x: boundary.NFunction) repr.Value {
+    return repr.wrapPointer(@ptrCast(@constCast(x)), repr.Tag.nfunction);
 }
 
 pub inline fn fromFalse() repr.Value {
@@ -340,7 +340,7 @@ pub fn toBuffer(x: repr.Value) *buffers.Buffer {
     return @ptrCast(@alignCast(toPointer(x)));
 }
 
-pub fn toCfunction(x: repr.Value) boundary.CFunction {
+pub fn toNfunction(x: repr.Value) boundary.NFunction {
     return @ptrFromInt(@intFromPtr(toPointer(x)));
 }
 

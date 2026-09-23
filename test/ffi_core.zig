@@ -1,5 +1,5 @@
 //! Behavioral contract for the FFI's type system, marshalling, calling
-//! machinery and cfunction surface.
+//! machinery and nfunction surface.
 //!
 //! ## What the Janet suites cannot reach
 //!
@@ -82,13 +82,13 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 
 /// Every name `ffi.libFfi` registers. A binding that stops being registered
-/// is what this catches: a registration table is the one place a cfunction
+/// is what this catches: a registration table is the one place an nfunction
 /// can go missing without a link error.
 const ffi_bindings = [_][*:0]const u8{
     "ffi/native",              "ffi/lookup", "ffi/close",          "ffi/signature",
     "ffi/call",                "ffi/struct", "ffi/write",          "ffi/read",
     "ffi/size",                "ffi/align",  "ffi/trampoline",     "ffi/jitfn",
-    "ffi/malloc",              "ffi/free",   "ffi/pointer-buffer", "ffi/pointer-cfunction",
+    "ffi/malloc",              "ffi/free",   "ffi/pointer-buffer", "ffi/pointer-nfunction",
     "ffi/calling-conventions",
 };
 
@@ -186,7 +186,7 @@ fn supports(want: [*:0]const u8) bool {
 
 fn registration() void {
     expect(ffi_bindings.len == 17);
-    // `harness.core` asserts the binding resolves to a cfunction, so reaching
+    // `harness.core` asserts the binding resolves to an nfunction, so reaching
     // the end of the loop is the assertion.
     for (ffi_bindings) |name| _ = harness.core(name);
 }
@@ -428,12 +428,12 @@ fn theRaises() void {
     argv[0] = value.fromBytes("none", .keyword);
     expectRaise(harness.core("ffi/trampoline"), .{argv[0..1]}, "calling convention not supported");
 
-    // A raw pointer cannot become a cfunction. Every pointer this can be
-    // given is a C function, and a cfunction here takes a `[]Value` over
+    // A raw pointer cannot become an nfunction. Every pointer this can be
+    // given is a C function, and an nfunction here takes a `[]Value` over
     // Zig's own calling convention, so no conversion between the two is
     // possible. The argument is still checked, which is what the second case
     // says.
-    const pointer_cfunction = harness.core("ffi/pointer-cfunction");
+    const pointer_nfunction = harness.core("ffi/pointer-nfunction");
     // The pointer is taken here rather than looked up through `ffi/native`.
     // A release build of this driver need not put its own symbols in the
     // dynamic symbol table, and `ffi/lookup` then gives nil, which would
@@ -442,12 +442,12 @@ fn theRaises() void {
     // is meant to have, and `asS8` is one this file already defines.
     argv[0] = wrap.fromPointer(@ptrCast(@constCast(&asS8)));
     expectRaise(
-        pointer_cfunction,
+        pointer_nfunction,
         .{argv[0..1]},
-        "a raw pointer cannot become a cfunction; use ffi/signature and ffi/call",
+        "a raw pointer cannot become an nfunction; use ffi/signature and ffi/call",
     );
     argv[0] = harness.wrapInteger(7);
-    expectRaise(pointer_cfunction, .{argv[0..1]}, "bad slot #0, expected pointer, got 7");
+    expectRaise(pointer_nfunction, .{argv[0..1]}, "bad slot #0, expected pointer, got 7");
 
     // A struct of one void member: the void type has no alignment, which is
     // the `el_align == 0` arm of the layout loop.

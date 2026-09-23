@@ -200,7 +200,7 @@ pub const set_type = abstract_type.define(Tree, .{
     .unmarshal = setUnmarshal,
 });
 
-/// The `hash-set` cfunction as the registry stores it, for the compiler's set
+/// The `hash-set` nfunction as the registry stores it, for the compiler's set
 /// literal arm.
 ///
 /// A set literal is built by calling this through a constant slot rather than
@@ -208,7 +208,7 @@ pub const set_type = abstract_type.define(Tree, .{
 /// change what it builds. `notes/LANGUAGE.md` decided against a `make_set` on
 /// 2026-09-18: the opcode would buy the few percent a literal saves over a
 /// call, and cost four tables to keep in step for a form nothing yet uses.
-pub const hash_set_cfunction = raise.stored(&cfunHashSet);
+pub const hash_set_nfunction = raise.stored(&nfunHashSet);
 
 // ==========================================================================
 // Types
@@ -523,11 +523,11 @@ pub fn kindOf(header: *const abi.GCObject) ?Kind {
 /// `env` is the environment. This function raises if a registration does.
 pub fn lib(env: *tables.Table) raise.Error!void {
     const bindings = comptime [_]corefn.Entry{
-        corefn.reg("hash-map", &cfunHashMap, @src(), "(hash-map & kvs)", "Create a new persistent map from alternating keys and values. The pairs are added in order, so a later value for a key replaces an earlier one, and a nil value removes its key. A key cannot be nil or NaN."),
-        corefn.reg("hash-set", &cfunHashSet, @src(), "(hash-set & xs)", "Create a new persistent set containing the elements xs. An element cannot be nil or NaN."),
-        corefn.reg("map/to-table", &cfunMapTotable, @src(), "(map/to-table m)", "Convert a map to a table. Returns a new table."),
-        corefn.reg("dissoc", &cfunDissoc, @src(), "(dissoc map & ks)", "Return a new persistent map without the keys ks. `map` is unchanged."),
-        corefn.reg("disj", &cfunDisj, @src(), "(disj set & xs)", "Return a new persistent set without the elements xs. `set` is unchanged."),
+        corefn.reg("hash-map", &nfunHashMap, @src(), "(hash-map & kvs)", "Create a new persistent map from alternating keys and values. The pairs are added in order, so a later value for a key replaces an earlier one, and a nil value removes its key. A key cannot be nil or NaN."),
+        corefn.reg("hash-set", &nfunHashSet, @src(), "(hash-set & xs)", "Create a new persistent set containing the elements xs. An element cannot be nil or NaN."),
+        corefn.reg("map/to-table", &nfunMapTotable, @src(), "(map/to-table m)", "Convert a map to a table. Returns a new table."),
+        corefn.reg("dissoc", &nfunDissoc, @src(), "(dissoc map & ks)", "Return a new persistent map without the keys ks. `map` is unchanged."),
+        corefn.reg("disj", &nfunDisj, @src(), "(disj set & xs)", "Return a new persistent set without the elements xs. `set` is unchanged."),
     };
     corefn.install(env, bindings);
     try registry.registerAbstractType(&set_type);
@@ -810,7 +810,7 @@ fn buildTree(kind: Kind, values: []const repr.Value, placed: []const Placed) *No
 }
 
 /// `disj`: a new set without the elements.
-fn cfunDisj(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDisj(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const src = try args_core.getAbstract(Tree, argv, 0, &set_type);
     var built = copyTree(src);
@@ -819,7 +819,7 @@ fn cfunDisj(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `dissoc`: a new map without the keys.
-fn cfunDissoc(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDissoc(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const src = try args_core.getMap(argv, 0);
     var built = copyTree(src);
@@ -828,7 +828,7 @@ fn cfunDissoc(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `map/to-table`: a map's entries copied into a new table.
-fn cfunMapTotable(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMapTotable(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const t = try args_core.getMap(argv, 0);
     const table = tables.new(t.count);
@@ -837,7 +837,7 @@ fn cfunMapTotable(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `hash-map`: a map of the key-value pairs in the arguments.
-fn cfunHashMap(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunHashMap(argv: []repr.Value) raise.Error!repr.Value {
     if (argv.len % 2 != 0) {
         return pp_format.panicf("expected an even number of keys and values, got %d", .{@as(i32, @intCast(argv.len))});
     }
@@ -847,7 +847,7 @@ fn cfunHashMap(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `hash-set`: a set of the arguments.
-fn cfunHashSet(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunHashSet(argv: []repr.Value) raise.Error!repr.Value {
     for (argv) |x| try checkKey(x);
     return wrap.fromAbstract(build(.set, argv));
 }

@@ -37,7 +37,7 @@
 //!
 //! ## Two things about how the subjects are reached
 //!
-//! A refusal is a value: this calls the cfunction and reads the error.
+//! A refusal is a value: this calls the nfunction and reads the error.
 //!
 //! The address structures come from `std.posix` rather than from the host
 //! headers. Building a `sockaddr_in` from the same translation the subject
@@ -96,7 +96,7 @@ const has_ipv6 = config.ipv6;
 /// Every name `net.libNet` registers, in the order it registers them. The
 /// order is not itself pinned, a table having none, but the list is: a
 /// binding that stops being registered is what this catches, and a
-/// registration table is the one place a cfunction can go missing without a
+/// registration table is the one place an nfunction can go missing without a
 /// link error.
 const net_bindings = [_][*:0]const u8{
     "net/address",     "net/listen",    "net/socket",    "net/accept",
@@ -145,8 +145,8 @@ fn expectRaisePrefix(name: [*:0]const u8, argv: []repr.Value, prefix: []const u8
     raises_seen += 1;
 }
 
-/// A cfunction expected to return, called by the name the registry has for it.
-/// This is the pointer `net.libNet` registered, so it is the same cfunction a
+/// An nfunction expected to return, called by the name the registry has for it.
+/// This is the pointer `net.libNet` registered, so it is the same nfunction a
 /// Janet call would reach.
 fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
     return harness.callCore(name, argv) catch
@@ -226,7 +226,7 @@ fn ip6(text: []const u8, port: u16) posix.sockaddr.in6 {
 
 fn theRegistration() void {
     expect(net_bindings.len == 17);
-    // `harness.core` asserts the binding resolves to a cfunction.
+    // `harness.core` asserts the binding resolves to an nfunction.
     for (net_bindings) |name| _ = harness.core(name);
 }
 
@@ -470,10 +470,10 @@ fn theStreamFaults() void {
         for (expected, 0..) |name, i| {
             expect(methods[i].name != null);
             expect(std.mem.eql(u8, std.mem.span(methods[i].name.?), name));
-            expect(methods[i].cfun != null);
+            expect(methods[i].nfun != null);
         }
         expect(methods[expected.len].name == null);
-        expect(methods[expected.len].cfun == null);
+        expect(methods[expected.len].nfun == null);
     }
 
     // `net/shutdown`'s vocabulary is three keywords.
@@ -501,7 +501,7 @@ fn theStreamFaults() void {
     }
 
     // A closed stream is refused before any host call is made, and the two
-    // name-reading cfunctions check it themselves rather than through
+    // name-reading nfunctions check it themselves rather than through
     // `ev/stream.streamFlags`.
     {
         const stream: *ev_stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(listener)));

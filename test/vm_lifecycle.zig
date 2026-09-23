@@ -26,8 +26,8 @@
 //!
 //! ## What only a contract inside the compilation can do
 //!
-//! The unregistered-cfunction case is unconditional here. Reading the
-//! cfunction registry entry without testing it for null would make decoding a
+//! The unregistered-nfunction case is unconditional here. Reading the
+//! nfunction registry entry without testing it for null would make decoding a
 //! cframe whose function was never registered a null dereference; this runtime
 //! consumes `debug.traceFrame`, which has the check.
 //!
@@ -231,7 +231,7 @@ fn theStateInitLeaves() raise.Error!void {
     // Sandbox.
     expect(harness.vm().sandbox_flags == vm_lifecycle.Sandbox.none);
 
-    // Cfunction registry: empty, and not yet sorted.
+    // Nfunction registry: empty, and not yet sorted.
     expect(std.meta.eql(harness.vm().registry, registry.Registry{}));
 
     // The empty case of a grown array, which is the ordinary state of three
@@ -403,7 +403,7 @@ fn aWattleFrame() void {
     expectString(built, "source", "vm-lifecycle-test");
     expect(harness.isType(frameGet(built, "function"), repr.Tag.function));
     expect(harness.isType(frameGet(built, "pc"), repr.Tag.number));
-    expectAbsent(built, "c");
+    expectAbsent(built, "native");
 
     // The source map, not the program counter, supplies the location for a
     // funcdef that has one.
@@ -498,21 +498,21 @@ fn aCapturedBindingOffTheStack() void {
     ));
 }
 
-/// The registered-cfunction case. `debug/stack` is itself the top frame, so it
+/// The registered-nfunction case. `debug/stack` is itself the top frame, so it
 /// describes its own registration: a prefixed name, the source file it was
 /// declared in, the line, and a column of one. That column is not measured
 /// from anything; it is a constant this consumer supplies, the registry having
 /// no column to give.
-fn aRegisteredCfunctionFrame() void {
+fn aRegisteredNfunctionFrame() void {
     const frames = eval("(debug/stack (fiber/current))");
     const built = wrap.toArray(frames).slice()[0];
 
-    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "native"), wrap.fromTrue()));
     expectAbsent(built, "function");
     expectAbsent(built, "slots");
     expectAbsent(built, "pc");
 
-    // A registered cfunction reports prefix/name.
+    // A registered nfunction reports prefix/name.
     expectString(built, "name", "debug/stack");
 
     expect(harness.isType(frameGet(built, "source"), repr.Tag.string));
@@ -520,9 +520,9 @@ fn aRegisteredCfunctionFrame() void {
     expectInteger(built, "source-column", 1);
 }
 
-fn aPrefixedCfunctionFrame() void {
+fn aPrefixedNfunctionFrame() void {
     const built = eval("(selfframe)");
-    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "native"), wrap.fromTrue()));
     expectString(built, "name", "vmlife/selfframe");
     expectAbsent(built, "source");
     expectAbsent(built, "source-line");
@@ -530,22 +530,22 @@ fn aPrefixedCfunctionFrame() void {
     expectAbsent(built, "function");
 }
 
-/// A cfunction registered with a prefix, which the core's own are not: every
+/// An nfunction registered with a prefix, which the core's own are not: every
 /// core registration puts the qualified name in `name` and leaves
 /// `name_prefix` null, so `debug/stack` above cannot tell a dropped prefix
-/// from a kept one. This one is registered through `registry.cfuns` with a
+/// from a kept one. This one is registered through `registry.nfuns` with a
 /// prefix, and with neither a source file nor a source line, so it also pins
 /// the two keys a registry entry without them must not produce.
 ///
 /// It reports its own frame, which is the only way to see a cframe that is not
 /// `debug/stack` itself.
-fn cfunSelfframe(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSelfframe(argv: []repr.Value) raise.Error!repr.Value {
     try subsystems.args.fixarity(argv, 0);
     return decode(harness.frame.current(harness.vm().fiber.?));
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "selfframe", .cfun = raise.stored(&cfunSelfframe), .documentation = "(selfframe)\n\nIts own stack frame." },
+const nfuns = [_]abi.Reg{
+    .{ .name = "selfframe", .nfun = raise.stored(&nfunSelfframe), .documentation = "(selfframe)\n\nIts own stack frame." },
 };
 
 /// A tail call is reported, and it is the one key that comes from the frame's
@@ -586,23 +586,23 @@ fn aFrameWithNoProgramCounter() void {
     expectAbsent(built, "source-line");
 }
 
-/// A cfunction that was never passed through `registry.cfuns` has no registry
+/// An nfunction that was never passed through `registry.nfuns` has no registry
 /// entry. The C implementation read the entry anyway; `debug.traceFrame`
 /// checks. See the header.
-fn unregisteredCfunction(argv: []repr.Value) raise.Error!repr.Value {
+fn unregisteredNfunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.fromNil();
 }
 
-fn anUnregisteredCfunctionFrame() void {
+fn anUnregisteredNfunctionFrame() void {
     const fnv = eval("(fn [] nil)");
     const fiber = fibers.new(wrap.toFunction(fnv), 64, &.{}) catch unreachable;
     gc_alloc.gcroot(wrap.fromFiber(fiber));
-    fibers.cframe(fiber, raise.stored(&unregisteredCfunction));
+    fibers.cframe(fiber, raise.stored(&unregisteredNfunction));
 
     const built = decode(harness.frame.current(fiber));
-    expect(harness.equals(frameGet(built, "c"), wrap.fromTrue()));
+    expect(harness.equals(frameGet(built, "native"), wrap.fromTrue()));
     expectAbsent(built, "name");
     expectAbsent(built, "source");
     expectAbsent(built, "source-line");
@@ -666,17 +666,17 @@ fn body() raise.Error!void {
 
     _ = try vm_lifecycle.init();
     test_env = harness.coreEnv();
-    registry.cfuns(test_env, "vmlife", &cfuns);
+    registry.nfuns(test_env, "vmlife", &nfuns);
 
     aWattleFrame();
     anAnonymousWattleFrame();
     aCapturedBinding();
     aCapturedBindingOffTheStack();
-    aRegisteredCfunctionFrame();
-    aPrefixedCfunctionFrame();
+    aRegisteredNfunctionFrame();
+    aPrefixedNfunctionFrame();
     aTailCallFrame();
     aFrameWithNoProgramCounter();
-    anUnregisteredCfunctionFrame();
+    anUnregisteredNfunctionFrame();
 
     vm_lifecycle.deinit();
     test_env = null;

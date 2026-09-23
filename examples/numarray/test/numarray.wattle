@@ -9,7 +9,7 @@
 (def env !{})
 (native module-path env)
 
-; `cfuns` passes the prefix to the *registry*, for stack traces, and leaves
+; `nfuns` passes the prefix to the *registry*, for stack traces, and leaves
 ; the binding unprefixed -- which is what the C original did too. An
 ; `(import ...)` is what puts `numarray/` in front of it.
 (def new ((env 'new) :value))

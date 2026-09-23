@@ -327,7 +327,7 @@ fn whatJdnRefuses() !void {
     checkBuffer(b, "{:a [1 ![2 \"x\"] 1.5]}");
 
     for ([_][*:0]const u8{
-        "print", // a cfunction has no source form
+        "print", // an nfunction has no source form
         "(keyword \"a b\")", // nor a keyword whose text would not lex
         "math/inf", // nor infinity
     }) |source| {

@@ -95,7 +95,7 @@ const type_colors = [16][*:0]const u8{
     "\x1B[36m", // tuple
     "\x1B[36m", // fiber
     "\x1B[36m", // function
-    "\x1B[36m", // cfunction
+    "\x1B[36m", // nfunction
     "\x1B[36m", // abstract
     "\x1B[36m", // pointer
 };

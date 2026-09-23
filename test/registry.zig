@@ -1,5 +1,5 @@
 //! Behavioral contract for the half of the runtime substrate that owns VM
-//! state: the cfunction registry, the four registration entry points,
+//! state: the nfunction registry, the four registration entry points,
 //! bindings, symbol resolution, the abstract-type registry, and text
 //! substitution.
 //!
@@ -65,8 +65,8 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-const family: [family_size]abi.CFunction = blk: {
-    var keys: [family_size]abi.CFunction = undefined;
+const family: [family_size]abi.NFunction = blk: {
+    var keys: [family_size]abi.NFunction = undefined;
     for (&keys, 0..) |*slot, i| slot.* = keyOf(100 + @as(i32, @intCast(i)));
     break :blk keys;
 };
@@ -105,7 +105,7 @@ fn cstringIs(s: ?[*:0]const u8, expected: []const u8) bool {
     return std.mem.eql(u8, std.mem.span(s.?), expected);
 }
 
-/// A cfunction that exists only to be a registry key.
+/// An nfunction that exists only to be a registry key.
 fn Probe(comptime tag: i32) type {
     return struct {
         fn run(argv: []repr.Value) raise.Error!repr.Value {
@@ -116,7 +116,7 @@ fn Probe(comptime tag: i32) type {
     };
 }
 
-fn keyOf(comptime tag: i32) abi.CFunction {
+fn keyOf(comptime tag: i32) abi.NFunction {
     return raise.stored(&Probe(tag).run);
 }
 
@@ -133,7 +133,7 @@ fn theRegistryRecordsWhatItWasGiven() void {
     var found = registry.registryGet(probe_two);
     expect(harness.vm().registry.dirty == false);
     expect(found != null);
-    expect(found.?.cfun == probe_two);
+    expect(found.?.nfun == probe_two);
     expect(cstringIs(found.?.name, "probe/two"));
     // `registry.register` passes no prefix and no source location.
     expect(found.?.name_prefix == null);
@@ -141,11 +141,11 @@ fn theRegistryRecordsWhatItWasGiven() void {
     expect(found.?.source_line == 0);
 
     found = registry.registryGet(probe_one);
-    expect(found != null and found.?.cfun == probe_one);
+    expect(found != null and found.?.nfun == probe_one);
     found = registry.registryGet(probe_three);
-    expect(found != null and found.?.cfun == probe_three);
+    expect(found != null and found.?.nfun == probe_three);
 
-    // A cfunction that was never registered gives null rather than a
+    // An nfunction that was never registered gives null rather than a
     // neighbouring row. `debug.zig`'s frame walk tests for that null; reading
     // the row without testing is a dereference of it.
     expect(registry.registryGet(probe_unregistered) == null);
@@ -156,7 +156,7 @@ fn theRegistryRecordsWhatItWasGiven() void {
     registry.register("probe/one-again", probe_one);
     expect(harness.vm().registry.rows.items.len == again + 1);
     found = registry.registryGet(probe_one);
-    expect(found != null and found.?.cfun == probe_one);
+    expect(found != null and found.?.nfun == probe_one);
 }
 
 /// The sort is by pointer and orders the *whole* array, not only the rows this
@@ -178,13 +178,13 @@ fn theSortIsTotalOverDistinctKeys() void {
     for (family) |key| {
         const row = registry.registryGet(key);
         expect(row != null);
-        expect(row.?.cfun == key);
+        expect(row.?.nfun == key);
     }
 
     const rows = harness.vm().registry.rows.items;
     var i: usize = 1;
     while (i < rows.len) : (i += 1) {
-        expect(@intFromPtr(rows[i - 1].cfun) <= @intFromPtr(rows[i].cfun));
+        expect(@intFromPtr(rows[i - 1].nfun) <= @intFromPtr(rows[i].nfun));
     }
 }
 
@@ -228,12 +228,12 @@ fn theLookupAgreesWithAWalk() void {
     for (rows) |row| {
         var expected: ?*const registry.Row = null;
         for (rows) |*candidate| {
-            if (candidate.cfun == row.cfun) {
+            if (candidate.nfun == row.nfun) {
                 expected = candidate;
                 break;
             }
         }
-        const found = registry.registryGet(row.cfun);
+        const found = registry.registryGet(row.nfun);
         expect(found != null);
         expect(found.? == expected.?);
     }
@@ -246,7 +246,7 @@ fn theLookupAgreesWithAWalk() void {
 const c_reg_ext = [_]abi.Reg{
     .{
         .name = "three",
-        .cfun = probe_three,
+        .nfun = probe_three,
         .documentation = "the third",
         .source_file = "probe.c",
         .source_line = 42,
@@ -257,15 +257,15 @@ const c_reg_ext = [_]abi.Reg{
 /// The same two rows as a table inside the runtime: one `Reg`, a slice, no
 /// terminator.
 const probe_reg = [_]abi.Reg{
-    .{ .name = "one", .cfun = probe_one, .documentation = "the first" },
-    .{ .name = "two", .cfun = probe_two, .documentation = null },
+    .{ .name = "one", .nfun = probe_one, .documentation = "the first" },
+    .{ .name = "two", .nfun = probe_two, .documentation = null },
 };
 
 /// A longer name and then a shorter one, so the prefixing buffer still holds
 /// the tail of the first name when the second is written over it.
 const shrinking_reg = [_]abi.Reg{
-    .{ .name = "longer", .cfun = probe_one, .documentation = null },
-    .{ .name = "ab", .cfun = probe_two, .documentation = null },
+    .{ .name = "longer", .nfun = probe_one, .documentation = null },
+    .{ .name = "ab", .nfun = probe_two, .documentation = null },
 };
 
 /// The entry a def builds: a table with `:value`, and `:doc` and `:source-map`
@@ -274,7 +274,7 @@ fn checkEntry(env: *tables.Table, name: [*:0]const u8, has_doc: bool, has_map: b
     const entry = tables.get(env, value.fromBytes(std.mem.span(name), .symbol));
     expect(harness.isType(entry, repr.Tag.table));
     const t = wrap.toTable(entry);
-    expect(harness.isType(tables.get(t, value.fromBytes("value", .keyword)), repr.Tag.cfunction));
+    expect(harness.isType(tables.get(t, value.fromBytes("value", .keyword)), repr.Tag.nfunction));
     expect(harness.isType(tables.get(t, value.fromBytes("doc", .keyword)), repr.Tag.nil) != has_doc);
     expect(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil) != has_map);
 }
@@ -282,13 +282,13 @@ fn checkEntry(env: *tables.Table, name: [*:0]const u8, has_doc: bool, has_map: b
 /// The one entry point a native module reaches by symbol, and the sentinel
 /// adapter behind it.
 ///
-/// `cfuns_ext` is the whole of `module.zig`'s registration surface, and
+/// `nfuns_ext` is the whole of `module.zig`'s registration surface, and
 /// `abi.Reg` is the one row shape. There is no narrow row to widen, so the
 /// only thing to check is that a full row registers with its source map.
 fn thePublishedEntryPointDefinesAndRegisters() void {
     const env = tables.new(4);
 
-    capi.cfuns_ext(@ptrCast(env), "probe", &c_reg_ext);
+    capi.nfuns_ext(@ptrCast(env), "probe", &c_reg_ext);
     checkEntry(env, "three", true, true);
 
     const entry = tables.get(env, value.fromBytes("three", .symbol));
@@ -310,7 +310,7 @@ fn thePublishedEntryPointDefinesAndRegisters() void {
 fn thePrefixingFormRewritesOnlyTheName() void {
     const env = tables.new(4);
 
-    registry.cfunsPrefix(env, "pre", &probe_reg);
+    registry.nfunsPrefix(env, "pre", &probe_reg);
     checkEntry(env, "pre/one", true, false);
     checkEntry(env, "pre/two", false, false);
     expect(harness.isType(tables.get(env, value.fromBytes("one", .symbol)), repr.Tag.nil));
@@ -322,7 +322,7 @@ fn thePrefixingFormRewritesOnlyTheName() void {
         big[big.len - 1] = 0;
         var expected: [420]u8 = @splat(0);
         const env2 = tables.new(4);
-        registry.cfunsPrefix(env2, @ptrCast(&big), &probe_reg);
+        registry.nfunsPrefix(env2, @ptrCast(&big), &probe_reg);
         _ = std.fmt.bufPrint(&expected, "{s}/one", .{big[0 .. big.len - 1]}) catch unreachable;
         checkEntry(env2, @ptrCast(&expected), true, false);
     }
@@ -331,15 +331,15 @@ fn thePrefixingFormRewritesOnlyTheName() void {
     // terminator is all that ends a shorter one.
     {
         const env3 = tables.new(4);
-        registry.cfunsPrefix(env3, "pre", &shrinking_reg);
+        registry.nfunsPrefix(env3, "pre", &shrinking_reg);
         checkEntry(env3, "pre/longer", false, false);
         checkEntry(env3, "pre/ab", false, false);
     }
 
     // A null environment registers without defining, and must not build a name
     // buffer at all. Both surviving entry points take it.
-    capi.cfuns_ext(null, "probe", &c_reg_ext);
-    registry.cfunsPrefix(null, "probe", &probe_reg);
+    capi.nfuns_ext(null, "probe", &c_reg_ext);
+    registry.nfunsPrefix(null, "probe", &probe_reg);
 }
 
 /// The two entry points a table *inside* the runtime uses, which take a slice
@@ -352,23 +352,23 @@ fn thePrefixingFormRewritesOnlyTheName() void {
 fn theSliceFormsInstallTheSameRows() void {
     const env = tables.new(4);
 
-    registry.cfuns(env, "probe", &probe_reg);
+    registry.nfuns(env, "probe", &probe_reg);
     checkEntry(env, "one", true, false);
     checkEntry(env, "two", false, false);
     // Two rows, and nothing past them: the terminator is not what stopped it.
     expect(probe_reg.len == 2);
 
     const env2 = tables.new(4);
-    registry.cfunsPrefix(env2, "pre", &probe_reg);
+    registry.nfunsPrefix(env2, "pre", &probe_reg);
     checkEntry(env2, "pre/one", true, false);
     expect(harness.isType(tables.get(env2, value.fromBytes("one", .symbol)), repr.Tag.nil));
 
-    registry.cfuns(null, "probe", &probe_reg);
-    registry.cfunsPrefix(null, "probe", &probe_reg);
+    registry.nfuns(null, "probe", &probe_reg);
+    registry.nfunsPrefix(null, "probe", &probe_reg);
 
     // An empty table is the case a sentinel array cannot express without a
     // row, and a slice can.
-    registry.cfuns(env2, "probe", &.{});
+    registry.nfuns(env2, "probe", &.{});
 }
 
 /// `registry.defVarAbi` is the reporting form over `registry.defVarSm`, which
@@ -550,7 +550,7 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Error!void {
 fn theCoreFormsReachTheCoreEnvironment() void {
     // `registry.resolveCore` and `registry.getCoreTable` reach the core
     // environment rather than one the caller built.
-    expect(harness.isType(registry.resolveCore("string/find"), repr.Tag.cfunction));
+    expect(harness.isType(registry.resolveCore("string/find"), repr.Tag.nfunction));
     expect(harness.isType(registry.resolveCore("no-such-binding-17f"), repr.Tag.nil));
 
     expect(registry.getCoreTable("module/cache") != null);
@@ -621,17 +621,17 @@ fn substitutionMemoizesAValueAndCallsACallable() raise.Error!void {
     view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     expect(bytesAre(view, "42"));
 
-    // A cfunction is called with the matched text.
+    // An nfunction is called with the matched text.
     subst = registry.resolveCore("string/ascii-upper");
-    expect(harness.isType(subst, repr.Tag.cfunction));
+    expect(harness.isType(subst, repr.Tag.nfunction));
     view = try registry.textSubstitution(&subst, matched[0..@intCast(2)], null);
     expect(bytesAre(view, "AB"));
     // The slot is *not* memoized for a callable: it must be called again for
     // the next match.
-    expect(harness.isType(subst, repr.Tag.cfunction));
+    expect(harness.isType(subst, repr.Tag.nfunction));
 
-    // A raising cfunction. `textSubstitution` is raise-capable and invokes
-    // the cfunction pointer itself, so the refusal arrives as its return
+    // A raising nfunction. `textSubstitution` is raise-capable and invokes
+    // the nfunction pointer itself, so the refusal arrives as its return
     // value.
     var finder = registry.resolveCore("string/find");
     const refusal = harness.raised(

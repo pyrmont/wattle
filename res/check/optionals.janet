@@ -146,7 +146,7 @@
   Their null is the local's own progress -- "has the first pass happened yet"
   -- rather than a value that may be absent, and a function that both tests one
   and asserts it at the end is not contradicting itself: the test is what makes
-  the assertion true. `structs.cfunStructToTable` is the type, and it is a
+  the assertion true. `structs.nfunStructToTable` is the type, and it is a
   different class rather than an exemption because the shape is decidable.``
   (def seen @{})
   (each i (string/find-all "var " body)

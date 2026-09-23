@@ -46,7 +46,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-buffer.wattle" },
     .{ .path = "test/suite-bundle.wattle", .needs_os = true },
     .{ .path = "test/suite-capi.wattle" },
-    .{ .path = "test/suite-cfuns.wattle" },
+    .{ .path = "test/suite-nfuns.wattle" },
     .{ .path = "test/suite-compile.wattle" },
     .{ .path = "test/suite-corelib.wattle" },
     .{ .path = "test/suite-debug.wattle" },
@@ -355,7 +355,7 @@ pub const QuickbinOptions = struct {
 /// `wattle -c` compiles `source`. Each native is also built for the target as
 /// an object whose entry symbols carry its name, and `src/client/quickbin.zig`
 /// adds the same modules under the same names before it loads the image, so
-/// every cfunction and abstract value the image names resolves.
+/// every nfunction and abstract value the image names resolves.
 ///
 /// The executable is returned uninstalled.
 pub fn quickbin(
@@ -531,7 +531,7 @@ pub fn build(b: *std.Build) void {
     // neighbours through the symbol table -- and that ended when the C API
     // did: there is no C API left to be an embedder of. The
     // import is what lets `cli.zig` write `try` at a raise and hold a
-    // `raise.CFunction` rather than an `.auto`-convention pointer across a
+    // `raise.NFunction` rather than an `.auto`-convention pointer across a
     // compilation boundary.
     const client_module = b.createModule(.{
         .root_source_file = b.path("src/client/cli.zig"),
@@ -560,7 +560,7 @@ pub fn build(b: *std.Build) void {
     // `rdynamic` puts the export table in the binary, and the linker's
     // dead-strip then removes every symbol the client itself never calls.
     // Measured at `HEAD` — the Debug client exports **691** and the
-    // `ReleaseSafe` client **92**, with `cfuns_ext` and `abstract`
+    // `ReleaseSafe` client **92**, with `nfuns_ext` and `abstract`
     // among the six hundred that go. So a module has only ever been able to
     // reach whatever the interpreter happened to reference, and the old
     // `test/zig-native.wattle` fixture passed because its four names were in
@@ -654,7 +654,7 @@ pub fn build(b: *std.Build) void {
     installModuleTest(b, options, config, url_module);
 
     // `examples/digest`, the worked example of scheduling work through the
-    // event loop: one cfunction that hashes on a thread of its own, so the
+    // event loop: one nfunction that hashes on a thread of its own, so the
     // loop is never blocked.
     const digest_module = nativeModule(
         b,
@@ -811,7 +811,7 @@ pub fn build(b: *std.Build) void {
         const exe = selectBackend(b.addExecutable(.{ .name = "wattle-contract-test", .root_module = module }));
         applyLinkage(exe, options, target);
         // A contract may load the native-module fixture, and a contract that
-        // registers a cfunction the runtime later names needs its own symbols
+        // registers an nfunction the runtime later names needs its own symbols
         // visible for the same reason the client does.
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
@@ -902,8 +902,8 @@ pub fn build(b: *std.Build) void {
                 "contents are read.",
         },
         .{
-            .file = "test/module-errors/wrong_cfunction.zig",
-            .phrase = "cfunction 'identity': it takes its arguments as one `[]Value` slice, " ++
+            .file = "test/module-errors/wrong_nfunction.zig",
+            .phrase = "nfunction 'identity': it takes its arguments as one `[]Value` slice, " ++
                 "not a count and a pointer. It must be `fn (argv: []Value) Error!Value`",
         },
         .{
@@ -911,7 +911,7 @@ pub fn build(b: *std.Build) void {
             // The tail only: the anonymous-union suffix Zig gives `Value`
             // changes per compilation, so a phrase containing the given type
             // would be a check on the compiler's numbering.
-            .phrase = "A cfunction returns a `Value` or raises, so the type is exactly " ++
+            .phrase = "An nfunction returns a `Value` or raises, so the type is exactly " ++
                 "`Error!Value`: a wider error set is reinterpreted at the call rather " ++
                 "than diagnosed here.",
         },
@@ -1457,12 +1457,12 @@ fn coreImage(
     // The generator gets the same subsystems as the runtime, built a second
     // time because they must run on the host -- see `boot_host` in `build` -- and
     // with `bootstrap` set. `src/runtime/corefn.zig` is what reads it: a core
-    // cfunction carries its docstring in the generator and not in the runtime,
+    // nfunction carries its docstring in the generator and not in the runtime,
     // and defines a binding where the runtime only puts a value. `bootConfig`
     // says which fields come from the target and which from the host.
     //
     // The generator could not be anything but Zig: it registers the whole core
-    // environment, so it needs every cfunction there is, and a cfunction is a
+    // environment, so it needs every nfunction there is, and an nfunction is a
     // Zig function.
     //
     // It gets its own instance of the graph, built for `boot_host` and carrying
@@ -2006,7 +2006,7 @@ const ValueRepr = enum { nanbox_64, nanbox_32, tagged };
 /// and the guesswork goes.
 const Config = struct {
     /// Whether this compilation is the image generator rather than the
-    /// runtime. `bootConfig` sets it. A core cfunction table carries docstrings
+    /// runtime. `bootConfig` sets it. A core nfunction table carries docstrings
     /// in the generator and not in the runtime, and `src/runtime/corefn.zig`
     /// reads it to select.
     bootstrap: bool,
@@ -2172,7 +2172,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         else => false,
     });
 
-    // The shift discards the low bits of a wrapped pointer, and a cfunction's
+    // The shift discards the low bits of a wrapped pointer, and an nfunction's
     // address is wrapped, so the shift cannot exceed the alignment every
     // function address has. A64 instructions are 4 bytes, so on aarch64 that
     // is two bits. No other target is given a nonzero ceiling.
@@ -2182,7 +2182,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         if (shift < 0) @panic("-Dnanbox-pointer-shift cannot be negative");
         if (shift > shift_ceiling) std.debug.panic(
             "-Dnanbox-pointer-shift={d} is above {d}, the ceiling for {s}. The shift " ++
-                "discards the low bits of a cfunction's address, so it cannot exceed " ++
+                "discards the low bits of an nfunction's address, so it cannot exceed " ++
                 "the alignment of every function address: A64 instructions are 4 " ++
                 "bytes, so the ceiling is 2 on aarch64 and 0 on every other target.",
             .{ shift, shift_ceiling, @tagName(target.result.cpu.arch) },
@@ -2671,7 +2671,7 @@ fn makeRuntimeGraph(
 
     // The module boundary's declarations. In the runtime because `raise.zig`
     // -- which compiles into an author's module as well as into `root` --
-    // names `abi.Signal` and `abi.JanetCFunction`. One instance, so that the
+    // names `abi.Signal` and `abi.NFunction`. One instance, so that the
     // runtime's `AbstractType` and an author's are one type.
     const abi_module = b.createModule(.{
         .root_source_file = b.path("src/api/abi.zig"),

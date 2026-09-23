@@ -1309,7 +1309,7 @@ fn addFiberTimeout(sec: f64, is_error: bool) void {
 }
 
 /// `(ev/all-tasks)`.
-fn cfunAllTasks(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAllTasks(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const sched = &vm_state.current().ev;
@@ -1322,7 +1322,7 @@ fn cfunAllTasks(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/cancel fiber err)`.
-fn cfunCancel(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCancel(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const fiber = try args_core.getFiber(argv, 0);
     try cancel(fiber, argv[1]);
@@ -1330,7 +1330,7 @@ fn cfunCancel(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/deadline sec &opt tocancel body interrupt)`.
-fn cfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var sec = try args_core.getNumber(argv, 0);
     if (sec < 0) sec = 0;
@@ -1392,7 +1392,7 @@ fn cfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/give-supervisor tag & payload)`.
-fn cfunGiveSupervisor(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGiveSupervisor(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const chanv = vm_state.current().root_fiber.?.supervisor_channel;
     if (chanv != null) {
@@ -1405,7 +1405,7 @@ fn cfunGiveSupervisor(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/go func &opt value supervisor)`.
-fn cfunGo(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const val = if (argv.len >= 2) argv[1] else wrap.fromNil();
     const supervisor = try args_core.optAbstract(
@@ -1442,7 +1442,7 @@ fn cfunGo(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/lock)`.
-fn cfunMutex(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMutex(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const mutex = abstracts.threaded(&mutexType, os_locks.mutexSize());
@@ -1451,7 +1451,7 @@ fn cfunMutex(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/acquire-lock lock)`.
-fn cfunMutexAcquire(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMutexAcquire(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const mutex = try args_core.getAbstract(anyopaque, argv, 0, &mutexType);
     os_locks.mutexLock(@ptrCast(mutex));
@@ -1459,7 +1459,7 @@ fn cfunMutexAcquire(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/release-lock lock)`.
-fn cfunMutexRelease(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMutexRelease(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const mutex = try args_core.getAbstract(anyopaque, argv, 0, &mutexType);
     try os_locks.mutexUnlock(@ptrCast(mutex));
@@ -1467,7 +1467,7 @@ fn cfunMutexRelease(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/rwlock)`.
-fn cfunRwlock(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRwlock(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const rwlock = abstracts.threaded(&rwlockType, os_locks.rwlockSize());
@@ -1476,7 +1476,7 @@ fn cfunRwlock(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/acquire-rlock rwlock)`.
-fn cfunRwlockReadLock(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRwlockReadLock(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockRlock(@ptrCast(rwlock));
@@ -1484,7 +1484,7 @@ fn cfunRwlockReadLock(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/release-rlock rwlock)`.
-fn cfunRwlockReadRelease(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRwlockReadRelease(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockRunlock(@ptrCast(rwlock));
@@ -1492,7 +1492,7 @@ fn cfunRwlockReadRelease(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/acquire-wlock rwlock)`.
-fn cfunRwlockWriteLock(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRwlockWriteLock(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockWlock(@ptrCast(rwlock));
@@ -1500,7 +1500,7 @@ fn cfunRwlockWriteLock(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/release-wlock rwlock)`.
-fn cfunRwlockWriteRelease(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRwlockWriteRelease(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rwlock = try args_core.getAbstract(anyopaque, argv, 0, &rwlockType);
     os_locks.rwlockWunlock(@ptrCast(rwlock));
@@ -1508,14 +1508,14 @@ fn cfunRwlockWriteRelease(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/sleep sec)`.
-fn cfunSleep(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSleep(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const sec = try args_core.getNumber(argv, 0);
     return sleepAwait(sec);
 }
 
 /// `(ev/thread func &opt value flags supervisor)`.
-fn cfunThread(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunThread(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"threads"}));
     try args_core.arity(argv, 1, 4);
     const val = if (argv.len >= 2) argv[1] else wrap.fromNil();
@@ -1528,7 +1528,7 @@ fn cfunThread(argv: []repr.Value) raise.Error!repr.Value {
         _ = try args_core.getFiber(argv, 0); // arg check for fiber
     }
     var flags: u64 = 0;
-    if (argv.len >= 3) flags = try args_core.getFlags(argv, 2, "nact");
+    if (argv.len >= 3) flags = try args_core.getFlags(argv, 2, "iant");
     const supervisor = try args_core.optAbstract(
         argv,
         3,
@@ -1639,7 +1639,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
         v.user = wrap.toPointer(sup);
     }
 
-    // Set cfunction registry.
+    // Set nfunction registry.
     if (flags & 0x4 == 0) {
         var count1: u32 = undefined;
         @memcpy(std.mem.asBytes(&count1), ctx.next[0..@sizeOf(u32)]);
@@ -1816,16 +1816,16 @@ fn lockEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/lock", &cfunMutex, @src(), "(ev/lock)", "Create a new lock to coordinate threads."),
-            corefn.reg("ev/acquire-lock", &cfunMutexAcquire, @src(), "(ev/acquire-lock lock)", "Acquire a lock such that this operating system thread is the only thread with access to this resource." ++
+            corefn.reg("ev/lock", &nfunMutex, @src(), "(ev/lock)", "Create a new lock to coordinate threads."),
+            corefn.reg("ev/acquire-lock", &nfunMutexAcquire, @src(), "(ev/acquire-lock lock)", "Acquire a lock such that this operating system thread is the only thread with access to this resource." ++
                 " This will block this entire thread until the lock becomes available, and will not yield to other fibers " ++
                 "on this system thread."),
-            corefn.reg("ev/release-lock", &cfunMutexRelease, @src(), "(ev/release-lock lock)", "Release a lock such that other threads may acquire it."),
-            corefn.reg("ev/rwlock", &cfunRwlock, @src(), "(ev/rwlock)", "Create a new read-write lock to coordinate threads."),
-            corefn.reg("ev/acquire-rlock", &cfunRwlockReadLock, @src(), "(ev/acquire-rlock rwlock)", "Acquire a read lock an a read-write lock."),
-            corefn.reg("ev/acquire-wlock", &cfunRwlockWriteLock, @src(), "(ev/acquire-wlock rwlock)", "Acquire a write lock on a read-write lock."),
-            corefn.reg("ev/release-rlock", &cfunRwlockReadRelease, @src(), "(ev/release-rlock rwlock)", "Release a read lock on a read-write lock"),
-            corefn.reg("ev/release-wlock", &cfunRwlockWriteRelease, @src(), "(ev/release-wlock rwlock)", "Release a write lock on a read-write lock"),
+            corefn.reg("ev/release-lock", &nfunMutexRelease, @src(), "(ev/release-lock lock)", "Release a lock such that other threads may acquire it."),
+            corefn.reg("ev/rwlock", &nfunRwlock, @src(), "(ev/rwlock)", "Create a new read-write lock to coordinate threads."),
+            corefn.reg("ev/acquire-rlock", &nfunRwlockReadLock, @src(), "(ev/acquire-rlock rwlock)", "Acquire a read lock an a read-write lock."),
+            corefn.reg("ev/acquire-wlock", &nfunRwlockWriteLock, @src(), "(ev/acquire-wlock rwlock)", "Acquire a write lock on a read-write lock."),
+            corefn.reg("ev/release-rlock", &nfunRwlockReadRelease, @src(), "(ev/release-rlock rwlock)", "Release a read lock on a read-write lock"),
+            corefn.reg("ev/release-wlock", &nfunRwlockWriteRelease, @src(), "(ev/release-wlock rwlock)", "Release a write lock on a read-write lock"),
         };
         break :blk acc;
     };
@@ -1907,7 +1907,7 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/go", &cfunGo, @src(), "(ev/go fiber-or-fun &opt value supervisor)", "Put a fiber on the event loop to be resumed later. If a " ++
+            corefn.reg("ev/go", &nfunGo, @src(), "(ev/go fiber-or-fun &opt value supervisor)", "Put a fiber on the event loop to be resumed later. If a " ++
                 "function is used, it is wrapped with `fiber/new` first. " ++
                 "Returns a task fiber. Optionally pass a value to resume " ++
                 "with, otherwise resumes with nil. An optional `core/channel` " ++
@@ -1915,28 +1915,28 @@ fn selfEntries() []const corefn.Entry {
                 "in the newly scheduled fiber, an event will be pushed to the " ++
                 "supervisor. If not provided, the new fiber will inherit the " ++
                 "current supervisor."),
-            corefn.reg("ev/thread", &cfunThread, @src(), "(ev/thread main &opt value flags supervisor)", "Run `main` in a new operating system thread, optionally passing `value` " ++
+            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main &opt value flags supervisor)", "Run `main` in a new operating system thread, optionally passing `value` " ++
                 "to resume with. The parameter `main` can either be a fiber, or a function that accepts " ++
                 "0 or 1 arguments. " ++
                 "Unlike `ev/go`, this function will suspend the current fiber until the thread is complete. " ++
-                "If you want to run the thread without waiting for a result, pass the `:n` flag to return nil immediately. " ++
+                "If you want to run the thread without waiting for a result, pass the `:i` flag to return nil immediately. " ++
                 "Otherwise, returns nil. Available flags:\n\n" ++
-                "* `:n` - return immediately\n" ++
+                "* `:i` - return immediately\n" ++
                 "* `:t` - set the task-id of the new thread to value. The task-id is passed in messages to the supervisor channel.\n" ++
                 "* `:a` - don't copy abstract registry to new thread (performance optimization)\n" ++
-                "* `:c` - don't copy cfunction registry to new thread (performance optimization)"),
-            corefn.reg("ev/give-supervisor", &cfunGiveSupervisor, @src(), "(ev/give-supervisor tag & payload)", "Send a message to the current supervisor channel if there is one. The message will be a " ++
+                "* `:n` - don't copy nfunction registry to new thread (performance optimization)"),
+            corefn.reg("ev/give-supervisor", &nfunGiveSupervisor, @src(), "(ev/give-supervisor tag & payload)", "Send a message to the current supervisor channel if there is one. The message will be a " ++
                 "tuple of all of the arguments combined into a single message, where the first element is tag. " ++
                 "By convention, tag should be a keyword indicating the type of message. Returns nil."),
-            corefn.reg("ev/sleep", &cfunSleep, @src(), "(ev/sleep sec)", "Suspend the current fiber for sec seconds without blocking the event loop."),
-            corefn.reg("ev/deadline", &cfunDeadline, @src(), "(ev/deadline sec &opt tocancel tocheck intr?)", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
+            corefn.reg("ev/sleep", &nfunSleep, @src(), "(ev/sleep sec)", "Suspend the current fiber for sec seconds without blocking the event loop."),
+            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec &opt tocancel tocheck intr?)", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
                 "After `sec` seconds, the event loop will attempt cancellation of `tocancel` if the " ++
                 "`tocheck` fiber is resumable. `sec` is a number that can have a fractional part. " ++
                 "`tocancel` defaults to `(fiber/root)`, but if specified, must be a task (root " ++
                 "fiber). `tocheck` defaults to `(fiber/current)`, but if specified, must be a fiber. " ++
                 "Returns `tocancel` immediately. If `interrupt?` is set to true, will create a " ++
                 "background thread to try to interrupt the VM if the timeout expires."),
-            corefn.reg("ev/cancel", &cfunCancel, @src(), "(ev/cancel fiber err)", "Cancel a suspended task fiber in the event loop. Differs from " ++
+            corefn.reg("ev/cancel", &nfunCancel, @src(), "(ev/cancel fiber err)", "Cancel a suspended task fiber in the event loop. Differs from " ++
                 "`cancel` in that it returns the canceled fiber immediately."),
         };
         break :blk acc;
@@ -1949,7 +1949,7 @@ fn tailEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/all-tasks", &cfunAllTasks, @src(), "(ev/all-tasks)", "Get an array of all active task fibers that are being used by the scheduler."),
+            corefn.reg("ev/all-tasks", &nfunAllTasks, @src(), "(ev/all-tasks)", "Get an array of all active task fibers that are being used by the scheduler."),
         };
         break :blk acc;
     };

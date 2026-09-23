@@ -172,7 +172,7 @@ fn unknownMachineTypes() void {
 
 /// All four convention names decode on every target, and `default` is not one
 /// of them.
-fn cfunCallingConventions() void {
+fn nfunCallingConventions() void {
     // Every convention decodes on every target, including the three that this
     // build cannot call through.
     expect(cc("none") == cc_none);
@@ -457,7 +457,7 @@ pub fn run() void {
     machineTypeAliases();
     wordSizedMachineTypes();
     unknownMachineTypes();
-    cfunCallingConventions();
+    nfunCallingConventions();
 
     typeExtents();
 

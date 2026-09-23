@@ -204,10 +204,10 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
                 try stringDescriptionB(buffer, t.name, p);
             }
         },
-        repr.Tag.cfunction => {
-            const reg = registry.registryGet(wrap.toCfunction(x)) orelse
+        repr.Tag.nfunction => {
+            const reg = registry.registryGet(wrap.toNfunction(x)) orelse
                 return genericDescriptionB(buffer, x);
-            try buffers.pushCString(buffer, "<cfunction ");
+            try buffers.pushCString(buffer, "<nfunction ");
             if (reg.name_prefix) |prefix| {
                 try buffers.pushCString(buffer, prefix);
                 try buffers.pushU8(buffer, '/');
@@ -257,7 +257,7 @@ fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Error!void 
 }
 
 /// The `<type 0x...>` fallback, which three cases in `toStringB` reach: an
-/// unregistered cfunction, a function with no name, and everything with no
+/// unregistered nfunction, a function with no name, and everything with no
 /// case of its own.
 fn genericDescriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     try stringDescriptionB(buffer, utils.typeNames[@intFromEnum(repr.typeOf(x))], wrap.toPointer(x));

@@ -11,7 +11,7 @@
 ; rather than on `WATTLE_PATH`; everything after this line is what someone who
 ; had installed the module would write.
 ;
-; `cfuns` passes its prefix to the *registry*, for stack traces, and leaves the
+; `nfuns` passes its prefix to the *registry*, for stack traces, and leaves the
 ; binding unprefixed -- so `url/` in front of these names comes from the
 ; `:prefix` here, exactly as it would from `(import url)`.
 (import* module-path :prefix "url/")

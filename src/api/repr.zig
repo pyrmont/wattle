@@ -192,7 +192,7 @@ pub const Tag = enum(u4) {
     tuple,
     fiber,
     function,
-    cfunction,
+    nfunction,
     abstract,
     pointer,
 };
@@ -223,7 +223,7 @@ pub const TagSet = packed struct(u16) {
     tuple: bool = false,
     fiber: bool = false,
     function: bool = false,
-    cfunction: bool = false,
+    nfunction: bool = false,
     abstract: bool = false,
     pointer: bool = false,
 
@@ -235,7 +235,7 @@ pub const TagSet = packed struct(u16) {
     pub const indexed = of(&.{ .array, .vector, .tuple });
     pub const dictionary = of(&.{ .table, .map });
     pub const lengthable = bytes.with(indexed).with(dictionary);
-    pub const callable = of(&.{ .function, .cfunction, .abstract }).with(lengthable);
+    pub const callable = of(&.{ .function, .nfunction, .abstract }).with(lengthable);
 
     pub fn one(t: Tag) TagSet {
         return fromBits(@as(u16, 1) << @intFromEnum(t));
@@ -439,7 +439,7 @@ pub const nanbox64 = struct {
     /// `p` must have its low `pointer_shift` bits clear, because the shift
     /// discards them and `toPointer` does not restore them. When the shift is
     /// nonzero, a Debug or ReleaseSafe build asserts this on every wrap.
-    /// `runtime/registry.zig`'s `checkPointerAlign` also checks each cfunction
+    /// `runtime/registry.zig`'s `checkPointerAlign` also checks each nfunction
     /// and abstract type once, at registration, in every build mode.
     pub inline fn fromPointer(p: ?*anyopaque, tagmask: u64) Value {
         if (pointer_shift != 0) {
@@ -624,7 +624,7 @@ comptime {
         .{ Tag.buffer, 3 },    .{ Tag.string, 4 },     .{ Tag.array, 5 },
         .{ Tag.vector, 6 },    .{ Tag.table, 7 },      .{ Tag.map, 8 },
         .{ Tag.symbol, 9 },    .{ Tag.tuple, 10 },     .{ Tag.fiber, 11 },
-        .{ Tag.function, 12 }, .{ Tag.cfunction, 13 }, .{ Tag.abstract, 14 },
+        .{ Tag.function, 12 }, .{ Tag.nfunction, 13 }, .{ Tag.abstract, 14 },
         .{ Tag.pointer, 15 },
     };
     for (expected) |pair| {
@@ -654,7 +654,7 @@ comptime {
     std.debug.assert(TagSet.one(.tuple).bits() == 0x0400);
     std.debug.assert(TagSet.one(.fiber).bits() == 0x0800);
     std.debug.assert(TagSet.one(.function).bits() == 0x1000);
-    std.debug.assert(TagSet.one(.cfunction).bits() == 0x2000);
+    std.debug.assert(TagSet.one(.nfunction).bits() == 0x2000);
     std.debug.assert(TagSet.one(.abstract).bits() == 0x4000);
     std.debug.assert(TagSet.one(.pointer).bits() == 0x8000);
     std.debug.assert(TagSet.bytes.bits() == 0x0218);

@@ -84,7 +84,7 @@ const WindowsOpen = struct {
 
 /// `(os/open path &opt flags mode)`, which returns a stream rather than a
 /// file.
-pub fn cfunOpen(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunOpen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);
     const opt_flags: [*:0]const u8 = @ptrCast(try args_core.optKeyword(argv, 1, "r"));

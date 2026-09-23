@@ -19,7 +19,7 @@
   (unless ok result))
 
 ; **A build with no event loop refuses at `loop()`**, which is the first thing
-; the cfunction calls, so the whole of this module is one refusal there and
+; the nfunction calls, so the whole of this module is one refusal there and
 ; nothing below it applies.
 (def has-ev (not (nil? (root-env 'ev/go))))
 

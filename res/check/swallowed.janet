@@ -87,7 +87,7 @@
 # assumption that an event-loop callback has nowhere to raise to -- which is the
 # argument `abstract_type.zig` makes for `gc` and `gcmark`, and which is *wrong
 # for this table*.  `ev_callback.EVCallback` is `raise.Error!void`: the hinge
-# typed it raising exactly as it typed `CFunction`, and `acceptWindows`
+# typed it raising exactly as it typed `NFunction`, and `acceptWindows`
 # had been propagating all along, ten lines from the site being excused.
 #
 # So the bar for an entry here is high: a callback type that is genuinely
@@ -197,7 +197,7 @@
         (++ j))
       # `error{JanetSignal}!` spelled out counts too. `interop.zig` writes it
       # that way on purpose -- the Zig client is not the runtime's module and
-      # does not import `raise` -- so every cfunction in that file read as
+      # does not import `raise` -- so every nfunction in that file read as
       # non-raising and none of its calls could ever be reported. A tool that
       # recognises one spelling of a thing polices the files that use that
       # spelling, which is not the population it claims.

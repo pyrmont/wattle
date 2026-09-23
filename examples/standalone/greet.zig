@@ -1,8 +1,8 @@
 //! The smallest module that exercises the published interface.
 //!
-//! It has one import, one cfunction and one abstract type. That is enough
+//! It has one import, one nfunction and one abstract type. That is enough
 //! that the module would fail to compile if `wattle` stopped offering
-//! registration, the raising cfunction shape, or `wattle.define`.
+//! registration, the raising nfunction shape, or `wattle.define`.
 //!
 //! `build.zig` in this directory builds it, and `zig build examples/standalone` at
 //! the repository root runs that build.
@@ -36,7 +36,7 @@ const greeting_type = wattle.define(Greeting, .{
 /// Returns a new greeting abstract with a `count` of 1. Implements
 /// `(standalone/hello)`.
 ///
-/// `argv` is empty, because this cfunction takes no arguments.
+/// `argv` is empty, because this nfunction takes no arguments.
 ///
 /// This function raises if the arity is wrong.
 fn hello(argv: []wattle.Value) wattle.Error!wattle.Value {
@@ -46,14 +46,14 @@ fn hello(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.abstract(g);
 }
 
-/// Defines the module's one cfunction.
+/// Defines the module's one nfunction.
 ///
 /// `env` is the capability to define a binding in the environment the module
 /// is loading into. `wattle.entry` below passes `defs` to the loader.
 ///
 /// This function cannot raise.
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.cfuns(env, "standalone", &.{
+    wattle.nfuns(env, "standalone", &.{
         wattle.reg("hello", &hello, "(standalone/hello)\n\nAnswer a greeting."),
     });
 }

@@ -518,9 +518,9 @@
   @[
     # Phase 10 Part 17b converted 656 call sites across twenty-eight
     # subsystems, so this matrix is asked the same question 17a's was and
-    # for a second reason: every cfunction in the runtime opens with two or
+    # for a second reason: every nfunction in the runtime opens with two or
     # three calls into the layer that changed, so a configuration that
-    # compiles a cfunction nothing else compiles is the only thing that
+    # compiles an nfunction nothing else compiles is the only thing that
     # checks those. Phase 10's fifth rule is the whole argument -- a
     # comptime-false branch is not analysed, so an arm this host does not
     # take was never seen by the conversion at all. The Windows

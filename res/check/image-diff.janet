@@ -10,15 +10,15 @@
 #
 # This script was written for a comparison that no longer exists. It built
 # `-Dboot=c` and `-Dboot=zig` and diffed the two images, and that option went
-# with the last cfunction-bearing C arm in Phase 10 Part 17g -- so every
+# with the last nfunction-bearing C arm in Phase 10 Part 17g -- so every
 # invocation since had failed at the first build, and nothing said so, because
 # nothing runs it but a person. Phase 11 Part 19 rewrote it around the two
 # questions it can still answer.
 #
 # **The absolute host paths, which must stay at zero.** The image is not
 # reproducible across checkouts if it carries any: a C compiler is handed
-# absolute paths, `__FILE__` keeps them, and a core cfunction's source file goes
-# into the image. There were twenty-two. A Zig-registered cfunction records a
+# absolute paths, `__FILE__` keeps them, and a core nfunction's source file goes
+# into the image. There were twenty-two. A Zig-registered nfunction records a
 # repo-relative path instead -- `src/runtime/io.zig` -- so the figure fell by one
 # per C file that emptied, and reached zero with the last C source.
 #
@@ -37,7 +37,7 @@
 
 # An *absolute* path starts at a `/`. A repo-relative one that happens to
 # contain a directory -- `src/runtime/value/tables.zig`, which is what a
-# Zig-registered cfunction records -- must not match at its interior slash.
+# Zig-registered nfunction records -- must not match at its interior slash.
 # Without the lookbehind every Zig path is counted as a host path, which
 # inflates the figure by exactly the number of Zig-registered subsystems: it
 # read nineteen once where eight was the published number and seven the true

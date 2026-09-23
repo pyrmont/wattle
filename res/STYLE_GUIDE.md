@@ -195,7 +195,7 @@ built from the `ByteView` the runtime gives them."
 names the function that returns a pointer to it and the functions that take
 that pointer. `module.zig` `Loop` names `loop` as the function that returns
 and `post` as the function that takes. `abi.zig` `Env`: "This type is an
-argument passed to `module.cfuns` and `module.def`".
+argument passed to `module.nfuns` and `module.def`".
 
 **A struct's fields are described in the container's block, by name in
 backticks, in prose,** the way parameters are. A field that its type already
@@ -217,7 +217,7 @@ constant, an alias or a field the block is one paragraph. `module.zig`
 `AbstractHead` against `AtomicInt`.
 
 **A constant's block is a noun phrase saying what the number is, not its
-value.** `module.zig` `max_table_rows`: "The most rows `cfuns`, `getMethod`
+value.** `module.zig` `max_table_rows`: "The most rows `nfuns`, `getMethod`
 and `nextMethod` accept in one table." `abi.zig` `abstract_payload`: "The
 offset to an abstract's payload from the beginning of its allocation."
 
@@ -261,8 +261,8 @@ this is by hand.
 **The vocabulary also has:** "the loader" (`module.zig` line 4; `abi.zig`
 `BuildConfig`), "the collector" (`module.zig` line 118; `abi.zig` group
 comment "The collector."), "payload" for the bytes behind an abstract
-(`module.zig` `abstract`; `abi.zig` `AbstractHead`), "cfunction" as one
-word (`module.zig` `CFunction`; `abi.zig` `CFunction`), "callback" for a
+(`module.zig` `abstract`; `abi.zig` `AbstractHead`), "nfunction" as one
+word (`module.zig` `NFunction`; `abi.zig` `NFunction`), "callback" for a
 slot of an abstract type (both `AbstractType` blocks), and "Janet" for the
 language with "the runtime" for the implementation (`module.zig` `call`:
 "Janet code"; `abi.zig` `AbstractType`: "Janet supports user-defined
@@ -332,10 +332,10 @@ raise, as `module.zig`'s `define` records: a finalizer runs inside a
 collection, where nothing could act on a report." `numarray.zig`
 `numArrayGc`.
 
-**A cfunction's block names its Janet call shape, and a callback's block
+**An nfunction's block names its Janet call shape, and a callback's block
 names its slot.** After the verb-first sentence: "Implements
-`(numarray/scale numarray factor)`." or "Implements the `gc` callback." A
-cfunction's parameters are `argv` slots by number ("`argv` slot 0 is the
+`(numarray/scale numarray factor)`." or "Implements the `gc` callback." An
+nfunction's parameters are `argv` slots by number ("`argv` slot 0 is the
 numarray and slot 1 is the factor"), and its failure sentence lists the
 arity and each slot's type. `numarray.zig` `scale`, `numArrayGc`.
 
@@ -345,7 +345,7 @@ declaration in the same file stays bare, and a callback slot named as a
 field (`gc`, `put`) stays bare. `numarray.zig` `new`: "`wattle.new` returns
 a block"; `defs`: "`wattle.registerAbstract` refuses".
 
-**An example keeps its own banner order.** The callbacks, the cfunctions,
+**An example keeps its own banner order.** The callbacks, the nfunctions,
 the module: the order a module is read in. The banner form is the
 three-line form; the fixed order for `src/` does not apply. `numarray.zig`
 lines 53 to 55.
@@ -449,7 +449,7 @@ of `abi.zig` did in the meantime.
 
 - **Private functions.** Only `module.zig` has them. Their blocks keep the
   verb-first sentence and the failure sentence, and in place of the calling
-  facts name the callers the function serves (`terminate`: "`cfuns_ext`,
+  facts name the callers the function serves (`terminate`: "`nfuns_ext`,
   `getmethod` and `nextmethod` each take a table that ends with a null-name
   row") or why it is the one place (`toCString`: "The one place the sentinel
   is claimed"). None has a ```zig block or a "See" sentence. `abi.zig` has

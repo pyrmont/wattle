@@ -1,5 +1,5 @@
 //! Behavioral contract for the file watcher's backends, watcher type and
-//! cfunction surface.
+//! nfunction surface.
 //!
 //! ## What the Janet suites cannot reach
 //!
@@ -17,7 +17,7 @@
 //!    Janet can give the collector a watcher in that state; a `@memset` and an
 //!    `abstracts.newBytes` can.
 //!  - A stale `errno`. A retry loop that repeats on *success* while `errno` is
-//!    `EINTR` needs `EINTR` in `errno` when the cfunction is entered, which no
+//!    `EINTR` needs `EINTR` in `errno` when the nfunction is entered, which no
 //!    Janet program can arrange. `c.retryIntr` repeats only a call that
 //!    failed, and this is the only place the removal can be asked with a dirty
 //!    `errno`, so the assertion is what says the result does not depend on
@@ -47,7 +47,7 @@
 //!
 //! ## Two things about how the subjects are reached
 //!
-//! A refusal is a value. A cfunction is a raising Zig function and this
+//! A refusal is a value. An nfunction is a raising Zig function and this
 //! contract is compiled beside it, so `harness.raised` is the whole of it.
 //!
 //! The backend is derived from Zig's target rather than from the subject.
@@ -106,7 +106,7 @@ const backend: ?struct { platform: Platform, word: []const u8 } = switch (builti
 /// Every name `filewatch.libFilewatch` registers, in registration order. The
 /// order is not itself pinned, a table having none, but the list is: a
 /// binding that stops being registered is what this catches, and a
-/// registration table is the one place a cfunction can go missing without a
+/// registration table is the one place an nfunction can go missing without a
 /// link error.
 const filewatch_bindings = [_][*:0]const u8{
     "filewatch/new",    "filewatch/add",      "filewatch/remove",
@@ -168,7 +168,7 @@ fn expectAnyRaise(name: [*:0]const u8, argv: []repr.Value) void {
     raises_seen += 1;
 }
 
-/// A cfunction expected to return, called by the name the registry has for it.
+/// An nfunction expected to return, called by the name the registry has for it.
 fn callCore(name: [*:0]const u8, argv: []repr.Value) repr.Value {
     return harness.callCore(name, argv) catch
         @panic("filewatch_core: a call that should have returned raised");
@@ -295,7 +295,7 @@ fn theReadFailureEndsTheWatch(chan: repr.Value) void {
 
 fn theRegistration() void {
     expect(filewatch_bindings.len == 5);
-    // `harness.core` asserts the binding resolves to a cfunction.
+    // `harness.core` asserts the binding resolves to an nfunction.
     for (filewatch_bindings) |name| _ = harness.core(name);
 }
 
@@ -417,7 +417,7 @@ fn theAbstractType(chan: repr.Value) void {
     expect(harness.isType(watcher, repr.Tag.abstract));
 
     // A `Janet` in a local is not a root: the collector scans the VM and the
-    // fiber stacks, and a cfunction's arguments are on one of those. Nothing
+    // fiber stacks, and an nfunction's arguments are on one of those. Nothing
     // here is, so every watcher this file keeps across an allocation has to be
     // rooted by hand, and a watcher that is collected closes its stream, so
     // the symptom is a later call failing on a descriptor the test still

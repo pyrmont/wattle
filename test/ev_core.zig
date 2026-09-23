@@ -18,7 +18,7 @@
 //! placed after the loop emits before the loop's own output. That is the
 //! embedding API behaving as designed, not a defect, but it makes any assertion
 //! of this shape meaningless. `harness.inFiber` is the instrument where the
-//! subject is a cfunction; here the subject is arithmetic, and pinning it with
+//! subject is an nfunction; here the subject is arithmetic, and pinning it with
 //! fixed vectors is both cheaper and stricter.
 //!
 //! ## Two things about how the subjects are reached

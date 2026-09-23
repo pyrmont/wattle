@@ -26,7 +26,7 @@
 //!
 //! A NaN argument written as a Janet literal is folded into a constant slot,
 //! so a contract that wrote its vectors as literals would be asserting about
-//! the emitter as much as about `math/gcd`. Calling the cfunction avoids the
+//! the emitter as much as about `math/gcd`. Calling the nfunction avoids the
 //! compiler entirely, so these vectors do not depend on it.
 
 // ==========================================================================

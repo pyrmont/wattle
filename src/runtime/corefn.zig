@@ -1,11 +1,11 @@
-//! Registering a core cfunction from Zig.
+//! Registering a core nfunction from Zig.
 //!
-//! A Zig subsystem owns its cfunctions, and this is the layer that registers
+//! A Zig subsystem owns its nfunctions, and this is the layer that registers
 //! them. It is shared like `cabi.zig` and `raise.zig` rather than selected like
 //! a subsystem, and for the same reason: it declares no `export`, so every
 //! subsystem can import it without a definition appearing twice.
 //!
-//! Whether a core cfunction has a docstring and a source map depends on
+//! Whether a core nfunction has a docstring and a source map depends on
 //! whether this is the bootstrap or the runtime and on what the build asked
 //! for, and the four combinations are the whole of what this file is for:
 //!
@@ -16,7 +16,7 @@
 //!
 //! The runtime row is not a simplification. A `-Ddocstrings=false` runtime has
 //! no docstrings here to drop, and a `-Dsourcemaps=false` runtime still records
-//! a source map for every core cfunction. The runtime needs no docstrings
+//! a source map for every core nfunction. The runtime needs no docstrings
 //! because the core environment is unmarshalled from the image, which the
 //! bootstrap built with them in place; what the runtime registration adds on
 //! top is the binding and the registry entry that a description or a
@@ -28,7 +28,7 @@
 //! location in a real file, one screen from the code.
 //!
 //! `Method` is not here. It is `method_type.zig`'s, beside the other retyped
-//! tables. This file registers core cfunctions and uses neither it nor a
+//! tables. This file registers core nfunctions and uses neither it nor a
 //! method terminator; the subsystems that declare a method table reached the
 //! type through the registration layer only because that is where it happened
 //! to be written.
@@ -56,7 +56,7 @@ const tables = @import("value/tables.zig");
 // ==========================================================================
 
 /// Whether this compilation is the bootstrap image generator rather than the
-/// runtime. A core cfunction table has docstrings in the generator and not in
+/// runtime. A core nfunction table has docstrings in the generator and not in
 /// the runtime.
 pub const bootstrap = config.bootstrap;
 
@@ -104,7 +104,7 @@ pub const Entry = abi.Reg;
 // Public functions
 // ==========================================================================
 
-/// Defines a plain value binding rather than a cfunction.
+/// Defines a plain value binding rather than an nfunction.
 ///
 /// `env` is the environment, `name` the binding, `value` the value bound,
 /// the caller's `@src()` and `doc` its documentation.
@@ -168,15 +168,15 @@ pub fn install(env: *tables.Table, comptime entries: anytype) void {
 /// `end`.
 pub fn installTerminated(env: *tables.Table, entries: [*]const Entry) void {
     if (bootstrap) {
-        capi.cfuns_ext(@ptrCast(env), null, entries);
+        capi.nfuns_ext(@ptrCast(env), null, entries);
     } else {
-        registry.coreCfunsExt(env, null, entries);
+        registry.coreNfunsExt(env, null, entries);
     }
 }
 
-/// Builds one row of a core cfunction table.
+/// Builds one row of a core nfunction table.
 ///
-/// `name` is the binding, `cfun` the implementation, `where` the caller's
+/// `name` is the binding, `nfun` the implementation, `where` the caller's
 /// `@src()`, and `usage` and `doc` the two halves of the docstring. `where` is
 /// a parameter rather than something this could work out for itself, because
 /// `@src()` reports the line it is written on and taking it here would name
@@ -186,14 +186,14 @@ pub fn installTerminated(env: *tables.Table, entries: [*]const Entry) void {
 /// implementation sit on one line instead of at two ends of the file.
 pub fn reg(
     comptime name: [:0]const u8,
-    comptime cfun: anytype,
+    comptime nfun: anytype,
     comptime where: std.builtin.SourceLocation,
     comptime usage: [:0]const u8,
     comptime doc: [:0]const u8,
 ) Entry {
     return .{
         .name = name.ptr,
-        .cfun = raise.stored(cfun),
+        .nfun = raise.stored(nfun),
         .documentation = if (with_docstrings) (usage ++ "\n\n" ++ doc).ptr else null,
         .source_file = if (with_sourcemaps) sourcePath(where).ptr else null,
         .source_line = if (with_sourcemaps) @intCast(where.line) else 0,

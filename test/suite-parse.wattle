@@ -466,7 +466,7 @@
 (def pall (parser/new))
 (each m [:byte :clone :consume :eof :error :flush :has-more :insert :produce
          :state :status :where]
-  (assert (= :cfunction (type (pall m))) (string "method " m)))
+  (assert (= :nfunction (type (pall m))) (string "method " m)))
 (assert-error "key :not-a-method not found in" (pall :not-a-method))
 (assert (deep= ![:byte :clone :consume :eof :error :flush :has-more :insert
                  :produce :state :status :where]

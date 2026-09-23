@@ -164,13 +164,13 @@ const type_aliases = [_]TypeAlias{
     .{ .name = "boolean", .mask = repr.TagSet.one(.boolean) },
     .{ .name = "buffer", .mask = repr.TagSet.one(.buffer) },
     .{ .name = "callable", .mask = repr.TagSet.callable },
-    .{ .name = "cfunction", .mask = repr.TagSet.one(.cfunction) },
     .{ .name = "dictionary", .mask = repr.TagSet.dictionary },
     .{ .name = "fiber", .mask = repr.TagSet.one(.fiber) },
     .{ .name = "function", .mask = repr.TagSet.one(.function) },
     .{ .name = "indexed", .mask = repr.TagSet.indexed },
     .{ .name = "keyword", .mask = repr.TagSet.one(.symbol) },
     .{ .name = "map", .mask = repr.TagSet.one(.map) },
+    .{ .name = "nfunction", .mask = repr.TagSet.one(.nfunction) },
     .{ .name = "nil", .mask = repr.TagSet.one(.nil) },
     .{ .name = "number", .mask = repr.TagSet.one(.number) },
     .{ .name = "pointer", .mask = repr.TagSet.one(.pointer) },
@@ -529,10 +529,10 @@ pub fn assembleValue(source: repr.Value, flags: c_int) AssembleResult {
 }
 
 // ==========================================================================
-// asm and disasm, the cfunction surface
+// asm and disasm, the nfunction surface
 // ==========================================================================
 //
-// The two cfunctions the assembler publishes.
+// The two nfunctions the assembler publishes.
 //
 // `disasm`'s fifteen-way keyword dispatch is the densest use of
 // `utils.cstrcmp` in the tree. It is kept as a linear chain of comparisons
@@ -643,12 +643,12 @@ pub fn invalidError(status: verify.Verdict) [*:0]const u8 {
 /// Installs `asm` and `disasm` into `env`.
 pub fn libAsm(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("asm", &cfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
+        corefn.reg("asm", &nfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
             "The syntax for the assembly is Janet's, documented at janet-lang.org, and should correspond\n" ++
             "to the return value of disasm. Will throw an\n" ++
             "error on invalid assembly."),
-        corefn.reg("disasm", &cfunDisasm, @src(), "(disasm func &opt field)", "Returns assembly that could be used to compile the given function. " ++
-            "func must be a function, not a c function. Will throw on error on a badly " ++
+        corefn.reg("disasm", &nfunDisasm, @src(), "(disasm func &opt field)", "Returns assembly that could be used to compile the given function. " ++
+            "func must be a function, not an nfunction. Will throw on error on a badly " ++
             "typed argument. If given a field name, will only return that part of the function assembly. " ++
             "Possible fields are:\n\n" ++
             "* :arity - number of required and optional arguments.\n" ++
@@ -1047,7 +1047,7 @@ fn assemble(a: *Assembler, source: repr.Value, flags: c_int) AsmError!void {
 }
 
 /// `asm`: a thunk over the assembled definition.
-fn cfunAsm(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAsm(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.fixarity(argv, 1);
     const res = assembleValue(argv[0], 0);
@@ -1064,7 +1064,7 @@ fn cfunAsm(argv: []repr.Value) raise.Error!repr.Value {
 /// `std.StaticStringMap`, because the order decides which of two keys sharing
 /// a prefix wins and because `utils.cstrcmp` compares against the string
 /// head's length rather than scanning for a NUL.
-fn cfunDisasm(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDisasm(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"asm"}));
     try args_core.arity(argv, 1, 2);
     const f = try args_core.getFunction(argv, 0);

@@ -16,7 +16,7 @@
 //!
 //! There is no per-call `setjmp` scope around the loop. Its callees, the
 //! access layer, the callee layer, the fiber pushes, `order.zig`'s `equals`
-//! and `compare`, the three fills and the cfunction call, each return their
+//! and `compare`, the three fills and the nfunction call, each return their
 //! raise, so there is nothing left for a scope to catch.
 
 // ==========================================================================
@@ -655,7 +655,7 @@ pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
 /// work, while calling a table looks the argument up in the table.
 pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Value {
     switch (repr.typeOf(method)) {
-        repr.Tag.cfunction => return raise.cfunction(wrap.toCfunction(method))(argv),
+        repr.Tag.nfunction => return raise.nfunction(wrap.toNfunction(method))(argv),
         repr.Tag.function => {
             const fun = wrap.toFunction(method);
             return try vm_entry.call(fun, argv);
@@ -1227,11 +1227,11 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 self.pc = self.func.def.?.bytecode.?;
                 self.maybeCollect();
                 continue :sw self.nextOp();
-            } else if (repr.checkType(callee, repr.Tag.cfunction)) {
+            } else if (repr.checkType(callee, repr.Tag.nfunction)) {
                 self.commit();
                 const argc = fiber.stacktop - fiber.stackstart;
-                fibers.cframe(fiber, wrap.toCfunction(callee));
-                const v = try raise.cfunction(wrap.toCfunction(callee))(
+                fibers.cframe(fiber, wrap.toNfunction(callee));
+                const v = try raise.nfunction(wrap.toNfunction(callee))(
                     (fiber.data.? + utils.asSize(fiber.frame))[0..@intCast(argc)],
                 );
                 fibers.popframe(fiber);
@@ -1243,7 +1243,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             } else {
                 self.commit();
                 const v = try vm_calls.callNonfn(fiber, callee);
-                // Reloaded for the same reason the cfunction branch above
+                // Reloaded for the same reason the nfunction branch above
                 // reloads: an abstract type's `call` or `get` callback may
                 // re-enter the interpreter and grow the fiber, and `stack` is
                 // a pointer into what it grew out of.
@@ -1289,10 +1289,10 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             const entrance_frame = stackFrame(self.stack).flags.entrance;
             self.commit();
             var retreg: repr.Value = undefined;
-            if (repr.checkType(callee, repr.Tag.cfunction)) {
+            if (repr.checkType(callee, repr.Tag.nfunction)) {
                 const argc = fiber.stacktop - fiber.stackstart;
-                fibers.cframe(fiber, wrap.toCfunction(callee));
-                retreg = try raise.cfunction(wrap.toCfunction(callee))(
+                fibers.cframe(fiber, wrap.toNfunction(callee));
+                retreg = try raise.nfunction(wrap.toNfunction(callee))(
                     (fiber.data.? + utils.asSize(fiber.frame))[0..@intCast(argc)],
                 );
                 fibers.popframe(fiber);

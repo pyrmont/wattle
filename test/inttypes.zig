@@ -336,8 +336,8 @@ fn theFlooredDivision() !void {
     // Dividing by zero raises, while the modulo above does not.
     //
     // Through `vm_entry.pcall` rather than `harness.raised`, because `div` is
-    // not a cfunction. It is a Janet function that dispatches to the abstract
-    // type's `div` method, so there is no `raise.CFunction` to call and no
+    // not an nfunction. It is a Janet function that dispatches to the abstract
+    // type's `div` method, so there is no `raise.NFunction` to call and no
     // error to catch: the raise happens inside the interpreter, and a
     // protected call is the instrument for that. `harness.core("div")` fails
     // its type assertion.

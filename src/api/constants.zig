@@ -203,15 +203,15 @@ pub const stream_nodups = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
 pub const trace_loc_none: c_int = 0;
 pub const trace_loc_sourcemap: c_int = 1;
 pub const trace_loc_pc: c_int = 2;
-pub const trace_loc_cfun_line: c_int = 3;
+pub const trace_loc_nfun_line: c_int = 3;
 
 /// How a stack trace names a frame, numbered in ascending order.
 /// `src/runtime/debug.zig` reads them.
 pub const trace_name_none: c_int = 0;
 pub const trace_name_anonymous: c_int = 1;
 pub const trace_name_function: c_int = 2;
-pub const trace_name_cfunction: c_int = 3;
-pub const trace_name_cfunction_bare: c_int = 4;
+pub const trace_name_nfunction: c_int = 3;
+pub const trace_name_nfunction_bare: c_int = 4;
 
 /// `1` under the event loop.
 pub const vm_has_ev: c_int = if (config.ev) 1 else 0;

@@ -47,7 +47,7 @@
       (when (number? v) (set total (+ total v)))))
   total)
 
-; Strings and buffers: JOP_MAKE_STRING plus the string cfunctions.
+; Strings and buffers: JOP_MAKE_STRING plus the string nfunctions.
 (defn- strings []
   (def b !"")
   (for i 0 200000

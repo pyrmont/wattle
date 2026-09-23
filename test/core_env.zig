@@ -2,7 +2,7 @@
 //! in it, the lookup table the image is unmarshalled against, and the three
 //! entry points an embedder reaches that Janet source cannot.
 //!
-//! `test/suite-corelib.wattle` covers the cfunctions, because every one of them
+//! `test/suite-corelib.wattle` covers the nfunctions, because every one of them
 //! has a Janet spelling. What it cannot reach is everything around them:
 //!
 //!  - `coreEnv`'s `replacements` parameter has no Janet spelling at all.
@@ -35,7 +35,7 @@
 //! compiler will not let this file ignore.
 //!
 //! The native loader is called as an abi instead, with `harness.abiRaised`.
-//! Its implementation is private and `cfunNative` calls that directly, so the
+//! Its implementation is private and `nfunNative` calls that directly, so the
 //! abi has no in-tree caller and exists for an embedder alone, which makes an
 //! abi the right thing to test.
 //!
@@ -346,18 +346,18 @@ fn theImageIsConsumedExactly() raise.Error!void {
 
 fn theLookupTableIsKeyedBySymbol() raise.Error!void {
     const dict = try core_env.coreLookupTable(null);
-    expect(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .symbol)), repr.Tag.cfunction));
+    expect(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .symbol)), repr.Tag.nfunction));
     // A keyword of the same name is not the key.
     expect(harness.isType(tables.get(dict, value.fromBytes("gcinterval", .keyword)), repr.Tag.nil));
     // Every `loadLibs` entry the configuration has is in it, not only
     // corelib's.
-    expect(harness.isType(tables.get(dict, value.fromBytes("string/slice", .symbol)), repr.Tag.cfunction));
-    expect(harness.isType(tables.get(dict, value.fromBytes("marshal", .symbol)), repr.Tag.cfunction));
+    expect(harness.isType(tables.get(dict, value.fromBytes("string/slice", .symbol)), repr.Tag.nfunction));
+    expect(harness.isType(tables.get(dict, value.fromBytes("marshal", .symbol)), repr.Tag.nfunction));
     // `peg/match` is registered only when the engine is compiled, and the
     // question to ask is the environment rather than `options`: what is missing
     // under `-Dpeg=false` is a registration.
     if (harness.coreOptional("peg/match") != null) {
-        expect(harness.isType(tables.get(dict, value.fromBytes("peg/match", .symbol)), repr.Tag.cfunction));
+        expect(harness.isType(tables.get(dict, value.fromBytes("peg/match", .symbol)), repr.Tag.nfunction));
     }
 }
 
@@ -366,12 +366,12 @@ fn theLookupTableTakesReplacements() raise.Error!void {
     tables.put(
         replacements,
         value.fromBytes("gcinterval", .symbol),
-        wrap.fromCfunction(replacement_key),
+        wrap.fromNfunction(replacement_key),
     );
     tables.put(replacements, value.fromBytes("contract/added", .symbol), value.fromBytes("added", .keyword));
 
     const dict = try core_env.coreLookupTable(replacements);
-    expect(wrap.toCfunction(
+    expect(wrap.toNfunction(
         tables.get(dict, value.fromBytes("gcinterval", .symbol)),
     ) == replacement_key);
     // A key the core does not define is added rather than rejected.
@@ -386,7 +386,7 @@ fn theLookupTableTakesReplacements() raise.Error!void {
 // `(dyn :out)`, both of which `io.dynfile` resolves and both of which fall
 // back to the process handles. The Janet suites cannot bind either without a
 // file to bind it to, and cannot assert what was read without controlling what
-// is on the other end, so the whole cfunction is exercised here.
+// is on the other end, so the whole nfunction is exercised here.
 
 fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // Two handles, not one. Interleaving reads and writes on a single `FILE *`
@@ -406,7 +406,7 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
     // Into the environment table rather than through `vm_state.setdyn`. A
     // dynamic binding is fiber-local, `dobytes` gives each form a fiber whose
     // env is this table, and `setdyn` at the top level, where there is no
-    // fiber, writes to `vm.top_dyns` instead, which the cfunction
+    // fiber, writes to `vm.top_dyns` instead, which the nfunction
     // never looks at. That split is why `:err` above is set the other way:
     // those diagnostics are printed after the fiber has finished.
     tables.put(test_env, value.fromBytes("in", .keyword), in_handle);
@@ -627,7 +627,7 @@ fn body() raise.Error!void {
     tables.put(
         replacements,
         value.fromBytes("gcinterval", .symbol),
-        wrap.fromCfunction(replacement_key),
+        wrap.fromNfunction(replacement_key),
     );
     test_env = try core_env.coreEnv(replacements);
     gc_alloc.gcroot(wrap.fromTable(test_env));
@@ -637,7 +637,7 @@ fn body() raise.Error!void {
     vm_state.setdyn("err", wrap.fromBuffer(errsink));
 
     // The substitution reached the unmarshalled environment: the image refers
-    // to a core cfunction by name through the lookup table, so replacing the
+    // to a core nfunction by name through the lookup table, so replacing the
     // name replaces the binding.
     {
         var out = wrap.fromNil();

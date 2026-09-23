@@ -240,7 +240,7 @@ it was made; three separate hunts over three days failed to localise one. What
 worked was ten lines: assert in `janet_try_init` and in `janet_restore` that no
 report is outstanding. That brackets the leak to a single scope and names it in
 one run. Every subsequent instance -- `wattle_ev_protect`, the contract's
-`catching` helper, `cfunUnmarshal` reaching an abi instead of its
+`catching` helper, `nfunUnmarshal` reaching an abi instead of its
 implementation -- was found first time. Both scopes are Zig now and both
 assertions are still there; they go when the abis do.
 
@@ -266,7 +266,7 @@ disagreement about every header below it.** Ordering a platform chain's Windows
 arm first is a second defence and not a substitute.
 
 **A `Janet` in a C local is not a root, and a contract is where that matters.**
-The collector scans the VM and the fiber stacks, and a cfunction's arguments
+The collector scans the VM and the fiber stacks, and an nfunction's arguments
 are on one of those, so nothing written *in Janet* ever has to think about it.
 A contract holds its values in C locals, and any allocation between two calls
 can collect what the first one returned. Phase 10 Part 15 lost its contract's

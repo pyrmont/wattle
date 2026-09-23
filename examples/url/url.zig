@@ -76,7 +76,7 @@ const Style = struct {
 
 /// Reads the optional keyword-options argument at slot `n`.
 ///
-/// `argv` is the cfunction's arguments and `n` is the slot the options are
+/// `argv` is the nfunction's arguments and `n` is the slot the options are
 /// in. An absent slot gives the default `Style`.
 ///
 /// This function raises if slot `n` is not an indexed value, if an element
@@ -106,7 +106,7 @@ fn readStyle(argv: []wattle.Value, n: i32) wattle.Error!Style {
 }
 
 // ==========================================================================
-// The cfunctions
+// The nfunctions
 // ==========================================================================
 
 /// Appends `bytes` to `out` and advances `n`.
@@ -279,17 +279,17 @@ fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
 // The module entry point
 // ==========================================================================
 
-/// Defines the module's four cfunctions.
+/// Defines the module's four nfunctions.
 ///
 /// `env` is the capability to define a binding in the environment the module
 /// is loading into. `wattle.entry` below passes `defs` to the loader.
 ///
 /// This function cannot raise. Nothing is registered but the four
-/// cfunctions: this module declares no abstract type, so it has no
+/// nfunctions: this module declares no abstract type, so it has no
 /// `wattle.registerAbstract` to call and nothing fallible in it. It is still
 /// typed as raising, because that is the one shape `wattle.entry` takes.
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.cfuns(env, "url", &.{
+    wattle.nfuns(env, "url", &.{
         wattle.reg("slug", &slug, "(url/slug title &opt opts)\n\nA title as a URL path segment."),
         wattle.reg("query", &query, "(url/query params)\n\nA map or table as a query string."),
         wattle.reg("cut", &cut, "(url/cut text &opt start end)\n\nA slice of a byte argument."),

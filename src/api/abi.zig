@@ -6,7 +6,7 @@
 //! `interface.zig` declares. Each field of that table is a _crossing_: a point
 //! where a module's compilation and the runtime's meet. Both compilations
 //! compile this file, so a type declared here has one declaration for the two.
-//! They also compile `src/module.zig`, whose `CFunction`, `Error` and
+//! They also compile `src/module.zig`, whose `NFunction`, `Error` and
 //! `PostCallback` have one declaration for the same reason.
 //!
 //! A module author does not import this file. Instead `src/module.zig`
@@ -28,7 +28,7 @@
 //! - The layouts a crossing takes or returns by pointer: `Reg`, `Range`,
 //!   `BuildConfig` and `Keyval`; the heap header an abstract payload
 //!   sits behind, `AbstractHead` (which includes `GCObject`, `GCFlags` and
-//!   `GCData`); and the function pointer type `CFunction`.
+//!   `GCData`); and the function pointer type `NFunction`.
 //!
 //! - The abstract type, `AbstractType`: a name and the callbacks the
 //!   runtime dispatches through.
@@ -235,18 +235,18 @@ pub const Chunk = extern struct {
     start: usize = 0,
 };
 
-/// The type of the slot a cfunction pointer is stored in.
+/// The type of the slot an nfunction pointer is stored in.
 ///
-/// A module author writes a cfunction as `fn ([]Value) Error!Value`, which is
-/// `module.CFunction`, declared in `module.zig` and re-exported by
-/// `api/raise.zig`. `CFunction` here is a different type: it is the C ABI's
-/// shape for the same pointer, and it is what the runtime stores in `Reg.cfun`
-/// and in `runtime/method_type.zig`'s `CMethod.cfun`.
+/// A module author writes an nfunction as `fn ([]Value) Error!Value`, which is
+/// `module.NFunction`, declared in `module.zig` and re-exported by
+/// `api/raise.zig`. `NFunction` here is a different type: it is the C ABI's
+/// shape for the same pointer, and it is what the runtime stores in `Reg.nfun`
+/// and in `runtime/method_type.zig`'s `CMethod.nfun`.
 ///
 /// `api/raise.zig` converts between the two. Its `stored` casts an author's
-/// cfunction into this type at registration, and its `cfunction` casts the
+/// nfunction into this type at registration, and its `nfunction` casts the
 /// stored pointer back before the runtime makes a call.
-pub const CFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) repr.Value;
+pub const NFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) repr.Value;
 
 /// What a value holds: nothing a reader walks, elements, or pairs.
 ///
@@ -290,7 +290,7 @@ pub const Dictionary = extern struct {
 /// The capability to define a binding in the environment into which a module
 /// is loaded.
 ///
-/// This type is an argument passed to `module.cfuns` and `module.def`,
+/// This type is an argument passed to `module.nfuns` and `module.def`,
 /// typically within a function (traditionally called `defs`) that is passed as
 /// an argument to `module.entry`. See `examples/numarray/numarray.zig`.
 pub const Env = opaque {};
@@ -426,15 +426,15 @@ pub const Range = extern struct {
     end: i32 = 0,
 };
 
-/// One registration row: a name, a cfunction and three pieces of metadata.
+/// One registration row: a name, an nfunction and three pieces of metadata.
 ///
-/// `module.reg` returns a `Reg` and `module.cfuns` takes a table of `Reg`.
+/// `module.reg` returns a `Reg` and `module.nfuns` takes a table of `Reg`.
 /// `documentation` is the docstring, and `source_file` and `source_line` are
-/// where the cfunction is defined, for the source map. `module.reg` fills
+/// where the nfunction is defined, for the source map. `module.reg` fills
 /// `documentation` and leaves the other two at their defaults.
 pub const Reg = extern struct {
     name: ?[*:0]const u8 = null,
-    cfun: CFunction = null,
+    nfun: NFunction = null,
     documentation: ?[*:0]const u8 = null,
     source_file: ?[*:0]const u8 = null,
     source_line: i32 = 0,

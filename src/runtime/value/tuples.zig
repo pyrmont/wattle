@@ -125,21 +125,21 @@ pub inline fn head(t: [*]const repr.Value) *TupleHead {
     return @ptrFromInt(@intFromPtr(t) -% tuple_payload);
 }
 
-/// Installs the `tuple/*` cfunctions into the core environment.
+/// Installs the `tuple/*` nfunctions into the core environment.
 pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("tuple/slice", &cfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
+        corefn.reg("tuple/slice", &nfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
             "inclusive to index `end` exclusive. If `start` or `end` are not provided, " ++
             "they default to 0 and the length of `arrtup`, respectively. " ++
             "`start` and `end` can also be negative to indicate indexing " ++
             "from the end of the input. Note that if `start` is negative it is " ++
             "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
             "negative slice range. Returns the new tuple."),
-        corefn.reg("tuple/sourcemap", &cfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
+        corefn.reg("tuple/sourcemap", &nfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
             "which is another tuple (line, column)."),
-        corefn.reg("tuple/setmap", &cfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. `line` and `column` " ++
+        corefn.reg("tuple/setmap", &nfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. `line` and `column` " ++
             "should be integers. Returns the modified tuple."),
-        corefn.reg("tuple/join", &cfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
+        corefn.reg("tuple/join", &nfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
     };
     corefn.install(env, entries);
 }
@@ -187,15 +187,15 @@ pub inline fn view(t: [*]const repr.Value) []const repr.Value {
 // Private functions
 // ==========================================================================
 
-/// The `tuple/*` cfunctions.
+/// The `tuple/*` nfunctions.
 ///
-/// Everything above is value construction. A published cfunction has no error
+/// Everything above is value construction. A published nfunction has no error
 /// channel in its signature, so each of these delivers its raise through an
 /// abi, and none keeps a value across a call that can raise.
 ///
-/// `cfunTupleJoin` checks every argument and counts every element before it
+/// `nfunTupleJoin` checks every argument and counts every element before it
 /// allocates, so a refusal leaves nothing behind.
-fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, -1);
     var total: usize = 0;
     for (argv) |arg| {
@@ -215,7 +215,7 @@ fn cfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(end(tup));
 }
 
-fn cfunTupleSetmap(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTupleSetmap(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const tup = try args_core.getTuple(argv, 0);
     head(tup).sm_line = try args_core.getInteger(argv, 1);
@@ -223,7 +223,7 @@ fn cfunTupleSetmap(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-fn cfunTupleSlice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTupleSlice(argv: []repr.Value) raise.Error!repr.Value {
     const x = args_core.argSlot(argv, 0);
     var source = try args_core.chunks(x) orelse {
         return args_core.panicIndexed(x, 0, repr.TagSet.none);
@@ -234,7 +234,7 @@ fn cfunTupleSlice(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(try newFromChunks(&source, length));
 }
 
-fn cfunTupleSourcemap(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTupleSourcemap(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const tup = try args_core.getTuple(argv, 0);
     const pair = [2]repr.Value{

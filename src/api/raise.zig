@@ -4,7 +4,7 @@
 //! because it declares no `export`: two subsystems can import it without a
 //! definition appearing twice.
 //!
-//! `Error` and `CFunction` are `module.zig`'s, re-exported under the names the
+//! `Error` and `NFunction` are `module.zig`'s, re-exported under the names the
 //! runtime uses. That import is a cycle, since `module.zig` imports this file.
 //! It costs nothing: both declarations are comptime, and no function of
 //! `module.zig` is analysed in the runtime.
@@ -90,16 +90,16 @@ const in_module = config.native_module;
 // Aliased types
 // ==========================================================================
 
-/// The type of a Janet builtin. This is `module.CFunction`, under the name the
+/// The type of a Janet builtin. This is `module.NFunction`, under the name the
 /// runtime uses.
 ///
-/// A cfunction takes its arguments as one slice and returns a `Value` or
+/// An nfunction takes its arguments as one slice and returns a `Value` or
 /// raises, so a caller has to `try` it. Janet's own signature is
 /// `Janet (*)(int32_t, Janet *)`, which returns no error union, so a C body
-/// cannot have this type and a C caller cannot invoke it. `abi.CFunction` is
-/// the C ABI's shape for the same pointer, and `cfunction` and `stored` are
+/// cannot have this type and a C caller cannot invoke it. `abi.NFunction` is
+/// the C ABI's shape for the same pointer, and `nfunction` and `stored` are
 /// the casts between the two.
-pub const CFunction = module.CFunction;
+pub const NFunction = module.NFunction;
 
 /// The one error a raise-capable function returns. This is `module.Error`,
 /// under the name the runtime uses. A raise-capable function returning `T` is
@@ -110,7 +110,7 @@ pub const Error = module.Error;
 // Public functions
 // ==========================================================================
 
-/// Reads a cfunction out of a stored slot.
+/// Reads an nfunction out of a stored slot.
 ///
 /// `slot` is the C ABI's shape for the pointer, which is how a `Value`'s union
 /// member, a registration row, a registry key and a stack frame's `pc` are
@@ -119,7 +119,7 @@ pub const Error = module.Error;
 /// error. This function cannot raise.
 ///
 /// See `stored`, which is the same pointer on its way into that storage.
-pub inline fn cfunction(slot: abi.CFunction) CFunction {
+pub inline fn nfunction(slot: abi.NFunction) NFunction {
     return @ptrCast(slot.?);
 }
 
@@ -303,13 +303,13 @@ pub fn signal(sig: abi.Signal, message: repr.Value) Error {
     return error.Signal;
 }
 
-/// Returns a cfunction on its way into a stored slot, at registration.
+/// Returns an nfunction on its way into a stored slot, at registration.
 ///
-/// `cfun` is the cfunction. This function cannot raise.
+/// `nfun` is the nfunction. This function cannot raise.
 ///
-/// See `cfunction`, which is the cast back out of that storage.
-pub inline fn stored(cfun: anytype) abi.CFunction {
-    return @ptrCast(cfun);
+/// See `nfunction`, which is the cast back out of that storage.
+pub inline fn stored(nfun: anytype) abi.NFunction {
+    return @ptrCast(nfun);
 }
 
 /// Returns the value a raise-capable call produced, or a determinate zero if

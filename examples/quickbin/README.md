@@ -28,12 +28,12 @@ beside it.
 Three things, and nothing is read at run time. The runtime is the same
 `subsystems` module the `wattle` client imports. The program is a marshalled
 image of `main.wattle`'s environment, embedded the way the core image is. The
-module is `digest.zig` compiled into the same binary, so its cfunctions are
+module is `digest.zig` compiled into the same binary, so its nfunctions are
 addresses the linker resolved rather than symbols a loader looks up.
 
 ### The image names the module rather than containing it
 
-A cfunction has no wire form. `marshal` writes one only when the dictionary it
+An nfunction has no wire form. `marshal` writes one only when the dictionary it
 is given maps the value to a name, and `unmarshal` reads a name back only when
 its dictionary maps the name to a value. `make-image` and `load-image` use the
 two dictionaries the core builds for its own functions. A module's functions are

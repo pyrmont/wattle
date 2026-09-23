@@ -115,16 +115,16 @@ fn sameValue(a: repr.Value, b: repr.Value) bool {
     return harness.u64Of(a) == harness.u64Of(b) and repr.typeOf(a) == repr.typeOf(b);
 }
 
-/// A cfunction to wrap. Its address is the only function pointer in the file.
-fn aCFunction(argv: []repr.Value) raise.Error!repr.Value {
+/// An nfunction to wrap. Its address is the only function pointer in the file.
+fn aNFunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.abi.fromNil();
 }
 
-/// The same function as the `abi.CFunction` a wrapper takes.
-fn theCFunction() abi.CFunction {
-    return raise.stored(&aCFunction);
+/// The same function as the `abi.NFunction` a wrapper takes.
+fn theNFunction() abi.NFunction {
+    return raise.stored(&aNFunction);
 }
 
 /// Sixteen-byte-aligned storage, so the addresses given to the pointer
@@ -173,7 +173,7 @@ fn buildOneOfEach(out: *[repr.tag_count]repr.Value) void {
     out[at(.map)] = wrap.fromMap(maps.build(.map, &.{}));
     out[at(.buffer)] = wrap.abi.fromBuffer(buffers.new(0));
     out[at(.function)] = wrap.abi.fromFunction(@ptrCast(@alignCast(pointerA())));
-    out[at(.cfunction)] = wrap.abi.fromCfunction(theCFunction());
+    out[at(.nfunction)] = wrap.abi.fromNfunction(theNFunction());
     out[at(.abstract)] = wrap.abi.fromAbstract(pointerB());
     out[at(.pointer)] = wrap.abi.fromPointer(pointerB());
 }
@@ -200,7 +200,7 @@ fn eachWrapperStampsItsType() void {
     expect(repr.typeOf(wrap.abi.fromFiber(@ptrCast(@alignCast(p)))) == repr.Tag.fiber);
     expect(repr.typeOf(wrap.abi.fromBuffer(@ptrCast(@alignCast(p)))) == repr.Tag.buffer);
     expect(repr.typeOf(wrap.abi.fromFunction(@ptrCast(@alignCast(p)))) == repr.Tag.function);
-    expect(repr.typeOf(wrap.abi.fromCfunction(theCFunction())) == repr.Tag.cfunction);
+    expect(repr.typeOf(wrap.abi.fromNfunction(theNFunction())) == repr.Tag.nfunction);
     expect(repr.typeOf(wrap.abi.fromTable(@ptrCast(@alignCast(p)))) == repr.Tag.table);
     expect(repr.typeOf(wrap.abi.fromAbstract(p)) == repr.Tag.abstract);
     expect(repr.typeOf(wrap.abi.fromPointer(p)) == repr.Tag.pointer);
@@ -231,7 +231,7 @@ fn pointerRoundTrips() void {
         expect(wrap.toAbstract(wrap.abi.fromAbstract(p)) == p);
         expect(wrap.toPointerAbi(wrap.abi.fromPointer(p)) == p);
     }
-    expect(wrap.toCfunction(wrap.abi.fromCfunction(theCFunction())) == theCFunction());
+    expect(wrap.toNfunction(wrap.abi.fromNfunction(theNFunction())) == theNFunction());
 }
 
 /// A null payload is a legal value for every pointer type: `wrap.fromFiber`

@@ -1,7 +1,7 @@
 //! The `os/` module: what the host is, what time it is, and what is in the
 //! environment.
 //!
-//! One name, because Janet publishes one: `os`. The cfunctions and the time,
+//! One name, because Janet publishes one: `os`. The nfunctions and the time,
 //! platform and environment kernels are all here, and the pieces that keep
 //! names of their own are beside this file in `os/`.
 //!
@@ -15,7 +15,7 @@
 //! binding that simply is not there.
 //!
 //! The environment lock is taken across each of the four environment
-//! cfunctions, and it is a no-op in every build this tree can produce;
+//! nfunctions, and it is a no-op in every build this tree can produce;
 //! `os/abi.zig` has the reasoning. The places it is taken are what a future
 //! threaded build would need, and `os/getenv` in particular takes it across
 //! the copy of the borrowed `c.getenv` result rather than only across the
@@ -148,7 +148,7 @@ const os_name = switch (builtin.os.tag) {
 /// Plan 9 arms are recorded rather than written.
 const plan9 = false; // No Zig target; `os.c`'s Plan 9 arms are recorded, not written.
 
-/// Whether this build registers only the four cfunctions that need no host
+/// Whether this build registers only the four nfunctions that need no host
 /// service.
 const reduced_os = config.reduced_os;
 
@@ -313,7 +313,7 @@ pub fn gettimeAbi(spec: *Timespec, source: c_uint) c_int {
     return 0;
 }
 
-/// Registers the `os/` family, which is four cfunctions in a reduced build and
+/// Registers the `os/` family, which is four nfunctions in a reduced build and
 /// the whole table otherwise.
 pub fn libOs(env: *tables.Table) raise.Error!void {
     // Upstream's `os/` registration opens with a Windows critical-section
@@ -423,14 +423,14 @@ pub fn timeNow() f64 {
 // ==========================================================================
 
 /// `(os/arch)`.
-fn cfunArch(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunArch(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     if (arch_name_override) |name| return value.fromBytes(name, .keyword);
     return value.fromBytes(std.mem.span(osArch()), .keyword);
 }
 
 /// `(os/clock &opt source format)`.
-fn cfunClock(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunClock(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
     try args_core.arity(argv, 0, 2);
 
@@ -471,13 +471,13 @@ fn cfunClock(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/compiler)`.
-fn cfunCompiler(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCompiler(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return value.fromBytes(std.mem.span(osCompiler()), .keyword);
 }
 
 /// `(os/cpu-count &opt dflt)`.
-fn cfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const count = osCpuCount();
     if (count < 0) return if (argv.len > 0) argv[0] else wrap.fromNil();
@@ -485,7 +485,7 @@ fn cfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/cryptorand n &opt buf)`.
-fn cfunCryptorand(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCryptorand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const n = try args_core.getInteger(argv, 0);
     if (n < 0) return raise.panic("expected positive integer");
@@ -506,7 +506,7 @@ fn cfunCryptorand(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/environ)`.
-fn cfunEnviron(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunEnviron(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.fixarity(argv, 0);
     oa.lockEnviron();
@@ -532,7 +532,7 @@ fn cfunEnviron(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/exit &opt x force)`.
-fn cfunExit(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunExit(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"exit"}));
     var status: c_int = 0;
@@ -554,7 +554,7 @@ fn cfunExit(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/getenv variable &opt dflt)`.
-fn cfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const cstr = try args_core.getCString(argv, 0);
@@ -571,7 +571,7 @@ fn cfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/isatty &opt file)`.
-fn cfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const f: ?*io_core.FILE = if (argv.len == 1)
         try io_core.getfile(argv, 0, null)
@@ -592,7 +592,7 @@ fn cfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
 /// It declares an arity of one to two and reads two arguments, so
 /// `(os/setenv "K")` unsets. The result of the host call is discarded, so a
 /// refusal is not reported.
-fn cfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
     const ks = try args_core.getCString(argv, 0);
@@ -604,7 +604,7 @@ fn cfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/setlocale &opt locale category)`.
-fn cfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
     var category: c_int = h.LC_ALL;
@@ -621,7 +621,7 @@ fn cfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/sleep n)`.
-fn cfunSleep(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSleep(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const delay = try args_core.getNumber(argv, 0);
     // A negative delay, a NaN and a value outside `time_t`'s range are one
@@ -635,13 +635,13 @@ fn cfunSleep(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/time)`.
-fn cfunTime(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(timeNow());
 }
 
 /// `(os/which)`.
-fn cfunWhich(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunWhich(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     if (argv.len == 1 and repr.truthy(argv[0])) {
         _ = try args_core.getKeyword(argv, 0); // Constrain to keywords.
@@ -655,7 +655,7 @@ fn clockEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/time", &cfunTime, @src(), "(os/time)", "Get the current time expressed as the number of whole seconds since " ++
+            corefn.reg("os/time", &nfunTime, @src(), "(os/time)", "Get the current time expressed as the number of whole seconds since " ++
                 "January 1, 1970, the Unix epoch. Returns a real number."),
         };
         break :blk acc[0..acc.len].*;
@@ -672,7 +672,7 @@ fn fileTimeToInt(ft: c.FILETIME) i64 {
 /// last.
 fn hrtimeEntries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/clock", &cfunClock, @src(), "(os/clock &opt source format)", "Return the current time of the requested clock source.\n\n" ++
+        corefn.reg("os/clock", &nfunClock, @src(), "(os/clock &opt source format)", "Return the current time of the requested clock source.\n\n" ++
             "The `source` argument selects the clock source to use, when not specified the default " ++
             "is `:realtime`:\n" ++
             "- :realtime: Return the real (i.e., wall-clock) time. This clock is affected by discontinuous " ++
@@ -696,7 +696,7 @@ fn miscEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/cryptorand", &cfunCryptorand, @src(), "(os/cryptorand n &opt buf)", "Get or append `n` bytes of good quality random data provided by the OS. Returns a new buffer or `buf`."),
+            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n &opt buf)", "Get or append `n` bytes of good quality random data provided by the OS. Returns a new buffer or `buf`."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -731,24 +731,24 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/exit", &cfunExit, @src(), "(os/exit &opt x force)", "Exit from Wattle with an exit code equal to x. If x is not an integer, " ++
+            corefn.reg("os/exit", &nfunExit, @src(), "(os/exit &opt x force)", "Exit from Wattle with an exit code equal to x. If x is not an integer, " ++
                 "exits with status 1. If `force` is truthy will exit immediately and " ++
                 "skip cleanup code."),
-            corefn.reg("os/which", &cfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
+            corefn.reg("os/which", &nfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
                 "* :windows\n\n* :cygwin\n\n* :macos\n\n" ++
                 "* :web - Web assembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
                 "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
                 "* :dragonfly\n\n* :bsd\n\n" ++
                 "* :posix - A POSIX compatible system (default)\n\n" ++
                 "May also return a custom keyword specified at build time. Is `test` is truthy, will check if the current operating system equals `test` and return true if they are the same, false otherwise."),
-            corefn.reg("os/arch", &cfunArch, @src(), "(os/arch)", "Check the ISA that Wattle was compiled for. Returns one of:\n\n" ++
+            corefn.reg("os/arch", &nfunArch, @src(), "(os/arch)", "Check the ISA that Wattle was compiled for. Returns one of:\n\n" ++
                 "* :x86\n\n* :x64\n\n* :arm\n\n* :aarch64\n\n* :riscv32\n\n* :riscv64\n\n" ++
                 "* :sparc\n\n* :wasm\n\n* :s390\n\n* :s390x\n\n* :unknown\n"),
-            corefn.reg("os/compiler", &cfunCompiler, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns :zig."),
+            corefn.reg("os/compiler", &nfunCompiler, @src(), "(os/compiler)", "Get the compiler used to compile the interpreter. Returns :zig."),
         };
         if (!reduced_os) {
             acc = acc ++ [_]corefn.Entry{
-                corefn.reg("os/cpu-count", &cfunCpuCount, @src(), "(os/cpu-count &opt dflt)", "Get an approximate number of CPUs available on for this process to use. If " ++
+                corefn.reg("os/cpu-count", &nfunCpuCount, @src(), "(os/cpu-count &opt dflt)", "Get an approximate number of CPUs available on for this process to use. If " ++
                     "unable to get an approximation, will return a default value dflt."),
             };
         }
@@ -763,24 +763,24 @@ fn tailEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/sleep", &cfunSleep, @src(), "(os/sleep n)", "Suspend the program for `n` seconds. `n` can be a real number. Returns " ++
+            corefn.reg("os/sleep", &nfunSleep, @src(), "(os/sleep n)", "Suspend the program for `n` seconds. `n` can be a real number. Returns " ++
                 "nil."),
-            corefn.reg("os/isatty", &cfunIsatty, @src(), "(os/isatty &opt file)", "Returns true if `file` is a terminal. If `file` is not specified, " ++
+            corefn.reg("os/isatty", &nfunIsatty, @src(), "(os/isatty &opt file)", "Returns true if `file` is a terminal. If `file` is not specified, " ++
                 "it will default to standard output."),
         };
         if (!no_locales) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/setlocale", &cfunSetlocale, @src(), "(os/setlocale &opt locale category)", "Set the system locale, which affects how dates and numbers are formatted. " ++
+            corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale &opt locale category)", "Set the system locale, which affects how dates and numbers are formatted. " ++
                 "Passing nil to locale will return the current locale. Category can be one of:\n\n" ++
                 " * :all (default)\n * :collate\n * :ctype\n * :monetary\n * :numeric\n * :time\n\n" ++
                 "Returns the new locale if set successfully, otherwise nil. Note that this will affect " ++
                 "other functions such as `os/strftime` and even `printf`."),
         };
         if (!plan9) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/environ", &cfunEnviron, @src(), "(os/environ)", "Get a copy of the OS environment table."),
+            corefn.reg("os/environ", &nfunEnviron, @src(), "(os/environ)", "Get a copy of the OS environment table."),
         };
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/getenv", &cfunGetenv, @src(), "(os/getenv variable &opt dflt)", "Get the string value of an environment variable."),
-            corefn.reg("os/setenv", &cfunSetenv, @src(), "(os/setenv variable value)", "Set an environment variable. A nil value removes it. " ++
+            corefn.reg("os/getenv", &nfunGetenv, @src(), "(os/getenv variable &opt dflt)", "Get the string value of an environment variable."),
+            corefn.reg("os/setenv", &nfunSetenv, @src(), "(os/setenv variable value)", "Set an environment variable. A nil value removes it. " ++
                 "On Windows an empty string removes it as well, because the platform has no way to hold a variable whose value is " ++
                 "empty; on every other platform an empty string is stored and read back."),
         };

@@ -75,21 +75,21 @@ const has_ipv6 = net_abi.has_ipv6;
 /// The order is what a program observes: `findMethod` walks the table linearly
 /// and `(next stream)` reports it as written.
 const net_stream_methods = [_]method_type.Method{
-    .{ .name = "chunk", .cfun = &cfunChunk },
-    .{ .name = "close", .cfun = &ev_stream.cfunStreamClose },
-    .{ .name = "read", .cfun = &cfunRead },
-    .{ .name = "write", .cfun = &cfunWrite },
-    .{ .name = "flush", .cfun = &cfunFlush },
-    .{ .name = "accept", .cfun = &cfunAccept },
-    .{ .name = "accept-loop", .cfun = &cfunAcceptLoop },
-    .{ .name = "send-to", .cfun = &cfunSendTo },
-    .{ .name = "recv-from", .cfun = &cfunRecvFrom },
-    .{ .name = "evread", .cfun = &ev_stream.cfunStreamRead },
-    .{ .name = "evchunk", .cfun = &ev_stream.cfunStreamChunk },
-    .{ .name = "evwrite", .cfun = &ev_stream.cfunStreamWrite },
-    .{ .name = "shutdown", .cfun = &cfunShutdown },
-    .{ .name = "setsockopt", .cfun = &cfunSetsockopt },
-    .{ .name = null, .cfun = null },
+    .{ .name = "chunk", .nfun = &nfunChunk },
+    .{ .name = "close", .nfun = &ev_stream.nfunStreamClose },
+    .{ .name = "read", .nfun = &nfunRead },
+    .{ .name = "write", .nfun = &nfunWrite },
+    .{ .name = "flush", .nfun = &nfunFlush },
+    .{ .name = "accept", .nfun = &nfunAccept },
+    .{ .name = "accept-loop", .nfun = &nfunAcceptLoop },
+    .{ .name = "send-to", .nfun = &nfunSendTo },
+    .{ .name = "recv-from", .nfun = &nfunRecvFrom },
+    .{ .name = "evread", .nfun = &ev_stream.nfunStreamRead },
+    .{ .name = "evchunk", .nfun = &ev_stream.nfunStreamChunk },
+    .{ .name = "evwrite", .nfun = &ev_stream.nfunStreamWrite },
+    .{ .name = "shutdown", .nfun = &nfunShutdown },
+    .{ .name = "setsockopt", .nfun = &nfunSetsockopt },
+    .{ .name = null, .nfun = null },
 };
 
 /// The three `shutdown(2)` directions, under the names each platform spells
@@ -256,23 +256,23 @@ pub fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime m
 }
 
 /// `(net/address-unpack address)`.
-pub fn cfunAddressUnpack(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunAddressUnpack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return soGetName(try args_core.getAbstract(anyopaque, argv, 0, &addressType));
 }
 
 /// `(net/peername stream)`.
-pub fn cfunGetpeername(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunGetpeername(argv: []repr.Value) raise.Error!repr.Value {
     return endpointName(argv, true);
 }
 
 /// `(net/localname stream)`.
-pub fn cfunGetsockname(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunGetsockname(argv: []repr.Value) raise.Error!repr.Value {
     return endpointName(argv, false);
 }
 
 /// `(net/address host port &opt type)`.
-pub fn cfunSockaddr(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunSockaddr(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"})); // connect OR listen
     try args_core.arity(argv, 2, 4);
     const socktype = try socketType(argv, 2);
@@ -370,59 +370,59 @@ pub fn getAddrInfo(
 /// Installs the `net/` bindings, in upstream Janet's own registration order.
 pub fn libNet(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
-        corefn.reg("net/address", &cfunSockaddr, @src(), "(net/address host port &opt type multi)", "Look up the connection information for a given hostname, port, and connection type. Returns " ++
+        corefn.reg("net/address", &nfunSockaddr, @src(), "(net/address host port &opt type multi)", "Look up the connection information for a given hostname, port, and connection type. Returns " ++
             "a handle that can be used to send datagrams over network without establishing a connection. " ++
             "On Posix platforms, you can use :unix for host to connect to a unix domain socket, where the name is " ++
             "given in the port argument. On Linux, abstract " ++
             "unix domain sockets are specified with a leading '@' character in port. If `multi` is truthy, will " ++
             "return all address that match in an array instead of just the first."),
-        corefn.reg("net/listen", &cfunListen, @src(), "(net/listen host port &opt type no-reuse)", "Creates a server. Returns a new stream that is neither readable nor " ++
+        corefn.reg("net/listen", &nfunListen, @src(), "(net/listen host port &opt type no-reuse)", "Creates a server. Returns a new stream that is neither readable nor " ++
             "writeable. Use net/accept or net/accept-loop be to handle connections and start the server. " ++
             "The type parameter specifies the type of network connection, either " ++
             "a :stream (usually tcp), or :datagram (usually udp). If not specified, the default is " ++
             ":stream. The host and port arguments are the same as in net/address. The last boolean parameter `no-reuse` will " ++
             "disable the use of `SO_REUSEADDR` and `SO_REUSEPORT` when creating a server on some operating systems."),
-        corefn.reg("net/socket", &cfunSocket, @src(), "(net/socket &opt type address-family)", "Creates a new unbound socket. Type is an optional keyword, " ++
+        corefn.reg("net/socket", &nfunSocket, @src(), "(net/socket &opt type address-family)", "Creates a new unbound socket. Type is an optional keyword, " ++
             "either a :stream (usually tcp), or :datagram (usually udp). The default is :stream. " ++
             "`address-family` should be one of :ipv4 or :ipv6."),
-        corefn.reg("net/accept", &cfunAccept, @src(), "(net/accept stream &opt timeout)", "Get the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
+        corefn.reg("net/accept", &nfunAccept, @src(), "(net/accept stream &opt timeout)", "Get the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a new duplex stream which represents a connection to the client."),
-        corefn.reg("net/accept-loop", &cfunAcceptLoop, @src(), "(net/accept-loop stream handler)", "Shorthand for running a server stream that will continuously accept new connections. " ++
+        corefn.reg("net/accept-loop", &nfunAcceptLoop, @src(), "(net/accept-loop stream handler)", "Shorthand for running a server stream that will continuously accept new connections. " ++
             "Blocks the current fiber until the stream is closed, and will return the stream."),
-        corefn.reg("net/read", &cfunRead, @src(), "(net/read stream nbytes &opt buf timeout)", "Read up to n bytes from a stream, suspending the current fiber until the bytes are available. " ++
+        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream nbytes &opt buf timeout)", "Read up to n bytes from a stream, suspending the current fiber until the bytes are available. " ++
             "`n` can also be the keyword `:all` to read into the buffer until end of stream. " ++
             "If less than n bytes are available (and more than 0), will push those bytes and return early. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a buffer with up to n more bytes in it, or raises an error if the read failed."),
-        corefn.reg("net/chunk", &cfunChunk, @src(), "(net/chunk stream nbytes &opt buf timeout)", "Same a net/read, but will wait for all n bytes to arrive rather than return early. " ++
+        corefn.reg("net/chunk", &nfunChunk, @src(), "(net/chunk stream nbytes &opt buf timeout)", "Same a net/read, but will wait for all n bytes to arrive rather than return early. " ++
             "Takes an optional timeout in seconds, after which will raise an error."),
-        corefn.reg("net/write", &cfunWrite, @src(), "(net/write stream data &opt timeout)", "Write data to a stream, suspending the current fiber until the write " ++
+        corefn.reg("net/write", &nfunWrite, @src(), "(net/write stream data &opt timeout)", "Write data to a stream, suspending the current fiber until the write " ++
             "completes. Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns nil, or raises an error if the write failed."),
-        corefn.reg("net/send-to", &cfunSendTo, @src(), "(net/send-to stream dest data &opt timeout)", "Writes a datagram to a server stream. dest is a the destination address of the packet. " ++
+        corefn.reg("net/send-to", &nfunSendTo, @src(), "(net/send-to stream dest data &opt timeout)", "Writes a datagram to a server stream. dest is a the destination address of the packet. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns stream."),
-        corefn.reg("net/recv-from", &cfunRecvFrom, @src(), "(net/recv-from stream nbytes buf &opt timeout)", "Receives data from a server stream and puts it into a buffer. Returns the socket-address the " ++
+        corefn.reg("net/recv-from", &nfunRecvFrom, @src(), "(net/recv-from stream nbytes buf &opt timeout)", "Receives data from a server stream and puts it into a buffer. Returns the socket-address the " ++
             "packet came from. Takes an optional timeout in seconds, after which will raise an error."),
-        corefn.reg("net/flush", &cfunFlush, @src(), "(net/flush stream)", "Make sure that a stream is not buffering any data. This temporarily disables Nagle's algorithm. " ++
+        corefn.reg("net/flush", &nfunFlush, @src(), "(net/flush stream)", "Make sure that a stream is not buffering any data. This temporarily disables Nagle's algorithm. " ++
             "Use this to make sure data is sent without delay. Returns stream."),
-        corefn.reg("net/connect", &cfunConnect, @src(), "(net/connect host port &opt type bindhost bindport)", "Open a connection to communicate with a server. Returns a duplex stream " ++
+        corefn.reg("net/connect", &nfunConnect, @src(), "(net/connect host port &opt type bindhost bindport)", "Open a connection to communicate with a server. Returns a duplex stream " ++
             "that can be used to communicate with the server. Type is an optional keyword " ++
             "to specify a connection type, either :stream or :datagram. The default is :stream. " ++
             "Bindhost is an optional string to select from what address to make the outgoing " ++
             "connection, with the default being the same as using the OS's preferred address. "),
-        corefn.reg("net/shutdown", &cfunShutdown, @src(), "(net/shutdown stream &opt mode)", "Stop communication on this socket in a graceful manner, either in both directions or just " ++
+        corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream &opt mode)", "Stop communication on this socket in a graceful manner, either in both directions or just " ++
             "reading/writing from the stream. The `mode` parameter controls which communication to stop on the socket. " ++
             "\n\n* `:wr` is the default and prevents both reading new data from the socket and writing new data to the socket.\n" ++
             "* `:r` disables reading new data from the socket.\n" ++
             "* `:w` disable writing data to the socket.\n\n" ++
             "Returns the original socket."),
-        corefn.reg("net/peername", &cfunGetpeername, @src(), "(net/peername stream)", "Gets the remote peer's address and port in a tuple in that order."),
-        corefn.reg("net/localname", &cfunGetsockname, @src(), "(net/localname stream)", "Gets the local address and port in a tuple in that order."),
-        corefn.reg("net/address-unpack", &cfunAddressUnpack, @src(), "(net/address-unpack address)", "Given an address returned by net/address, return a host, port pair. Unix domain sockets " ++
+        corefn.reg("net/peername", &nfunGetpeername, @src(), "(net/peername stream)", "Gets the remote peer's address and port in a tuple in that order."),
+        corefn.reg("net/localname", &nfunGetsockname, @src(), "(net/localname stream)", "Gets the local address and port in a tuple in that order."),
+        corefn.reg("net/address-unpack", &nfunAddressUnpack, @src(), "(net/address-unpack address)", "Given an address returned by net/address, return a host, port pair. Unix domain sockets " ++
             "will have only the path in the returned tuple."),
-        corefn.reg("net/setsockopt", &cfunSetsockopt, @src(), "(net/setsockopt stream option value)", "set socket options.\n" ++
+        corefn.reg("net/setsockopt", &nfunSetsockopt, @src(), "(net/setsockopt stream option value)", "set socket options.\n" ++
             "\n" ++
             "supported options and associated value types:\n" ++
             "- :so-broadcast boolean\n" ++
@@ -539,7 +539,7 @@ pub inline fn sockOf(s: *const ev_stream.Stream) net_abi.JSock {
     return if (windows) @intFromPtr(s.handle) else s.handle;
 }
 
-/// The `&opt type` argument the socket cfunctions share: `:stream` or
+/// The `&opt type` argument the socket nfunctions share: `:stream` or
 /// `:datagram`.
 pub fn socketType(argv: []repr.Value, n: usize) raise.Error!c_int {
     const stype = try args_core.optKeyword(argv, n, null);
@@ -652,7 +652,7 @@ fn addressAbstract(from: ?*const anyopaque, len: usize) repr.Value {
 /// `family` is `AF_INET` or `AF_INET6`, and any other family reports false
 /// without a call. A zeroed `sockaddr` of either family is already the
 /// wildcard address on port 0, so only the family field is written.
-/// `cfunConnect` calls this on Windows, where `ConnectEx` requires a bound
+/// `nfunConnect` calls this on Windows, where `ConnectEx` requires a bound
 /// socket. This function cannot raise.
 fn bindWildcard(sock: JSock, family: c_int) bool {
     if (family == h.AF_INET) {
@@ -671,7 +671,7 @@ fn bindWildcard(sock: JSock, family: c_int) bool {
 }
 
 /// `(net/accept stream &opt timeout)`.
-fn cfunAccept(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAccept(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_acceptable | stream_socket);
@@ -681,7 +681,7 @@ fn cfunAccept(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/accept-loop stream handler)`.
-fn cfunAcceptLoop(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAcceptLoop(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_acceptable | stream_socket);
@@ -699,7 +699,7 @@ fn cfunAcceptLoop(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/chunk stream n &opt buf timeout)`.
-fn cfunChunk(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_readable | stream_socket);
@@ -711,7 +711,7 @@ fn cfunChunk(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/connect host port &opt type bindhost bindport)`.
-fn cfunConnect(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"}));
     try args_core.arity(argv, 2, 5);
 
@@ -877,7 +877,7 @@ fn cfunConnect(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/flush stream)`.
-fn cfunFlush(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFlush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_writable | stream_socket);
@@ -891,7 +891,7 @@ fn cfunFlush(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/listen host port &opt type no-reuse)`.
-fn cfunListen(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_listen"}));
     try args_core.arity(argv, 2, 4);
 
@@ -949,7 +949,7 @@ fn cfunListen(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/read stream n &opt buf timeout)`.
-fn cfunRead(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_readable | stream_socket);
@@ -966,7 +966,7 @@ fn cfunRead(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/recv-from stream n buf &opt timeout)`.
-fn cfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_udpserver | stream_socket);
@@ -978,7 +978,7 @@ fn cfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/send-to stream dest data &opt timeout)`.
-fn cfunSendTo(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSendTo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_udpserver | stream_socket);
@@ -995,7 +995,7 @@ fn cfunSendTo(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/setsockopt stream option value)`.
-fn cfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 3);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_socket);
@@ -1068,7 +1068,7 @@ fn cfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/shutdown stream &opt mode)`.
-fn cfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_socket);
@@ -1098,7 +1098,7 @@ fn cfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/socket host port &opt type)`.
-fn cfunSocket(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
 
     const socktype = try socketType(argv, 0);
@@ -1140,7 +1140,7 @@ fn cfunSocket(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(net/write stream data &opt timeout)`.
-fn cfunWrite(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const stream = try getStream(argv, 0);
     try ev_loop.streamFlags(stream, stream_writable | stream_socket);
@@ -1155,7 +1155,7 @@ fn cfunWrite(argv: []repr.Value) raise.Error!repr.Value {
     }
 }
 
-/// `(net/localname)` and `(net/peername)` are the same cfunction but for the
+/// `(net/localname)` and `(net/peername)` are the same nfunction but for the
 /// host call and one word of the failure message. `net.c` writes them out
 /// twice; the duplication is not part of the behaviour.
 fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Error!repr.Value {
@@ -1218,7 +1218,7 @@ fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
 ///
 /// Raising, and it must be: `registerStream` refuses a descriptor the backend
 /// will not take, and every caller below is inside a raise-capable function,
-/// the four cfunctions and both halves of the accept callback, because
+/// the four nfunctions and both halves of the accept callback, because
 /// `ev_dispatch.EVCallback` is `raise.Error!void` too. A reporting form here
 /// would leave the refusal as a report nobody consumes, with a null stream
 /// pointer dereferenced on top of it.
@@ -1268,13 +1268,13 @@ fn net_callback_accept(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) rais
 /// What the loop calls when a connect completes.
 ///
 /// On Windows the result comes from the completion event for the `ConnectEx`
-/// that `cfunConnect` started. Elsewhere it comes from `SO_ERROR` after a
+/// that `nfunConnect` started. Elsewhere it comes from `SO_ERROR` after a
 /// writability event on a non-blocking `connect`. The two arms share only the
 /// event dispatch.
 fn net_callback_connect(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) raise.Error!void {
     const stream: *ev_stream.Stream = op.stream;
     switch (event) {
-        // `cfunConnect` issued the `ConnectEx` before this, so the port owes
+        // `nfunConnect` issued the `ConnectEx` before this, so the port owes
         // a completion for it and the flag is what leaves the state for that
         // completion. A state is what distinguishes that path: the blocking
         // fallback this file keeps, and every other platform, schedule with

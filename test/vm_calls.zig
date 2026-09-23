@@ -13,7 +13,7 @@
 //! The whole battery runs inside a real fiber. `methodInvoke` reaches
 //! `vm/entry.zig`'s `call` for a function callee, which needs a current fiber
 //! and a frame to push onto. Rather than installing one by hand, `run`
-//! registers a cfunction and calls it from Janet source, so every assertion
+//! registers an nfunction and calls it from Janet source, so every assertion
 //! below runs where `runVm` would have made the same call.
 //!
 //! The seven refusal messages. Each is built by `pp_format.panicf` with a
@@ -161,17 +161,17 @@ fn makeAbstracts() void {
     gc_alloc.gcroot(loud_string_value);
 }
 
-fn invokeACfunction() raise.Error!void {
+fn invokeANfunction() raise.Error!void {
     var argv = [_]repr.Value{ intv(1), intv(2), intv(4) };
     const callee = eval("vmcalls/sum");
-    expect(harness.isType(callee, repr.Tag.cfunction));
+    expect(harness.isType(callee, repr.Tag.nfunction));
     expect(wrap.toNumber(try vm_calls.methodInvoke(callee, argv[0..3])) == 7);
     // Arity is the callee's business, not this layer's: zero arguments reach
-    // the cfunction rather than the arity check below.
+    // the nfunction rather than the arity check below.
     expect(wrap.toNumber(try vm_calls.methodInvoke(callee, &.{})) == 0);
 }
 
-fn cfunSum(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSum(argv: []repr.Value) raise.Error!repr.Value {
     var total: f64 = 0;
     var i: usize = 0;
     while (i < argv.len) : (i += 1) total += try args_core.getNumber(argv, i);
@@ -179,7 +179,7 @@ fn cfunSum(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// Returns its arguments as a tuple, so a caller can assert their order.
-fn cfunArgs(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunArgs(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(tuples.newFrom(argv));
 }
 
@@ -256,7 +256,7 @@ fn theDefaultArmReversesTheLookup() raise.Error!void {
 /// asserted below.
 fn methodLookup() raise.Error!void {
     const found = try vm_calls.methodLookup(eval("!{:m vmcalls/sum}"), "m");
-    expect(harness.isType(found, repr.Tag.cfunction));
+    expect(harness.isType(found, repr.Tag.nfunction));
     expect(isNil(try vm_calls.methodLookup(eval("!{:m 1}"), "other")));
     // A value with no keys at all gives nil rather than raising, which is
     // what lets the operator fallbacks try the other operand.
@@ -311,7 +311,7 @@ fn resolveMethod() raise.Error!void {
     var args = [_]repr.Value{ eval("!{:m vmcalls/sum}"), intv(1) };
     var fiber = try fiberWithArgs(&args);
     const callee = try vm_calls.resolveMethod(kw("m"), fiber);
-    expect(harness.isType(callee, repr.Tag.cfunction));
+    expect(harness.isType(callee, repr.Tag.nfunction));
     // Resolution reads the receiver and leaves the stack alone: the arguments
     // are still pushed when it returns, because `JOP_CALL` consumes them next.
     expect(fiber.stacktop - fiber.stackstart == 2);
@@ -341,7 +341,7 @@ fn callNonfn() raise.Error!void {
     expect(fiber.stacktop == fiber.stackstart);
     _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
 
-    // A cfunction callee gets the pushed arguments in order.
+    // An nfunction callee gets the pushed arguments in order.
     args[0] = intv(5);
     fiber = try fiberWithArgs(&args);
     expect(wrap.toNumber(try vm_calls.callNonfn(fiber, eval("vmcalls/sum"))) == 11);
@@ -409,10 +409,10 @@ fn aRaiseFromInsideAFillLoop() void {
     _ = gc_alloc.gcunroot(wrap.fromBuffer(buffer));
 }
 
-fn cfunContract(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunContract(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
-    try invokeACfunction();
+    try invokeANfunction();
     try invokeAFunction();
     try invokeAnAbstractWithACallCallback();
     try anAbstractWithoutCallFallsThroughToIndexing();
@@ -438,10 +438,10 @@ fn cfunContract(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "vmcalls/sum", .cfun = raise.stored(&cfunSum), .documentation = null },
-    .{ .name = "vmcalls/args", .cfun = raise.stored(&cfunArgs), .documentation = null },
-    .{ .name = "vmcalls/contract", .cfun = raise.stored(&cfunContract), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "vmcalls/sum", .nfun = raise.stored(&nfunSum), .documentation = null },
+    .{ .name = "vmcalls/args", .nfun = raise.stored(&nfunArgs), .documentation = null },
+    .{ .name = "vmcalls/contract", .nfun = raise.stored(&nfunContract), .documentation = null },
 };
 
 // ==========================================================================
@@ -451,7 +451,7 @@ const cfuns = [_]abi.Reg{
 pub fn run() void {
     harness.init();
     test_env = harness.coreEnv();
-    registry.cfuns(test_env, null, &cfuns);
+    registry.nfuns(test_env, null, &nfuns);
     makeAbstracts();
 
     // From Janet source, so that everything above runs with a live fiber under

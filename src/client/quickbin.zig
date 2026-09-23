@@ -9,7 +9,7 @@
 //!
 //! `runRaising` builds the environment as `cli.zig` does and calls
 //! `run-image` on a fiber with the image, the argument vector and one loader
-//! cfunction per native. The program runs as `wattle -i` runs an image file,
+//! nfunction per native. The program runs as `wattle -i` runs an image file,
 //! with the program name in place of the image path, and the exit status is
 //! the event loop's.
 //!
@@ -57,9 +57,9 @@ const image = @embedFile("quickbin_image");
 // Types
 // ==========================================================================
 
-/// The loader cfunction for `natives[index]`.
+/// The loader nfunction for `natives[index]`.
 ///
-/// The cfunction takes no arguments. It refuses the module if its
+/// The nfunction takes no arguments. It refuses the module if its
 /// `_wattle_mod_config` report differs from this build's, runs its
 /// `_wattle_init` into a new table, sets `:native` to the module's name and
 /// returns the table, as `native` does for a module it opens.
@@ -147,7 +147,7 @@ fn runRaising(arguments: []const [:0]const u8) raise.Error!c_int {
         tables.put(
             loaders,
             value.fromBytes(natives[index].name, .string),
-            wrap.fromCfunction(raise.stored(&Loader(index).load)),
+            wrap.fromNfunction(raise.stored(&Loader(index).load)),
         );
     }
 

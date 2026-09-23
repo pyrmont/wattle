@@ -20,7 +20,7 @@
 //!
 //! ## The refusals
 //!
-//! Validation happens above the kernels, in the argument layer. The cfunction
+//! Validation happens above the kernels, in the argument layer. The nfunction
 //! is called directly here and the refusal is a value, so each case is one
 //! line and says which argument was rejected.
 

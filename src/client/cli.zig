@@ -7,7 +7,7 @@
 //! This file imports the runtime rather than linking it. There is no C API for
 //! it to be an embedder of, so the client is an ordinary Zig program that
 //! `@import`s the runtime, writes `try` at a raise, and uses a
-//! `raise.CFunction` rather than a function pointer across a compilation
+//! `raise.NFunction` rather than a function pointer across a compilation
 //! boundary. It is the root of its own module and reaches the runtime by the
 //! name `subsystems`, so it is still a separate compilation: a native module
 //! resolves into the client's symbol table rather than the library's.

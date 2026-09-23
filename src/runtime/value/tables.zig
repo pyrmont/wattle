@@ -39,9 +39,9 @@
 //! into the table before the loop that fills it and keeps the old array in a
 //! local across that loop.
 //!
-//! ## The cfunction surface
+//! ## The nfunction surface
 //!
-//! Each `cfunTable*` is a `raise.Error!repr.Value` and takes its raise out
+//! Each `nfunTable*` is a `raise.Error!repr.Value` and takes its raise out
 //! with `try`; nothing in them is stranded across a call that can raise.
 
 // ==========================================================================
@@ -253,31 +253,31 @@ pub inline fn isScratch(table: *const Table) bool {
     return table.gc.flags.own & own_scratch != 0;
 }
 
-/// Installs the `table/` cfunctions into `env`.
+/// Installs the `table/` nfunctions into `env`.
 pub fn lib(env: *Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("table/new", &cfunTableNew, @src(), "(table/new capacity)", "Creates a new empty table with pre-allocated memory " ++
+        corefn.reg("table/new", &nfunTableNew, @src(), "(table/new capacity)", "Creates a new empty table with pre-allocated memory " ++
             "for `capacity` entries. This means that if one knows the number of " ++
             "entries going into a table on creation, extra memory allocation " ++
             "can be avoided. " ++
             "Returns the new table."),
-        corefn.reg("table/weak", &cfunTableWeak, @src(), "(table/weak capacity)", "Creates a new empty table with weak references to keys and values. Similar to `table/new`. " ++
+        corefn.reg("table/weak", &nfunTableWeak, @src(), "(table/weak capacity)", "Creates a new empty table with weak references to keys and values. Similar to `table/new`. " ++
             "Returns the new table."),
-        corefn.reg("table/weak-keys", &cfunTableWeakKeys, @src(), "(table/weak-keys capacity)", "Creates a new empty table with weak references to keys and normal references to values. Similar to `table/new`. " ++
+        corefn.reg("table/weak-keys", &nfunTableWeakKeys, @src(), "(table/weak-keys capacity)", "Creates a new empty table with weak references to keys and normal references to values. Similar to `table/new`. " ++
             "Returns the new table."),
-        corefn.reg("table/weak-values", &cfunTableWeakValues, @src(), "(table/weak-values capacity)", "Creates a new empty table with normal references to keys and weak references to values. Similar to `table/new`. " ++
+        corefn.reg("table/weak-values", &nfunTableWeakValues, @src(), "(table/weak-values capacity)", "Creates a new empty table with normal references to keys and weak references to values. Similar to `table/new`. " ++
             "Returns the new table."),
-        corefn.reg("table/to-map", &cfunTableTomap, @src(), "(table/to-map tab)", "Convert a table to a map. The prototype is not followed. Returns a new map."),
-        corefn.reg("table/getproto", &cfunTableGetproto, @src(), "(table/getproto tab)", "Get the prototype table of a table. Returns nil if the table " ++
+        corefn.reg("table/to-map", &nfunTableTomap, @src(), "(table/to-map tab)", "Convert a table to a map. The prototype is not followed. Returns a new map."),
+        corefn.reg("table/getproto", &nfunTableGetproto, @src(), "(table/getproto tab)", "Get the prototype table of a table. Returns nil if the table " ++
             "has no prototype, otherwise returns the prototype."),
-        corefn.reg("table/setproto", &cfunTableSetproto, @src(), "(table/setproto tab proto)", "Set the prototype of a table. Returns the original table `tab`."),
-        corefn.reg("table/rawget", &cfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table `tab` without looking at the prototype table. " ++
+        corefn.reg("table/setproto", &nfunTableSetproto, @src(), "(table/setproto tab proto)", "Set the prototype of a table. Returns the original table `tab`."),
+        corefn.reg("table/rawget", &nfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table `tab` without looking at the prototype table. " ++
             "If `tab` does not contain the key directly, the function will return " ++
             "nil without checking the prototype. Returns the value in the table."),
-        corefn.reg("table/clone", &cfunTableClone, @src(), "(table/clone tab)", "Create a copy of a table. Updates to the new table will not change the old table, " ++
+        corefn.reg("table/clone", &nfunTableClone, @src(), "(table/clone tab)", "Create a copy of a table. Updates to the new table will not change the old table, " ++
             "and vice versa."),
-        corefn.reg("table/clear", &cfunTableClear, @src(), "(table/clear tab)", "Remove all key-value pairs in a table and return the modified table `tab`."),
-        corefn.reg("table/proto-flatten", &cfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Create a new table that is the result of merging all prototypes into a new table."),
+        corefn.reg("table/clear", &nfunTableClear, @src(), "(table/clear tab)", "Remove all key-value pairs in a table and return the modified table `tab`."),
+        corefn.reg("table/proto-flatten", &nfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Create a new table that is the result of merging all prototypes into a new table."),
     };
     corefn.install(env, entries);
 }
@@ -444,7 +444,7 @@ pub fn weakv(capacity: usize) *Table {
 // ==========================================================================
 
 /// `table/clear`: every pair removed, the capacity and the prototype kept.
-fn cfunTableClear(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableClear(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const table = try args_core.getTable(argv, 0);
     clear(table);
@@ -452,32 +452,32 @@ fn cfunTableClear(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `table/clone`: a copy, bucket array and all.
-fn cfunTableClone(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableClone(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(clone(try args_core.getTable(argv, 0)));
 }
 
 /// `table/getproto`: the prototype, or nil where there is none.
-fn cfunTableGetproto(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableGetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const t = try args_core.getTable(argv, 0);
     return if (t.proto) |proto| wrap.fromTable(proto) else wrap.fromNil();
 }
 
 /// `table/new`: an empty table with capacity reserved.
-fn cfunTableNew(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(new(@intCast(try args_core.getNat(argv, 0))));
 }
 
 /// `table/proto-flatten`: the prototype chain collapsed into one table.
-fn cfunTableProtoFlatten(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableProtoFlatten(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(protoFlatten(try args_core.getTable(argv, 0)));
 }
 
 /// `table/rawget`: a lookup that does not follow the prototype chain.
-fn cfunTableRawget(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableRawget(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return rawget(try args_core.getTable(argv, 0), argv[1]);
 }
@@ -487,7 +487,7 @@ fn cfunTableRawget(argv: []repr.Value) raise.Error!repr.Value {
 /// The second argument is tested before it is fetched rather than going
 /// through `args.optTable`, because that would build an empty table for the
 /// default where a nil has to clear the prototype instead.
-fn cfunTableSetproto(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableSetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const table = try args_core.getTable(argv, 0);
     var proto: ?*Table = null;
@@ -497,25 +497,25 @@ fn cfunTableSetproto(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `table/to-map`: the table's own pairs frozen into a map.
-fn cfunTableTomap(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableTomap(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromMap(toMap(try args_core.getTable(argv, 0)));
 }
 
 /// `table/weak`: `table/new` with weak keys and weak values.
-fn cfunTableWeak(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableWeak(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakkv(@intCast(try args_core.getNat(argv, 0))));
 }
 
 /// `table/weak-keys`: `table/new` with weak keys and strong values.
-fn cfunTableWeakKeys(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableWeakKeys(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakk(@intCast(try args_core.getNat(argv, 0))));
 }
 
 /// `table/weak-values`: `table/new` with strong keys and weak values.
-fn cfunTableWeakValues(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTableWeakValues(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromTable(weakv(@intCast(try args_core.getNat(argv, 0))));
 }

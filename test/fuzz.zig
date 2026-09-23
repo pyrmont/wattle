@@ -158,8 +158,8 @@ fn session(comptime body: fn (env: *tables.Table, data: []const u8) void, data: 
 /// The deepest reach of the four into what a byte string can ask for:
 /// `marsh.zig` reconstructs funcdefs, envs and fibers from a stream, and every
 /// length and index it uses comes out of that stream. A registry is looked up
-/// and passed because that is what lets a stream name an abstract type or a
-/// cfunction, so leaving it out would put those two paths out of reach.
+/// and passed because that is what lets a stream name an abstract type or an
+/// nfunction, so leaving it out would put those two paths out of reach.
 fn unmarshalBody(env: *tables.Table, data: []const u8) void {
     const registry = marsh.envLookup(env);
     var next: [*]const u8 = undefined;

@@ -231,7 +231,7 @@ pub fn callbackEntry(ctx: ?*anyopaque, userdata: ?*anyopaque) void {
     _ = raise.total(vm_entry.call(fun, (&context)[0..1]), "an ffi callback");
 }
 
-pub fn cfunCall(argv: []const repr.Value) raise.Error!repr.Value {
+pub fn nfunCall(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, -1);
     const function_pointer = try callablePointer(argv, 0);
@@ -254,7 +254,7 @@ pub fn cfunCall(argv: []const repr.Value) raise.Error!repr.Value {
     };
 }
 
-pub fn cfunJitfn(argv: []const repr.Value) raise.Error!repr.Value {
+pub fn nfunJitfn(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_jit"}));
     try args_core.fixarity(argv, 1);
     const bytes = try args_core.getBytes(argv, 0);
@@ -305,7 +305,7 @@ pub fn cfunJitfn(argv: []const repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(fun);
 }
 
-pub fn cfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
+pub fn nfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
     // The upper bound is a deliberate divergence from Janet, which checks
     // only the lower one: without it `arg_count` is whatever the caller passed
     // and the loop below fills `mappings` and `slots` past their ends, into
@@ -417,7 +417,7 @@ pub fn cfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(abst);
 }
 
-pub fn cfunTrampoline(argv: []const repr.Value) raise.Error!repr.Value {
+pub fn nfunTrampoline(argv: []const repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     var cc = ffi_types.default_cc;
     if (argv.len >= 1) cc = try ffi_types.decodeCc(try args_core.getKeyword(argv, 0));
@@ -438,8 +438,8 @@ pub fn cfunTrampoline(argv: []const repr.Value) raise.Error!repr.Value {
     };
 }
 
-/// `cfun_ffi_supported_calling_conventions`. Every architecture supports
-/// `:none`, which is a placeholder that cannot be used at runtime.
+/// Returns the array `ffi/calling-conventions` gives. Every architecture
+/// supports `:none`, which is a placeholder that cannot be used at runtime.
 pub fn supportedConventions() raise.Error!repr.Value {
     const array = arrays.new(4);
     if (ffi_types.win64_enabled) try arrays.push(array, value.fromBytes("win64", .keyword));

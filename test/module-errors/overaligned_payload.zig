@@ -25,7 +25,7 @@ fn make(argv: []wattle.Value) wattle.Error!wattle.Value {
 }
 
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.cfuns(env, "overaligned", &.{
+    wattle.nfuns(env, "overaligned", &.{
         wattle.reg("make", &make, null),
     });
 }

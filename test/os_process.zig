@@ -277,18 +277,18 @@ fn theHostOperations() void {
 
 /// How many scratch blocks the VM holds, for a Janet case to read on either
 /// side of a call that allocates and releases them.
-fn cfunScratch(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunScratch(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return harness.wrapInteger(@intCast(harness.vm().scratch.items.len));
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "osprocess/scratch", .cfun = raise.stored(&cfunScratch), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "osprocess/scratch", .nfun = raise.stored(&nfunScratch), .documentation = null },
 };
 
 fn theCoreFunctions() void {
     const env = harness.coreEnv();
-    registry.cfuns(env, null, &cfuns);
+    registry.nfuns(env, null, &nfuns);
 
     // An exit code reaches the caller unchanged, whether the program is named
     // by path or found on it.

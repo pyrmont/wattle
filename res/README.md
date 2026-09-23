@@ -87,7 +87,7 @@ per source under `zig-out/comments` and gates nothing.
 `image-diff.janet` counts the absolute host paths the image embeds, which must
 be zero; `--save FILE` on one host and `--against FILE` on another compare its
 bytes. `image-semantic.janet` compares each binding's value, docstring and
-bytecode with `:source-map` ignored, so a change that moves a cfunction's
+bytecode with `:source-map` ignored, so a change that moves an nfunction's
 registration line changes the bytes and not this comparison. `zig build` runs
 `wasm_imports.zig` on wasm targets.
 

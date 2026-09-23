@@ -1,17 +1,17 @@
 //! A method table row, in the two declared forms it is reached by.
 //!
-//! A method table is an array of rows, a name beside a cfunction, terminated
+//! A method table is an array of rows, a name beside an nfunction, terminated
 //! by a row whose name is null. Typing the row's function is what makes a
 //! method's `try` a compile error to omit, exactly as `abstract_type.zig` does
 //! for a finalizer and `ev/dispatch.zig` for an event callback.
 //!
 //! The layout is one row in both forms, a name and a pointer, and the pointer
 //! is the same pointer. What differs is the declared type of the function it
-//! points at: `Method`'s is `module.CFunction`, and `CMethod`'s is the C-ABI
-//! `abi.CFunction` the published method lookups have to take.
+//! points at: `Method`'s is `module.NFunction`, and `CMethod`'s is the C-ABI
+//! `abi.NFunction` the published method lookups have to take.
 //!
 //! There is no terminator constant. A table spells its own, inline, as
-//! `.{ .name = null, .cfun = null }`.
+//! `.{ .name = null, .nfun = null }`.
 
 // ==========================================================================
 // Project imports
@@ -24,7 +24,7 @@ const module = @import("../module.zig");
 // Aliased types
 // ==========================================================================
 
-/// A method table's row, with the cfunction typed as raising.
+/// A method table's row, with the nfunction typed as raising.
 ///
 /// The declaration is `module.Method`: a module author builds a method table
 /// with the same two fields and passes it to the same two entry points, so the
@@ -36,14 +36,14 @@ pub const Method = module.Method;
 // Types
 // ==========================================================================
 
-/// The same row with the cfunction as the C ABI declares it.
+/// The same row with the nfunction as the C ABI declares it.
 ///
 /// `Method` above and this are one layout, a name and a pointer, and they
 /// differ only in the declared type of the function the pointer names. This is
 /// the arm for the places where that signature is fixed from outside:
 /// `getmethod` and `nextmethod` take an array of these, and
 /// `Stream.methods` points at one, because a caller that reached the runtime
-/// through the C ABI cannot name a `module.CFunction`.
+/// through the C ABI cannot name a `module.NFunction`.
 ///
 /// A method table written for a Zig caller uses `Method`. This one exists so
 /// that the boundary's tables do not have to be cast at every read.
@@ -57,7 +57,7 @@ pub const Method = module.Method;
 /// is `extern` so that the cast between them is sound by declaration.
 pub const CMethod = extern struct {
     name: ?[*:0]const u8 = null,
-    cfun: abi.CFunction = null,
+    nfun: abi.NFunction = null,
 };
 
 // ==========================================================================
@@ -67,6 +67,6 @@ pub const CMethod = extern struct {
 comptime {
     if (@sizeOf(CMethod) != @sizeOf(Method) or
         @offsetOf(CMethod, "name") != @offsetOf(Method, "name") or
-        @offsetOf(CMethod, "cfun") != @offsetOf(Method, "cfun"))
+        @offsetOf(CMethod, "nfun") != @offsetOf(Method, "nfun"))
         @compileError("Method and CMethod are cast to each other and no longer share a layout");
 }

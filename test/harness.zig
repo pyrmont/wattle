@@ -3,7 +3,7 @@
 //! The list is deliberately short. A contract inside the runtime's compilation
 //! crosses no boundary, so nothing here is an adapter: an equivalent written
 //! for a contract on the far side of a symbol table is nine times this size,
-//! and almost all of it exists to move a raise or a cfunction across the C
+//! and almost all of it exists to move a raise or an nfunction across the C
 //! ABI. What is left is a protected scope, which is a real mechanism.
 //!
 //! ## The scope is not a formality
@@ -309,7 +309,7 @@ pub fn arrayPush(array: *arrays.Array, val: repr.Value) void {
     arrays.push(array, val) catch @panic("harness: arrays.push raised");
 }
 
-/// Call a core cfunction by name over a slice of arguments.
+/// Call a core nfunction by name over a slice of arguments.
 ///
 /// This is the `argc`/`argv` split, which a contract otherwise spells at every
 /// call from an array it already has.
@@ -322,15 +322,15 @@ pub fn callCore(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value 
     return core(name)(argv);
 }
 
-/// A core cfunction by name, with the calling convention it actually has.
+/// A core nfunction by name, with the calling convention it actually has.
 ///
-/// `registry.resolveCore` returns a `Value` wrapping a `CFunction`, which is
+/// `registry.resolveCore` returns a `Value` wrapping an `NFunction`, which is
 /// a pointer to a raising Zig function rather than to a C one.
-/// `raise.cfunction` is the cast that says so.
-pub fn core(name: [*:0]const u8) raise.CFunction {
+/// `raise.nfunction` is the cast that says so.
+pub fn core(name: [*:0]const u8) raise.NFunction {
     const val = registry.resolveCore(name);
-    expect(isType(val, repr.Tag.cfunction));
-    return raise.cfunction(wrap.toCfunction(val));
+    expect(isType(val, repr.Tag.nfunction));
+    return raise.nfunction(wrap.toNfunction(val));
 }
 
 /// `core_env.coreEnv(null)`, on the same rule as `init` and `arrayPush`.
@@ -350,10 +350,10 @@ pub fn coreEnv() *tables.Table {
 /// *registration*. `os/cpu-count` is absent from a reduced-OS build while
 /// `os_platform` itself is compiled either way, so no field of `Selection`
 /// covers it.
-pub fn coreOptional(name: [*:0]const u8) ?raise.CFunction {
+pub fn coreOptional(name: [*:0]const u8) ?raise.NFunction {
     const val = registry.resolveCore(name);
-    if (!isType(val, repr.Tag.cfunction)) return null;
-    return raise.cfunction(wrap.toCfunction(val));
+    if (!isType(val, repr.Tag.nfunction)) return null;
+    return raise.nfunction(wrap.toNfunction(val));
 }
 
 /// `callCore` under a protected scope, returning the raise it made, or null

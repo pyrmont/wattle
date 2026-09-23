@@ -1,4 +1,4 @@
-//! Argument extraction: checking whether a cfunction's arguments are what it
+//! Argument extraction: checking whether an nfunction's arguments are what it
 //! asked for, and saying so.
 //!
 //! A `get*` function reads one argument and raises where it is not what was
@@ -136,7 +136,7 @@ pub const getStartRange = startRange;
 pub const getArray = GetArray.get;
 pub const getBoolean = GetBoolean.get;
 pub const getBuffer = GetBuffer.get;
-pub const getCFunction = GetCFunction.get;
+pub const getNFunction = GetNFunction.get;
 pub const getFiber = GetFiber.get;
 pub const getFunction = GetFunction.get;
 pub const getKeyword = GetKeyword.get;
@@ -206,7 +206,7 @@ pub const optTable = OptLen(GetTable, tables.new).get;
 
 /// The eleven type getters that take a default.
 pub const optBoolean = Opt(GetBoolean).get;
-pub const optCFunction = Opt(GetCFunction).get;
+pub const optNFunction = Opt(GetNFunction).get;
 pub const optFiber = Opt(GetFiber).get;
 pub const optFunction = Opt(GetFunction).get;
 pub const optKeyword = Opt(GetKeyword).get;
@@ -502,7 +502,7 @@ pub const Gathered = struct {
 pub const GetArray = TypeGetter(wrap.toArray, repr.Tag.array, repr.TagSet.one(.array));
 pub const GetBoolean = TypeGetter(wrap.toBoolean, repr.Tag.boolean, repr.TagSet.one(.boolean));
 pub const GetBuffer = TypeGetter(wrap.toBuffer, repr.Tag.buffer, repr.TagSet.one(.buffer));
-pub const GetCFunction = TypeGetter(wrap.toCfunction, repr.Tag.cfunction, repr.TagSet.one(.cfunction));
+pub const GetNFunction = TypeGetter(wrap.toNfunction, repr.Tag.nfunction, repr.TagSet.one(.nfunction));
 pub const GetFiber = TypeGetter(wrap.toFiber, repr.Tag.fiber, repr.TagSet.one(.fiber));
 pub const GetFunction = TypeGetter(wrap.toFunction, repr.Tag.function, repr.TagSet.one(.function));
 pub const GetKeyword = KindGetter(.keyword);
@@ -760,7 +760,7 @@ pub fn argArgindex(
 }
 
 /// Whether `count` is within `min` and `max`. A negative bound means unbounded
-/// on that side, which is how a cfunction with no maximum spells itself.
+/// on that side, which is how an nfunction with no maximum spells itself.
 pub fn argArity(count: i32, min: i32, max: i32, fault: *Fault) bool {
     if (min >= 0 and count < min) {
         fault.* = .{ .arity_min = .{ .got = count, .want = min } };
@@ -845,7 +845,7 @@ pub fn argFixarity(count: i32, fix: i32, fault: *Fault) bool {
 /// so a `flags` set longer than 64 characters cannot be honoured; clamping it
 /// instead would turn the caller's mistake into a wrong result about the
 /// user's input, rejecting a keyword that names a character the quoted set
-/// visibly contains. The set is written by whoever registered the cfunction,
+/// visibly contains. The set is written by whoever registered the nfunction,
 /// so that is who the diagnosis names.
 pub fn argFlags(
     keyw: [*]const u8,
@@ -1315,7 +1315,7 @@ pub fn endRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!i32
 pub fn findMethod(key: repr.Value, methods: [*]const method_type.CMethod) ?repr.Value {
     if (!wrap.isKeyword(key)) return null;
     const found = argMethod(wrap.toKeyword(key), methods) orelse return null;
-    return wrap.fromCfunction(found.cfun);
+    return wrap.fromNfunction(found.nfun);
 }
 
 /// Raises unless `count` is exactly `fix`.
@@ -1569,7 +1569,7 @@ pub fn getSlice(argv: []const repr.Value) raise.Error!Range {
     return range_out;
 }
 
-/// The cfunction a method name resolves to, written into `out`, and 1 or 0 for
+/// The nfunction a method name resolves to, written into `out`, and 1 or 0 for
 /// whether one was found.
 pub fn getmethod(
     method: [*:0]const u8,
@@ -1577,7 +1577,7 @@ pub fn getmethod(
     out: *repr.Value,
 ) c_int {
     const found = argMethod(method, methods) orelse return 0;
-    out.* = wrap.fromCfunction(found.cfun);
+    out.* = wrap.fromNfunction(found.nfun);
     return 1;
 }
 
@@ -1916,8 +1916,8 @@ fn indexedOf(x: repr.Value) raise.Error!?abi.Indexed {
 ///
 /// `argv` is the frame and `n` is the slot. This function cannot fault.
 ///
-/// Every kernel reads its argument through this, and so does a cfunction
-/// that reads a slot before its arity has been checked. A cfunction may read a slot
+/// Every kernel reads its argument through this, and so does an nfunction
+/// that reads a slot before its arity has been checked. An nfunction may read a slot
 /// before anything has checked its arity, and each of the seven `slice`
 /// bindings does: `getSlice` is what checks the arity, and it runs after the
 /// value has been read. A slot past the end reads as nil, so such a call

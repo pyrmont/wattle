@@ -4,7 +4,7 @@
 //! `debugFrame` turns one stack frame into a table for `debug/stack`,
 //! `traceFrame` decodes one into a `TraceFrame` descriptor, and
 //! `stacktraceExt` renders a whole fiber chain to `(dyn :err)`. `libDebug`
-//! installs the `debug/` cfunctions.
+//! installs the `debug/` nfunctions.
 //!
 //! The frame walk and the trace render are one file because the second cannot
 //! do its job without the first, and the `JANET_TRACE_*` constants below are
@@ -50,19 +50,19 @@ const wrap = @import("value/helpers/wrap.zig");
 /// header from its locals.
 const frame_size: usize = constants.frame_size;
 
-/// How a `TraceFrame` locates the code it describes: a cfunction's registered
+/// How a `TraceFrame` locates the code it describes: an nfunction's registered
 /// line, no location at all, a bytecode offset, or a line and column from a
 /// funcdef's source map.
-const loc_cfun_line: u8 = @intCast(constants.trace_loc_cfun_line);
+const loc_nfun_line: u8 = @intCast(constants.trace_loc_nfun_line);
 const loc_none: u8 = @intCast(constants.trace_loc_none);
 const loc_pc: u8 = @intCast(constants.trace_loc_pc);
 const loc_sourcemap: u8 = @intCast(constants.trace_loc_sourcemap);
 
-/// What a `TraceFrame` names: an anonymous function, a registered cfunction, a
-/// cfunction with no registry entry, a named function, or nothing.
+/// What a `TraceFrame` names: an anonymous function, a registered nfunction, an
+/// nfunction with no registry entry, a named function, or nothing.
 const name_anonymous: u8 = @intCast(constants.trace_name_anonymous);
-const name_cfunction: u8 = @intCast(constants.trace_name_cfunction);
-const name_cfunction_bare: u8 = @intCast(constants.trace_name_cfunction_bare);
+const name_nfunction: u8 = @intCast(constants.trace_name_nfunction);
+const name_nfunction_bare: u8 = @intCast(constants.trace_name_nfunction_bare);
 const name_function: u8 = @intCast(constants.trace_name_function);
 const name_none: u8 = @intCast(constants.trace_name_none);
 
@@ -125,7 +125,7 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Error!repr.Value {
             put(t, "name", wrap.fromString(desc.name.?));
         }
     } else {
-        if (desc.name_kind == name_cfunction) {
+        if (desc.name_kind == name_nfunction) {
             if (desc.name_prefix != null) {
                 put(t, "name", wrap.fromString(try pp_format.formatc("%s/%s", .{ desc.name_prefix, desc.name })));
             } else {
@@ -137,12 +137,12 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Error!repr.Value {
             // Inside the named branch. The descriptor classifies the location
             // independently of the name; a stack trace uses that and
             // `debug/stack` does not.
-            if (desc.loc_kind == loc_cfun_line) {
+            if (desc.loc_kind == loc_nfun_line) {
                 put(t, "source-line", wrap.fromInteger(desc.line));
                 put(t, "source-column", wrap.fromInteger(1));
             }
         }
-        put(t, "c", wrap.fromTrue());
+        put(t, "native", wrap.fromTrue());
     }
 
     if (desc.tail != 0) {
@@ -211,29 +211,29 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Error!repr.Value {
     return wrap.fromTable(t);
 }
 
-/// Installs the `debug/` cfunctions into `env`.
+/// Installs the `debug/` nfunctions into `env`.
 pub fn libDebug(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("debug/break", &cfunDebugBreak, @src(), "(debug/break source line col)", "Sets a breakpoint in `source` at a given line and column. " ++
+        corefn.reg("debug/break", &nfunDebugBreak, @src(), "(debug/break source line col)", "Sets a breakpoint in `source` at a given line and column. " ++
             "Will throw an error if the breakpoint location " ++
             "cannot be found. For example\n\n" ++
             "\t(debug/break \"core.wattle\" 10 4)\n\n" ++
             "will set a breakpoint at line 10, 4th column of the file core.wattle."),
-        corefn.reg("debug/unbreak", &cfunDebugUnbreak, @src(), "(debug/unbreak source line column)", "Remove a breakpoint with a source key at a given line and column. " ++
+        corefn.reg("debug/unbreak", &nfunDebugUnbreak, @src(), "(debug/unbreak source line column)", "Remove a breakpoint with a source key at a given line and column. " ++
             "Will throw an error if the breakpoint " ++
             "cannot be found."),
-        corefn.reg("debug/fbreak", &cfunDebugFbreak, @src(), "(debug/fbreak fun &opt pc)", "Set a breakpoint in a given function. pc is an optional offset, which " ++
+        corefn.reg("debug/fbreak", &nfunDebugFbreak, @src(), "(debug/fbreak fun &opt pc)", "Set a breakpoint in a given function. pc is an optional offset, which " ++
             "is in bytecode instructions. fun is a function value. Will throw an error " ++
             "if the offset is too large or negative."),
-        corefn.reg("debug/unfbreak", &cfunDebugUnfbreak, @src(), "(debug/unfbreak fun &opt pc)", "Unset a breakpoint set with debug/fbreak."),
-        corefn.reg("debug/arg-stack", &cfunDebugArgstack, @src(), "(debug/arg-stack fiber)", "Gets all values currently on the fiber's argument stack. Normally, " ++
+        corefn.reg("debug/unfbreak", &nfunDebugUnfbreak, @src(), "(debug/unfbreak fun &opt pc)", "Unset a breakpoint set with debug/fbreak."),
+        corefn.reg("debug/arg-stack", &nfunDebugArgstack, @src(), "(debug/arg-stack fiber)", "Gets all values currently on the fiber's argument stack. Normally, " ++
             "this should be empty unless the fiber signals while pushing arguments " ++
             "to make a function call. Returns a new array."),
-        corefn.reg("debug/stack", &cfunDebugStack, @src(), "(debug/stack fib)", "Gets information about the stack as an array of tables. Each table " ++
+        corefn.reg("debug/stack", &nfunDebugStack, @src(), "(debug/stack fib)", "Gets information about the stack as an array of tables. Each table " ++
             "in the array contains information about a stack frame. The top-most, current " ++
             "stack frame is the first table in the array, and the bottom-most stack frame " ++
             "is the last value. Each stack frame contains some of the following attributes:\n\n" ++
-            "* :c - true if the stack frame is a c function invocation\n\n" ++
+            "* :native - true if the stack frame is an nfunction invocation\n\n" ++
             "* :source-column - the current source column of the stack frame\n\n" ++
             "* :function - the function that the stack frame represents\n\n" ++
             "* :source-line - the current source line of the stack frame\n\n" ++
@@ -242,14 +242,14 @@ pub fn libDebug(env: *tables.Table) void {
             "* :source - string with the file path or other identifier for the source code\n\n" ++
             "* :slots - array of all values in each slot\n\n" ++
             "* :tail - boolean indicating a tail call"),
-        corefn.reg("debug/stacktrace", &cfunDebugStacktrace, @src(), "(debug/stacktrace fiber &opt err prefix)", "Prints a nice looking stacktrace for a fiber. Can optionally provide " ++
+        corefn.reg("debug/stacktrace", &nfunDebugStacktrace, @src(), "(debug/stacktrace fiber &opt err prefix)", "Prints a nice looking stacktrace for a fiber. Can optionally provide " ++
             "an error value to print the stack trace with. If `prefix` is nil or not " ++
             "provided, will skip the error line. Returns the fiber."),
-        corefn.reg("debug/lineage", &cfunDebugLineage, @src(), "(debug/lineage fib)", "Returns an array of all child fibers from a root fiber. This function " ++
+        corefn.reg("debug/lineage", &nfunDebugLineage, @src(), "(debug/lineage fib)", "Returns an array of all child fibers from a root fiber. This function " ++
             "is useful when a fiber signals or errors to an ancestor fiber. Using this function, " ++
             "the fiber handling the error can see which fiber raised the signal. This function should " ++
             "be used mostly for debugging purposes."),
-        corefn.reg("debug/step", &cfunDebugStep, @src(), "(debug/step fiber &opt x)", "Run a fiber for one virtual instruction of the Wattle machine. Can optionally " ++
+        corefn.reg("debug/step", &nfunDebugStep, @src(), "(debug/step fiber &opt x)", "Run a fiber for one virtual instruction of the Wattle machine. Can optionally " ++
             "pass in a value that will be passed as the resuming value. Returns the signal value, " ++
             "which will usually be nil, as breakpoints raise nil signals."),
     };
@@ -325,31 +325,31 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Error!voi
         return;
     }
 
-    // A cframe stores the cfunction in the pc slot, which is why that slot is
+    // A cframe stores the nfunction in the pc slot, which is why that slot is
     // a union; `vm/state.zig`'s `FramePc` has the reasoning.
-    const cfun = frame.pc.cfunction;
-    if (cfun == null) return;
+    const nfun = frame.pc.nfunction;
+    if (nfun == null) return;
 
-    const reg = registry.registryGet(cfun) orelse {
-        out.name_kind = name_cfunction_bare;
+    const reg = registry.registryGet(nfun) orelse {
+        out.name_kind = name_nfunction_bare;
         return;
     };
     if (reg.name) |name| {
-        out.name_kind = name_cfunction;
+        out.name_kind = name_nfunction;
         out.name = name;
         out.name_prefix = reg.name_prefix;
         // Only the named branch reports a source. An entry with a source file
-        // and no name prints "<cfunction>" and nothing more, and leaving
+        // and no name prints "<nfunction>" and nothing more, and leaving
         // `source` null here is what keeps that true.
         out.source = reg.source_file;
     } else {
-        out.name_kind = name_cfunction_bare;
+        out.name_kind = name_nfunction_bare;
     }
 
     // Deliberately outside the branch above: the location comes from the entry
     // existing, the name from the entry having a name. See the header comment.
     if (reg.source_line > 0) {
-        out.loc_kind = loc_cfun_line;
+        out.loc_kind = loc_nfun_line;
         out.line = reg.source_line;
     }
 }
@@ -359,7 +359,7 @@ pub fn traceFrame(frame: *vm_state.StackFrame, out: *TraceFrame) raise.Error!voi
 // ==========================================================================
 
 /// `debug/arg-stack`: the values on the fiber's argument stack, as an array.
-fn cfunDebugArgstack(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugArgstack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(@intCast(fiber.stacktop - fiber.stackstart));
@@ -377,21 +377,21 @@ fn cfunDebugArgstack(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `debug/break`: a breakpoint set at a source position.
-fn cfunDebugBreak(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugBreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findBySource(argv);
     try debugBreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/fbreak`: a breakpoint set at a bytecode offset into a function.
-fn cfunDebugFbreak(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugFbreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findByFunction(argv);
     try debugBreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/lineage`: a fiber and every child under it, as an array.
-fn cfunDebugLineage(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugLineage(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     var fiber: ?*fibers.Fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(0);
@@ -402,7 +402,7 @@ fn cfunDebugLineage(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `debug/stack`: one table per stack frame, innermost first.
-fn cfunDebugStack(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugStack(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
     const array = arrays.new(0);
@@ -416,7 +416,7 @@ fn cfunDebugStack(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `debug/stacktrace`: the fiber's stack trace printed to `(dyn :err)`.
-fn cfunDebugStacktrace(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugStacktrace(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fiber = try args_core.getFiber(argv, 0);
     const err = if (argv.len == 1) wrap.fromNil() else argv[1];
@@ -427,7 +427,7 @@ fn cfunDebugStacktrace(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `debug/step`: one virtual instruction of the fiber, and the signal it ended
 /// on.
-fn cfunDebugStep(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugStep(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const fiber = try args_core.getFiber(argv, 0);
     var out = wrap.fromNil();
@@ -436,14 +436,14 @@ fn cfunDebugStep(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `debug/unbreak`: the breakpoint at a source position removed.
-fn cfunDebugUnbreak(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugUnbreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findBySource(argv);
     try debugUnbreak(found.definition, found.pc);
     return wrap.fromNil();
 }
 
 /// `debug/unfbreak`: the breakpoint at a bytecode offset removed.
-fn cfunDebugUnfbreak(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDebugUnfbreak(argv: []repr.Value) raise.Error!repr.Value {
     const found = try findByFunction(argv);
     try debugUnbreak(found.definition, found.pc);
     return wrap.fromNil();
@@ -597,17 +597,17 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
         switch (descriptor.name_kind) {
             constants.trace_name_anonymous => try eprintf(" %s", .{@as([*]const u8, "<anonymous>")}),
             constants.trace_name_function => try eprintf(" %s", .{descriptor.name}),
-            constants.trace_name_cfunction => if (descriptor.name_prefix != null) {
+            constants.trace_name_nfunction => if (descriptor.name_prefix != null) {
                 try eprintf(" %s/%s", .{ descriptor.name_prefix, descriptor.name });
             } else {
                 try eprintf(" %s", .{descriptor.name});
             },
-            constants.trace_name_cfunction_bare => try eprintf(" <cfunction>", .{}),
+            constants.trace_name_nfunction_bare => try eprintf(" <nfunction>", .{}),
             else => {},
         }
 
         // `source` is null in exactly the cases that printed no source before:
-        // an unnamed cfunction, and a frame that names nothing.
+        // an unnamed nfunction, and a frame that names nothing.
         if (descriptor.source != null) try eprintf(" [%s]", .{descriptor.source});
         if (descriptor.tail != 0) try eprintf(" (tail call)", .{});
 
@@ -617,7 +617,7 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
             // The widening is deliberate: `%d` renders the 64 bits the
             // specifier asks for, so the digits are the same for every
             // line number this runtime can produce.
-            constants.trace_loc_cfun_line => try eprintf(" on line %d", .{@as(c_long, descriptor.line)}),
+            constants.trace_loc_nfun_line => try eprintf(" on line %d", .{@as(c_long, descriptor.line)}),
             else => {},
         }
         try eprintf("\n", .{});

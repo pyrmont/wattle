@@ -102,8 +102,8 @@ const o_nonblock: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .NONBLOCK = true }
 var post_record: PostRecord = .{};
 
 const probe_methods = [_]method_type.CMethod{
-    .{ .name = "probe", .cfun = raise.stored(&probeMethod) },
-    .{ .name = null, .cfun = null },
+    .{ .name = "probe", .nfun = raise.stored(&probeMethod) },
+    .{ .name = null, .nfun = null },
 };
 
 const windows = builtin.os.tag == .windows;
@@ -284,7 +284,7 @@ fn theThreadedChannel() void {
 /// The two embedder constructors take a `u32` and assert that it fits an
 /// `i32`, so the largest value that does fit is the one input that separates
 /// that bound from the one below it. `(ev/chan n)` reaches neither function:
-/// `cfunNew` calls `chanInit` itself, with no bound of its own.
+/// `nfunNew` calls `chanInit` itself, with no bound of its own.
 fn theChannelCapacityBound() void {
     const limit: u32 = std.math.maxInt(i32);
 
@@ -393,7 +393,7 @@ fn theStreamExtension() void {
     // The getter reaches the caller's table rather than the default one.
     const at = &stream.streamType;
     const found = try_(at.get.?(ps, value.fromBytes("probe", .keyword))).?;
-    expect(harness.isType(found, repr.Tag.cfunction));
+    expect(harness.isType(found, repr.Tag.nfunction));
     expect(try_(at.get.?(ps, value.fromBytes("close", .keyword))) == null);
 
     // `next` walks the same table.
@@ -417,16 +417,16 @@ fn theDefaultMethods() void {
 
     // A null method table means the four default stream methods.
     //
-    // Named through the core bindings rather than as symbols: a cfunction is
+    // Named through the core bindings rather than as symbols: an nfunction is
     // not a C function, so what is asserted is that the method table and the
     // `ev/` binding are the same
     // asserted is that the method table and the `ev/` binding are the same
     // function, which is slightly stronger than comparing addresses would be.
     inline for (.{ "close", "read", "chunk", "write" }) |name| {
         const out = try_(at.get.?(s, value.fromBytes(name, .keyword))).?;
-        expect(harness.isType(out, repr.Tag.cfunction));
-        expect(wrap.toCfunction(out) ==
-            wrap.toCfunction(registry.resolveCore("ev/" ++ name)));
+        expect(harness.isType(out, repr.Tag.nfunction));
+        expect(wrap.toNfunction(out) ==
+            wrap.toNfunction(registry.resolveCore("ev/" ++ name)));
     }
 
     // A non-keyword key is not a method lookup.
@@ -1160,9 +1160,9 @@ fn theOrderedTimeouts() void {
 /// `addFiberTimeout`, which reads `vm.root_fiber.?`, and that is set only
 /// while the loop is running a task. `addtimeoutNil` has no caller in the tree
 /// at all: `ev/read`'s optional timeout and the socket layer both take the
-/// error one. So the contract lends the core environment a cfunction of its
+/// error one. So the contract lends the core environment an nfunction of its
 /// own and drives it from a task, which is the only way to reach the pair.
-fn cfunAddTimeout(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAddTimeout(argv: []repr.Value) raise.Error!repr.Value {
     try subsystems.args.fixarity(argv, 2);
     const sec = try subsystems.args.getNumber(argv, 0);
     if (try subsystems.args.getBoolean(argv, 1)) {
@@ -1178,7 +1178,7 @@ fn theTwoTimeoutConstructors() void {
     registry.def(
         env,
         "test/add-timeout",
-        wrap.fromCfunction(raise.stored(&cfunAddTimeout)),
+        wrap.fromNfunction(raise.stored(&nfunAddTimeout)),
         "Contract-only: ev.addtimeout when the second argument is true, " ++
             "ev.addtimeoutNil when it is false.",
     );

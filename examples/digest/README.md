@@ -10,7 +10,7 @@ owns that thread in an abstract value whose `gc` callback joins it. Every module
 that wraps a library with its own threads, its own poll or its own sockets has
 this shape.
 
-`digest.zig` is the whole module, and it has one cfunction:
+`digest.zig` is the whole module, and it has one nfunction:
 
 ```clojure
 (import digest)
@@ -37,11 +37,11 @@ three operations to take part.
 
 | operation | what it does | where it may be called |
 | --- | --- | --- |
-| `wattle.await()` | suspends the fiber this cfunction is running on | a cfunction |
+| `wattle.await()` | suspends the fiber this nfunction is running on | an nfunction |
 | `wattle.post(loop, cb, ctx)` | asks the loop thread to run `cb(wake, ctx)` | any thread, including a thread that is not running Wattle |
 | `wattle.wake(w, fiber, value)` | puts the fiber back on the run queue | inside a posted callback |
 
-`wattle.loop()` and `wattle.rootFiber()` are what a cfunction reads before it
+`wattle.loop()` and `wattle.rootFiber()` are what an nfunction reads before it
 suspends.
 
 ### The thread discipline in the types
@@ -53,9 +53,9 @@ a thread that is not running Wattle is unspellable rather than discouraged.
 `Wake` arrives as the posted callback's first parameter and is good for that
 call.
 
-### The order in the cfunction
+### The order in the nfunction
 
-The order in the cfunction is required.
+The order in the nfunction is required.
 
 ```zig
 const bytes = try wattle.getBytes(argv, 0); // read
@@ -72,7 +72,7 @@ return wattle.await();                      // then suspend
 ### Starting the thread before the suspend
 
 Starting the thread before the suspend is not a race. The loop is
-single-threaded, so an event the worker posts before the cfunction has returned
+single-threaded, so an event the worker posts before the nfunction has returned
 is not processed until the fiber has suspended. There is no window and nothing
 to synchronise.
 

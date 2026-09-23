@@ -16,8 +16,8 @@
 # also be `test/<name>.c`, and that route was a `zig cc` of `test/contracts.c`
 # plus the one contract plus `wattle-contract-support.o` against
 # `zig-out/lib/libwattle.a` -- a shallow link, because a C contract sat on the
-# far side of the symbol table and needed the adapter to call or define a
-# cfunction. There is no `test/*.c` contract left, so there is no link, no
+# far side of the symbol table and needed the adapter to call or define an
+# nfunction. There is no `test/*.c` contract left, so there is no link, no
 # `janetconf.h` lookup, and no support object.
 #
 # This is the narrow iteration loop `AGENTS.md` prescribes -- "`zig build` plus

@@ -59,7 +59,7 @@ pub fn getPointer(argv: []const repr.Value, n: usize) raise.Error!?*anyopaque {
         repr.Tag.pointer,
         repr.Tag.string,
         repr.Tag.symbol,
-        repr.Tag.cfunction,
+        repr.Tag.nfunction,
         => wrap.toPointer(argv[n]),
         repr.Tag.abstract => @ptrCast(@constCast((try args_core.getBytes(argv, n)).bytes)),
         repr.Tag.buffer => wrap.toBuffer(argv[n]).data,

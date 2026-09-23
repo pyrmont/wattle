@@ -1,4 +1,4 @@
-//! The core environment. Thirty-six cfunctions, the native-module loader, the
+//! The core environment. Thirty-six nfunctions, the native-module loader, the
 //! bootstrap's inline assembler, the environment every other subsystem's
 //! `lib*` registers into, and the three entry points that run Janet source.
 //!
@@ -6,9 +6,9 @@
 //! rather than two that sit together: `dobytes` takes the `tables.Table` to
 //! run in, and running source means nothing without one.
 //!
-//! A cfunction that decides to raise returns `raise.Error` and its abi
-//! delivers it. A cfunction that makes no such decision has no error channel
-//! and is written as the plain `raise.CFunction` it is: `(describe x)` cannot
+//! An nfunction that decides to raise returns `raise.Error` and its abi
+//! delivers it. An nfunction that makes no such decision has no error channel
+//! and is written as the plain `raise.NFunction` it is: `(describe x)` cannot
 //! fail on its own account, and giving it an error union it never returns
 //! would be ceremony rather than shape.
 //!
@@ -201,7 +201,7 @@ const windows = builtin.os.tag == .windows;
 /// the concatenation in.
 fn Concat(comptime finish: anytype) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             const b = buffers.new(0);
             for (argv) |a| try pp_describe.toStringB(b, a);
             return finish(b);
@@ -232,7 +232,7 @@ const SandboxOption = struct { name: [:0]const u8, flag: vm_lifecycle.Sandbox };
 /// The four type-mask predicates, which differ only in the mask.
 fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
     return struct {
-        fn cfun(argv: []repr.Value) raise.Error!repr.Value {
+        fn nfun(argv: []repr.Value) raise.Error!repr.Value {
             try args_core.fixarity(argv, 1);
             return wrap.fromBoolean(repr.checkTypes(argv[0], flags));
         }
@@ -671,7 +671,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
 }
 
 /// `(array & xs)`.
-fn cfunArray(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunArray(argv: []repr.Value) raise.Error!repr.Value {
     const array = arrays.new(argv.len);
     array.count = argv.len;
     @memcpy(array.reserved()[0..argv.len], argv);
@@ -679,13 +679,13 @@ fn cfunArray(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(int? x)`.
-fn cfunCheckInt(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCheckInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(args_core.checkint(argv[0]));
 }
 
 /// `(nat? x)`.
-fn cfunCheckNat(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCheckNat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (!args_core.checkint(argv[0])) return wrap.fromFalse();
     return wrap.fromBoolean(wrap.toInteger(argv[0]) >= 0);
@@ -693,14 +693,14 @@ fn cfunCheckNat(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(describe x)`, which cannot fail on its own account and so declares no
 /// raise.
-fn cfunDescribe(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDescribe(argv: []repr.Value) raise.Error!repr.Value {
     const b = buffers.new(0);
     for (argv) |a| try pp_describe.descriptionB(b, a);
     return value.fromBytes(b.slice(), .string);
 }
 
 /// `(dyn key &opt default)`.
-fn cfunDyn(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDyn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const env = vm_state.current().fiber.?.env;
     const val = if (env) |dyns| tables.get(dyns, argv[0]) else wrap.fromNil();
@@ -709,7 +709,7 @@ fn cfunDyn(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(module/expand-path path template)`.
-fn cfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const input = try args_core.getCString(argv, 0);
     const template = try args_core.getCString(argv, 1);
@@ -789,20 +789,20 @@ fn cfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(gccollect)`.
-fn cfunGccollect(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGccollect(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
     gc_mark.collect();
     return wrap.fromNil();
 }
 
 /// `(gcinterval)`.
-fn cfunGcinterval(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGcinterval(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(@floatFromInt(vm_state.current().gc.interval));
 }
 
 /// `(gcsetinterval interval)`.
-fn cfunGcsetinterval(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGcsetinterval(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const s = try args_core.getSize(argv, 0);
     // Limited to 48 bits, and only where a size is wider than that.
@@ -812,13 +812,13 @@ fn cfunGcsetinterval(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(gensym)`.
-fn cfunGensym(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGensym(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromSymbol(symbols.gen());
 }
 
 /// `(getline &opt prompt buf env)`.
-fn cfunGetline(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGetline(argv: []repr.Value) raise.Error!repr.Value {
     const in = io_core.dynfile("in", stdio.in());
     const out = io_core.dynfile("out", stdio.out());
     try args_core.arity(argv, 0, 3);
@@ -839,7 +839,7 @@ fn cfunGetline(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(getproto x)`.
-fn cfunGetproto(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGetproto(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], repr.Tag.table)) {
         const t = wrap.toTable(argv[0]);
@@ -849,33 +849,33 @@ fn cfunGetproto(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(hash x)`.
-fn cfunHash(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunHash(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromNumber(@floatFromInt(order.hash(argv[0])));
 }
 
 /// `(abstract? x)`.
-fn cfunIsAbstract(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunIsAbstract(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(repr.checkType(argv[0], repr.Tag.abstract));
 }
 
 /// `(dictionary? x)`: a table, a struct, or an abstract whose contents are
 /// pairs.
-fn cfunIsDictionary(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunIsDictionary(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(args_core.checkdictionary(argv[0]));
 }
 
 /// `(indexed? x)`: an array, a vector, a tuple, or an abstract whose contents
 /// are elements.
-fn cfunIsIndexed(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunIsIndexed(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(args_core.checkindexed(argv[0]));
 }
 
 /// `(memcmp a b &opt len offset-a offset-b)`.
-fn cfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
     const a = try args_core.getBytes(argv, 0);
     const b = try args_core.getBytes(argv, 1);
@@ -901,7 +901,7 @@ fn cfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(native path &opt env)`: loads a `.so` and runs its `_wattle_init`.
-fn cfunNative(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNative(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const argv0 = argv[0];
     const path = try args_core.getString(argv, 0);
@@ -920,7 +920,7 @@ fn cfunNative(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(range start &opt end step)`.
-fn cfunRange(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRange(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     var start: f64 = 0;
     var stop: f64 = 0;
@@ -961,7 +961,7 @@ fn cfunRange(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(sandbox & flags)`, with each keyword looked up in `sandbox_options`.
-fn cfunSandbox(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSandbox(argv: []repr.Value) raise.Error!repr.Value {
     var flags: vm_lifecycle.Sandbox = .{};
     for (0..argv.len) |i| {
         const kw = try args_core.getKeyword(argv, i);
@@ -980,7 +980,7 @@ fn cfunSandbox(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(scan-number str &opt base)`.
-fn cfunScanNumber(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunScanNumber(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
     const base = try args_core.optInteger(argv, 1, 0);
@@ -993,7 +993,7 @@ fn cfunScanNumber(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(setdyn key value)`.
-fn cfunSetdyn(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSetdyn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const fiber = vm_state.currentFiber();
     const dyns = fiber.env orelse made: {
@@ -1007,7 +1007,7 @@ fn cfunSetdyn(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(signal what &opt payload)`, where `what` is a user signal number or a
 /// keyword from `utils.signalNames`.
-fn cfunSignal(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSignal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const payload = if (argv.len == 2) argv[1] else wrap.fromNil();
     if (args_core.checkint(argv[0])) {
@@ -1055,7 +1055,7 @@ fn vectorFromChunks(it: *args_core.Chunks, length: usize) raise.Error!*vectors.V
 ///
 /// An indexed value gives a vector, which is Wattle's immutable sequence; a
 /// tuple is the call form and is what `tuple/slice` gives.
-fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSlice(argv: []repr.Value) raise.Error!repr.Value {
     // Read through `argSlot`, because `getSlice` is what checks the arity and
     // it runs after this: `(slice)` reaches here with no argument at all.
     const x = args_core.argSlot(argv, 0);
@@ -1074,7 +1074,7 @@ fn cfunSlice(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(table & kvs)`.
-fn cfunTable(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTable(argv: []repr.Value) raise.Error!repr.Value {
     if (argv.len & 1 != 0) return raise.panic("expected even number of arguments");
     const table = tables.new(argv.len >> 1);
     var i: usize = 0;
@@ -1085,7 +1085,7 @@ fn cfunTable(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(trace f)`.
-fn cfunTrace(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTrace(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
     functions.setTraced(func, true);
@@ -1093,12 +1093,12 @@ fn cfunTrace(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(tuple & xs)`.
-fn cfunTuple(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTuple(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(tuples.newFrom(argv));
 }
 
 /// `(type x)`.
-fn cfunType(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunType(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const t = repr.typeOf(argv[0]);
     if (t == .abstract) {
@@ -1110,7 +1110,7 @@ fn cfunType(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(untrace f)`.
-fn cfunUntrace(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunUntrace(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const func = try args_core.getFunction(argv, 0);
     functions.setTraced(func, false);
@@ -1257,49 +1257,49 @@ inline fn isPathSep(ch: u8) bool {
 /// build has no code for.
 fn loadLibs(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("native", &cfunNative, @src(), "(native path &opt env)", "Load a native module from the given path. The path " ++
+        corefn.reg("native", &nfunNative, @src(), "(native path &opt env)", "Load a native module from the given path. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
             "usually a .so file on Unix systems, and a .dll file on Windows. " ++
             "Returns an environment table that contains functions and other values " ++
             "from the native module."),
-        corefn.reg("describe", &cfunDescribe, @src(), "(describe x)", "Returns a string that is a human-readable description of `x`. " ++
+        corefn.reg("describe", &nfunDescribe, @src(), "(describe x)", "Returns a string that is a human-readable description of `x`. " ++
             "For recursive data structures, the string returned contains a " ++
             "pointer value from which the identity of `x` " ++
             "can be determined."),
-        corefn.reg("string", &Concat(finishString).cfun, @src(), "(string & xs)", "Creates a string by concatenating the elements of `xs` together. If an " ++
+        corefn.reg("string", &Concat(finishString).nfun, @src(), "(string & xs)", "Creates a string by concatenating the elements of `xs` together. If an " ++
             "element is not a byte sequence, it is converted to bytes via `describe`. " ++
             "Returns the new string."),
-        corefn.reg("symbol", &Concat(finishSymbol).cfun, @src(), "(symbol & xs)", "Creates a symbol by concatenating the elements of `xs` together. If an " ++
+        corefn.reg("symbol", &Concat(finishSymbol).nfun, @src(), "(symbol & xs)", "Creates a symbol by concatenating the elements of `xs` together. If an " ++
             "element is not a byte sequence, it is converted to bytes via `describe`. " ++
             "Returns the new symbol."),
-        corefn.reg("keyword", &Concat(finishKeyword).cfun, @src(), "(keyword & xs)", "Creates a keyword by concatenating the elements of `xs` together. If an " ++
+        corefn.reg("keyword", &Concat(finishKeyword).nfun, @src(), "(keyword & xs)", "Creates a keyword by concatenating the elements of `xs` together. If an " ++
             "element is not a byte sequence, it is converted to bytes via `describe`. " ++
             "Returns the new keyword."),
-        corefn.reg("buffer", &Concat(finishBuffer).cfun, @src(), "(buffer & xs)", "Creates a buffer by concatenating the elements of `xs` together. If an " ++
+        corefn.reg("buffer", &Concat(finishBuffer).nfun, @src(), "(buffer & xs)", "Creates a buffer by concatenating the elements of `xs` together. If an " ++
             "element is not a byte sequence, it is converted to bytes via `describe`. " ++
             "Returns the new buffer."),
-        corefn.reg("abstract?", &cfunIsAbstract, @src(), "(abstract? x)", "Check if x is an abstract type."),
-        corefn.reg("table", &cfunTable, @src(), "(table & kvs)", "Creates a new table from a variadic number of keys and values. " ++
+        corefn.reg("abstract?", &nfunIsAbstract, @src(), "(abstract? x)", "Check if x is an abstract type."),
+        corefn.reg("table", &nfunTable, @src(), "(table & kvs)", "Creates a new table from a variadic number of keys and values. " ++
             "kvs is a sequence k1, v1, k2, v2, k3, v3, ... If kvs has " ++
             "an odd number of elements, an error will be thrown. Returns the " ++
             "new table."),
-        corefn.reg("array", &cfunArray, @src(), "(array & items)", "Create a new array that contains items. Returns the new array."),
-        corefn.reg("scan-number", &cfunScanNumber, @src(), "(scan-number str &opt base)", "Parse a number from a byte sequence and return that number, either an integer " ++
+        corefn.reg("array", &nfunArray, @src(), "(array & items)", "Create a new array that contains items. Returns the new array."),
+        corefn.reg("scan-number", &nfunScanNumber, @src(), "(scan-number str &opt base)", "Parse a number from a byte sequence and return that number, either an integer " ++
             "or a real. The number " ++
             "must be in the same format as numbers in Wattle source code. Will return nil " ++
             "on an invalid number. Optionally provide a base - if a base is provided, no " ++
             "radix specifier is expected at the beginning of the number."),
-        corefn.reg("tuple", &cfunTuple, @src(), "(tuple & items)", "Creates a new tuple that contains items. Returns the new tuple."),
-        corefn.reg("gensym", &cfunGensym, @src(), "(gensym)", "Returns a new symbol that is unique across the runtime. This means it " ++
+        corefn.reg("tuple", &nfunTuple, @src(), "(tuple & items)", "Creates a new tuple that contains items. Returns the new tuple."),
+        corefn.reg("gensym", &nfunGensym, @src(), "(gensym)", "Returns a new symbol that is unique across the runtime. This means it " ++
             "will not collide with any already created symbols during compilation, so " ++
             "it can be used in macros to generate automatic bindings."),
-        corefn.reg("gccollect", &cfunGccollect, @src(), "(gccollect)", "Run garbage collection. You should probably not call this manually."),
-        corefn.reg("gcsetinterval", &cfunGcsetinterval, @src(), "(gcsetinterval interval)", "Set an integer number of bytes to allocate before running garbage collection. " ++
+        corefn.reg("gccollect", &nfunGccollect, @src(), "(gccollect)", "Run garbage collection. You should probably not call this manually."),
+        corefn.reg("gcsetinterval", &nfunGcsetinterval, @src(), "(gcsetinterval interval)", "Set an integer number of bytes to allocate before running garbage collection. " ++
             "Low values for interval will be slower but use less memory. " ++
             "High values will be faster but use more memory."),
-        corefn.reg("gcinterval", &cfunGcinterval, @src(), "(gcinterval)", "Returns the integer number of bytes to allocate before running an iteration " ++
+        corefn.reg("gcinterval", &nfunGcinterval, @src(), "(gcinterval)", "Returns the integer number of bytes to allocate before running an iteration " ++
             "of garbage collection."),
-        corefn.reg("type", &cfunType, @src(), "(type x)", "Returns the type of `x` as a keyword. `x` is one of:\n\n" ++
+        corefn.reg("type", &nfunType, @src(), "(type x)", "Returns the type of `x` as a keyword. `x` is one of:\n\n" ++
             "* :number\n" ++
             "* :nil\n" ++
             "* :boolean\n" ++
@@ -1313,21 +1313,21 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :struct\n" ++
             "* :buffer\n" ++
             "* :function\n" ++
-            "* :cfunction\n" ++
+            "* :nfunction\n" ++
             "* :pointer\n\n" ++
             "or another keyword for an abstract type."),
-        corefn.reg("hash", &cfunHash, @src(), "(hash value)", "Gets a hash for any value. The hash is an integer can be used " ++
+        corefn.reg("hash", &nfunHash, @src(), "(hash value)", "Gets a hash for any value. The hash is an integer can be used " ++
             "as a cheap hash function for all values. If two values are strictly equal, " ++
             "then they will have the same hash value."),
-        corefn.reg("getline", &cfunGetline, @src(), "(getline &opt prompt buf env)", "Reads a line of input into a buffer, including the newline character, using a prompt. " ++
+        corefn.reg("getline", &nfunGetline, @src(), "(getline &opt prompt buf env)", "Reads a line of input into a buffer, including the newline character, using a prompt. " ++
             "An optional environment table can be provided for auto-complete. " ++
             "Returns the modified buffer. " ++
             "Use this function to implement a simple interface for a terminal program."),
-        corefn.reg("dyn", &cfunDyn, @src(), "(dyn key &opt default)", "Get a dynamic binding. Returns the default value (or nil) if no binding found."),
-        corefn.reg("setdyn", &cfunSetdyn, @src(), "(setdyn key value)", "Set a dynamic binding. Returns value."),
-        corefn.reg("trace", &cfunTrace, @src(), "(trace func)", "Enable tracing on a function. Returns the function."),
-        corefn.reg("untrace", &cfunUntrace, @src(), "(untrace func)", "Disables tracing on a function. Returns the function."),
-        corefn.reg("module/expand-path", &cfunExpandPath, @src(), "(module/expand-path path template)", "Expands a path template as found in `module/paths` for `module/find`. " ++
+        corefn.reg("dyn", &nfunDyn, @src(), "(dyn key &opt default)", "Get a dynamic binding. Returns the default value (or nil) if no binding found."),
+        corefn.reg("setdyn", &nfunSetdyn, @src(), "(setdyn key value)", "Set a dynamic binding. Returns value."),
+        corefn.reg("trace", &nfunTrace, @src(), "(trace func)", "Enable tracing on a function. Returns the function."),
+        corefn.reg("untrace", &nfunUntrace, @src(), "(untrace func)", "Disables tracing on a function. Returns the function."),
+        corefn.reg("module/expand-path", &nfunExpandPath, @src(), "(module/expand-path path template)", "Expands a path template as found in `module/paths` for `module/find`. " ++
             "This takes in a path (the argument to require) and a template string, " ++
             "to expand the path to a path that can be used for importing files. " ++
             "The replacements are as follows:\n\n" ++
@@ -1340,17 +1340,17 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :name: -- the name component of path, with extension if given\n\n" ++
             "* :native: -- the extension used to load natives, .so or .dll\n\n" ++
             "* :sys: -- the system path, or (dyn :syspath)"),
-        corefn.reg("int?", &cfunCheckInt, @src(), "(int? x)", "Check if x can be exactly represented as a 32 bit signed two's complement integer."),
-        corefn.reg("nat?", &cfunCheckNat, @src(), "(nat? x)", "Check if x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
-        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).cfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
-        corefn.reg("indexed?", &cfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
-        corefn.reg("dictionary?", &cfunIsDictionary, @src(), "(dictionary? x)", "Check if x is a table, a struct, or an abstract type that implements the dictionary protocol."),
-        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).cfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
-        corefn.reg("slice", &cfunSlice, @src(), "(slice x &opt start end)", "Extract a sub-range of an indexed data structure or byte sequence."),
-        corefn.reg("range", &cfunRange, @src(), "(range & args)", "Create an array of values [start, end) with a given step. " ++
+        corefn.reg("int?", &nfunCheckInt, @src(), "(int? x)", "Check if x can be exactly represented as a 32 bit signed two's complement integer."),
+        corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? x)", "Check if x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
+        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
+        corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
+        corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Check if x is a table, a struct, or an abstract type that implements the dictionary protocol."),
+        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
+        corefn.reg("slice", &nfunSlice, @src(), "(slice x &opt start end)", "Extract a sub-range of an indexed data structure or byte sequence."),
+        corefn.reg("range", &nfunRange, @src(), "(range & args)", "Create an array of values [start, end) with a given step. " ++
             "With one argument, returns a range [0, end). With two arguments, returns " ++
             "a range [start, end). With three, returns a range with optional step size."),
-        corefn.reg("signal", &cfunSignal, @src(), "(signal what x)", "Raise a signal with payload x. `what` can be an integer\n" ++
+        corefn.reg("signal", &nfunSignal, @src(), "(signal what x)", "Raise a signal with payload x. `what` can be an integer\n" ++
             "from 0 through 7 indicating user(0-7), or one of:\n\n" ++
             "* :ok\n" ++
             "* :error\n" ++
@@ -1359,12 +1359,12 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :user(0-7)\n" ++
             "* :interrupt\n" ++
             "* :await"),
-        corefn.reg("memcmp", &cfunMemcmp, @src(), "(memcmp a b &opt len offset-a offset-b)", "Compare memory. Takes two byte sequences `a` and `b`, and " ++
+        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b &opt len offset-a offset-b)", "Compare memory. Takes two byte sequences `a` and `b`, and " ++
             "return 0 if they have identical contents, a negative integer if a is less than b, " ++
             "and a positive integer if a is greater than b. Optionally take a length and offsets " ++
             "to compare slices of the bytes sequences."),
-        corefn.reg("getproto", &cfunGetproto, @src(), "(getproto x)", "Get the prototype of a table or struct. Will return nil if `x` has no prototype."),
-        corefn.reg("sandbox", &cfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disable feature sets to prevent the interpreter from using certain system resources. " ++
+        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Get the prototype of a table or struct. Will return nil if `x` has no prototype."),
+        corefn.reg("sandbox", &nfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disable feature sets to prevent the interpreter from using certain system resources. " ++
             "Once a feature is disabled, there is no way to re-enable it. Capabilities can be:\n\n" ++
             "* :all - disallow all (except IO to stdout, stderr, and stdin)\n" ++
             "* :asm - disallow calling `asm` and `disasm` functions.\n" ++

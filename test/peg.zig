@@ -21,9 +21,9 @@
 //! `theAbstractTypeIsShapedAsTheRuntimeExpects` asserts the table the runtime
 //! dispatches through.
 //!
-//! `peg/compile` is reached as a cfunction rather than by import, because a
+//! `peg/compile` is reached as an nfunction rather than by import, because a
 //! grammar error has to arrive as a refusal rather than as a status code
-//! `env.dostring` has already caught. A cfunction *is* a raising Zig function,
+//! `env.dostring` has already caught. An nfunction *is* a raising Zig function,
 //! so `harness.core` and `harness.raised` are the whole of it.
 
 // ==========================================================================
@@ -67,7 +67,7 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 
 /// `peg/compile`, resolved once. The type assertion is `harness.core`'s.
-var compile_cfun: raise.CFunction = undefined;
+var compile_nfun: raise.NFunction = undefined;
 const lb_integer: u8 = 205;
 const lb_nil: u8 = 201;
 
@@ -133,7 +133,7 @@ fn compiled(pattern: []const u8) *peg.Peg {
 /// opens so that only the compilation is inside it.
 fn grammarError(source: [*:0]const u8) harness.Raise {
     var argv = [_]repr.Value{evaluate(source)};
-    return harness.raised(compile_cfun, .{argv[0..1]}).?;
+    return harness.raised(compile_nfun, .{argv[0..1]}).?;
 }
 
 fn bytecodeIs(pattern: []const u8, expected: []const u32) void {
@@ -194,7 +194,7 @@ fn theMethodTableAndItsOrder() raise.Error!void {
     for (names) |name| {
         key = try access.next(val, key);
         expect(harness.keywordIs(key, name));
-        expect(harness.isType(try access.get(val, key), repr.Tag.cfunction));
+        expect(harness.isType(try access.get(val, key), repr.Tag.nfunction));
     }
     expect(harness.isType(try access.next(val, key), repr.Tag.nil));
 
@@ -400,7 +400,7 @@ fn grammarErrorsNameTheForm() void {
     expect(grammarError("'(<- 1 \"a\")").endsWith(", expected keyword for capture tag, got \"a\""));
     expect(grammarError("'(number 1 40)").endsWith(", expected integer between 2 and 36, got 40"));
     expect(grammarError("'(number 1 2.5)").endsWith(", expected integer between 2 and 36, got 2.5"));
-    expect(grammarError("'(cmt 1 2)").endsWith(", expected function or cfunction, got 2"));
+    expect(grammarError("'(cmt 1 2)").endsWith(", expected function or nfunction, got 2"));
     expect(grammarError("'(uint " ++ max_readint_width_text ++ "1)")
         .endsWith(", width must be between 0 and " ++ max_readint_width_text ++
         ", got " ++ max_readint_width_text ++ "1"));
@@ -852,7 +852,7 @@ fn body() raise.Error!void {
     gc_alloc.gcroot(wrap.fromTable(test_env));
     rooted = arrays.new(0);
     gc_alloc.gcroot(wrap.fromArray(rooted));
-    compile_cfun = harness.core("peg/compile");
+    compile_nfun = harness.core("peg/compile");
 
     theAbstractTypeIsShapedAsTheRuntimeExpects();
     try theMethodTableAndItsOrder();

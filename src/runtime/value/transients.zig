@@ -122,12 +122,12 @@ pub fn fromVector(v: *const vectors.Vector) *Transient {
 /// `env` is the environment. This function raises if the registration does.
 pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("transient", &cfunTransient, @src(), "(transient coll)", "Return a transient of the persistent vector, map or set `coll`, which `conj!`, `assoc!`, `dissoc!` and `disj!` change in place. `coll` itself does not change."),
-        corefn.reg("persistent!", &cfunPersistent, @src(), "(persistent! coll)", "Return a persistent collection with the contents of the transient `coll`. Every later operation on `coll` raises an error."),
-        corefn.reg("conj!", &cfunConjBang, @src(), "(conj! coll & xs)", "Add the elements xs to the transient `coll`, of a vector or a set, in place, and return it. For a transient of a vector, the elements are added at the end."),
-        corefn.reg("assoc!", &cfunAssocBang, @src(), "(assoc! coll key val & kvs)", "Associate each key with the value that follows it in the transient `coll`, of a vector or a map, in place, and return it. For a transient of a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a transient of a map, a nil value removes the key."),
-        corefn.reg("dissoc!", &cfunDissocBang, @src(), "(dissoc! coll & ks)", "Remove the keys ks from the transient of a map `coll` in place, and return it."),
-        corefn.reg("disj!", &cfunDisjBang, @src(), "(disj! coll & xs)", "Remove the elements xs from the transient of a set `coll` in place, and return it."),
+        corefn.reg("transient", &nfunTransient, @src(), "(transient coll)", "Return a transient of the persistent vector, map or set `coll`, which `conj!`, `assoc!`, `dissoc!` and `disj!` change in place. `coll` itself does not change."),
+        corefn.reg("persistent!", &nfunPersistent, @src(), "(persistent! coll)", "Return a persistent collection with the contents of the transient `coll`. Every later operation on `coll` raises an error."),
+        corefn.reg("conj!", &nfunConjBang, @src(), "(conj! coll & xs)", "Add the elements xs to the transient `coll`, of a vector or a set, in place, and return it. For a transient of a vector, the elements are added at the end."),
+        corefn.reg("assoc!", &nfunAssocBang, @src(), "(assoc! coll key val & kvs)", "Associate each key with the value that follows it in the transient `coll`, of a vector or a map, in place, and return it. For a transient of a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a transient of a map, a nil value removes the key."),
+        corefn.reg("dissoc!", &nfunDissocBang, @src(), "(dissoc! coll & ks)", "Remove the keys ks from the transient of a map `coll` in place, and return it."),
+        corefn.reg("disj!", &nfunDisjBang, @src(), "(disj! coll & xs)", "Remove the elements xs from the transient of a set `coll` in place, and return it."),
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&transient_type);
@@ -153,7 +153,7 @@ pub fn persistent(t: *Transient) repr.Value {
 // ==========================================================================
 
 /// `assoc!`: each key associated with its value in place.
-fn cfunAssocBang(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAssocBang(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, -1);
     const t = try getActive(argv);
     try vectors.checkPairs(argv);
@@ -183,7 +183,7 @@ fn cfunAssocBang(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `conj!`: the elements added in place.
-fn cfunConjBang(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunConjBang(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const t = try getActive(argv);
     switch (t.*) {
@@ -199,7 +199,7 @@ fn cfunConjBang(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `disj!`: the elements removed in place.
-fn cfunDisjBang(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDisjBang(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const t = try getActive(argv);
     switch (t.*) {
@@ -211,7 +211,7 @@ fn cfunDisjBang(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `dissoc!`: the keys removed in place.
-fn cfunDissocBang(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDissocBang(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const t = try getActive(argv);
     switch (t.*) {
@@ -223,13 +223,13 @@ fn cfunDissocBang(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `persistent!`: the persistent collection, ending the transient.
-fn cfunPersistent(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPersistent(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return persistent(try getActive(argv));
 }
 
 /// `transient`: a transient of a persistent collection.
-fn cfunTransient(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTransient(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (vectors.toVector(argv[0])) |v| return wrap.fromAbstract(fromVector(v));
     if (maps.toTree(argv[0], .map)) |m| return wrap.fromAbstract(fromTree(m, .map));

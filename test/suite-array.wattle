@@ -59,7 +59,7 @@
 
 ; array/new takes a signed integer and reserves nothing for a negative one.
 ; The capacity is a count internally, so the floor is written down at the
-; cfunction; before it was, a negative request stored a capacity near the top
+; nfunction; before it was, a negative request stored a capacity near the top
 ; of `size_t` and the first push wrote through a null payload.
 (assert (deep= (array/new -5) ![]) "array/new with a negative capacity is empty")
 (assert (= 0 (length (array/new -5))) "array/new with a negative capacity has no elements")

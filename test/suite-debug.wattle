@@ -180,12 +180,12 @@
                      (trace-of loc-f "loc" "L"))
         "the trace agrees with debug/stack about which number is which")
 
-; A cfunction frame names its prefix, records the file it was registered from,
+; An nfunction frame names its prefix, records the file it was registered from,
 ; and reports a bare line rather than a line and column.
 (def cf (fiber/new (fn [] (string/find 1 2)) :ie))
 (resume cf)
 (def cf-trace (trace-of cf (fiber/last-value cf) "C"))
-(assert (string/find "  in string/find [" cf-trace) "a cfunction keeps its prefix")
+(assert (string/find "  in string/find [" cf-trace) "an nfunction keeps its prefix")
 (assert (not (string/find "  in find [" cf-trace)) "and is not printed without one")
 ; Guarded because it is the one assertion in this suite that needs a peg, and a
 ; `-Dpeg=false` build has no `peg/find` to compile against. A matrix entry
@@ -193,7 +193,7 @@
 (compwhen (dyn 'peg/find)
   (assert (peg/find '(* "  in string/find [" (some (if-not "]" 1)) "] on line " (some :d) "\n")
                     cf-trace)
-          "a registered cfunction reports a line and no column"))
+          "a registered nfunction reports a line and no column"))
 
 ; The tail-call marker appears on a tail call and not otherwise.
 (defn tail-callee [] (error "t"))
@@ -202,7 +202,7 @@
 (resume tf2)
 (def tail-trace (trace-of tf2 "t" "T"))
 (assert (string/find "(tail call)" tail-trace) "a tail call is marked")
-(assert (not (string/find "(tail call)" cf-trace)) "a cfunction frame is not")
+(assert (not (string/find "(tail call)" cf-trace)) "an nfunction frame is not")
 
 ; debug/break by source position, which is the only way `janet_debug_find` is
 ; reached with a match. The form is built through a parser with an explicit

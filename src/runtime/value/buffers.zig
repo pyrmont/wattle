@@ -37,10 +37,10 @@
 //! charges after, so a failed buffer growth is accounted for and a failed
 //! array growth is not. Both end the process, so nothing observes it.
 //!
-//! ## The cfunction surface
+//! ## The nfunction surface
 //!
-//! A published `CFunction` has no error channel in its signature, so the
-//! `cfunBuffer*` functions deliver a raise through `raise.Error!`. Nothing in
+//! A published `NFunction` has no error channel in its signature, so the
+//! `nfunBuffer*` functions deliver a raise through `raise.Error!`. Nothing in
 //! them is stranded across a call that can raise, which for a growable
 //! container means in particular that no local caches `data` across an
 //! `ensure`: a reallocation invalidates it whether or not anything raises.
@@ -142,7 +142,7 @@ pub const Buffer = struct {
 /// Refuses to reallocate a buffer that does not own its memory.
 ///
 /// Called before every reallocation of a buffer payload and never after one.
-/// The callers are `ensure`, `extra` and `cfunBufferTrim`, plus
+/// The callers are `ensure`, `extra` and `nfunBufferTrim`, plus
 /// `test/buffer_array.zig`, which reaches it by import.
 pub fn canRealloc(buffer: *Buffer) raise.Error!void {
     if (isForeign(buffer)) {
@@ -221,59 +221,59 @@ pub inline fn isForeign(buffer: *const Buffer) bool {
     return buffer.gc.flags.own & own_foreign != 0;
 }
 
-/// Installs the `buffer/` cfunctions into `env`.
+/// Installs the `buffer/` nfunctions into `env`.
 pub fn lib(env: *tables.Table) void {
     const push_tail = "Returns the modified buffer." ++
         "Expands the buffer as necessary. Throws an error if size limit is exceeded.";
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("buffer/new", &cfunBufferNew, @src(), "(buffer/new capacity)", "Creates a new, empty buffer with enough backing memory for `capacity` bytes. " ++
+        corefn.reg("buffer/new", &nfunBufferNew, @src(), "(buffer/new capacity)", "Creates a new, empty buffer with enough backing memory for `capacity` bytes. " ++
             "Returns a new buffer of length 0."),
-        corefn.reg("buffer/new-filled", &cfunBufferNewFilled, @src(), "(buffer/new-filled count &opt byte)", "Creates a new buffer of length `count` filled with `byte`. By default, `byte` is 0. " ++
+        corefn.reg("buffer/new-filled", &nfunBufferNewFilled, @src(), "(buffer/new-filled count &opt byte)", "Creates a new buffer of length `count` filled with `byte`. By default, `byte` is 0. " ++
             "Returns the new buffer."),
-        corefn.reg("buffer/from-bytes", &cfunBufferFrombytes, @src(), "(buffer/from-bytes & byte-vals)", "Creates a buffer from integer parameters with byte values. All integers " ++
+        corefn.reg("buffer/from-bytes", &nfunBufferFrombytes, @src(), "(buffer/from-bytes & byte-vals)", "Creates a buffer from integer parameters with byte values. All integers " ++
             "will be coerced to the range of 1 byte 0-255."),
-        corefn.reg("buffer/fill", &cfunBufferFill, @src(), "(buffer/fill buffer &opt byte)", "Fill up a buffer with bytes, defaulting to 0s. Does not change the buffer's length. " ++
+        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill buffer &opt byte)", "Fill up a buffer with bytes, defaulting to 0s. Does not change the buffer's length. " ++
             "Returns the modified buffer."),
-        corefn.reg("buffer/trim", &cfunBufferTrim, @src(), "(buffer/trim buffer)", "Set the backing capacity of the buffer to the current length of the buffer. Returns the " ++
+        corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim buffer)", "Set the backing capacity of the buffer to the current length of the buffer. Returns the " ++
             "modified buffer."),
-        corefn.reg("buffer/push-byte", &cfunBufferU8, @src(), "(buffer/push-byte buffer & xs)", "Append bytes to a buffer. Returns the modified buffer. " ++
+        corefn.reg("buffer/push-byte", &nfunBufferU8, @src(), "(buffer/push-byte buffer & xs)", "Append bytes to a buffer. Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-word", &cfunBufferWord, @src(), "(buffer/push-word buffer & xs)", "Append machine words to a buffer. The 4 bytes of the integer are appended " ++
+        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word buffer & xs)", "Append machine words to a buffer. The 4 bytes of the integer are appended " ++
             "in twos complement, little endian order, unsigned for all x. Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-string", &cfunBufferChars, @src(), "(buffer/push-string buffer & xs)", "Push byte sequences onto the end of a buffer. " ++
+        corefn.reg("buffer/push-string", &nfunBufferChars, @src(), "(buffer/push-string buffer & xs)", "Push byte sequences onto the end of a buffer. " ++
             "Will accept any of strings, keywords, symbols, and buffers. " ++
             "Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-uint16", &cfunBufferPushUint16, @src(), "(buffer/push-uint16 buffer order data)", "Push a 16 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-uint32", &cfunBufferPushUint32, @src(), "(buffer/push-uint32 buffer order data)", "Push a 32 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-uint64", &cfunBufferPushUint64, @src(), "(buffer/push-uint64 buffer order data)", "Push a 64 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-float32", &cfunBufferPushFloat32, @src(), "(buffer/push-float32 buffer order data)", "Push the underlying bytes of a 32 bit float data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-float64", &cfunBufferPushFloat64, @src(), "(buffer/push-float64 buffer order data)", "Push the underlying bytes of a 64 bit float data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push", &cfunBufferPush, @src(), "(buffer/push buffer & xs)", "Push both individual bytes and byte sequences to a buffer. For each x in xs, " ++
+        corefn.reg("buffer/push-uint16", &nfunBufferPushUint16, @src(), "(buffer/push-uint16 buffer order data)", "Push a 16 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-uint32", &nfunBufferPushUint32, @src(), "(buffer/push-uint32 buffer order data)", "Push a 32 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-uint64", &nfunBufferPushUint64, @src(), "(buffer/push-uint64 buffer order data)", "Push a 64 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-float32", &nfunBufferPushFloat32, @src(), "(buffer/push-float32 buffer order data)", "Push the underlying bytes of a 32 bit float data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-float64", &nfunBufferPushFloat64, @src(), "(buffer/push-float64 buffer order data)", "Push the underlying bytes of a 64 bit float data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push", &nfunBufferPush, @src(), "(buffer/push buffer & xs)", "Push both individual bytes and byte sequences to a buffer. For each x in xs, " ++
             "push the byte if x is an integer, otherwise push the bytesequence to the buffer. " ++
             "Thus, this function behaves like both `buffer/push-string` and `buffer/push-byte`. " ++
             "Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-at", &cfunBufferPushAt, @src(), "(buffer/push-at buffer index & xs)", "Same as buffer/push, but copies the new data into the buffer " ++
+        corefn.reg("buffer/push-at", &nfunBufferPushAt, @src(), "(buffer/push-at buffer index & xs)", "Same as buffer/push, but copies the new data into the buffer " ++
             " at index `index`."),
-        corefn.reg("buffer/popn", &cfunBufferPopn, @src(), "(buffer/popn buffer n)", "Removes the last `n` bytes from the buffer. Returns the modified buffer."),
-        corefn.reg("buffer/clear", &cfunBufferClear, @src(), "(buffer/clear buffer)", "Sets the size of a buffer to 0 and empties it. The buffer retains " ++
+        corefn.reg("buffer/popn", &nfunBufferPopn, @src(), "(buffer/popn buffer n)", "Removes the last `n` bytes from the buffer. Returns the modified buffer."),
+        corefn.reg("buffer/clear", &nfunBufferClear, @src(), "(buffer/clear buffer)", "Sets the size of a buffer to 0 and empties it. The buffer retains " ++
             "its memory so it can be efficiently refilled. Returns the modified buffer."),
-        corefn.reg("buffer/slice", &cfunBufferSlice, @src(), "(buffer/slice bytes &opt start end)", "Takes a slice of a byte sequence from `start` to `end`. The range is half open, " ++
+        corefn.reg("buffer/slice", &nfunBufferSlice, @src(), "(buffer/slice bytes &opt start end)", "Takes a slice of a byte sequence from `start` to `end`. The range is half open, " ++
             "[start, end). Indexes can also be negative, indicating indexing from the end of the " ++
             "end of the array. By default, `start` is 0 and `end` is the length of the buffer. " ++
             "Returns a new buffer."),
-        corefn.reg("buffer/bit-set", &cfunBufferBitset, @src(), "(buffer/bit-set buffer index)", "Sets the bit at the given bit-index. Returns the buffer."),
-        corefn.reg("buffer/bit-clear", &cfunBufferBitclear, @src(), "(buffer/bit-clear buffer index)", "Clears the bit at the given bit-index. Returns the buffer."),
-        corefn.reg("buffer/bit", &cfunBufferBitget, @src(), "(buffer/bit buffer index)", "Gets the bit at the given bit-index. Returns true if the bit is set, false if not."),
-        corefn.reg("buffer/bit-toggle", &cfunBufferBittoggle, @src(), "(buffer/bit-toggle buffer index)", "Toggles the bit at the given bit index in buffer. Returns the buffer."),
-        corefn.reg("buffer/blit", &cfunBufferBlit, @src(), "(buffer/blit dest src &opt dest-start src-start src-end)", "Insert the contents of `src` into `dest`. Can optionally take indices that " ++
+        corefn.reg("buffer/bit-set", &nfunBufferBitset, @src(), "(buffer/bit-set buffer index)", "Sets the bit at the given bit-index. Returns the buffer."),
+        corefn.reg("buffer/bit-clear", &nfunBufferBitclear, @src(), "(buffer/bit-clear buffer index)", "Clears the bit at the given bit-index. Returns the buffer."),
+        corefn.reg("buffer/bit", &nfunBufferBitget, @src(), "(buffer/bit buffer index)", "Gets the bit at the given bit-index. Returns true if the bit is set, false if not."),
+        corefn.reg("buffer/bit-toggle", &nfunBufferBittoggle, @src(), "(buffer/bit-toggle buffer index)", "Toggles the bit at the given bit index in buffer. Returns the buffer."),
+        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit dest src &opt dest-start src-start src-end)", "Insert the contents of `src` into `dest`. Can optionally take indices that " ++
             "indicate which part of `src` to copy into which part of `dest`. Indices can be " ++
             "negative in order to index from the end of `src` or `dest`. Returns `dest`."),
-        corefn.reg("buffer/format", &cfunBufferFormat, @src(), "(buffer/format buffer format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++
+        corefn.reg("buffer/format", &nfunBufferFormat, @src(), "(buffer/format buffer format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++
             "the modified buffer."),
-        corefn.reg("buffer/format-at", &cfunBufferFormatAt, @src(), "(buffer/format-at buffer at format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++
+        corefn.reg("buffer/format-at", &nfunBufferFormatAt, @src(), "(buffer/format-at buffer at format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++
             "the modified buffer."),
     };
     corefn.install(env, entries);
@@ -400,7 +400,7 @@ pub fn setcount(buffer: *Buffer, count: usize) raise.Error!void {
 
 /// Decodes a bit index into a byte index and a bit within that byte.
 ///
-/// `argv` is the cfunction's arguments, the buffer at 0 and the bit index at
+/// `argv` is the nfunction's arguments, the buffer at 0 and the bit index at
 /// 1. The test `bitindex != x` is what rejects a fractional index, a check the
 /// argument layer cannot make because the value is legitimately wider than the
 /// byte index it becomes.
@@ -417,28 +417,28 @@ fn bitloc(argv: []repr.Value) raise.Error!BitLoc {
 }
 
 /// `buffer/bit-clear`: the bit at a bit index cleared.
-fn cfunBufferBitclear(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferBitclear(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] &= ~(@as(u8, 1) << loc.bit);
     return argv[0];
 }
 
 /// `buffer/bit`: whether the bit at a bit index is set.
-fn cfunBufferBitget(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferBitget(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     const set = loc.buffer.slice()[@intCast(loc.index)] & (@as(u8, 1) << loc.bit);
     return wrap.fromBoolean(set != 0);
 }
 
 /// `buffer/bit-set`: the bit at a bit index set.
-fn cfunBufferBitset(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferBitset(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] |= @as(u8, 1) << loc.bit;
     return argv[0];
 }
 
 /// `buffer/bit-toggle`: the bit at a bit index flipped.
-fn cfunBufferBittoggle(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferBittoggle(argv: []repr.Value) raise.Error!repr.Value {
     const loc = try bitloc(argv);
     loc.buffer.slice()[@intCast(loc.index)] ^= @as(u8, 1) << loc.bit;
     return argv[0];
@@ -446,7 +446,7 @@ fn cfunBufferBittoggle(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `buffer/blit`: part of one byte sequence copied into a buffer, growing it
 /// where the copy runs past the end.
-fn cfunBufferBlit(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferBlit(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
     const dest = try args_core.getBuffer(argv, 0);
     var src = try args_core.getBytes(argv, 1);
@@ -495,7 +495,7 @@ fn cfunBufferBlit(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-string`: byte sequences appended.
-fn cfunBufferChars(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferChars(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| try pushBytesAliasSafe(buffer, try args_core.getBytes(argv, i));
@@ -503,14 +503,14 @@ fn cfunBufferChars(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/clear`: the count set to zero, the backing capacity kept.
-fn cfunBufferClear(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferClear(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     (try args_core.getBuffer(argv, 0)).count = 0;
     return argv[0];
 }
 
 /// `buffer/fill`: every live byte replaced, the length unchanged.
-fn cfunBufferFill(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferFill(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const byte: u8 = if (argv.len == 2) @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, 1)))) else 0;
@@ -545,7 +545,7 @@ fn refuseSelfFormat(buffer: *Buffer, argv: []repr.Value, first: usize) raise.Err
 }
 
 /// `buffer/format`: `pp_format.bufferFormat` appended at the end.
-fn cfunBufferFormat(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferFormat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const strfrmt = try args_core.getString(argv, 1);
@@ -556,7 +556,7 @@ fn cfunBufferFormat(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `buffer/format-at`: `buffer/format` written at an index instead of at the
 /// end, with the original length restored where the write was shorter.
-fn cfunBufferFormatAt(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferFormatAt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     var at = try args_core.getInteger(argv, 1);
@@ -577,7 +577,7 @@ fn cfunBufferFormatAt(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/from-bytes`: a buffer of the byte values given as arguments.
-fn cfunBufferFrombytes(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferFrombytes(argv: []repr.Value) raise.Error!repr.Value {
     const buffer = new(argv.len);
     for (0..argv.len) |i| {
         const byte = try args_core.getInteger(argv, i);
@@ -588,7 +588,7 @@ fn cfunBufferFrombytes(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/new`: an empty buffer with capacity reserved.
-fn cfunBufferNew(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const capacity = try args_core.getInteger(argv, 0);
     // A negative request is a zero request, and `initImpl`'s floor of four
@@ -597,7 +597,7 @@ fn cfunBufferNew(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/new-filled`: a buffer of `count` bytes, all set to one value.
-fn cfunBufferNewFilled(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferNewFilled(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const requested = try args_core.getInteger(argv, 0);
     const count: usize = if (requested < 0) 0 else @intCast(requested);
@@ -609,7 +609,7 @@ fn cfunBufferNewFilled(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/popn`: the last `n` bytes dropped, stopping at empty.
-fn cfunBufferPopn(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPopn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const buffer = try args_core.getBuffer(argv, 0);
     const n = try args_core.getInteger(argv, 1);
@@ -620,14 +620,14 @@ fn cfunBufferPopn(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push`: bytes and byte sequences appended, by argument type.
-fn cfunBufferPush(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     try push(try args_core.getBuffer(argv, 0), argv, 1, argv.len);
     return argv[0];
 }
 
 /// `buffer/push-at`: `buffer/push` written at an index instead of at the end.
-fn cfunBufferPushAt(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPushAt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     const index = try args_core.getInteger(argv, 1);
@@ -640,7 +640,7 @@ fn cfunBufferPushAt(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-float32`: four bytes of a float, in the caller's byte order.
-fn cfunBufferPushFloat32(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPushFloat32(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -649,7 +649,7 @@ fn cfunBufferPushFloat32(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-float64`: eight bytes of a float, in the caller's byte order.
-fn cfunBufferPushFloat64(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPushFloat64(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -658,7 +658,7 @@ fn cfunBufferPushFloat64(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-uint16`: two bytes of an integer, in the caller's byte order.
-fn cfunBufferPushUint16(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPushUint16(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -667,7 +667,7 @@ fn cfunBufferPushUint16(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-uint32`: four bytes of an integer, in the caller's byte order.
-fn cfunBufferPushUint32(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPushUint32(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -677,7 +677,7 @@ fn cfunBufferPushUint32(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `buffer/push-uint64`: eight bytes of an integer, in the caller's byte
 /// order.
-fn cfunBufferPushUint64(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferPushUint64(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 3);
     const buffer = try args_core.getBuffer(argv, 0);
     const reverse = try shouldReverseBytes(argv, 1);
@@ -686,7 +686,7 @@ fn cfunBufferPushUint64(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/slice`: a new buffer over a half-open range of a byte sequence.
-fn cfunBufferSlice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferSlice(argv: []repr.Value) raise.Error!repr.Value {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     const len: usize = @intCast(range.end - range.start);
@@ -700,7 +700,7 @@ fn cfunBufferSlice(argv: []repr.Value) raise.Error!repr.Value {
 ///
 /// The floor of four is not `array/trim`'s behaviour: an empty buffer keeps a
 /// four-byte allocation where an empty array releases its payload entirely.
-fn cfunBufferTrim(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferTrim(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const buffer = try args_core.getBuffer(argv, 0);
     try canRealloc(buffer);
@@ -715,7 +715,7 @@ fn cfunBufferTrim(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-byte`: byte values appended.
-fn cfunBufferU8(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferU8(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {
@@ -725,7 +725,7 @@ fn cfunBufferU8(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `buffer/push-word`: machine words appended, four bytes each, little-endian.
-fn cfunBufferWord(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunBufferWord(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {

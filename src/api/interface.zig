@@ -130,7 +130,7 @@ const Value = repr.Value;
 /// abstract that starts at `position`, and `len` is the `len` `getdictionary`
 /// or `to_dictionary` reported.
 ///
-/// `cfuns_ext` and `def` take a capability rather than an aggregate.
+/// `nfuns_ext` and `def` take a capability rather than an aggregate.
 /// `abi.Env` and `abi.Render` are `opaque {}` over `runtime/value/tables.zig`'s
 /// `Table` and `runtime/value/buffers.zig`'s `Buffer`, and
 /// `runtime/capi.zig`'s definitions cast on their first line.
@@ -163,7 +163,7 @@ const Value = repr.Value;
 /// raises on anything but a return; its `pcall` runs a callee on a fresh fiber
 /// and reports the signal, the value and the fiber. `call_value` flattens a
 /// raise into a report like every other raising crossing, and takes a
-/// function or a cfunction; `pcall_value` takes a function. `mcall` looks a
+/// function or an nfunction; `pcall_value` takes a function. `mcall` looks a
 /// method up by name in the first argument and calls it with every argument. `pcall_value`
 /// reports by its own nature and needs no report of its own: the signal is its
 /// result, and its two out-parameters are there because a `callconv(.c)`
@@ -177,7 +177,7 @@ const Value = repr.Value;
 /// thread or its own library's poll, and three operations join it to the loop:
 /// suspend, knock and wake. `await` is the suspend and needs no field.
 /// `post` is the knock and `wake` is the wake, and `current_loop` and
-/// `root_fiber_value` are what a cfunction saves before it suspends. All four
+/// `root_fiber_value` are what an nfunction saves before it suspends. All four
 /// are filled in every build, because `runtime/capi.zig`'s `loop_ops` has a
 /// `-Dev=false` arm, so a build without the loop raises at `current_loop`
 /// rather than reaching a null pointer. `post` is the one crossing callable
@@ -201,10 +201,10 @@ pub const Runtime = extern struct {
     c_raise_take: *const fn () callconv(.c) c_int,
     call_value: *const fn (f: Value, args: [*]const Value, len: usize) callconv(.c) Value,
     calloc: *const fn (n: usize, size: usize) callconv(.c) ?*anyopaque,
-    cfuns_ext: *const fn (env: ?*abi.Env, prefix: ?[*:0]const u8, table: [*]const abi.Reg) callconv(.c) void,
+    nfuns_ext: *const fn (env: ?*abi.Env, prefix: ?[*:0]const u8, table: [*]const abi.Reg) callconv(.c) void,
     checkint: *const fn (x: Value) callconv(.c) c_int,
     cstring: *const fn (str: [*:0]const u8) callconv(.c) [*:0]const u8,
-    /// The loop this cfunction is running on. Raises where the build has none.
+    /// The loop this nfunction is running on. Raises where the build has none.
     current_loop: *const fn () callconv(.c) *abi.Loop,
     def: *const fn (env: *abi.Env, name: [*:0]const u8, val: Value, doc: ?[*:0]const u8) callconv(.c) void,
     dictionary_chunk: *const fn (x: Value, position: usize, len: usize) callconv(.c) abi.Chunk,
@@ -222,7 +222,7 @@ pub const Runtime = extern struct {
     getindexed: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.Indexed,
     getinteger: *const fn (argv: [*]const Value, n: i32) callconv(.c) i32,
     /// Takes `method_type.CMethod` rather than `module.Method`. The two share
-    /// one layout and differ only in the declared type of `cfun`. This field
+    /// one layout and differ only in the declared type of `nfun`. This field
     /// declares the C form because a table field is a crossing, and
     /// `runtime/method_type.zig` asserts that the two layouts match.
     getmethod: *const fn (method: [*:0]const u8, methods: [*]const method_type.CMethod, out: *Value) callconv(.c) c_int,

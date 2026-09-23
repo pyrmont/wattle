@@ -90,7 +90,7 @@ pub const FrameFlags = packed struct(u32) {
 };
 
 /// What a frame's `pc` slot holds: the program counter of a Janet frame, or
-/// the cfunction of a C frame.
+/// the nfunction of a C frame.
 ///
 /// A union rather than a cast through the address, because a wasm function
 /// pointer is a table index and not an address at all, and reinterpreting one
@@ -98,7 +98,7 @@ pub const FrameFlags = packed struct(u32) {
 /// is null in a C frame and set in a Janet one.
 pub const FramePc = extern union {
     bytecode: ?[*]u32,
-    cfunction: abi.CFunction,
+    nfunction: abi.NFunction,
 };
 
 /// One call frame: the function, the program counter, the captured
@@ -233,7 +233,7 @@ pub fn dyn(name: [*:0]const u8) repr.Value {
 ///
 /// The invariant is at or below the interpreter loop. `continueNoCheck`
 /// assigns `fiber` before it enters the loop and `signal.restore` puts back
-/// whatever was there before, so a cfunction body, an opcode handler, or
+/// whatever was there before, so an nfunction body, an opcode handler, or
 /// `vm/entry.zig`'s `call` after its own entry check cannot observe a null
 /// here. A caller that can also be reached from outside the loop reads
 /// `vm.fiber` and handles the null instead.

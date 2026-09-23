@@ -367,7 +367,7 @@ fn theFuncframeTailVarargs(add: *functions.Function, rest: *functions.Function) 
     expect(harness.elems(tail).len == 0);
 }
 
-fn aCfunction(argv: []repr.Value) raise.Error!repr.Value {
+fn aNfunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = @as(i32, @intCast(argv.len));
 
     return wrap.fromNil();
@@ -382,13 +382,13 @@ fn theCframeAndPopframe(add: *functions.Function) raise.Error!void {
     var stacktop = fiber.stacktop;
 
     try fibers.push2(fiber, harness.wrapInteger(3), harness.wrapInteger(4));
-    const cfun = raise.stored(&aCfunction);
-    fibers.cframe(fiber, cfun);
+    const nfun = raise.stored(&aNfunction);
+    fibers.cframe(fiber, nfun);
     const frame = currentFrame(fiber);
 
     expect(fiber.frame == stacktop);
     expect(frame.func == null);
-    expect(frame.pc.cfunction == cfun);
+    expect(frame.pc.nfunction == nfun);
     expect(frame.env == null);
     expect(@as(i32, @bitCast(frame.flags)) == 0);
     expect(frame.prevframe == base);
@@ -535,7 +535,7 @@ fn anExactFitDoesNotGrow(add: *functions.Function) raise.Error!void {
 
     // A C frame takes `frame_size` slots above the top.
     fiber.stacktop = capacity - frame_size;
-    fibers.cframe(fiber, raise.stored(&aCfunction));
+    fibers.cframe(fiber, raise.stored(&aNfunction));
     expect(fiber.capacity == capacity);
     fibers.popframe(fiber);
     fiber.stacktop = saved;

@@ -603,7 +603,7 @@
 (check-replacer "aba" 123 "ababababababa")
 (assert (= (string (peg/replace-all `(set "ab") string/ascii-upper "abcaa"))
            "ABcAA")
-        "peg/replace-all cfunction")
+        "peg/replace-all nfunction")
 (assert (= (string (peg/replace-all `(set "ab") (short-fn $) "abcaa"))
            "abcaa")
         "peg/replace-all function")

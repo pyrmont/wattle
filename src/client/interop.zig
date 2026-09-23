@@ -9,8 +9,8 @@
 //! `module.zig` rather than through anything here.
 //!
 //! Nothing here crosses a symbol table. This file compiles into the client,
-//! which imports the runtime, so a cfunction here is an ordinary
-//! `raise.CFunction` and a raise is a returned error. Each entry point is a
+//! which imports the runtime, so an nfunction here is an ordinary
+//! `raise.NFunction` and a raise is a returned error. Each entry point is a
 //! plain Zig function under this file's own namespace, `interop.register`,
 //! rather than an exported symbol under a prefix of its own.
 
@@ -51,7 +51,7 @@ const wrap = subsystems.value.wrap;
 // ==========================================================================
 
 /// The five operations `dispatch` switches on, in the order it numbers them.
-/// Each `cfunZig*` function passes an operation to `dispatchOrPanic`.
+/// Each `nfunZig*` function passes an operation to `dispatchOrPanic`.
 const identity_operation = 0;
 const length_operation = 1;
 const call_operation = 2;
@@ -68,11 +68,11 @@ var process_io: std.Io = undefined;
 // Aliased types
 // ==========================================================================
 
-/// The type of a cfunction in this file. This is `raise.CFunction`, which
+/// The type of an nfunction in this file. This is `raise.NFunction`, which
 /// returns `raise.Error!Value` over Zig's own calling convention, so a
 /// raise is a returned error and a caller that forgets the `try` gets a
 /// compile error.
-const CFunction = raise.CFunction;
+const NFunction = raise.NFunction;
 
 // ==========================================================================
 // Types
@@ -96,7 +96,7 @@ pub const WattleLine = struct {
 ///
 /// The result wraps `lineGetter`. This function cannot raise.
 pub fn lineGetterValue() repr.Value {
-    return wrap.fromCfunction(@ptrCast(&lineGetter));
+    return wrap.fromNfunction(@ptrCast(&lineGetter));
 }
 
 /// Defines the five `zig/*` builtins in `env`, and returns whether that
@@ -132,12 +132,12 @@ pub fn setIo(io: std.Io) void {
 // Private functions
 // ==========================================================================
 
-/// The five `zig/*` cfunctions, one per operation.
+/// The five `zig/*` nfunctions, one per operation.
 ///
 /// Each checks its arity, checks any type the operation needs, and passes its
 /// operation to `dispatchOrPanic`. `zig/call` and `zig/length` are the two
 /// that check a type, because `dispatch` unwraps without checking.
-fn cfunZigCall(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunZigCall(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 2);
     if (!repr.checkType(argv[0], repr.Tag.function)) {
         return args.panicType(argv[0], 0, repr.TagSet.one(.function));
@@ -145,17 +145,17 @@ fn cfunZigCall(argv: []repr.Value) raise.Error!repr.Value {
     return dispatchOrPanic(call_operation, argv);
 }
 
-fn cfunZigFail(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunZigFail(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 1);
     return dispatchOrPanic(fail_operation, argv);
 }
 
-fn cfunZigIdentity(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunZigIdentity(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 1);
     return dispatchOrPanic(identity_operation, argv);
 }
 
-fn cfunZigLength(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunZigLength(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 1);
     if (!repr.checkTypes(argv[0], repr.TagSet.lengthable)) {
         return args.panicType(argv[0], 0, repr.TagSet.lengthable);
@@ -163,40 +163,40 @@ fn cfunZigLength(argv: []repr.Value) raise.Error!repr.Value {
     return dispatchOrPanic(length_operation, argv);
 }
 
-fn cfunZigRooted(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunZigRooted(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixArity(@intCast(argv.len), 0);
     return dispatchOrPanic(rooted_operation, argv);
 }
 
 /// Defines the five `zig/*` builtins, from inside `register`'s try scope.
 ///
-/// `env` is the environment to define into. Each row is a name, a cfunction
+/// `env` is the environment to define into. Each row is a name, an nfunction
 /// and the docstring `(doc zig/...)` prints. This function raises if a
 /// definition does.
 ///
 /// The local `defs` is the table and this function is what installs it.
 fn define(env: *tables.Table) raise.Error!void {
-    const defs = [_]struct { name: [*:0]const u8, cfun: CFunction, doc: [*:0]const u8 }{
-        .{ .name = "zig/identity", .cfun = &cfunZigIdentity, .doc = "Round-trip one Wattle value through Zig." },
-        .{ .name = "zig/length", .cfun = &cfunZigLength, .doc = "Read the length of a Wattle collection in Zig." },
-        .{ .name = "zig/call", .cfun = &cfunZigCall, .doc = "Call a Wattle closure from Zig through a protected call." },
-        .{ .name = "zig/rooted", .cfun = &cfunZigRooted, .doc = "Create and root a Wattle value across a forced collection." },
-        .{ .name = "zig/fail", .cfun = &cfunZigFail, .doc = "Raise a controlled Wattle error after returning from Zig." },
+    const defs = [_]struct { name: [*:0]const u8, nfun: NFunction, doc: [*:0]const u8 }{
+        .{ .name = "zig/identity", .nfun = &nfunZigIdentity, .doc = "Round-trip one Wattle value through Zig." },
+        .{ .name = "zig/length", .nfun = &nfunZigLength, .doc = "Read the length of a Wattle collection in Zig." },
+        .{ .name = "zig/call", .nfun = &nfunZigCall, .doc = "Call a Wattle closure from Zig through a protected call." },
+        .{ .name = "zig/rooted", .nfun = &nfunZigRooted, .doc = "Create and root a Wattle value across a forced collection." },
+        .{ .name = "zig/fail", .nfun = &nfunZigFail, .doc = "Raise a controlled Wattle error after returning from Zig." },
     };
     for (defs) |d| {
-        registry.def(env, d.name, wrap.fromCfunction(@ptrCast(d.cfun)), d.doc);
+        registry.def(env, d.name, wrap.fromNfunction(@ptrCast(d.nfun)), d.doc);
     }
 }
 
 /// Runs one operation over `argv` and writes its result to `out`.
 ///
-/// `operation` is one of the five constants above, `argv` is the cfunction's
+/// `operation` is one of the five constants above, `argv` is the nfunction's
 /// arguments, and `out` takes the result. The result is 1 on success and 0
 /// when the operation refuses, in which case `out` has the value
 /// `dispatchOrPanic` raises with. This function raises what `access.length`
 /// raises.
 ///
-/// Nothing here checks a type: each `cfunZig*` has already checked what its
+/// Nothing here checks a type: each `nfunZig*` has already checked what its
 /// own operation needs.
 fn dispatch(
     operation: i32,
@@ -228,7 +228,7 @@ fn dispatch(
 /// Returns what `dispatch` produced, or raises with its refusal.
 ///
 /// `operation` is one of the five constants above and `argv` is the
-/// cfunction's arguments. This function raises when `dispatch` returns 0,
+/// nfunction's arguments. This function raises when `dispatch` returns 0,
 /// with the value `dispatch` wrote to `out`.
 fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Error!repr.Value {
     var result: repr.Value = undefined;
@@ -348,7 +348,7 @@ fn rootedProbe(rooted: *?repr.Value) raise.Error!void {
 
 /// Returns a function out of a value already checked to be a function.
 ///
-/// `value` is checked by `cfunZigCall` before `dispatch` reaches this.
+/// `value` is checked by `nfunZigCall` before `dispatch` reaches this.
 fn unwrapFunction(value: repr.Value) *functions.Function {
     return wrap.toFunction(value);
 }

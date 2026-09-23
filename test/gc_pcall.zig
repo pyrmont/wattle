@@ -1,11 +1,11 @@
 //! Behavioral contract for the collector's treatment of a fiber entered by
-//! `vm_entry.pcall` from a cfunction.
+//! `vm_entry.pcall` from an nfunction.
 //!
 //! ## What the subject is
 //!
 //! `gc/mark.zig`'s `collect` marks exactly one fiber: `vm.root_fiber`, and
 //! then whatever chain of `child` pointers hangs off it. Neither reaches a
-//! fiber entered through `pcall` from inside a cfunction. `vm.fiber` is set to
+//! fiber entered through `pcall` from inside an nfunction. `vm.fiber` is set to
 //! the new fiber and `root_fiber` is not, `continueNoCheck` assigning it only
 //! when it is null, and `pcall` never sets `child`, because `child` is what
 //! `fiber/resume` and `JOP_RESUME` maintain for a *Janet* nesting.
@@ -57,8 +57,8 @@ const wrap = @import("subsystems").value.wrap;
 // Constants
 // ==========================================================================
 
-/// How many times `directCase`'s cfunction was reached, read at the end. A
-/// cfunction that silently stopped being called would leave every assertion in
+/// How many times `directCase`'s nfunction was reached, read at the end. An
+/// nfunction that silently stopped being called would leave every assertion in
 /// it unexecuted and the contract green.
 var direct_calls: u32 = 0;
 
@@ -113,7 +113,7 @@ fn rooted(fiber: *fibers.Fiber) bool {
 /// Called from Janet source running on the nested fiber, which is the only
 /// place the situation exists. Everything it needs is read off the VM rather
 /// than passed in, because the point is what the *collector* can see.
-fn cfunCollectHere(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCollectHere(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const nested = harness.vm().fiber.?;
@@ -128,7 +128,7 @@ fn cfunCollectHere(argv: []repr.Value) raise.Error!repr.Value {
 
     // The claim. Without `continueNoCheck`'s rooting this block is unreachable
     // from every root the mark phase has, so the sweep frees it, along with
-    // `fiber.data`, the stack this cfunction's caller is executing on.
+    // `fiber.data`, the stack this nfunction's caller is executing on.
     expect(harness.heap.onList(harness.vm().gc.blocks, block));
 
     // And *why* it survived, which the assertion above cannot say on its own.
@@ -151,11 +151,11 @@ fn cfunCollectHere(argv: []repr.Value) raise.Error!repr.Value {
 
 /// Call a Janet function on a fresh fiber, from C's position.
 ///
-/// The shape of the whole hazard: a cfunction that re-enters the interpreter.
+/// The shape of the whole hazard: an nfunction that re-enters the interpreter.
 /// `pcall` reports its signal rather than raising, so the refusal is re-raised
 /// here through `raise.panicv`, which is what makes a failure inside the
 /// callback arrive at the Janet caller as an ordinary error.
-fn cfunCallViaPcall(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCallViaPcall(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const function = try args_core.getFunction(argv, 0);
 
@@ -165,9 +165,9 @@ fn cfunCallViaPcall(argv: []repr.Value) raise.Error!repr.Value {
     return resumed.value;
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "gcpcall/call", .cfun = raise.stored(&cfunCallViaPcall), .documentation = null },
-    .{ .name = "gcpcall/collect-here", .cfun = raise.stored(&cfunCollectHere), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "gcpcall/call", .nfun = raise.stored(&nfunCallViaPcall), .documentation = null },
+    .{ .name = "gcpcall/collect-here", .nfun = raise.stored(&nfunCollectHere), .documentation = null },
 };
 
 fn eval(source: [*:0]const u8) void {
@@ -264,7 +264,7 @@ fn deepNesting() void {
 pub fn run() void {
     harness.init();
     test_env = harness.coreEnv();
-    registry.cfuns(test_env.?, null, &cfuns);
+    registry.nfuns(test_env.?, null, &nfuns);
 
     directCase();
     singleNesting();

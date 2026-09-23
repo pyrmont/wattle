@@ -153,33 +153,33 @@
 (assert (= :error (fiber/status fc)) "cancel resume 4")
 
 ;
-; Signals a cfunction raises, and the frame the raise leaves behind
+; Signals an nfunction raises, and the frame the raise leaves behind
 ;
-; A cfunction returns its raise and run_vm propagates it, so a non-error signal
+; An nfunction returns its raise and run_vm propagates it, so a non-error signal
 ; is the case that distinguishes carrying the signal unaltered from re-raising
 ; it as an error.
 (def fs (fiber/new (fn [] (signal 3 :payload)) :i0123456789))
-(assert (= :payload (resume fs)) "user signal from a cfunction carries its value")
-(assert (= :user3 (fiber/status fs)) "user signal from a cfunction keeps its number")
+(assert (= :payload (resume fs)) "user signal from an nfunction carries its value")
+(assert (= :user3 (fiber/status fs)) "user signal from an nfunction keeps its number")
 
 (def fst (fiber/new (fn [] (defn g [] (signal 5 :deep)) (g)) :i0123456789))
 (assert (= :deep (resume fst)) "user signal at a tail call carries its value")
 (assert (= :user5 (fiber/status fst)) "user signal at a tail call keeps its number")
 
-; A cfunction that raises must leave its own frame on the stack, or the trace
+; An nfunction that raises must leave its own frame on the stack, or the trace
 ; loses the function that actually failed.
 (def fe (fiber/new (fn [] (defn g [x] (string/ascii-upper x)) (g 7)) :ei))
 (resume fe)
-(assert (= :error (fiber/status fe)) "cfunction error is an error")
+(assert (= :error (fiber/status fe)) "nfunction error is an error")
 (def frames (debug/stack fe))
-(assert (= 2 (length frames)) "cfunction error leaves the c frame unpopped")
-(assert (get (first frames) :c) "the unpopped frame is the cfunction's")
+(assert (= 2 (length frames)) "nfunction error leaves the c frame unpopped")
+(assert (get (first frames) :native) "the unpopped frame is the nfunction's")
 (assert (= "string/ascii-upper" (get (first frames) :name))
-        "the unpopped frame names the cfunction")
+        "the unpopped frame names the nfunction")
 
-; A signal raised inside a Janet callback that a cfunction invoked has to
-; unwind through the cfunction's frame the same way. A PEG function capture is
-; the cheapest cfunction that calls back into Janet, so this region needs the
+; A signal raised inside a Janet callback that an nfunction invoked has to
+; unwind through the nfunction's frame the same way. A PEG function capture is
+; the cheapest nfunction that calls back into Janet, so this region needs the
 ; matcher and is compiled out of a build without it.
 (compwhen (dyn 'peg/match)
   (def fp (fiber/new (fn [] (peg/match `(/ '1 ~(fn [_] (error :grammar))) "abc")) :ei))

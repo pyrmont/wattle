@@ -151,7 +151,7 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         /// interpreter dispatches with.
         ///
         /// This is the one slot whose shape changes on the way through. A
-        /// module author writes `call` over a `[]Value`, as a cfunction is
+        /// module author writes `call` over a `[]Value`, as an nfunction is
         /// written.
         pub fn call(p: *anyopaque, argc: i32, argv: [*]repr.Value) raise.Error!repr.Value {
             return spec.call.?(mut(p), argv[0..@intCast(argc)]);

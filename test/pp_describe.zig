@@ -8,7 +8,7 @@
 //! `string/format` and friends, which hand them a buffer that is either empty
 //! or is not the value being printed. Both append rather than replace, both
 //! special-case a buffer printed into itself, and neither property is
-//! observable through a cfunction that returns a fresh string.
+//! observable through an nfunction that returns a fresh string.
 //!
 //! The escape width is the other subject. `pp.zig`'s `escapeString` reports
 //! how many columns it wrote and the pretty printer's alignment is computed
@@ -233,18 +233,18 @@ fn theTwoWrappersDifferWhereTheyShould() void {
     expect(describe.toString(sym) == wrap.toSymbol(sym));
 }
 
-/// A registered cfunction prints its registry name, with the prefix when it
+/// A registered nfunction prints its registry name, with the prefix when it
 /// has one. An unregistered one falls through to the pointer description,
 /// which is the same fall-through an anonymous function takes.
-fn theCfunctionsAndFunctions() !void {
+fn theNfunctionsAndFunctions() !void {
     const b: *buffers.Buffer = buffers.new(64);
 
     try describe.descriptionB(b, eval("print"));
-    checkBuffer(b, "<cfunction print>");
+    checkBuffer(b, "<nfunction print>");
 
     b.count = 0;
     try describe.descriptionB(b, eval("string/format"));
-    checkBuffer(b, "<cfunction string/format>");
+    checkBuffer(b, "<nfunction string/format>");
 
     // A named function names itself; an anonymous one cannot and prints as a
     // pointer. Only the shape of the second is asserted, since the address is
@@ -308,7 +308,7 @@ fn body() !void {
     try descriptionEscapesWhereToStringDoesNot();
     try theNumbers();
     theTwoWrappersDifferWhereTheyShould();
-    try theCfunctionsAndFunctions();
+    try theNfunctionsAndFunctions();
     try thePointerDescriptionTruncatesItsTitle();
     // `int/s64` exists only with the integer types compiled in.
     if (harness.coreOptional("int/s64") != null) try anAbstractWithATostring();

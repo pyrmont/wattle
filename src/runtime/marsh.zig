@@ -1,4 +1,4 @@
-//! The marshalling protocol: both directions and the three cfunctions over
+//! The marshalling protocol: both directions and the three nfunctions over
 //! them.
 //!
 //! One file, because it is one subsystem: nothing else in the tree reaches
@@ -143,7 +143,7 @@ pub const Lead = enum(u8) {
     reference = 218,
     funcenv_ref = 219,
     funcdef_ref = 220,
-    unsafe_cfunction = 221,
+    unsafe_nfunction = 221,
     unsafe_pointer = 222,
 
     /// 223 was a struct with a prototype, and 213 a struct without one. A map
@@ -287,16 +287,16 @@ pub fn envLookupInto(
 /// Registers `marshal`, `unmarshal` and `env-lookup`.
 pub fn libMarsh(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("marshal", &cfunMarshal, @src(), "(marshal x &opt reverse-lookup buffer no-cycles)", "Marshal a value into a buffer and return the buffer. The buffer " ++
+        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal x &opt reverse-lookup buffer no-cycles)", "Marshal a value into a buffer and return the buffer. The buffer " ++
             "can then later be unmarshalled to reconstruct the initial value. " ++
             "Optionally, one can pass in a reverse lookup table to not marshal " ++
             "aliased values that are found in the table. Then a forward " ++
             "lookup table can be used to recover the original value when " ++
             "unmarshalling."),
-        corefn.reg("unmarshal", &cfunUnmarshal, @src(), "(unmarshal buffer &opt lookup)", "Unmarshal a value from a buffer. An optional lookup table " ++
+        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal buffer &opt lookup)", "Unmarshal a value from a buffer. An optional lookup table " ++
             "can be provided to allow for aliases to be resolved. Returns the value " ++
             "unmarshalled from the buffer."),
-        corefn.reg("env-lookup", &cfunEnvLookup, @src(), "(env-lookup env)", "Creates a forward lookup table for unmarshalling from an environment. " ++
+        corefn.reg("env-lookup", &nfunEnvLookup, @src(), "(env-lookup env)", "Creates a forward lookup table for unmarshalling from an environment. " ++
             "To create a reverse lookup table, use the invert function to swap keys " ++
             "and values in the returned table."),
     };
@@ -559,14 +559,14 @@ fn assertType(x: repr.Value, t: repr.Tag) raise.Error!void {
 }
 
 /// `(env-lookup env)`.
-fn cfunEnvLookup(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunEnvLookup(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const env = try args_core.getTable(argv, 0);
     return wrap.fromTable(envLookup(env));
 }
 
 /// `(marshal x &opt reverse-lookup buffer no-cycles)`.
-fn cfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var rreg: ?*tables.Table = null;
     var flags: c_int = 0;
@@ -578,7 +578,7 @@ fn cfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(unmarshal buffer &opt lookup)`, which the sandbox can withhold.
-fn cfunUnmarshal(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunUnmarshal(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"unmarshal"}));
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -628,7 +628,7 @@ fn fiberCannotBeMarshalled(fiber: *fibers.Fiber) bool {
     var i = fiber.frame;
     while (i > 0) {
         const frame = stackFrame(fiber.data.? + utils.asSize(i));
-        if (frame.func == null) return true; // has cfunction on stack
+        if (frame.func == null) return true; // has nfunction on stack
         i = frame.prevframe;
     }
     return false;
@@ -855,11 +855,11 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
             try pushByte(st, Lead.fiber.byte());
             try marshalOneFiber(st, wrap.toFiber(x), flags + 1);
         },
-        repr.Tag.cfunction => {
+        repr.Tag.nfunction => {
             if ((flags & constants.marshal_unsafe) == 0) return noRegistry(x);
             markSeen(st, x);
-            try pushByte(st, Lead.unsafe_cfunction.byte());
-            const cfn = wrap.toCfunction(x);
+            try pushByte(st, Lead.unsafe_nfunction.byte());
+            const cfn = wrap.toNfunction(x);
             try pushBytes(st, std.mem.asBytes(&cfn));
         },
         repr.Tag.pointer => {
@@ -1061,10 +1061,10 @@ fn marshalOneFiber(st: *MarshalState, fiber: *fibers.Fiber, flags: c_int) raise.
         const frame = stackFrame(fiber.data.? + utils.asSize(i));
         if (frame.env != null) frame.flags.has_env = true;
         const func = frame.func orelse {
-            const as_cfun = frame.pc.cfunction;
+            const as_nfun = frame.pc.nfunction;
             return pp_format.panicf(
                 "cannot marshal fiber with c stackframe (%v)",
-                .{wrap.fromCfunction(as_cfun)},
+                .{wrap.fromNfunction(as_nfun)},
             );
         };
         try pushInt(st, @bitCast(frame.flags));
@@ -1564,8 +1564,8 @@ fn unmarshalOne(
             scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data };
         },
-        Lead.unsafe_cfunction => {
-            try eos(st, data + @sizeOf(abi.CFunction));
+        Lead.unsafe_nfunction => {
+            try eos(st, data + @sizeOf(abi.NFunction));
             data += 1;
             if ((flags & constants.marshal_unsafe) == 0) {
                 return pp_format.panicf(
@@ -1573,13 +1573,13 @@ fn unmarshalOne(
                     .{indexOf(st, data)},
                 );
             }
-            var cfn: abi.CFunction = undefined;
+            var cfn: abi.NFunction = undefined;
             @memcpy(
-                @as([*]u8, @ptrCast(&cfn))[0..@sizeOf(abi.CFunction)],
-                data[0..@sizeOf(abi.CFunction)],
+                @as([*]u8, @ptrCast(&cfn))[0..@sizeOf(abi.NFunction)],
+                data[0..@sizeOf(abi.NFunction)],
             );
-            data += @sizeOf(abi.CFunction);
-            out = wrap.fromCfunction(cfn);
+            data += @sizeOf(abi.NFunction);
+            out = wrap.fromNfunction(cfn);
             scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data };
         },

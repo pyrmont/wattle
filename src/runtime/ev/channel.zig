@@ -1,5 +1,5 @@
 //! `core/channel`: the queue of values, the two queues of blocked fibers, the
-//! lock that makes a threaded channel safe, and the ten `ev/` cfunctions over
+//! lock that makes a threaded channel safe, and the ten `ev/` nfunctions over
 //! them.
 //!
 //! This file owns the channel's layout. Its last member is a
@@ -59,15 +59,15 @@ const max_channel_capacity: i32 = 0xFFFFFF;
 
 /// The methods reached through `(:give ch x)` and its siblings.
 const chanat_methods = [_]method_type.Method{
-    .{ .name = "select", .cfun = &cfunChoice },
-    .{ .name = "rselect", .cfun = &cfunRchoice },
-    .{ .name = "count", .cfun = &cfunCount },
-    .{ .name = "take", .cfun = &cfunTake },
-    .{ .name = "give", .cfun = &cfunGive },
-    .{ .name = "capacity", .cfun = &cfunCapacity },
-    .{ .name = "full", .cfun = &cfunFull },
-    .{ .name = "close", .cfun = &cfunClose },
-    .{ .name = null, .cfun = null },
+    .{ .name = "select", .nfun = &nfunChoice },
+    .{ .name = "rselect", .nfun = &nfunRchoice },
+    .{ .name = "count", .nfun = &nfunCount },
+    .{ .name = "take", .nfun = &nfunTake },
+    .{ .name = "give", .nfun = &nfunGive },
+    .{ .name = "capacity", .nfun = &nfunCapacity },
+    .{ .name = "full", .nfun = &nfunFull },
+    .{ .name = "close", .nfun = &nfunClose },
+    .{ .name = null, .nfun = null },
 };
 
 /// The abstract type a channel is.
@@ -185,13 +185,13 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/give", &cfunGive, @src(), "(ev/give channel value)", "Write a value to a channel, suspending the current fiber if the channel is full. " ++
+            corefn.reg("ev/give", &nfunGive, @src(), "(ev/give channel value)", "Write a value to a channel, suspending the current fiber if the channel is full. " ++
                 "Returns the channel if the write succeeded, nil otherwise."),
-            corefn.reg("ev/take", &cfunTake, @src(), "(ev/take channel)", "Read from a channel, suspending the current fiber if no value is available."),
-            corefn.reg("ev/full", &cfunFull, @src(), "(ev/full channel)", "Check if a channel is full or not."),
-            corefn.reg("ev/capacity", &cfunCapacity, @src(), "(ev/capacity channel)", "Get the number of items a channel will store before blocking writers."),
-            corefn.reg("ev/count", &cfunCount, @src(), "(ev/count channel)", "Get the number of items currently waiting in a channel."),
-            corefn.reg("ev/select", &cfunChoice, @src(), "(ev/select & clauses)", "Block until the first of several channel operations occur. Returns a " ++
+            corefn.reg("ev/take", &nfunTake, @src(), "(ev/take channel)", "Read from a channel, suspending the current fiber if no value is available."),
+            corefn.reg("ev/full", &nfunFull, @src(), "(ev/full channel)", "Check if a channel is full or not."),
+            corefn.reg("ev/capacity", &nfunCapacity, @src(), "(ev/capacity channel)", "Get the number of items a channel will store before blocking writers."),
+            corefn.reg("ev/count", &nfunCount, @src(), "(ev/count channel)", "Get the number of items currently waiting in a channel."),
+            corefn.reg("ev/select", &nfunChoice, @src(), "(ev/select & clauses)", "Block until the first of several channel operations occur. Returns a " ++
                 "tuple of the form [:give chan], [:take chan x], or [:close chan], " ++
                 "where a :give tuple is the result of a write and a :take tuple is the " ++
                 "result of a read. Each clause must be either a channel (for a channel " ++
@@ -201,12 +201,12 @@ pub fn entries() []const corefn.Entry {
                 "return a [:close chan] tuple, which indicates that the specified " ++
                 "channel was closed while waiting, or that the channel was already " ++
                 "closed."),
-            corefn.reg("ev/rselect", &cfunRchoice, @src(), "(ev/rselect & clauses)", "Similar to ev/select, but will try clauses in a random order for fairness."),
-            corefn.reg("ev/chan", &cfunNew, @src(), "(ev/chan &opt capacity)", "Create a new channel. capacity is the number of values to queue before " ++
+            corefn.reg("ev/rselect", &nfunRchoice, @src(), "(ev/rselect & clauses)", "Similar to ev/select, but will try clauses in a random order for fairness."),
+            corefn.reg("ev/chan", &nfunNew, @src(), "(ev/chan &opt capacity)", "Create a new channel. capacity is the number of values to queue before " ++
                 "blocking writers, defaults to 0 if not provided. Returns a new channel."),
-            corefn.reg("ev/thread-chan", &cfunNewThreaded, @src(), "(ev/thread-chan &opt limit)", "Create a threaded channel. A threaded channel is a channel that can be shared between threads and " ++
+            corefn.reg("ev/thread-chan", &nfunNewThreaded, @src(), "(ev/thread-chan &opt limit)", "Create a threaded channel. A threaded channel is a channel that can be shared between threads and " ++
                 "used to communicate between any number of operating system threads."),
-            corefn.reg("ev/chan-close", &cfunClose, @src(), "(ev/chan-close chan)", "Close a channel. A closed channel will cause all pending reads and writes to return nil. " ++
+            corefn.reg("ev/chan-close", &nfunClose, @src(), "(ev/chan-close chan)", "Close a channel. A closed channel will cause all pending reads and writes to return nil. " ++
                 "Returns the channel."),
         };
         break :blk acc;
@@ -262,7 +262,7 @@ pub fn push(chan: *Channel, x: repr.Value, mode: Caller) raise.Error!bool {
 // ==========================================================================
 
 /// `(ev/capacity ch)`.
-fn cfunCapacity(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCapacity(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -272,7 +272,7 @@ fn cfunCapacity(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/select & clauses)`.
-fn cfunChoice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunChoice(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
 
     if (vm_state.current().coerce_error) {
@@ -332,7 +332,7 @@ fn cfunChoice(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/chan-close ch)`.
-fn cfunClose(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunClose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -388,7 +388,7 @@ fn cfunClose(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/count ch)`.
-fn cfunCount(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCount(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -397,7 +397,7 @@ fn cfunCount(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/full ch)`.
-fn cfunFull(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFull(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     lock(chan);
@@ -406,7 +406,7 @@ fn cfunFull(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/give ch x)`.
-fn cfunGive(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGive(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const chan = try channelArg(argv, 0);
     if (vm_state.current().coerce_error) {
@@ -417,7 +417,7 @@ fn cfunGive(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/chan &opt capacity)`.
-fn cfunNew(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
     const chan = unwrap(abstracts.newFor(Channel, &channelType));
@@ -426,7 +426,7 @@ fn cfunNew(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/thread-chan &opt limit)`.
-fn cfunNewThreaded(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNewThreaded(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
     const chan = unwrap(abstracts.threaded(&channelType, @sizeOf(Channel)));
@@ -435,13 +435,13 @@ fn cfunNewThreaded(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/rselect & clauses)`.
-fn cfunRchoice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRchoice(argv: []repr.Value) raise.Error!repr.Value {
     fisherYatesArgs(argv);
-    return cfunChoice(argv);
+    return nfunChoice(argv);
 }
 
 /// `(ev/take ch)`.
-fn cfunTake(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunTake(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const chan = try channelArg(argv, 0);
     var item: repr.Value = undefined;
@@ -614,12 +614,12 @@ fn markFQ(fq: *ev.Queue(Pending)) void {
 fn pack(chan: *Channel, x: *repr.Value) raise.Error!bool {
     if (!isThreaded(chan)) return false;
     switch (repr.typeOf(x.*)) {
-        repr.Tag.nil, repr.Tag.number, repr.Tag.pointer, repr.Tag.boolean, repr.Tag.cfunction => return false,
+        repr.Tag.nil, repr.Tag.number, repr.Tag.pointer, repr.Tag.boolean, repr.Tag.nfunction => return false,
         else => {
             const buf: *buffers.Buffer = @ptrCast(@alignCast(utils.malloc(@sizeOf(buffers.Buffer)) orelse
                 ev.outOfMemory(@src())));
             // `marshal` raises on any value a threaded channel cannot take,
-            // an alive fiber, a file in safe mode, an unregistered cfunction,
+            // an alive fiber, a file in safe mode, an unregistered nfunction,
             // and this buffer is not the collector's, so the raise has to
             // release it here.
             errdefer {
@@ -859,7 +859,7 @@ fn unlock(chan: *Channel) void {
 fn unpack(chan: *Channel, x: *repr.Value, is_cleanup: bool) raise.Error!bool {
     if (!isThreaded(chan)) return false;
     switch (repr.typeOf(x.*)) {
-        repr.Tag.nil, repr.Tag.number, repr.Tag.pointer, repr.Tag.boolean, repr.Tag.cfunction => return false,
+        repr.Tag.nil, repr.Tag.number, repr.Tag.pointer, repr.Tag.boolean, repr.Tag.nfunction => return false,
         repr.Tag.buffer => {
             const buf = wrap.toBuffer(x.*);
             const flags: c_int = if (is_cleanup)

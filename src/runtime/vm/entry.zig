@@ -137,7 +137,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
     // Dirty stack.
     const dirty_stack: i32 = vm_state.fiberOf(v).stacktop - vm_state.fiberOf(v).stackstart;
     if (dirty_stack != 0) {
-        fibers.cframe(vm_state.fiberOf(v), raise.stored(&voidCFunction));
+        fibers.cframe(vm_state.fiberOf(v), raise.stored(&voidNFunction));
     }
 
     // Tracing.
@@ -194,13 +194,13 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 /// `callee` is the value and `argv` the arguments. `call` is narrower: it
 /// takes a `*functions.Function`, which is the callee the interpreter's own
 /// host-to-Janet path has already resolved. Janet's call is wider, `vm.zig`'s
-/// `.call` and `.tailcall` arms dispatching a function and a cfunction
+/// `.call` and `.tailcall` arms dispatching a function and an nfunction
 /// themselves and handing everything else to `callNonfn`, which is
 /// `methodInvoke`: an abstract with a `call` slot, and the six indexable
 /// types, which index their one argument rather than call it. This is that
 /// whole vocabulary reached from a host frame. `mcallValue` below needs all of
 /// it, because a looked-up method may be any of them; `capi.zig`'s
-/// `call_value` refuses everything but a function and a cfunction
+/// `call_value` refuses everything but a function and an nfunction
 /// before calling this.
 ///
 /// The arguments are copied onto the current fiber's stack, under a `cframe`
@@ -208,7 +208,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 /// third one. Three things make it necessary, and each is a property of the
 /// callee or of the collector rather than of this function:
 ///
-/// - a cfunction may write to its `argv`, `ev/channel.zig`'s `fisherYatesArgs`
+/// - an nfunction may write to its `argv`, `ev/channel.zig`'s `fisherYatesArgs`
 ///   shuffling it in place to make `ev/rselect` fair, so a `[]const` slice
 ///   cannot be handed through;
 /// - `gc/mark.zig`'s `markFiber` traces `[stackstart, stacktop)` and each
@@ -241,8 +241,8 @@ pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.
     const fiber = vm_state.fiberOf(v);
     // The stack is clean here, and this is where that is checked rather than
     // assumed. Every route to this function runs under a frame that left it
-    // so: `vm.zig`'s `.call` arm installs a `cframe` before invoking a
-    // cfunction, and `callNonfn` resets `stacktop` to `stackstart` before
+    // so: `vm.zig`'s `.call` arm installs a `cframe` before invoking an
+    // nfunction, and `callNonfn` resets `stacktop` to `stackstart` before
     // reaching `methodInvoke`. A dirty entry would put `cframe`'s `nextframe`
     // below the arguments pushed below, so the frame would name the wrong
     // values, and `call`'s guard frame reserves, which relocates the stack in
@@ -254,18 +254,18 @@ pub fn callValue(callee: repr.Value, argv: []const repr.Value) raise.Error!repr.
         return call(wrap.toFunction(callee), argv);
     }
     try fibers.pushn(fiber, argv);
-    // The real cfunction where there is one, so a trace through a module's
+    // The real nfunction where there is one, so a trace through a module's
     // `call` names what a trace through `(f ...)` names; the placeholder
     // otherwise, exactly as `call`'s guard frame uses it.
-    fibers.cframe(fiber, if (repr.checkType(callee, repr.Tag.cfunction))
-        wrap.toCfunction(callee)
+    fibers.cframe(fiber, if (repr.checkType(callee, repr.Tag.nfunction))
+        wrap.toNfunction(callee)
     else
-        raise.stored(&voidCFunction));
+        raise.stored(&voidNFunction));
     // Read after `cframe`, which reserves and may therefore move the stack.
     const pushed = (fiber.data.? + utils.asSize(fiber.frame))[0..argv.len];
     const answer = try vm_run.methodInvoke(callee, pushed);
     // `popframe` restores all three indices, so nothing else is saved here. A
-    // raise leaves the frame standing, which is what `vm.zig`'s own cfunction
+    // raise leaves the frame standing, which is what `vm.zig`'s own nfunction
     // arm leaves too.
     fibers.popframe(fiber);
     return answer;
@@ -439,7 +439,7 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
 
     // If this is a nested continue (root_fiber already set), root the fiber so
     // it survives GC. `gc/mark.zig`'s `collect` marks only `root_fiber`, so
-    // without this a nested fiber, one from a `pcall` inside a cfunction for
+    // without this a nested fiber, one from a `pcall` inside an nfunction for
     // instance, would be invisible to the collector and could be freed while
     // actively running.
     const fiber_rooted = vm.root_fiber != null;
@@ -632,9 +632,9 @@ inline fn setStatus(fiber: *fibers.Fiber, status: fibers.FiberStatus) void {
 /// It is never called. The frame exists so that the arguments already pushed
 /// above `stackstart` are not overwritten by the call being set up. Its
 /// address is not observable: the frame stores it in `pc` with `func` left
-/// null, and an unregistered `CFunction` renders as `<cfunction>` in a stack
+/// null, and an unregistered `NFunction` renders as `<nfunction>` in a stack
 /// trace either way.
-fn voidCFunction(argv: []repr.Value) raise.Error!repr.Value {
+fn voidNFunction(argv: []repr.Value) raise.Error!repr.Value {
     _ = argv;
 
     return raise.panic("placeholder");

@@ -442,7 +442,7 @@ fn theCoreFunctions() void {
     }
 }
 
-/// The refusals, each reached by calling the cfunction directly so that the
+/// The refusals, each reached by calling the nfunction directly so that the
 /// message is a value rather than something printed inside a Janet string.
 fn theRefusals() void {
     var args: [2]repr.Value = undefined;

@@ -7,7 +7,7 @@
   * One of the three host translations left in the tree, and it is here for the
   * reason `os/abi.h` gives for the first of them: nothing declared *here*
   * crosses a subsystem boundary. A `struct addrinfo` lives for the length of
-  * one cfunction, and the one socket address that outlives its call is
+  * one nfunction, and the one socket address that outlives its call is
   * `janet_address_type`'s abstract, which is a byte buffer both sides treat as
   * opaque. Nothing Janet's own -- a `JanetStream *`, a `Value` -- appears in
   * this translation at all; each is declared in the Zig file that owns what

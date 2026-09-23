@@ -11,7 +11,7 @@
   *
   * This is a translation of its own and it is deliberate. Nothing declared here
   * crosses a subsystem boundary: a `struct tm` lives for the length of one
-  * cfunction, a `posix_spawn_file_actions_t` for the length of one spawn. One
+  * nfunction, a `posix_spawn_file_actions_t` for the length of one spawn. One
   * header, one Zig type: this file is included once, by `os/abi.zig`, and the
   * files of the `os/` subtree share it.
  *

@@ -13,7 +13,7 @@
 //! modulo. None of that raises.
 //!
 //! The arithmetic methods are generated. `OpMethod`, `OpMethodInvert`,
-//! `NotMethod` and `DivMethod` each build a cfunction from a type and an
+//! `NotMethod` and `DivMethod` each build an nfunction from a type and an
 //! operation, `S64` and `U64` name one instantiation per row, and
 //! `s64_methods` and `u64_methods` are the tables `itS64Get` and `itU64Get`
 //! look a method name up in. Those bodies unwrap Janet values, allocate
@@ -54,7 +54,7 @@ const wrap = @import("helpers/wrap.zig");
 // Constants
 // ==========================================================================
 
-/// Whether the host is big-endian, decided at compile time. `cfunToBytes`
+/// Whether the host is big-endian, decided at compile time. `nfunToBytes`
 /// compares a caller's keyword against it.
 const big_endian = (builtin.cpu.arch.endian() == .big);
 
@@ -65,7 +65,7 @@ const intmax_double: f64 = 9007199254740992.0;
 const intmin_double: f64 = -9007199254740992.0;
 
 /// The same bound as an `i64`, matching `constants.intmax_int64`.
-/// `cfunToNumber` refuses a box outside it.
+/// `nfunToNumber` refuses a box outside it.
 const intmax_int64: i64 = 9007199254740992;
 
 /// The first double past each type's range, 2^63 and 2^64, exact as doubles.
@@ -97,15 +97,15 @@ const s64_methods = [_]method_type.Method{
     method("-", &S64.sub),           method("r-", &S64.subi),
     method("*", &S64.mul),           method("r*", &S64.mul),
     method("/", &S64.div),           method("r/", &S64.divi),
-    method("div", &cfunS64Divf),     method("rdiv", &cfunS64Divfi),
-    method("mod", &cfunS64Mod),      method("rmod", &cfunS64Modi),
+    method("div", &nfunS64Divf),     method("rdiv", &nfunS64Divfi),
+    method("mod", &nfunS64Mod),      method("rmod", &nfunS64Modi),
     method("%", &S64.rem),           method("r%", &S64.remi),
     method("&", &S64.band),          method("r&", &S64.band),
     method("|", &S64.bor),           method("r|", &S64.bor),
     method("^", &S64.bxor),          method("r^", &S64.bxor),
     method("~", &S64.bnot),          method("<<", &S64.shl),
-    method(">>", &S64.shr),          method("compare", &cfunS64Compare),
-    .{ .name = null, .cfun = null },
+    method(">>", &S64.shr),          method("compare", &nfunS64Compare),
+    .{ .name = null, .nfun = null },
 };
 
 /// The abstract type `int/u64` boxes a `u64` in.
@@ -140,8 +140,8 @@ const u64_methods = [_]method_type.Method{
     method("|", &U64.bor),           method("r|", &U64.bor),
     method("^", &U64.bxor),          method("r^", &U64.bxor),
     method("~", &U64.bnot),          method("<<", &U64.shl),
-    method(">>", &U64.shr),          method("compare", &cfunU64Compare),
-    .{ .name = null, .cfun = null },
+    method(">>", &U64.shr),          method("compare", &nfunU64Compare),
+    .{ .name = null, .nfun = null },
 };
 
 // ==========================================================================
@@ -409,14 +409,14 @@ pub fn isInt(x: repr.Value) constants.IntType {
     return .none;
 }
 
-/// Installs the `int/` cfunctions into `env` and registers both abstract
+/// Installs the `int/` nfunctions into `env` and registers both abstract
 /// types.
 pub fn libInttypes(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("int/s64", &cfunS64New, @src(), "(int/s64 value)", "Create a boxed signed 64 bit integer from a string value or a number."),
-        corefn.reg("int/u64", &cfunU64New, @src(), "(int/u64 value)", "Create a boxed unsigned 64 bit integer from a string value or a number."),
-        corefn.reg("int/to-number", &cfunToNumber, @src(), "(int/to-number value)", "Convert an int/u64 or int/s64 to a number. Fails if the number is out of range for an int64."),
-        corefn.reg("int/to-bytes", &cfunToBytes, @src(), "(int/to-bytes value &opt endianness buffer)", "Write the bytes of an `int/s64` or `int/u64` into a buffer.\n" ++
+        corefn.reg("int/s64", &nfunS64New, @src(), "(int/s64 value)", "Create a boxed signed 64 bit integer from a string value or a number."),
+        corefn.reg("int/u64", &nfunU64New, @src(), "(int/u64 value)", "Create a boxed unsigned 64 bit integer from a string value or a number."),
+        corefn.reg("int/to-number", &nfunToNumber, @src(), "(int/to-number value)", "Convert an int/u64 or int/s64 to a number. Fails if the number is out of range for an int64."),
+        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes value &opt endianness buffer)", "Write the bytes of an `int/s64` or `int/u64` into a buffer.\n" ++
             "The `buffer` parameter specifies an existing buffer to write to, if unset a new buffer will be created.\n" ++
             "Returns the modified buffer.\n" ++
             "The `endianness` parameter indicates the byte order:\n" ++
@@ -542,7 +542,7 @@ fn boxed(comptime T: type, at: *const abi.AbstractType, val: T) repr.Value {
 
 /// The `compare` method of `int/s64`, which orders a box against a number, an
 /// `int/s64` or an `int/u64`, and returns nil for anything else.
-fn cfunS64Compare(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunS64Compare(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != .s64) {
         return raise.panic("compare method requires int/s64 as first argument");
@@ -569,7 +569,7 @@ fn cfunS64Compare(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `div`: floored division, refusing a zero divisor.
-fn cfunS64Divf(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunS64Divf(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
@@ -579,7 +579,7 @@ fn cfunS64Divf(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `rdiv`: `div` with the operands swapped.
-fn cfunS64Divfi(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunS64Divfi(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
@@ -589,7 +589,7 @@ fn cfunS64Divfi(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `mod`: floored modulo, which returns the dividend for a zero divisor.
-fn cfunS64Mod(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunS64Mod(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op1 = try unwrapS64(argv[0]);
     const op2 = try unwrapS64(argv[1]);
@@ -598,7 +598,7 @@ fn cfunS64Mod(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `rmod`: `mod` with the operands swapped.
-fn cfunS64Modi(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunS64Modi(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const op2 = try unwrapS64(argv[0]);
     const op1 = try unwrapS64(argv[1]);
@@ -607,14 +607,14 @@ fn cfunS64Modi(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `int/s64`: a boxed signed integer from a number, a string or another box.
-fn cfunS64New(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunS64New(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrapS64(try unwrapS64(argv[0]));
 }
 
 /// `int/to-bytes`: the eight bytes of a box, in a chosen order, appended to a
 /// buffer.
-fn cfunToBytes(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunToBytes(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     if (isInt(argv[0]) == .none) {
         return pp_format.panicf("int/to-bytes: expected an int/s64 or int/u64, got %q", .{argv[0]});
@@ -663,7 +663,7 @@ fn cfunToBytes(argv: []repr.Value) raise.Error!repr.Value {
 /// The bound is `intmax_int64` and not `maxInt(i64)`: beyond it a double
 /// cannot tell neighbouring integers apart, so the conversion would silently
 /// round.
-fn cfunToNumber(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunToNumber(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (repr.typeOf(argv[0]) == repr.Tag.abstract) {
         const abst = wrap.toAbstract(argv[0]);
@@ -682,8 +682,8 @@ fn cfunToNumber(argv: []repr.Value) raise.Error!repr.Value {
     return pp_format.panicf("expected int/u64 or int/s64, got %q", .{argv[0]});
 }
 
-/// The `compare` method of `int/u64`, the unsigned twin of `cfunS64Compare`.
-fn cfunU64Compare(argv: []repr.Value) raise.Error!repr.Value {
+/// The `compare` method of `int/u64`, the unsigned twin of `nfunS64Compare`.
+fn nfunU64Compare(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     if (isInt(argv[0]) != .u64) {
         return raise.panic("compare method requires int/u64 as first argument");
@@ -710,7 +710,7 @@ fn cfunU64Compare(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `int/u64`: a boxed unsigned integer from a number, a string or another box.
-fn cfunU64New(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunU64New(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrapU64(try unwrapU64(argv[0]));
 }
@@ -791,10 +791,10 @@ fn itU64Tostring(box: *u64, render: *abi.Render) raise.Error!void {
 
 /// Builds one method table row.
 fn method(comptime name: [:0]const u8, comptime f: anytype) method_type.Method {
-    return .{ .name = name, .cfun = f };
+    return .{ .name = name, .nfun = f };
 }
 
-/// The refusal `cfunToNumber` raises for a box outside a double's exact range.
+/// The refusal `nfunToNumber` raises for a box outside a double's exact range.
 fn outOfRange(x: repr.Value) raise.Error {
     return pp_format.panicf("cannot convert %q to a number, must be in the range [%q, %q]", .{ x, wrap.fromNumber(-9007199254740992.0), wrap.fromNumber(9007199254740992.0) });
 }

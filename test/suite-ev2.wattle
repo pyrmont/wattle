@@ -47,7 +47,7 @@
       (def item (ev/take thread-channel))
       (when (= item :deadline)
         (ev/deadline 0.1 nil (fiber/current) true))))
-  (ev/thread worker nil :n super)
+  (ev/thread worker nil :i super)
   (ev/give thread-channel :item)
   (ev/sleep 0.05)
   (ev/give thread-channel :item)
@@ -68,7 +68,7 @@
     (def item (ev/take thread-channel))
     (when (= item :deadline)
       (ev/deadline 0.1))))
-(ev/thread worker nil :n super)
+(ev/thread worker nil :i super)
 (ev/give thread-channel :deadline)
 (ev/sleep 0.2)
 (assert (deep= [:error "deadline expired" nil] (ev/take super)) "deadline expirataion")
@@ -147,9 +147,9 @@
     (assert-error-value
       "a stream does not cross into a thread on Windows"
       "a stream does not marshal on Windows: this runtime does not move a registered handle to another completion port"
-      (ev/thread reader-body [r replies] :n))
+      (ev/thread reader-body [r replies] :i))
     (do
-      (ev/thread reader-body [r replies] :n)
+      (ev/thread reader-body [r replies] :i)
       (ev/sleep 0.2)
       (ev/write w "abc")
       (var got nil)

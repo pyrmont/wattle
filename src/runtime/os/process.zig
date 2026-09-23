@@ -3,11 +3,11 @@
 //!
 //! `spawn.zig`, `signals.zig` and `pipe.zig` beside it would each need a name,
 //! and none earns one. A piece splits out when it has a name Janet already
-//! publishes, a type, a cfunction family or a module, or when it exists
-//! because the platform differs. This file registers twelve cfunctions and not
+//! publishes, a type, an nfunction family or a module, or when it exists
+//! because the platform differs. This file registers twelve nfunctions and not
 //! one of those three names is among them: there is no `os/spawn` family
 //! (there is `os/spawn`, `os/execute` and `os/shell`, which share no name),
-//! `os/sigaction` is a single cfunction, and so is `os/pipe`. A leaf called
+//! `os/sigaction` is a single nfunction, and so is `os/pipe`. A leaf called
 //! `signals` would claim something the tree cannot point at.
 //!
 //! `Proc` is the one thing here Janet publishes as a type, and it stays in the
@@ -19,9 +19,9 @@
 //! claims nothing cannot claim wrongly.
 //!
 //! `shell` appears twice and the two are not duplicates: the host call, and
-//! the cfunction that checks arguments and calls it. The cfunction is
-//! `cfunShell`, which is this file's own convention beside `cfunExecute`,
-//! `cfunSpawn`, `cfunSigaction` and `cfunPipe`.
+//! the nfunction that checks arguments and calls it. The nfunction is
+//! `nfunShell`, which is this file's own convention beside `nfunExecute`,
+//! `nfunSpawn`, `nfunSigaction` and `nfunPipe`.
 //!
 //! The kernels at the foot are reached by import rather than by symbol, and
 //! the host calls below them are the ones whose signatures name `h.pid_t`,
@@ -115,13 +115,13 @@ const proc_waiting: c_int = 4;
 /// walks, so `(keys p)` reports `:in`, `:out` and `:err` as well; the table's
 /// order is observable for the same reason, and it is preserved.
 const proc_methods = [_]method_type.Method{
-    .{ .name = "wait", .cfun = &cfunProcWait },
-    .{ .name = "kill", .cfun = &cfunProcKill },
-    .{ .name = "close", .cfun = &cfunProcClose },
-    .{ .name = "in", .cfun = null },
-    .{ .name = "out", .cfun = null },
-    .{ .name = "err", .cfun = null },
-    .{ .name = null, .cfun = null },
+    .{ .name = "wait", .nfun = &nfunProcWait },
+    .{ .name = "kill", .nfun = &nfunProcKill },
+    .{ .name = "close", .nfun = &nfunProcClose },
+    .{ .name = "in", .nfun = null },
+    .{ .name = "out", .nfun = null },
+    .{ .name = "err", .nfun = null },
+    .{ .name = null, .nfun = null },
 };
 
 /// The abstract type `os/spawn` returns.
@@ -205,7 +205,7 @@ const stream_readable: u32 = 0x200;
 const stream_unregistered: u32 = 0x4;
 const stream_writable: u32 = 0x400;
 
-/// What `wait` reports, and the whole of that vocabulary. The cfunctions turn
+/// What `wait` reports, and the whole of that vocabulary. The nfunctions turn
 /// the first three into the number a Janet program sees and raise on the
 /// fourth; `test/os_process.zig` names all four rather than restating the
 /// numbers.
@@ -379,7 +379,7 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/execute", &cfunExecute, @src(), "(os/execute args &opt flags env)", "Execute a program on the system and return the exit code. `args` is an array/tuple " ++
+            corefn.reg("os/execute", &nfunExecute, @src(), "(os/execute args &opt flags env)", "Execute a program on the system and return the exit code. `args` is an array/tuple " ++
                 "of strings. The first string is the name of the program and the remainder are " ++
                 "arguments passed to the program. `flags` is a keyword made from the following " ++
                 "characters that modifies how the program executes:\n" ++
@@ -395,7 +395,7 @@ pub fn entries() []const corefn.Entry {
                 "subprocess. :in, :out, and :err should be core/file or core/stream values. " ++
                 "If core/stream values are used, the caller is responsible for ensuring pipes do not " ++
                 "cause the program to block and deadlock."),
-            corefn.reg("os/spawn", &cfunSpawn, @src(), "(os/spawn args &opt flags env)", "Execute a program on the system and return a core/process value representing the " ++
+            corefn.reg("os/spawn", &nfunSpawn, @src(), "(os/spawn args &opt flags env)", "Execute a program on the system and return a core/process value representing the " ++
                 "spawned subprocess. Takes the same arguments as `os/execute` but does not wait for " ++
                 "the subprocess to complete. Unlike `os/execute`, the value `:pipe` can be used for " ++
                 ":in, :out and :err keys in `env`. If used, the returned core/process will have a " ++
@@ -410,35 +410,35 @@ pub fn entries() []const corefn.Entry {
                 "`os/proc-close`). Similar to `os/execute`, the caller is responsible for ensuring " ++
                 "pipes do not cause the program to block and deadlock. As a special case, the stream passed to `:err` " ++
                 "can be the keyword `:out` to redirect stderr to stdout in the subprocess."),
-            corefn.reg("os/shell", &cfunShell, @src(), "(os/shell str)", "Pass a command string str directly to the system shell."),
-            corefn.reg("os/posix-fork", &cfunPosixFork, @src(), "(os/posix-fork)", "Make a `fork` system call and create a new process. Return nil if in the new process, otherwise a core/process object (as returned by os/spawn). " ++
+            corefn.reg("os/shell", &nfunShell, @src(), "(os/shell str)", "Pass a command string str directly to the system shell."),
+            corefn.reg("os/posix-fork", &nfunPosixFork, @src(), "(os/posix-fork)", "Make a `fork` system call and create a new process. Return nil if in the new process, otherwise a core/process object (as returned by os/spawn). " ++
                 "Not supported on all systems (POSIX and Plan 9 only)."),
-            corefn.reg("os/posix-exec", &cfunPosixExec, @src(), "(os/posix-exec args &opt flags env)", "Use the execvpe or execve system calls to replace the current process with an interface similar to os/execute. " ++
+            corefn.reg("os/posix-exec", &nfunPosixExec, @src(), "(os/posix-exec args &opt flags env)", "Use the execvpe or execve system calls to replace the current process with an interface similar to os/execute. " ++
                 "However, instead of creating a subprocess, the current process is replaced. Is not supported on Windows, and " ++
                 "does not allow redirection of stdio."),
-            corefn.reg("os/posix-chroot", &cfunPosixChroot, @src(), "(os/posix-chroot dirname)", "Call `chroot` to change the root directory to `dirname`. " ++
+            corefn.reg("os/posix-chroot", &nfunPosixChroot, @src(), "(os/posix-chroot dirname)", "Call `chroot` to change the root directory to `dirname`. " ++
                 "Not supported on all systems (POSIX only)."),
             // Process management is not sandboxed: a build that cannot create
-            // processes can still be handed one by an embedder's cfunction.
-            corefn.reg("os/proc-wait", &cfunProcWait, @src(), "(os/proc-wait proc)", "Suspend the current fiber until the subprocess `proc` completes. Once `proc` " ++
+            // processes can still be handed one by an embedder's nfunction.
+            corefn.reg("os/proc-wait", &nfunProcWait, @src(), "(os/proc-wait proc)", "Suspend the current fiber until the subprocess `proc` completes. Once `proc` " ++
                 "completes, return the exit code of `proc`. If called more than once on the same " ++
                 "core/process value, will raise an error. When creating subprocesses using " ++
                 "`os/spawn`, this function should be called on the returned value to avoid zombie " ++
                 "processes."),
-            corefn.reg("os/proc-kill", &cfunProcKill, @src(), "(os/proc-kill proc &opt wait signal)", "Kill the subprocess `proc` by sending SIGKILL to it on POSIX systems, or by closing " ++
+            corefn.reg("os/proc-kill", &nfunProcKill, @src(), "(os/proc-kill proc &opt wait signal)", "Kill the subprocess `proc` by sending SIGKILL to it on POSIX systems, or by closing " ++
                 "the process handle on Windows. If `proc` has already completed, raise an error. If " ++
                 "`wait` is truthy, will wait for `proc` to complete and return the exit code (this " ++
                 "will raise an error if `proc` is being waited for). Otherwise, return `proc`. If " ++
                 "`signal` is provided, send it instead of SIGKILL. Signal keywords are named after " ++
                 "their C counterparts but in lowercase with the leading SIG stripped. `signal` is " ++
                 "ignored on Windows."),
-            corefn.reg("os/proc-close", &cfunProcClose, @src(), "(os/proc-close proc)", "Close pipes created for subprocess `proc` by `os/spawn` if they have not been " ++
+            corefn.reg("os/proc-close", &nfunProcClose, @src(), "(os/proc-close proc)", "Close pipes created for subprocess `proc` by `os/spawn` if they have not been " ++
                 "closed. Then, if `proc` is not being waited for, wait. If this function waits, when " ++
                 "`proc` completes, return the exit code of `proc`. Otherwise, return nil."),
-            corefn.reg("os/getpid", &cfunProcGetpid, @src(), "(os/getpid)", "Get the process ID of the current process."),
+            corefn.reg("os/getpid", &nfunProcGetpid, @src(), "(os/getpid)", "Get the process ID of the current process."),
         };
         if (has_ev) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/sigaction", &cfunSigaction, @src(), "(os/sigaction which &opt handler interrupt-interpreter)", "Add a signal handler for a given action. Use nil for the `handler` argument to remove a signal handler. " ++
+            corefn.reg("os/sigaction", &nfunSigaction, @src(), "(os/sigaction which &opt handler interrupt-interpreter)", "Add a signal handler for a given action. Use nil for the `handler` argument to remove a signal handler. " ++
                 "All signal handlers are the same as supported by `os/proc-kill`."),
         };
         break :blk acc[0..acc.len].*;
@@ -543,7 +543,7 @@ pub fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) i32 {
 pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/pipe", &cfunPipe, @src(), "(os/pipe &opt flags)", "Create a readable stream and a writable stream that are connected. Returns a two-element " ++
+        corefn.reg("os/pipe", &nfunPipe, @src(), "(os/pipe &opt flags)", "Create a readable stream and a writable stream that are connected. Returns a two-element " ++
             "tuple where the first element is a readable stream and the second element is the writable " ++
             "stream. `flags` is a keyword set of flags to disable non-blocking settings on the ends of the pipe. " ++
             "This may be desired if passing the pipe to a subprocess with `os/spawn`.\n\n" ++
@@ -710,12 +710,12 @@ fn buildEnv(argv: []repr.Value) raise.Error!EnvBlock {
 }
 
 /// `(os/execute args &opt flags env)`.
-fn cfunExecute(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunExecute(argv: []repr.Value) raise.Error!repr.Value {
     return execute(argv, .execute);
 }
 
 /// `(os/pipe &opt flags)`.
-fn cfunPipe(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPipe(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     var fds: [2]host.Handle = undefined;
     var flags: c_int = 0;
@@ -730,7 +730,7 @@ fn cfunPipe(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/posix-chroot path)`.
-fn cfunPosixChroot(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPosixChroot(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"chroot"}));
     try args_core.fixarity(argv, 1);
     if (windows) return raise.panic("not supported on Windows or Plan 9");
@@ -742,13 +742,13 @@ fn cfunPosixChroot(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/posix-exec args &opt flags env)`.
-fn cfunPosixExec(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPosixExec(argv: []repr.Value) raise.Error!repr.Value {
     if (windows) return raise.panic("not supported on Windows");
     return execute(argv, .exec);
 }
 
 /// `(os/posix-fork)`.
-fn cfunPosixFork(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPosixFork(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.fixarity(argv, 0);
     if (windows) return raise.panic("not supported on Windows");
@@ -765,7 +765,7 @@ fn cfunPosixFork(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(:close p)`.
-fn cfunProcClose(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunProcClose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     if (proc.flags & proc_owns_stdin != 0) try closeStdio(proc.in.?);
@@ -777,14 +777,14 @@ fn cfunProcClose(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/proc-getpid p)`.
-fn cfunProcGetpid(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunProcGetpid(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(@floatFromInt(processId()));
 }
 
 /// `(os/proc-kill p &opt wait signal)`.
-fn cfunProcKill(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunProcKill(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     if (proc.flags & proc_waited != 0) {
@@ -810,14 +810,14 @@ fn cfunProcKill(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/proc-wait p)`.
-fn cfunProcWait(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunProcWait(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
     return procWait(proc);
 }
 
 /// `(os/shell &opt cmd)`.
-fn cfunShell(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunShell(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 0, 1);
     const cmd: ?[*:0]const u8 = if (argv.len != 0) try args_core.getCString(argv, 0) else null;
@@ -838,7 +838,7 @@ fn cfunShell(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/sigaction signal &opt handler)`.
-fn cfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"signal"}));
     try args_core.arity(argv, 1, 3);
     if (windows) return raise.panic("unsupported on this platform");
@@ -896,7 +896,7 @@ fn cfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(os/spawn args &opt flags env)`.
-fn cfunSpawn(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSpawn(argv: []repr.Value) raise.Error!repr.Value {
     return execute(argv, .spawn);
 }
 

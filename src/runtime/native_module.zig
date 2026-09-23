@@ -77,8 +77,8 @@ var marks: u32 = 0;
 
 /// What `get`'s keyword arm and `next` both walk.
 const methods = [_]wattle.Method{
-    .{ .name = "kept", .cfun = &kept },
-    .{ .name = "rank", .cfun = &rank },
+    .{ .name = "kept", .nfun = &kept },
+    .{ .name = "rank", .nfun = &rank },
 };
 
 /// The serial number `keep` stamps each payload with, so that the marshal pair
@@ -87,7 +87,7 @@ var next_serial: i64 = 1;
 
 /// A method table with a `:length`, which a call such as `(:length o)` finds
 /// through `get`.
-const odd_methods = [_]wattle.Method{.{ .name = "length", .cfun = &oddLength }};
+const odd_methods = [_]wattle.Method{.{ .name = "length", .nfun = &oddLength }};
 
 /// No `length` slot, on purpose: `length` refuses such a type rather than
 /// calling its `:length` method, as C Janet would.
@@ -118,7 +118,7 @@ const render_options = std.StaticStringMap(u32).initComptime(.{
 
 /// How many times either marshal callback has seen the unsafe flag set.
 ///
-/// It stays zero, and that is the assertion. Janet's own `marshal` cfunction
+/// It stays zero, and that is the assertion. Janet's own `marshal` nfunction
 /// exposes only the no-cycles flag, so nothing a Janet program can write
 /// reaches this type in unsafe mode. What the counter is really for is the
 /// compile: `isUnsafe` takes `anytype` and decides at comptime, so calling it
@@ -296,9 +296,9 @@ fn built(argv: []wattle.Value) wattle.Error!wattle.Value {
 
 /// `(classify x)`: the tag of a value, named.
 ///
-/// One cfunction over all fourteen predicates, because what they are for is
+/// One nfunction over all fourteen predicates, because what they are for is
 /// telling apart the types one getter accepts, and a module that has them all
-/// has no reason to reach for anything else. `isFunction` and `isCFunction`
+/// has no reason to reach for anything else. `isFunction` and `isNFunction`
 /// are the odd ones out: what the pair is for is refusing a callback `call`
 /// could not run, and `isFunction` alone a callback `pcall` could not run, at
 /// the point the callback is handed over rather than at the call.
@@ -331,8 +331,8 @@ fn classify(argv: []wattle.Value) wattle.Error!wattle.Value {
         "table"
     else if (wattle.isFunction(v))
         "function"
-    else if (wattle.isCFunction(v))
-        "cfunction"
+    else if (wattle.isNFunction(v))
+        "nfunction"
     else
         "other";
     return wattle.cstring(name);
@@ -356,7 +356,7 @@ fn cut(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.cstring(out[0 .. to - from :0]);
 }
 
-/// The module's entry point: registers the abstract type and the cfunctions.
+/// The module's entry point: registers the abstract type and the nfunctions.
 ///
 /// A type with an `unmarshal` callback has to be registered, or the
 /// unmarshaller never finds it: an abstract names its type on the wire and
@@ -368,7 +368,7 @@ fn defs(env: *wattle.Env) wattle.Error!void {
     // resolves it through the runtime's registry. This is what `defs` may
     // raise for.
     try wattle.registerAbstract(&keeper_type);
-    wattle.cfuns(env, "zig-native", &.{
+    wattle.nfuns(env, "zig-native", &.{
         wattle.reg(
             "identity",
             &identity,
@@ -430,7 +430,7 @@ fn finalizedCount(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.number(@floatFromInt(finalized));
 }
 
-/// `(greeting)`: a cfunction returning a string, which `wattle.cstring` is the
+/// `(greeting)`: an nfunction returning a string, which `wattle.cstring` is the
 /// whole of.
 fn greeting(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 0);
@@ -610,7 +610,7 @@ fn keptAcross(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// The order is what a caller has to keep: read the loop and the fiber, root
 /// the fiber, start the thread, and only then suspend. Starting the thread
 /// before the suspend is not a race, because the loop is single-threaded, so
-/// an event posted before this cfunction has returned is not processed until
+/// an event posted before this nfunction has returned is not processed until
 /// the fiber has suspended.
 fn later(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
@@ -805,8 +805,8 @@ fn sorted(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 2);
     var items = try wattle.getIndexed(argv, 1);
     const count = items.len;
-    // Copied out of `argv` before the first call, which is not optional. A
-    // cfunction's arguments live on the fiber's stack and a call into Janet may
+    // Copied out of `argv` before the first call, which is not optional. An
+    // nfunction's arguments live on the fiber's stack and a call into Janet may
     // move it; `call`'s doc states the rule, and
     // `-Dfiber-stack-shuffle=true` is the build that turns breaking it into a
     // use-after-free the allocator sees rather than a wrong result. The

@@ -1,14 +1,14 @@
-; Phase 10 Part 17b's benchmark corpus: cfunction entry.
+; Phase 10 Part 17b's benchmark corpus: nfunction entry.
 ;
 ; The Phase 9 corpus measures the interpreter, and what 17b changed is what
-; happens in the first two or three instructions of a *cfunction*: an arity
+; happens in the first two or three instructions of an *nfunction*: an arity
 ; check and a getter per argument, which were calls across a compilation
 ; boundary and are now ordinary in-module calls. Nine of that corpus's ten
 ; workloads cannot see it, and its tenth is a PEG match, which is the control.
 ;
 ; So these workloads are chosen for the opposite property: as little work per
 ; call as possible, so that the entry cost is the largest share of it. Each
-; calls a cfunction whose body is a few instructions, several million times.
+; calls an nfunction whose body is a few instructions, several million times.
 ; A regression here is what the argument layer costs; an improvement is what
 ; the fold gives back.
 ;
@@ -82,7 +82,7 @@
     (set n (+ n (length (string "a" "b")))))
   n)
 
-; The control: a PEG match, which enters one cfunction and then spends all its
+; The control: a PEG match, which enters one nfunction and then spends all its
 ; time inside the engine. It should not move, and if it does the corpus has not
 ; measured anything -- Part 16's rule.
 (defn- control []
@@ -93,8 +93,8 @@
   n)
 
 ; Phase 10 Part 17d converted `janet_sandbox_assert`, which every `os/`, `io/`,
-; `net/` and `ffi/` cfunction opens with, and there is deliberately no workload
-; for it here. Every cfunction that pays the check also makes a system call:
+; `net/` and `ffi/` nfunction opens with, and there is deliberately no workload
+; for it here. Every nfunction that pays the check also makes a system call:
 ; `(os/cwd)` runs at five microseconds an iteration, against forty nanoseconds
 ; for `onearg` below, so the check is three orders of magnitude beneath the
 ; noise of the cheapest thing that performs it. A corpus that cannot resolve

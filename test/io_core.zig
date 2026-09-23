@@ -1,6 +1,6 @@
 //! Behavioral contract for the file subsystem: mode-string parsing, the
 //! stream host operations, the `core/file` abstract type, the public
-//! `io.File` entry points, and the cfunction surface over all of them.
+//! `io.File` entry points, and the nfunction surface over all of them.
 //!
 //! ## Why this file exists rather than the suite covering it
 //!
@@ -431,7 +431,7 @@ fn theMethodOrder() raise.Error!void {
 
     // The getter accepts only keywords, and only names in the table.
     const out = (try at.get.?(payload, value.fromBytes("read", .keyword))).?;
-    expect(harness.isType(out, repr.Tag.cfunction));
+    expect(harness.isType(out, repr.Tag.nfunction));
     expect((try at.get.?(payload, value.fromBytes("open", .keyword))) == null);
     expect((try at.get.?(payload, value.fromBytes("read", .string))) == null);
 }

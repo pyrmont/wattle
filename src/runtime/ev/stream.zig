@@ -1,6 +1,6 @@
 //! `core/stream`: the wrapper around a pollable file descriptor or handle, the
 //! read and write state machines every asynchronous transfer runs through, the
-//! pipe constructor, and the five stream cfunctions.
+//! pipe constructor, and the five stream nfunctions.
 //!
 //! Two host structures are named here and neither comes from a system header.
 //! `Overlapped` is restated below, because `WSAOVERLAPPED` and `OVERLAPPED`
@@ -122,11 +122,11 @@ const chunk_size_windows: i32 = 4096;
 
 /// The methods every stream has, which the abstract type's `get` looks in.
 const default_methods = [_]method_type.Method{
-    .{ .name = "close", .cfun = &cfunStreamClose },
-    .{ .name = "read", .cfun = &cfunStreamRead },
-    .{ .name = "chunk", .cfun = &cfunStreamChunk },
-    .{ .name = "write", .cfun = &cfunStreamWrite },
-    .{ .name = null, .cfun = null },
+    .{ .name = "close", .nfun = &nfunStreamClose },
+    .{ .name = "read", .nfun = &nfunStreamRead },
+    .{ .name = "chunk", .nfun = &nfunStreamChunk },
+    .{ .name = "write", .nfun = &nfunStreamWrite },
+    .{ .name = null, .nfun = null },
 };
 
 /// Whether this build has the net subsystem, which decides whether the
@@ -322,7 +322,7 @@ fn setOffset(ov: *Overlapped, position: u64) void {
 // ==========================================================================
 
 /// `(ev/chunk s n &opt buf)`.
-pub fn cfunStreamChunk(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunStreamChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -334,14 +334,14 @@ pub fn cfunStreamChunk(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(:close s)`.
-pub fn cfunStreamClose(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunStreamClose(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     try streamClose(try getStream(argv, 0));
     return argv[0];
 }
 
 /// `(ev/read s n &opt buf timeout)`.
-pub fn cfunStreamRead(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunStreamRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_readable);
@@ -357,7 +357,7 @@ pub fn cfunStreamRead(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(ev/write s bytes &opt timeout)`.
-pub fn cfunStreamWrite(argv: []repr.Value) raise.Error!repr.Value {
+pub fn nfunStreamWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const s = try getStream(argv, 0);
     try streamFlags(s, stream_writable);
@@ -384,9 +384,9 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/close", &cfunStreamClose, @src(), "(ev/close stream)", "Close a stream. This should be the same as calling (:close stream) for all streams. " ++
+            corefn.reg("ev/close", &nfunStreamClose, @src(), "(ev/close stream)", "Close a stream. This should be the same as calling (:close stream) for all streams. " ++
                 "Closing ends every read and write outstanding on the stream."),
-            corefn.reg("ev/read", &cfunStreamRead, @src(), "(ev/read stream n &opt buffer timeout)", "Read up to n bytes into a buffer asynchronously from a stream. `n` can also be the keyword " ++
+            corefn.reg("ev/read", &nfunStreamRead, @src(), "(ev/read stream n &opt buffer timeout)", "Read up to n bytes into a buffer asynchronously from a stream. `n` can also be the keyword " ++
                 "`:all` to read into the buffer until end of stream. " ++
                 "Optionally provide a buffer to write into " ++
                 "as well as a timeout in seconds after which to cancel the operation and raise an error. " ++
@@ -395,9 +395,9 @@ pub fn entries() []const corefn.Entry {
                 "Several fibers may read one stream at once. They compete for the input, so which bytes " ++
                 "reach which fiber is not settled here, and a program that needs a particular assignment " ++
                 "coordinates for itself."),
-            corefn.reg("ev/chunk", &cfunStreamChunk, @src(), "(ev/chunk stream n &opt buffer timeout)", "Same as ev/read, but will not return early if less than n bytes are available. If an end of " ++
+            corefn.reg("ev/chunk", &nfunStreamChunk, @src(), "(ev/chunk stream n &opt buffer timeout)", "Same as ev/read, but will not return early if less than n bytes are available. If an end of " ++
                 "stream is reached, will also return early with the collected bytes."),
-            corefn.reg("ev/write", &cfunStreamWrite, @src(), "(ev/write stream data &opt timeout)", "Write data to a stream, suspending the current fiber until the write " ++
+            corefn.reg("ev/write", &nfunStreamWrite, @src(), "(ev/write stream data &opt timeout)", "Write data to a stream, suspending the current fiber until the write " ++
                 "completes. Takes an optional timeout in seconds, after which will return nil. " ++
                 "Returns nil, or raises an error if the write failed. " ++
                 "Several fibers may write one stream at once. No order and no atomicity is promised " ++
@@ -739,7 +739,7 @@ pub fn toFileEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/to-file", &cfunToFile, @src(), "(ev/to-file)", "Create core/file copy of the stream. This value can be used " ++
+            corefn.reg("ev/to-file", &nfunToFile, @src(), "(ev/to-file)", "Create core/file copy of the stream. This value can be used " ++
                 "when blocking IO behavior is needed. On Windows the stream's handle has to be a synchronous one. " ++
                 "A handle opened FILE_FLAG_OVERLAPPED, which is every handle os/open returns, converts and then " ++
                 "refuses each transfer: the C library reads and writes a file synchronously, and those calls " ++
@@ -779,7 +779,7 @@ pub fn writeGeneric(
 // ==========================================================================
 
 /// `(ev/to-file s)`.
-fn cfunToFile(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunToFile(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const s = try getStream(argv, 0);
     const iof = (try getFileForStream(s)) orelse return raise.panic("cannot make file from stream");

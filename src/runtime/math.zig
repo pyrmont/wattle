@@ -4,7 +4,7 @@
 //! The generator is public C ABI and its state is marshalled, so it is
 //! bit-exact with Janet by construction rather than by convention.
 //!
-//! The `math/` cfunctions are at the foot of the file, along with the RNG
+//! The `math/` nfunctions are at the foot of the file, along with the RNG
 //! abstract type. Their bodies are argument extraction that raises on a type
 //! or arity mismatch, which is an ordinary returned error here.
 
@@ -58,10 +58,10 @@ pub const rngType = abstract_type.define(Rng, .{
 
 /// The methods reached through `(:int rng 10)` and its two siblings.
 const rng_methods = [_]method_type.Method{
-    .{ .name = "uniform", .cfun = &cfunRngUniform },
-    .{ .name = "int", .cfun = &cfunRngInt },
-    .{ .name = "buffer", .cfun = &cfunRngBuffer },
-    .{ .name = null, .cfun = null },
+    .{ .name = "uniform", .nfun = &nfunRngUniform },
+    .{ .name = "int", .nfun = &nfunRngInt },
+    .{ .name = "buffer", .nfun = &nfunRngBuffer },
+    .{ .name = null, .nfun = null },
 };
 
 // ==========================================================================
@@ -83,7 +83,7 @@ fn Math2Op(comptime fop: anytype) type {
 
 /// One row per math op, so that the table and the implementations cannot
 /// drift: the name, the libm function and the docstring are given once and the
-/// cfunction is generated from them.
+/// nfunction is generated from them.
 ///
 /// Nine of these are dropped on Plan 9. It is not a target this build
 /// supports, and the guard is kept rather than deleted, because removing a
@@ -243,22 +243,22 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
     };
 
     const written = comptime [_]corefn.Entry{
-        corefn.reg("not", &cfunNot, @src(), "(not x)", "Returns the boolean inverse of x."),
-        corefn.reg("math/random", &cfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
-        corefn.reg("math/seedrandom", &cfunSrand, @src(), "(math/seedrandom seed)", "Set the seed for the random number generator. `seed` should be " ++
+        corefn.reg("not", &nfunNot, @src(), "(not x)", "Returns the boolean inverse of x."),
+        corefn.reg("math/random", &nfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
+        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Set the seed for the random number generator. `seed` should be " ++
             "an integer or a buffer."),
-        corefn.reg("math/rng", &cfunRngMake, @src(), "(math/rng &opt seed)", "Creates a Pseudo-Random number generator, with an optional seed. " ++
+        corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng &opt seed)", "Creates a Pseudo-Random number generator, with an optional seed. " ++
             "The seed should be an unsigned 32 bit integer or a buffer. " ++
             "Do not use this for cryptography. Returns a core/rng abstract type."),
-        corefn.reg("math/rng-uniform", &cfunRngUniform, @src(), "(math/rng-uniform rng)", "Extract a random number in the range [0, 1) from the RNG."),
-        corefn.reg("math/rng-int", &cfunRngInt, @src(), "(math/rng-int rng &opt max)", "Extract a random integer in the range [0, max) for max > 0 from the RNG.  " ++
+        corefn.reg("math/rng-uniform", &nfunRngUniform, @src(), "(math/rng-uniform rng)", "Extract a random number in the range [0, 1) from the RNG."),
+        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng &opt max)", "Extract a random integer in the range [0, max) for max > 0 from the RNG.  " ++
             "If max is 0, return 0.  If no max is given, the default is 2^31 - 1."),
-        corefn.reg("math/rng-buffer", &cfunRngBuffer, @src(), "(math/rng-buffer rng n &opt buf)", "Get n random bytes and put them in a buffer. Creates a new buffer if no buffer is " ++
+        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n &opt buf)", "Get n random bytes and put them in a buffer. Creates a new buffer if no buffer is " ++
             "provided, otherwise appends to the given buffer. Returns the buffer."),
-        corefn.reg("math/gcd", &cfunGcd, @src(), "(math/gcd x y)", "Returns the greatest common divisor between x and y."),
-        corefn.reg("math/lcm", &cfunLcm, @src(), "(math/lcm x y)", "Returns the least common multiple of x and y."),
-        corefn.reg("math/frexp", &cfunFrexp, @src(), "(math/frexp x)", "Returns a tuple of (mantissa, exponent) from number."),
-        corefn.reg("math/ldexp", &cfunLdexp, @src(), "(math/ldexp m e)", "Creates a new number from a mantissa and an exponent."),
+        corefn.reg("math/gcd", &nfunGcd, @src(), "(math/gcd x y)", "Returns the greatest common divisor between x and y."),
+        corefn.reg("math/lcm", &nfunLcm, @src(), "(math/lcm x y)", "Returns the least common multiple of x and y."),
+        corefn.reg("math/frexp", &nfunFrexp, @src(), "(math/frexp x)", "Returns a tuple of (mantissa, exponent) from number."),
+        corefn.reg("math/ldexp", &nfunLdexp, @src(), "(math/ldexp m e)", "Creates a new number from a mantissa and an exponent."),
     };
 
     corefn.install(env, generated ++ written);
@@ -364,7 +364,7 @@ pub fn rngU32(rng: *Rng) u32 {
 // ==========================================================================
 
 /// `(math/frexp x)`, as a vector of the mantissa and the exponent.
-fn cfunFrexp(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunFrexp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     var exp: c_int = undefined;
     const mantissa = c.frexp(try args_core.getNumber(argv, 0), &exp);
@@ -376,19 +376,19 @@ fn cfunFrexp(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(math/gcd x y)`.
-fn cfunGcd(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunGcd(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return wrap.fromNumber(gcd(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
 /// `(math/lcm x y)`.
-fn cfunLcm(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunLcm(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return wrap.fromNumber(lcm(try args_core.getNumber(argv, 0), try args_core.getNumber(argv, 1)));
 }
 
 /// `(math/ldexp m e)`.
-fn cfunLdexp(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunLdexp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const x = try args_core.getNumber(argv, 0);
     const y = try args_core.getInteger(argv, 1);
@@ -396,20 +396,20 @@ fn cfunLdexp(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(not x)`, registered by `libMath` along with the `math/` names.
-fn cfunNot(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNot(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(!repr.truthy(argv[0]));
 }
 
 /// `(math/random)`, from the VM's own generator.
-fn cfunRand(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return wrap.fromNumber(rngDouble(&vm_state.current().rng));
 }
 
 /// `(math/rng-buffer rng n &opt buf)`. The space is reserved through
 /// `buffers.extra`, which raises before any byte is written.
-fn cfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     const n: usize = @intCast(try args_core.getNat(argv, 1));
@@ -422,7 +422,7 @@ fn cfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(math/rng-int rng &opt max)`. A `max` of zero gives zero, and no `max`
 /// means the whole non-negative `i32` range.
-fn cfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     if (argv.len == 1) return wrap.fromInteger(@bitCast(rngU32(rng) >> 1));
@@ -432,7 +432,7 @@ fn cfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(math/rng &opt seed)`, seeding from an integer or from a byte sequence.
-fn cfunRngMake(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRngMake(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const rng: *Rng = abstracts.newFor(Rng, &rngType);
     if (argv.len == 1) {
@@ -449,14 +449,14 @@ fn cfunRngMake(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(math/rng-uniform rng)`.
-fn cfunRngUniform(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRngUniform(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
     return wrap.fromNumber(rngDouble(rng));
 }
 
 /// `(math/seedrandom seed)`, seeding the VM's own generator.
-fn cfunSrand(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSrand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (args_core.checkint(argv[0])) {
         rngSeed(&vm_state.current().rng, @bitCast(try args_core.getInteger(argv, 0)));

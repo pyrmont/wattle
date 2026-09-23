@@ -1,7 +1,7 @@
-//! A cfunction whose error set is wider than the runtime's.
+//! An nfunction whose error set is wider than the runtime's.
 //!
 //! `Error` is `error{Signal}` and nothing else, because the runtime
-//! invokes a cfunction *through* that type. An `anyerror!Value` looks like it
+//! invokes an nfunction *through* that type. An `anyerror!Value` looks like it
 //! should be accepted, being a superset with the right payload, but the call
 //! reinterprets it as the narrower type, so the author's extra errors are
 //! unrepresentable with nothing said about it. The definition is the only
@@ -17,7 +17,7 @@ fn widened(argv: []wattle.Value) anyerror!wattle.Value {
 }
 
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.cfuns(env, "broad", &.{
+    wattle.nfuns(env, "broad", &.{
         wattle.reg("widened", &widened, null),
     });
 }

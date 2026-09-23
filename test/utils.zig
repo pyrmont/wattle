@@ -416,7 +416,7 @@ fn theTablesAreIndexedByTheNumbersACallerHas() void {
     const expected_types = [_][:0]const u8{
         "number",   "nil",       "boolean",  "buffer",  "string", "array",
         "vector",   "table",     "map",      "symbol",  "tuple",  "fiber",
-        "function", "cfunction", "abstract", "pointer",
+        "function", "nfunction", "abstract", "pointer",
     };
     for (expected_types, 0..) |want, i| {
         expect(std.mem.eql(u8, utils.typeNames[i], want));

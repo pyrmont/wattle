@@ -2,7 +2,7 @@
 //! is, and how a struct is laid out.
 //!
 //! One half decides and the other measures, and neither has a name of its own,
-//! since every `ffi/` cfunction is registered in `ffi.zig`. They are a leaf
+//! since every `ffi/` nfunction is registered in `ffi.zig`. They are a leaf
 //! rather than part of a bucket because `ffi/` is designed as a group.
 //!
 //! `decodeCc` and `decodePrim` are not duplicates of `lookupCc` and
@@ -65,7 +65,7 @@ else
 /// cannot disagree.
 const is_64_bit = config.bits64;
 
-/// The most arguments a signature may take. `cfunSignature` checks it: the
+/// The most arguments a signature may take. `nfunSignature` checks it: the
 /// mapping and slot arrays are sized by it.
 pub const max_args: u32 = 32;
 

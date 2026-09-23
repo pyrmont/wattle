@@ -30,7 +30,7 @@
 //! from the resumed fiber is re-raised as that signal or converted to a panic,
 //! and it decides whether `vm.fiber.child` is cleared first. No in-tree caller
 //! passes zero, the VM always passing one, so that half of the entry point is
-//! reachable only from outside and is tested here through a cfunction
+//! reachable only from outside and is tested here through an nfunction
 //! registered for the purpose.
 //!
 //! ## A refusal is a value, so there is no panic counter
@@ -223,7 +223,7 @@ fn methodSeven(argv: []repr.Value) raise.Error!repr.Value {
 
 fn goodMethodGet(_: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
     if (!args_core.keyeq(key, "length")) return null;
-    return wrap.fromCfunction(raise.stored(&methodSeven));
+    return wrap.fromNfunction(raise.stored(&methodSeven));
 }
 
 fn typeOf(at: *const AbstractType) *const abi.AbstractType {
@@ -247,8 +247,8 @@ fn makeAbstracts() void {
     gc_alloc.gcroot(good_method_value);
 }
 
-fn aCFunctionValue() repr.Value {
-    return wrap.fromCfunction(raise.stored(&methodSeven));
+fn aNFunctionValue() repr.Value {
+    return wrap.fromNfunction(raise.stored(&methodSeven));
 }
 
 /// The property that matters is completeness, not the order: starting from nil
@@ -422,16 +422,16 @@ fn nextOnANonIterablePanics() void {
         .says("expected iterable type, got nil"));
     expect(refusal(access.next, .{ wrap.fromTrue(), wrap.fromNil() })
         .says("expected iterable type, got true"));
-    expect(refusal(access.next, .{ aCFunctionValue(), wrap.fromNil() })
-        .beginsWith("expected iterable type, got <cfunction "));
+    expect(refusal(access.next, .{ aNFunctionValue(), wrap.fromNil() })
+        .beginsWith("expected iterable type, got <nfunction "));
 }
 
 // `next` writes `vm.fiber.child` before resuming *when there is a fiber*, so
-// the cases about the chain have to run with one on the VM. These cfunctions
+// the cases about the chain have to run with one on the VM. These nfunctions
 // are how: they are called from Janet source, so `vm.fiber` is the fiber
 // running that source. The case with no fiber is separate, below.
 
-fn cfunNext(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNext(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     return access.next(argv[0], argv[1]);
 }
@@ -439,7 +439,7 @@ fn cfunNext(argv: []repr.Value) raise.Error!repr.Value {
 /// Resume through `next` and report whether the caller's `child` slot was put
 /// back to null afterwards. A slot left set keeps the child fiber reachable and
 /// misreports the fiber chain, and nothing else observes it.
-fn cfunNextChildCleared(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNextChildCleared(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const self = harness.vm().fiber.?;
     _ = try access.next(argv[0], argv[1]);
@@ -449,7 +449,7 @@ fn cfunNextChildCleared(argv: []repr.Value) raise.Error!repr.Value {
 /// The same, for the path that leaves through a panic. The runtime clears the
 /// slot before panicking there and deliberately does not on the interpreter's
 /// path, which is the one asymmetry in the function.
-fn cfunNextChildClearedOnPanic(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunNextChildClearedOnPanic(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const self = harness.vm().fiber.?;
     if (harness.raised(access.next, .{ argv[0], argv[1] }) == null) {
@@ -458,10 +458,10 @@ fn cfunNextChildClearedOnPanic(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(self.child == null);
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "va/next", .cfun = raise.stored(&cfunNext), .documentation = null },
-    .{ .name = "va/next-child-cleared", .cfun = raise.stored(&cfunNextChildCleared), .documentation = null },
-    .{ .name = "va/next-child-cleared-on-panic", .cfun = raise.stored(&cfunNextChildClearedOnPanic), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "va/next", .nfun = raise.stored(&nfunNext), .documentation = null },
+    .{ .name = "va/next-child-cleared", .nfun = raise.stored(&nfunNextChildCleared), .documentation = null },
+    .{ .name = "va/next-child-cleared-on-panic", .nfun = raise.stored(&nfunNextChildClearedOnPanic), .documentation = null },
 };
 
 fn run_(src: [*:0]const u8) repr.Value {
@@ -713,7 +713,7 @@ fn inOnANonLengthablePanics() void {
     expect(refusal(access.in, .{ intv(5), intv(0) }).says(not_lengthable ++ "5"));
     expect(refusal(access.in, .{ wrap.fromNil(), intv(0) }).says(not_lengthable ++ "nil"));
     expect(refusal(access.in, .{ wrap.fromTrue(), intv(0) }).says(not_lengthable ++ "true"));
-    expect(refusal(access.in, .{ aCFunctionValue(), intv(0) }).beginsWith(not_lengthable));
+    expect(refusal(access.in, .{ aNFunctionValue(), intv(0) }).beginsWith(not_lengthable));
 }
 
 /// An abstract type is the one place where a key that is simply absent is an
@@ -771,7 +771,7 @@ fn getAnswersNilWhereInPanics() !void {
     expect(isNil(try access.get(wrap.fromTrue(), kw("x"))));
     expect(isNil(try access.get(bare_value, intv(0))));
     expect(isNil(try access.get(slots_value, intv(7))));
-    expect(isNil(try access.get(aCFunctionValue(), intv(0))));
+    expect(isNil(try access.get(aNFunctionValue(), intv(0))));
 }
 
 /// ...and where both succeed they agree.
@@ -1213,7 +1213,7 @@ fn fromWattle() void {
 /// with a less informative assertion.
 fn body() !void {
     makeAbstracts();
-    registry.cfuns(harness.coreEnv(), null, &cfuns);
+    registry.nfuns(harness.coreEnv(), null, &nfuns);
 
     try nextVisitsEveryTableKeyOnce();
     try nextStepsOverTombstones();

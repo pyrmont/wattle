@@ -1,6 +1,6 @@
 //! Parsing expression grammars: the matcher, the compiler that feeds it, the
 //! bytecode verifier that guards the unmarshalled form, and the six
-//! cfunctions over all three.
+//! nfunctions over all three.
 //!
 //! One file, because the compiler emits the bytecode the matcher runs and the
 //! verifier accepts, so the three share a private instruction encoding that
@@ -95,12 +95,12 @@ pub const pegType = abstract_type.define(Peg, .{
 /// so the order here is the order `(keys peg)` reports, and a caller may
 /// depend on it.
 const peg_methods = [_]method_type.Method{
-    .{ .name = "match", .cfun = cfunPegMatch },
-    .{ .name = "find", .cfun = cfunPegFind },
-    .{ .name = "find-all", .cfun = cfunPegFindAll },
-    .{ .name = "replace", .cfun = cfunPegReplace },
-    .{ .name = "replace-all", .cfun = cfunPegReplaceAll },
-    .{ .name = null, .cfun = null },
+    .{ .name = "match", .nfun = nfunPegMatch },
+    .{ .name = "find", .nfun = nfunPegFind },
+    .{ .name = "find-all", .nfun = nfunPegFindAll },
+    .{ .name = "replace", .nfun = nfunPegReplace },
+    .{ .name = "replace-all", .nfun = nfunPegReplaceAll },
+    .{ .name = null, .nfun = null },
 };
 
 /// Every special a grammar may name, and the compiler behind it. Several
@@ -247,7 +247,7 @@ pub const Peg = struct {
     }
 };
 
-/// What the five matching cfunctions share: the compiled peg, the matcher
+/// What the five matching nfunctions share: the compiled peg, the matcher
 /// state, the text, the substitution where there is one, and the offset to
 /// start at.
 const PegCall = struct {
@@ -329,22 +329,22 @@ const Verdict = struct {
 // Public functions
 // ==========================================================================
 
-/// Registers the six `peg/*` cfunctions and the abstract type they return.
+/// Registers the six `peg/*` nfunctions and the abstract type they return.
 pub fn libPeg(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("peg/compile", &cfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
+        corefn.reg("peg/compile", &nfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
             "`default-peg-grammar` for the grammar of the peg."),
-        corefn.reg("peg/match", &cfunPegMatch, @src(), "(peg/match peg text &opt start & args)", "Match a Parsing Expression Grammar to a byte string and return an array of captured values. " ++
+        corefn.reg("peg/match", &nfunPegMatch, @src(), "(peg/match peg text &opt start & args)", "Match a Parsing Expression Grammar to a byte string and return an array of captured values. " ++
             "Returns nil if text does not match the language defined by peg. The syntax of PEGs is Janet's, documented at janet-lang.org."),
-        corefn.reg("peg/find", &cfunPegFind, @src(), "(peg/find peg text &opt start & args)", "Find first index where the peg matches in text. Returns an integer, or nil if not found."),
-        corefn.reg("peg/find-all", &cfunPegFindAll, @src(), "(peg/find-all peg text &opt start & args)", "Find all indexes where the peg matches in text. Returns an array of integers."),
-        corefn.reg("peg/replace", &cfunPegReplace, @src(), "(peg/replace peg subst text &opt start & args)", "Replace first match of `peg` in `text` with `subst`, returning a new buffer. " ++
+        corefn.reg("peg/find", &nfunPegFind, @src(), "(peg/find peg text &opt start & args)", "Find first index where the peg matches in text. Returns an integer, or nil if not found."),
+        corefn.reg("peg/find-all", &nfunPegFindAll, @src(), "(peg/find-all peg text &opt start & args)", "Find all indexes where the peg matches in text. Returns an array of integers."),
+        corefn.reg("peg/replace", &nfunPegReplace, @src(), "(peg/replace peg subst text &opt start & args)", "Replace first match of `peg` in `text` with `subst`, returning a new buffer. " ++
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures. " ++
             "If no matches are found, returns the input string in a new buffer."),
-        corefn.reg("peg/replace-all", &cfunPegReplaceAll, @src(), "(peg/replace-all peg subst text &opt start & args)", "Replace all matches of `peg` in `text` with `subst`, returning a new buffer. " ++
+        corefn.reg("peg/replace-all", &nfunPegReplaceAll, @src(), "(peg/replace-all peg subst text &opt start & args)", "Replace all matches of `peg` in `text` with `subst`, returning a new buffer. " ++
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures."),
@@ -410,15 +410,15 @@ fn capSave(s: *PegState) CapState {
 }
 
 /// `(peg/compile peg)`.
-fn cfunPegCompile(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPegCompile(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromAbstract(try compilePeg(argv[0]));
 }
 
 /// `(peg/find peg text &opt start & args)`, which is the first offset the
 /// pattern matches at, or nil.
-fn cfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
-    var call = try pegCfunInit(argv, false);
+fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
+    var call = try pegNfunInit(argv, false);
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
         pegCallReset(&call);
@@ -430,8 +430,8 @@ fn cfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(peg/find-all peg text &opt start & args)`.
-fn cfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
-    var call = try pegCfunInit(argv, false);
+fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
+    var call = try pegNfunInit(argv, false);
     const ret = arrays.new(0);
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
@@ -445,19 +445,19 @@ fn cfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(peg/match peg text &opt start & args)`, which is the captures as an
 /// array, or nil where the pattern does not match.
-fn cfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
-    var call = try pegCfunInit(argv, false);
+fn nfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
+    var call = try pegNfunInit(argv, false);
     const result = try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(call.start)));
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
 
 /// `(peg/replace peg subst text &opt start & args)`.
-fn cfunPegReplace(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPegReplace(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, true);
 }
 
 /// `(peg/replace-all peg subst text &opt start & args)`.
-fn cfunPegReplaceAll(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunPegReplaceAll(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, false);
 }
 
@@ -705,7 +705,7 @@ fn pegCallReset(call: *PegCall) void {
 
 /// The state every `peg/...` call needs, including compiling the pattern where
 /// it arrives as source rather than as a `<core/peg>`.
-fn pegCfunInit(argv: []repr.Value, get_replace: bool) raise.Error!PegCall {
+fn pegNfunInit(argv: []repr.Value, get_replace: bool) raise.Error!PegCall {
     var ret: PegCall = undefined;
     const min: usize = if (get_replace) 3 else 2;
     try args_core.arity(argv, @intCast(min), -1);
@@ -1012,7 +1012,7 @@ fn pegPanicf(b: *Builder, comptime format: [:0]const u8, args: anytype) raise.Er
 /// The body of `peg/replace` and `peg/replace-all`, which differ only in
 /// whether the walk stops at the first match.
 fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Error!repr.Value {
-    var call = try pegCfunInit(argv, true);
+    var call = try pegNfunInit(argv, true);
     const ret = buffers.new(0);
     var trail: i32 = 0;
     var i = call.start;
@@ -1557,8 +1557,8 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                     },
                     // Both of these run arbitrary Janet code in the middle of
                     // the matcher's recursion.
-                    repr.Tag.cfunction => {
-                        cap = try raise.cfunction(wrap.toCfunction(constant))(
+                    repr.Tag.nfunction => {
+                        cap = try raise.nfunction(wrap.toNfunction(constant))(
                             s.captures.slice()[@intCast(cs.cap)..],
                         );
                     },
@@ -2045,9 +2045,9 @@ fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: constants.PegRul
     const subrule = try pegCompile1(b, argv[0]);
     const fun = argv[1];
     if (!repr.checkType(fun, repr.Tag.function) and
-        !repr.checkType(fun, repr.Tag.cfunction))
+        !repr.checkType(fun, repr.Tag.nfunction))
     {
-        return pegPanicf(b, "expected function or cfunction, got %v", .{fun});
+        return pegPanicf(b, "expected function or nfunction, got %v", .{fun});
     }
     const tag: u32 = if (argv.len == 3) try emitTag(b, argv[2]) else 0;
     const cindex = emitConstant(b, fun);

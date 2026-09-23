@@ -49,7 +49,7 @@
 //! `%p` renderings of whatever was passed, which for a function or a table is
 //! an address, so only the fixed prefix is compared. All three statuses
 //! `vm_entry.step` refuses are asserted: `:dead` and `:error` below, and
-//! `:alive` from inside a running fiber, where `cfunProbe` is the only place
+//! `:alive` from inside a running fiber, where `nfunProbe` is the only place
 //! that can reach one.
 
 // ==========================================================================
@@ -365,12 +365,12 @@ fn callingWithoutAFiber() void {
 
 /// Five things need `vm.fiber` to be set, and the only honest way to get
 /// that is to be called by the interpreter.
-fn cfunProbe(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunProbe(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const self = harness.vm().fiber.?;
 
-    // The fiber running this cfunction is alive, and both gates refuse it.
+    // The fiber running this nfunction is alive, and both gates refuse it.
     var resumed = vm_entry.continueFiber(self, wrap.fromNil());
     expectReport(resumed, "cannot resume fiber with status :alive");
 
@@ -435,7 +435,7 @@ fn cfunProbe(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-fn cfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
@@ -453,10 +453,10 @@ fn cfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
 /// unmarshaller does not check it. With the two crossed, a call with exactly
 /// the minimum is refused for passing the maximum, and says so.
 ///
-/// A cfunction of its own because a refused call leaves its arguments pushed,
+/// An nfunction of its own because a refused call leaves its arguments pushed,
 /// and a second call after it finds the stack dirty and pushes a guard frame
 /// that the refusal leaves standing too.
-fn cfunCrossedArity(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCrossedArity(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
 
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
@@ -469,16 +469,16 @@ fn cfunCrossedArity(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `stackn` as a number, for a Janet function to report the depth it runs at.
-fn cfunDepth(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunDepth(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     return harness.wrapInteger(@intCast(harness.vm().stackn));
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "vmentry/probe", .cfun = raise.stored(&cfunProbe), .documentation = null },
-    .{ .name = "vmentry/arity", .cfun = raise.stored(&cfunArityVariants), .documentation = null },
-    .{ .name = "vmentry/crossed", .cfun = raise.stored(&cfunCrossedArity), .documentation = null },
-    .{ .name = "vmentry/depth", .cfun = raise.stored(&cfunDepth), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "vmentry/probe", .nfun = raise.stored(&nfunProbe), .documentation = null },
+    .{ .name = "vmentry/arity", .nfun = raise.stored(&nfunArityVariants), .documentation = null },
+    .{ .name = "vmentry/crossed", .nfun = raise.stored(&nfunCrossedArity), .documentation = null },
+    .{ .name = "vmentry/depth", .nfun = raise.stored(&nfunDepth), .documentation = null },
 };
 
 /// `vm_entry.call` sets `coerce_error`, so a signal the loop returns rather
@@ -559,7 +559,7 @@ fn theDepthACallRunsAt() void {
 
 fn body() raise.Error!void {
     test_env = harness.coreEnv();
-    registry.cfuns(test_env, null, &cfuns);
+    registry.nfuns(test_env, null, &nfuns);
 
     pcallReportsRatherThanRaises();
     pcallWithAReusedFiber();

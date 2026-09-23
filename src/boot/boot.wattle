@@ -105,8 +105,8 @@
 (defn symbol? "Check if x is a symbol." [x] (= (type x) :symbol))
 (defn keyword? "Check if x is a keyword." [x] (= (type x) :keyword))
 (defn buffer? "Check if x is a buffer." [x] (= (type x) :buffer))
-(defn function? "Check if x is a function (not a cfunction)." [x] (= (type x) :function))
-(defn cfunction? "Check if x is a cfunction." [x] (= (type x) :cfunction))
+(defn function? "Check if x is a function (not an nfunction)." [x] (= (type x) :function))
+(defn nfunction? "Check if x is an nfunction." [x] (= (type x) :nfunction))
 (defn table? "Check if x is a table." [x] (= (type x) :table))
 (defn map? "Check if x is a map." [x] (= (type x) :map))
 (defn array? "Check if x is an array." [x] (= (type x) :array))
@@ -3044,7 +3044,7 @@
 (defn module/add-native
   """
   Add the environment `env` of a native module to `module/cache` under
-  `name`, so that `(import name)` finds it without a file. Each cfunction
+  `name`, so that `(import name)` finds it without a file. Each nfunction
   and abstract value bound in `env` is also added to `make-image-dict` and
   `load-image-dict` under the symbol `name/sym`, so that an image made with
   the module imported names those values rather than failing to marshal
@@ -3056,7 +3056,7 @@
   (eachp [sym entry] env
     (when (and (symbol? sym) (table? entry))
       (def v (get entry :value))
-      (when (or (cfunction? v) (abstract? v))
+      (when (or (nfunction? v) (abstract? v))
         (def key (symbol name "/" sym))
         (put make-image-dict v key)
         (put load-image-dict key v))))
@@ -4060,7 +4060,7 @@
   (defmacro ev/spawn-thread
     """Run some code in a new thread. Like `ev/do-thread`, but returns nil immediately."""
     [& body]
-    `(~ev/thread (fn :spawn-thread [&] ~|body) nil :n))
+    `(~ev/thread (fn :spawn-thread [&] ~|body) nil :i))
 
   (defmacro ev/with-deadline
     """
@@ -5094,7 +5094,7 @@
 
   (def image
     (let [env-pairs (pairs (env-lookup root-env))
-          essential-pairs (filter (fn [[k v]] (or (cfunction? v) (abstract? v))) env-pairs)
+          essential-pairs (filter (fn [[k v]] (or (nfunction? v) (abstract? v))) env-pairs)
           lookup (table |(mapcat identity essential-pairs))
           reverse-lookup (invert lookup)]
       ; Check no duplicate values

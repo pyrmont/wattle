@@ -1,4 +1,4 @@
-//! `spawn`-based filesystem watching: the cfunctions, and the flag vocabulary
+//! `spawn`-based filesystem watching: the nfunctions, and the flag vocabulary
 //! they translate between Janet keywords and the host's own bits.
 //!
 //! The flag vocabulary is here rather than beside this file because it has no
@@ -1042,7 +1042,7 @@ pub fn flagName(platform: Platform, index: usize) ?[:0]const u8 {
 pub fn libFilewatch(env: *tables.Table) void {
     assertTableIsWhole();
     const table = comptime [_]corefn.Entry{
-        corefn.reg("filewatch/new", &cfunMake, @src(), "(filewatch/new channel & default-flags)", "Create a new filewatcher that will give events to a channel channel. See `filewatch/add` for available flags.\n\n" ++
+        corefn.reg("filewatch/new", &nfunMake, @src(), "(filewatch/new channel & default-flags)", "Create a new filewatcher that will give events to a channel channel. See `filewatch/add` for available flags.\n\n" ++
             "When an event is triggered by the filewatcher, a struct containing information will be given to channel as with `ev/give`. " ++
             "The contents of the channel depend on the OS, but will contain some common keys:\n\n" ++
             "* `:type` -- the type of the event that was raised.\n\n" ++
@@ -1055,7 +1055,7 @@ pub fn libFilewatch(env: *tables.Table) void {
             "* `:wd-path` -- the string path for watched directory of file. For files, will be the same as `:file-name`, and for directories, will be the same as `:dir-name`.\n\n" ++
             "* `:cookie` -- a semi-randomized integer used to associate related events, such as :moved-from and :moved-to events.\n\n" ++
             ""),
-        corefn.reg("filewatch/add", &cfunAdd, @src(), "(filewatch/add watcher path flag & more-flags)", "Add a path to the watcher. Available flags depend on the current OS, and are as follows:\n\n" ++
+        corefn.reg("filewatch/add", &nfunAdd, @src(), "(filewatch/add watcher path flag & more-flags)", "Add a path to the watcher. Available flags depend on the current OS, and are as follows:\n\n" ++
             "Windows/MINGW (flags correspond to `FILE_NOTIFY_CHANGE_*` flags in win32 documentation):\n\n" ++
             "FLAGS\n\n" ++
             "* `:all` - trigger an event for all of the below triggers.\n\n" ++
@@ -1109,9 +1109,9 @@ pub fn libFilewatch(env: *tables.Table) void {
             "* `:renamed-new`\n\n" ++
             "On Linux and BSDs, events will have a `:type` corresponding to the possible flags, excluding `:all`.\n" ++
             ""),
-        corefn.reg("filewatch/remove", &cfunRemove, @src(), "(filewatch/remove watcher path)", "Remove a path from the watcher."),
-        corefn.reg("filewatch/listen", &cfunListen, @src(), "(filewatch/listen watcher)", "Listen for changes in the watcher."),
-        corefn.reg("filewatch/unlisten", &cfunUnlisten, @src(), "(filewatch/unlisten watcher)", "Stop listening for changes on a given watcher."),
+        corefn.reg("filewatch/remove", &nfunRemove, @src(), "(filewatch/remove watcher path)", "Remove a path from the watcher."),
+        corefn.reg("filewatch/listen", &nfunListen, @src(), "(filewatch/listen watcher)", "Listen for changes in the watcher."),
+        corefn.reg("filewatch/unlisten", &nfunUnlisten, @src(), "(filewatch/unlisten watcher)", "Stop listening for changes on a given watcher."),
     };
     corefn.install(env, table);
 }
@@ -1153,7 +1153,7 @@ fn assertTableIsWhole() void {
 }
 
 /// `(filewatch/add watcher path & flags)`.
-fn cfunAdd(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunAdd(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     // The same refusal `filewatch/listen` makes, so that the three calls give
@@ -1166,7 +1166,7 @@ fn cfunAdd(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(filewatch/listen watcher)`.
-fn cfunListen(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     // A closed watcher cannot listen. `filewatch/unlisten` closes the
@@ -1181,7 +1181,7 @@ fn cfunListen(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(filewatch/new channel & default-flags)`.
-fn cfunMake(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunMake(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, -1);
     const channel = try ev_loop.getChannel(argv, 0);
@@ -1192,7 +1192,7 @@ fn cfunMake(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(filewatch/remove watcher path)`.
-fn cfunRemove(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunRemove(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     if (!watcherIsOpen(watcher)) return raise.panic("watcher is closed");
@@ -1203,7 +1203,7 @@ fn cfunRemove(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(filewatch/unlisten watcher)`.
-fn cfunUnlisten(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunUnlisten(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const watcher = try args_core.getAbstract(Watcher, argv, 0, &watcherType);
     try be.unlisten(watcher);

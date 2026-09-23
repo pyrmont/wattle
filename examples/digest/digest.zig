@@ -46,7 +46,7 @@
 const std = @import("std");
 const wattle = @import("wattle");
 
-/// One hash in flight: what the cfunction fills in, the thread computes
+/// One hash in flight: what the nfunction fills in, the thread computes
 /// into, and the callback reads.
 ///
 /// `sha256` allocates a `Hash` with `wattle.new`, `hashOnThread` takes a
@@ -180,7 +180,7 @@ fn sha256(argv: []wattle.Value) wattle.Error!wattle.Value {
     wattle.gcroot(wattle.abstract(job));
 
     // Started before the suspend, which is not a race: the loop is
-    // single-threaded, so an event posted before this cfunction returns is
+    // single-threaded, so an event posted before this nfunction returns is
     // not processed until the fiber has suspended.
     job.thread = std.Thread.spawn(.{}, hashOnThread, .{job}) catch {
         // Nothing has been posted, so this frame does the callback's cleanup.
@@ -198,14 +198,14 @@ fn sha256(argv: []wattle.Value) wattle.Error!wattle.Value {
 // The module entry point
 // ==========================================================================
 
-/// Defines the module's one cfunction.
+/// Defines the module's one nfunction.
 ///
 /// `env` is the capability to define a binding in the environment the module
 /// is loading into. `wattle.entry` below passes `defs` to the loader.
 ///
 /// This function cannot raise.
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.cfuns(env, "digest", &.{
+    wattle.nfuns(env, "digest", &.{
         wattle.reg(
             "sha256",
             &sha256,

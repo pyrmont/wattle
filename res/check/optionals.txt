@@ -11,4 +11,4 @@
 #
 # columns: class  site  receiver  occurrences  function
 
-accumulator src/runtime/net.zig:714                  sa                           1    cfunConnect
+accumulator src/runtime/net.zig:714                  sa                           1    nfunConnect

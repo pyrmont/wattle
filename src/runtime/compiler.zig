@@ -69,7 +69,7 @@ const wrap = @import("value/helpers/wrap.zig");
 const std_max_u32 = ~@as(u32, 0);
 
 // ==========================================================================
-// The cfunction surface
+// The nfunction surface
 // ==========================================================================
 
 // ==========================================================================
@@ -449,7 +449,7 @@ pub fn gettarget(options: FormOptions) Slot {
 /// Installs `compile` into `env`.
 pub fn libCompile(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("compile", &cfunCompile, @src(), "(compile ast &opt env source lints)", "Compiles an Abstract Syntax Tree (ast) into a function. " ++
+        corefn.reg("compile", &nfunCompile, @src(), "(compile ast &opt env source lints)", "Compiles an Abstract Syntax Tree (ast) into a function. " ++
             "Pair the compile function with parsing functionality to implement " ++
             "eval. Returns a new function and does not modify ast. Returns an error " ++
             "struct with keys :line, :column, and :error if compilation fails. " ++
@@ -927,7 +927,7 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
                 } else {
                     var suboptions = foptsDefault(compiler);
                     const function = try valueImpl(suboptions, tuple[0]);
-                    suboptions.flags = .{ .types = .of(&.{ .function, .cfunction }) };
+                    suboptions.flags = .{ .types = .of(&.{ .function, .nfunction }) };
                     result = try compileCall(
                         options,
                         try toslots(compiler, tuple + 1, @intCast(length - 1)),
@@ -985,9 +985,9 @@ fn arityError(
     recordError(compiler, try pp_format.formatc(format, .{ function, expected, plural, got }));
 }
 
-/// `compile`: the cfunction, which turns the result into the struct a Janet
+/// `compile`: the nfunction, which turns the result into the struct a Janet
 /// program reads.
-fn cfunCompile(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunCompile(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"compile"}));
     try args_core.arity(argv, 1, 4);
 
@@ -1273,10 +1273,10 @@ fn makeValue(options: FormOptions, slots: scratch_vector.Vector(Slot), operation
     return result;
 }
 
-/// Emits a call to `cfun` over the slots already gathered, for a literal whose
+/// Emits a call to `nfun` over the slots already gathered, for a literal whose
 /// constructor is a function rather than an opcode.
 ///
-/// The callee is a constant slot holding the cfunction itself, so no name is
+/// The callee is a constant slot holding the nfunction itself, so no name is
 /// resolved and rebinding the binding it is also registered under does not
 /// change what the literal builds -- which is one of the two properties an
 /// opcode was taken for elsewhere. The other, folding a literal whose elements
@@ -1285,13 +1285,13 @@ fn makeValue(options: FormOptions, slots: scratch_vector.Vector(Slot), operation
 pub fn callConstant(
     options: FormOptions,
     slots: scratch_vector.Vector(Slot),
-    cfun: abi.CFunction,
+    nfun: abi.NFunction,
 ) Slot {
     const compiler: *Compiler = options.compiler;
     _ = pushslots(compiler, slots.items);
     freeslots(compiler, slots);
     const target = gettarget(options);
-    _ = emit_core.emitSs(compiler, .call, target, cslot(wrap.fromCfunction(cfun)), 1);
+    _ = emit_core.emitSs(compiler, .call, target, cslot(wrap.fromNfunction(nfun)), 1);
     return target;
 }
 
@@ -1351,7 +1351,7 @@ fn makeSet(options: FormOptions, tree: *maps.Tree) raise.Error!Slot {
         freeslots(compiler, slots);
         return built;
     }
-    return callConstant(options, slots, maps.hash_set_cfunction);
+    return callConstant(options, slots, maps.hash_set_nfunction);
 }
 
 /// `count` elements of `T` from the runtime's allocator.
@@ -1589,7 +1589,7 @@ fn validateCall(
                 }
             }
         },
-        repr.Tag.cfunction, repr.Tag.abstract, repr.Tag.nil => {},
+        repr.Tag.nfunction, repr.Tag.abstract, repr.Tag.nil => {},
         // A keyword is called as a method on its first argument, and anything
         // else callable is a lookup of one key.
         else => if (wrap.isKeyword(function.constant)) {

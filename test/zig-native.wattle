@@ -105,7 +105,7 @@
 ; instantiates for a *Marshal and for an *Unmarshal alike.
 (assert (= 0 (unsafe-seen)) "no reachable marshal runs in unsafe mode")
 
-; A cfunction returning a string, which is `wattle.cstring`.
+; An nfunction returning a string, which is `wattle.cstring`.
 (assert (= "hello from a module" (greeting)) "a module can build a string")
 
 ; ==========================================================================
@@ -228,7 +228,7 @@
 (assert (= "map" (classify {})))
 (assert (= "table" (classify !{})))
 (assert (= "function" (classify (fn [] nil))) "a function is the thirteenth")
-(assert (= "cfunction" (classify classify)) "a cfunction is the fourteenth")
+(assert (= "nfunction" (classify classify)) "an nfunction is the fourteenth")
 (assert (= "other" (classify (fiber/new (fn [] nil))))
         "a fiber is none of the fourteen")
 
@@ -436,22 +436,22 @@
 (assert (deep= [:ok 7 :dead] (attempted (fn [a b] (+ a b)) 3 4))
         "pcall reports the return, and the fiber it ran on is spent")
 
-; `call` takes a function or a cfunction and refuses the other types Janet code
+; `call` takes a function or an nfunction and refuses the other types Janet code
 ; can call.
-(assert (= :number (apply-fn type 1)) "call runs a cfunction")
-(assert (= "expected function or cfunction, got :a" (refusal apply-fn :a {:a 1}))
+(assert (= :number (apply-fn type 1)) "call runs an nfunction")
+(assert (= "expected function or nfunction, got :a" (refusal apply-fn :a {:a 1}))
         "call refuses a keyword, which is mcall's job")
-(assert (string/has-prefix? "expected function or cfunction, got <table 0x"
+(assert (string/has-prefix? "expected function or nfunction, got <table 0x"
                             (refusal apply-fn !{:a 1} :a))
         "and a table")
-(assert (string/has-prefix? "expected function or cfunction, got <map "
+(assert (string/has-prefix? "expected function or nfunction, got <map "
                             (refusal apply-fn {:a 1} :a))
         "and a map")
 
 ; `pcall` is narrower, and by the callee's nature rather than by a decision
 ; here: a fiber runs a function and nothing else.
-(assert (deep= [:error "expected function, got cfunction" nil] (attempted type 1))
-        "pcall reports a cfunction and makes no fiber")
+(assert (deep= [:error "expected function, got nfunction" nil] (attempted type 1))
+        "pcall reports an nfunction and makes no fiber")
 (assert (deep= [:error "expected function, got keyword" nil] (attempted :a {:a 1}))
         "and a keyword")
 (assert (deep= [:error "expected function, got table" nil] (attempted !{:a 1} :a))
@@ -521,7 +521,7 @@
 (assert (= 101 reached) "and every level ran")
 
 ; The shape that justifies the part: a comparator passed to a sort.
-(assert (deep= ![1 2 3 5 9] (sorted < ![5 1 9 2 3])) "a cfunction comparator")
+(assert (deep= ![1 2 3 5 9] (sorted < ![5 1 9 2 3])) "an nfunction comparator")
 (assert (deep= ![9 5 3 2 1] (sorted > [5 1 9 2 3])) "and over a tuple")
 (assert (deep= ![9 5 3 2 1] (sorted (fn [a b] (> a b)) ![5 1 9 2 3]))
         "and a Wattle function")
@@ -534,7 +534,7 @@
 (assert (deep= (sort (array |(string/bytes "keeper"))) (sorted < k))
         "an indexed abstract is copied into the working array run by run")
 
-; Forwarding a cfunction's own `argv` is the shortest thing a module does with
+; Forwarding an nfunction's own `argv` is the shortest thing a module does with
 ; `call`, and those arguments are a slice of the fiber's own stack -- so the
 ; push that copies them is the one that would read a freed block, because
 ; growing the stack reallocates it. This is the test of `fibers.pushn`'s growth
@@ -547,7 +547,7 @@
 (for n 1 400
   (unless (= (sum (range n)) (apply-fn total |(range n))) (++ miscopied)))
 (assert (= 0 miscopied)
-        "call forwards a cfunction's own argv across the push that grows the stack")
+        "call forwards an nfunction's own argv across the push that grows the stack")
 
 ; The GC pin. `kept-across` builds a table, roots it, calls a function that
 ; collects, unroots it and answers it intact.

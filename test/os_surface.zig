@@ -1,4 +1,4 @@
-//! Behavioral contract for the `os/` cfunction surface.
+//! Behavioral contract for the `os/` nfunction surface.
 //!
 //! `test/suite-os.wattle` has fifty-eight assertions and every one of them is
 //! about what an `os/` function returns. Four things about this subsystem are
@@ -260,7 +260,7 @@ else
 
 /// The permissions a file created with `8r640` reports back.
 ///
-/// POSIX applies the mode and reports it. Windows never sees it: `cfunOpen`
+/// POSIX applies the mode and reports it. Windows never sees it: `nfunOpen`
 /// reads the mode but passes it only to `c.open`, and the `CreateFileA` arm
 /// takes file attributes instead (`os/fs/open.zig:111`). So the file arrives
 /// with the ordinary attributes, readable and writable.

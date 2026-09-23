@@ -1000,7 +1000,7 @@ fn theRelationsHoldOverACorpus() void {
         mkcell(42),
         mkbare(bareType()),
         wrap.fromPointer(@ptrCast(@constCast(cellType()))),
-        wrap.fromCfunction(null),
+        wrap.fromNfunction(null),
     };
     for (corpus, 0..) |entry, i| tables.put(root, intv(@intCast(i)), entry);
     gc_alloc.gcunlock(vm_state.current(), lock);

@@ -3,7 +3,7 @@
 //!
 //! `init` sets up every aggregate a `Vm` has and `deinit` releases them, in
 //! the order the file describes. `sandbox` gives up a capability and
-//! `sandboxAssert` is the check a guarded cfunction opens with.
+//! `sandboxAssert` is the check a guarded nfunction opens with.
 //!
 //! The state these calls initialise, the type and the storage and the one
 //! accessor, is `vm/state.zig`, which every subsystem imports and this file is
@@ -224,7 +224,7 @@ pub fn sandbox(flags: Sandbox) raise.Error!void {
 
 /// Raises if any capability in `forbidden_flags` has been sandboxed away.
 ///
-/// This is what a guarded cfunction opens with, and it is the most-called
+/// This is what a guarded nfunction opens with, and it is the most-called
 /// raise in the runtime after the argument layer's.
 pub fn sandboxAssert(forbidden_flags: Sandbox) raise.Error!void {
     if (forbidden_flags.intersects(vm_state.current().sandbox_flags)) {

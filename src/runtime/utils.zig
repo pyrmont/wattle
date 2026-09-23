@@ -4,7 +4,7 @@
 //!
 //! Nothing here raises, so `defer` is legal and used.
 //!
-//! `registry.zig` has the half that does own VM state: the cfunction registry,
+//! `registry.zig` has the half that does own VM state: the nfunction registry,
 //! the registration entry points, the abstract-type registry, and bindings.
 //! The dictionary probe and the collection hashes are `value.zig`'s.
 
@@ -135,7 +135,7 @@ pub const statusNames: [16][*:0]const u8 = .{
 /// takes `.ptr`. The sentinel is kept for that one reader alone, and the abstract
 /// arm beside every one of these already carries `AbstractType.name` as a slice.
 ///
-/// It was measured. `(type x)` is `env.zig`'s `cfunType`, and on the `tables`
+/// It was measured. `(type x)` is `env.zig`'s `nfunType`, and on the `tables`
 /// workload `sample` put 170 of its 175 samples inside `_platform_strlen`,
 /// against 25 for the whole of upstream C's binary; `pp/format.zig`'s
 /// `pushtypes` reached a second one through `buffers.pushCString`.
@@ -153,7 +153,7 @@ pub const typeNames: [16][:0]const u8 = .{
     "tuple",
     "fiber",
     "function",
-    "cfunction",
+    "nfunction",
     "abstract",
     "pointer",
 };

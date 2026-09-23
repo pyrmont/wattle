@@ -23,8 +23,8 @@
 # Five camelCase rows were found by reading in that session and every one of
 # them had survived a pass whose whole subject was the comments:
 # `symbolDeinit` for `symbols.deinit`, `pointerBufferUnsafe` for
-# `pointerUnsafe`, `registrySort` for `sortRows`, `cfunsExt` for `Installer`,
-# and `raise.callCFunction` for `raise.cfunction`. Four were inherited and
+# `pointerUnsafe`, `registrySort` for `sortRows`, `nfunsExt` for `Installer`,
+# and `raise.callNFunction` for `raise.nfunction`. Four were inherited and
 # carried through a rewrite unchecked; reading is not what should find the
 # sixth.
 #
@@ -121,9 +121,9 @@
   ``Every identifier named inside backticks on a comment line of `text`, as
   [name line].
 
-  A backticked span is split on `.`, so `raise.cfunction` offers both halves
+  A backticked span is split on `.`, so `raise.nfunction` offers both halves
   and a qualified name is checked at both ends -- which is what caught
-  `raise.callCFunction`, whose left half was right. A trailing `()` is dropped.
+  `raise.callNFunction`, whose left half was right. A trailing `()` is dropped.
   A component that is not a bare identifier -- `array/ensure`, `-Dnanbox`,
   `%v` -- is not one and is skipped.
 

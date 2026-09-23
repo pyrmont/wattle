@@ -61,19 +61,19 @@ const wrap = @import("value/helpers/wrap.zig");
 /// table, so `(keys p)` and `next` report the methods in the order they are
 /// written here.
 const methods = [_]method_type.Method{
-    .{ .name = "byte", .cfun = cfunParserByte },
-    .{ .name = "clone", .cfun = cfunParserClone },
-    .{ .name = "consume", .cfun = cfunParserConsume },
-    .{ .name = "eof", .cfun = cfunParserEof },
-    .{ .name = "error", .cfun = cfunParserError },
-    .{ .name = "flush", .cfun = cfunParserFlush },
-    .{ .name = "has-more", .cfun = cfunParserHasMore },
-    .{ .name = "insert", .cfun = cfunParserInsert },
-    .{ .name = "produce", .cfun = cfunParserProduce },
-    .{ .name = "state", .cfun = cfunParserState },
-    .{ .name = "status", .cfun = cfunParserStatus },
-    .{ .name = "where", .cfun = cfunParserWhere },
-    .{ .name = null, .cfun = null },
+    .{ .name = "byte", .nfun = nfunParserByte },
+    .{ .name = "clone", .nfun = nfunParserClone },
+    .{ .name = "consume", .nfun = nfunParserConsume },
+    .{ .name = "eof", .nfun = nfunParserEof },
+    .{ .name = "error", .nfun = nfunParserError },
+    .{ .name = "flush", .nfun = nfunParserFlush },
+    .{ .name = "has-more", .nfun = nfunParserHasMore },
+    .{ .name = "insert", .nfun = nfunParserInsert },
+    .{ .name = "produce", .nfun = nfunParserProduce },
+    .{ .name = "state", .nfun = nfunParserState },
+    .{ .name = "status", .nfun = nfunParserStatus },
+    .{ .name = "where", .nfun = nfunParserWhere },
+    .{ .name = null, .nfun = null },
 };
 
 /// The abstract type `parser/new` allocates, and what `getParser` checks an
@@ -208,37 +208,37 @@ pub fn eofChecked(parser: *Parser) raise.Error!void {
     try parserEof(parser);
 }
 
-/// Registers the `parser/*` cfunctions.
+/// Registers the `parser/*` nfunctions.
 pub fn libParse(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("parser/new", &cfunParserNew, @src(), "(parser/new)", "Creates and returns a new parser object. Parsers are state machines " ++
+        corefn.reg("parser/new", &nfunParserNew, @src(), "(parser/new)", "Creates and returns a new parser object. Parsers are state machines " ++
             "that can receive bytes and generate a stream of values."),
-        corefn.reg("parser/clone", &cfunParserClone, @src(), "(parser/clone p)", "Creates a deep clone of a parser that is identical to the input parser. " ++
+        corefn.reg("parser/clone", &nfunParserClone, @src(), "(parser/clone p)", "Creates a deep clone of a parser that is identical to the input parser. " ++
             "This cloned parser can be used to continue parsing from a good checkpoint " ++
             "if parsing later fails. Returns a new parser."),
-        corefn.reg("parser/has-more", &cfunParserHasMore, @src(), "(parser/has-more parser)", "Check if the parser has more values in the value queue."),
-        corefn.reg("parser/produce", &cfunParserProduce, @src(), "(parser/produce parser &opt wrap)", "Dequeue the next value in the parse queue. Will return nil if " ++
+        corefn.reg("parser/has-more", &nfunParserHasMore, @src(), "(parser/has-more parser)", "Check if the parser has more values in the value queue."),
+        corefn.reg("parser/produce", &nfunParserProduce, @src(), "(parser/produce parser &opt wrap)", "Dequeue the next value in the parse queue. Will return nil if " ++
             "no parsed values are in the queue, otherwise will dequeue the " ++
             "next value. If `wrap` is truthy, will return a 1-element tuple that " ++
             "wraps the result. This tuple can be used for source-mapping " ++
             "purposes."),
-        corefn.reg("parser/consume", &cfunParserConsume, @src(), "(parser/consume parser bytes &opt index)", "Input bytes into the parser and parse them. Will not throw errors " ++
+        corefn.reg("parser/consume", &nfunParserConsume, @src(), "(parser/consume parser bytes &opt index)", "Input bytes into the parser and parse them. Will not throw errors " ++
             "if there is a parse error. Starts at the byte index given by `index`. Returns " ++
             "the number of bytes read."),
-        corefn.reg("parser/byte", &cfunParserByte, @src(), "(parser/byte parser b)", "Input a single byte `b` into the parser byte stream. Returns the parser."),
-        corefn.reg("parser/error", &cfunParserError, @src(), "(parser/error parser)", "If the parser is in the error state, returns the message associated with " ++
+        corefn.reg("parser/byte", &nfunParserByte, @src(), "(parser/byte parser b)", "Input a single byte `b` into the parser byte stream. Returns the parser."),
+        corefn.reg("parser/error", &nfunParserError, @src(), "(parser/error parser)", "If the parser is in the error state, returns the message associated with " ++
             "that error. Otherwise, returns nil. Also flushes the parser state and parser " ++
             "queue, so be sure to handle everything in the queue before calling " ++
             "`parser/error`."),
-        corefn.reg("parser/status", &cfunParserStatus, @src(), "(parser/status parser)", "Gets the current status of the parser state machine. The status will " ++
+        corefn.reg("parser/status", &nfunParserStatus, @src(), "(parser/status parser)", "Gets the current status of the parser state machine. The status will " ++
             "be one of:\n\n" ++
             "* :pending - a value is being parsed.\n\n" ++
             "* :error - a parsing error was encountered.\n\n" ++
             "* :root - the parser can either read more values or safely terminate."),
-        corefn.reg("parser/flush", &cfunParserFlush, @src(), "(parser/flush parser)", "Clears the parser state and parse queue. Can be used to reset the parser " ++
+        corefn.reg("parser/flush", &nfunParserFlush, @src(), "(parser/flush parser)", "Clears the parser state and parse queue. Can be used to reset the parser " ++
             "if an error was encountered. Does not reset the line and column counter, so " ++
             "to begin parsing in a new context, create a new parser."),
-        corefn.reg("parser/state", &cfunParserState, @src(), "(parser/state parser &opt key)", "Returns a representation of the internal state of the parser. If a key is passed, " ++
+        corefn.reg("parser/state", &nfunParserState, @src(), "(parser/state parser &opt key)", "Returns a representation of the internal state of the parser. If a key is passed, " ++
             "only that information about the state is returned. Allowed keys are:\n\n" ++
             "* :delimiters - Each byte in the string represents a nested data structure. For example, " ++
             "if the parser state is '([\"', then the parser is in the middle of parsing a " ++
@@ -246,11 +246,11 @@ pub fn libParse(env: *tables.Table) void {
             "* :frames - Each table in the array represents a 'frame' in the parser state. Frames " ++
             "contain information about the start of the expression being parsed as well as the " ++
             "type of that expression and some type-specific information."),
-        corefn.reg("parser/where", &cfunParserWhere, @src(), "(parser/where parser &opt line col)", "Returns the current line number and column of the parser's internal state. If line is " ++
+        corefn.reg("parser/where", &nfunParserWhere, @src(), "(parser/where parser &opt line col)", "Returns the current line number and column of the parser's internal state. If line is " ++
             "provided, the current line number of the parser is first set to that value. If column is " ++
             "also provided, the current column number of the parser is also first set to that value."),
-        corefn.reg("parser/eof", &cfunParserEof, @src(), "(parser/eof parser)", "Indicate to the parser that the end of file was reached. This puts the parser in the :dead state."),
-        corefn.reg("parser/insert", &cfunParserInsert, @src(), "(parser/insert parser value)", "Insert a value into the parser. This means that the parser state can be manipulated " ++
+        corefn.reg("parser/eof", &nfunParserEof, @src(), "(parser/eof parser)", "Indicate to the parser that the end of file was reached. This puts the parser in the :dead state."),
+        corefn.reg("parser/insert", &nfunParserInsert, @src(), "(parser/insert parser value)", "Insert a value into the parser. This means that the parser state can be manipulated " ++
             "in between chunks of bytes. This would allow a user to add extra elements to arrays " ++
             "and tuples, for example. Returns the parser."),
     };
@@ -917,7 +917,7 @@ pub fn parserTokenchar(
 // ==========================================================================
 
 /// `(parser/byte parser b)`. The low eight bits of `b` are the byte fed.
-fn cfunParserByte(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserByte(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     const val = try args_core.getInteger(argv, 1);
@@ -926,7 +926,7 @@ fn cfunParserByte(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(parser/clone p)`.
-fn cfunParserClone(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserClone(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const source = try getParser(argv, 0);
     const destination: *Parser = abstracts.newFor(Parser, &parserType);
@@ -937,7 +937,7 @@ fn cfunParserClone(argv: []repr.Value) raise.Error!repr.Value {
 /// `(parser/consume parser bytes &opt index)`, returning how many bytes were
 /// read. A byte that puts the parser in the error or dead state stops the
 /// loop and is counted.
-fn cfunParserConsume(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserConsume(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const parser = try getParser(argv, 0);
     var view = try args_core.getBytes(argv, 1);
@@ -965,7 +965,7 @@ fn cfunParserConsume(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(parser/eof parser)`.
-fn cfunParserEof(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserEof(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     try eofChecked(try getParser(argv, 0));
     return argv[0];
@@ -973,7 +973,7 @@ fn cfunParserEof(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(parser/error parser)`. Reading the message clears it and flushes the
 /// parser.
-fn cfunParserError(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserError(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const parser = try getParser(argv, 0);
     const message = parserError(parser) orelse return wrap.fromNil();
@@ -985,14 +985,14 @@ fn cfunParserError(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(parser/flush parser)`.
-fn cfunParserFlush(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserFlush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     parserFlush(try getParser(argv, 0));
     return argv[0];
 }
 
 /// `(parser/has-more parser)`.
-fn cfunParserHasMore(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserHasMore(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return wrap.fromBoolean(parserHasMore(try getParser(argv, 0)));
 }
@@ -1000,7 +1000,7 @@ fn cfunParserHasMore(argv: []repr.Value) raise.Error!repr.Value {
 /// `(parser/insert parser value)`. A value inserted into a container is
 /// queued as an element of it; inserted into a string or a long string, the
 /// value's printed form is appended to the text being read.
-fn cfunParserInsert(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserInsert(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const parser = try getParser(argv, 0);
     var state = &parser.states.items[parser.states.items.len - 1];
@@ -1032,7 +1032,7 @@ fn cfunParserInsert(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(parser/new)`.
-fn cfunParserNew(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
     const parser: *Parser = abstracts.newFor(Parser, &parserType);
     parserInit(parser);
@@ -1040,7 +1040,7 @@ fn cfunParserNew(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(parser/produce parser &opt wrap)`.
-fn cfunParserProduce(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserProduce(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (argv.len == 2 and repr.truthy(argv[1])) {
@@ -1051,7 +1051,7 @@ fn cfunParserProduce(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(parser/state parser &opt key)`, with the key looked up in
 /// `state_getters` and every getter run when there is none.
-fn cfunParserState(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserState(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
     if (argv.len == 2) {
@@ -1069,7 +1069,7 @@ fn cfunParserState(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `(parser/status parser)`, as the keyword rather than the number.
-fn cfunParserStatus(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserStatus(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const name: [*:0]const u8 = switch (parserStatus(try getParser(argv, 0))) {
         .pending => "pending",
@@ -1082,7 +1082,7 @@ fn cfunParserStatus(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(parser/where parser &opt line col)`, setting the position first where
 /// either is given.
-fn cfunParserWhere(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunParserWhere(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const parser = try getParser(argv, 0);
     if (argv.len > 1) {

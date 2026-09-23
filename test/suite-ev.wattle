@@ -866,7 +866,7 @@
   ; anything the thread writes: `make_supervisor_event` reads it out of the
   ; fiber's environment, which is where the `:t` flag put it.
   (def sup (ev/thread-chan 8))
-  (ev/thread (fn [x] nil) :my-task :nt sup)
+  (ev/thread (fn [x] nil) :my-task :it sup)
   (var found nil)
   (var tries 0)
   (while (and (nil? found) (< tries 400))
@@ -1035,18 +1035,29 @@
 (assert-no-error "thread passes its value at two arguments"
                  (ev/thread (fn [x] (unless (= x :value) (error "wrong value"))) :value))
 
-; ...and with exactly three, the flag word is read. `:n` returns immediately
+; ...and with exactly three, the flag word is read. `:i` returns immediately
 ; rather than waiting, which is the only flag whose effect is visible without a
 ; supervisor.
 (do
   (def start (os/clock :monotonic))
-  (ev/thread (fn [] (os/sleep 0.4)) nil :n)
+  (ev/thread (fn [] (os/sleep 0.4)) nil :i)
   (def elapsed (- (os/clock :monotonic) start))
-  (assert (< elapsed 0.2) "the :n flag is read at three arguments")
+  (assert (< elapsed 0.2) "the :i flag is read at three arguments")
   ; And without it the same call waits.
   (def start2 (os/clock :monotonic))
   (ev/thread (fn [] (os/sleep 0.2)) nil)
-  (assert (>= (- (os/clock :monotonic) start2) 0.15) "without :n the caller waits"))
+  (assert (>= (- (os/clock :monotonic) start2) 0.15) "without :i the caller waits"))
+
+; `:n` does not copy the nfunction registry, so the new thread has no name for
+; an nfunction and `string` gives its address.
+(do
+  (def names (ev/thread-chan 2))
+  (ev/thread (fn [c] (ev/give c (string print))) names)
+  (ev/thread (fn [c] (ev/give c (string print))) names :n)
+  (assert (= "<nfunction print>" (ev/take names)) "a thread gets the registry")
+  (assert (string/has-prefix? "<nfunction 0x" (ev/take names))
+          "the :n flag withholds it"))
+(assert-error "the :c flag is gone" (ev/thread (fn [] nil) nil :c))
 
 ; A thread's failure arm on the way *in*: a thread started with `:a` does not
 ; receive the abstract registry, so unmarshalling a value carrying an abstract
@@ -1059,7 +1070,7 @@
 ; still runs there.
 (compwhen (dyn 'int/s64)
   (do
-    ; No supervisor and no `:n`: the parent's call raises, carrying the child's
+    ; No supervisor and no `:i`: the parent's call raises, carrying the child's
     ; message, which the failure arm copies byte for byte.
     (def [ok err] (protect (ev/thread (fn [x] nil) (int/s64 1) :a)))
     (assert (not ok) "a thread that fails during setup raises in the parent")
@@ -1089,7 +1100,7 @@
                (def [inbox outbox] chans)
                (ev/give outbox [:got (ev/take inbox)]))
              [to-child from-child]
-             :n)
+             :i)
   (ev/give to-child :ping)
   (var reply nil)
   (var tries 0)
@@ -1410,7 +1421,7 @@
                (ev/take c)
                (ev/give d :done))
              [ch done]
-             :n)
+             :i)
   (ev/give ch :a)
   (def started (os/clock :monotonic))
   (assert (= ch (ev/give ch :b))

@@ -10,9 +10,9 @@
 //! its environment for a drive's working directory, where the separator is at
 //! index zero and must not be read as "missing".
 //!
-//! ## The cfunctions are called directly
+//! ## The nfunctions are called directly
 //!
-//! A cfunction returns `error{Signal}!Value` over Zig's calling
+//! An nfunction returns `error{Signal}!Value` over Zig's calling
 //! convention, so this file calls one and writes `try`.
 //!
 //! That is what makes `theRefusals` below possible: a refusal is a value, so

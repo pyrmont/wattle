@@ -9,8 +9,8 @@
 //! be exhaustive and right while the formatting drifts, so the message is what
 //! each case asserts.
 //!
-//! The suites reach almost none of this. A Janet program that calls a
-//! cfunction with the wrong argument sees one of these messages and stops, so
+//! The suites reach almost none of this. A Janet program that calls an
+//! nfunction with the wrong argument sees one of these messages and stops, so
 //! the common shapes are covered incidentally and the rest are not reached at
 //! all: every width of integer, both range foldings, the flag ceiling and the
 //! three cbytes shapes. They are enumerated here.
@@ -79,9 +79,9 @@ const method_one = raise.stored(&methodOne);
 const method_two = raise.stored(&methodTwo);
 
 const methods = [_]method_type.CMethod{
-    .{ .name = "one", .cfun = method_one },
-    .{ .name = "two", .cfun = method_two },
-    .{ .name = null, .cfun = null },
+    .{ .name = "one", .nfun = method_one },
+    .{ .name = "two", .nfun = method_two },
+    .{ .name = null, .nfun = null },
 };
 
 const other_at = abstract_type.define(anyopaque, .{ .name = "args-core/other" });
@@ -181,7 +181,7 @@ fn everyTypeGetterNamesItsSlotAndItsType() raise.Error!void {
     refuses(args.getBuffer, .{ a, 0 }, "bad slot #0, expected buffer, got nil");
     refuses(args.getFiber, .{ a, 0 }, "bad slot #0, expected fiber, got nil");
     refuses(args.getFunction, .{ a, 0 }, "bad slot #0, expected function, got nil");
-    refuses(args.getCFunction, .{ a, 0 }, "bad slot #0, expected cfunction, got nil");
+    refuses(args.getNFunction, .{ a, 0 }, "bad slot #0, expected nfunction, got nil");
     refuses(args.getKeyword, .{ a, 0 }, "bad slot #0, expected keyword, got nil");
     refuses(args.getSymbol, .{ a, 0 }, "bad slot #0, expected symbol, got nil");
     refuses(args.getTuple, .{ a, 0 }, "bad slot #0, expected tuple, got nil");
@@ -1111,7 +1111,7 @@ fn drainKeyvals(x: repr.Value) raise.Error!void {
 /// the end of the frame, and the fault it reports names that nil.
 ///
 /// The optional getters have always handled a slot past the end, `argIsdefault`
-/// checking the length. The type and number getters did not, and a cfunction
+/// checking the length. The type and number getters did not, and an nfunction
 /// that reads a slot before its arity has been checked reaches them that way:
 /// each of the seven `slice` bindings does, because `getSlice` is what checks
 /// the arity and it runs after the value has been read.
@@ -1160,7 +1160,7 @@ fn pastTheEndAndAnExplicitNilBothMeanTheDefault() raise.Error!void {
     expect(std.mem.eql(u8, std.mem.span((try args.optCBytes(a, 1, "d")).?), "d"));
     expect(try args.optBoolean(a, 1, true));
     expect(try args.optPointer(a, 1, null) == null);
-    expect(try args.optCFunction(a, 1, null) == null);
+    expect(try args.optNFunction(a, 1, null) == null);
     expect(try args.optFiber(a, 1, null) == null);
     expect(try args.optFunction(a, 1, null) == null);
     expect(try args.optTuple(a, 1, null) == null);
@@ -1219,9 +1219,9 @@ fn nextmethodIsAnIterator() void {
     var out = wrap.fromNil();
 
     expect(args.getmethod(strings.cstring("one"), &methods, &out) != 0);
-    expect(wrap.toCfunction(out) == method_one);
+    expect(wrap.toNfunction(out) == method_one);
     expect(args.getmethod(strings.cstring("two"), &methods, &out) != 0);
-    expect(wrap.toCfunction(out) == method_two);
+    expect(wrap.toNfunction(out) == method_two);
     expect(args.getmethod(strings.cstring("three"), &methods, &out) == 0);
 
     // `nextmethod` is an iterator: nil starts at the head, and any other key

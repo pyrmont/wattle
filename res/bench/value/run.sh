@@ -1,5 +1,5 @@
 #!/bin/sh
-# Interleave two binaries over the cfunction-entry corpus and report the
+# Interleave two binaries over the nfunction-entry corpus and report the
 # minimum each reaches per workload, with the second as a percentage of the
 # first. Interleaved so thermal drift lands on both; minimum because the noise
 # is one-sided.

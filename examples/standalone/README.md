@@ -18,7 +18,7 @@ available to it.
     zig build examples/standalone      # from the repository root
     zig build test            # from this directory
 
-`greet.zig` is deliberately small: one cfunction, one abstract type, one
+`greet.zig` is deliberately small: one nfunction, one abstract type, one
 registration. Its job is to fail when the interface changes, rather than to
 demonstrate anything `numarray` demonstrates better. It is built twice here: as
 the shared object `libgreet`, and linked into the executable `hello`.

@@ -220,7 +220,7 @@
 
 ; The core environment.
 ;
-; The cfunctions it owns, asserted here because every one of them has a Janet
+; The nfunctions it owns, asserted here because every one of them has a Janet
 ; spelling. What has none -- the environment builder's replacements, the flag
 ; words `janet_dobytes` answers with, `janet_native`'s failure paths -- is in
 ; `test/core_env.c` instead.
@@ -440,7 +440,7 @@
 ; type answers a keyword for every type, not only for abstracts
 (assert (= :number (type 1)) "type of a number")
 (assert (= :nil (type nil)) "type of nil")
-(assert (= :cfunction (type type)) "type of a cfunction")
+(assert (= :nfunction (type type)) "type of an nfunction")
 
 ; range's three arities are distinguished by argument count
 (assert (deep= ![0 1 2] (range 3)) "range with one argument")

@@ -81,7 +81,7 @@ fn joinLength(self: *Join, _: usize) raise.Error!usize {
     return self.count;
 }
 
-fn cfunJoin(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args.fixarity(argv, 1);
     const count = try args.getInteger(argv, 0);
     const raw = abstracts.newBytes(&join_at, @sizeOf(Join));
@@ -90,9 +90,9 @@ fn cfunJoin(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(raw);
 }
 
-const cfuns = [_]abi.Reg{
-    .{ .name = "sites/join", .cfun = raise.stored(&cfunJoin), .documentation = null },
-    .{ .name = "sites/held", .cfun = raise.stored(&cfunHeld), .documentation = null },
+const nfuns = [_]abi.Reg{
+    .{ .name = "sites/join", .nfun = raise.stored(&nfunJoin), .documentation = null },
+    .{ .name = "sites/held", .nfun = raise.stored(&nfunHeld), .documentation = null },
 };
 
 /// Values given at construction, handed out in runs of a chosen size.
@@ -137,7 +137,7 @@ fn heldMark(self: *Held, _: usize) void {
     for (self.items[0..self.count]) |item| gc_mark.mark(item);
 }
 
-fn cfunHeld(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunHeld(argv: []repr.Value) raise.Error!repr.Value {
     try args.arity(argv, 1, -1);
     const per_run = try args.getSize(argv, 0);
     const values = argv[1..];
@@ -157,7 +157,7 @@ fn cfunHeld(argv: []repr.Value) raise.Error!repr.Value {
 fn tupleJoinReadsAnIndexedAbstract() void {
     var out: repr.Value = undefined;
     const env = harness.coreEnv();
-    registry.cfuns(env, null, &cfuns);
+    registry.nfuns(env, null, &nfuns);
     const source =
         \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push failures label)))

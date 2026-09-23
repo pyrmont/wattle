@@ -763,7 +763,7 @@ fn fromWattle() void {
     expect(harness.elems(r[6]).len == 2);
 }
 
-/// Every core cfunction is registered with the file and line it was declared
+/// Every core nfunction is registered with the file and line it was declared
 /// on, and that pair is what a stack trace prints for a frame that is not a
 /// Janet function. The location comes from `@src()` at the registration table
 /// row rather than from the line of the definition, and what this asserts is
@@ -782,8 +782,8 @@ fn theRegistryRecordsALocation() void {
         const binding = registry.resolveCore(name);
         // A build without integer types has no int/ functions to look up.
         if (harness.isType(binding, repr.Tag.nil)) continue;
-        expect(harness.isType(binding, repr.Tag.cfunction));
-        const entry = registry.registryGet(wrap.toCfunction(binding));
+        expect(harness.isType(binding, repr.Tag.nfunction));
+        const entry = registry.registryGet(wrap.toNfunction(binding));
         expect(entry != null);
         expect(entry.?.name != null);
         expect(std.mem.eql(u8, std.mem.span(entry.?.name.?), std.mem.span(name)));

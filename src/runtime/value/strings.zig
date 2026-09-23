@@ -33,10 +33,10 @@
 //! `pub` so that `symbols.zig` reaches them rather than keeping a copy,
 //! because two copies of a pointer offset can disagree where a caller sees it.
 //!
-//! ## The cfunction surface
+//! ## The nfunction surface
 //!
 //! What raises is the argument layer and the buffer pushes, and the
-//! `cfunString*` functions are where both are reached. Nothing above them
+//! `nfunString*` functions are where both are reached. Nothing above them
 //! raises: `gcalloc` can trigger a collection, but an abstract type's `gc` and
 //! `gcmark` are `callconv(.c) void` by contract, so a collection has no error
 //! to deliver. `KmpState` is the one thing in this file that owns heap memory
@@ -285,7 +285,7 @@ pub inline fn lengthOf(s: [*]const u8) u32 {
     return head(s).length;
 }
 
-/// Installs the `string/`, `symbol/slice` and `keyword/slice` cfunctions into
+/// Installs the `string/`, `symbol/slice` and `keyword/slice` nfunctions into
 /// `env`.
 pub fn lib(env: *tables.Table) void {
     const slice_doc = "Returns a substring from a byte sequence. The substring is from " ++
@@ -297,49 +297,49 @@ pub fn lib(env: *tables.Table) void {
     const trim_doc_tail = "whitespace from a byte sequence. If the argument " ++
         "`set` is provided, consider only characters in `set` to be whitespace.";
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("string/slice", &cfunStringSlice, @src(), "(string/slice bytes &opt start end)", slice_doc),
-        corefn.reg("keyword/slice", &cfunKeywordSlice, @src(), "(keyword/slice bytes &opt start end)", "Same as string/slice, but returns a keyword."),
-        corefn.reg("symbol/slice", &cfunSymbolSlice, @src(), "(symbol/slice bytes &opt start end)", "Same as string/slice, but returns a symbol."),
-        corefn.reg("string/repeat", &cfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is `n` copies of `bytes` concatenated."),
-        corefn.reg("string/bytes", &cfunStringBytes, @src(), "(string/bytes str)", "Returns a tuple of integers that are the byte values of the string."),
-        corefn.reg("string/from-bytes", &cfunStringFrombytes, @src(), "(string/from-bytes & byte-vals)", "Creates a string from integer parameters with byte values. All integers " ++
+        corefn.reg("string/slice", &nfunStringSlice, @src(), "(string/slice bytes &opt start end)", slice_doc),
+        corefn.reg("keyword/slice", &nfunKeywordSlice, @src(), "(keyword/slice bytes &opt start end)", "Same as string/slice, but returns a keyword."),
+        corefn.reg("symbol/slice", &nfunSymbolSlice, @src(), "(symbol/slice bytes &opt start end)", "Same as string/slice, but returns a symbol."),
+        corefn.reg("string/repeat", &nfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is `n` copies of `bytes` concatenated."),
+        corefn.reg("string/bytes", &nfunStringBytes, @src(), "(string/bytes str)", "Returns a tuple of integers that are the byte values of the string."),
+        corefn.reg("string/from-bytes", &nfunStringFrombytes, @src(), "(string/from-bytes & byte-vals)", "Creates a string from integer parameters with byte values. All integers " ++
             "will be coerced to the range of 1 byte 0-255."),
-        corefn.reg("string/ascii-lower", &cfunStringAsciilower, @src(), "(string/ascii-lower str)", "Returns a new string where all bytes are replaced with the " ++
+        corefn.reg("string/ascii-lower", &nfunStringAsciilower, @src(), "(string/ascii-lower str)", "Returns a new string where all bytes are replaced with the " ++
             "lowercase version of themselves in ASCII. Does only a very simple " ++
             "case check, meaning no unicode support."),
-        corefn.reg("string/ascii-upper", &cfunStringAsciiupper, @src(), "(string/ascii-upper str)", "Returns a new string where all bytes are replaced with the " ++
+        corefn.reg("string/ascii-upper", &nfunStringAsciiupper, @src(), "(string/ascii-upper str)", "Returns a new string where all bytes are replaced with the " ++
             "uppercase version of themselves in ASCII. Does only a very simple " ++
             "case check, meaning no unicode support."),
-        corefn.reg("string/reverse", &cfunStringReverse, @src(), "(string/reverse str)", "Returns a string that is the reversed version of `str`."),
-        corefn.reg("string/find", &cfunStringFind, @src(), "(string/find patt str &opt start-index)", "Searches for the first instance of pattern `patt` in string " ++
+        corefn.reg("string/reverse", &nfunStringReverse, @src(), "(string/reverse str)", "Returns a string that is the reversed version of `str`."),
+        corefn.reg("string/find", &nfunStringFind, @src(), "(string/find patt str &opt start-index)", "Searches for the first instance of pattern `patt` in string " ++
             "`str`. Returns the index of the first character in `patt` if found, " ++
             "otherwise returns nil."),
-        corefn.reg("string/find-all", &cfunStringFindall, @src(), "(string/find-all patt str &opt start-index)", "Searches for all instances of pattern `patt` in string " ++
+        corefn.reg("string/find-all", &nfunStringFindall, @src(), "(string/find-all patt str &opt start-index)", "Searches for all instances of pattern `patt` in string " ++
             "`str`. Returns an array of all indices of found patterns. Overlapping " ++
             "instances of the pattern are counted individually, meaning a byte in `str` " ++
             "may contribute to multiple found patterns."),
-        corefn.reg("string/has-prefix?", &cfunStringHasprefix, @src(), "(string/has-prefix? pfx str)", "Tests whether `str` starts with `pfx`."),
-        corefn.reg("string/has-suffix?", &cfunStringHassuffix, @src(), "(string/has-suffix? sfx str)", "Tests whether `str` ends with `sfx`."),
-        corefn.reg("string/replace", &cfunStringReplace, @src(), "(string/replace patt subst str)", "Replace the first occurrence of `patt` with `subst` in the string `str`. " ++
+        corefn.reg("string/has-prefix?", &nfunStringHasprefix, @src(), "(string/has-prefix? pfx str)", "Tests whether `str` starts with `pfx`."),
+        corefn.reg("string/has-suffix?", &nfunStringHassuffix, @src(), "(string/has-suffix? sfx str)", "Tests whether `str` ends with `sfx`."),
+        corefn.reg("string/replace", &nfunStringReplace, @src(), "(string/replace patt subst str)", "Replace the first occurrence of `patt` with `subst` in the string `str`. " ++
             "If `subst` is a function, it will be called with `patt` only if a match is found, " ++
             "and should return the actual replacement text to use. " ++
             "Will return the new string if `patt` is found, otherwise returns `str`."),
-        corefn.reg("string/replace-all", &cfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replace all instances of `patt` with `subst` in the string `str`. Overlapping " ++
+        corefn.reg("string/replace-all", &nfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replace all instances of `patt` with `subst` in the string `str`. Overlapping " ++
             "matches will not be counted, only the first match in such a span will be replaced. " ++
             "If `subst` is a function, it will be called with `patt` once for each match, " ++
             "and should return the actual replacement text to use. " ++
             "Will return the new string if `patt` is found, otherwise returns `str`."),
-        corefn.reg("string/split", &cfunStringSplit, @src(), "(string/split delim str &opt start limit)", "Splits a string `str` with delimiter `delim` and returns an array of " ++
+        corefn.reg("string/split", &nfunStringSplit, @src(), "(string/split delim str &opt start limit)", "Splits a string `str` with delimiter `delim` and returns an array of " ++
             "substrings. The substrings will not contain the delimiter `delim`. If `delim` " ++
             "is not found, the returned array will have one element. Will start searching " ++
             "for `delim` at the index `start` (if provided), and return up to a maximum " ++
             "of `limit` results (if provided)."),
-        corefn.reg("string/check-set", &cfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string `str` only contains bytes that appear in the string `set`. " ++
+        corefn.reg("string/check-set", &nfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string `str` only contains bytes that appear in the string `set`. " ++
             "Returns true if all bytes in `str` appear in `set`, false if some bytes in `str` do " ++
             "not appear in `set`."),
-        corefn.reg("string/join", &cfunStringJoin, @src(), "(string/join parts &opt sep)", "Joins an array of strings into one string, optionally separated by " ++
+        corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join parts &opt sep)", "Joins an array of strings into one string, optionally separated by " ++
             "a separator string `sep`."),
-        corefn.reg("string/format", &cfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
+        corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
             "a new string.\n\n" ++
             "The following conversion specifiers are supported, where the upper case specifiers generate " ++
             "upper case output:\n" ++
@@ -367,9 +367,9 @@ pub fn lib(env: *tables.Table) void {
             "- `m`, `M`: pretty format without truncating.\n" ++
             "- `q`, `Q`: pretty format on one line, truncating if necessary.\n" ++
             "- `n`, `N`: pretty format on one line without truncation.\n"),
-        corefn.reg("string/trim", &cfunStringTrim, @src(), "(string/trim str &opt set)", "Trim leading and trailing " ++ trim_doc_tail),
-        corefn.reg("string/triml", &cfunStringTriml, @src(), "(string/triml str &opt set)", "Trim leading " ++ trim_doc_tail),
-        corefn.reg("string/trimr", &cfunStringTrimr, @src(), "(string/trimr str &opt set)", "Trim trailing " ++ trim_doc_tail),
+        corefn.reg("string/trim", &nfunStringTrim, @src(), "(string/trim str &opt set)", "Trim leading and trailing " ++ trim_doc_tail),
+        corefn.reg("string/triml", &nfunStringTriml, @src(), "(string/triml str &opt set)", "Trim leading " ++ trim_doc_tail),
+        corefn.reg("string/trimr", &nfunStringTrimr, @src(), "(string/trimr str &opt set)", "Trim trailing " ++ trim_doc_tail),
     };
     corefn.install(env, entries);
 }
@@ -390,24 +390,24 @@ pub fn new(buf: []const u8) [*:0]const u8 {
 // ==========================================================================
 
 /// `keyword/slice`: `string/slice` returning a keyword.
-fn cfunKeywordSlice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunKeywordSlice(argv: []repr.Value) raise.Error!repr.Value {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromKeyword(symbols.keyword(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
 }
 
 /// `string/ascii-lower`: the ASCII upper-case bytes lowered.
-fn cfunStringAsciilower(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringAsciilower(argv: []repr.Value) raise.Error!repr.Value {
     return try mapCase(65, 90, 32, argv);
 }
 
 /// `string/ascii-upper`: the ASCII lower-case bytes raised.
-fn cfunStringAsciiupper(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringAsciiupper(argv: []repr.Value) raise.Error!repr.Value {
     return try mapCase(97, 122, -32, argv);
 }
 
 /// `string/bytes`: a vector of the byte values.
-fn cfunStringBytes(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringBytes(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const block = gc_alloc.scratch_heap.alloc(repr.Value, view.len) catch
@@ -421,7 +421,7 @@ fn cfunStringBytes(argv: []repr.Value) raise.Error!repr.Value {
 ///
 /// The set is 256 bits in eight words, indexed by the top three bits of the
 /// byte and masked by the low five.
-fn cfunStringCheckset(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringCheckset(argv: []repr.Value) raise.Error!repr.Value {
     var bitset: [8]u32 = @splat(0);
     try args_core.fixarity(argv, 2);
     const set = try args_core.getBytes(argv, 0);
@@ -440,7 +440,7 @@ fn cfunStringCheckset(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/find`: the index of the first match, or nil.
-fn cfunStringFind(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringFind(argv: []repr.Value) raise.Error!repr.Value {
     var state = try findsetup(argv, 0);
     defer state.deinit();
     const result = state.next();
@@ -449,7 +449,7 @@ fn cfunStringFind(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `string/find-all`: an array of the index of every match, overlapping
 /// matches counted one at a time.
-fn cfunStringFindall(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringFindall(argv: []repr.Value) raise.Error!repr.Value {
     var state = try findsetup(argv, 0);
     defer state.deinit();
     const array = arrays.new(0);
@@ -463,7 +463,7 @@ fn cfunStringFindall(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `string/format`: `pp_format.bufferFormat` into a fresh buffer, returned as
 /// a string.
-fn cfunStringFormat(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringFormat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = buffers.new(0);
     const strfrmt = try args_core.getString(argv, 0);
@@ -472,7 +472,7 @@ fn cfunStringFormat(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/from-bytes`: a string of the byte values given as arguments.
-fn cfunStringFrombytes(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringFrombytes(argv: []repr.Value) raise.Error!repr.Value {
     const buf = begin(argv.len);
     for (0..argv.len) |i| {
         buf[i] = @truncate(@as(u32, @bitCast(try args_core.getInteger(argv, i))));
@@ -481,7 +481,7 @@ fn cfunStringFrombytes(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/has-prefix?`: whether a byte sequence starts with another.
-fn cfunStringHasprefix(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringHasprefix(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const prefix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
@@ -491,7 +491,7 @@ fn cfunStringHasprefix(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/has-suffix?`: whether a byte sequence ends with another.
-fn cfunStringHassuffix(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringHassuffix(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const suffix = try args_core.getBytes(argv, 0);
     const str = try args_core.getBytes(argv, 1);
@@ -503,7 +503,7 @@ fn cfunStringHassuffix(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `string/join`: the parts concatenated, optionally with a separator between
 /// them.
-fn cfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     var source = try args_core.chunks(argv[0]) orelse {
         return args_core.panicIndexed(argv[0], 0, repr.TagSet.none);
@@ -576,7 +576,7 @@ fn cfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/repeat`: `n` copies of a byte sequence concatenated.
-fn cfunStringRepeat(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringRepeat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 2);
     const view = try args_core.getBytes(argv, 0);
     const rep = try args_core.getInteger(argv, 1);
@@ -594,7 +594,7 @@ fn cfunStringRepeat(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/replace`: the first match replaced.
-fn cfunStringReplace(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringReplace(argv: []repr.Value) raise.Error!repr.Value {
     var s = try replacesetup(argv);
     defer s.kmp.deinit();
     const result = s.kmp.next();
@@ -614,7 +614,7 @@ fn cfunStringReplace(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/replace-all`: every non-overlapping match replaced.
-fn cfunStringReplaceall(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringReplaceall(argv: []repr.Value) raise.Error!repr.Value {
     var s = try replacesetup(argv);
     defer s.kmp.deinit();
     var b: buffers.Buffer = undefined;
@@ -642,7 +642,7 @@ fn cfunStringReplaceall(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/reverse`: the bytes in the opposite order.
-fn cfunStringReverse(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringReverse(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const view = try args_core.getBytes(argv, 0);
     const buf = begin(@intCast(view.len));
@@ -651,7 +651,7 @@ fn cfunStringReverse(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/slice`: a new string over a half-open range of a byte sequence.
-fn cfunStringSlice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringSlice(argv: []repr.Value) raise.Error!repr.Value {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromString(new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));
@@ -663,7 +663,7 @@ fn cfunStringSlice(argv: []repr.Value) raise.Error!repr.Value {
 /// to -1 and is tested against zero after each decrement, so the default runs
 /// away from zero and never stops the loop. An explicit 0 decrements to -1 and
 /// therefore behaves like the default rather than like a limit of one.
-fn cfunStringSplit(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringSplit(argv: []repr.Value) raise.Error!repr.Value {
     var limit: i32 = -1;
     var lastindex: i32 = 0;
     if (argv.len == 4) limit = try args_core.getInteger(argv, 3);
@@ -686,7 +686,7 @@ fn cfunStringSplit(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/trim`: leading and trailing bytes of a set dropped.
-fn cfunStringTrim(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringTrim(argv: []repr.Value) raise.Error!repr.Value {
     var str: abi.ByteView = undefined;
     var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -697,7 +697,7 @@ fn cfunStringTrim(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/triml`: leading bytes of a set dropped.
-fn cfunStringTriml(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringTriml(argv: []repr.Value) raise.Error!repr.Value {
     var str: abi.ByteView = undefined;
     var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -706,7 +706,7 @@ fn cfunStringTriml(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/trimr`: trailing bytes of a set dropped.
-fn cfunStringTrimr(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunStringTrimr(argv: []repr.Value) raise.Error!repr.Value {
     var str: abi.ByteView = undefined;
     var set: abi.ByteView = undefined;
     try trimArgs(argv, &str, &set);
@@ -714,7 +714,7 @@ fn cfunStringTrimr(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `symbol/slice`: `string/slice` returning a symbol.
-fn cfunSymbolSlice(argv: []repr.Value) raise.Error!repr.Value {
+fn nfunSymbolSlice(argv: []repr.Value) raise.Error!repr.Value {
     const view = try args_core.getBytes(argv, 0);
     const range = try args_core.getSlice(argv);
     return wrap.fromSymbol(symbols.new(view.bytes.?[@intCast(range.start)..@intCast(range.end)]));

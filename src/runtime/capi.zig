@@ -78,7 +78,7 @@ pub const table: interface.Runtime = .{
     .c_raise_take = &c_raise_take,
     .call_value = &call_value,
     .calloc = &calloc,
-    .cfuns_ext = &cfuns_ext,
+    .nfuns_ext = &nfuns_ext,
     .checkint = &checkint,
     .cstring = &cstring,
     .current_loop = &current_loop,
@@ -306,18 +306,18 @@ pub fn buffer_push_bytes(render: *abi.Render, bytes: [*]const u8, len: usize) ca
     return raise.toAbi(impl.value_buffers.pushBytes(buffer, bytes[0..len]));
 }
 
-/// `(f ...)` for a function or a cfunction `f`, from a module's frame, raising
+/// `(f ...)` for a function or an nfunction `f`, from a module's frame, raising
 /// on anything but a return.
 ///
 /// Any other callee is refused. `vm/entry.zig`'s `callValue` is reached for
 /// both accepted types because it copies the arguments onto the fiber under a
-/// frame, which a cfunction needs.
+/// frame, which an nfunction needs.
 pub fn call_value(f: repr.Value, args: [*]const repr.Value, len: usize) callconv(.c) repr.Value {
     requireVmThread();
-    const result: raise.Error!repr.Value = if (repr.checkType(f, repr.Tag.function) or repr.checkType(f, repr.Tag.cfunction))
+    const result: raise.Error!repr.Value = if (repr.checkType(f, repr.Tag.function) or repr.checkType(f, repr.Tag.nfunction))
         impl.vm_entry.callValue(f, args[0..len])
     else
-        impl.pp_format.panicf("expected function or cfunction, got %v", .{f});
+        impl.pp_format.panicf("expected function or nfunction, got %v", .{f});
     return raise.toAbi(result);
 }
 
@@ -338,9 +338,9 @@ pub fn free(ptr: ?*anyopaque) callconv(.c) void {
     return impl.utils.free(ptr);
 }
 
-/// Registration: a table of cfunctions read to its null-name terminator, and
+/// Registration: a table of nfunctions read to its null-name terminator, and
 /// one plain binding.
-pub fn cfuns_ext(env: ?*abi.Env, regprefix: ?[*:0]const u8, registrations: [*]const abi.Reg) callconv(.c) void {
+pub fn nfuns_ext(env: ?*abi.Env, regprefix: ?[*:0]const u8, registrations: [*]const abi.Reg) callconv(.c) void {
     requireVmThread();
     installSentinel(@ptrCast(@alignCast(env)), regprefix, registrations);
 }
@@ -587,7 +587,7 @@ pub fn nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) callco
 ///
 /// A non-function is reported rather than raised, because this crossing has no
 /// other channel: a fiber runs a `functions.Function` and nothing else, which
-/// is what makes `(fiber/new <cfunction>)` refuse too. The message is built the
+/// is what makes `(fiber/new <nfunction>)` refuse too. The message is built the
 /// way `entry.checkCanResume` builds its status refusal, the one of its three
 /// that formats where the other two are fixed strings, and it is safe for the
 /// same reason: that renders `%s` of a static status name and this renders
@@ -760,7 +760,7 @@ const requireVmThread = impl.vm_state.requireVmThread;
 /// running, which is the fiber the loop resumes: `ev.sleepAwait` sets its
 /// timeout on that field and `ev.loop1` schedules what the timeout named.
 ///
-/// The refusal is unreachable from a cfunction, and it is here because the
+/// The refusal is unreachable from an nfunction, and it is here because the
 /// field is optional rather than because a caller can meet it:
 /// `vm/entry.zig`'s `continueNoCheck` assigns `root_fiber` before it enters
 /// `runVm`, so anything running under the interpreter has one.

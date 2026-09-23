@@ -776,7 +776,7 @@ fn quasiquote(options: compiler_primitives.FormOptions, val: repr.Value, depth: 
                 element = maps.nextElement(tree, element);
                 pushSlot(&slots, try quasiquote(suboptions, element, depth - 1, level));
             }
-            return compiler_primitives.callConstant(options, slots, maps.hash_set_cfunction);
+            return compiler_primitives.callConstant(options, slots, maps.hash_set_nfunction);
         },
         else => return compiler_primitives.cslot(val),
     }

@@ -1,4 +1,4 @@
-//! Everything that owns VM state: the cfunction registry, the four
+//! Everything that owns VM state: the nfunction registry, the four
 //! registration entry points and the two core forms beside them, the
 //! abstract-type registry, environment bindings and their resolution, and the
 //! text substitution.
@@ -9,7 +9,7 @@
 //! Two tables and one array, and everything here is a way into one of them.
 //!
 //! `vm.registry.rows` is an array of `Row`, one per builtin, keyed by the
-//! cfunction pointer, with the name, prefix and source location a stack
+//! nfunction pointer, with the name, prefix and source location a stack
 //! trace prints. It is not a Janet table: the key is a function pointer, the
 //! rows are static strings the collector never sees, and it must be readable
 //! while the collector runs.
@@ -22,8 +22,8 @@
 //! `bindingFromEntry` is the reader that turns one of those entries into the
 //! `Binding` the compiler and `resolve` work from.
 //!
-//! `textSubstitution` runs arbitrary Janet code: a call for a function, and a
-//! cfunction pointer for a builtin. The second goes through `raise.cfunction`,
+//! `textSubstitution` runs arbitrary Janet code: a call for a function, and an
+//! nfunction pointer for a builtin. The second goes through `raise.nfunction`,
 //! which is what makes forgetting the raise impossible, and that function's
 //! block says what forgetting it costs.
 
@@ -96,7 +96,7 @@ pub const BindingType = enum(u32) {
     dynamic_macro = 5,
 };
 
-/// One installation of a table of cfunctions, one row at a time.
+/// One installation of a table of nfunctions, one row at a time.
 ///
 /// `env` is the environment to define into, `regprefix` the prefix a row's
 /// registry entry records, `nb` the name buffer where names are prefixed, and
@@ -110,7 +110,7 @@ pub const BindingType = enum(u32) {
 ///
 /// It is a struct rather than a function because a caller with a
 /// sentinel-terminated table cannot pass a slice: `capi.zig`'s
-/// `cfuns_ext` takes the rows one at a time through `put`, and the name
+/// `nfuns_ext` takes the rows one at a time through `put`, and the name
 /// buffer's lifetime is what the type owns.
 pub const Installer = struct {
     env: ?*tables.Table,
@@ -131,13 +131,13 @@ pub const Installer = struct {
 
     pub fn put(self: *Installer, entry: abi.Reg) void {
         const entry_name = entry.name orelse return;
-        checkPointerAlign(@ptrCast(entry.cfun));
-        const fun = wrap.fromCfunction(entry.cfun);
+        checkPointerAlign(@ptrCast(entry.nfun));
+        const fun = wrap.fromNfunction(entry.nfun);
         if (self.env) |env| {
             const name = if (self.nb) |*nb| nb.name(entry_name) else entry_name;
             defSm(env, name, fun, entry.documentation, entry.source_file, entry.source_line);
         }
-        putRow(self.registry, entry.cfun, entry_name, self.regprefix, entry.source_file, entry.source_line);
+        putRow(self.registry, entry.nfun, entry_name, self.regprefix, entry.source_file, entry.source_line);
     }
 
     pub fn deinit(self: *Installer) void {
@@ -182,7 +182,7 @@ const NameBuf = struct {
     }
 };
 
-/// The cfunction registry: one row per builtin, sorted by function pointer so
+/// The nfunction registry: one row per builtin, sorted by function pointer so
 /// that a lookup can bisect. This file owns the lifecycle.
 ///
 /// `dirty` is what says the sort is owed; `registryPut` sets it and `sortRows`
@@ -194,10 +194,10 @@ pub const Registry = struct {
     dirty: bool = false,
 };
 
-/// One row of the cfunction registry: the pointer, the name and prefix a trace
+/// One row of the nfunction registry: the pointer, the name and prefix a trace
 /// prints, and the source location.
 pub const Row = struct {
-    cfun: abi.CFunction = null,
+    nfun: abi.NFunction = null,
     name: ?[*:0]const u8 = null,
     name_prefix: ?[*:0]const u8 = null,
     source_file: ?[*:0]const u8 = null,
@@ -269,16 +269,16 @@ pub fn bindingFromEntry(entry: repr.Value) Binding {
     return binding;
 }
 
-/// Registers a table of cfunctions, with each name as written.
+/// Registers a table of nfunctions, with each name as written.
 ///
 /// `env` is the environment, `regprefix` the prefix a row's registry entry
 /// records, and `registrations` the rows.
-pub fn cfuns(env: ?*tables.Table, regprefix: ?[*:0]const u8, registrations: []const abi.Reg) void {
+pub fn nfuns(env: ?*tables.Table, regprefix: ?[*:0]const u8, registrations: []const abi.Reg) void {
     install(env, regprefix, false, registrations);
 }
 
 /// The same, with every name prefixed by `regprefix`.
-pub fn cfunsPrefix(env: ?*tables.Table, regprefix: ?[*:0]const u8, registrations: []const abi.Reg) void {
+pub fn nfunsPrefix(env: ?*tables.Table, regprefix: ?[*:0]const u8, registrations: []const abi.Reg) void {
     install(env, regprefix, true, registrations);
 }
 
@@ -293,7 +293,7 @@ pub fn cfunsPrefix(env: ?*tables.Table, regprefix: ?[*:0]const u8, registrations
 /// bare value, because the binding itself arrived in the image. What they build
 /// is the core lookup dictionary, which is what the unmarshaller resolves the
 /// image's symbol references against.
-pub fn coreCfunsExt(
+pub fn coreNfunsExt(
     env: *tables.Table,
     regprefix: ?[*:0]const u8,
     registrations: [*]const abi.Reg,
@@ -301,12 +301,12 @@ pub fn coreCfunsExt(
     const r = &vm_state.current().registry;
     var entry = registrations;
     while (entry[0].name) |entry_name| : (entry += 1) {
-        checkPointerAlign(@ptrCast(entry[0].cfun));
-        const fun = wrap.fromCfunction(entry[0].cfun);
+        checkPointerAlign(@ptrCast(entry[0].nfun));
+        const fun = wrap.fromNfunction(entry[0].nfun);
         tables.put(env, value.fromBytes(std.mem.span(entry_name), .symbol), fun);
         putRow(
             r,
-            entry[0].cfun,
+            entry[0].nfun,
             entry_name,
             regprefix,
             entry[0].source_file,
@@ -333,8 +333,8 @@ pub fn coreDefSm(
     _ = sl;
     const key = value.fromBytes(std.mem.span(name), .symbol);
     tables.put(env, key, x);
-    if (repr.checkType(x, repr.Tag.cfunction)) {
-        putRow(&vm_state.current().registry, wrap.toCfunction(x), name, null, null, 0);
+    if (repr.checkType(x, repr.Tag.nfunction)) {
+        putRow(&vm_state.current().registry, wrap.toNfunction(x), name, null, null, 0);
     }
 }
 
@@ -419,8 +419,8 @@ pub fn getCoreTable(name: [*:0]const u8) ?*tables.Table {
 
 /// Records a builtin's name against its function pointer, with no prefix and
 /// no source location.
-pub fn register(name: ?[*:0]const u8, cfun: abi.CFunction) void {
-    putRow(&vm_state.current().registry, cfun, name, null, null, 0);
+pub fn register(name: ?[*:0]const u8, nfun: abi.NFunction) void {
+    putRow(&vm_state.current().registry, nfun, name, null, null, 0);
 }
 
 /// Records an abstract type under its name, so that the unmarshaller can find
@@ -458,7 +458,7 @@ pub fn registryDeinit(r: *Registry) void {
 
 /// Finds a builtin's metadata by its function pointer, in the current VM's
 /// registry, or null.
-pub fn registryGet(key: abi.CFunction) ?*Row {
+pub fn registryGet(key: abi.NFunction) ?*Row {
     return getRow(&vm_state.current().registry, key);
 }
 
@@ -477,11 +477,11 @@ pub fn registryInit(r: *Registry) void {
 
 /// Records a builtin's metadata in the current VM's registry.
 ///
-/// `key` is the cfunction, `name` and `name_prefix` what a trace prints, and
+/// `key` is the nfunction, `name` and `name_prefix` what a trace prints, and
 /// `source_file` and `source_line` where it was written. A caller that already
 /// has the table calls `putRow`.
 pub fn registryPut(
-    key: abi.CFunction,
+    key: abi.NFunction,
     name: ?[*:0]const u8,
     name_prefix: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
@@ -527,7 +527,7 @@ pub fn resolveExt(env: *tables.Table, sym: [*:0]const u8) Binding {
 /// `(string/replace "a" "b" s)` does not. This function raises what the call
 /// raises.
 ///
-/// The cfunction call goes through `raise.cfunction`, and Janet's does not.
+/// The nfunction call goes through `raise.nfunction`, and Janet's does not.
 /// Without the test a raising substitution passes this frame unnoticed and is
 /// reported against whichever builtin called it, and the remaining matches are
 /// substituted with nil in the meantime.
@@ -540,7 +540,7 @@ pub fn textSubstitution(
     const extra_argc: i32 = @intCast(extra.len);
     const value_type = repr.typeOf(subst.*);
     switch (value_type) {
-        repr.Tag.function, repr.Tag.cfunction => {
+        repr.Tag.function, repr.Tag.nfunction => {
             const argc = 1 + extra_argc;
             const argv = tuples.begin(@intCast(argc));
             argv[0] = value.fromBytes(bytes, .string);
@@ -551,7 +551,7 @@ pub fn textSubstitution(
             if (value_type == repr.Tag.function) {
                 return toByteView(try vm_entry.call(wrap.toFunction(subst.*), argv[0..@intCast(argc)]));
             }
-            return toByteView(try raise.cfunction(wrap.toCfunction(subst.*))(argv[0..@intCast(argc)]));
+            return toByteView(try raise.nfunction(wrap.toNfunction(subst.*))(argv[0..@intCast(argc)]));
         },
         else => return memoizeByteView(subst),
     }
@@ -589,20 +589,20 @@ fn addMeta(table: *tables.Table, doc: ?[*:0]const u8, source_file: ?[*:0]const u
 /// steal its low bits, and aborts if it does not.
 ///
 /// `p` is the pointer. Registration is where the check goes rather than every
-/// wrap, because a cfunction pointer and an abstract type pointer are each
+/// wrap, because an nfunction pointer and an abstract type pointer are each
 /// registered exactly once and wrapped repeatedly afterwards.
 inline fn checkPointerAlign(p: ?*const anyopaque) void {
     if (config.value_repr != .nanbox_64 or config.nanbox_pointer_shift == 0) return;
     const mask: usize = (@as(usize, 1) << repr.pointer_shift) - 1;
     if (@intFromPtr(p) & mask != 0) {
-        fatal.fatal("unaligned pointer wrap - cfunction pointers and abstract types " ++
+        fatal.fatal("unaligned pointer wrap - nfunction pointers and abstract types " ++
             "must be aligned with this nanboxing configuration.");
     }
 }
 
 /// Finds a builtin's metadata by its function pointer, or null.
 ///
-/// `r` is the registry and `key` the cfunction. The bisection is the lookup,
+/// `r` is the registry and `key` the nfunction. The bisection is the lookup,
 /// which is what the sorted array and the `dirty` flag are maintained for; a
 /// linear walk would be per frame, on the path a stack trace takes to name each
 /// one.
@@ -611,12 +611,12 @@ inline fn checkPointerAlign(p: ?*const anyopaque) void {
 /// bisection landed on. A bisection over a run of equal keys may land anywhere
 /// in the run, so walking back to its start is what makes the result
 /// independent of the search path. Which registration that first row has is
-/// not a property this code has: one cfunction may be registered more than once
+/// not a property this code has: one nfunction may be registered more than once
 /// under different names, and `sortRows` shifts past equal keys rather than
 /// stopping at them, so every re-sort reverses the order of a tie. The property
 /// that is true either way is the one `test/registry.zig` pins, the row a
 /// walk of the array would find first.
-fn getRow(r: *Registry, key: abi.CFunction) ?*Row {
+fn getRow(r: *Registry, key: abi.NFunction) ?*Row {
     if (r.dirty) sortRows(r);
 
     const rows = r.rows.items;
@@ -624,16 +624,16 @@ fn getRow(r: *Registry, key: abi.CFunction) ?*Row {
     var hi: usize = rows.len;
     while (lo < hi) {
         const mid = lo + (hi - lo) / 2;
-        if (rows[mid].cfun == key) {
+        if (rows[mid].nfun == key) {
             // The first row with this key, rather than whichever the
             // bisection landed on. A bisection over a run of equal keys may
             // land anywhere in the run, so walking back to its start is what
             // makes the result independent of the search path.
             var first = mid;
-            while (first > 0 and rows[first - 1].cfun == key) first -= 1;
+            while (first > 0 and rows[first - 1].nfun == key) first -= 1;
             return &rows[first];
         }
-        if (@intFromPtr(rows[mid].cfun) > @intFromPtr(key)) {
+        if (@intFromPtr(rows[mid].nfun) > @intFromPtr(key)) {
             hi = mid;
         } else {
             lo = mid + 1;
@@ -667,7 +667,7 @@ fn memoizeByteView(val: *repr.Value) abi.ByteView {
 
 /// Records a builtin's metadata in `r`.
 ///
-/// `r` is the registry, `key` the cfunction, `name` and `name_prefix` what a
+/// `r` is the registry, `key` the nfunction, `name` and `name_prefix` what a
 /// trace prints, and `source_file` and `source_line` where it was written.
 ///
 /// The growth floor is sized to the core, so that registering the builtins is
@@ -676,14 +676,14 @@ fn memoizeByteView(val: *repr.Value) abi.ByteView {
 /// binary rather than into the heap, so nothing marks it.
 fn putRow(
     r: *Registry,
-    key: abi.CFunction,
+    key: abi.NFunction,
     name: ?[*:0]const u8,
     name_prefix: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
     source_line: i32,
 ) void {
     r.rows.append(utils.heap, .{
-        .cfun = key,
+        .nfun = key,
         .name = name,
         .name_prefix = name_prefix,
         .source_file = source_file,
@@ -692,7 +692,7 @@ fn putRow(
     r.dirty = true;
 }
 
-/// Sorts the registry by cfunction pointer, so that a lookup can bisect it.
+/// Sorts the registry by nfunction pointer, so that a lookup can bisect it.
 ///
 /// `r` is the registry. Insertion sort, which is right for the shape of the
 /// input: the registry is filled once at startup in whatever order the
@@ -706,7 +706,7 @@ fn sortRows(r: *Registry) void {
     for (rows[1..], 1..) |reg, i| {
         var j: usize = i;
         while (j > 0) : (j -= 1) {
-            if (@intFromPtr(rows[j - 1].cfun) < @intFromPtr(reg.cfun)) break;
+            if (@intFromPtr(rows[j - 1].nfun) < @intFromPtr(reg.nfun)) break;
             rows[j] = rows[j - 1];
         }
         rows[j] = reg;

@@ -1,7 +1,7 @@
 ; The indexed protocol's benchmark corpus: reading a collection's elements.
 ;
 ; The Phase 9 corpus measures the interpreter and the Phase 10 one measures
-; cfunction entry. Neither contains a splice, an `apply` or an `array/concat`,
+; nfunction entry. Neither contains a splice, an `apply` or an `array/concat`,
 ; so neither can see the sites the indexed protocol converts: both corpora sat
 ; flat through a change that made one of these workloads 4.6 times faster and
 ; another 13% slower.
