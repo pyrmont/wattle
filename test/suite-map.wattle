@@ -227,7 +227,8 @@
   "describe nested")
 (assert (= "{:a 1}" (string/format "%q" (hash-map :a 1))) "format is the map literal")
 (assert (= "{:a 1}" (string/format "%w" (hash-map :a 1))) "and so is the source form")
-(assert (= ":a 1" (string (hash-map :a 1))) "string gives the entries")
+(assert (string/has-prefix? "<map 0x" (string (hash-map :a 1))) "string gives the address")
+(assert (string/has-prefix? "<core/set 0x" (string (hash-set 1))) "and so for a set")
 
 ; A set in a syntax tree is a literal
 

@@ -172,7 +172,8 @@
 ; `%q` is source: a vector spells itself `[ ]`, where `describe` keeps the
 ; angle-bracket form every value has there.
 (assert (= "[1 2 3]" (string/format "%q" v)) "format")
-(assert (= "1 2 3" (string v)) "string")
+; `string` gives a vector's address, as it does for every collection.
+(assert (string/has-prefix? "<vector 0x" (string v)) "string")
 
 ; The source writer spells a vector `[ ]`, which is what Wattle's parser reads one from, so
 ; a vector round-trips where it had no source form at all.

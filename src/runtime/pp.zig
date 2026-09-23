@@ -167,6 +167,10 @@ pub fn toString(x: repr.Value) strings.String {
 }
 
 /// Renders `x` the way `(string x)` does, into `buffer`.
+///
+/// A collection comes out as `<vector 0x...>`, its type's name and its
+/// address, and so does a set. `descriptionB` gives a vector's, a map's and a
+/// set's elements.
 pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
     switch (repr.typeOf(x)) {
         repr.Tag.nil => try buffers.pushCString(buffer, ""),
@@ -186,11 +190,13 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
             if (buffer == to) try buffers.extra(buffer, @intCast(to.count));
             try buffers.pushBytes(buffer, to.slice());
         },
-        repr.Tag.map => try maps.describeTree(@constCast(wrap.toMap(x)), @ptrCast(buffer)),
-        repr.Tag.vector => try vectorElementsB(buffer, wrap.toVector(x)),
         repr.Tag.abstract => {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
+            // A set's `tostring` callback describes its elements for
+            // `descriptionB`. `string` gives a set's address, as it does for
+            // every other collection.
+            if (t == &maps.set_type) return stringDescriptionB(buffer, t.name, p);
             if (t.tostring) |tostring| {
                 // The slot takes `*abi.Render`; see `abi.zig`.
                 try tostring(p, @ptrCast(buffer));
