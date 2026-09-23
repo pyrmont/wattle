@@ -33,16 +33,20 @@
   (os/proc-wait p)
   [out err])
 
+; On Windows the C library writes standard output in text mode, which writes
+; each newline as `\r\n`.
+(def- line-end (if (= :windows (os/which)) "\r\n" "\n"))
+
 ; Without a terminal the plain reader runs: the prompt is written to standard
 ; error and nothing is redrawn.
 (let [[out err] (run [(dyn *executable*) "-q" "-n" "-R"] "(+ 1 2)\n")]
-  (assert (= "3\n" out) "the plain reader evaluates a line from a pipe")
+  (assert (= (string "3" line-end) out) "the plain reader evaluates a line from a pipe")
   (assert (= "repl:1:> repl:2:> " err) "the plain reader writes each prompt once"))
 
 ; The plain reader returns one line, so a form of two lines is read by two
 ; calls, and the second prompt shows the open delimiter.
 (let [[out err] (run [(dyn *executable*) "-q" "-n" "-R"] "(+ 1\n2)\n")]
-  (assert (= "3\n" out) "the plain reader evaluates a form of two lines")
+  (assert (= (string "3" line-end) out) "the plain reader evaluates a form of two lines")
   (assert (= "repl:1:> repl:2:(> repl:3:> " err)
           "the plain reader shows the open delimiter in the prompt"))
 

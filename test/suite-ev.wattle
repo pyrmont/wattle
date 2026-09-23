@@ -660,9 +660,11 @@
     (ev/gather
       (os/proc-wait p)
       (ev/slurp (p :out))))
-  (def data (string/replace-all "\r" "" data))
+  ; On Windows the C library writes both streams in text mode, which writes
+  ; each newline as `\r\n`.
+  (def line-end (if (= :windows (os/which)) "\r\n" "\n"))
   (assert (zero? exit-code) "subprocess ran")
-  (assert (= data "hi\nthere\n") "output is correct"))
+  (assert (= (string data) (string "hi" line-end "there" line-end)) "output is correct"))
 
 ; Error handling
 (assert-error "bad thread" (ev/thread in))
