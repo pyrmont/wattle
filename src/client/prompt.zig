@@ -32,6 +32,19 @@
 //! report as pending and otherwise opens a line. Without an environment Enter
 //! always submits.
 //!
+//! ## History
+//!
+//! A `getline` given an environment browses and records the history, and a
+//! `getline` without one does neither. The history is created at the first
+//! `read` that browses it, with the entries of the file `WATTLE_HISTFILE`
+//! names, and each entry recorded is appended to that file. With the variable
+//! unset or empty the history lasts for the process only. A file that cannot
+//! be read is taken as empty, and a write that fails is not reported, so a
+//! bad file never stops a line from being read. At most the last megabyte of
+//! the file is read, starting at a line, so a long file does not grow the
+//! memory the read takes. A file longer than that, or with more entries than
+//! the history keeps, is written again with the entries kept.
+//!
 //! ## Output while a line is open
 //!
 //! `read` passes `io.divert` a function that gives each write to standard
@@ -76,6 +89,13 @@ const wrap = subsystems.value.wrap;
 /// The most bytes one read takes from the terminal.
 const read_size = 256;
 
+/// The most bytes read from the end of the history file.
+const history_read_limit: i64 = 1 << 20;
+
+/// The `whence` values of `fseeko`, which are the same on every target.
+const seek_set: c_int = 0;
+const seek_end: c_int = 2;
+
 /// Whether this build waits on the loop for input, through the stream feed.
 /// Windows reads with the blocking feed whether or not the loop is compiled.
 const stream_feed = config.ev and builtin.os.tag != .windows;
@@ -91,6 +111,10 @@ var pending_buffer: ?*buffers.Buffer = null;
 /// loop and rooted for the life of the process.
 var input_stream: ?*ev_stream.Stream = null;
 
+/// The history a `getline` given an environment browses, created at the
+/// first such `read`.
+var history: ?lineedit.history.History = null;
+
 /// Whether standard output is a terminal, read when a line is opened.
 var output_is_terminal = false;
 
@@ -103,11 +127,11 @@ var output_is_terminal = false;
 ///
 /// `buffer` is empty and takes the line and a newline. `source` is whether
 /// `getline` was given an environment, which makes Enter ask the parser
-/// whether the buffer is finished. The result is
-/// `buffer`, which is empty at end of input, or the keyword `:cancel` after
-/// Ctrl-C. The result is null when the editor is not used, and the caller
-/// then reads without it. With the event loop, the calling fiber is
-/// suspended until the line ends.
+/// whether the buffer is finished, and makes the line browse the history and
+/// record a submission in it. The result is `buffer`, which is empty at end
+/// of input, or the keyword `:cancel` after Ctrl-C. The result is null when
+/// the editor is not used, and the caller then reads without it. With the
+/// event loop, the calling fiber is suspended until the line ends.
 ///
 /// This function raises when another line is open, and when an allocation
 /// fails.
@@ -118,7 +142,8 @@ pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool) raise.Err
     if (!terminal.enter()) return null;
     output_is_terminal = c.isatty(1) != 0;
     io.divert(&divertedWrite);
-    const opened = s.begin(prompt, size(), if (source) &finished else null) catch {
+    const browsed = if (source) historyPtr() else null;
+    const opened = s.begin(prompt, size(), if (source) &finished else null, browsed) catch {
         abandon();
         return raise.panic("out of memory");
     };
@@ -205,14 +230,16 @@ fn finished(text: []const u8) bool {
 /// returns.
 ///
 /// The session's last bytes are written before the terminal leaves raw mode,
-/// so they are written as the session produced them. This function raises
-/// when `buffer` cannot take the line.
+/// so they are written as the session produced them. A submitted line that
+/// browsed the history is recorded in it. This function raises when `buffer`
+/// cannot take the line.
 fn finish(end: lineedit.session.End, buffer: *buffers.Buffer) raise.Error!repr.Value {
     flush();
     restore();
     release();
     switch (end) {
         .submit => {
+            if (sessionPtr().history) |h| record(h, sessionPtr().line());
             try buffers.pushBytes(buffer, sessionPtr().line());
             try buffers.pushU8(buffer, '\n');
             return wrap.fromBuffer(buffer);
@@ -225,6 +252,45 @@ fn finish(end: lineedit.session.End, buffer: *buffers.Buffer) raise.Error!repr.V
 /// Writes the bytes the session has produced to the terminal.
 fn flush() void {
     terminal.write(sessionPtr().take());
+}
+
+/// Returns the path `WATTLE_HISTFILE` names, or null when it is unset or
+/// empty.
+fn historyPath() ?[*:0]const u8 {
+    const path = c.getenv("WATTLE_HISTFILE") orelse return null;
+    if (path[0] == 0) return null;
+    return path;
+}
+
+/// Returns the history, creating it at the first call with the entries of the
+/// history file.
+///
+/// At most `history_read_limit` bytes are read, from the end of the file. A
+/// file that is longer, or that has more entries than the history keeps, is
+/// written again with the entries kept. A file that fails partway through
+/// reading is taken as empty and is not written.
+fn historyPtr() *lineedit.history.History {
+    if (history) |*h| return h;
+    history = .init(std.heap.c_allocator);
+    const h = &history.?;
+    const path = historyPath() orelse return h;
+    var contents: std.ArrayList(u8) = .empty;
+    defer contents.deinit(std.heap.c_allocator);
+    // A partial read loads nothing, so the rewrite below cannot shorten the
+    // file to the part that was read.
+    const skipped = readHistory(path, &contents) orelse return h;
+    // An allocation that fails leaves the entries read before it, and the
+    // file is not written.
+    const dropped = h.load(contents.items) catch return h;
+    if (!dropped and !skipped) return h;
+    // A file whose newest entry does not fit in the bytes read loads no
+    // entry, and is left as it is rather than written empty.
+    if (h.entries.items.len == 0) return h;
+    var out: std.Io.Writer.Allocating = .init(std.heap.c_allocator);
+    defer out.deinit();
+    h.write(&out.writer) catch return h;
+    writeHistory(path, "wb", out.written());
+    return h;
 }
 
 /// Roots `buffer` for as long as `read` waits on the loop.
@@ -282,6 +348,53 @@ fn readBlocking(buffer: *buffers.Buffer) raise.Error!repr.Value {
     }
 }
 
+/// Reads the end of the history file at `path` into `contents`, and returns
+/// whether bytes before the end were skipped.
+///
+/// A file longer than `history_read_limit` bytes is read from that many bytes
+/// before its end, and `contents` then starts after the first newline read,
+/// so it holds whole lines. This function returns null, with `contents` in
+/// any state, when the file cannot be opened, measured or read, or when
+/// `contents` cannot grow.
+fn readHistory(path: [*:0]const u8, contents: *std.ArrayList(u8)) ?bool {
+    const file = c.fopen(path, "rb") orelse return null;
+    defer _ = c.fclose(file);
+    if (c.fseeko(file, 0, seek_end) != 0) return null;
+    const length = c.ftello(file);
+    if (length < 0) return null;
+    const skipped = length > history_read_limit;
+    if (c.fseeko(file, if (skipped) length - history_read_limit else 0, seek_set) != 0) return null;
+    var chunk: [4096]u8 = undefined;
+    while (true) {
+        const count = c.fread(&chunk, 1, chunk.len, file);
+        if (count == 0) break;
+        contents.appendSlice(std.heap.c_allocator, chunk[0..count]) catch return null;
+    }
+    if (c.ferror(file) != 0) return null;
+    if (skipped) {
+        const newline = std.mem.indexOfScalar(u8, contents.items, '\n');
+        const start = if (newline) |at| at + 1 else contents.items.len;
+        contents.replaceRangeAssumeCapacity(0, start, &.{});
+    }
+    return skipped;
+}
+
+/// Records `line` in `h`, and appends it to the history file when it was
+/// recorded.
+///
+/// A line that cannot be copied is not recorded, and the line is still
+/// returned to the caller of `getline`.
+fn record(h: *lineedit.history.History, line: []const u8) void {
+    const added = h.add(line) catch false;
+    if (!added) return;
+    const path = historyPath() orelse return;
+    var out: std.Io.Writer.Allocating = .init(std.heap.c_allocator);
+    defer out.deinit();
+    lineedit.history.escape(&out.writer, line) catch return;
+    out.writer.writeByte('\n') catch return;
+    writeHistory(path, "ab", out.written());
+}
+
 /// Drops the root on the buffer `hold` rooted.
 fn release() void {
     const buffer = pending_buffer orelse return;
@@ -315,4 +428,14 @@ fn sessionPtr() *lineedit.session.Session {
 /// Returns the terminal's size as the session takes it.
 fn size() lineedit.session.Size {
     return .{ .columns = terminal.columns(), .rows = terminal.rows() };
+}
+
+/// Writes `bytes` to the file at `path`, opened with `mode`.
+///
+/// A file that cannot be opened or written is left as the failure leaves it,
+/// and nothing is reported.
+fn writeHistory(path: [*:0]const u8, mode: [*:0]const u8, bytes: []const u8) void {
+    const file = c.fopen(path, mode) orelse return;
+    _ = c.fwrite(bytes.ptr, 1, bytes.len, file);
+    _ = c.fclose(file);
 }

@@ -22,9 +22,9 @@
 (def harness (get (dyn *args*) 1))
 
 (defn- run
-  "Runs `argv` with `TERM` set, writes `input` to its standard input, and returns what it wrote to standard output and standard error."
-  [argv &opt input]
-  (def env (merge (os/environ) {"TERM" "xterm-256color" :in :pipe :out :pipe :err :pipe}))
+  "Runs `argv` with `TERM` and the variables in `extra` set, writes `input` to its standard input, and returns what it wrote to standard output and standard error."
+  [argv &opt input extra]
+  (def env (merge (os/environ) {"TERM" "xterm-256color" :in :pipe :out :pipe :err :pipe} (or extra {})))
   (def p (os/spawn argv :pe env))
   (when input (:write (p :in) input))
   (:close (p :in))
@@ -51,14 +51,14 @@
 (compwhen harness
 
   (defn- drive
-    "Types `input` at the client behind the harness, and returns what the harness printed. The input waits for `:marker`, `repl:1:> ` by default. `:screen` asks for the screen rather than the bytes and `:cursor` for the cursor after it, and `:exit` for the command's exit and the terminal's modes, with the wait for the exit bounded at three seconds. `:cols` and `:rows` size the terminal, and `:args` are the client's arguments after `-q -n -R`."
-    [input &named marker screen cursor exit cols rows args]
+    "Types `input` at the client behind the harness, and returns what the harness printed. The input waits for `:marker`, `repl:1:> ` by default. `:screen` asks for the screen rather than the bytes and `:cursor` for the cursor after it, and `:exit` for the command's exit and the terminal's modes, with the wait for the exit bounded at three seconds. `:cols` and `:rows` size the terminal, `:args` are the client's arguments after `-q -n -R`, and `:env` is a table of environment variables to set."
+    [input &named marker screen cursor exit cols rows args env]
     (def argv [harness "-w" (or marker "repl:1:> ") "-i" input
                "-c" (string (or cols 100)) "-r" (string (or rows 30))
                |(if screen ["-s"] []) |(if cursor ["-k"] [])
                |(if exit ["-x" "-t" "3000"] [])
                "--" (dyn *executable*) "-q" "-n" "-R" |(or args [])])
-    (def [out err] (run argv))
+    (def [out err] (run argv nil env))
     (assert (= "" err) (string "the harness reports nothing: " err))
     out)
 
@@ -153,6 +153,110 @@
   (assert (= "repl:1:> (+ 1\n         2^C\nrepl:1:>\n"
              (drive """(+ 1\r2\x03""" :screen true))
           "Ctrl-C cancels a form of several rows")
+
+  ; History. Each case names its own file in the temporary directory, and
+  ; the file is removed after it.
+  (var history-count 0)
+  (defn- history-file
+    "Returns a path for a history file that does not exist, and writes `contents` to it when given."
+    [&opt contents]
+    (++ history-count)
+    (def path (string (or (os/getenv "TMPDIR") "/tmp/") "/wattle-history-"
+                      (os/getpid) "-" history-count))
+    (when (os/stat path) (os/rm path))
+    (when contents (spit path contents))
+    path)
+  (defn- slurp-and-remove
+    "Returns the contents of the file at `path`, or nil when there is none, and removes it."
+    [path]
+    (when (os/stat path)
+      (def contents (string (slurp path)))
+      (os/rm path)
+      contents))
+
+  ; A form of two rows is recalled whole by Up, drawn under the marker at the
+  ; next prompt, and written to the file on one line with its newline
+  ; escaped.
+  (let [path (history-file)]
+    (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:> (+ 1\n         2)\n"
+               (drive """(+ 1\r2)\r\m{repl:3:> }\e[A"""
+                      :screen true :env {"WATTLE_HISTFILE" path}))
+            "Up recalls a form of two rows")
+    (assert (= "(+ 1\\n2)\n" (slurp-and-remove path))
+            "the history file holds the form on one line"))
+
+  ; A recalled form is submitted again, and is not recorded twice.
+  (let [path (history-file)]
+    (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:> (+ 1\n         2)\n3\nrepl:5:>\n"
+               (drive """(+ 1\r2)\r\m{repl:3:> }\e[A\r"""
+                      :screen true :env {"WATTLE_HISTFILE" path}))
+            "a recalled form is submitted again")
+    (assert (= "(+ 1\\n2)\n" (slurp-and-remove path))
+            "a form submitted twice in a row is recorded once"))
+
+  ; Up leaves the line being typed, and Down past the newest entry brings it
+  ; back.
+  (let [path (history-file)]
+    (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:> abc\n"
+               (drive """(+ 1 2)\r\m{repl:2:> }abc\e[A\m{> (+ 1 2)}\e[B"""
+                      :screen true :env {"WATTLE_HISTFILE" path}))
+            "Down past the newest entry brings back the line being typed")
+    (slurp-and-remove path))
+
+  ; An escaped entry in a file written beforehand is read as a form of two
+  ; rows.
+  (let [path (history-file "(+ 1\\n2)\n")]
+    (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:>\n"
+               (drive """\e[A\r""" :screen true :env {"WATTLE_HISTFILE" path}))
+            "an entry read from the file is recalled as two rows")
+    (slurp-and-remove path))
+
+  ; A history file that cannot be read or written is taken as empty, and the
+  ; line is read and evaluated. A directory opens and fails at the read.
+  (let [path (history-file)]
+    (os/mkdir path)
+    (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:>\n"
+               (drive """\e[A(+ 1 2)\r""" :screen true :env {"WATTLE_HISTFILE" path}))
+            "a history file that cannot be read does not stop the line")
+    (os/rmdir path))
+
+  ; At most the last megabyte of the file is read, from the first line that
+  ; starts in it. A longer file is written again with what was read, so its
+  ; oldest entries are gone and its newest remain.
+  (let [pad (string/repeat "x" 2000)
+        older (seq [i :range [0 600]] (string "(comment " i " " pad ")\n"))
+        path (history-file (string |older "(+ 1 2)\n"))]
+    (assert (= "repl:1:> (+ 1 2)\n3\nrepl:2:>\n"
+               (drive """\e[A\r""" :screen true :env {"WATTLE_HISTFILE" path}))
+            "the newest entry of a long file is recalled")
+    (def contents (slurp-and-remove path))
+    (assert (<= (length contents) (* 1024 1024))
+            "a long file is written again within a megabyte")
+    (assert (string/has-suffix? (string (last older) "(+ 1 2)\n") contents)
+            "the rewritten file keeps the newest entries")
+    (assert (not (string/has-prefix? "(comment 0 " contents))
+            "the rewritten file drops the oldest entries"))
+
+  ; A file whose only entry is longer than a megabyte loads nothing, and is
+  ; left as it is rather than written empty.
+  (let [entry (string "(comment " (string/repeat "x" (* 1100 1024)) ")\n")
+        path (history-file entry)]
+    (assert (= "repl:1:>\n"
+               (drive """\e[A""" :screen true :env {"WATTLE_HISTFILE" path}))
+            "an entry longer than the bytes read is not recalled")
+    (assert (= entry (slurp-and-remove path))
+            "a file with no whole entry in the bytes read is left as it is"))
+
+  ; A getline without an environment does not browse the history, and its
+  ; line is not recorded.
+  (let [path (history-file "(old)\n")]
+    (assert (= "a> x\nx\n"
+               (drive """\e[Ax\r""" :marker "a> " :screen true
+                      :env {"WATTLE_HISTFILE" path}
+                      :args ["-e" """(print (string/trim (getline "a> ")))"""]))
+            "Up in a getline without an environment recalls nothing")
+    (assert (= "(old)\n" (slurp-and-remove path))
+            "a getline without an environment records nothing"))
 
   ; A tab is drawn in caret notation, the width the layout measures it at.
   (assert (= "repl:1:> a^Ib\n"

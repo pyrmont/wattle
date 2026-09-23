@@ -11,6 +11,7 @@
 // ==========================================================================
 
 pub const editor = @import("lineedit/editor.zig");
+pub const history = @import("lineedit/history.zig");
 pub const keys = @import("lineedit/keys.zig");
 pub const layout = @import("lineedit/layout.zig");
 pub const picture = @import("lineedit/picture.zig");
@@ -26,6 +27,7 @@ comptime {
     // A `test` block is collected only from a file that the test root
     // references, so each file is named here.
     _ = editor;
+    _ = history;
     _ = keys;
     _ = layout;
     _ = picture;

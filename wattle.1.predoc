@@ -163,6 +163,11 @@ ENVIRONMENT
   A Wattle file to load before the REPL starts. It is not loaded when a
   _script_ runs without **-r**.
 
+- `WATTLE_HISTFILE`:
+  A file to keep the REPL's history in. Each form submitted at the REPL on a
+  terminal is appended to it, and the forms in it are recalled with the Up
+  key in a later session. If unset, history lasts only until the REPL exits.
+
 - `NO_COLOR`:
   If set to a non-empty value, disable colour. Colour is otherwise used when
   both standard output and standard error are terminals.

@@ -18,7 +18,9 @@
 //! end of the buffer. Home, End, Ctrl-U and Ctrl-K act on the cursor's line,
 //! and none of them removes or crosses a newline. Up and Down move by layout
 //! row, which a wrap opens as well as a newline, so `vertical` takes the
-//! layout's geometry and `apply` does not move for them.
+//! layout's geometry and `apply` does not move for them. Up on the first
+//! row and Down on the last return `beyond`, which the session takes to the
+//! history.
 //!
 //! A run of Up and Down keeps the _goal column_, the cursor's column when the
 //! run began, so a move through a shorter row and back returns to it. Every
@@ -53,11 +55,13 @@ const rune = @import("rune.zig");
 
 /// What applying a key did.
 ///
-/// `Editor.apply` returns an `Outcome`. `unchanged` and `edited` leave the
-/// line open, and `edited` says the buffer or the cursor changed. `submit`,
+/// `Editor.apply` and `Editor.vertical` return an `Outcome`. `unchanged`,
+/// `edited` and `beyond` leave the line open, and `edited` says the buffer or
+/// the cursor changed. `beyond` is Up on the first row or Down on the last,
+/// which change nothing in the buffer. `submit`,
 /// `eof` and `cancel` end the line: `submit` with the buffer as it stands,
 /// `eof` at Ctrl-D on an empty buffer, and `cancel` at Ctrl-C.
-pub const Outcome = enum { unchanged, edited, submit, eof, cancel };
+pub const Outcome = enum { unchanged, edited, beyond, submit, eof, cancel };
 
 /// Returns whether `text` is ready to be submitted.
 ///
@@ -97,6 +101,18 @@ pub const Editor = struct {
     pub fn clear(editor: *Editor) void {
         editor.buffer.clearRetainingCapacity();
         editor.cursor = 0;
+        editor.goal = null;
+    }
+
+    /// Replaces the buffer with `text` and puts the cursor at its end.
+    ///
+    /// This function returns `error.OutOfMemory` when the buffer cannot grow,
+    /// and the buffer is then unchanged.
+    pub fn replace(editor: *Editor, text: []const u8) error{OutOfMemory}!void {
+        try editor.buffer.ensureTotalCapacity(editor.allocator, text.len);
+        editor.buffer.clearRetainingCapacity();
+        editor.buffer.appendSliceAssumeCapacity(text);
+        editor.cursor = text.len;
         editor.goal = null;
     }
 
@@ -164,13 +180,14 @@ pub const Editor = struct {
     ///
     /// `geometry` is the layout the buffer is drawn with. The cursor moves to
     /// the byte `layout.offset` names at the goal column on that row. On the
-    /// first row a move up, and on the last row a move down, changes nothing.
+    /// first row a move up, and on the last row a move down, changes nothing
+    /// and returns `beyond`.
     pub fn vertical(editor: *Editor, geometry: layout.Geometry, up: bool) Outcome {
         const text = editor.buffer.items;
         const from = layout.position(geometry, text, editor.cursor);
         const column = editor.goal orelse from.column;
-        if (up and from.row == 0) return .unchanged;
-        if (!up and from.row + 1 >= layout.rows(geometry, text)) return .unchanged;
+        if (up and from.row == 0) return .beyond;
+        if (!up and from.row + 1 >= layout.rows(geometry, text)) return .beyond;
         const row = if (up) from.row - 1 else from.row + 1;
         const outcome = editor.moveTo(layout.offset(geometry, text, .{ .row = row, .column = column }));
         editor.goal = column;
@@ -497,7 +514,16 @@ test "vertical: a column inside the marker names the row's first byte" {
     try std.testing.expectEqual(2, result[0].cursor);
 }
 
-test "vertical: Up on the first row and Down on the last change nothing" {
-    try expectRun("(ab\x1b[A", "(ab", 3, .unchanged);
-    try expectRun("(a\nb\x1b[B", "(a\nb", 4, .unchanged);
+test "vertical: Up on the first row and Down on the last are beyond the buffer" {
+    try expectRun("(ab\x1b[A", "(ab", 3, .beyond);
+    try expectRun("(a\nb\x1b[B", "(a\nb", 4, .beyond);
+}
+
+test "replace: the cursor goes to the end and the run of vertical moves ends" {
+    var result = try run("(abc\nde\x1b[A", .{ .columns = 80, .prompt = 2, .marker = 2 });
+    defer result[0].deinit();
+    try result[0].replace("(x\ny)");
+    try std.testing.expectEqualStrings("(x\ny)", result[0].buffer.items);
+    try std.testing.expectEqual(5, result[0].cursor);
+    try std.testing.expectEqual(null, result[0].goal);
 }
