@@ -34,6 +34,23 @@
 //! newer entry, with the cursor at its end. Without a history they change
 //! nothing. The session does not record a submitted line; its owner does.
 //!
+//! ## Completion and hints
+//!
+//! `begin` takes a `Source` for a line that reads source, or null. With its
+//! `symbol` and `gather` functions, Tab completes the token before the
+//! cursor, as `complete.zig` describes, and draws the candidates beneath the
+//! line while a completion is in progress. Any key other than Tab ends the
+//! completion with the buffer as it stands, and is then applied. Without
+//! them, or inside a bracketed paste, Tab inserts a tab.
+//!
+//! A `gather` that fails is taken as giving no candidates, and what it added
+//! is freed, so the line stays open.
+//!
+//! With its `symbol` and `hint` functions, a frame draws the hint for the
+//! token that ends at the cursor, when nothing follows the cursor on its
+//! line. The frame at the end of a line draws neither the candidates nor the
+//! hint.
+//!
 //! ## Bracketed paste
 //!
 //! A paste can submit several lines, and its bytes can be split across reads
@@ -52,11 +69,22 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const complete = @import("complete.zig");
 const editor_mod = @import("editor.zig");
 const history_mod = @import("history.zig");
 const keys = @import("keys.zig");
 const layout = @import("layout.zig");
 const render = @import("render.zig");
+
+// ==========================================================================
+// Aliased types
+// ==========================================================================
+
+/// Returns the hint for `token`, or null for none.
+///
+/// `Source` has a `Hint`. The result is valid until the next call into the
+/// runtime, and a frame draws it at once.
+pub const Hint = *const fn (token: []const u8) ?[]const u8;
 
 // ==========================================================================
 // Types
@@ -68,6 +96,20 @@ const render = @import("render.zig");
 /// `Session.begin` and `Session.feed` return an `End`, and `Session.close`
 /// takes one.
 pub const End = enum { submit, eof, cancel };
+
+/// The functions a line that reads source is edited with.
+///
+/// `Session.begin` takes a `Source`. `finished` sets what Enter does, as
+/// `editor.Editor.finished` does. `symbol` reports which bytes a token has,
+/// `gather` adds the candidates for a token, and `hint` returns a token's
+/// hint. Tab completes only with `symbol` and `gather`, and a frame draws a
+/// hint only with `symbol` and `hint`.
+pub const Source = struct {
+    finished: ?editor_mod.Finished = null,
+    symbol: ?complete.Symbol = null,
+    gather: ?complete.Gather = null,
+    hint: ?Hint = null,
+};
 
 /// The terminal's size, in columns and rows.
 ///
@@ -86,7 +128,9 @@ pub const Size = struct {
 /// buffer and the cursor, `prompt` a copy of the prompt, `output` the bytes
 /// for the terminal that `take` has not returned, `held` the output after its
 /// last newline, and `typeahead` the bytes after the key that ended the last
-/// line. `history` is the history the open line browses, or null. `climb` is
+/// line. `source` is the open line's `Source`, or null, and `cycle` is the
+/// completion in progress, or null. `history` is the history the open line
+/// browses, or null. `climb` is
 /// `render.zig`'s climb and `top` the first row of its window, `size` is the
 /// size the last frame was drawn at, and `open` is whether a line is being
 /// edited.
@@ -98,6 +142,8 @@ pub const Session = struct {
     output: std.Io.Writer.Allocating,
     held: std.ArrayList(u8) = .empty,
     typeahead: std.ArrayList(u8) = .empty,
+    source: ?Source = null,
+    cycle: ?complete.Cycle = null,
     history: ?*history_mod.History = null,
     climb: usize = 0,
     top: usize = 0,
@@ -116,6 +162,7 @@ pub const Session = struct {
 
     /// Releases every allocation.
     pub fn deinit(session: *Session) void {
+        _ = session.endCycle();
         session.editor.deinit();
         session.prompt.deinit(session.allocator);
         session.output.deinit();
@@ -126,16 +173,18 @@ pub const Session = struct {
     /// Opens a line with `prompt`, draws its first frame, and applies the
     /// typeahead.
     ///
-    /// `size` is the terminal's size, and `finished` decides what Enter does
-    /// on this line, as `editor.Editor.finished` does. `history` is what Up
+    /// `size` is the terminal's size, and `source` is the functions a line
+    /// that reads source is edited with, or null for none. `history` is what Up
     /// and Down browse beyond the buffer's first and last rows, or null for
     /// nothing, and is reset here and when the line ends. The result is how the
     /// line ended when the typeahead ended it, and null when the line is
     /// open. This function returns `error.OutOfMemory` when an allocation
     /// fails, with no line open.
-    pub fn begin(session: *Session, prompt: []const u8, size: Size, finished: ?editor_mod.Finished, history: ?*history_mod.History) error{OutOfMemory}!?End {
+    pub fn begin(session: *Session, prompt: []const u8, size: Size, source: ?Source, history: ?*history_mod.History) error{OutOfMemory}!?End {
         session.editor.clear();
-        session.editor.finished = finished;
+        _ = session.endCycle();
+        session.source = source;
+        session.editor.finished = if (source) |s| s.finished else null;
         session.history = history;
         if (history) |h| h.reset();
         session.decoder = .{};
@@ -166,7 +215,9 @@ pub const Session = struct {
         var changed = false;
         for (bytes, 0..) |byte, i| {
             const key = session.decoder.feed(byte) orelse continue;
+            if (key != .tab and session.endCycle()) changed = true;
             const outcome = switch (key) {
+                .tab => try session.tab(),
                 .up => try session.vertical(true),
                 .down => try session.vertical(false),
                 else => try session.editor.apply(key),
@@ -232,6 +283,14 @@ pub const Session = struct {
         return bytes;
     }
 
+    /// Ends the completion in progress, and reports whether there was one.
+    fn endCycle(session: *Session) bool {
+        var cycle = session.cycle orelse return false;
+        cycle.deinit();
+        session.cycle = null;
+        return true;
+    }
+
     /// Returns the layout the open line is drawn with.
     fn geometry(session: *const Session) layout.Geometry {
         return render.geometryOf(session.prompt.items, session.size.columns);
@@ -248,9 +307,78 @@ pub const Session = struct {
         return .edited;
     }
 
+    /// Returns the hint for the token that ends at the cursor, or an empty
+    /// slice where there is none or text follows the cursor on its line.
+    fn hintText(session: *const Session) []const u8 {
+        const source = session.source orelse return "";
+        const symbol = source.symbol orelse return "";
+        const hint = source.hint orelse return "";
+        const text = session.editor.buffer.items;
+        const cursor = session.editor.cursor;
+        if (cursor < text.len and text[cursor] != '\n') return "";
+        const start = complete.tokenStart(text, cursor, symbol);
+        if (start == cursor) return "";
+        return hint(text[start..cursor]) orelse "";
+    }
+
+    /// Applies Tab: completes the token before the cursor, or inserts a tab
+    /// on a line that does not complete and inside a bracketed paste.
+    fn tab(session: *Session) error{OutOfMemory}!editor_mod.Outcome {
+        const editor = &session.editor;
+        if (session.cycle) |*cycle| {
+            const text = cycle.advance();
+            try editor.splice(cycle.start, cycle.start + cycle.length, text);
+            cycle.length = text.len;
+            return .edited;
+        }
+        const source = session.source orelse return editor.apply(.tab);
+        const symbol = source.symbol orelse return editor.apply(.tab);
+        const gather = source.gather orelse return editor.apply(.tab);
+        if (editor.pasting) return editor.apply(.tab);
+        const text = editor.buffer.items;
+        const end = complete.tokenEnd(text, editor.cursor, symbol);
+        const start = complete.tokenStart(text, end, symbol);
+        const moved: editor_mod.Outcome = if (end == editor.cursor) .unchanged else .edited;
+        editor.cursor = end;
+        editor.goal = null;
+        if (start == end) return moved;
+        var candidates = complete.Candidates.init(session.allocator);
+        // A gatherer that fails gives no candidates, so the line stays open.
+        gather(text[start..end], &candidates) catch {
+            candidates.deinit();
+            return moved;
+        };
+        candidates.settle();
+        switch (candidates.names.items.len) {
+            0 => {
+                candidates.deinit();
+                return moved;
+            },
+            1 => {
+                defer candidates.deinit();
+                try editor.splice(start, end, candidates.names.items[0]);
+                return .edited;
+            },
+            else => {
+                // From here the cycle frees the candidates.
+                var cycle = complete.Cycle.init(candidates, text[start..end], start) catch |err| {
+                    candidates.deinit();
+                    return err;
+                };
+                errdefer cycle.deinit();
+                const first = cycle.advance();
+                try editor.splice(start, end, first);
+                cycle.length = first.len;
+                session.cycle = cycle;
+                return .edited;
+            },
+        }
+    }
+
     /// Draws the last frame with the cursor at the end and every row, breaks
     /// the row, and writes the held output.
     fn finish(session: *Session, end: End) error{OutOfMemory}!void {
+        _ = session.endCycle();
         if (session.history) |h| h.reset();
         if (end != .submit) session.editor.pasting = false;
         session.editor.cursor = session.editor.buffer.items.len;
@@ -267,7 +395,13 @@ pub const Session = struct {
 
     /// Draws a frame of the open line, within the terminal's height when
     /// `bounded` and with every row otherwise.
+    ///
+    /// The frame draws the candidates of the completion in progress, and a
+    /// bounded frame draws the hint. The frame at the end of a line is
+    /// unbounded, and no completion is in progress when it is drawn.
     fn redraw(session: *Session, bounded: bool) error{OutOfMemory}!void {
+        var listing: ?render.Listing = null;
+        if (session.cycle) |cycle| listing = .{ .names = cycle.candidates.names.items, .selected = cycle.selected };
         const drawn = render.draw(&session.output.writer, session.climb, .{
             .prompt = session.prompt.items,
             .buffer = session.editor.buffer.items,
@@ -275,6 +409,8 @@ pub const Session = struct {
             .columns = session.size.columns,
             .height = if (bounded) session.size.rows else 0,
             .top = session.top,
+            .listing = listing,
+            .hint = if (bounded) session.hintText() else "",
         }) catch return error.OutOfMemory;
         session.climb = drawn.climb;
         session.top = drawn.top;
@@ -410,7 +546,7 @@ fn balanced(text: []const u8) bool {
 test "feed: Enter on an unfinished form opens a row under the marker" {
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("repl:1:> ", w80, &balanced, null);
+    _ = try session.begin("repl:1:> ", w80, .{ .finished = &balanced }, null);
     _ = session.take();
     try std.testing.expectEqual(null, try session.feed("(+ 1\r", w80));
     try std.testing.expectEqualStrings("\r\x1b[Jrepl:1:> (+ 1\r\n         ", session.take());
@@ -422,7 +558,7 @@ test "feed: Enter on an unfinished form opens a row under the marker" {
 test "feed: Up moves to the row above, and Enter there submits the whole form" {
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, null);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, null);
     _ = try session.feed("(+ 1\r2)\x1b[A", w80);
     // Column 4 on the row above is the space after `+`.
     try std.testing.expectEqual(@as(usize, 2), session.editor.cursor);
@@ -433,14 +569,14 @@ test "feed: Up moves to the row above, and Enter there submits the whole form" {
 test "feed: a paste flag lasts until the end marker, and Ctrl-C or Ctrl-D ends it" {
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, null);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, null);
     try std.testing.expectEqual(End.submit, (try session.feed("\x1b[200~(a)\r", w80)).?);
     // No typeahead, and the paste has not ended.
-    _ = try session.begin("> ", w80, &balanced, null);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, null);
     try std.testing.expect(session.editor.pasting);
     try std.testing.expectEqual(End.cancel, (try session.feed("\x03", w80)).?);
     try std.testing.expect(!session.editor.pasting);
-    _ = try session.begin("> ", w80, &balanced, null);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, null);
     _ = try session.feed("\x1b[200~", w80);
     try std.testing.expectEqual(End.eof, (try session.feed("\x04", w80)).?);
     try std.testing.expect(!session.editor.pasting);
@@ -455,12 +591,12 @@ const pasted = "\x1b[200~(a)\r(do\r  (b)\r  (c))\x1b[201~\r";
 fn submitted(chunks: []const []const u8, lines: *std.Io.Writer.Allocating) !void {
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    var ended = try session.begin("> ", w80, &balanced, null);
+    var ended = try session.begin("> ", w80, .{ .finished = &balanced }, null);
     for (chunks) |chunk| {
         ended = try session.feed(chunk, w80);
         while (ended) |_| {
             try lines.writer.print("{s}\n", .{session.line()});
-            ended = try session.begin("> ", w80, &balanced, null);
+            ended = try session.begin("> ", w80, .{ .finished = &balanced }, null);
         }
     }
 }
@@ -500,7 +636,7 @@ test "feed: Up on the first row recalls the newer entry first, with the cursor a
     defer history.deinit();
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, &history);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, &history);
     _ = session.take();
     _ = try session.feed("\x1b[A", w80);
     try std.testing.expectEqualStrings("(b\n c)", session.line());
@@ -513,7 +649,7 @@ test "feed: Up inside a recalled entry of several rows moves by row" {
     defer history.deinit();
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, &history);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, &history);
     _ = try session.feed("\x1b[A\x1b[A", w80);
     try std.testing.expectEqualStrings("(b\n c)", session.line());
     try std.testing.expectEqual(2, session.editor.cursor);
@@ -526,7 +662,7 @@ test "feed: Down past the newest entry brings back the line being typed" {
     defer history.deinit();
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, &history);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, &history);
     _ = try session.feed("xyz\x1b[A\x1b[B", w80);
     try std.testing.expectEqualStrings("xyz", session.line());
     try std.testing.expectEqual(3, session.editor.cursor);
@@ -540,14 +676,14 @@ test "feed: an edit to a recalled entry is gone after the line ends" {
     defer history.deinit();
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, &history);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, &history);
     _ = try session.feed("\x1b[A\x1b[A\x1b[A!\x1b[B", w80);
     try std.testing.expectEqualStrings("(b\n c)", session.line());
     // Down put the cursor on the entry's last row.
     _ = try session.feed("\x1b[A\x1b[A", w80);
     try std.testing.expectEqualStrings("(a)!", session.line());
     try std.testing.expectEqual(End.cancel, (try session.feed("\x03", w80)).?);
-    _ = try session.begin("> ", w80, &balanced, &history);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, &history);
     _ = try session.feed("\x1b[A\x1b[A\x1b[A", w80);
     try std.testing.expectEqualStrings("(a)", session.line());
     try std.testing.expectEqualStrings("(a)", history.entries.items[0]);
@@ -556,10 +692,151 @@ test "feed: an edit to a recalled entry is gone after the line ends" {
 test "feed: without a history Up on the first row changes nothing" {
     var session = Session.init(std.testing.allocator);
     defer session.deinit();
-    _ = try session.begin("> ", w80, &balanced, null);
+    _ = try session.begin("> ", w80, .{ .finished = &balanced }, null);
     _ = try session.feed("ab", w80);
     _ = session.take();
     try std.testing.expectEqual(null, try session.feed("\x1b[A", w80));
     try std.testing.expectEqualStrings("ab", session.line());
     try std.testing.expectEqualStrings("", session.take());
+}
+
+/// Whether `byte` is a letter, a digit, `-` or `/`.
+fn testSymbol(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '/';
+}
+
+/// Adds the names of `test_names` that begin with `token`, the first twice.
+fn testGather(token: []const u8, candidates: *complete.Candidates) error{OutOfMemory}!void {
+    for (test_names) |name| {
+        if (std.mem.startsWith(u8, name, token)) try candidates.add(name);
+    }
+    if (std.mem.startsWith(u8, test_names[0], token)) try candidates.add(test_names[0]);
+}
+
+/// Returns a hint for `map` and nothing for any other token.
+fn testHint(token: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, token, "map")) return "(map f ind)\n\nMap a function.";
+    return null;
+}
+
+/// The names `testGather` completes from, not in order. The three that begin
+/// `zz` and `yy` are longer than a buffer holds after a few keys, so
+/// replacing a token with one of them allocates.
+const test_names = [_][]const u8{ "mapcat", "map", "max", "string/find", "zz" ++ "z" ** 300, "yya" ++ "y" ** 300, "yyb" ++ "y" ** 300 };
+
+/// A source that completes from `test_names` and hints `map`.
+const completing: Source = .{ .symbol = &testSymbol, .gather = &testGather, .hint = &testHint };
+
+/// Opens a line with `completing`, feeds it `bytes`, and checks the buffer.
+fn expectCompleted(bytes: []const u8, buffer: []const u8) !void {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, completing, null);
+    _ = try session.feed(bytes, w80);
+    try std.testing.expectEqualStrings(buffer, session.line());
+    try std.testing.expectEqual(buffer.len, session.editor.cursor);
+}
+
+test "feed: Tab with one candidate replaces the token" {
+    try expectCompleted("(stri\t", "(string/find");
+}
+
+test "feed: Tab with three candidates cycles through each and back to the token" {
+    try expectCompleted("ma\t", "map");
+    try expectCompleted("ma\t\t", "mapcat");
+    try expectCompleted("ma\t\t\t", "max");
+    try expectCompleted("ma\t\t\t\t", "ma");
+    try expectCompleted("ma\t\t\t\t\t", "map");
+}
+
+test "feed: a key other than Tab keeps the candidate and is applied" {
+    try expectCompleted("ma\t\t ", "mapcat ");
+    try expectCompleted("ma\t\tx", "mapcatx");
+}
+
+test "feed: Tab inside a token completes the whole token" {
+    try expectCompleted("stri\x1b[D\x1b[D\t", "string/find");
+}
+
+test "feed: Tab with an empty token or no candidate changes nothing" {
+    try expectCompleted("( \t", "( ");
+    try expectCompleted("qq\t", "qq");
+}
+
+test "feed: Tab inside a paste, and on a line that does not complete, inserts a tab" {
+    try expectCompleted("\x1b[200~ma\t\x1b[201~", "ma\t");
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, null, null);
+    _ = try session.feed("ma\t", w80);
+    try std.testing.expectEqualStrings("ma\t", session.line());
+}
+
+test "feed: the candidates are listed while the completion is in progress" {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, completing, null);
+    _ = session.take();
+    _ = try session.feed("ma\t", w80);
+    try std.testing.expectEqualStrings("\r\x1b[J> map\r\n\x1b[7mmap\x1b[0m     mapcat  max\x1b[1A\r\x1b[5C\x1b[3C\x1b[90m(map f ind) Map a function.\x1b[0m\r\x1b[5C", session.take());
+    _ = try session.feed(" ", w80);
+    try std.testing.expectEqualStrings("\r\x1b[J> map ", session.take());
+}
+
+test "feed: the frame at submission draws no candidates and no hint" {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, completing, null);
+    _ = try session.feed("ma\t", w80);
+    _ = session.take();
+    try std.testing.expectEqual(End.submit, (try session.feed("\r", w80)).?);
+    try std.testing.expectEqualStrings("\r\x1b[J> map\r\n", session.take());
+}
+
+test "feed: no hint is drawn with text after the cursor on its line" {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, completing, null);
+    _ = try session.feed("map x\x1b[D\x1b[D", w80);
+    try std.testing.expectEqual(null, std.mem.indexOf(u8, session.take(), "\x1b[90m"));
+    _ = try session.feed("\x1b[F", w80);
+    try std.testing.expectEqual(null, std.mem.indexOf(u8, session.take(), "\x1b[90m"));
+    _ = try session.feed("\x7f\x7f", w80);
+    try std.testing.expect(std.mem.indexOf(u8, session.take(), "\x1b[90m") != null);
+}
+
+/// Opens a line with `completing` on `allocator` and feeds it `bytes`.
+fn completeWith(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    var session = Session.init(allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, completing, null);
+    _ = try session.feed(bytes, w80);
+}
+
+test "feed: a completion that fails to allocate frees each allocation once" {
+    for ([_][]const u8{ "zz\t", "yy\t", "yy\t\t\t\t" }) |bytes| {
+        var fail_index: usize = 0;
+        while (true) : (fail_index += 1) {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+            completeWith(failing.allocator(), bytes) catch |err| try std.testing.expectEqual(error.OutOfMemory, err);
+            if (!failing.has_induced_failure) break;
+        }
+    }
+}
+
+/// Adds a candidate and then fails, as a gatherer that cannot allocate does.
+fn failingGather(token: []const u8, candidates: *complete.Candidates) error{OutOfMemory}!void {
+    _ = token;
+    try candidates.add("mapcat");
+    return error.OutOfMemory;
+}
+
+test "feed: a gatherer that fails gives no candidates and the line stays open" {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, .{ .symbol = &testSymbol, .gather = &failingGather }, null);
+    try std.testing.expectEqual(null, try session.feed("ma\t", w80));
+    try std.testing.expectEqualStrings("ma", session.line());
+    try std.testing.expectEqual(null, session.cycle);
+    try std.testing.expectEqual(End.submit, (try session.feed("\r", w80)).?);
 }

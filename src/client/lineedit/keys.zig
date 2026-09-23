@@ -60,8 +60,11 @@ const max_parameters = 16;
 /// `insert` has the bytes of one rune, or of one byte that begins no valid
 /// UTF-8 sequence. `interrupt` is Ctrl-C and `eof` is Ctrl-D.
 /// `paste_start` and `paste_end` are the markers around a bracketed paste.
+/// `tab` is Tab, which the editor inserts as a tab and the session takes for
+/// completion on a line that completes.
 pub const Key = union(enum) {
     insert: Rune,
+    tab,
     left,
     right,
     up,
@@ -189,7 +192,7 @@ pub const Decoder = struct {
             0x05 => return .end,
             0x06 => return .right,
             0x08, 0x7f => return .backspace,
-            '\t' => return .{ .insert = single(byte) },
+            '\t' => return .tab,
             '\n' => return .newline,
             0x0b => return .kill_end,
             '\r' => return .enter,
@@ -351,6 +354,6 @@ test "feed: ESC and another byte are ignored together" {
     try expectKeys(&.{ .ignored, ins("x") }, "\x1bbx");
 }
 
-test "feed: a tab is inserted and other controls are ignored" {
-    try expectKeys(&.{ ins("\t"), .ignored, .ignored }, "\t\x07\x0c");
+test "feed: a tab is a key of its own and other controls are ignored" {
+    try expectKeys(&.{ .tab, .ignored, .ignored }, "\t\x07\x0c");
 }

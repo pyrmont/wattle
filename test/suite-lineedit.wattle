@@ -258,10 +258,96 @@
     (assert (= "(old)\n" (slurp-and-remove path))
             "a getline without an environment records nothing"))
 
-  ; A tab is drawn in caret notation, the width the layout measures it at.
-  (assert (= "repl:1:> a^Ib\n"
-             (drive """a\tb""" :screen true))
-          "a tab is drawn as ^I")
+  ; Completion and hints. Each case reads a line with `getline` given an
+  ; environment the case builds, so the candidates are fixed. The
+  ; environment has no prototype, and no special form begins with `zz`.
+  (defn- completing
+    "The program that reads one line with `getline` given the environment `bindings` makes, and prints it."
+    [bindings]
+    (string "(def e (table " bindings "))"
+            """(print (string/trim (getline "a> " (buffer) e)))"""))
+
+  ; Tab with one candidate replaces the token.
+  (assert (= "a> zzsolo-name\nzzsolo-name\n"
+             (drive """zzs\t\r""" :marker "a> " :screen true
+                    :args ["-e" (completing "'zzsolo-name 1")]))
+          "Tab with one candidate completes the token")
+
+  ; Tab with three candidates puts the first in the line and lists all three
+  ; beneath it. Three more Tabs select the other two and then put back the
+  ; token as typed, and the listing is still drawn.
+  (def three (completing "'zzc 1 'zza 2 'zzb 3"))
+  (assert (= "a> zza\nzza  zzb  zzc\n@0,6\n"
+             (drive """zz\t""" :marker "a> " :screen true :cursor true
+                    :args ["-e" three]))
+          "Tab with three candidates lists them beneath the line")
+  (assert (= "a> zz\nzza  zzb  zzc\n@0,5\n"
+             (drive """zz\t\m{zzc}\t\t\t""" :marker "a> " :screen true :cursor true
+                    :args ["-e" three]))
+          "Tab after the last candidate puts back the token as typed")
+
+  ; A key other than Tab keeps the candidate and ends the completion, and
+  ; the next frame has no listing. The screen has no trailing spaces, so the
+  ; cursor shows the space.
+  (assert (= "a> zza\n@0,7\n"
+             (drive """zz\t\m{zzc} """ :marker "a> " :screen true :cursor true
+                    :args ["-e" three]))
+          "a space after Tab keeps the candidate and erases the listing")
+
+  ; Enter while the candidates are listed submits the candidate, and the
+  ; frame at submission has no listing beneath the line.
+  (assert (= "a> zza\nzza\n"
+             (drive """zz\t\m{zzc}\r""" :marker "a> " :screen true
+                    :args ["-e" three]))
+          "Enter during a completion submits the line without the listing")
+
+  ; Twelve candidates in columns of six on 20 columns are three across and
+  ; need four rows, and four rows of terminal leave three beneath the line:
+  ; a page of two rows and its footer. The seventh Tab selects the seventh
+  ; candidate, which is on the second page.
+  (def twelve (completing (string/join (map (fn [i] (string/format "'zz%02d %d" i i)) (range 1 13)) " ")))
+  (assert (= "a> zz01\nzz01  zz03  zz05\nzz02  zz04  zz06\n1-6 of 12\n"
+             (drive """zz\t""" :marker "a> " :screen true :cols 20 :rows 4
+                    :args ["-e" twelve]))
+          "a listing longer than the room left draws the first page")
+  (assert (= "a> zz07\nzz07  zz09  zz11\nzz08  zz10  zz12\n7-12 of 12\n"
+             (drive """zz\t\m{of 12}\t\t\t\t\t\t""" :marker "a> " :screen true :cols 20 :rows 4
+                    :args ["-e" twelve]))
+          "the listing draws the page with the selected candidate")
+
+  ; A hint is the first two paragraphs of the docstring, three columns after
+  ; the cursor, cut before the last column with an ellipsis. A space after
+  ; the token ends it.
+  (def documented
+    (completing "'zzdoc (table :doc \"(zzdoc x y)\\n\\nDoes a long thing to x and y.\\n\\nNot shown.\")"))
+  (assert (= "a> zzdoc   (zzdoc x y) Does a long thi…\n@0,8\n"
+             (drive """zzdoc""" :marker "a> " :screen true :cursor true :cols 40
+                    :args ["-e" documented]))
+          "the hint for a documented binding is drawn and cut")
+  (assert (= "a> zzdoc\n@0,9\n"
+             (drive """zzdoc\m{thi} """ :marker "a> " :screen true :cursor true :cols 40
+                    :args ["-e" documented]))
+          "a space after the token removes the hint")
+
+  ; A blank line that ends a paragraph may have a carriage return or spaces
+  ; on it, as in a docstring from a file with CRLF line ends.
+  (assert (= "a> zzdoc   (zzdoc x) First.\n"
+             (drive """zzdoc""" :marker "a> " :screen true
+                    :args ["-e" (completing "'zzdoc (table :doc \"(zzdoc x)\\r\\n\\r\\nFirst.\\r\\n  \\r\\nThird.\")")]))
+          "a blank line with a carriage return or spaces ends a paragraph")
+
+  ; Completion in the REPL's own environment: the first of `string/find` and
+  ; `string/find-all`, and the form is evaluated.
+  (assert (= "repl:1:> (string/find \"a\" \"cat\")\n1\nrepl:2:>\n"
+             (drive """(string/fi\t "a" "cat")\r""" :screen true))
+          "a symbol completed in the REPL is evaluated")
+
+  ; A getline without an environment inserts a tab, which is drawn in caret
+  ; notation at the width the layout measures it at, and draws no hint.
+  (assert (= "a> map^Ib\n"
+             (drive """map\tb""" :marker "a> " :screen true
+                    :args ["-e" """(getline "a> ")"""]))
+          "Tab in a getline without an environment inserts a tab")
 
   ; A prompt with colour sequences is measured by the columns it occupies,
   ; so after `abc` and Left the cursor is in column 4: two for `> ` and two

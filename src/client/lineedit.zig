@@ -10,6 +10,7 @@
 // Project imports
 // ==========================================================================
 
+pub const complete = @import("lineedit/complete.zig");
 pub const editor = @import("lineedit/editor.zig");
 pub const history = @import("lineedit/history.zig");
 pub const keys = @import("lineedit/keys.zig");
@@ -26,6 +27,7 @@ pub const session = @import("lineedit/session.zig");
 comptime {
     // A `test` block is collected only from a file that the test root
     // references, so each file is named here.
+    _ = complete;
     _ = editor;
     _ = history;
     _ = keys;

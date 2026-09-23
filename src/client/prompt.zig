@@ -32,6 +32,18 @@
 //! report as pending and otherwise opens a line. Without an environment Enter
 //! always submits.
 //!
+//! ## Completion and hints
+//!
+//! A `getline` given a table as its environment completes and hints from
+//! that table and its prototypes. `gather` adds each symbol bound there that
+//! begins with the token, and each special form. `hint` finds the nearest
+//! binding of the token and returns the first two paragraphs of its
+//! docstring, which for a function defined with `defn` are its signature and
+//! the first paragraph of prose. A binding with no docstring has its value's
+//! type as `(type x)` names it, with a colon. Neither function raises or
+//! allocates on the runtime's heap, and the environment is rooted while the
+//! line is open.
+//!
 //! ## History
 //!
 //! A `getline` given an environment browses and records the history, and a
@@ -65,6 +77,7 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
 const buffers = subsystems.value.buffers;
 const c = @import("cabi");
 const config = @import("config");
@@ -77,8 +90,13 @@ const lineedit = @import("lineedit");
 const parser = subsystems.parser;
 const raise = subsystems.raise;
 const repr = @import("repr");
+const scan = subsystems.scan;
+const specials = subsystems.specials_core;
+const strings = subsystems.value.strings;
 const subsystems = @import("subsystems");
+const tables = subsystems.value.tables;
 const terminal = @import("terminal.zig");
+const utils = subsystems.utils;
 const value = subsystems.value;
 const wrap = subsystems.value.wrap;
 
@@ -115,6 +133,13 @@ var input_stream: ?*ev_stream.Stream = null;
 /// first such `read`.
 var history: ?lineedit.history.History = null;
 
+/// The environment the open line completes from and hints with, rooted while
+/// the line is open.
+var source_env: ?*tables.Table = null;
+
+/// The text `hint` returns for a binding with no docstring.
+var type_hint: [80]u8 = undefined;
+
 /// Whether standard output is a terminal, read when a line is opened.
 var output_is_terminal = false;
 
@@ -128,14 +153,16 @@ var output_is_terminal = false;
 /// `buffer` is empty and takes the line and a newline. `source` is whether
 /// `getline` was given an environment, which makes Enter ask the parser
 /// whether the buffer is finished, and makes the line browse the history and
-/// record a submission in it. The result is `buffer`, which is empty at end
-/// of input, or the keyword `:cancel` after Ctrl-C. The result is null when
-/// the editor is not used, and the caller then reads without it. With the
-/// event loop, the calling fiber is suspended until the line ends.
+/// record a submission in it. `env` is that environment where it is a table,
+/// and the line then completes and hints from it. The result is `buffer`,
+/// which is empty at end of input, or the keyword `:cancel` after Ctrl-C.
+/// The result is null when the editor is not used, and the caller then reads
+/// without it. With the event loop, the calling fiber is suspended until the
+/// line ends.
 ///
 /// This function raises when another line is open, and when an allocation
 /// fails.
-pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool) raise.Error!?repr.Value {
+pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool, env: ?*tables.Table) raise.Error!?repr.Value {
     if (!config.lineedit) return null;
     const s = sessionPtr();
     if (s.open) return raise.panic("getline is already reading a line");
@@ -143,7 +170,16 @@ pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool) raise.Err
     output_is_terminal = c.isatty(1) != 0;
     io.divert(&divertedWrite);
     const browsed = if (source) historyPtr() else null;
-    const opened = s.begin(prompt, size(), if (source) &finished else null, browsed) catch {
+    var functions: ?lineedit.session.Source = null;
+    if (source) functions = .{ .finished = &finished };
+    if (env) |table| {
+        gc_alloc.gcroot(wrap.fromTable(table));
+        source_env = table;
+        functions.?.symbol = &scan.isSymbolChar;
+        functions.?.gather = &gather;
+        functions.?.hint = &hint;
+    }
+    const opened = s.begin(prompt, size(), functions, browsed) catch {
         abandon();
         return raise.panic("out of memory");
     };
@@ -193,6 +229,24 @@ fn awaitStream(buffer: *buffers.Buffer) raise.Error!?repr.Value {
     const stream = try inputStream();
     hold(buffer);
     return ev.asyncStart(stream, constants.AsyncMode.reading, onStreamEvent, null);
+}
+
+/// Returns the table of the nearest binding of the symbol `token` in the
+/// open line's environment and its prototypes, or null where there is none.
+fn binding(token: []const u8) ?*tables.Table {
+    var table = source_env;
+    var depth: usize = 0;
+    while (table) |t| : (table = t.proto) {
+        if (depth == config.max_proto_depth) break;
+        depth += 1;
+        for (t.slots()) |kv| {
+            if (!wrap.isSymbol(kv.key)) continue;
+            if (!std.mem.eql(u8, strings.bytesOf(wrap.toSymbol(kv.key)), token)) continue;
+            if (!repr.checkType(kv.value, repr.Tag.table)) return null;
+            return wrap.toTable(kv.value);
+        }
+    }
+    return null;
 }
 
 /// Gives a write to standard output or standard error to the open line.
@@ -252,6 +306,53 @@ fn finish(end: lineedit.session.End, buffer: *buffers.Buffer) raise.Error!repr.V
 /// Writes the bytes the session has produced to the terminal.
 fn flush() void {
     terminal.write(sessionPtr().take());
+}
+
+/// Adds to `candidates` each symbol bound in the open line's environment
+/// and its prototypes that begins with `token`, and each special form that
+/// does.
+///
+/// This is the `lineedit.complete.Gather` `read` gives the session. This
+/// function returns `error.OutOfMemory` when `candidates` cannot grow.
+fn gather(token: []const u8, candidates: *lineedit.complete.Candidates) error{OutOfMemory}!void {
+    var table = source_env;
+    var depth: usize = 0;
+    while (table) |t| : (table = t.proto) {
+        if (depth == config.max_proto_depth) break;
+        depth += 1;
+        for (t.slots()) |kv| {
+            if (!wrap.isSymbol(kv.key)) continue;
+            const name = strings.bytesOf(wrap.toSymbol(kv.key));
+            if (std.mem.startsWith(u8, name, token)) try candidates.add(name);
+        }
+    }
+    for (specials.allSpecials()) |special| {
+        const name = std.mem.span(special.name);
+        if (std.mem.startsWith(u8, name, token)) try candidates.add(name);
+    }
+}
+
+/// Returns the hint for `token`: the first two paragraphs of its binding's
+/// docstring, or its value's type, or null where the open line's
+/// environment does not bind `token`.
+///
+/// This is the `lineedit.session.Hint` `read` gives the session. The result
+/// is valid until the next call into the runtime.
+fn hint(token: []const u8) ?[]const u8 {
+    const entry = binding(token) orelse return null;
+    const doc = tables.getKeyword(entry, "doc");
+    if (repr.checkType(doc, repr.Tag.string)) return paragraphs(strings.bytesOf(wrap.toString(doc)), 2);
+    var bound = tables.getKeyword(entry, "value");
+    const ref = tables.getKeyword(entry, "ref");
+    if (repr.checkType(ref, repr.Tag.array)) {
+        const cells = wrap.toArray(ref).slice();
+        bound = if (cells.len > 0) cells[0] else wrap.fromNil();
+    }
+    const name: []const u8 = switch (repr.typeOf(bound)) {
+        .abstract => abi.abstractHead(wrap.toAbstract(bound)).type.name,
+        else => if (wrap.isKeyword(bound)) "keyword" else utils.typeNames[@intFromEnum(repr.typeOf(bound))],
+    };
+    return std.fmt.bufPrint(&type_hint, ":{s}", .{name}) catch null;
 }
 
 /// Returns the path `WATTLE_HISTFILE` names, or null when it is unset or
@@ -335,6 +436,32 @@ fn onStreamEvent(op: *ev_stream.Operation, event: ev.AsyncEvent) raise.Error!voi
     }
 }
 
+/// Returns the first `count` paragraphs of `text`, where a blank line ends a
+/// paragraph.
+///
+/// A blank line has nothing but spaces, tabs and a carriage return, so a
+/// docstring with CRLF line ends is divided as one with LF line ends.
+fn paragraphs(text: []const u8, count: usize) []const u8 {
+    var ended: usize = 0;
+    var inside = false;
+    var end: usize = 0;
+    var start: usize = 0;
+    while (start < text.len) {
+        const stop = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        const blank = std.mem.trim(u8, text[start..stop], " \t\r").len == 0;
+        if (!blank) {
+            inside = true;
+            end = stop;
+        } else if (inside) {
+            inside = false;
+            ended += 1;
+            if (ended == count) return text[0..end];
+        }
+        start = stop + 1;
+    }
+    return text;
+}
+
 /// Reads with blocking reads until the line ends, for a build without the
 /// loop.
 ///
@@ -395,8 +522,13 @@ fn record(h: *lineedit.history.History, line: []const u8) void {
     writeHistory(path, "ab", out.written());
 }
 
-/// Drops the root on the buffer `hold` rooted.
+/// Drops the root on the buffer `hold` rooted, and on the environment `read`
+/// rooted.
 fn release() void {
+    if (source_env) |table| {
+        source_env = null;
+        _ = gc_alloc.gcunroot(wrap.fromTable(table));
+    }
     const buffer = pending_buffer orelse return;
     pending_buffer = null;
     _ = gc_alloc.gcunroot(wrap.fromBuffer(buffer));

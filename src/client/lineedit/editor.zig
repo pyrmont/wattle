@@ -116,6 +116,19 @@ pub const Editor = struct {
         editor.goal = null;
     }
 
+    /// Replaces the bytes from `start` up to `end` with `text`, and puts the
+    /// cursor after `text`.
+    ///
+    /// `start` and `end` are offsets into the buffer, with `start` at most
+    /// `end`. This function returns `error.OutOfMemory` when the buffer
+    /// cannot grow, and the buffer is then unchanged.
+    pub fn splice(editor: *Editor, start: usize, end: usize, text: []const u8) error{OutOfMemory}!void {
+        if (text.len > end - start) try editor.buffer.ensureUnusedCapacity(editor.allocator, text.len - (end - start));
+        editor.buffer.replaceRangeAssumeCapacity(start, end - start, text);
+        editor.cursor = start + text.len;
+        editor.goal = null;
+    }
+
     /// Applies `key` to the buffer and the cursor, and returns what it did.
     ///
     /// Up and Down change nothing here; `vertical` applies them. This
@@ -128,6 +141,11 @@ pub const Editor = struct {
             .insert => |r| {
                 try editor.buffer.insertSlice(editor.allocator, editor.cursor, r.slice());
                 editor.cursor += r.len;
+                return .edited;
+            },
+            .tab => {
+                try editor.buffer.insert(editor.allocator, editor.cursor, '\t');
+                editor.cursor += 1;
                 return .edited;
             },
             .left => return editor.moveTo(previous(text, editor.cursor)),

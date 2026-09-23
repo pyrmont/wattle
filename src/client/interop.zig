@@ -256,7 +256,8 @@ fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     buffer.*.count = 0;
     if (config.lineedit) {
         const source = argv.len >= 3 and !repr.checkType(argv[2], repr.Tag.nil);
-        if (try prompt_editor.read(std.mem.span(prompt), buffer, source)) |result| return result;
+        const env = if (source and repr.checkType(argv[2], repr.Tag.table)) wrap.toTable(argv[2]) else null;
+        if (try prompt_editor.read(std.mem.span(prompt), buffer, source, env)) |result| return result;
     }
     if (readline(prompt, &line) != 0 and line.length > 0) {
         try buffers.pushBytes(buffer, line.bytes.?[0..@intCast(line.length)]);

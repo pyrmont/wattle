@@ -93,6 +93,13 @@ const SlotHeadPair = struct {
 // Public functions
 // ==========================================================================
 
+/// Returns the thirteen special forms, in lexicographic order.
+///
+/// `client/prompt.zig` adds their names to the candidates for a completion.
+pub fn allSpecials() []const special.Special {
+    return &specials;
+}
+
 /// The special form `name` names, or null. `compiler.zig` consults this before
 /// treating a tuple's head as a call.
 pub fn lookupSpecial(name: [*:0]const u8) ?*const special.Special {

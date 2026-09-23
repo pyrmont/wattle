@@ -55,6 +55,35 @@
 //! A C0 control character and DEL are drawn in caret notation, a C1 control
 //! character is not drawn, and a byte that begins no valid UTF-8 sequence is
 //! drawn as U+FFFD, so each rune occupies the width `rune.width` reports.
+//!
+//! ## The listing and the hint
+//!
+//! A frame may draw a completion's _listing_ beneath the input and a _hint_
+//! on the cursor's row. Neither is part of the window, and neither changes
+//! the climb.
+//!
+//! - The listing's rows are written after the window's last row, each opened
+//!   by `\r\n`, and the cursor then moves up over them to its position. A
+//!   frame begins with `\x1b[J`, so the next frame clears them.
+//!
+//! - The listing has the rows of the height the window leaves. A listing that
+//!   needs more is drawn a page at a time, the page with the selected
+//!   candidate, and its last row reads `33-64 of 65`. With no row left, or
+//!   one row where a page is needed, the listing is not drawn.
+//!
+//! - The listing is a grid sorted down each column. Each column is as wide
+//!   as the widest candidate and two spaces, and a row is cut at the
+//!   terminal's width. The selected candidate is drawn in reverse video.
+//!
+//! - The hint is written after the cursor is placed, three columns to its
+//!   right, in dim grey, and the cursor is then placed again. Each run of
+//!   whitespace in it is drawn as one space. It ends before the terminal's
+//!   last column, so the terminal is never left at a pending wrap, and a
+//!   hint cut short ends in `…`. A hint with fewer than four columns is not
+//!   drawn.
+//!
+//! - A styled run ends with `\x1b[0m`, so no style is active when the frame
+//!   writes a row break or ends.
 
 // ==========================================================================
 // Standard library imports
@@ -70,6 +99,28 @@ const layout = @import("layout.zig");
 const rune = @import("rune.zig");
 
 // ==========================================================================
+// Constants
+// ==========================================================================
+
+/// The columns between the cursor and a hint.
+const hint_gap = 3;
+
+/// The fewest columns a hint is drawn in.
+const hint_least = 4;
+
+/// The escape that begins a hint, dim grey.
+const hint_style = "\x1b[90m";
+
+/// The spaces after the widest candidate in a listing's column.
+const listing_gap = 2;
+
+/// The escape that begins the selected candidate, reverse video.
+const selected_style = "\x1b[7m";
+
+/// The escape that ends a styled run.
+const style_reset = "\x1b[0m";
+
+// ==========================================================================
 // Types
 // ==========================================================================
 
@@ -79,7 +130,9 @@ const rune = @import("rune.zig");
 /// row, `buffer` is the text being edited, `cursor` is a byte offset into
 /// `buffer`, and `columns` is the terminal's width. `height` is the most
 /// rows the frame draws, 0 for no limit, and `top` is the first display row
-/// of the last frame's window.
+/// of the last frame's window. `listing` is drawn beneath the input, and
+/// `hint` to the right of the cursor, where the cursor has nothing after it
+/// on its row; the caller checks that.
 pub const Frame = struct {
     prompt: []const u8,
     buffer: []const u8,
@@ -87,6 +140,18 @@ pub const Frame = struct {
     columns: usize,
     height: usize = 0,
     top: usize = 0,
+    listing: ?Listing = null,
+    hint: []const u8 = "",
+};
+
+/// The candidates a frame lists beneath the input.
+///
+/// `Frame.listing` is a `Listing`. `names` are the candidates in the order
+/// they are listed, and `selected` is the index of the one in the buffer, or
+/// null for none.
+pub const Listing = struct {
+    names: []const []const u8,
+    selected: ?usize = null,
 };
 
 /// Where a frame left the terminal.
@@ -97,6 +162,40 @@ pub const Frame = struct {
 pub const Drawn = struct {
     climb: usize,
     top: usize,
+};
+
+/// The runes of a hint, with each run of whitespace as one space.
+///
+/// `drawHint` walks a `Spaced` twice: once to measure the hint and once to
+/// draw it. Whitespace at the start and the end is dropped.
+const Spaced = struct {
+    text: []const u8,
+    i: usize = 0,
+
+    /// One rune, or a space for a run of whitespace when `rune` is null.
+    const Piece = struct {
+        rune: ?rune.Rune,
+        bytes: []const u8,
+        width: usize,
+    };
+
+    /// Returns the next piece, or null at the end.
+    fn next(walk: *Spaced) ?Piece {
+        const text = walk.text;
+        const start = walk.i;
+        while (walk.i < text.len and isSpace(text[walk.i])) walk.i += 1;
+        if (walk.i >= text.len) return null;
+        if (walk.i > start and start > 0) return .{ .rune = null, .bytes = " ", .width = 1 };
+        const r = rune.decode(text[walk.i..]);
+        const bytes = text[walk.i..][0..r.len];
+        walk.i += r.len;
+        return .{ .rune = r, .bytes = bytes, .width = rune.width(r) };
+    }
+
+    /// Whether `byte` is whitespace in a hint.
+    fn isSpace(byte: u8) bool {
+        return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r';
+    }
 };
 
 // ==========================================================================
@@ -171,11 +270,18 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
         column = 0;
     }
 
-    if (stopped or target.row != row or target.column != column) {
-        if (row > target.row) try out.print("\x1b[{d}A", .{row - target.row});
-        try out.writeByte('\r');
-        if (target.column > 0) try out.print("\x1b[{d}C", .{target.column});
+    var listed: usize = 0;
+    if (frame.listing) |listing| {
+        const room = if (frame.height == 0) std.math.maxInt(usize) else frame.height - (last - first);
+        listed = try drawListing(out, listing, frame.columns, room);
     }
+
+    if (listed > 0 or stopped or target.row != row or target.column != column) {
+        const at = row + listed;
+        if (at > target.row) try out.print("\x1b[{d}A", .{at - target.row});
+        try place(out, target.column);
+    }
+    if (frame.hint.len > 0) try drawHint(out, frame.hint, target.column, frame.columns);
     return .{ .climb = target.row - first, .top = first };
 }
 
@@ -226,6 +332,100 @@ pub fn promptWidth(prompt: []const u8) usize {
 // Private functions
 // ==========================================================================
 
+/// Returns `a` divided by `b`, rounded up.
+fn ceilDiv(a: usize, b: usize) usize {
+    return (a + b - 1) / b;
+}
+
+/// Writes the hint `text` three columns after `column`, and places the
+/// cursor at `column` again.
+///
+/// `columns` is the terminal's width. Nothing is written when fewer than
+/// four columns are left before the last.
+fn drawHint(out: *std.Io.Writer, text: []const u8, column: usize, columns: usize) std.Io.Writer.Error!void {
+    const start = column + hint_gap;
+    if (start + hint_least + 1 > columns) return;
+    const budget = columns - 1 - start;
+    var total: usize = 0;
+    var walk: Spaced = .{ .text = text };
+    while (walk.next()) |piece| total += piece.width;
+    if (total == 0) return;
+    // A hint that does not fit keeps a column for the ellipsis.
+    const room = if (total > budget) budget - 1 else budget;
+    try out.print("\x1b[{d}C" ++ hint_style, .{hint_gap});
+    var used: usize = 0;
+    walk = .{ .text = text };
+    while (walk.next()) |piece| {
+        if (used + piece.width > room) break;
+        try drawPiece(out, piece);
+        used += piece.width;
+    }
+    if (total > budget) try out.writeAll("…");
+    try out.writeAll(style_reset);
+    try place(out, column);
+}
+
+/// Writes the rows of `listing` beneath the input, and returns how many.
+///
+/// `columns` is the terminal's width and `room` the most rows the listing
+/// may take.
+fn drawListing(out: *std.Io.Writer, listing: Listing, columns: usize, room: usize) std.Io.Writer.Error!usize {
+    const names = listing.names;
+    if (names.len == 0 or room == 0) return 0;
+    var widest: usize = 0;
+    for (names) |name| widest = @max(widest, textWidth(name));
+    const cell = widest + listing_gap;
+    const across = @max(1, columns / cell);
+    var per_page = names.len;
+    var paged = false;
+    if (ceilDiv(names.len, across) > room) {
+        if (room < 2) return 0;
+        per_page = (room - 1) * across;
+        paged = true;
+    }
+    const first = (listing.selected orelse 0) / per_page * per_page;
+    const count = @min(per_page, names.len - first);
+    const rows = ceilDiv(count, across);
+    for (0..rows) |row| {
+        try out.writeAll("\r\n");
+        var column: usize = 0;
+        for (0..across) |c| {
+            const index = c * rows + row;
+            if (index >= count) break;
+            if (c > 0) {
+                if (c * cell >= columns) break;
+                try out.splatByteAll(' ', c * cell - column);
+                column = c * cell;
+            }
+            const selected = listing.selected == first + index;
+            if (selected) try out.writeAll(selected_style);
+            var i: usize = 0;
+            const name = names[first + index];
+            while (i < name.len) {
+                const r = rune.decode(name[i..]);
+                const w = rune.width(r);
+                if (column + w > columns) break;
+                try drawRune(out, r, name[i..][0..r.len]);
+                column += w;
+                i += r.len;
+            }
+            if (selected) try out.writeAll(style_reset);
+        }
+    }
+    if (!paged) return rows;
+    var footer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&footer, "{d}-{d} of {d}", .{ first + 1, first + count, names.len }) catch unreachable;
+    try out.writeAll("\r\n");
+    if (text.len <= columns) try out.writeAll(text);
+    return rows + 1;
+}
+
+/// Writes one piece of a hint.
+fn drawPiece(out: *std.Io.Writer, piece: Spaced.Piece) std.Io.Writer.Error!void {
+    const r = piece.rune orelse return out.writeByte(' ');
+    try drawRune(out, r, piece.bytes);
+}
+
 /// Writes one rune as a frame draws it.
 ///
 /// `bytes` are the rune's bytes in the buffer.
@@ -264,6 +464,24 @@ fn pastEscape(text: []const u8, at: usize) usize {
             return @min(i + 1, text.len);
         },
     }
+}
+
+/// Moves the cursor to `column` on its row.
+fn place(out: *std.Io.Writer, column: usize) std.Io.Writer.Error!void {
+    try out.writeByte('\r');
+    if (column > 0) try out.print("\x1b[{d}C", .{column});
+}
+
+/// Returns the columns `text` occupies as a frame draws it.
+fn textWidth(text: []const u8) usize {
+    var total: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const r = rune.decode(text[i..]);
+        total += rune.width(r);
+        i += r.len;
+    }
+    return total;
 }
 
 /// Moves the cursor to the start of the window's first row.
@@ -478,6 +696,96 @@ test "draw: a window whose first row a newline opened begins with the marker" {
         .cursor = 5,
         .columns = 8,
         .height = 2,
+    });
+}
+
+test "draw: a listing with nothing selected has no reverse video" {
+    try expectFrame("\r\x1b[J> ma\r\nmap     mapcat  max\x1b[1A\r\x1b[4C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "ma",
+        .cursor = 2,
+        .columns = 80,
+        .listing = .{ .names = &.{ "map", "mapcat", "max" } },
+    });
+}
+
+test "draw: a listing's row is cut at the terminal's width" {
+    try expectFrame("\r\x1b[J> a\r\nabcdefghijkl\r\nb\x1b[2A\r\x1b[3C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "a",
+        .cursor = 1,
+        .columns = 12,
+        .listing = .{ .names = &.{ "abcdefghijklmnop", "b" } },
+    });
+}
+
+test "draw: a listing taller than the room left is drawn a page at a time" {
+    // Two columns of three, so five candidates need three rows, and a height
+    // of three leaves two: a page of one row and the footer.
+    try expectFrame("\r\x1b[J> d\r\nc  \x1b[7md\x1b[0m\r\n3-4 of 5\x1b[2A\r\x1b[3C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "d",
+        .cursor = 1,
+        .columns = 8,
+        .height = 3,
+        .listing = .{ .names = &.{ "a", "b", "c", "d", "e" }, .selected = 3 },
+    });
+}
+
+test "draw: no listing is drawn when the input fills the height" {
+    try expectFrame("\r\x1b[J> d", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "d",
+        .cursor = 1,
+        .columns = 8,
+        .height = 1,
+        .listing = .{ .names = &.{ "a", "b" }, .selected = 0 },
+    });
+}
+
+test "draw: a hint is three columns right of the cursor, in dim grey" {
+    try expectFrame("\r\x1b[J> map\x1b[3C\x1b[90m(map f)\x1b[0m\r\x1b[5C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "map",
+        .cursor = 3,
+        .columns = 80,
+        .hint = "(map f)",
+    });
+}
+
+test "draw: a hint is cut before the last column and ends in an ellipsis" {
+    // Twenty columns: the hint begins in column 8 and has the eleven before
+    // the last, ten of them for its runes.
+    try expectFrame("\r\x1b[J> map\x1b[3C\x1b[90m(map f ind…\x1b[0m\r\x1b[5C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "map",
+        .cursor = 3,
+        .columns = 20,
+        .hint = "  (map f ind)\n\n  Map a function.",
+    });
+    try expectFrame("\r\x1b[J> map\x1b[3C\x1b[90mab cd\x1b[0m\r\x1b[5C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "map",
+        .cursor = 3,
+        .columns = 20,
+        .hint = "ab \t\n cd\n",
+    });
+}
+
+test "draw: a hint with fewer than four columns is not drawn" {
+    try expectFrame("\r\x1b[J> map", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "map",
+        .cursor = 3,
+        .columns = 12,
+        .hint = "(map f)",
+    });
+    try expectFrame("\r\x1b[J> map\x1b[3C\x1b[90m(ma…\x1b[0m\r\x1b[5C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "map",
+        .cursor = 3,
+        .columns = 13,
+        .hint = "(map f)",
     });
 }
 
