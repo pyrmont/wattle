@@ -64,16 +64,18 @@
 #
 # ## What the evidence column cannot see
 #
-# **Evidence is collected per *name*, and four names are declared in more than
-# one file.** `Overlapped` is in `ev/stream.zig`, `net.zig` and
-# `filewatch/abi.zig`; `OVERLAPPED`, `Method` and `CMethod` in two each. A use
-# of the bare identifier anywhere is counted as evidence for every declaration
-# that shares the name, so the column over-attributes across those four and a
-# genuinely unevidenced one could be rescued by a same-named neighbour. None is
-# today: every row involved is fixed by `host` and `field`, which are decided
-# from the declaration's own file and members. It is a hole in the `residue`
-# class and it is named here rather than hidden, because the row it would hide
-# is exactly the row this list exists to show.
+# **Evidence is collected per *name*, and two names are declared in more than
+# one file.** `Head` is in `value/maps.zig` and `value/vectors.zig`, and
+# `SignedHead` in `value/strings.zig` and `value/tuples.zig`. A use of the bare
+# identifier anywhere is counted as evidence for every declaration that shares
+# the name, so the column over-attributes across those two and a genuinely
+# unevidenced one could be rescued by a same-named neighbour. One is today:
+# `maps.zig`'s `Head` has no `repr` evidence in its own file, and its row is
+# fixed by `vectors.zig`'s. It is `extern` because `gc.gcalloc` asserts that
+# the collector's header is its first field, which no pattern below matches.
+# Each `SignedHead` has its own `@sizeOf` and `@offsetOf`. It is a hole in the
+# `residue` class and it is named here rather than hidden, because the row it
+# would hide is exactly the row this list exists to show.
 (def compiler-fixed
   {"Aapcs64ReturnGeneral" true "Aapcs64ReturnPointer" true
    "Aapcs64ReturnSse" true "AssembleResult" true

@@ -231,11 +231,12 @@
       (def departed (sort (filter |(nil? (get new $)) (keys old))))
       (each k departed (print "retired  " k))
       (each k arrived (eprint "NEW      " k))
-      (when (and (empty? arrived) (empty? departed))
+      (def agree (and (empty? arrived) (empty? departed)))
+      (when agree
         (print "the tree and " list-path " agree"))
-      (print (length rows) " sites in class `tested` (" occurrences " occurrences)"
-             (if (empty? rows) "" " -- the gate is that this is zero"))
-      (os/exit (if (empty? rows) 0 1)))
+      (print (length tested-rows) " sites in class `tested` (" occurrences " occurrences)"
+             (if (empty? tested-rows) "" " -- the gate is that this is zero"))
+      (os/exit (if (and agree (empty? tested-rows)) 0 1)))
     (do
       (spit list-path text)
       (print "wrote " list-path " -- " (length tested-rows) " sites in class `tested`, "

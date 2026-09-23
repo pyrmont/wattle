@@ -12,7 +12,7 @@
 # stripping `extern` from all of them builds once those are restored, and
 # the binary then aborts in the bootstrap.  See this tool's header.
 #
-# layouts  72
+# layouts  69
 # residue  5
 #
 # columns: class  name  file:line  evidence
@@ -22,54 +22,51 @@ fixed    Aapcs64ReturnPointer         runtime/ffi/call.zig:153           abi,hos
 fixed    Aapcs64ReturnSse             runtime/ffi/call.zig:155           abi,host
 fixed    AbstractHead                 api/abi.zig:98                     repr
 residue  AbstractNative               runtime/ffi.zig:40                 
-fixed    AssembleResult               runtime/bytecode.zig:196           abi
+fixed    AssembleResult               runtime/bytecode.zig:197           abi
 fixed    Binding                      runtime/registry.zig:70            abi
 fixed    BuildConfig                  api/abi.zig:194                    abi
 fixed    ByteView                     api/abi.zig:218                    abi,field
 fixed    CMethod                      runtime/method_type.zig:58         abi,field,repr
 fixed    Chunk                        api/abi.zig:232                    abi,field
+fixed    ConsoleScreenBufferInfo      host/cabi.zig:101                  host
 fixed    Dictionary                   api/abi.zig:283                    abi,field
-fixed    FILETIME                     host/cabi.zig:100                  host
+fixed    FILETIME                     host/cabi.zig:110                  host
 fixed    Fiber                        runtime/value/fibers.zig:132       field
-residue  FramePc                      runtime/vm/state.zig:98            
+residue  FramePc                      runtime/vm/state.zig:99            
 fixed    FuncEnvRef                   runtime/value/functions.zig:216    abi,repr
 fixed    Function                     runtime/value/functions.zig:228    field,repr
 fixed    GCData                       api/abi.zig:333                    abi,field,repr
 fixed    GCObject                     api/abi.zig:358                    abi,field,repr
-fixed    GenericMessage               runtime/ev.zig:178                 abi,field,repr
-fixed    Head                         runtime/value/maps.zig:267         repr
-fixed    Head                         runtime/value/vectors.zig:161      repr
-fixed    ITimerSpec                   host/cabi.zig:107                  abi,host
+fixed    GenericMessage               runtime/ev.zig:174                 abi,field,repr
+fixed    Head                         runtime/value/maps.zig:277         repr
+fixed    Head                         runtime/value/vectors.zig:182      repr
+fixed    ITimerSpec                   host/cabi.zig:117                  abi,host
 fixed    Indexed                      api/abi.zig:374                    abi,field
-residue  Inner                        runtime/value/vectors.zig:170      
+residue  Inner                        runtime/value/vectors.zig:191      
 fixed    JittedFn                     runtime/ffi/call.zig:198           host,repr
 fixed    Keyval                       api/abi.zig:389                    abi,field,repr
 residue  Layout                       runtime/ffi/types.zig:154          
-fixed    Leaf                         runtime/value/vectors.zig:190      field,repr
+fixed    Leaf                         runtime/value/vectors.zig:211      field,repr
 fixed    Mapping                      runtime/ffi/types.zig:203          field
 fixed    Method                       module.zig:468                     repr
 fixed    Nanbox32Payload              api/repr.zig:155                   field,repr
 fixed    Nanbox32Tagged               api/repr.zig:161                   field
-fixed    Node                         runtime/value/maps.zig:277         field,repr
-fixed    OVERLAPPED                   host/cabi.zig:115                  field,host
-fixed    OVERLAPPED                   runtime/filewatch/abi.zig:71       field,host
-fixed    OVERLAPPED                   runtime/net.zig:214                field,host
-fixed    OptValue                     runtime/net.zig:225                host
-fixed    Overlapped                   runtime/ev/stream.zig:165          field,host,repr
-fixed    Overlapped                   runtime/filewatch/abi.zig:82       field,host,repr
-fixed    Overlapped                   runtime/net.zig:233                field,host,repr
-fixed    OverlappedWatch              runtime/filewatch.zig:722          host,repr
+fixed    Node                         runtime/value/maps.zig:287         field,repr
+fixed    OVERLAPPED                   host/cabi.zig:125                  field,host
+fixed    OptValue                     runtime/net.zig:214                host
+fixed    Overlapped                   runtime/ev/stream.zig:213          field,host,repr
+fixed    OverlappedWatch              runtime/filewatch.zig:740          host,repr
 fixed    Range                        api/abi.zig:424                    abi,field
 fixed    Reg                          api/abi.zig:435                    abi,field
 fixed    Runtime                      api/interface.zig:190              abi
 fixed    ScratchBlock                 runtime/gc.zig:215                 repr
-fixed    SecurityAttributes           host/cabi.zig:124                  host
-fixed    SelfPipeEvent                runtime/ev.zig:316                 repr
+fixed    SecurityAttributes           host/cabi.zig:134                  host
+fixed    SelfPipeEvent                runtime/ev.zig:312                 repr
 residue  Signature                    runtime/ffi/types.zig:272          
-fixed    SignedHead                   runtime/value/strings.zig:828      repr
-fixed    SignedHead                   runtime/value/tuples.zig:325       repr
-fixed    State                        runtime/filewatch.zig:441          host,repr
-fixed    Stream                       runtime/ev/stream.zig:209          field,repr
+fixed    SignedHead                   runtime/value/strings.zig:831      repr
+fixed    SignedHead                   runtime/value/tuples.zig:288       repr
+fixed    State                        runtime/filewatch.zig:452          host,repr
+fixed    Stream                       runtime/ev/stream.zig:292          field,repr
 fixed    StringHead                   runtime/value/strings.zig:186      repr
 fixed    Struct                       runtime/ffi/types.zig:310          field,repr
 fixed    StructMember                 runtime/ffi/types.zig:328          repr
@@ -78,14 +75,14 @@ fixed    Sysv64IntSseReturn           runtime/ffi/call.zig:209           host
 fixed    Sysv64SseIntReturn           runtime/ffi/call.zig:211           host
 fixed    Sysv64SseReturn              runtime/ffi/call.zig:213           host
 fixed    TaggedPayload                api/repr.zig:271                   field,repr
-fixed    ThreadInit                   runtime/ev.zig:335                 repr
-fixed    Tree                         runtime/value/maps.zig:325         field,repr
-fixed    TupleHead                    runtime/value/tuples.zig:81        repr
+fixed    ThreadInit                   runtime/ev.zig:331                 repr
+fixed    Tree                         runtime/value/maps.zig:335         field,repr
+fixed    TupleHead                    runtime/value/tuples.zig:75        repr
 fixed    Type                         runtime/ffi/types.zig:333          field
 fixed    TypeNode                     runtime/ffi/classify.zig:150       repr
 fixed    Value                        api/repr.zig:284                   abi,field,repr
-fixed    Vector                       runtime/value/vectors.zig:210      field
-fixed    WSABUF                       host/cabi.zig:132                  host
+fixed    Vector                       runtime/value/vectors.zig:231      field
+fixed    WSABUF                       host/cabi.zig:142                  host
 fixed    pthread_attr_t               host/host.zig:89                   abi,host
 fixed    pthread_mutex_t              host/host.zig:91                   host
-fixed    utimbuf                      host/cabi.zig:138                  abi,host
+fixed    utimbuf                      host/cabi.zig:148                  abi,host

@@ -622,7 +622,7 @@ pub fn build(b: *std.Build) void {
     );
     // Dynamic module loading is platform-specific, so ship this alongside the
     // test executables for cross-platform runs.
-    installTest(b, options, native_module);
+    installModuleTest(b, options, config, native_module);
 
     // `examples/numarray`, the sample an author reads: the worked example of
     // an abstract type, which `zig build test` loads and runs.
@@ -636,7 +636,7 @@ pub fn build(b: *std.Build) void {
         "examples/numarray/numarray.zig",
         "numarray",
     );
-    installTest(b, options, numarray_module);
+    installModuleTest(b, options, config, numarray_module);
 
     // `examples/url`, the worked example of the built-in types: a module that
     // owns nothing, reads every shape an argument can be -- bytes, elements,
@@ -651,7 +651,7 @@ pub fn build(b: *std.Build) void {
         "examples/url/url.zig",
         "url",
     );
-    installTest(b, options, url_module);
+    installModuleTest(b, options, config, url_module);
 
     // `examples/digest`, the worked example of scheduling work through the
     // event loop: one cfunction that hashes on a thread of its own, so the
@@ -666,7 +666,7 @@ pub fn build(b: *std.Build) void {
         "examples/digest/digest.zig",
         "digest",
     );
-    installTest(b, options, digest_module);
+    installModuleTest(b, options, config, digest_module);
 
     // `examples/quickbin`, the worked example of `quickbin`: `main.wattle` with
     // `examples/digest` linked into one executable. The image is made by
@@ -735,7 +735,7 @@ pub fn build(b: *std.Build) void {
         "test/module-load/wrong_bits.zig",
         "module-load-wrong-bits",
     );
-    installTest(b, options, wrong_bits_module);
+    installModuleTest(b, options, config, wrong_bits_module);
     const wrong_zig_module = refusalModule(
         b,
         runtime_graph,
@@ -745,7 +745,7 @@ pub fn build(b: *std.Build) void {
         "test/module-load/wrong_zig.zig",
         "module-load-wrong-zig",
     );
-    installTest(b, options, wrong_zig_module);
+    installModuleTest(b, options, config, wrong_zig_module);
     const wrong_api_module = refusalModule(
         b,
         runtime_graph,
@@ -755,7 +755,7 @@ pub fn build(b: *std.Build) void {
         "test/module-load/wrong_api.zig",
         "module-load-wrong-api",
     );
-    installTest(b, options, wrong_api_module);
+    installModuleTest(b, options, config, wrong_api_module);
 
     // The three host translations -- `os/abi.h`, `net/abi.h`, `filewatch/abi.h`
     // -- have no oracle and need none: each keeps what it declares inside one
@@ -1870,6 +1870,16 @@ fn installTest(b: *std.Build, options: BuildOptions, exe: *std.Build.Step.Compil
         .dest_dir = .{ .override = .{ .custom = "test" } },
     });
     b.getInstallStep().dependOn(&install.step);
+}
+
+/// Install a native-module or module-load fixture under `<prefix>/test` when
+/// -Dinstall-tests is set and the runtime loads dynamic modules.
+///
+/// A runtime built without `dynamic_modules` loads no fixture, and a WASI
+/// build, which never has it, cannot link a fixture as a shared library.
+fn installModuleTest(b: *std.Build, options: BuildOptions, config: Config, lib: *std.Build.Step.Compile) void {
+    if (!config.dynamic_modules) return;
+    installTest(b, options, lib);
 }
 
 fn addCliChecks(
