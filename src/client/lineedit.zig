@@ -12,6 +12,7 @@
 
 pub const complete = @import("lineedit/complete.zig");
 pub const editor = @import("lineedit/editor.zig");
+pub const highlight = @import("lineedit/highlight.zig");
 pub const history = @import("lineedit/history.zig");
 pub const keys = @import("lineedit/keys.zig");
 pub const layout = @import("lineedit/layout.zig");
@@ -29,6 +30,7 @@ comptime {
     // references, so each file is named here.
     _ = complete;
     _ = editor;
+    _ = highlight;
     _ = history;
     _ = keys;
     _ = layout;

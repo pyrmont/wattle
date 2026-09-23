@@ -630,19 +630,20 @@ pub fn wattleRoot(
     }
 }
 
-/// The comment consumer, which hands the newline back rather than
-/// consuming it.
+/// The comment consumer, which hands the newline or carriage return that ends
+/// the comment back rather than consuming it.
 ///
-/// A comment does not excuse the newline that ends it: `'; note` leaves a
-/// quote pending, and the newline has to reach the quote's state for
-/// `wattleRoot` to refuse it. At the root the re-fed newline is whitespace,
-/// which is what it would have been anyway.
+/// A comment ends where `parserConsume` counts a new line, at a newline or a
+/// carriage return, so a form after a lone carriage return is read. A comment
+/// does not excuse the byte that ends it: `'; note` leaves a quote pending,
+/// and the byte has to reach the quote's state for `wattleRoot` to refuse it.
+/// At the root the re-fed byte is whitespace.
 fn wattleComment(
     parser: *Parser,
     _: *ParseState,
     character: u8,
 ) raise.Error!bool {
-    if (character != '\n') {
+    if (character != '\n' and character != '\r') {
         parserPushBuf(parser, character);
         return true;
     }

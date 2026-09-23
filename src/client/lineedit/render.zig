@@ -84,6 +84,16 @@
 //!
 //! - A styled run ends with `\x1b[0m`, so no style is active when the frame
 //!   writes a row break or ends.
+//!
+//! ## Highlighting
+//!
+//! A frame given the class of each byte draws each rune in its class's
+//! style, as `highlight.zig` classifies it. The escape is written where the
+//! class changes from the rune before, and each escape resets the style
+//! first. The style is reset before each row break and after the last rune,
+//! so the marker, the hint and the listing are drawn with no style. The
+//! first rune of each row writes its style again, including the window's
+//! first row when the rows above it are not drawn.
 
 // ==========================================================================
 // Standard library imports
@@ -95,6 +105,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const highlight = @import("highlight.zig");
 const layout = @import("layout.zig");
 const rune = @import("rune.zig");
 
@@ -120,6 +131,22 @@ const selected_style = "\x1b[7m";
 /// The escape that ends a styled run.
 const style_reset = "\x1b[0m";
 
+/// The escape that begins a run of each class.
+///
+/// Each resets the style first. The string, number, keyword and constant
+/// colours are the printer's in `runtime/pp/pretty.zig`.
+const class_styles: std.enums.EnumArray(highlight.Class, []const u8) = .init(.{
+    .plain = style_reset,
+    .comment = "\x1b[0;38;5;246m",
+    .string = "\x1b[0;35m",
+    .number = "\x1b[0;32m",
+    .keyword = "\x1b[0;33m",
+    .constant = "\x1b[0;36m",
+    .special = "\x1b[0;93m",
+    .bound = "\x1b[0;94m",
+    .@"error" = "\x1b[0;31m",
+});
+
 // ==========================================================================
 // Types
 // ==========================================================================
@@ -132,7 +159,8 @@ const style_reset = "\x1b[0m";
 /// rows the frame draws, 0 for no limit, and `top` is the first display row
 /// of the last frame's window. `listing` is drawn beneath the input, and
 /// `hint` to the right of the cursor, where the cursor has nothing after it
-/// on its row; the caller checks that.
+/// on its row; the caller checks that. `classes` is the class of each byte
+/// of `buffer`, or empty for a buffer drawn with no style.
 pub const Frame = struct {
     prompt: []const u8,
     buffer: []const u8,
@@ -142,6 +170,7 @@ pub const Frame = struct {
     top: usize = 0,
     listing: ?Listing = null,
     hint: []const u8 = "",
+    classes: []const highlight.Class = &.{},
 };
 
 /// The candidates a frame lists beneath the input.
@@ -238,12 +267,14 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
     var row: usize = 0;
     var column = geometry.prompt;
     var stopped = false;
+    var style: highlight.Class = .plain;
     var i: usize = 0;
     while (i < frame.buffer.len) {
         const newline = frame.buffer[i] == '\n';
         const r = rune.decode(frame.buffer[i..]);
         const w: usize = if (newline) 0 else rune.width(r);
         if (newline or layout.wraps(column, w, frame.columns)) {
+            try restyle(out, &style, .plain);
             if (row + 1 >= last) {
                 stopped = true;
                 break;
@@ -257,10 +288,14 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
                 continue;
             }
         }
-        if (row >= first) try drawRune(out, r, frame.buffer[i..][0..r.len]);
+        if (row >= first) {
+            if (frame.classes.len > 0) try restyle(out, &style, frame.classes[i]);
+            try drawRune(out, r, frame.buffer[i..][0..r.len]);
+        }
         column += w;
         i += r.len;
     }
+    try restyle(out, &style, .plain);
     // A full last row leaves the terminal waiting to wrap. The display row
     // below makes the cursor's place definite.
     if (!stopped and extra_row and last == display_rows) {
@@ -470,6 +505,14 @@ fn pastEscape(text: []const u8, at: usize) usize {
 fn place(out: *std.Io.Writer, column: usize) std.Io.Writer.Error!void {
     try out.writeByte('\r');
     if (column > 0) try out.print("\x1b[{d}C", .{column});
+}
+
+/// Writes the escape that changes the style from `style` to `class`, where
+/// the two differ, and sets `style` to `class`.
+fn restyle(out: *std.Io.Writer, style: *highlight.Class, class: highlight.Class) std.Io.Writer.Error!void {
+    if (style.* == class) return;
+    try out.writeAll(class_styles.get(class));
+    style.* = class;
 }
 
 /// Returns the columns `text` occupies as a frame draws it.
@@ -786,6 +829,61 @@ test "draw: a hint with fewer than four columns is not drawn" {
         .cursor = 3,
         .columns = 13,
         .hint = "(map f)",
+    });
+}
+
+test "draw: each class is drawn in its style, and the style is reset before the hint" {
+    const S = highlight.Class;
+    try expectFrame("\r\x1b[J> \x1b[0;35m\"a\"\x1b[0m \x1b[0;32m1\x1b[0m\x1b[3C\x1b[90m(h)\x1b[0m\r\x1b[7C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "\"a\" 1",
+        .cursor = 5,
+        .columns = 80,
+        .hint = "(h)",
+        .classes = &.{ S.string, S.string, S.string, S.plain, S.number },
+    });
+}
+
+test "draw: the style is reset before a wrap and a newline and written again after" {
+    const S = highlight.Class;
+    const string = [_]S{.string} ** 9;
+    try expectFrame("\r\x1b[J> \x1b[0;35m\"abcde\x1b[0m\r\n\x1b[0;35mfgh\x1b[0m", .{ .climb = 1, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "\"abcdefgh",
+        .cursor = 9,
+        .columns = 8,
+        .classes = &string,
+    });
+    try expectFrame("\r\x1b[J> \x1b[0;38;5;246m;a\x1b[0m\r\n  \x1b[0;38;5;246m;b\x1b[0m", .{ .climb = 1, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = ";a\n;b",
+        .cursor = 5,
+        .columns = 80,
+        .classes = &.{ S.comment, S.comment, S.plain, S.comment, S.comment },
+    });
+}
+
+test "draw: a window whose first row begins inside a string draws the string's style" {
+    const string = [_]highlight.Class{.string} ** 16;
+    try expectFrame("\r\x1b[J\x1b[0;35mno\x1b[0m", .{ .climb = 0, .top = 2 }, 0, .{
+        .prompt = "> ",
+        .buffer = "\"abcdefghijklmno",
+        .cursor = 16,
+        .columns = 8,
+        .height = 1,
+        .classes = &string,
+    });
+}
+
+test "draw: the style is reset before the listing" {
+    const S = highlight.Class;
+    try expectFrame("\r\x1b[J> \x1b[0;33m:a\x1b[0m\r\n\x1b[7m:a\x1b[0m   :ab\x1b[1A\r\x1b[4C", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = ":a",
+        .cursor = 2,
+        .columns = 80,
+        .listing = .{ .names = &.{ ":a", ":ab" }, .selected = 0 },
+        .classes = &.{ S.keyword, S.keyword },
     });
 }
 

@@ -51,6 +51,12 @@
 //! line. The frame at the end of a line draws neither the candidates nor the
 //! hint.
 //!
+//! ## Highlighting
+//!
+//! With its `symbol`, `number` and `special` functions, each frame draws the
+//! buffer in the classes `highlight.classify` gives it, the frame at the end
+//! of a line included, so the line keeps its colours on the screen.
+//!
 //! ## Bracketed paste
 //!
 //! A paste can submit several lines, and its bytes can be split across reads
@@ -71,6 +77,7 @@ const std = @import("std");
 
 const complete = @import("complete.zig");
 const editor_mod = @import("editor.zig");
+const highlight = @import("highlight.zig");
 const history_mod = @import("history.zig");
 const keys = @import("keys.zig");
 const layout = @import("layout.zig");
@@ -102,13 +109,18 @@ pub const End = enum { submit, eof, cancel };
 /// `Session.begin` takes a `Source`. `finished` sets what Enter does, as
 /// `editor.Editor.finished` does. `symbol` reports which bytes a token has,
 /// `gather` adds the candidates for a token, and `hint` returns a token's
-/// hint. Tab completes only with `symbol` and `gather`, and a frame draws a
-/// hint only with `symbol` and `hint`.
+/// hint. `number` and `special` report which tokens are numbers and special
+/// forms, and `bound` which symbols are bound. Tab completes only with
+/// `symbol` and `gather`, a frame draws a hint only with `symbol` and `hint`,
+/// and a frame is highlighted only with `symbol`, `number` and `special`.
 pub const Source = struct {
     finished: ?editor_mod.Finished = null,
     symbol: ?complete.Symbol = null,
     gather: ?complete.Gather = null,
     hint: ?Hint = null,
+    number: ?highlight.Number = null,
+    special: ?highlight.Special = null,
+    bound: ?highlight.Bound = null,
 };
 
 /// The terminal's size, in columns and rows.
@@ -130,7 +142,8 @@ pub const Size = struct {
 /// last newline, and `typeahead` the bytes after the key that ended the last
 /// line. `source` is the open line's `Source`, or null, and `cycle` is the
 /// completion in progress, or null. `history` is the history the open line
-/// browses, or null. `climb` is
+/// browses, or null. `classes` is the class of each byte of the buffer in
+/// the last highlighted frame. `climb` is
 /// `render.zig`'s climb and `top` the first row of its window, `size` is the
 /// size the last frame was drawn at, and `open` is whether a line is being
 /// edited.
@@ -145,6 +158,7 @@ pub const Session = struct {
     source: ?Source = null,
     cycle: ?complete.Cycle = null,
     history: ?*history_mod.History = null,
+    classes: std.ArrayList(highlight.Class) = .empty,
     climb: usize = 0,
     top: usize = 0,
     size: Size = .{ .columns = 80 },
@@ -168,6 +182,7 @@ pub const Session = struct {
         session.output.deinit();
         session.held.deinit(session.allocator);
         session.typeahead.deinit(session.allocator);
+        session.classes.deinit(session.allocator);
     }
 
     /// Opens a line with `prompt`, draws its first frame, and applies the
@@ -281,6 +296,25 @@ pub const Session = struct {
         const bytes = session.output.written();
         session.output.writer.end = 0;
         return bytes;
+    }
+
+    /// Returns the class of each byte of the buffer, or an empty slice for a
+    /// line that is not highlighted.
+    ///
+    /// The result is valid until the next call. This function returns
+    /// `error.OutOfMemory` when the classes cannot be allocated.
+    fn classify(session: *Session) error{OutOfMemory}![]const highlight.Class {
+        const source = session.source orelse return &.{};
+        const lexicon: highlight.Lexicon = .{
+            .symbol = source.symbol orelse return &.{},
+            .number = source.number orelse return &.{},
+            .special = source.special orelse return &.{},
+            .bound = source.bound,
+        };
+        const text = session.editor.buffer.items;
+        try session.classes.resize(session.allocator, text.len);
+        highlight.classify(text, session.classes.items, lexicon);
+        return session.classes.items;
     }
 
     /// Ends the completion in progress, and reports whether there was one.
@@ -400,6 +434,7 @@ pub const Session = struct {
     /// bounded frame draws the hint. The frame at the end of a line is
     /// unbounded, and no completion is in progress when it is drawn.
     fn redraw(session: *Session, bounded: bool) error{OutOfMemory}!void {
+        const classes = try session.classify();
         var listing: ?render.Listing = null;
         if (session.cycle) |cycle| listing = .{ .names = cycle.candidates.names.items, .selected = cycle.selected };
         const drawn = render.draw(&session.output.writer, session.climb, .{
@@ -411,6 +446,7 @@ pub const Session = struct {
             .top = session.top,
             .listing = listing,
             .hint = if (bounded) session.hintText() else "",
+            .classes = classes,
         }) catch return error.OutOfMemory;
         session.climb = drawn.climb;
         session.top = drawn.top;
@@ -839,4 +875,36 @@ test "feed: a gatherer that fails gives no candidates and the line stays open" {
     try std.testing.expectEqualStrings("ma", session.line());
     try std.testing.expectEqual(null, session.cycle);
     try std.testing.expectEqual(End.submit, (try session.feed("\r", w80)).?);
+}
+
+/// The `highlight.Number` of the tests: a run of digits.
+fn testNumber(token: []const u8) bool {
+    for (token) |byte| if (!std.ascii.isDigit(byte)) return false;
+    return true;
+}
+
+/// The `highlight.Special` of the tests: `def` alone.
+fn testSpecial(token: []const u8) bool {
+    return std.mem.eql(u8, token, "def");
+}
+
+test "feed: a line with the classifier's functions is highlighted, the last frame too" {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    const source: Source = .{ .symbol = &testSymbol, .number = &testNumber, .special = &testSpecial };
+    _ = try session.begin("> ", w80, source, null);
+    _ = session.take();
+    _ = try session.feed("(def 1)", w80);
+    try std.testing.expectEqualStrings("\r\x1b[J> (\x1b[0;93mdef\x1b[0m \x1b[0;32m1\x1b[0m)", session.take());
+    try std.testing.expectEqual(End.submit, (try session.feed("\r", w80)).?);
+    try std.testing.expectEqualStrings("\r\x1b[J> (\x1b[0;93mdef\x1b[0m \x1b[0;32m1\x1b[0m)\r\n", session.take());
+}
+
+test "feed: a line without the classifier's functions is not highlighted" {
+    var session = Session.init(std.testing.allocator);
+    defer session.deinit();
+    _ = try session.begin("> ", w80, .{ .symbol = &testSymbol, .special = &testSpecial }, null);
+    _ = session.take();
+    _ = try session.feed("(def 1)", w80);
+    try std.testing.expectEqualStrings("\r\x1b[J> (def 1)", session.take());
 }

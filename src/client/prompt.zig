@@ -44,6 +44,17 @@
 //! allocates on the runtime's heap, and the environment is rooted while the
 //! line is open.
 //!
+//! ## Highlighting
+//!
+//! A `getline` given a table as its environment is highlighted when the
+//! dynamic binding `*err-color*` is truthy. `-n`, `-N` and `NO_COLOR` set it
+//! for the REPL, and the runtime's stack traces read it. `read` then gives
+//! the session `scan.isNumber`, the parser's test of a number, `special`, a
+//! test against the special forms' names, and `isBound`, a test against the
+//! symbols bound in the environment and its prototypes. The bound symbols
+//! are collected once for each line, at the first token tested, so a
+//! binding made while the line is open is not seen until the next line.
+//!
 //! ## History
 //!
 //! A `getline` given an environment browses and records the history, and a
@@ -98,6 +109,7 @@ const tables = subsystems.value.tables;
 const terminal = @import("terminal.zig");
 const utils = subsystems.utils;
 const value = subsystems.value;
+const vm_state = subsystems.vm_state;
 const wrap = subsystems.value.wrap;
 
 // ==========================================================================
@@ -143,6 +155,14 @@ var type_hint: [80]u8 = undefined;
 /// Whether standard output is a terminal, read when a line is opened.
 var output_is_terminal = false;
 
+/// The names bound in the open line's environment and its prototypes. Each
+/// name is the bytes of a symbol in the environment, which is rooted while
+/// the line is open.
+var bound_names: std.StringHashMapUnmanaged(void) = .empty;
+
+/// Whether `bound_names` has been collected for the open line.
+var bound_collected = false;
+
 // ==========================================================================
 // Public functions
 // ==========================================================================
@@ -178,6 +198,12 @@ pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool, env: ?*ta
         functions.?.symbol = &scan.isSymbolChar;
         functions.?.gather = &gather;
         functions.?.hint = &hint;
+        if (repr.truthy(vm_state.dyn("err-color"))) {
+            bound_collected = false;
+            functions.?.number = &scan.isNumber;
+            functions.?.special = &special;
+            functions.?.bound = &isBound;
+        }
     }
     const opened = s.begin(prompt, size(), functions, browsed) catch {
         abandon();
@@ -247,6 +273,24 @@ fn binding(token: []const u8) ?*tables.Table {
         }
     }
     return null;
+}
+
+/// Puts each symbol bound in the open line's environment and its prototypes
+/// in `bound_names`, in place of what it had.
+///
+/// This function returns `error.OutOfMemory` when `bound_names` cannot grow.
+fn collectBound() error{OutOfMemory}!void {
+    bound_names.clearRetainingCapacity();
+    var table = source_env;
+    var depth: usize = 0;
+    while (table) |t| : (table = t.proto) {
+        if (depth == config.max_proto_depth) break;
+        depth += 1;
+        for (t.slots()) |kv| {
+            if (!wrap.isSymbol(kv.key)) continue;
+            try bound_names.put(std.heap.c_allocator, strings.bytesOf(wrap.toSymbol(kv.key)), {});
+        }
+    }
 }
 
 /// Gives a write to standard output or standard error to the open line.
@@ -326,8 +370,8 @@ fn gather(token: []const u8, candidates: *lineedit.complete.Candidates) error{Ou
             if (std.mem.startsWith(u8, name, token)) try candidates.add(name);
         }
     }
-    for (specials.allSpecials()) |special| {
-        const name = std.mem.span(special.name);
+    for (specials.allSpecials()) |form| {
+        const name = std.mem.span(form.name);
         if (std.mem.startsWith(u8, name, token)) try candidates.add(name);
     }
 }
@@ -413,6 +457,21 @@ fn inputStream() raise.Error!*ev_stream.Stream {
     try ev.levelTriggeredStream(stream);
     input_stream = stream;
     return stream;
+}
+
+/// Returns whether the symbol `token` is bound in the open line's
+/// environment or its prototypes.
+///
+/// This is the `lineedit.highlight.Bound` `read` gives the session. The
+/// bound names are collected at the first call for a line, and a collection
+/// that cannot allocate is taken as binding nothing. This function does not
+/// raise or allocate on the runtime's heap.
+fn isBound(token: []const u8) bool {
+    if (!bound_collected) {
+        bound_collected = true;
+        collectBound() catch bound_names.clearRetainingCapacity();
+    }
+    return bound_names.contains(token);
 }
 
 /// Receives the loop's events for the stream `awaitStream` waits on.
@@ -560,6 +619,16 @@ fn sessionPtr() *lineedit.session.Session {
 /// Returns the terminal's size as the session takes it.
 fn size() lineedit.session.Size {
     return .{ .columns = terminal.columns(), .rows = terminal.rows() };
+}
+
+/// Returns whether `token` is the name of a special form.
+///
+/// This is the `lineedit.highlight.Special` `read` gives the session.
+fn special(token: []const u8) bool {
+    for (specials.allSpecials()) |form| {
+        if (std.mem.eql(u8, std.mem.span(form.name), token)) return true;
+    }
+    return false;
 }
 
 /// Writes `bytes` to the file at `path`, opened with `mode`.

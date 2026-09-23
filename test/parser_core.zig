@@ -610,6 +610,12 @@ fn theAdjacencyRule() !void {
     // A comment does not excuse the newline that ends it.
     expect(refusalIs("'; note\nx", "expected a form on the same line as ', opened at line 1, column 1"));
 
+    // A comment ends at a carriage return, as a line does, so a prefix
+    // before a comment is refused there, and a form after a lone carriage
+    // return is read.
+    expect(refusalIs("'; note\r\nx", "expected a form on the same line as ', opened at line 1, column 1"));
+    expect(harness.integerIs(try only("; note\r7"), 7));
+
     // Whitespace within the line is fine, and so is a comment that the form
     // still follows on its own line.
     expect(harness.symbolIs(try access.getIndex(try only("'  x"), 1), "x"));

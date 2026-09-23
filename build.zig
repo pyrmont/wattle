@@ -804,6 +804,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
+        module.addImport("lineedit", lineeditModule(b, target, optimize));
         const exe = selectBackend(b.addExecutable(.{ .name = "wattle-contract-test", .root_module = module }));
         applyLinkage(exe, options, target);
         // A contract may load the native-module fixture, and a contract that

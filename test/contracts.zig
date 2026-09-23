@@ -172,6 +172,9 @@ const contracts: []const Contract = blk: {
     // register. The event-loop configurations that publish the OS still run
     // this contract.
     if (options.ev and !config.reduced_os) list = with(list, "ev_loop", @import("ev_loop.zig"));
+    // The line editor's classifier, compiled into the client only where
+    // `Config.lineedit` is set.
+    if (config.lineedit) list = with(list, "highlight", @import("highlight.zig"));
     break :blk list;
 };
 

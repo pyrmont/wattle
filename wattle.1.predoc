@@ -99,10 +99,12 @@ Options
   and a top-level definition can be rebound.
 
 - **-n**, **--nocolor**:
-  Print values, errors and documentation without ANSI colour.
+  Print values, errors and documentation without ANSI colour, and do not
+  highlight the source typed at the REPL.
 
 - **-N**, **--color**:
-  Print values, errors and documentation with ANSI colour.
+  Print values, errors and documentation with ANSI colour, and highlight the
+  source typed at the REPL.
 
 - **-w**, **--lint-warn** _level_:
   Set the lint level at which a message is printed as a warning. _level_ is

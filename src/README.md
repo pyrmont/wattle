@@ -48,13 +48,13 @@ must never reach `src/host/` or `src/runtime/`.
 | `src/host/`    | 2     | the runtime                             |
 | `src/runtime/` | 79    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 13    | the `wattle` and `quickbin` executables |
+| `src/client/`  | 16    | the `wattle` and `quickbin` executables |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
 
-Ten of the thirteen files in `src/client/` are the REPL's line editor.
-`src/client/lineedit.zig` and the seven files under `src/client/lineedit/`
+Thirteen of the sixteen files in `src/client/` are the REPL's line editor.
+`src/client/lineedit.zig` and the ten files under `src/client/lineedit/`
 are a module named `lineedit`, which imports nothing from the runtime and
 never reads or writes the terminal: it takes the bytes a terminal sends and
 returns the bytes to draw. The client, the `test/lineedit` step and

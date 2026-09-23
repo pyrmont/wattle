@@ -21,6 +21,7 @@ const std = @import("std");
 
 const buffers = @import("value/buffers.zig");
 const c = @import("cabi");
+const config = @import("config");
 const fatal = @import("fatal.zig");
 const inttypes = @import("value/ints.zig");
 const raise = @import("../api/raise.zig");
@@ -210,6 +211,23 @@ pub fn bufferDtostr(buffer: *buffers.Buffer, val: f64) raise.Error!void {
 /// through `raise.toAbi`.
 pub fn bufferDtostrAbi(buffer: *buffers.Buffer, val: f64) void {
     raise.toAbi(bufferDtostr(buffer, val));
+}
+
+/// Whether `str` is a number as the parser reads a token: as `scanNumeric`
+/// scans it in a build with `int_types`, and as `scanNumber` scans it
+/// otherwise.
+///
+/// No number is wrapped, so this function allocates nothing.
+pub fn isNumber(str: []const u8) bool {
+    if (!config.int_types) return scanNumber(str) != null;
+    if (str.len < 2 or str[str.len - 2] != ':') return scanNumber(str) != null;
+    const digits = str[0 .. str.len - 2];
+    return switch (str[str.len - 1]) {
+        'n' => scanNumber(digits) != null,
+        's' => scanInt64(digits) != null,
+        'u' => scanUint64(digits) != null,
+        else => false,
+    };
 }
 
 /// Whether `character` may appear in a symbol.
