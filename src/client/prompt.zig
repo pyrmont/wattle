@@ -25,6 +25,13 @@
 //!   while a line is open: another fiber's timer or output waits for the
 //!   line to end, and nothing can cancel the wait.
 //!
+//! ## What Enter does
+//!
+//! A `getline` given an environment is reading source, and `read` then gives
+//! the session `finished`, so Enter submits only a buffer the parser does not
+//! report as pending and otherwise opens a line. Without an environment Enter
+//! always submits.
+//!
 //! ## Output while a line is open
 //!
 //! `read` passes `io.divert` a function that gives each write to standard
@@ -54,6 +61,7 @@ const ev_stream = subsystems.ev_stream;
 const gc_alloc = subsystems.gc_alloc;
 const io = subsystems.io;
 const lineedit = @import("lineedit");
+const parser = subsystems.parser;
 const raise = subsystems.raise;
 const repr = @import("repr");
 const subsystems = @import("subsystems");
@@ -93,7 +101,9 @@ var output_is_terminal = false;
 /// Reads a line on the terminal into `buffer`, after drawing `prompt`, and
 /// returns what `getline` returns.
 ///
-/// `buffer` is empty and takes the line and a newline. The result is
+/// `buffer` is empty and takes the line and a newline. `source` is whether
+/// `getline` was given an environment, which makes Enter ask the parser
+/// whether the buffer is finished. The result is
 /// `buffer`, which is empty at end of input, or the keyword `:cancel` after
 /// Ctrl-C. The result is null when the editor is not used, and the caller
 /// then reads without it. With the event loop, the calling fiber is
@@ -101,14 +111,14 @@ var output_is_terminal = false;
 ///
 /// This function raises when another line is open, and when an allocation
 /// fails.
-pub fn read(prompt: []const u8, buffer: *buffers.Buffer) raise.Error!?repr.Value {
+pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool) raise.Error!?repr.Value {
     if (!config.lineedit) return null;
     const s = sessionPtr();
     if (s.open) return raise.panic("getline is already reading a line");
     if (!terminal.enter()) return null;
     output_is_terminal = c.isatty(1) != 0;
     io.divert(&divertedWrite);
-    const opened = s.begin(prompt, size()) catch {
+    const opened = s.begin(prompt, size(), if (source) &finished else null) catch {
         abandon();
         return raise.panic("out of memory");
     };
@@ -172,6 +182,23 @@ fn divertedWrite(stream: io.Standard, bytes: []const u8) ?bool {
     s.above(bytes, size()) catch return false;
     flush();
     return true;
+}
+
+/// Returns whether `text` is ready to be submitted as source: whether a
+/// fresh parser, given `text` and a newline, reports anything but pending.
+///
+/// This is the `lineedit.editor.Finished` `read` gives the session. The
+/// newline is given because `getline` returns one after the line, and a
+/// bare token or a closed long string is pending without it. A raise is
+/// taken as finished, so the buffer is submitted and the REPL reports what
+/// it can; the editor never refuses to submit a buffer.
+fn finished(text: []const u8) bool {
+    var p: parser.Parser = undefined;
+    parser.parserInit(&p);
+    defer parser.parserDeinit(&p);
+    for (text) |byte| parser.parserConsume(&p, byte) catch return true;
+    parser.parserConsume(&p, '\n') catch return true;
+    return parser.parserStatus(&p) != .pending;
 }
 
 /// Finishes a line that has ended as `end`, and returns what `getline`

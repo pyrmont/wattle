@@ -240,11 +240,12 @@ fn dispatchOrPanic(operation: i32, argv: []repr.Value) raise.Error!repr.Value {
 
 /// `getline`, replaced so that the client reads its own lines.
 ///
-/// The arguments are a prompt, a buffer to fill and a third Janet ignores
-/// here, all optional. The buffer is truncated and then filled with one line
-/// including its newline, or left empty at end of input. On a terminal the
-/// line is read by `prompt.zig`'s editor, which also returns `:cancel` after
-/// Ctrl-C. This function raises on a wrong argument type and where the editor
+/// The arguments are a prompt, a buffer to fill and an environment, all
+/// optional. The buffer is truncated and then filled with one line including
+/// its newline, or left empty at end of input. On a terminal the line is read
+/// by `prompt.zig`'s editor, which also returns `:cancel` after Ctrl-C. An
+/// environment other than nil says the caller is reading source, and the
+/// editor then returns a whole form, which may be several lines. This function raises on a wrong argument type and where the editor
 /// raises, and returns the buffer.
 fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
     try args.checkArity(@intCast(argv.len), 0, 3);
@@ -254,7 +255,8 @@ fn lineGetter(argv: []repr.Value) raise.Error!repr.Value {
 
     buffer.*.count = 0;
     if (config.lineedit) {
-        if (try prompt_editor.read(std.mem.span(prompt), buffer)) |result| return result;
+        const source = argv.len >= 3 and !repr.checkType(argv[2], repr.Tag.nil);
+        if (try prompt_editor.read(std.mem.span(prompt), buffer, source)) |result| return result;
     }
     if (readline(prompt, &line) != 0 and line.length > 0) {
         try buffers.pushBytes(buffer, line.bytes.?[0..@intCast(line.length)]);

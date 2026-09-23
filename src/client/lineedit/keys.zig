@@ -27,6 +27,10 @@
 //!
 //! - Enter arrives as CR and Ctrl-J as LF, because raw mode clears `ICRNL`.
 //!   They are separate keys.
+//!
+//! - A bracketed paste arrives between `ESC [ 200 ~` and `ESC [ 201 ~`, which
+//!   are the keys `paste_start` and `paste_end`. The bytes between them are
+//!   decoded as they would be if typed.
 
 // ==========================================================================
 // Standard library imports
@@ -55,10 +59,13 @@ const max_parameters = 16;
 /// `Decoder.feed` returns a `Key` and `editor.Editor.apply` takes one.
 /// `insert` has the bytes of one rune, or of one byte that begins no valid
 /// UTF-8 sequence. `interrupt` is Ctrl-C and `eof` is Ctrl-D.
+/// `paste_start` and `paste_end` are the markers around a bracketed paste.
 pub const Key = union(enum) {
     insert: Rune,
     left,
     right,
+    up,
+    down,
     home,
     end,
     backspace,
@@ -69,6 +76,8 @@ pub const Key = union(enum) {
     newline,
     eof,
     interrupt,
+    paste_start,
+    paste_end,
     ignored,
 };
 
@@ -184,8 +193,10 @@ pub const Decoder = struct {
             '\n' => return .newline,
             0x0b => return .kill_end,
             '\r' => return .enter,
+            0x0e => return .down,
+            0x10 => return .up,
             0x15 => return .kill_start,
-            0x00, 0x07, 0x0c, 0x0e...0x14, 0x16...0x1a, 0x1c...0x1f => return .ignored,
+            0x00, 0x07, 0x0c, 0x0f, 0x11...0x14, 0x16...0x1a, 0x1c...0x1f => return .ignored,
             else => {},
         }
         const len = std.unicode.utf8ByteSequenceLength(byte) catch return .{ .insert = single(byte) };
@@ -226,6 +237,8 @@ fn final(byte: u8, parameters: []const u8) Key {
     const plain = parameters.len == 0 or std.mem.eql(u8, parameters, "1");
     if (!plain and byte != '~') return .ignored;
     switch (byte) {
+        'A' => return .up,
+        'B' => return .down,
         'C' => return .right,
         'D' => return .left,
         'F' => return .end,
@@ -234,6 +247,8 @@ fn final(byte: u8, parameters: []const u8) Key {
             if (std.mem.eql(u8, parameters, "1") or std.mem.eql(u8, parameters, "7")) return .home;
             if (std.mem.eql(u8, parameters, "4") or std.mem.eql(u8, parameters, "8")) return .end;
             if (std.mem.eql(u8, parameters, "3")) return .delete;
+            if (std.mem.eql(u8, parameters, "200")) return .paste_start;
+            if (std.mem.eql(u8, parameters, "201")) return .paste_end;
             return .ignored;
         },
         else => return .ignored,
@@ -304,6 +319,7 @@ test "feed: a broken rune is dropped and the next byte decoded" {
 test "feed: cursor keys as CSI and as SS3" {
     try expectKeys(&.{ .left, .right, .home, .end }, "\x1b[D\x1b[C\x1b[H\x1b[F");
     try expectKeys(&.{ .left, .right, .home, .end }, "\x1bOD\x1bOC\x1bOH\x1bOF");
+    try expectKeys(&.{ .up, .down, .up, .down }, "\x1b[A\x1b[B\x1bOA\x1bOB");
     try expectKeys(&.{ .home, .end, .home, .end, .delete }, "\x1b[1~\x1b[4~\x1b[7~\x1b[8~\x1b[3~");
 }
 
@@ -311,6 +327,11 @@ test "feed: control keys" {
     try expectKeys(&.{ .home, .left, .interrupt, .eof, .end, .right }, "\x01\x02\x03\x04\x05\x06");
     try expectKeys(&.{ .backspace, .backspace, .kill_end, .kill_start }, "\x08\x7f\x0b\x15");
     try expectKeys(&.{ .enter, .newline }, "\r\n");
+    try expectKeys(&.{ .up, .down }, "\x10\x0e");
+}
+
+test "feed: the bracketed paste markers are keys of their own" {
+    try expectKeys(&.{ .paste_start, ins("a"), .enter, .paste_end }, "\x1b[200~a\r\x1b[201~");
 }
 
 test "feed: an unrecognised CSI is consumed whole" {

@@ -12,10 +12,26 @@
 //! combining mark is a rune of its own and is stepped over separately from
 //! its base.
 //!
+//! ## Lines and rows
+//!
+//! A _line_ is the text between two newlines, or between a newline and an
+//! end of the buffer. Home, End, Ctrl-U and Ctrl-K act on the cursor's line,
+//! and none of them removes or crosses a newline. Up and Down move by layout
+//! row, which a wrap opens as well as a newline, so `vertical` takes the
+//! layout's geometry and `apply` does not move for them.
+//!
+//! A run of Up and Down keeps the _goal column_, the cursor's column when the
+//! run began, so a move through a shorter row and back returns to it. Every
+//! other key ends the run.
+//!
 //! ## Enter
 //!
-//! Enter and Ctrl-J both submit the buffer. The editor does not read the
-//! parser's status, so neither key inserts a newline.
+//! Enter submits the buffer, unless the editor has a `Finished` function and
+//! that function says the buffer is not finished, when Enter opens a line.
+//! Ctrl-J always opens a line. _Opening a line_ inserts a newline at the
+//! cursor and then the spaces and tabs that begin the cursor's line, as far as
+//! the cursor. Inside a bracketed paste it inserts the newline alone, because
+//! pasted text carries its own indentation.
 
 // ==========================================================================
 // Standard library imports
@@ -28,6 +44,7 @@ const std = @import("std");
 // ==========================================================================
 
 const keys = @import("keys.zig");
+const layout = @import("layout.zig");
 const rune = @import("rune.zig");
 
 // ==========================================================================
@@ -42,14 +59,26 @@ const rune = @import("rune.zig");
 /// `eof` at Ctrl-D on an empty buffer, and `cancel` at Ctrl-C.
 pub const Outcome = enum { unchanged, edited, submit, eof, cancel };
 
+/// Returns whether `text` is ready to be submitted.
+///
+/// `Editor.finished` holds one. `text` is the whole buffer. The editor calls
+/// the function at Enter, and opens a line when the result is false.
+pub const Finished = *const fn (text: []const u8) bool;
+
 /// The buffer being edited and the cursor in it.
 ///
 /// `init` returns an `Editor` and `deinit` releases it. `buffer` is the
-/// bytes typed so far and `cursor` is a byte offset into them.
+/// bytes typed so far and `cursor` is a byte offset into them. `finished`
+/// decides what Enter does, and Enter submits when it is null. `pasting` is
+/// whether the keys are inside a bracketed paste, and `goal` is the goal
+/// column of a run of vertical moves, null outside one.
 pub const Editor = struct {
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8) = .empty,
     cursor: usize = 0,
+    finished: ?Finished = null,
+    pasting: bool = false,
+    goal: ?usize = null,
 
     /// Returns an empty editor whose buffer `allocator` holds.
     pub fn init(allocator: std.mem.Allocator) Editor {
@@ -63,18 +92,22 @@ pub const Editor = struct {
 
     /// Empties the buffer and puts the cursor at its start.
     ///
-    /// The buffer's memory is kept for the next line.
+    /// The buffer's memory is kept for the next line. `finished` and
+    /// `pasting` are left as they are.
     pub fn clear(editor: *Editor) void {
         editor.buffer.clearRetainingCapacity();
         editor.cursor = 0;
+        editor.goal = null;
     }
 
     /// Applies `key` to the buffer and the cursor, and returns what it did.
     ///
-    /// This function returns `error.OutOfMemory` when an insertion cannot
-    /// grow the buffer, and the buffer is then unchanged.
+    /// Up and Down change nothing here; `vertical` applies them. This
+    /// function returns `error.OutOfMemory` when an insertion cannot grow the
+    /// buffer, and the buffer is then unchanged.
     pub fn apply(editor: *Editor, key: keys.Key) error{OutOfMemory}!Outcome {
         const text = editor.buffer.items;
+        editor.goal = null;
         switch (key) {
             .insert => |r| {
                 try editor.buffer.insertSlice(editor.allocator, editor.cursor, r.slice());
@@ -83,8 +116,9 @@ pub const Editor = struct {
             },
             .left => return editor.moveTo(previous(text, editor.cursor)),
             .right => return editor.moveTo(next(text, editor.cursor)),
-            .home => return editor.moveTo(0),
-            .end => return editor.moveTo(text.len),
+            .up, .down => return .unchanged,
+            .home => return editor.moveTo(lineStart(text, editor.cursor)),
+            .end => return editor.moveTo(lineEnd(text, editor.cursor)),
             .backspace => {
                 if (editor.cursor == 0) return .unchanged;
                 const start = previous(text, editor.cursor);
@@ -94,24 +128,53 @@ pub const Editor = struct {
             },
             .delete => return editor.deleteForward(),
             .kill_end => {
-                if (editor.cursor == text.len) return .unchanged;
-                editor.remove(editor.cursor, text.len);
+                const end = lineEnd(text, editor.cursor);
+                if (end == editor.cursor) return .unchanged;
+                editor.remove(editor.cursor, end);
                 return .edited;
             },
             .kill_start => {
-                if (editor.cursor == 0) return .unchanged;
-                editor.remove(0, editor.cursor);
-                editor.cursor = 0;
+                const start = lineStart(text, editor.cursor);
+                if (start == editor.cursor) return .unchanged;
+                editor.remove(start, editor.cursor);
+                editor.cursor = start;
                 return .edited;
             },
-            .enter, .newline => return .submit,
+            .enter => {
+                const finished = editor.finished orelse return .submit;
+                if (finished(text)) return .submit;
+                return editor.openLine();
+            },
+            .newline => return editor.openLine(),
             .eof => {
                 if (text.len == 0) return .eof;
                 return editor.deleteForward();
             },
             .interrupt => return .cancel,
+            .paste_start, .paste_end => {
+                editor.pasting = key == .paste_start;
+                return .unchanged;
+            },
             .ignored => return .unchanged,
         }
+    }
+
+    /// Moves the cursor to the layout row above, when `up`, or below, and
+    /// returns what it did.
+    ///
+    /// `geometry` is the layout the buffer is drawn with. The cursor moves to
+    /// the byte `layout.offset` names at the goal column on that row. On the
+    /// first row a move up, and on the last row a move down, changes nothing.
+    pub fn vertical(editor: *Editor, geometry: layout.Geometry, up: bool) Outcome {
+        const text = editor.buffer.items;
+        const from = layout.position(geometry, text, editor.cursor);
+        const column = editor.goal orelse from.column;
+        if (up and from.row == 0) return .unchanged;
+        if (!up and from.row + 1 >= layout.rows(geometry, text)) return .unchanged;
+        const row = if (up) from.row - 1 else from.row + 1;
+        const outcome = editor.moveTo(layout.offset(geometry, text, .{ .row = row, .column = column }));
+        editor.goal = column;
+        return outcome;
     }
 
     /// Deletes the rune at the cursor.
@@ -119,6 +182,25 @@ pub const Editor = struct {
         const text = editor.buffer.items;
         if (editor.cursor == text.len) return .unchanged;
         editor.remove(editor.cursor, next(text, editor.cursor));
+        return .edited;
+    }
+
+    /// Inserts a newline at the cursor and the indentation of the cursor's
+    /// line before the cursor, or the newline alone inside a paste.
+    fn openLine(editor: *Editor) error{OutOfMemory}!Outcome {
+        const text = editor.buffer.items;
+        const start = lineStart(text, editor.cursor);
+        var end = start;
+        if (!editor.pasting) {
+            while (end < editor.cursor and (text[end] == ' ' or text[end] == '\t')) end += 1;
+        }
+        try editor.buffer.ensureUnusedCapacity(editor.allocator, 1 + end - start);
+        const at = editor.cursor;
+        editor.buffer.insertAssumeCapacity(at, '\n');
+        // The indentation is before the cursor, so the insertions after it
+        // leave it where it was.
+        editor.buffer.insertSliceAssumeCapacity(at + 1, editor.buffer.items[start..end]);
+        editor.cursor = at + 1 + end - start;
         return .edited;
     }
 
@@ -138,6 +220,18 @@ pub const Editor = struct {
 // ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// Returns the offset of the start of the line `at` is on.
+fn lineStart(text: []const u8, at: usize) usize {
+    const newline = std.mem.lastIndexOfScalar(u8, text[0..at], '\n') orelse return 0;
+    return newline + 1;
+}
+
+/// Returns the offset of the end of the line `at` is on: its newline, or the
+/// end of `text`.
+fn lineEnd(text: []const u8, at: usize) usize {
+    return std.mem.indexOfScalarPos(u8, text, at, '\n') orelse text.len;
+}
 
 /// Returns the offset after the rune at `at`, or `text.len` at the end.
 fn next(text: []const u8, at: usize) usize {
@@ -281,8 +375,129 @@ test "apply: an invalid byte is stepped over on its own" {
     try expectEdited("a\x80b\x1b[D\x1b[D", "a\x80b", 1);
 }
 
-test "apply: Enter and Ctrl-J submit, Ctrl-C cancels" {
+test "apply: Enter submits without a Finished function, and Ctrl-C cancels" {
     try std.testing.expectEqual(Outcome.submit, try lastOutcome("abc\r"));
-    try std.testing.expectEqual(Outcome.submit, try lastOutcome("abc\n"));
     try std.testing.expectEqual(Outcome.cancel, try lastOutcome("abc\x03"));
+}
+
+/// A `Finished` for the tests: the buffer is finished when it has as many
+/// `)` as `(`.
+fn balanced(text: []const u8) bool {
+    return std.mem.count(u8, text, "(") == std.mem.count(u8, text, ")");
+}
+
+/// Applies every key `bytes` decodes to a fresh editor with `balanced` as its
+/// `Finished`, applying Up and Down with `geometry`, and returns the editor
+/// and the outcome of the last key. The caller releases the editor.
+fn run(bytes: []const u8, geometry: layout.Geometry) !struct { Editor, Outcome } {
+    var editor = Editor.init(std.testing.allocator);
+    errdefer editor.deinit();
+    editor.finished = &balanced;
+    var decoder = keys.Decoder.init();
+    var outcome: Outcome = .unchanged;
+    for (bytes) |byte| {
+        const key = decoder.feed(byte) orelse continue;
+        outcome = switch (key) {
+            .up => editor.vertical(geometry, true),
+            .down => editor.vertical(geometry, false),
+            else => try editor.apply(key),
+        };
+    }
+    return .{ editor, outcome };
+}
+
+/// Checks the buffer, the cursor and the last outcome after `bytes`.
+fn expectRun(bytes: []const u8, buffer: []const u8, cursor: usize, outcome: Outcome) !void {
+    var result = try run(bytes, .{ .columns = 80, .prompt = 2, .marker = 2 });
+    defer result[0].deinit();
+    try std.testing.expectEqualStrings(buffer, result[0].buffer.items);
+    try std.testing.expectEqual(cursor, result[0].cursor);
+    try std.testing.expectEqual(outcome, result[1]);
+}
+
+test "apply: Enter opens a line when unfinished and submits when finished" {
+    try expectRun("(+ 1\r", "(+ 1\n", 5, .edited);
+    try expectRun("(+ 1\r2)\r", "(+ 1\n2)", 7, .submit);
+}
+
+test "apply: Enter opens a line at the cursor" {
+    try expectRun("(ab\x1b[D\r", "(a\nb", 3, .edited);
+}
+
+test "apply: Ctrl-J opens a line with or without a Finished function" {
+    try expectRun("(a)\n", "(a)\n", 4, .edited);
+    try expectEdited("abc\n", "abc\n", 4);
+}
+
+test "apply: an opened line copies the indentation before the cursor" {
+    // `(defn f [x]` has no indentation to copy.
+    try expectRun("(defn f [x]\r", "(defn f [x]\n", 12, .edited);
+    try expectRun("(do\r  (a)\r", "(do\n  (a)\n  ", 12, .edited);
+    try expectRun("(do\r \t(a)\r", "(do\n \t(a)\n \t", 12, .edited);
+    // A cursor inside the indentation copies only what is before it.
+    try expectRun("(do\r    (a)\x01\x1b[C\x1b[C\r", "(do\n  \n    (a)", 9, .edited);
+}
+
+test "apply: an opened line inside a paste copies no indentation" {
+    try expectRun("(do\r  (a)\x1b[200~\r", "(do\n  (a)\n", 10, .edited);
+    // The paste's end restores the copying.
+    try expectRun("(do\r  (a)\x1b[200~\x1b[201~\r", "(do\n  (a)\n  ", 12, .edited);
+}
+
+test "apply: the paste markers insert nothing" {
+    try expectRun("\x1b[200~ab\x1b[201~", "ab", 2, .unchanged);
+}
+
+test "apply: Home and End act on the cursor's line" {
+    try expectRun("(a\nbc\nd)\x1b[D\x1b[D\x1b[D\x01", "(a\nbc\nd)", 3, .edited);
+    try expectRun("(a\nbc\nd)\x1b[D\x1b[D\x1b[D\x01\x05", "(a\nbc\nd)", 5, .edited);
+    // At the line's start Home does not cross the newline.
+    try expectRun("(a\nbc\x01\x01", "(a\nbc", 3, .unchanged);
+}
+
+test "apply: Ctrl-U and Ctrl-K act on the cursor's line" {
+    try expectRun("(a\nbcd\nef\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x0b", "(a\nb\nef", 4, .edited);
+    try expectRun("(a\nbcd\nef\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x15", "(a\ncd\nef", 3, .edited);
+}
+
+test "apply: Ctrl-U and Ctrl-K remove no newline at the line's edges" {
+    try expectRun("(a\nb\x1b[D\x15", "(a\nb", 3, .unchanged);
+    try expectRun("(a\nb\x1b[D\x1b[D\x0b", "(a\nb", 2, .unchanged);
+}
+
+test "vertical: Up and Down cross a newline" {
+    // Row 0 is `> (abc`, row 1 is the marker and `de`.
+    try expectRun("(abc\nde\x1b[A", "(abc\nde", 2, .edited);
+    try expectRun("(abc\nde\x1b[A\x1b[B", "(abc\nde", 7, .edited);
+}
+
+test "vertical: Up and Down cross a wrap" {
+    var result = try run("abcdefghij\x1b[A", .{ .columns = 8, .prompt = 2, .marker = 2 });
+    defer result[0].deinit();
+    // Row 1 is `ghij` from column 0, so the end at column 4 is below `c`.
+    try std.testing.expectEqual(2, result[0].cursor);
+    try std.testing.expectEqual(Outcome.edited, result[1]);
+}
+
+test "vertical: a run keeps its goal column through a shorter row" {
+    // The cursor is after `(abcdef` at column 9. Row 1 ends at column 3, and
+    // row 0 is back at column 9.
+    try expectRun("(abcdef\nx\nyyyyyyy\x1b[A\x1b[A", "(abcdef\nx\nyyyyyyy", 7, .edited);
+    try expectRun("(abcdef\nx\nyyyyyyy\x1b[A\x1b[A\x1b[B\x1b[B", "(abcdef\nx\nyyyyyyy", 17, .edited);
+    // Any other key ends the run, and the next takes the column afresh:
+    // Left puts the cursor at column 8, and two rows down is column 8 too.
+    try expectRun("(abcdef\nx\nyyyyyyy\x1b[A\x1b[A\x1b[D\x1b[B\x1b[B", "(abcdef\nx\nyyyyyyy", 16, .edited);
+}
+
+test "vertical: a column inside the marker names the row's first byte" {
+    // `(abc` puts the cursor at column 2 on row 0, which is inside a marker
+    // six columns wide on row 1.
+    var result = try run("(\nabcdef\x1b[A\x01\x1b[B", .{ .columns = 80, .prompt = 2, .marker = 6 });
+    defer result[0].deinit();
+    try std.testing.expectEqual(2, result[0].cursor);
+}
+
+test "vertical: Up on the first row and Down on the last change nothing" {
+    try expectRun("(ab\x1b[A", "(ab", 3, .unchanged);
+    try expectRun("(a\nb\x1b[B", "(a\nb", 4, .unchanged);
 }

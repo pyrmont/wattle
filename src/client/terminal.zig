@@ -23,6 +23,10 @@
 //! - The modes in effect before `enter` are restored by `leave`, and by an
 //!   `atexit` handler if the process exits while a line is open.
 //!
+//! - `enter` turns on bracketed paste, so the terminal marks where pasted
+//!   text begins and ends, and `leave` turns it off. Both are written to
+//!   standard error, so the mode is on exactly while raw mode is.
+//!
 //! A size change is read at the next frame, since `columns` and `rows` are
 //! asked before each one. Nothing redraws on the signal itself.
 
@@ -130,7 +134,9 @@ pub fn enter() bool {
         registered = true;
         _ = c.atexit(restoreAtExit);
     }
-    return if (windows) enterWindows() else enterPosix();
+    const entered = if (windows) enterWindows() else enterPosix();
+    if (entered) write("\x1b[?2004h");
+    return entered;
 }
 
 /// Restores the modes `enter` replaced.
@@ -139,6 +145,7 @@ pub fn enter() bool {
 pub fn leave() void {
     const previous = saved orelse return;
     saved = null;
+    write("\x1b[?2004l");
     if (windows) {
         const input = c.GetStdHandle(std_input_handle);
         const output = c.GetStdHandle(std_error_handle);

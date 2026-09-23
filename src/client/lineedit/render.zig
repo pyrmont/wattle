@@ -42,6 +42,12 @@
 //!   window is not written, and no break is written after the window's last
 //!   row.
 //!
+//! - The _marker_ is spaces as wide as the prompt's columns, written at the
+//!   start of each row a newline opens, including the window's first row. A
+//!   row a wrap opens has no marker, so the two kinds of break can be told
+//!   apart, and a line's text under the marker begins in the column where the
+//!   first line's text begins.
+//!
 //! - The cursor is then moved from where drawing stopped to its position, by
 //!   rows up and columns right from the row's start. No movement is written
 //!   when the cursor is at the end of the buffer and drawing stopped there.
@@ -103,7 +109,7 @@ pub const Drawn = struct {
 /// returned, or 0 when the cursor is at the start of an empty row, and
 /// `frame` is what to draw. This function returns the writer's error.
 pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error!Drawn {
-    const geometry = geometryOf(frame);
+    const geometry = geometryOf(frame.prompt, frame.columns);
     const end = layout.position(geometry, frame.buffer, frame.buffer.len);
     const extra_row = end.column >= frame.columns;
     const display_rows = end.row + 1 + @intFromBool(extra_row);
@@ -147,6 +153,7 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
             row += 1;
             column = if (newline) geometry.marker else 0;
             if (newline) {
+                if (row >= first) try out.splatByteAll(' ', geometry.marker);
                 i += 1;
                 continue;
             }
@@ -181,6 +188,15 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
 pub fn erase(out: *std.Io.Writer, climb: usize) std.Io.Writer.Error!void {
     try top(out, climb);
     try out.writeAll("\x1b[J");
+}
+
+/// Returns the layout a frame draws a buffer with, after `prompt` on a
+/// terminal `columns` wide.
+///
+/// The marker is as wide as the prompt.
+pub fn geometryOf(prompt: []const u8, columns: usize) layout.Geometry {
+    const width = promptWidth(prompt);
+    return .{ .columns = columns, .prompt = width, .marker = width };
 }
 
 /// Returns the number of columns `prompt` occupies on the terminal.
@@ -220,11 +236,6 @@ fn drawRune(out: *std.Io.Writer, r: rune.Rune, bytes: []const u8) std.Io.Writer.
     // written.
     if (r.codepoint.? >= 0x80 and r.codepoint.? <= 0x9f) return;
     try out.writeAll(bytes);
-}
-
-/// Returns the layout geometry of `frame`, with a marker of width 0.
-fn geometryOf(frame: Frame) layout.Geometry {
-    return .{ .columns = frame.columns, .prompt = promptWidth(frame.prompt), .marker = 0 };
 }
 
 /// Returns the offset after the escape sequence that begins at `at` in
@@ -344,7 +355,7 @@ test "draw: the end of each frame is where the layout puts the end of the buffer
             var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
             defer out.deinit();
             const drawn = try draw(&out.writer, 0, .{ .prompt = "> ", .buffer = buffer, .cursor = buffer.len, .columns = columns });
-            const end = layout.position(.{ .columns = columns, .prompt = 2, .marker = 0 }, buffer, buffer.len);
+            const end = layout.position(.{ .columns = columns, .prompt = 2, .marker = 2 }, buffer, buffer.len);
             const expected = if (end.column >= columns) end.row + 1 else end.row;
             try std.testing.expectEqual(expected, drawn.climb);
             // No movement is written when the cursor is at the end: the only
@@ -440,6 +451,34 @@ test "draw: a window draws no more rows than the height and includes the cursor'
             }
         }
     }
+}
+
+test "draw: a newline opens a row with the marker, and a wrap one without" {
+    try expectFrame("\r\x1b[J> (a\r\n  bcdefg\r\nh", .{ .climb = 2, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "(a\nbcdefgh",
+        .cursor = 10,
+        .columns = 8,
+    });
+}
+
+test "draw: the marker is as wide as a coloured prompt's columns" {
+    try expectFrame("\r\x1b[J\x1b[31mrepl:1:> \x1b[0m(+ 1\r\n         2)", .{ .climb = 1, .top = 0 }, 0, .{
+        .prompt = "\x1b[31mrepl:1:> \x1b[0m",
+        .buffer = "(+ 1\n2)",
+        .cursor = 7,
+        .columns = 80,
+    });
+}
+
+test "draw: a window whose first row a newline opened begins with the marker" {
+    try expectFrame("\r\x1b[J  b\r\n  c", .{ .climb = 1, .top = 1 }, 0, .{
+        .prompt = "> ",
+        .buffer = "a\nb\nc",
+        .cursor = 5,
+        .columns = 8,
+        .height = 2,
+    });
 }
 
 test "promptWidth: each escape form occupies no column" {

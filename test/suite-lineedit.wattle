@@ -39,6 +39,13 @@
   (assert (= "3\n" out) "the plain reader evaluates a line from a pipe")
   (assert (= "repl:1:> repl:2:> " err) "the plain reader writes each prompt once"))
 
+; The plain reader returns one line, so a form of two lines is read by two
+; calls, and the second prompt shows the open delimiter.
+(let [[out err] (run [(dyn *executable*) "-q" "-n" "-R"] "(+ 1\n2)\n")]
+  (assert (= "3\n" out) "the plain reader evaluates a form of two lines")
+  (assert (= "repl:1:> repl:2:(> repl:3:> " err)
+          "the plain reader shows the open delimiter in the prompt"))
+
 ; `compwhen` rather than `when`: `harness` is known when the form is
 ; compiled, and a `when` on a constant nil is dead code to the linter.
 (compwhen harness
@@ -64,10 +71,11 @@
   ; A line typed with Left, an insertion, Home, End and a Backspace, then
   ; submitted. A frame clears from its first row and then draws, the last
   ; frame has the cursor at the line's end, the row break is `\r\n`, and the
-  ; next prompt is a frame of its own. Frames drawn before the last are not
-  ; compared, because how many there are depends on how the keys were split
-  ; across reads.
-  (assert (= "\r\e[Jrepl:1:> (+ 1 2)\r\n3\r\n\r\e[Jrepl:2:> "
+  ; next prompt is a frame of its own. Bracketed paste is turned off when
+  ; the line ends and on again with the next prompt. Frames drawn before the
+  ; last are not compared, because how many there are depends on how the keys
+  ; were split across reads.
+  (assert (= "\r\e[Jrepl:1:> (+ 1 2)\r\n\e[?2004l3\r\n\e[?2004h\r\e[Jrepl:2:> "
              (from-last "\r\e[Jrepl:1:> "
                         (drive """(+ 2\e[D1 \e[H\e[Fx\x7f)\r""")))
           "a line edited with the cursor keys is submitted whole")
@@ -77,6 +85,74 @@
   (assert (= "repl:1:> (+ 1^C\nrepl:1:> (+ 2 2)\n4\nrepl:2:>\n"
              (drive """(+ 1\x03(+ 2 2)\r""" :screen true))
           "Ctrl-C cancels the line")
+
+  ; Enter on an unfinished form opens a row under the marker, which is as
+  ; wide as the prompt, and the prompt shows no delimiter. The line number
+  ; advances by the two lines the form occupied.
+  (assert (= "repl:1:> (+ 1\n         2)\n3\nrepl:3:>\n"
+             (drive """(+ 1\r2)\r""" :screen true))
+          "Enter opens a row in an unfinished form")
+
+  ; Up moves to the row above, End to the end of that line, and Enter there
+  ; submits the whole form.
+  (assert (= "repl:1:> (+ 1 10\n         2)\n13\nrepl:3:>\n"
+             (drive """(+ 1\r2)\e[A\e[F 10\r""" :screen true))
+          "a form is edited on an earlier row and submitted whole")
+
+  ; An opened row copies the indentation of the row above.
+  (assert (= (string "repl:1:> (do\n"
+                     "           (print 1)\n"
+                     "           (print 2))\n"
+                     "1\n2\nnil\nrepl:4:>\n")
+             (drive """(do\r  (print 1)\r(print 2))\r""" :screen true))
+          "an opened row copies the indentation above it")
+
+  ; A pasted form carries its own indentation, and none is added to it.
+  (assert (= (string "repl:1:> (do\n"
+                     "           (print 1)\n"
+                     "           (print 2))\n"
+                     "1\n2\nnil\nrepl:4:>\n")
+             (drive """\e[200~(do\r  (print 1)\r  (print 2))\e[201~\r""" :screen true))
+          "a pasted form is not indented twice")
+
+  ; A paste can submit a form and go on, and its rest can arrive in a later
+  ; read. The input waits for the second prompt after the first form, so the
+  ; paste is split there, and the second form still has only the pasted
+  ; indentation.
+  (assert (= (string "repl:1:> (print 0)\n0\nnil\n"
+                     "repl:2:> (do\n"
+                     "           (print 1)\n"
+                     "           (print 2))\n"
+                     "1\n2\nnil\nrepl:5:>\n")
+             (drive (string """\e[200~(print 0)\r\m{repl:2:> }"""
+                            """(do\r  (print 1)\r  (print 2))\e[201~\r""")
+                    :screen true))
+          "a paste split across reads is not indented twice")
+
+  ; A form the parser rejects is submitted, and the REPL reports the error.
+  (assert (= (string "repl:1:> (+ 1 2]\n"
+                     "repl:1:7: parse error: mismatched delimiter ], ( opened at line 1, column 1\n"
+                     "repl:2:>\n")
+             (drive """(+ 1 2]\r""" :screen true))
+          "a form with a parse error is submitted")
+
+  ; A long string is pending until the byte after its closing run, so Enter
+  ; asks the parser about the buffer and a newline.
+  (assert (= "repl:1:> \"\"\"a\"\"\"\n\"a\"\nrepl:2:>\n"
+             (drive "\"\"\"a\"\"\"\r" :screen true))
+          "a closed long string is submitted")
+
+  ; A getline given no environment is not reading source, and Enter
+  ; submits whatever is typed.
+  (assert (= "a> (x\n(x\n"
+             (drive """(x\r""" :marker "a> " :screen true
+                    :args ["-e" """(print (string/trim (getline "a> ")))"""]))
+          "Enter submits in a getline without an environment")
+
+  ; Ctrl-C on a form of two rows draws both and prompts again.
+  (assert (= "repl:1:> (+ 1\n         2^C\nrepl:1:>\n"
+             (drive """(+ 1\r2\x03""" :screen true))
+          "Ctrl-C cancels a form of several rows")
 
   ; A tab is drawn in caret notation, the width the layout measures it at.
   (assert (= "repl:1:> a^Ib\n"
