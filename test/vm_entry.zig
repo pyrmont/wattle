@@ -389,12 +389,11 @@ fn nfunProbe(argv: []repr.Value) raise.Error!repr.Value {
         expectReport(resumed, if (has_ev) "cannot cancel root fiber, use ev/cancel" else "cannot cancel root fiber");
     }
 
-    // The three arity messages. The cascade that picks between them tests
-    // `min == max` first, then a minimum, and falls through to a maximum, so
-    // all three shapes have to be present for any of them to be trusted.
+    // A fixed arity reports its exact bound. The cases below exercise a
+    // lower bound and a range through the same formatter.
     var args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2) };
     const fun = evalfn("(do (defn exactly-two [a b] a) exactly-two)");
-    expect(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("arity mismatch in <function exactly-two>, expected 2, got 1"));
+    expect(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("<function exactly-two> called with 1 argument, expected 2"));
 
     // `vm_entry.call` raises on its own entry condition too, and does it before
     // touching the fiber. The scope `harness.raised` opens counts itself into
@@ -441,10 +440,10 @@ fn nfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
     const args = [_]repr.Value{ harness.wrapInteger(1), harness.wrapInteger(2), harness.wrapInteger(3) };
 
     var fun = evalfn("(do (defn at-least-two [a b & rest] a) at-least-two)");
-    expect(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("arity mismatch in <function at-least-two>, expected at least 2, got 1"));
+    expect(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("<function at-least-two> called with 1 argument, expected at least 2"));
 
     fun = evalfn("(do (defn at-most-two [&opt a b] a) at-most-two)");
-    expect(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("arity mismatch in <function at-most-two>, expected at most 2, got 3"));
+    expect(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("<function at-most-two> called with 3 arguments, expected 0 to 2"));
 
     return wrap.fromNil();
 }
@@ -463,7 +462,7 @@ fn nfunCrossedArity(argv: []repr.Value) raise.Error!repr.Value {
     const fun = evalfn("(do (defn crossed [a] a) crossed)");
     fun.def.?.min_arity = 3;
     fun.def.?.max_arity = 1;
-    expect(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("arity mismatch in <function crossed>, expected at most 1, got 3"));
+    expect(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("<function crossed> called with 3 arguments, expected at most 1"));
 
     return wrap.fromNil();
 }

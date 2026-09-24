@@ -30,6 +30,7 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
+const arity = @import("arity.zig");
 const abstract_type = @import("../api/abstract_type.zig");
 const abstracts = @import("value/abstracts.zig");
 const access = @import("value/helpers/access.zig");
@@ -1226,12 +1227,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 }
                 fibers.funcframe(fiber, self.func) catch {
                     const n = fiber.stacktop - fiber.stackstart;
-                    return try self.raisef("%v called with %d argument%s, expected %d", .{
-                        callee,
-                        n,
-                        if (n == 1) @as([*]const u8, "") else @as([*]const u8, "s"),
-                        self.func.def.?.arity,
-                    });
+                    return arity.mismatch(callee, @intCast(n));
                 };
                 self.reload();
                 self.pc = self.func.def.?.bytecode.?;
@@ -1284,12 +1280,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 fibers.funcframeTail(fiber, self.func) catch {
                     stackFrame(fiber.data.? + utils.asSize(fiber.frame)).pc = .{ .bytecode = self.pc };
                     const n = fiber.stacktop - fiber.stackstart;
-                    return try self.raisef("%v called with %d argument%s, expected %d", .{
-                        callee,
-                        n,
-                        if (n == 1) @as([*]const u8, "") else @as([*]const u8, "s"),
-                        self.func.def.?.arity,
-                    });
+                    return arity.mismatch(callee, @intCast(n));
                 };
                 self.reload();
                 self.pc = self.func.def.?.bytecode.?;

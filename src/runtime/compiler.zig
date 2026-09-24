@@ -28,6 +28,7 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
+const arity_error = @import("arity.zig");
 const args_core = @import("args.zig");
 const arrays = @import("value/arrays.zig");
 const config = @import("config");
@@ -970,21 +971,6 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
 // Private functions
 // ==========================================================================
 
-/// The three wrong-number-of-arguments errors, which differ only in their
-/// format string and in which bound they name.
-///
-/// `%s` selects the plural, so the count is passed twice.
-fn arityError(
-    compiler: *Compiler,
-    comptime format: [:0]const u8,
-    function: repr.Value,
-    expected: i32,
-    got: i32,
-) raise.Error!void {
-    const plural: [*]const u8 = if (expected == 1) "" else "s";
-    recordError(compiler, try pp_format.formatc(format, .{ function, expected, plural, got }));
-}
-
 /// `compile`: the nfunction, which turns the result into the struct a Janet
 /// program reads.
 fn nfunCompile(argv: []repr.Value) raise.Error!repr.Value {
@@ -1169,7 +1155,7 @@ fn lookupMissing(
 ) raise.Error!?registry.Binding {
     const definition = handler.def.?;
     if (definition.min_arity > 1 or definition.max_arity < 1) {
-        recordError(compiler, strings.cstring("missing symbol lookup handler must take 1 argument"));
+        recordError(compiler, try arity_error.format(wrap.fromFunction(handler), 1, false, definition.min_arity, definition.max_arity, "missing symbol lookup handler "));
         return null;
     }
     var args = [_]repr.Value{wrap.fromSymbol(symbol)};
@@ -1441,15 +1427,8 @@ fn runMacro(
     const arity = tuples.head(form).length - 1;
     const fiber = fibers.new(macro, 64, (form + 1)[0..@intCast(arity)]) catch {
         const definition = macro.def.?;
-        const minimum = definition.min_arity;
-        const maximum = definition.max_arity;
-        var message: ?[*:0]const u8 = null;
-        if (minimum >= 0 and arity < minimum)
-            message = try pp_format.formatc("macro arity mismatch, expected at least %d, got %d", .{ minimum, arity });
-        if (maximum >= 0 and arity > maximum)
-            message = try pp_format.formatc("macro arity mismatch, expected at most %d, got %d", .{ maximum, arity });
         compiler.result.macrofiber = null;
-        recordError(compiler, message);
+        recordError(compiler, try arity_error.format(macro_value, arity, false, definition.min_arity, definition.max_arity, "macro "));
         return null;
     };
     fiber.env = compiler.env;
@@ -1539,15 +1518,15 @@ fn validateCall(
             if (minimum_arity < 0) {
                 minimum_arity = -1 - minimum_arity;
                 if (maximum >= 0 and minimum_arity > maximum) {
-                    try arityError(compiler, "%v expects at most %d argument%s, got at least %d", function.constant, maximum, minimum_arity);
+                    recordError(compiler, try arity_error.format(function.constant, minimum_arity, true, minimum, maximum, ""));
                 }
                 return;
             }
             if (maximum >= 0 and minimum_arity > maximum) {
-                try arityError(compiler, "%v expects at most %d argument%s, got %d", function.constant, maximum, minimum_arity);
+                recordError(compiler, try arity_error.format(function.constant, minimum_arity, false, minimum, maximum, ""));
             }
             if (minimum_arity < minimum) {
-                try arityError(compiler, "%v expects at least %d argument%s, got %d", function.constant, minimum, minimum_arity);
+                recordError(compiler, try arity_error.format(function.constant, minimum_arity, false, minimum, maximum, ""));
             }
             if (has_map_argument and
                 minimum_arity > definition.arity and
@@ -1594,14 +1573,14 @@ fn validateCall(
         // else callable is a lookup of one key.
         else => if (wrap.isKeyword(function.constant)) {
             if (minimum_arity == 0) {
-                recordError(compiler, try pp_format.formatc("%v expects at least 1 argument, got 0", .{function.constant}));
+                recordError(compiler, try arity_error.format(function.constant, 0, false, 1, std.math.maxInt(i32), ""));
             }
         } else {
             if (minimum_arity > 1 or minimum_arity == 0) {
-                recordError(compiler, try pp_format.formatc("%v expects 1 argument, got %d", .{ function.constant, minimum_arity }));
+                recordError(compiler, try arity_error.format(function.constant, minimum_arity, false, 1, 1, ""));
             }
             if (minimum_arity < -2) {
-                recordError(compiler, try pp_format.formatc("%v expects 1 argument, got at least %d", .{ function.constant, -1 - minimum_arity }));
+                recordError(compiler, try arity_error.format(function.constant, -1 - minimum_arity, true, 1, 1, ""));
             }
         },
     }

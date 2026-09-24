@@ -45,6 +45,7 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
+const arity = @import("../arity.zig");
 const config = @import("config");
 const constants = @import("constants");
 const ev = @import("../ev.zig");
@@ -149,7 +150,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 
     // Push frame.
     try fibers.pushn(vm_state.fiberOf(v), argv);
-    fibers.funcframe(vm_state.fiberOf(v), fun) catch return arityMismatch(fun, argv.len);
+    fibers.funcframe(vm_state.fiberOf(v), fun) catch return arity.mismatch(wrap.fromFunction(fun), argv.len);
     fiberFrame(vm_state.fiberOf(v)).flags.entrance = true;
 
     // Set up.
@@ -574,32 +575,6 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
 // ==========================================================================
 // Private functions
 // ==========================================================================
-
-/// The raise for a `funcframe` that refused `argc` arguments, naming which of
-/// the three arity bounds was missed.
-///
-/// `fun` is the callee and `argc` the count it was offered. The caller has
-/// already had `fibers.funcframe` refuse, so this only decides the wording.
-///
-/// It is `noinline` because it is `call`'s only cold region and the largest:
-/// three `panicf` calls with distinct comptime formats instantiate three
-/// renderings, and inlined they sit in the frame of a function whose hot path
-/// is a host-to-Janet call.
-noinline fn arityMismatch(fun: *functions.Function, argc: usize) raise.Error {
-    const min = fun.def.?.min_arity;
-    const max = fun.def.?.max_arity;
-    const funv = wrap.fromFunction(fun);
-    // `%d` renders through an `i64`; the arities are the funcdef's own `i32`
-    // and the count is the slice's.
-    const got: i64 = @intCast(argc);
-    if (min == max and min != argc) {
-        return pp_format.panicf("arity mismatch in %v, expected %d, got %d", .{ funv, min, got });
-    }
-    if (min >= 0 and argc < min) {
-        return pp_format.panicf("arity mismatch in %v, expected at least %d, got %d", .{ funv, min, got });
-    }
-    return pp_format.panicf("arity mismatch in %v, expected at most %d, got %d", .{ funv, max, got });
-}
 
 /// A signed instruction field as a pointer offset. Zig's pointer arithmetic
 /// takes an unsigned offset, so the two's complement is taken explicitly.

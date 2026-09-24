@@ -205,26 +205,30 @@
 (assert (function? (compile '(do (def unused2 1) 2) (curenv) "lint-src"))
         "no lint array is not an error")
 
-; Arity diagnostics. Each is a compile error rather than a lint, and the
-; singular/plural in the message is chosen by the bound rather than the count.
+; Arity diagnostics. Each is a compile error rather than a lint. The count
+; determines the singular or plural form.
 (defn arity1 [a] a)
 (defn arity2 [a _b] a)
-(assert (= "<function arity1> expects at most 1 argument, got 2" (errof '(arity1 1 2)))
-        "at most, singular")
-(assert (= "<function arity2> expects at most 2 arguments, got 3" (errof '(arity2 1 2 3)))
-        "at most, plural")
-(assert (= "<function arity1> expects at least 1 argument, got 0" (errof '(arity1)))
-        "at least, singular")
-(assert (= "<function arity2> expects at least 2 arguments, got 1" (errof '(arity2 1)))
-        "at least, plural")
-(assert (= "<function arity2> expects at most 2 arguments, got at least 3"
+(assert (= "<function arity1> called with 2 arguments, expected 1" (errof '(arity1 1 2)))
+        "too many for one parameter")
+(assert (= "<function arity2> called with 3 arguments, expected 2" (errof '(arity2 1 2 3)))
+        "too many for two parameters")
+(assert (= "<function arity1> called with 0 arguments, expected 1" (errof '(arity1)))
+        "too few for one parameter")
+(assert (= "<function arity2> called with 1 argument, expected 2" (errof '(arity2 1)))
+        "too few for two parameters")
+(assert (= "<function arity2> called with at least 3 arguments, expected 2"
            (errof '(arity2 |[1] 2 3 4)))
-        "at most, with a splice")
-(assert (= ":kw expects at least 1 argument, got 0" (errof '(:kw)))
+        "too many with a splice")
+(defn arity-optional [a &opt _b] a)
+(assert (= "<function arity-optional> called with 0 arguments, expected 1 to 2"
+           (errof '(arity-optional)))
+        "an optional parameter has a range")
+(assert (= ":kw called with 0 arguments, expected at least 1" (errof '(:kw)))
         "keyword call with no argument")
-(assert (= "1 expects 1 argument, got 2" (errof '(1 2 3)))
+(assert (= "1 called with 2 arguments, expected 1" (errof '(1 2 3)))
         "indexing call with too many arguments")
-(assert (= "1 expects 1 argument, got 0" (errof '(1)))
+(assert (= "1 called with 0 arguments, expected 1" (errof '(1)))
         "indexing call with no argument")
 
 ; The two escapes into user code.
@@ -232,8 +236,10 @@
 (put missing :missing-symbol (fn [_s] !{:value 42}))
 (assert (= 42 ((compile 'nope missing "lint-src"))) "missing-symbol handler")
 (def missing-bad (make-env))
-(put missing-bad :missing-symbol (fn [a _b] a))
-(assert (= "missing symbol lookup handler must take 1 argument" (errof2 '(nope) missing-bad))
+(defn missing-bad-fn [a _b] a)
+(put missing-bad :missing-symbol missing-bad-fn)
+(assert (= "missing symbol lookup handler <function missing-bad-fn> called with 1 argument, expected 2"
+           (errof2 '(nope) missing-bad))
         "missing-symbol arity")
 (def missing-err (make-env))
 (put missing-err :missing-symbol (fn [_s] (error "handler boom")))
@@ -246,9 +252,9 @@
 
 (defmacro boom-macro [_a] (error "macro boom"))
 (assert (= "(macro) macro boom" (errof '(boom-macro 1))) "macro error")
-(assert (= "macro arity mismatch, expected at least 1, got 0" (errof '(boom-macro)))
+(assert (= "macro <function boom-macro> called with 0 arguments, expected 1" (errof '(boom-macro)))
         "macro too few arguments")
-(assert (= "macro arity mismatch, expected at most 1, got 2" (errof '(boom-macro 1 2)))
+(assert (= "macro <function boom-macro> called with 2 arguments, expected 1" (errof '(boom-macro 1 2)))
         "macro too many arguments")
 
 ; The lint's position is the form's, and the two numbers are not
@@ -336,10 +342,10 @@
 (def macro-arity-env (make-env))
 (eval '(defmacro zero-arg-macro [] 1) macro-arity-env)
 (eval '(defmacro two-arg-macro [_a _b] 1) macro-arity-env)
-(assert (string/find "at most 0"
+(assert (string/find "called with 1 argument, expected 0"
                      (get (compile '(zero-arg-macro 1) macro-arity-env "s") :error ""))
         "a macro with no parameters refuses one argument")
-(assert (string/find "at least 2"
+(assert (string/find "called with 1 argument, expected 2"
                      (get (compile '(two-arg-macro 1) macro-arity-env "s") :error ""))
         "a macro of two parameters refuses one argument")
 
@@ -347,9 +353,9 @@
 ; count the compiler knows exactly and a count it knows only a floor for.
 (defn zero-arg-fn [] 1)
 (defn one-arg-fn [_x] 1)
-(check-compile-message '(zero-arg-fn 1) "at most 0 arguments, got 1"
+(check-compile-message '(zero-arg-fn 1) "called with 1 argument, expected 0"
                        "a function of no parameters refuses one argument")
-(check-compile-message '(zero-arg-fn 1 |[]) "at most 0 arguments, got at least 1"
+(check-compile-message '(zero-arg-fn 1 |[]) "called with at least 1 argument, expected 0"
                        "a function of no parameters refuses one spliced argument")
 (check-good-compile '(one-arg-fn 1 |[]) "a spliced call at exactly the maximum")
 (def callable-struct {:a 1})
@@ -482,10 +488,10 @@
 ; and the arity message says which of the two it is.
 (defn two-arg-only [_x _y] 1)
 (check-compile-message '(fn [a b c] (two-arg-only a b |[] c))
-                       "got at least 3"
+                       "called with at least 3 arguments, expected 2"
                        "a spliced call reports a floor")
 (check-compile-message '(fn [a b c] (two-arg-only a b c))
-                       "got 3"
+                       "called with 3 arguments, expected 2"
                        "an ordinary call reports a total")
 
 ; A dictionary literal takes a splice in place of a key and a value pair, so

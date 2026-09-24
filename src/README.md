@@ -12,7 +12,7 @@ change must pass before it is accepted.
 
 ## Overview
 
-`src/` is 109 `.zig` files and four hand-written headers. There is no C
+`src/` is 110 `.zig` files and four hand-written headers. There is no C
 implementation to select and no upstream Janet C to call. Any C that a Zig
 file reaches is libc's, through one of seven `@cImport` blocks. "No C in the
 tree" and "no libc" are different claims, and only the first is a goal.
@@ -46,7 +46,7 @@ must never reach `src/host/` or `src/runtime/`.
 | -------------- | ----- | --------------------------------------- |
 | `src/api/`     | 7     | a native module's `.so` and the runtime |
 | `src/host/`    | 2     | the runtime                             |
-| `src/runtime/` | 79    | the runtime, as a single compilation    |
+| `src/runtime/` | 80    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
 | `src/client/`  | 16    | the `wattle` and `quickbin` executables |
 
@@ -117,7 +117,7 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 
 | directory        | files | contents                                            |
 | ---------------- | ----- | --------------------------------------------------- |
-| `runtime/`       | 32    | subsystems with no subdirectory                     |
+| `runtime/`       | 33    | subsystems with no subdirectory                     |
 | `value/`         | 13    | a file per Wattle value type                        |
 | `value/helpers/` | 3     | operations on any value                             |
 | `vm/`            | 3     | `entry`, `lifecycle`, `state`                       |
@@ -135,8 +135,9 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 Every directory below `runtime/` is relative to it.
 
 The files directly in `runtime/` are the parser, the PEG engine, the
-marshaller, the argument layer, the environment, the pretty printer's entry
-point, the allocator (`gc.zig`), `capi.zig`, `io`, `math`, `scan` and `signal`.
+marshaller, the argument and arity layers, the environment, the pretty
+printer's entry point, the allocator (`gc.zig`), `capi.zig`, `io`, `math`,
+`scan` and `signal`.
 `value/` has arrays, buffers, strings, symbols, tuples, tables, fibers,
 functions, abstracts, integer types, vectors, maps and sets, and transients. `value/helpers/` is `wrap`, `access` and `order`.
 

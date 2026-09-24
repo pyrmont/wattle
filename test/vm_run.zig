@@ -321,20 +321,22 @@ fn comparison() void {
     );
 }
 
-/// The arity message is built at `JOP_CALL` and again at `JOP_TAILCALL`, with
-/// a `%v` for the callee, two `%d`s and a `%s` for the plural. Both sites
-/// and both spellings of the plural are asserted, because they are separate
-/// format calls.
+/// Checks the arity refusal in both call instructions.
 fn theCallArityMessage() void {
-    // JOP_TAILCALL: a call in tail position, which builds the message after
-    // recomputing the frame it commits to.
+    // JOP_TAILCALL: a call in tail position after recomputing its frame.
     expectError("(do (defn f [x] x) (defn g [] (f)) (g))", "<function f> called with 0 arguments, expected 1");
     expectError("(do (defn f [x y] x) (defn g [] (f 1)) (g))", "<function f> called with 1 argument, expected 2");
-    // JOP_CALL: the same message from a separate site, which the arithmetic
-    // around the call is here to force. Every tail-position case above misses
-    // this site entirely, so inverting its plural alone would go unnoticed.
+    // JOP_CALL: the arithmetic around the call prevents a tail call.
     expectError("(do (defn f [x] x) (defn g [] (+ 1 (f))) (g))", "<function f> called with 0 arguments, expected 1");
     expectError("(do (defn f [x y] x) (defn g [] (+ 1 (f 1))) (g))", "<function f> called with 1 argument, expected 2");
+    expectError(
+        "(do (defn optional [x &opt y] x) (var v optional) (v))",
+        "<function optional> called with 0 arguments, expected 1 to 2",
+    );
+    expectError(
+        "(do (defn optional [x &opt y] x) (var v optional) (+ 1 (v)))",
+        "<function optional> called with 0 arguments, expected 1 to 2",
+    );
 }
 
 fn callingANfunction() void {
