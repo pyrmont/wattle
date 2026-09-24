@@ -40,15 +40,61 @@
 ; 23dcfb986
 (do
   (def test-tab !{:a 1 :b 2})
-  (def {:a a :b b} test-tab)
+  (def {a :a b :b} test-tab)
   (assert (= a 1) "dictionary destructuring 1")
   (assert (= b 2) "dictionary destructuring 2"))
 (do
   (def test-tab !{'a 1 'b 2 3 4})
-  (def {'a a 'b b (+ 1 2) c} test-tab)
+  (def {a 'a b 'b c (+ 1 2)} test-tab)
   (assert (= a 1) "dictionary destructuring 3")
   (assert (= b 2) "dictionary destructuring 4")
   (assert (= c 4) "dictionary destructuring 5 - expression as key"))
+
+(do
+  (def options {:a 1 "b" 2 'c 3})
+  (def {:keys [a] :strs [b] :syms [c] :as all} options)
+  (assert (= a 1) "map pattern :keys")
+  (assert (= b 2) "map pattern :strs")
+  (assert (= c 3) "map pattern :syms")
+  (assert (deep= all options) "map pattern :as"))
+
+(do
+  (var default-count 0)
+  (def {present :present missing :missing
+        :or {present (do (++ default-count) 99)
+             missing (do (++ default-count) 42)}}
+       {:present 7})
+  (assert (= present 7) "map pattern keeps a present value")
+  (assert (= missing 42) "map pattern uses a missing default")
+  (assert (= default-count 1) "map pattern evaluates only the used default"))
+
+(do
+  (def {:keys [absent] :or {absent 6}} {})
+  (assert (= absent 6) "map pattern default applies to :keys")
+  (def {nil-value :nil-value :or {nil-value 8}} !{:nil-value nil})
+  (assert (= nil-value 8) "map pattern default applies to nil"))
+
+(assert (= 10 (let [a 10]
+                (def {a :a b :b :or {b a}} {:a 1})
+                b))
+        "map pattern default reads the enclosing a")
+(assert (= 10 (let [x 10]
+                (def {x :x y :y :or {y x}} {:x 1})
+                y))
+        "map pattern default reads the enclosing x")
+(assert (= 4 (let [key :outer]
+               (def {key :a value key} {:a 1 :outer 4})
+               value))
+        "map pattern key reads the enclosing binding")
+
+(do
+  (var {bound :bound} {:bound 1})
+  (set bound 2)
+  (assert (= bound 2) "var map pattern")
+  (assert (= 3 (let [{value :value} {:value 3}] value)) "let map pattern")
+  (assert (= 4 ((fn [{value :value}] value) {:value 4})) "parameter map pattern")
+  (def {{nested :nested} :outer} {:outer {:nested 5}})
+  (assert (= nested 5) "nested map pattern"))
 
 ; cb5af974a
 (let [test-tuple [:a :b 1 2]]
@@ -143,7 +189,7 @@
 
 ; Keyword arguments
 ; 3f137ed0b
-(defn myfn [x y z &keys {:a a :b b :c c}]
+(defn myfn [x y z &keys {a :a b :b c :c}]
   (+ x y z a b c))
 
 (assert (= (+ |(range 6)) (myfn 0 1 2 :a 3 :b 4 :c 5)) "keyword args 1")

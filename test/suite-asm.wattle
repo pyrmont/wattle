@@ -216,7 +216,7 @@
 (check-bytecode (fn [xs] (def [a b] xs) a)
                 !['[geti 1 0 0] '[movn 2 1] '[geti 1 0 1] '[ret 2]]
                 "a destructuring of a value binds each element in turn")
-(check-bytecode (fn [s] (def {:k v} s) v)
+(check-bytecode (fn [s] (def {v :k} s) v)
                 !['[ldc 2 0] '[in 1 0 2] '[movn 2 1] '[ret 2]]
                 "a destructuring of a dictionary")
 (check-bytecode (fn [xs] (def [[a b] c] xs) a)

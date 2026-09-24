@@ -19,7 +19,7 @@
     (var docstr "")
     (def fstart
       (fn recur [i]
-        (def {i ith} more)
+        (def {ith i} more)
         (def t (type ith))
         (if (= t :tuple)
           (error "expected function parameters as a vector"))
@@ -290,7 +290,7 @@
   (var i 0)
   (var accum !['do])
   (while (< i len)
-    (def {i k (+ i 1) v} bindings)
+    (def {k i v (+ i 1)} bindings)
     (array/push accum (tuple 'def k v))
     (+= i 2))
   (array/concat accum body)
@@ -557,8 +557,8 @@
   (when (<= (length head) i)
     (break `(do ~|body)))
 
-  (def {i binding
-        (+ i 1) verb} head)
+  (def {binding i
+        verb (+ i 1)} head)
 
   ; 2 term expression
   (when (keyword? binding)
@@ -577,7 +577,7 @@
           (error (string "unexpected loop modifier " binding))))))
 
   ; 3 term expression
-  (def {(+ i 2) object} head)
+  (def {object (+ i 2)} head)
   (let [rest (loop1 body head (+ i 3))]
     (case verb
       :range (range-template binding object :range rest + <)
@@ -2741,18 +2741,18 @@
   """
   [opts]
 
-  (def {:env env
-        :chunks chunks
-        :on-status onstatus
-        :on-compile-error on-compile-error
-        :on-compile-warning on-compile-warning
-        :on-parse-error on-parse-error
-        :fiber-flags guard
-        :evaluator evaluator
-        :source default-where
-        :parser parser
-        :read read
-        :expander expand} opts)
+  (def {env :env
+        chunks :chunks
+        onstatus :on-status
+        on-compile-error :on-compile-error
+        on-compile-warning :on-compile-warning
+        on-parse-error :on-parse-error
+        guard :fiber-flags
+        evaluator :evaluator
+        default-where :source
+        parser :parser
+        read :read
+        expand :expander} opts)
   (default env (or (fiber/getenv (fiber/current)) !{}))
   (default chunks (fn chunks [buf p] (getline "" buf env)))
   (default onstatus debug/stacktrace)
@@ -2798,7 +2798,7 @@
               (evaluator res source env where)
               (do
                 (set good false)
-                (def {:error err :line line :column column :fiber errf} res)
+                (def {err :error line :line column :column errf :fiber} res)
                 (on-compile-error err errf where (or line l) (or column c))))))
         guard
         env))
@@ -3356,10 +3356,10 @@
   [path & args]
   (def env (curenv))
   (def kargs (table |args))
-  (def {:as as
-        :prefix prefix
-        :export ep
-        :only only} kargs)
+  (def {as :as
+        prefix :prefix
+        ep :export
+        only :only} kargs)
   (def newenv (require-1 path args kargs))
   (def prefix (or
                 (and as (string as "/"))
@@ -4193,10 +4193,10 @@
     (def computed-type-args (eval `[~|type-args]))
     (if (dyn *flychecking*)
       (break `(defn ~alias ~|meta [~|formal-args] nil)))
-    (def {:native lib
-          :lazy lazy
-          :native-lazy llib
-          :map-symbols ms} (assert (dyn *ffi-context*) "no ffi context found"))
+    (def {lib :native
+          lazy :lazy
+          llib :native-lazy
+          ms :map-symbols} (assert (dyn *ffi-context*) "no ffi context found"))
     (def raw-symbol (ms name))
     (defn make-sig []
       (ffi/signature :default real-ret-type |computed-type-args))
@@ -4641,7 +4641,7 @@
       (def syspath (bundle-rpath (dyn *syspath*)))
       (when is-backup (copyrf (bundle-dir bundle-name) (string dest-dir s "old-bundle")))
       (each file files
-        (def {:mode mode :permissions perm} (os/stat file))
+        (def {mode :mode perm :permissions} (os/stat file))
         (def relpath (string/triml (slice file (length syspath) -1) s))
         (case mode
           :directory (array/push install-source `(bundle/add-directory manifest ~relpath ~perm))

@@ -139,7 +139,7 @@
 (assert (= (if-let [a my-array k (next a)] :t :f) :t) "if-let 3")
 (assert (= (if-let [a my-array k (next a 5)] :t :f) :f) "if-let 4")
 (assert (= (if-let [[a b] my-array] a) 1) "if-let 5")
-(assert (= (if-let [{:a a :b b} {:a 1 :b 2}] b) 2) "if-let 6")
+(assert (= (if-let [{a :a b :b} {:a 1 :b 2}] b) 2) "if-let 6")
 (assert (= (if-let [[a b] nil] :t :f) :f) "if-let 7")
 
 ; #1191
@@ -231,7 +231,7 @@
 (var result nil)
 (defn f [] (yield {:a :ok}))
 (assert-no-error "issue 428 1"
-                 (loop [{:a x} :in (fiber/new f)] (set result x)))
+                 (loop [{x :a} :in (fiber/new f)] (set result x)))
 (assert (= result :ok) "issue 428 2")
 
 ; Generators
@@ -759,7 +759,7 @@
 ; has-key?
 (do
   (var test-has-key-auto 0)
-  (defn test-has-key [col key expected &keys {:name name}]
+  (defn test-has-key [col key expected &keys {name :name}]
     """Test that has-key has the outcome `expected`, and that if
     the result is true, then ensure (in key) does not fail either"""
     (assert (boolean? expected))

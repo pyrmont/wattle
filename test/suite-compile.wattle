@@ -114,7 +114,7 @@
 (defn fkeys [&keys ks] ks)
 (defn fnamed2 [_a _b _c &named x y z] [x y z])
 (defn fkeys2 [_a _b _c &keys ks] ks)
-(defn fnamed3 [{:x x} &named a b c] [x a b c])
+(defn fnamed3 [{x :x} &named a b c] [x a b c])
 (defn fnamed4 [_y &opt _z &named a b c] [a b c])
 (defn fnamed5 [&opt _z &named a b c] [a b c])
 (defn g [x &opt y &named z] [x y z])
@@ -408,6 +408,29 @@
                        "&keys is second from last or nowhere")
 (check-compile-message '(fn [ks-c &keys &] 1) "& in unexpected location"
                        "& after &keys")
+(check-compile-message '(def {:old old-value} {:old 1})
+                       "expected binding form before key in map pattern"
+                       "map patterns refuse the old key-first order")
+(check-compile-message '(def {1 :number} {:number 1})
+                       "expected binding form before key in map pattern"
+                       "map patterns require a binding form before the key")
+(check-compile-message '(def {"a" unknown-map-key} {})
+                       "expected binding form before key in map pattern"
+                       "map patterns reject a string in binding position")
+(check-compile-message '(fn []
+                          (def {map-scope-a :a map-scope-b :b
+                                :or {map-scope-b map-scope-a}}
+                               {:a 1})
+                          map-scope-b)
+                       "unknown symbol map-scope-a"
+                       "a map default cannot read a sibling binding")
+(check-compile-message '(fn []
+                          (def {:keys [map-scope-b map-scope-a]
+                                :or {map-scope-b map-scope-a}}
+                               {:map-scope-a 1})
+                          map-scope-b)
+                       "unknown symbol map-scope-a"
+                       "a :keys default cannot read a sibling binding")
 
 ; Two destructured parameters, which is what walks the collected slot vector
 ; more than once.

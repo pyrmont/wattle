@@ -575,7 +575,7 @@ fn theWholeCompilations() void {
     // Destructuring a struct by key.
     expect(core_env.dostring(
         environment,
-        "(do (def {:x binding-x} {:x 9}) binding-x)",
+        "(do (def {binding-x :x} {:x 9}) binding-x)",
         "specials-core-test",
         &output,
     ) == 0);

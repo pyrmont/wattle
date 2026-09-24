@@ -453,8 +453,40 @@ fn compileSequence(
     return result;
 }
 
-/// Binds a destructuring pattern against `rhs`, recursing through tuples and
-/// arrays and binding a symbol as a leaf.
+/// Computes one entry of a map pattern, applying a default only for nil.
+fn mapEntrySlot(
+    compiler: *compiler_primitives.Compiler,
+    key_form: repr.Value,
+    rhs: compiler_primitives.Slot,
+    default_form: ?repr.Value,
+) raise.Error!compiler_primitives.Slot {
+    const next_rhs = compiler_primitives.farslot(compiler) orelse nilSlot();
+    const key = try compiler_primitives.valueImpl(compiler_primitives.foptsDefault(compiler), key_form);
+    _ = emit_core.emitSss(compiler, constants.Opcode.in, next_rhs, rhs, key, 1);
+    compiler_primitives.freeslot(compiler, key);
+
+    if (default_form) |form| {
+        const skip = emit_core.emitSi(compiler, constants.Opcode.jump_if_not_nil, next_rhs, 0, 0);
+        const fallback = try compiler_primitives.valueImpl(compiler_primitives.foptsDefault(compiler), form);
+        emit_core.copy(compiler, next_rhs, fallback);
+        compiler_primitives.freeslot(compiler, fallback);
+        const done = compiler.here();
+        checkJump16(compiler, skip, done);
+        compiler.buffer.items[@intCast(skip)] |= @as(u32, @intCast(done - skip)) << 16;
+    }
+
+    return next_rhs;
+}
+
+/// Returns the `:or` expression for a symbol bound directly by a map pattern.
+fn mapDefault(defaults: ?*const maps.Tree, binding: repr.Value) ?repr.Value {
+    if (!wrap.isSymbol(binding)) return null;
+    const tree = defaults orelse return null;
+    const entry = maps.find(tree, .map, binding) orelse return null;
+    return entry[1];
+}
+
+/// Binds a symbol or recursively destructures an indexed or dictionary pattern.
 fn destructure(
     compiler: *compiler_primitives.Compiler,
     lhs: repr.Value,
@@ -528,17 +560,95 @@ fn destructure(
             return true;
         },
         repr.Tag.table, repr.Tag.map => {
-            // Read through the pair reader, so that a map's leaves and a
-            // table's slots are one walk. The pattern is a value in the tree
-            // and cannot change under the loop.
+            // The default map is read first because map iteration is in hash
+            // order, which need not place `:or` before its bindings.
             var pairs = (try args_core.keyvals(lhs)).?;
+            var defaults: ?*const maps.Tree = null;
             while (try pairs.next()) |pair| {
-                const next_rhs = compiler_primitives.farslot(compiler) orelse nilSlot();
-                const key = try compiler_primitives.valueImpl(compiler_primitives.foptsDefault(compiler), pair.key);
-                _ = emit_core.emitSss(compiler, constants.Opcode.in, next_rhs, rhs, key, 1);
-                if (try destructure(compiler, pair.value, next_rhs, binding_kind, attributes)) {
-                    compiler_primitives.freeslot(compiler, next_rhs);
+                if (!keywordEquals(pair.key, "or")) continue;
+                if (repr.typeOf(pair.value) != .map) {
+                    compiler_primitives.cerror(compiler, "expected map after :or in map pattern");
+                    return true;
                 }
+                defaults = wrap.toMap(pair.value);
+                var entries = (try args_core.keyvals(pair.value)).?;
+                while (try entries.next()) |entry| {
+                    if (!wrap.isSymbol(entry.key)) {
+                        compiler_primitives.cerror(compiler, "expected symbol in :or map");
+                        return true;
+                    }
+                }
+            }
+
+            var entries: scratch_vector.Vector(SlotHeadPair) = .empty;
+            var next_unbound: usize = 0;
+            defer {
+                for (entries.items[next_unbound..]) |entry| {
+                    compiler_primitives.freeslot(compiler, entry.rhs);
+                }
+                scratch_vector.free(&entries);
+            }
+            var as_binding: ?repr.Value = null;
+            pairs = (try args_core.keyvals(lhs)).?;
+            while (try pairs.next()) |pair| {
+                if (keywordEquals(pair.key, "or")) continue;
+                if (keywordEquals(pair.key, "as")) {
+                    if (!wrap.isSymbol(pair.value)) {
+                        compiler_primitives.cerror(compiler, "expected symbol after :as in map pattern");
+                        return true;
+                    }
+                    as_binding = pair.value;
+                    continue;
+                }
+                if (keywordEquals(pair.key, "keys") or
+                    keywordEquals(pair.key, "strs") or
+                    keywordEquals(pair.key, "syms"))
+                {
+                    if (repr.typeOf(pair.value) != .vector) {
+                        compiler_primitives.cerror(compiler, "expected vector in map pattern special key");
+                        return true;
+                    }
+                    var gathered = (try args_core.gather(pair.value)).?;
+                    defer gathered.free();
+                    for (gathered.items) |name| {
+                        if (!wrap.isSymbol(name)) {
+                            compiler_primitives.cerror(compiler, "expected symbol in map pattern special key");
+                            return true;
+                        }
+                        const bytes = std.mem.span(wrap.toSymbol(name));
+                        const key_form = if (keywordEquals(pair.key, "keys"))
+                            value.fromBytes(bytes, .keyword)
+                        else if (keywordEquals(pair.key, "strs"))
+                            value.fromBytes(bytes, .string)
+                        else
+                            wrap.fromTuple(tuples.newFrom(&.{ value.fromBytes("quote", .symbol), name }));
+                        const slot = try mapEntrySlot(compiler, key_form, rhs, mapDefault(defaults, name));
+                        scratch_vector.push(&entries, .{ .lhs = name, .rhs = slot });
+                    }
+                    continue;
+                }
+                switch (repr.typeOf(pair.key)) {
+                    .symbol => if (wrap.isKeyword(pair.key)) {
+                        compiler_primitives.cerror(compiler, "expected binding form before key in map pattern");
+                        return true;
+                    },
+                    .tuple, .array, .vector, .table, .map => {},
+                    else => {
+                        compiler_primitives.cerror(compiler, "expected binding form before key in map pattern");
+                        return true;
+                    },
+                }
+                const slot = try mapEntrySlot(compiler, pair.value, rhs, mapDefault(defaults, pair.key));
+                scratch_vector.push(&entries, .{ .lhs = pair.key, .rhs = slot });
+            }
+            while (next_unbound < entries.items.len) {
+                const entry = entries.items[next_unbound];
+                const release = try destructure(compiler, entry.lhs, entry.rhs, binding_kind, attributes);
+                if (release) compiler_primitives.freeslot(compiler, entry.rhs);
+                next_unbound += 1;
+            }
+            if (as_binding) |binding| {
+                _ = try destructure(compiler, binding, rhs, binding_kind, attributes);
             }
             return true;
         },
@@ -916,8 +1026,8 @@ fn specialFn(
             }
             tables.put(
                 named,
-                value.fromBytes(std.mem.span(wrap.toSymbol(parameter)), .keyword),
                 parameter,
+                value.fromBytes(std.mem.span(wrap.toSymbol(parameter)), .keyword),
             );
             pushSlot(&named_parameters, compiler_primitives.farslot(compiler) orelse nilSlot());
             continue;
@@ -1393,6 +1503,11 @@ fn specialWhile(
 fn symbolEquals(val: repr.Value, string: [*:0]const u8) bool {
     return wrap.isSymbol(val) and
         utils.cstrcmp(wrap.toSymbol(val), string) == 0;
+}
+
+/// Whether `val` is the keyword `string` names.
+fn keywordEquals(val: repr.Value, string: [*:0]const u8) bool {
+    return wrap.isKeyword(val) and utils.cstrcmp(wrap.toSymbol(val), string) == 0;
 }
 
 /// The value `keyword` names in `table`.
