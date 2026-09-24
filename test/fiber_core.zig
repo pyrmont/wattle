@@ -188,7 +188,10 @@ fn theFuncframeLayout(add: *functions.Function) void {
     expect(frame.prevframe == 0);
     // `fibers.reset` adds ENTRANCE after the frame is pushed, so the frame
     // itself must have been left with no other flags set.
-    expect(@as(i32, @bitCast(frame.flags)) == constants.stackframe_entrance);
+    var flags = frame.flags;
+    expect(flags.argc == 2);
+    flags.argc = 0;
+    expect(@as(i32, @bitCast(flags)) == constants.stackframe_entrance);
 
     expect(harness.integerIs(slot(fiber, fiber.frame), 11));
     expect(harness.integerIs(slot(fiber, fiber.frame + 1), 22));

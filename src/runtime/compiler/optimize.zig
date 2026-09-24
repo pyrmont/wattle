@@ -179,7 +179,7 @@ pub fn bytecodeRemoveNoops(definition: *functions.FuncDef) void {
         const shift: ?u5 = switch (opcodeOf(instruction)) {
             constants.Opcode.noop => continue,
             constants.Opcode.jump => 8,
-            constants.Opcode.jump_if, constants.Opcode.jump_if_nil, constants.Opcode.jump_if_not, constants.Opcode.jump_if_not_nil => 16,
+            constants.Opcode.jump_if, constants.Opcode.jump_if_nil, constants.Opcode.jump_if_not, constants.Opcode.jump_if_not_nil, constants.Opcode.jump_if_not_arity => 16,
             else => null,
         };
         if (shift) |field_shift| {
@@ -563,6 +563,7 @@ fn integerSlot(val: i32) compiler_primitives.Slot {
 fn markReads(registers: *regalloc.RegisterAllocator, instruction: u32) void {
     switch (opcodeOf(instruction)) {
         constants.Opcode.jump,
+        constants.Opcode.jump_if_not_arity,
         constants.Opcode.noop,
         constants.Opcode.return_nil,
         constants.Opcode.load_integer,

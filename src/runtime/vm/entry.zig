@@ -544,7 +544,7 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
         // into and out of functions (including a call).
         .return_nil, .@"return", .@"error", .tailcall => {},
         .jump => nexta = pc + asOffset(fDS(pc)),
-        .jump_if, .jump_if_not => {
+        .jump_if, .jump_if_not, .jump_if_not_arity => {
             nexta = pc + 1;
             nextb = pc + asOffset(fES(pc));
         },

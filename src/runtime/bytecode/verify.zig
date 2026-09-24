@@ -136,6 +136,7 @@ const rows = [_]Row{
     .{ .op = constants.Opcode.not_equals, .type = constants.InstructionType.sss },
     .{ .op = constants.Opcode.not_equals_immediate, .type = constants.InstructionType.ssi },
     .{ .op = constants.Opcode.cancel, .type = constants.InstructionType.sss },
+    .{ .op = constants.Opcode.jump_if_not_arity, .type = constants.InstructionType.il },
 };
 
 // ==========================================================================
@@ -211,6 +212,10 @@ pub fn verify(definition: *functions.FuncDef) Verdict {
             constants.InstructionType.ssi, constants.InstructionType.ssu => if (slotA(instruction) >= slot_count or slotB(instruction) >= slot_count) return .slot_out_of_range,
             constants.InstructionType.sl => {
                 if (slotA(instruction) >= slot_count) return .slot_out_of_range;
+                const destination = @as(i32, @intCast(index)) + signedField(instruction, 16);
+                if (destination < 0 or destination >= bytecode_length) return .jump_out_of_range;
+            },
+            constants.InstructionType.il => {
                 const destination = @as(i32, @intCast(index)) + signedField(instruction, 16);
                 if (destination < 0 or destination >= bytecode_length) return .jump_out_of_range;
             },

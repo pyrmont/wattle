@@ -82,7 +82,10 @@ const strerror_buf_len = if (builtin.os.tag == .windows) 0 else 256;
 pub const FrameFlags = packed struct(u32) {
     tailcall: bool = false,
     entrance: bool = false,
-    _rest: u29 = 0,
+    /// The argument count the frame was entered with, saturated at the
+    /// field's maximum. `jump_if_not_arity` reads it.
+    argc: u16 = 0,
+    _rest: u13 = 0,
     /// Set by the marshaller just before it writes the frame, to say that an
     /// environment follows. It is the sign bit, it is never set in a live
     /// frame, and the unmarshaller clears it again.

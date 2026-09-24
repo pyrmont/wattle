@@ -852,7 +852,7 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
     newframe.pc = .{ .bytecode = def.bytecode };
     newframe.func = func;
     newframe.env = null;
-    newframe.flags = .{};
+    newframe.flags = .{ .argc = saturatedArgc(next_arity) };
 
     // Locate the variadic tail, where there is one.
     if (!def.flags.vararg) return .{ .pushed = null };
@@ -861,6 +861,11 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
         .slot = tuplehead,
         .count = if (tuplehead >= oldtop) 0 else oldtop -% tuplehead,
     } };
+}
+
+/// An argument count as `FrameFlags.argc` holds it.
+inline fn saturatedArgc(argc: i32) u16 {
+    return @intCast(@min(argc, std.math.maxInt(u16)));
 }
 
 /// The first half of a tail call: arity, capacity, detaching the outgoing
@@ -883,6 +888,7 @@ fn funcframeTailBegin(fiber: *Fiber, func: *functions.Function) TailBegin {
     const frame = fiberFrame(fiber);
     if (frame.func != null) functions.envDetach(frame.env);
     frame.env = null;
+    frame.flags.argc = saturatedArgc(next_arity);
 
     // Locate the variadic tail, where there is one.
     if (!def.flags.vararg) return .{ .pushed = .{

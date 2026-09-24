@@ -972,6 +972,16 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             continue :sw self.nextOp();
         },
 
+        .jump_if_not_arity => {
+            if (stackFrame(self.stack).flags.argc == fA(self.pc)) {
+                self.pc += 1;
+            } else {
+                if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;
+                self.pc += asOffset(fES(self.pc));
+            }
+            continue :sw self.nextOp();
+        },
+
         .jump_if_nil => {
             if (repr.checkType(self.stack[fA(self.pc)], repr.Tag.nil)) {
                 if (try self.maybeAutoSuspend(fES(self.pc) <= 0)) |s| return s;

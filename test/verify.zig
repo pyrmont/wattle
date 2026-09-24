@@ -138,7 +138,7 @@ fn everyRowIsAShape() void {
     var op: i32 = 0;
     while (op < constants.Opcode.count) : (op += 1) {
         const shape = @intFromEnum(verify.instructions[@intCast(op)]);
-        expect(shape <= 13);
+        expect(shape <= 14);
     }
 }
 

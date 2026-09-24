@@ -88,7 +88,7 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
             integer(argument(instruction, 1, 0xff)),
             integer(argument(instruction, 2, 0xffff)),
         }),
-        constants.InstructionType.si, constants.InstructionType.sl => makeTuple(&.{
+        constants.InstructionType.si, constants.InstructionType.sl, constants.InstructionType.il => makeTuple(&.{
             name,
             integer(argument(instruction, 1, 0xff)),
             integer(signedShift(instruction, 16)),

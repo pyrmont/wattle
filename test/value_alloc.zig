@@ -339,7 +339,10 @@ fn aFiberIsReadyToRun(binary: *functions.Function) void {
     const frame = fiberFrame(fiber);
     expect(fiber.frame == frame_size);
     expect(frame.func == binary);
-    expect(@as(i32, @bitCast(frame.flags)) == constants.stackframe_entrance);
+    var flags = frame.flags;
+    expect(flags.argc == 2);
+    flags.argc = 0;
+    expect(@as(i32, @bitCast(flags)) == constants.stackframe_entrance);
     expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
     if (with_ev) expect(fiber.supervisor_channel == null);
 }

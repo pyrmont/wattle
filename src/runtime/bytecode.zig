@@ -101,6 +101,7 @@ pub const opcodes = [_]OpcodeDefinition{
     .{ .name = "in", .opcode = constants.Opcode.in },
     .{ .name = "jmp", .opcode = constants.Opcode.jump },
     .{ .name = "jmpif", .opcode = constants.Opcode.jump_if },
+    .{ .name = "jmpna", .opcode = constants.Opcode.jump_if_not_arity },
     .{ .name = "jmpni", .opcode = constants.Opcode.jump_if_nil },
     .{ .name = "jmpnn", .opcode = constants.Opcode.jump_if_not_nil },
     .{ .name = "jmpno", .opcode = constants.Opcode.jump_if_not },
@@ -393,6 +394,12 @@ pub fn asmEncode(
             const slot = try packArgument(a, a, constants.OperandKind.slot, 1, 1, false, arguments[1]);
             const label = try packArgument(a, a, constants.OperandKind.label, 2, 2, true, arguments[2]);
             instruction |= slot | label;
+        },
+        constants.InstructionType.il => {
+            if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, integer, label)");
+            const count = try packArgument(a, a, constants.OperandKind.integer, 1, 1, false, arguments[1]);
+            const label = try packArgument(a, a, constants.OperandKind.label, 2, 2, true, arguments[2]);
+            instruction |= count | label;
         },
         constants.InstructionType.st => {
             if (!hasLength(arguments, 3)) return a.fail("expected 2 arguments: (op, slot, type)");

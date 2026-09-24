@@ -289,6 +289,7 @@ pub const InstructionType = enum(u8) {
     ssu = 11,
     ses = 12,
     sc = 13,
+    il = 14,
 };
 
 /// Which of the two 64-bit integer abstracts a value is, or neither.
@@ -299,7 +300,7 @@ pub const IntType = enum(u32) {
     u64 = 2,
 };
 
-/// The bytecode's operation, as one type rather than seventy-seven integers.
+/// The bytecode's operation, as one type rather than seventy-eight integers.
 ///
 /// The numbers are the bytecode, so each is written out and none is implied by
 /// position: an instruction's low byte is this value, a marshalled funcdef
@@ -388,12 +389,13 @@ pub const Opcode = enum(u8) {
     not_equals = 74,
     not_equals_immediate = 75,
     cancel = 76,
+    jump_if_not_arity = 77,
     _,
 
     /// How many opcodes there are: one past the last, and not itself an
     /// opcode. `src/runtime/bytecode/verify.zig`'s type table and
     /// `src/runtime/bytecode.zig`'s name table are both this long.
-    pub const count: usize = 77;
+    pub const count: usize = 78;
 
     pub inline fn fromWord(word: u32) Opcode {
         return @enumFromInt(@as(u8, @truncate(word)));
@@ -527,11 +529,11 @@ comptime {
         .{ .make_array, 64 },           .{ .make_buffer, 65 },                    .{ .make_string, 66 },            .{ .make_map, 67 },
         .{ .make_table, 68 },           .{ .make_tuple, 69 },                     .{ .make_vector, 70 },            .{ .greater_than_equal, 71 },
         .{ .less_than_equal, 72 },      .{ .next, 73 },                           .{ .not_equals, 74 },             .{ .not_equals_immediate, 75 },
-        .{ .cancel, 76 },
+        .{ .cancel, 76 },               .{ .jump_if_not_arity, 77 },
     };
     std.debug.assert(expected_opcode.len == @typeInfo(Opcode).@"enum".fields.len);
     for (expected_opcode) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
-    std.debug.assert(Opcode.count == @intFromEnum(Opcode.cancel) + 1);
+    std.debug.assert(Opcode.count == @intFromEnum(Opcode.jump_if_not_arity) + 1);
 }
 
 comptime {
