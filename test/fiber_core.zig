@@ -44,6 +44,7 @@ const fibers = @import("subsystems").value.fibers;
 const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
+const maps = @import("subsystems").value.maps;
 const options = @import("options");
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
@@ -246,12 +247,8 @@ fn theFuncframeVarargs(rest: *functions.Function) void {
     expect(harness.elems(tail).len == 0);
 }
 
-/// `&keys` sets the funcdef's `maparg` flag, and the tail is built with
-/// `maps.build` instead of `tuples.n`. An odd-length tail drops its last
-/// value, which is what `makeMapN`'s even-length slice decides: that bound is
-/// the whole difference between ignoring the value and pairing it with the
-/// slot past the arguments.
-fn theFuncframeMapargs(keyed: *functions.Function) void {
+/// A map pattern after `&` sets `maparg` and receives a map of the tail.
+fn theFuncframeMapargs(add: *functions.Function, keyed: *functions.Function) raise.Error!void {
     const args = [_]repr.Value{
         harness.wrapInteger(1),
         value.fromBytes("a", .keyword),
@@ -273,22 +270,28 @@ fn theFuncframeMapargs(keyed: *functions.Function) void {
     expect(harness.isType(tail, repr.Tag.map));
     expect(wrap.toMap(tail).count == 0);
 
-    // An odd-length tail: the last key has no value, so it is dropped rather
-    // than paired with whatever is in the slot past the arguments. Four
-    // arguments, one fixed and three keyed, so the map is one pair.
+    const source = maps.build(.map, &.{ value.fromBytes("a", .keyword), harness.wrapInteger(7) });
+    gc_alloc.gcroot(wrap.fromMap(source));
+    defer _ = gc_alloc.gcunroot(wrap.fromMap(source));
+    fiber = rootedFiber(keyed, &.{ args[0], wrap.fromMap(source) });
+    tail = slot(fiber, fiber.frame + keyed.def.?.arity);
+    expect(wrap.toMap(tail) == source);
+
     const odd = [_]repr.Value{
         harness.wrapInteger(1),
         value.fromBytes("a", .keyword),
         harness.wrapInteger(7),
         value.fromBytes("b", .keyword),
     };
-    fiber = rootedFiber(keyed, odd[0..4]);
-    tail = slot(fiber, fiber.frame + keyed.def.?.arity);
-    expect(harness.isType(tail, repr.Tag.map));
-    const odd_map = wrap.toMap(tail);
-    expect(odd_map.count == 1);
-    expect(harness.integerIs(harness.field(odd_map, "a"), 7));
-    expect(harness.isType(harness.field(odd_map, "b"), repr.Tag.nil));
+    fiber = rootedFiber(add, args[0..2]);
+    try fibers.pushn(fiber, &odd);
+    const frame = fiber.frame;
+    const stackstart = fiber.stackstart;
+    const stacktop = fiber.stacktop;
+    expect(std.meta.isError(fibers.funcframe(fiber, keyed)));
+    expect(fiber.frame == frame);
+    expect(fiber.stackstart == stackstart);
+    expect(fiber.stacktop == stacktop);
 }
 
 /// A tail call reuses the current frame: the arguments move down over the
@@ -906,7 +909,7 @@ fn body() raise.Error!void {
     const add = compileFunction("(fn [a b] (+ a b))");
     const other = compileFunction("(fn [x y] (let [p (* x y) q (+ x y) r (- x y)] [p q r p q r]))");
     const rest = compileFunction("(fn [a & r] r)");
-    const keyed = compileFunction("(fn [a &keys kw] kw)");
+    const keyed = compileFunction("(fn [a & {:as kw}] kw)");
     const capturing = compileFunction("(fn [a b] (def unused (+ a b)) (fn [] a))");
     // The tail-call cases need two functions of the same arity and different
     // slot counts, so that a wrong slot count shows up as a wrong stack top.
@@ -915,7 +918,7 @@ fn body() raise.Error!void {
     theFuncframeLayout(add);
     try theFuncframeArityRejection(add);
     theFuncframeVarargs(rest);
-    theFuncframeMapargs(keyed);
+    try theFuncframeMapargs(add, keyed);
     try theFuncframeTail(add, other);
     try theFuncframeTailArityRejection(add, other);
     try theFuncframeTailVarargs(add, rest);

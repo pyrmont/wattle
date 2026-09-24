@@ -189,7 +189,7 @@
 
 ; Keyword arguments
 ; 3f137ed0b
-(defn myfn [x y z &keys {a :a b :b c :c}]
+(defn myfn [x y z & {a :a b :b c :c}]
   (+ x y z a b c))
 
 (assert (= (+ |(range 6)) (myfn 0 1 2 :a 3 :b 4 :c 5)) "keyword args 1")
@@ -199,17 +199,37 @@
 ; Named arguments
 ; 87fc339
 (defn named-arguments
-  [&named bob sally joe]
+  [& {:keys [bob sally joe]}]
   (+ bob sally joe))
 
 (assert (= 15 (named-arguments :bob 3 :sally 5 :joe 7)) "named arguments 1")
 
 ; a117252
 (defn named-opt-arguments
-  [&opt x &named a b c]
+  [&opt x & {:keys [a b c]}]
   (+ x a b c))
 
 (assert (= 10 (named-opt-arguments 1 :a 2 :b 3 :c 4)) "named arguments 2")
+
+(defn map-tail [& {:as options}] options)
+(def options-map {:a 3 :b 4})
+(assert (= options-map (map-tail options-map)) "a single map is the tail")
+(assert (= {:a 3 :b 4} (map-tail :a 1 :b 2 options-map))
+        "a trailing map replaces earlier pairs")
+(assert (= {:a 2} (map-tail :a 1 :a 2)) "a repeated pair replaces an earlier pair")
+(assert (string/find "called with no value for key <table"
+                     (try (map-tail !{:a 1}) ([err] err)))
+        "a table is not a trailing map")
+(assert-error-value "an odd tail has no value for its last key"
+                    "<function map-tail> called with no value for key :a"
+                    (map-tail :a))
+(assert-error-value "a map tail refuses nil keys"
+                    "<function map-tail> called with key nil, which a map cannot hold"
+                    (map-tail nil 1))
+(defn map-tail-call [key] (map-tail key))
+(assert-error-value "a tail call refuses a key without a value"
+                    "<function map-tail> called with no value for key :a"
+                    (map-tail-call :a))
 
 ;
 ; fn compilation special

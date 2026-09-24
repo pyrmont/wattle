@@ -3230,7 +3230,7 @@
   :source, :evaluator, :read, and :parser are passed through to the underlying
   `run-context` call. If `exit` is true, any top level errors will trigger a
   call to `(os/exit 1)` after printing the error."""
-  [path &named exit env source expander evaluator read parser]
+  [path & {:keys [exit env source expander evaluator read parser]}]
   (def f (case (type path)
            :core/file path
            :core/stream path
@@ -4171,7 +4171,7 @@
 
   (defn ffi/context
     "Set the path of the dynamic library to implicitly bind, as well     as other global state for ease of creating native bindings."
-    [&opt native-path &named map-symbols lazy]
+    [&opt native-path & {:keys [map-symbols lazy]}]
     (default map-symbols default-mangle)
     (def lib (if lazy nil (ffi/native native-path)))
     (def lazy-lib (if lazy (delay (ffi/native native-path))))
@@ -4251,7 +4251,7 @@
   and `where`, the same as the `:evaluator` argument to `run-context`.
   Other arguments to `flycheck` are the same as `dofile`. Returns nil.
   """
-  [path &keys kwargs]
+  [path & {:as kwargs}]
   (def new-env (make-env (get kwargs :env)))
   (put new-env *flychecking* true)
   (put new-env *module-cache* !{})
@@ -4548,7 +4548,7 @@
     5 hooks called during installation (postdeps, clean, build, install and
     check). A user can register a hook by defining a function with the same name
     in the bundle script."""
-    [path &keys config]
+    [path & {:as config}]
     (def path (bundle-rpath path))
     (def s (sep))
     ; Detect bundle name
@@ -4660,7 +4660,7 @@
     """Reinstall an existing bundle from a new directory. Similar to
     bundle/reinstall, but installs the replacement bundle from any directory.
     This is necessary to replace a package without breaking any dependencies."""
-    [bundle-name path &keys new-config]
+    [bundle-name path & {:as new-config}]
     (def manifest (bundle/manifest bundle-name))
     (def config (get manifest :config !{}))
     (def s (sep))
@@ -4679,7 +4679,7 @@
 
   (defn bundle/reinstall
     "Reinstall an existing bundle from the local source code."
-    [bundle-name &keys new-config]
+    [bundle-name & {:as new-config}]
     (def manifest (bundle/manifest bundle-name))
     (def path (get manifest :local-source))
     (bundle/replace bundle-name path |(kvs new-config))
@@ -4773,7 +4773,7 @@
 
   (defn bundle/update-all
     "Reinstall all bundles."
-    [&keys configs]
+    [& {:as configs}]
     (each bundle (bundle/topolist)
       (bundle/reinstall bundle |(kvs configs)))))
 

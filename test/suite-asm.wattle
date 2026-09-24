@@ -371,12 +371,6 @@
 (assert (= 4 (get (disasm (asm {:arity 0 :bytecode '[(add 3 0 0) (ret 0)]})) :slotcount))
         "an unheaded slot raises the slot count to one past itself")
 
-; The named-argument count is a field the assembler copies and a flag it sets
-; beside it, and the disassembler prints the field only when the flag is on.
-(assert (= 2 (get (disasm (asm {:arity 0 :slotcount 2 :namedargs 2 :bytecode '[(ret 0)]}))
-                  :namedargs))
-        "an assembled named-argument count comes back")
-
 ; The environment array is as long as the highest index the assembly names,
 ; counted from one. A closure over a single upvalue has exactly one.
 (assert (= 1 (length (get (first (get (disasm (asm (disasm (fn [x] (fn [y] (+ x y)))))) :defs))
@@ -384,4 +378,3 @@
         "one upvalue makes one environment")
 
 (end-suite)
-

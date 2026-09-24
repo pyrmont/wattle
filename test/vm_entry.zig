@@ -11,7 +11,7 @@
 //! signal, and `step` and `call` raise. Getting that backwards for even one
 //! condition turns a recoverable error into an abort.
 //!
-//! The messages, nine of them, compared byte for byte. The three arity
+//! The contract compares the messages byte for byte. The three arity
 //! messages matter most, because they are the only place a caller outside the
 //! runtime learns why its call was rejected, and the three cases (exact,
 //! minimum and maximum) are chosen by a two-branch cascade that reads
@@ -448,6 +448,16 @@ fn nfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
+fn nfunMapTail(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 0);
+
+    const fun = evalfn("(do (defn host-map-tail [& {value :value}] value) host-map-tail)");
+    const args = [_]repr.Value{harness.wrapInteger(1)};
+    expect(harness.raised(vm_entry.call, .{ fun, &args }).?.says("<function host-map-tail> called with no value for key 1"));
+
+    return wrap.fromNil();
+}
+
 /// The assembler keeps `min_arity` at or below `max_arity` and the
 /// unmarshaller does not check it. With the two crossed, a call with exactly
 /// the minimum is refused for passing the maximum, and says so.
@@ -476,6 +486,7 @@ fn nfunDepth(argv: []repr.Value) raise.Error!repr.Value {
 const nfuns = [_]abi.Reg{
     .{ .name = "vmentry/probe", .nfun = raise.stored(&nfunProbe), .documentation = null },
     .{ .name = "vmentry/arity", .nfun = raise.stored(&nfunArityVariants), .documentation = null },
+    .{ .name = "vmentry/map-tail", .nfun = raise.stored(&nfunMapTail), .documentation = null },
     .{ .name = "vmentry/crossed", .nfun = raise.stored(&nfunCrossedArity), .documentation = null },
     .{ .name = "vmentry/depth", .nfun = raise.stored(&nfunDepth), .documentation = null },
 };
@@ -576,6 +587,7 @@ fn body() raise.Error!void {
     // Everything that needs a running fiber underneath it.
     _ = eval("(vmentry/probe)");
     _ = eval("(vmentry/arity)");
+    _ = eval("(vmentry/map-tail)");
     _ = eval("(vmentry/crossed)");
 
     aSignalTheLoopReturnsIsCoerced();

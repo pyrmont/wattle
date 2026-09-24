@@ -6,7 +6,7 @@
 //! must first produce a function that *has* one, and several of these fields
 //! only arise from bytecode the compiler emits in particular circumstances.
 //! Building the `functions.FuncDef` by hand is what lets one fixture have all
-//! of them at once: a vararg, maparg, named-args function with constants, a
+//! of them at once: a vararg map-argument function with constants, a
 //! source map, an environment list, a symbol map and a child definition.
 //!
 //! ## The two fields that are not what they look like
@@ -57,7 +57,6 @@ fn theScalarFields(result: repr.Value) raise.Error!void {
     // The three flags come back as booleans and a count rather than as bits.
     expect(wrap.toBoolean(try harness.entry(result, "vararg")));
     expect(wrap.toBoolean(try harness.entry(result, "maparg")));
-    expect(harness.integerIs(try harness.entry(result, "namedargs"), 3));
     expect(harness.stringValueIs(try harness.entry(result, "source"), "source.janet"));
     expect(harness.stringValueIs(try harness.entry(result, "name"), "sample"));
 }
@@ -177,8 +176,7 @@ fn theWholeDefinitionRoundTrips() raise.Error!void {
     definition.min_arity = 1;
     definition.max_arity = 4;
     definition.slotcount = 9;
-    definition.flags = .{ .vararg = true, .maparg = true, .namedargs = true };
-    definition.named_args_count = 3;
+    definition.flags = .{ .vararg = true, .maparg = true };
     definition.bytecode = &bytecode;
     definition.bytecode_length = bytecode.len;
     definition.constants = &consts;

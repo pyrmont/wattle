@@ -41,7 +41,6 @@ const functions = @import("value/functions.zig");
 const gc_alloc = @import("gc.zig");
 const maps = @import("value/maps.zig");
 const optimize = @import("compiler/optimize.zig");
-const order = @import("value/helpers/order.zig");
 const pp_format = @import("pp/format.zig");
 const raise = @import("../api/raise.zig");
 const regalloc = @import("compiler/regalloc.zig");
@@ -377,9 +376,9 @@ pub inline fn currentScope(compiler: *Compiler) *Scope {
 
 /// Computes a definition's flag bits from the optional parts it has.
 pub fn defAddflags(definition: *functions.FuncDef) void {
-    // The seven "has" bits say which optional parts the definition has, so
+    // The six "has" bits say which optional parts the definition has, so
     // each is a read of the field it describes rather than a flag anyone sets
-    // by hand. Everything else the definition already had survives.
+    // by hand. Other active flags survive.
     var flags = definition.flags.withoutControlled();
     flags.hasname = definition.name != null;
     flags.hassource = definition.source != null;
@@ -387,7 +386,6 @@ pub fn defAddflags(definition: *functions.FuncDef) void {
     flags.hasenvs = definition.environments != null;
     flags.hassourcemap = definition.sourcemap != null;
     flags.hasclobitset = definition.closure_bitset != null;
-    flags.namedargs = definition.named_args_count != 0;
     definition.flags = flags;
 }
 
@@ -933,7 +931,6 @@ pub fn valueImpl(options: FormOptions, original_value: repr.Value) raise.Error!S
                         options,
                         try toslots(compiler, tuple + 1, @intCast(length - 1)),
                         function,
-                        tuple,
                     );
                     freeslot(compiler, function);
                 }
@@ -1037,13 +1034,12 @@ fn compileCall(
     options: FormOptions,
     slots: scratch_vector.Vector(Slot),
     function: Slot,
-    form: [*]const repr.Value,
 ) raise.Error!Slot {
     const compiler: *Compiler = options.compiler;
     var result: Slot = undefined;
     if (!tryCallOptimizer(options, slots.items, function, &result)) {
         const minimum_arity = pushslots(compiler, slots.items);
-        try validateCall(compiler, function, minimum_arity, form);
+        try validateCall(compiler, function, minimum_arity);
         if (options.flags.tail and !currentScope(compiler).flags.top) {
             _ = emit_core.emitSlot(compiler, .tailcall, function, 0);
             result = cslot(wrapNil());
@@ -1501,7 +1497,6 @@ fn validateCall(
     compiler: *Compiler,
     function: Slot,
     original_minimum_arity: i32,
-    form: [*]const repr.Value,
 ) raise.Error!void {
     if (!function.flags.constant) return;
     var minimum_arity = original_minimum_arity;
@@ -1512,8 +1507,6 @@ fn validateCall(
             const definition = function_value.def.?;
             const minimum = definition.min_arity;
             const maximum = definition.max_arity;
-            const has_map_argument = definition.flags.maparg;
-            const has_named_arguments = definition.flags.namedargs;
 
             if (minimum_arity < 0) {
                 minimum_arity = -1 - minimum_arity;
@@ -1527,45 +1520,6 @@ fn validateCall(
             }
             if (minimum_arity < minimum) {
                 recordError(compiler, try arity_error.format(function.constant, minimum_arity, false, minimum, maximum, ""));
-            }
-            if (has_map_argument and
-                minimum_arity > definition.arity and
-                (minimum_arity - definition.arity) & 1 != 0)
-            {
-                if (has_named_arguments) {
-                    try lintf(compiler, .normal, "odd number of named arguments to `&named` function %v", .{function.constant});
-                } else {
-                    try lintf(compiler, .normal, "odd number of named arguments to `&keys` function %v", .{function.constant});
-                }
-            }
-            if (has_named_arguments and definition.named_args_count > 0) {
-                var argument_index = definition.arity + 1;
-                const form_length = tuples.head(form).length;
-                while (argument_index < form_length) : (argument_index += 2) {
-                    const argument_key = form[@intCast(argument_index)];
-                    var found = false;
-                    if (wrap.isKeyword(argument_key)) {
-                        var named_index: i32 = 0;
-                        while (named_index < definition.named_args_count and
-                            named_index < definition.constants_length) : (named_index += 1)
-                        {
-                            if (order.equals(argument_key, definition.constantValues()[@intCast(named_index)])) {
-                                found = true;
-                                break;
-                            }
-                        }
-                    } else if (repr.checkType(argument_key, repr.Tag.tuple)) {
-                        found = true;
-                    }
-                    if (!found) {
-                        try lintf(
-                            compiler,
-                            .normal,
-                            "unused named argument %v to function %v",
-                            .{ argument_key, function.constant },
-                        );
-                    }
-                }
             }
         },
         repr.Tag.nfunction, repr.Tag.abstract, repr.Tag.nil => {},

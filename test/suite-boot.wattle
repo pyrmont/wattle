@@ -759,7 +759,7 @@
 ; has-key?
 (do
   (var test-has-key-auto 0)
-  (defn test-has-key [col key expected &keys {name :name}]
+  (defn test-has-key [col key expected & {name :name}]
     """Test that has-key has the outcome `expected`, and that if
     the result is true, then ensure (in key) does not fail either"""
     (assert (boolean? expected))

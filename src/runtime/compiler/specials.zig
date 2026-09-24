@@ -361,11 +361,9 @@ fn checkNilForm(val: repr.Value, function_tag: u32) ?repr.Value {
 fn cleanupFunctionError(
     compiler: *compiler_primitives.Compiler,
     destructured_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
-    named_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
     message: [*:0]const u8,
 ) raise.Error!compiler_primitives.Slot {
     scratch_vector.free(destructured_parameters);
-    scratch_vector.free(named_parameters);
     return functionError(compiler, message);
 }
 
@@ -1003,9 +1001,6 @@ fn specialFn(
     // would wrap under those subtractions.
     const parameter_count: i32 = @intCast(parameters.len);
     var destructured_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
-    var named_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
-    var named_table: ?*tables.Table = null;
-    var named_slot: compiler_primitives.Slot = undefined;
     var arity = parameter_count;
     var minimum_arity: i32 = 0;
     var vararg = false;
@@ -1015,25 +1010,8 @@ fn specialFn(
     var seen_optional = false;
 
     for (parameters, 0..) |parameter, index| {
-        // `named_table` is the `&named` flag: it is created when the marker is
-        // seen and nothing clears it, so every later parameter is a named one.
-        if (named_table) |named| {
-            arity -= 1;
-            if (!wrap.isSymbol(parameter)) {
-                scratch_vector.free(&destructured_parameters);
-                scratch_vector.free(&named_parameters);
-                return functionError(compiler, "only named arguments can follow &named");
-            }
-            tables.put(
-                named,
-                parameter,
-                value.fromBytes(std.mem.span(wrap.toSymbol(parameter)), .keyword),
-            );
-            pushSlot(&named_parameters, compiler_primitives.farslot(compiler) orelse nilSlot());
-            continue;
-        }
-
         if (!wrap.isSymbol(parameter)) {
+            if (seen_amp and index == parameter_count - 1 and repr.typeOf(parameter) == .map) maparg = true;
             pushSlot(&destructured_parameters, compiler_primitives.farslot(compiler) orelse nilSlot());
             continue;
         }
@@ -1046,7 +1024,7 @@ fn specialFn(
 
         if (utils.cstrcmp(symbol, "&") == 0) {
             if (seen_amp) {
-                return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "& in unexpected location");
+                return cleanupFunctionError(compiler, &destructured_parameters, "& in unexpected location");
             } else if (index == parameter_count - 1) {
                 allow_extra = true;
                 arity -= 1;
@@ -1054,51 +1032,24 @@ fn specialFn(
                 vararg = true;
                 arity -= 2;
             } else {
-                return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "& in unexpected location");
+                return cleanupFunctionError(compiler, &destructured_parameters, "& in unexpected location");
             }
             seen_amp = true;
         } else if (utils.cstrcmp(symbol, "&opt") == 0) {
             if (seen_optional) {
-                return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "only one &opt allowed");
+                return cleanupFunctionError(compiler, &destructured_parameters, "only one &opt allowed");
             } else if (index == parameter_count - 1) {
-                return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "&opt cannot be last item in parameter list");
+                return cleanupFunctionError(compiler, &destructured_parameters, "&opt cannot be last item in parameter list");
             }
             minimum_arity = @intCast(index);
             arity -= 1;
             seen_optional = true;
-        } else if (utils.cstrcmp(symbol, "&keys") == 0) {
-            if (seen_amp or index != parameter_count - 2) {
-                return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "&keys in unexpected location");
-            }
-            vararg = true;
-            maparg = true;
-            arity -= 2;
-            seen_amp = true;
-        } else if (utils.cstrcmp(symbol, "&named") == 0) {
-            if (seen_amp) {
-                return cleanupFunctionError(compiler, &destructured_parameters, &named_parameters, "&named in unexpected location");
-            }
-            vararg = true;
-            maparg = true;
-            arity -= 1;
-            seen_amp = true;
-            named_table = tables.new(10);
-            named_slot = compiler_primitives.farslot(compiler) orelse nilSlot();
         } else {
-            try compiler_primitives.nameslot(compiler, symbol, compiler_primitives.farslot(compiler) orelse nilSlot(), 0);
+            scratch_vector.free(&destructured_parameters);
+            compiler_primitives.recordError(compiler, try pp_format.formatc("unknown parameter marker %s", .{symbol}));
+            try compiler_primitives.popscope(compiler);
+            return nilSlot();
         }
-    }
-
-    if (named_table) |named| {
-        _ = try destructure(
-            compiler,
-            wrap.fromTable(named),
-            named_slot,
-            .definition,
-            null,
-        );
-        compiler_primitives.freeslot(compiler, named_slot);
-        scratch_vector.free(&named_parameters);
     }
 
     var destructured_index: usize = 0;
@@ -1152,10 +1103,8 @@ fn specialFn(
     definition.arity = arity;
     definition.min_arity = minimum_arity;
     definition.max_arity = maximum_arity;
-    if (named_table) |named| definition.named_args_count = @intCast(named.count);
     if (vararg) definition.flags.vararg = true;
     if (maparg) definition.flags.maparg = true;
-    if (named_table != null) definition.flags.namedargs = true;
     if (has_name) definition.name = wrap.toSymbol(head);
     compiler_primitives.defAddflags(definition);
     const definition_index = addFunctionDefinition(compiler, definition);

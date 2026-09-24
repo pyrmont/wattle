@@ -150,7 +150,6 @@ fn theFuncdefFlagsAreDerived() void {
         .hasenvs = true,
         .hassourcemap = true,
         .hasclobitset = true,
-        .namedargs = true,
     };
     primitives.defAddflags(&definition);
     // Every claim was false, so only the flag that is not derived survives.
@@ -162,7 +161,6 @@ fn theFuncdefFlagsAreDerived() void {
     definition.environments = @ptrCast(&environment);
     definition.sourcemap = @ptrCast(&mapping);
     definition.closure_bitset = @ptrCast(&closure_bits);
-    definition.named_args_count = 2;
     primitives.defAddflags(&definition);
     expect(definition.flags.vararg);
     expect(definition.flags.hasname);
@@ -171,7 +169,6 @@ fn theFuncdefFlagsAreDerived() void {
     expect(definition.flags.hasenvs);
     expect(definition.flags.hassourcemap);
     expect(definition.flags.hasclobitset);
-    expect(definition.flags.namedargs);
 }
 
 /// Popping a scope hands its high-water register mark and its symbols up to

@@ -101,7 +101,6 @@ pub const FuncDef = struct {
     environments_length: usize = 0,
     defs_length: usize = 0,
     symbolmap_length: usize = 0,
-    named_args_count: i32 = 0,
 
     /// The constant pool. `constants.Opcode.load_constant` indexes it.
     pub inline fn constantValues(self: anytype) utils.View(@TypeOf(self), repr.Value) {
@@ -179,12 +178,10 @@ pub const FuncDefFlags = packed struct(u32) {
     hassourcemap: bool = false,
     maparg: bool = false,
     hasclobitset: bool = false,
-    namedargs: bool = false,
-    _reserved: u5 = 0,
+    _reserved: u6 = 0,
 
-    /// The seven bits `compiler.zig`'s `defAddflags` owns, cleared. The tag,
-    /// `vararg`, `needsenv`, `hassymbolmap` and `maparg` are set elsewhere
-    /// and survive.
+    /// Clears the six optional-part bits.
+    /// The tag, `vararg`, `needsenv`, `hassymbolmap` and `maparg` survive.
     pub inline fn withoutControlled(self: FuncDefFlags) FuncDefFlags {
         var out = self;
         out.hasname = false;
@@ -193,7 +190,6 @@ pub const FuncDefFlags = packed struct(u32) {
         out.hasenvs = false;
         out.hassourcemap = false;
         out.hasclobitset = false;
-        out.namedargs = false;
         return out;
     }
 };
@@ -281,7 +277,6 @@ pub const defs = struct {
         def.bytecode_length = 0;
         def.environments_length = 0;
         def.symbolmap_length = 0;
-        def.named_args_count = 0;
         return def;
     }
 };

@@ -602,7 +602,7 @@ fn theWholeCompilations() void {
         "[ ((fn [[a b]] (+ a b)) [2 3]) " ++
             "  ((fn [a &opt b] [a b]) 1) " ++
             "  ((fn [a & rest] rest) 1 2 3) " ++
-            "  ((fn [&named x y] [x y]) :y 2 :x 1) " ++
+            "  ((fn [& {:keys [x y]}] [x y]) :y 2 :x 1) " ++
             "  ((fn recur [n] " ++
             "     (if (zero? n) 0 (+ 1 (recur (- n 1))))) 3) ]",
         "specials-core-test",

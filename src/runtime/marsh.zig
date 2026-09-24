@@ -937,8 +937,6 @@ fn marshalOneDef(st: *MarshalState, def: *functions.FuncDef, flags: c_int) raise
     try pushInt(st, def.max_arity);
     try pushInt(st, @intCast(def.constants_length));
     try pushInt(st, @intCast(def.bytecode_length));
-    try if (def.flags.namedargs)
-        pushInt(st, def.named_args_count);
     try if (def.flags.hasenvs)
         pushInt(st, @intCast(def.environments_length));
     try if (def.flags.hasdefs)
@@ -1668,7 +1666,6 @@ fn unmarshalOneDef(
     def.sourcemap = null;
     def.symbolmap = null;
     def.symbolmap_length = 0;
-    def.named_args_count = 0;
     scratch_vector.push(&st.lookup_defs, def);
 
     var environments_length: usize = 0;
@@ -1684,8 +1681,6 @@ fn unmarshalOneDef(
 
     const constants_length = try readCount(st, &data);
     const bytecode_length = try readCount(st, &data);
-    if (def.flags.namedargs)
-        def.named_args_count = try readNat(st, &data);
     if (def.flags.hasenvs)
         environments_length = try readCount(st, &data);
     if (def.flags.hasdefs)

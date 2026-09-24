@@ -1225,9 +1225,12 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
                     self.reload();
                 }
-                fibers.funcframe(fiber, self.func) catch {
+                fibers.funcframe(fiber, self.func) catch |err| {
                     const n = fiber.stacktop - fiber.stackstart;
-                    return arity.mismatch(callee, @intCast(n));
+                    return switch (err) {
+                        error.Arity => arity.mismatch(callee, @intCast(n)),
+                        error.MapTail => arity.mapTailMismatch(callee, fiber),
+                    };
                 };
                 self.reload();
                 self.pc = self.func.def.?.bytecode.?;
@@ -1277,10 +1280,13 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                     try traceFiber(self.func, fiber.stacktop - fiber.stackstart, fiber);
                     self.reload();
                 }
-                fibers.funcframeTail(fiber, self.func) catch {
+                fibers.funcframeTail(fiber, self.func) catch |err| {
                     stackFrame(fiber.data.? + utils.asSize(fiber.frame)).pc = .{ .bytecode = self.pc };
                     const n = fiber.stacktop - fiber.stackstart;
-                    return arity.mismatch(callee, @intCast(n));
+                    return switch (err) {
+                        error.Arity => arity.mismatch(callee, @intCast(n)),
+                        error.MapTail => arity.mapTailMismatch(callee, fiber),
+                    };
                 };
                 self.reload();
                 self.pc = self.func.def.?.bytecode.?;

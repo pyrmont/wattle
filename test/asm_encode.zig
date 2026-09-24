@@ -143,7 +143,7 @@ fn theTwoSpellingsOfAChildDefinition() void {
 fn theMetadataFields() void {
     const definition = accepted(
         \\'{:name metadata-fn :arity 2 :min-arity 1 :max-arity 3
-        \\  :vararg true :maparg true :namedargs 2
+        \\  :vararg true :maparg true
         \\  :source "metadata-source" :bytecode [(retn)]}
     );
     expect(definition.arity == 2);
@@ -151,10 +151,8 @@ fn theMetadataFields() void {
     expect(definition.max_arity == 3);
     // Derived rather than declared: `max-arity` 3 needs three slots.
     expect(definition.slotcount == 3);
-    expect(definition.named_args_count == 2);
     expect(definition.flags.vararg);
     expect(definition.flags.maparg);
-    expect(definition.flags.namedargs);
     expect(harness.stringIs(definition.name.?, "metadata-fn"));
     expect(harness.stringIs(definition.source.?, "metadata-source"));
 }

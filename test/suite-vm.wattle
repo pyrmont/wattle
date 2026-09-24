@@ -68,6 +68,19 @@
 (assert (= [:vector []] (resume empty-tail))
         "first resume with nil leaves an empty rest vector")
 
+(def first-map (fiber/new (fn [& {:as options}] options)))
+(assert (= {:a 1} (resume first-map {:a 1}))
+        "a map on first resume supplies the map tail")
+(def empty-map (fiber/new (fn [& {:as options}] options)))
+(assert (= {} (resume empty-map)) "nil first resume leaves an empty map tail")
+(def odd-map (fiber/new (fn odd-map-fn [& {:as options}] options)))
+(assert-error-value "a non-map first resume refuses an odd map tail"
+                    "<function odd-map-fn> called with no value for key :a"
+                    (resume odd-map :a))
+(def fixed-map (fiber/new (fn [x & {:as options}] [x options])))
+(assert (= [:value {}] (resume fixed-map :value))
+        "the first resume fills a fixed parameter before the map tail")
+
 ; Fix yields inside nested fibers
 ; 909c906
 (def yielder

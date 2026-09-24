@@ -18,9 +18,8 @@
 //! ## The kernels raise by returning
 //!
 //! The five pushes raise by returning `raise.Error`, and their callers `try`
-//! them. A frame push is different: an argument count outside the callee's
-//! arity comes back as `error.Arity`, which is not a raise, because every
-//! caller decides for itself what to say about it and two of them say nothing.
+//! them. A frame push returns `error.Arity` for an invalid count or
+//! `error.MapTail` for an invalid map tail. Each caller reports the refusal.
 //!
 //! The map packing and the varargs fill are here too, so that `funcframe`
 //! and `funcframeTail` are whole instead of being a kernel in two halves with
@@ -97,9 +96,13 @@ pub const FiberStatus = abi.FiberStatus;
 // Types
 // ==========================================================================
 
-/// Refusal from a frame push: the argument count was outside the callee's
-/// arity. Not a raise, for the reason the header gives.
-pub const ArityError = error{Arity};
+/// Refusal from a frame push: an invalid argument count or map tail.
+pub const ArityError = error{ Arity, MapTail };
+
+pub const MapTailRefusal = union(enum) {
+    missing_value: repr.Value,
+    invalid_key: repr.Value,
+};
 
 /// The GC header's per-type field, as a fiber reads it.
 ///
@@ -210,15 +213,13 @@ pub const FiberFlags = packed struct(u32) {
 };
 
 /// What pushing half a frame decided: the frame is pushed and a variadic tail
-/// may still need packing, or the arity refused the arguments and the fiber
-/// was not touched.
+/// may still need packing, or a refusal left the fiber unchanged.
 ///
-/// A union rather than a status beside two out-parameters with sentinels:
-/// three states, two of which would otherwise be one state at two sentinel
-/// values.
+/// The two refusal tags leave the stack unchanged.
 const FrameBegin = union(enum) {
     pushed: ?Varargs,
     arity_mismatch,
+    map_tail_mismatch,
 };
 
 /// What `funcframeTailBegin` decided: the variadic tail to pack, if any, and
@@ -226,6 +227,7 @@ const FrameBegin = union(enum) {
 const TailBegin = union(enum) {
     pushed: struct { tail: ?Varargs, stacksize: i32 },
     arity_mismatch,
+    map_tail_mismatch,
 };
 
 /// A variadic tail waiting to be packed: the slot to pack it into, and how
@@ -294,11 +296,11 @@ pub fn finished(f: *Fiber) bool {
 
 /// Pushes a call frame for `func`, packing its variadic tail where it has one.
 ///
-/// Returns `error.Arity` without touching the fiber where the argument count
-/// is outside the function's arity.
+/// Returns `error.Arity` or `error.MapTail` without changing the fiber.
 pub fn funcframe(fiber: *Fiber, func: *functions.Function) ArityError!void {
     switch (funcframeBegin(fiber, func)) {
         .arity_mismatch => return error.Arity,
+        .map_tail_mismatch => return error.MapTail,
         .pushed => |tail| if (tail) |t| fillVarargs(fiber, func, t.slot, t.count),
     }
 }
@@ -310,11 +312,11 @@ pub fn funcframe(fiber: *Fiber, func: *functions.Function) ArityError!void {
 /// check, the capacity, the outgoing environment and the gap fill,
 /// `fillVarargs` packs the tail, and `funcframeTailFinish` does the move.
 ///
-/// Returns `error.Arity` where the argument count is outside the function's
-/// arity.
+/// Returns `error.Arity` or `error.MapTail` without changing the fiber.
 pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
     const begun = switch (funcframeTailBegin(fiber, func)) {
         .arity_mismatch => return error.Arity,
+        .map_tail_mismatch => return error.MapTail,
         .pushed => |begun| begun,
     };
     if (begun.tail) |t| fillVarargs(fiber, func, t.slot, t.count);
@@ -820,6 +822,25 @@ fn fillVarargs(fiber: *Fiber, func: *functions.Function, slot: i32, count: i32) 
         wrap.fromVector(vectors.fromSlice(values));
 }
 
+/// Returns the first invalid map-tail argument, or null when the tail is valid.
+pub fn mapTailRefusal(args: []const repr.Value) ?MapTailRefusal {
+    const trailing_map = args.len % 2 == 1 and repr.checkType(args[args.len - 1], repr.Tag.map);
+    const pairs = args[0 .. args.len - @intFromBool(trailing_map)];
+    var i: usize = 0;
+    while (i + 1 < pairs.len) : (i += 2) {
+        if (!maps.storableKey(pairs[i])) return .{ .invalid_key = pairs[i] };
+    }
+    if (pairs.len % 2 != 0) return .{ .missing_value = pairs[pairs.len - 1] };
+    return null;
+}
+
+/// Returns the refusal for a map tail in `fiber`'s pending call to `func`.
+pub fn pendingMapTailRefusal(fiber: *Fiber, func: *functions.Function) ?MapTailRefusal {
+    const start = fiber.stackstart + func.def.?.arity;
+    if (start >= fiber.stacktop) return null;
+    return mapTailRefusal(dataAt(fiber, start)[0..@intCast(fiber.stacktop - start)]);
+}
+
 /// Everything a frame push does up to the point where a variadic tail's value
 /// is needed.
 ///
@@ -837,6 +858,7 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
     // Check strict arity before touching any state.
     if (next_arity < def.min_arity) return .arity_mismatch;
     if (next_arity > def.max_arity) return .arity_mismatch;
+    if (def.flags.maparg and pendingMapTailRefusal(fiber, func) != null) return .map_tail_mismatch;
 
     reserve(fiber, nextstacktop);
 
@@ -881,6 +903,7 @@ fn funcframeTailBegin(fiber: *Fiber, func: *functions.Function) TailBegin {
     // Check strict arity before touching any state.
     if (next_arity < def.min_arity) return .arity_mismatch;
     if (next_arity > def.max_arity) return .arity_mismatch;
+    if (def.flags.maparg and pendingMapTailRefusal(fiber, func) != null) return .map_tail_mismatch;
 
     reserve(fiber, nextstacktop);
 
@@ -957,31 +980,29 @@ fn grow(fiber: *Fiber, needed: i32) void {
     setcapacity(fiber, cap);
 }
 
-/// Builds a map from `args` taken as alternating keys and values. An odd
-/// count ignores the last value.
+/// Builds a map from the pairs in `args` and an optional trailing map.
 ///
+/// `mapTailRefusal` must have accepted `args` before this call.
 /// It is here because `funcframe` is. `maps.build` hashes the caller's keys,
 /// so an abstract type's `hash` callback runs underneath it; `abi.zig`
 /// declares that callback `callconv(.c)`, so it has no way to raise, and this
 /// frame keeps nothing across it either way.
 ///
-/// A trailing argument with no value of its own is dropped, which is what the
-/// even-length slice is for, and so is a pair whose key a map cannot store.
-/// Neither is a refusal, because a frame push has no raise to propagate and
-/// two of its callers say nothing about an argument they will not take.
-///
-/// `args` is the fiber's own stack, above the frame being filled, and the
-/// compaction writes back over it, which nothing else is reading.
 fn makeMapN(args: []repr.Value) repr.Value {
-    var kept: usize = 0;
-    var i: usize = 0;
-    while (i + 1 < args.len) : (i += 2) {
-        if (!maps.storableKey(args[i])) continue;
-        args[kept] = args[i];
-        args[kept + 1] = args[i + 1];
-        kept += 2;
+    const trailing_map = args.len % 2 == 1;
+    if (trailing_map and args.len == 1) return args[0];
+    const pairs = args[0 .. args.len - @intFromBool(trailing_map)];
+    var result = maps.build(.map, pairs);
+    if (trailing_map) {
+        const extra = maps.toTree(args[args.len - 1], .map).?;
+        var key = wrap.fromNil();
+        while (true) {
+            key = maps.nextKey(extra, key);
+            if (repr.checkType(key, repr.Tag.nil)) break;
+            result = maps.put(result, .map, &.{ key, maps.lookup(extra, key) });
+        }
     }
-    return wrap.fromMap(maps.build(.map, args[0..kept]));
+    return wrap.fromMap(result);
 }
 
 /// Copies `fiber`'s stack into a fresh allocation and frees the old block, so

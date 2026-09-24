@@ -59,7 +59,6 @@ const disasm_fields = [_]struct { name: [*:0]const u8, field: disasm.Field }{
     .{ .name = "name", .field = .name },
     .{ .name = "vararg", .field = .vararg },
     .{ .name = "maparg", .field = .maparg },
-    .{ .name = "namedargs", .field = .namedargs },
     .{ .name = "slotcount", .field = .slotcount },
     .{ .name = "symbolmap", .field = .symbolmap },
     .{ .name = "constants", .field = .constants },
@@ -662,8 +661,7 @@ pub fn libAsm(env: *tables.Table) raise.Error!void {
             "* :min-arity - minimum number of arguments function can be called with.\n" ++
             "* :max-arity - maximum number of arguments function can be called with.\n" ++
             "* :vararg - true if function can take a variable number of arguments.\n" ++
-            "* :maparg - true if function can take a variable number of arguments using the &keys option.\n" ++
-            "* :namedargs - if function can take a variable number of arguments using the &named option, this will be the number of named arguments.\n" ++
+            "* :maparg - true if a map pattern after & receives the variable arguments.\n" ++
             "* :bytecode - array of parsed bytecode instructions. Each instruction is a tuple.\n" ++
             "* :source - name of source file that this function was compiled from.\n" ++
             "* :name - name of function.\n" ++
@@ -692,8 +690,7 @@ pub fn parentForEnvironment(context: *Assembler, environment: u32) ?*Assembler {
 }
 
 /// Reads the funcdef's header fields out of `source`: its name, its three
-/// arities, the vararg and map-argument flags, the named-argument count and
-/// the source name.
+/// arities, the vararg and map-argument flags, and the source name.
 pub fn parseHeader(
     a: *Assembler,
     source: repr.Value,
@@ -728,12 +725,6 @@ pub fn parseHeader(
 
     val = getFieldByName(source, "maparg");
     if (repr.truthy(val)) definition.flags.maparg = true;
-
-    val = getFieldByName(source, "namedargs");
-    if (args_core.checkint(val)) {
-        definition.flags.namedargs = true;
-        definition.named_args_count = integerValue(val);
-    }
 
     val = getFieldByName(source, "source");
     if (repr.checkType(val, repr.Tag.string)) definition.source = wrap.toString(val);

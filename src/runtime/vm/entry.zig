@@ -150,7 +150,10 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
 
     // Push frame.
     try fibers.pushn(vm_state.fiberOf(v), argv);
-    fibers.funcframe(vm_state.fiberOf(v), fun) catch return arity.mismatch(wrap.fromFunction(fun), argv.len);
+    fibers.funcframe(vm_state.fiberOf(v), fun) catch |err| return switch (err) {
+        error.Arity => arity.mismatch(wrap.fromFunction(fun), argv.len),
+        error.MapTail => arity.mapTailMismatch(wrap.fromFunction(fun), vm_state.fiberOf(v)),
+    };
     fiberFrame(vm_state.fiberOf(v)).flags.entrance = true;
 
     // Set up.
@@ -427,13 +430,25 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
     }
 
     // Handle new fibers being resumed with a non-nil value.
+    var first_map_refusal: ?fibers.MapTailRefusal = null;
     if (old_status == fibers.FiberStatus.new and !repr.checkType(in, repr.Tag.nil)) {
         const stack = fiber.data.? + utils.asSize(fiber.frame);
         if (fiberFrame(fiber).func) |func| {
             if (func.def.?.arity > 0) {
                 stack[0] = in;
+                fiberFrame(fiber).flags.argc = 1;
             } else if (func.def.?.flags.vararg) {
-                stack[0] = wrap.fromVector(vectors.fromSlice(@as(*const [1]repr.Value, &in)));
+                if (func.def.?.flags.maparg) {
+                    if (fibers.mapTailRefusal(&.{in})) |refusal| {
+                        first_map_refusal = refusal;
+                    } else {
+                        stack[0] = in;
+                        fiberFrame(fiber).flags.argc = 1;
+                    }
+                } else {
+                    stack[0] = wrap.fromVector(vectors.fromSlice(@as(*const [1]repr.Value, &in)));
+                    fiberFrame(fiber).flags.argc = 1;
+                }
             }
         }
     }
@@ -452,7 +467,16 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
     if (vm.root_fiber == null) vm.root_fiber = fiber;
     vm.fiber = fiber;
     setStatus(fiber, fibers.FiberStatus.alive);
-    const sig = vm_run.runVm(fiber, in) catch vm.pending_signal;
+    const sig = if (first_map_refusal) |refusal| blk: {
+        gc_alloc.gcroot(in);
+        if (arity.formatMapTail(wrap.fromFunction(fiberFrame(fiber).func.?), refusal)) |message| {
+            tstate.payload = wrap.fromString(message);
+            break :blk abi.Signal.@"error";
+        } else |_| {
+            break :blk vm.pending_signal;
+        }
+    } else vm_run.runVm(fiber, in) catch vm.pending_signal;
+    if (first_map_refusal != null) _ = gc_alloc.gcunroot(in);
 
     // Restore.
     if (vm.root_fiber == fiber) vm.root_fiber = null;

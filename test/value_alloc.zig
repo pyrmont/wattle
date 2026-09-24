@@ -398,7 +398,6 @@ fn assertEmptyFuncdef(def: *functions.FuncDef) void {
     expect(def.defs == null);
     expect(def.defs_length == 0);
     expect(def.symbolmap_length == 0);
-    expect(def.named_args_count == 0);
 }
 
 /// An empty funcdef: every pointer null, every length zero, and `max_arity` at
