@@ -933,6 +933,11 @@
                                :doc "")))
         "no \\r in doc strings")
 
+; The signature line of a docstring is printed
+(assert (deep= (doc-format "(f x)\n\nBody." 80 4 false)
+               !"\n    (f x)\n\n    Body.\n")
+        "doc-format prints signature")
+
 ; cff718f37
 (var counter 0)
 (def thunk (delay (++ counter)))

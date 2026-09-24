@@ -3623,7 +3623,8 @@
     (def first-line (string/slice str 0 (- cursor 1)))
     (def fl-open (if has-color "\e[97m" ""))
     (def fl-close (if has-color "\e[39m" ""))
-    (push [[(string fl-open first-line fl-close) (length first-line)]]))
+    ; `emit-node` prints a line only if it is a tuple, and `[...]` is a vector.
+    (push (tuple [(string fl-open first-line fl-close) (length first-line)])))
 
   (parse-blocks 0)
 
