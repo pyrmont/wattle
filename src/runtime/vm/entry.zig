@@ -57,9 +57,9 @@ const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const signal_core = @import("../signal.zig");
-const tuples = @import("../value/tuples.zig");
 const utils = @import("../utils.zig");
 const value = @import("../value.zig");
+const vectors = @import("../value/vectors.zig");
 const vm_run = @import("../vm.zig");
 const vm_state = @import("state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
@@ -433,7 +433,7 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
             if (func.def.?.arity > 0) {
                 stack[0] = in;
             } else if (func.def.?.flags.vararg) {
-                stack[0] = wrap.fromTuple(tuples.newFrom(@as(*const [1]repr.Value, &in)));
+                stack[0] = wrap.fromVector(vectors.fromSlice(@as(*const [1]repr.Value, &in)));
             }
         }
     }

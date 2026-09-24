@@ -876,9 +876,9 @@ fn specialFn(
     const has_name = self_reference or wrap.isKeyword(head);
     if (has_name) parameter_index = 1;
     if (parameter_index >= arguments.len or
-        !repr.TagSet.of(&.{ .tuple, .vector }).has(repr.typeOf(arguments[@intCast(parameter_index)])))
+        repr.typeOf(arguments[@intCast(parameter_index)]) != .vector)
     {
-        return functionError(compiler, "expected function parameters");
+        return functionError(compiler, "expected function parameters as a vector");
     }
 
     // Gathered rather than read a run at a time: the list is walked twice and

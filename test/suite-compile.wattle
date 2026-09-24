@@ -393,8 +393,15 @@
                        "& is followed by a value")
 
 ; The parameter list a function literal refuses.
-(check-compile-message '(fn named-with-no-parameters) "expected function parameters"
+(check-compile-message '(fn named-with-no-parameters)
+                       "expected function parameters as a vector"
                        "a named function literal needs a parameter list")
+(check-compile-message '(fn (x) x)
+                       "expected function parameters as a vector"
+                       "a tuple cannot be a function parameter list")
+(check-compile-message '(defn tuple-parameters (x) x)
+                       "expected function parameters as a vector"
+                       "defn refuses a tuple parameter list")
 (check-compile-message '(fn [& &] 1) "& in unexpected location"
                        "two ampersands in one parameter list")
 (check-compile-message '(fn [&keys ks-a ks-b] 1) "&keys in unexpected location"

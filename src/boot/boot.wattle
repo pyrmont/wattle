@@ -21,9 +21,9 @@
       (fn recur [i]
         (def {i ith} more)
         (def t (type ith))
-        ; A parameter list is a vector in Wattle and a tuple in a syntax tree
-        ; built by hand. `or` is not defined this early in the bootstrap.
-        (if (in {:tuple true :vector true} t)
+        (if (= t :tuple)
+          (error "expected function parameters as a vector"))
+        (if (= t :vector)
           i
           (do
             (if (= t :string)
@@ -1377,7 +1377,7 @@
   (def $args (gensym))
   (each f funs
     (array/push parts (tuple apply f $args)))
-  (tuple 'fn :juxt (tuple '& $args) (tuple/slice parts 0)))
+  (tuple 'fn :juxt (vector '& $args) (tuple/slice parts 0)))
 
 (defn has-key?
   """

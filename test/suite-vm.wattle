@@ -61,6 +61,13 @@
                     "fiber function must accept 0 or 1 arguments"
                     (fiber/new (fn [a _b] a)))
 
+(def first-tail (fiber/new (fn [& rest] [(type rest) rest])))
+(assert (= [:vector [:value]] (resume first-tail :value))
+        "first resume puts its value in a rest vector")
+(def empty-tail (fiber/new (fn [& rest] [(type rest) rest])))
+(assert (= [:vector []] (resume empty-tail))
+        "first resume with nil leaves an empty rest vector")
+
 ; Fix yields inside nested fibers
 ; 909c906
 (def yielder

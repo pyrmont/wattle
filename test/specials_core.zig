@@ -416,13 +416,8 @@ fn theSetForm(arguments: []repr.Value) !void {
     try compiler_primitives.popscope(&compiler);
 }
 
-/// The two binding forms and the function literal, each on its arity check,
-/// and `fn` on the state it must leave behind when it refuses.
-///
-/// That last part is the one worth having: `fn` opens a scope before it
-/// validates its parameters, so a refusal that forgot to close it would leave
-/// the compiler one scope deep and corrupt every form after it. The assertion
-/// is `compiler.scope == &scope`.
+/// Checks the arity of the binding forms and the parameters of `fn`.
+/// A refused `fn` must close its scope before another form is compiled.
 fn theBindingForms(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
 
@@ -447,14 +442,21 @@ fn theBindingForms(arguments: []repr.Value) !void {
     arguments[0] = harness.wrapInteger(1);
     result = try compile("fn", options, 1, arguments);
     expect(harness.isType(result.constant, repr.Tag.nil));
-    expect(failedWith("expected function parameters"));
+    expect(failedWith("expected function parameters as a vector"));
     expect(compiler.scope == &scope);
     clearError();
 
-    // An empty parameter list is a whole function: one funcdef on the parent
-    // scope, and a closure instruction to make it.
+    // A tuple is refused as a parameter list.
     const tuple = tuples.begin(0);
     arguments[0] = wrap.fromTuple(tuples.end(tuple));
+    result = try compile("fn", options, 1, arguments);
+    expect(harness.isType(result.constant, repr.Tag.nil));
+    expect(failedWith("expected function parameters as a vector"));
+    expect(compiler.scope == &scope);
+    clearError();
+
+    // An empty vector parameter list emits one funcdef and a closure.
+    arguments[0] = wrap.fromVector(vectors.fromSlice(&.{}));
     result = try compile("fn", options, 1, arguments);
     expect(compiler.result.status == compiler_primitives.CompileStatus.ok);
     expect(!result.flags.constant);
@@ -468,13 +470,7 @@ fn theBindingForms(arguments: []repr.Value) !void {
     try compiler_primitives.popscope(&compiler);
 }
 
-/// A vector in the two binding positions: a parameter list and a
-/// destructuring pattern.
-///
-/// The parser cannot emit a vector yet and no suite can reach these, so this
-/// is the whole check on them. Before the arms, a vector parameter list was
-/// refused with "expected function parameters" and a vector pattern with
-/// "unexpected type in destructuring".
+/// Checks a vector parameter list and a vector destructuring pattern.
 fn theVectorBindingForms(arguments: []repr.Value) !void {
     const options = compiler_primitives.foptsDefault(&compiler);
     // Naming a parameter runs the shadow check, which reads the environment.
