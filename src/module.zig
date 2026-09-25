@@ -531,6 +531,11 @@ pub fn Spec(comptime T: type) type {
 
         get: ?*const fn (*T, Value) Error!?Value = null,
         put: ?*const fn (*T, Value, Value) Error!void = null,
+        /// Returns the key after the one given, or nil at the end. A type
+        /// with `chunk` and `contents` of `elements` that leaves it null is
+        /// iterated over its elements in index order, so `each` visits them.
+        /// A type that sets it decides the order and what is visited, even
+        /// where that is not its elements.
         next: ?*const fn (*T, Value) Error!Value = null,
         /// Returns the number of elements. It may raise, but may not call
         /// into Janet code, so a caller can read a length while it holds

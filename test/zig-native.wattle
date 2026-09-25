@@ -258,7 +258,6 @@
 (assert (= "index 6 is past the end" (refusal peek k 6))
         "get on an indexed abstract is null past its length")
 (assert (indexed? k) "a type with the chunk slot is indexed")
-(assert (deep= [107 101] (take 2 k)) "and take slices it as a vector")
 
 ; `Indexed` read with `next`, with `get` from the last index back, with
 ; `nextChunk`, and with `nextChunk` after one `next`. A keeper's runs are four

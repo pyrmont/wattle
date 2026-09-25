@@ -1332,130 +1332,88 @@
     (set k (next ind k)))
   ret))
 
-(defn- vector-slice
-  """
-  The indexed slice `take` and `drop` want: a vector, whatever the value is.
+(defn- check-sliceable
+  [name ind]
+  (if (dictionary? ind)
+    (errorf "%s does not accept a dictionary, got %v" name ind)))
 
-  `slice` prefers bytes where a value is both bytes and indexed, which is
-  right for `slice` and wrong here, since the branch has already chosen
-  indexed. `tuple/slice` reads any indexed value and `vec` gives the sequence
-  a vector rather than the call form.
-  """
-  ([ind start] (vector-slice ind start nil))
-  ([ind start end]
-  (vec (tuple/slice ind start end))))
-
-(defn- take-n-slice
-  [f n ind]
-  (def len (length ind))
-  (def m (+ len n))
-  (def start (if (< n 0 m) m 0))
-  (def end (if (<= 0 n len) n len))
-  (f ind start end))
+(defn- check-count
+  [name n]
+  (if (neg? n)
+    (errorf "%s expected a non-negative count, got %v" name n)))
 
 (defn take
   """
-  Take the first n elements of a fiber, indexed or bytes type. Returns a new array, tuple or string,
-  respectively. If `n` is negative, takes the last `n` elements instead.
+  Take the first `n` elements of an iterable other than a dictionary. Returns a
+  fiber that yields them. Nothing is read from `ind` until the fiber is
+  resumed. `n` must not be negative.
   """
   [n ind]
-  (cond
-    (indexed? ind) (take-n-slice vector-slice n ind)
-    (bytes? ind) (take-n-slice string/slice n ind)
-    (dictionary? ind) (do
-                        (var left n)
-                        (tabseq [[i x] :pairs ind :until (< (-- left) 0)] i x))
-    (do
-      (def res ![])
-      (var key nil)
-      (repeat n
-        (if (= nil (set key (next ind key))) (break))
-        (array/push res (in ind key)))
-      res)))
-
-(defn- take-until-slice
-  [f pred ind]
-  (def len (length ind))
-  (def i (find-index pred ind))
-  (def end (if (nil? i) len i))
-  (f ind 0 end))
+  (check-count :take n)
+  (check-sliceable :take ind)
+  (coro
+    (var left n)
+    (when (> left 0)
+      (each x ind
+        (yield x)
+        (if (zero? (-- left)) (break))))))
 
 (defn take-until
-  "Same as `(take-while (complement pred) ind)`."
+  """
+  Take the elements of an iterable other than a dictionary that precede the
+  first for which `(pred element)` is truthy. Returns a fiber that yields
+  them. Nothing is read from `ind` until the fiber is resumed. The matching
+  element is not yielded.
+  """
   [pred ind]
-  (cond
-    (indexed? ind) (take-until-slice vector-slice pred ind)
-    (bytes? ind) (take-until-slice string/slice pred ind)
-    (dictionary? ind) (tabseq [[i x] :pairs ind :until (pred x)] i x)
-    (seq [x :in ind :until (pred x)] x)))
+  (check-sliceable :take-until ind)
+  (coro
+    (each x ind
+      (if (pred x) (break))
+      (yield x))))
 
 (defn take-while
   """
-  Given a predicate, take only elements from a fiber, indexed, or bytes type that satisfy
-  the predicate, and abort on first failure. Returns a new array, tuple, or string, respectively.
+  Take the leading elements of an iterable other than a dictionary for which
+  `(pred element)` is truthy. Returns a fiber that yields them. Same as
+  `(take-until (complement pred) ind)`.
   """
   [pred ind]
   (take-until (complement pred) ind))
 
-(defn- drop-n-slice
-  [f n ind]
-  (def len (length ind))
-  (cond
-    (<= 0 n len) (f ind n)
-    (< (- len) n 0) (f ind 0 (+ len n))
-    (f ind len)))
-
-(defn- drop-n-dict
-  [f n ind]
-  (def res (f ind))
-  (var left n)
-  (loop [[i x] :pairs ind :until (< (-- left) 0)] (set (res i) nil))
-  res)
-
 (defn drop
   """
-  Drop the first `n` elements in an indexed or bytes type. Returns a new tuple or string
-  instance, respectively. If `n` is negative, drops the last `n` elements instead.
+  Drop the first `n` elements of an iterable other than a dictionary. Returns a
+  fiber that yields the rest. Nothing is read from `ind` until the fiber is
+  resumed. `n` must not be negative.
   """
   [n ind]
-  (cond
-    (indexed? ind) (drop-n-slice vector-slice n ind)
-    (bytes? ind) (drop-n-slice string/slice n ind)
-    (map? ind) (drop-n-dict map/to-table n ind)
-    (table? ind) (drop-n-dict table/clone n ind)
-    (do
-      (var key nil)
-      (repeat n
-        (if (= nil (set key (next ind key))) (break)))
-      ind)))
-
-(defn- drop-until-slice
-  [f pred ind]
-  (def len (length ind))
-  (def i (find-index pred ind))
-  (def start (if (nil? i) len i))
-  (f ind start))
-
-(defn- drop-until-dict
-  [f pred ind]
-  (def res (f ind))
-  (loop [[i x] :pairs ind :until (pred x)] (set (res i) nil))
-  res)
+  (check-count :drop n)
+  (check-sliceable :drop ind)
+  (coro
+    (var left n)
+    (each x ind
+      (if (> left 0) (-- left) (yield x)))))
 
 (defn drop-until
-  "Same as `(drop-while (complement pred) ind)`."
+  """
+  Drop the elements of an iterable other than a dictionary that precede the
+  first for which `(pred element)` is truthy. Returns a fiber that yields that
+  element and the rest. Nothing is read from `ind` until the fiber is resumed.
+  """
   [pred ind]
-  (cond
-    (indexed? ind) (drop-until-slice vector-slice pred ind)
-    (bytes? ind) (drop-until-slice string/slice pred ind)
-    (map? ind) (drop-until-dict map/to-table pred ind)
-    (table? ind) (drop-until-dict table/clone pred ind)
-    (do (find pred ind) ind)))
+  (check-sliceable :drop-until ind)
+  (coro
+    (var skipping true)
+    (each x ind
+      (if (and skipping (pred x)) (set skipping false))
+      (if (not skipping) (yield x)))))
 
 (defn drop-while
   """
-  Given a predicate, remove elements from an indexed or bytes type that satisfy
-  the predicate, and abort on first failure. Returns a new tuple or string, respectively.
+  Drop the leading elements of an iterable other than a dictionary for which
+  `(pred element)` is truthy. Returns a fiber that yields the rest. Same as
+  `(drop-until (complement pred) ind)`.
   """
   [pred ind]
   (drop-until (complement pred) ind))
@@ -2076,6 +2034,19 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
           (array/push ret sep (in ind k)))
         ret))
     ![]))
+
+(defn- vector-slice
+  """
+  The indexed slice `partition` wants: a vector, whatever the value is.
+
+  `slice` prefers bytes where a value is both bytes and indexed, which is
+  right for `slice` and wrong here, since the branch has already chosen
+  indexed. `tuple/slice` reads any indexed value and `vec` gives the sequence
+  a vector rather than the call form.
+  """
+  ([ind start] (vector-slice ind start nil))
+  ([ind start end]
+  (vec (tuple/slice ind start end))))
 
 (defn- partition-slice
   [f n ind]
@@ -3246,7 +3217,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def pattern (first entry))
     (when (and (string? pattern) (string/has-prefix? ":sys:/" pattern))
       (set last-index index)
-      (array/push copies [(string/replace ":sys:" path pattern) |(drop 1 entry)])))
+      (array/push copies [(string/replace ":sys:" path pattern) |(slice entry 1)])))
   (array/insert mp (+ 1 last-index) |copies)
   mp)
 

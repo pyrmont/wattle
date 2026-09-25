@@ -20,7 +20,7 @@
 (def- all-keys (map #(keyword (string "k" $)) (range 400)))
 
 (defn- run-size [n reps]
-  (def ks (take n all-keys))
+  (def ks (slice all-keys 0 n))
   (def kinds [["map" 'hash-map assoc]])
   (each [name ctor up] kinds
     (def f (eval `(fn [i] (~ctor ~|(mapcat (short-fn [$ 'i]) ks)))))

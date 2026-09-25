@@ -22,13 +22,13 @@
 (def- keys-24 (map #(keyword (string "k" $)) (range 24)))
 
 (defmacro- build-call [ctor n v]
-  `(~ctor ~|(mapcat (short-fn [$ v]) (take n keys-24))))
+  `(~ctor ~|(mapcat (short-fn [$ v]) (slice keys-24 0 n))))
 
 (defmacro- build-lit [n v]
-  (hash-map |(mapcat (short-fn [$ v]) (take n keys-24))))
+  (hash-map |(mapcat (short-fn [$ v]) (slice keys-24 0 n))))
 
 (defn- run-size [n reps]
-  (def ks (take n keys-24))
+  (def ks (slice keys-24 0 n))
   (def m (eval `(fn [i] (build-call hash-map ~n i))))
   (def l (eval `(fn [i] (build-lit ~n i))))
   (def m1 (m 7)) (def m2 (m 7))

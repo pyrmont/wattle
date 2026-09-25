@@ -539,12 +539,11 @@ fn theBootFunctionsReadAnIndexedAbstract() void {
     expectEqual("(indexed? (vmrun/runs 2))", "true");
     expectEqual("(indexed? 5)", "false");
     expectEqual("(indexed? \"ab\")", "false");
-    // `take`, `drop` and their kin go through `slice`, which gives a vector.
-    expectEqual("(take 2 (vmrun/runs 5))", "[0 10]");
-    expectEqual("(take -2 (vmrun/runs 5))", "[30 40]");
-    expectEqual("(drop 3 (vmrun/runs 5))", "[30 40]");
-    expectEqual("(take-while #(< $ 25) (vmrun/runs 5))", "[0 10 20]");
-    expectEqual("(drop-until #(> $ 25) (vmrun/runs 5))", "[30 40]");
+    // `take`, `drop` and their kin traverse it and yield a fiber.
+    expectEqual("(seq [x :in (take 2 (vmrun/runs 5))] x)", "![0 10]");
+    expectEqual("(seq [x :in (drop 3 (vmrun/runs 5))] x)", "![30 40]");
+    expectEqual("(seq [x :in (take-while #(< $ 25) (vmrun/runs 5))] x)", "![0 10 20]");
+    expectEqual("(seq [x :in (drop-until #(> $ 25) (vmrun/runs 5))] x)", "![30 40]");
     expectEqual("(partition 2 (vmrun/runs 5))", "![[0 10] [20 30] [40]]");
     expectEqual("(flatten [1 (vmrun/runs 4) 2])", "![1 0 10 20 30 2]");
     expectEqual("(match (vmrun/runs 2) [a b] (+ a b) _ :no)", "10");
