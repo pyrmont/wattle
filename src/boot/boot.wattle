@@ -1069,7 +1069,7 @@
   """
   Sorts `x` in-place, and returns it. Uses quick-sort and is not a
   stable sort. An omitted `before?` uses `<`; a supplied comparator orders
-  the elements. Passing `nil` as a comparator has undefined behavior.
+  the elements.
 
   `x` can be a buffer, array, or abstract type with suitable `get`,
   `put`, and `length` methods.
@@ -1092,8 +1092,7 @@
 (defn sort
   """
   Returns a new sorted array based on an indexed type `ind`. An omitted
-  `before?` uses `<`; a supplied comparator orders the elements. Passing
-  `nil` as a comparator has undefined behavior.
+  `before?` uses `<`; a supplied comparator orders the elements.
   """
   ([ind] (sort-impl (array/slice ind) <))
   ([ind before?]
@@ -2090,9 +2089,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn spit
   "Write `contents` to a file at `path`. Can optionally append to the file."
-  ([path contents] (spit path contents nil))
+  ([path contents] (spit path contents :wb))
   ([path contents mode]
-  (default mode :wb)
   (def f (file/open path mode))
   (if-not f (error (string "could not open file " path " with mode " mode)))
   (file/write f contents)
@@ -3326,9 +3324,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn debugger
   "Run a repl-based debugger on a fiber. Optionally pass in a level  to differentiate nested debuggers."
-  ([fiber] (debugger fiber nil))
+  ([fiber] (debugger fiber 1))
   ([fiber level]
-  (default level 1)
   (def nextenv (make-env (fiber/getenv fiber)))
   (put nextenv :fiber fiber)
   (put nextenv :debug-level level)
@@ -3352,10 +3349,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn debugger-on-status
   "Create a function that can be passed to `run-context`'s `:on-status`  argument that will drop into a debugger on errors. The debugger will  only start on abnormal signals if the env table has the `:debug` dyn  set to a truthy value."
-  ([env] (debugger-on-status env nil nil))
+  ([env] (debugger-on-status env 1 nil))
   ([env level] (debugger-on-status env level nil))
   ([env level is-repl]
-  (default level 1)
   (fn :debugger [f x]
     (def fs (fiber/status f))
     (if (= :dead fs)
@@ -3574,10 +3570,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 ;;;
 
 (defn- env-walk
-  ([pred] (env-walk pred nil nil))
-  ([pred env] (env-walk pred env nil))
-  ([pred env local]
-  (default env (fiber/getenv (fiber/current)))
+  [pred env local]
   (def envs ![])
   (do (var e env) (while e (array/push envs e) (set e (table/getproto e)) (if local (break))))
   (def ret-set !{})
@@ -3585,7 +3578,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
          k :keys envi
          :when (pred k)]
     (put ret-set k true))
-  (sort! (keys ret-set))))
+  (sort! (keys ret-set)))
 
 (defn all-bindings
   """
@@ -3593,7 +3586,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   fiber's environment. If `local` is truthy, will not show inherited bindings
   (from prototype tables).
   """
-  ([] (all-bindings nil nil))
+  ([] (all-bindings (fiber/getenv (fiber/current)) nil))
   ([env] (all-bindings env nil))
   ([env local]
   (env-walk symbol? env local)))
@@ -3604,7 +3597,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   fiber's environment. If `local` is truthy, will not show inherited bindings
   (from prototype tables).
   """
-  ([] (all-dynamics nil nil))
+  ([] (all-dynamics (fiber/getenv (fiber/current)) nil))
   ([env] (all-dynamics env nil))
   ([env local]
   (env-walk keyword? env local)))
@@ -3621,12 +3614,11 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   or a subset of markdown. This allows a long single line of prose or formatted text to be
   a well-formed docstring. Returns a buffer containing the formatted text.
   """
-  ([str] (doc-format str nil nil nil))
-  ([str width] (doc-format str width nil nil))
+  ([str] (doc-format str nil 4 nil))
+  ([str width] (doc-format str width 4 nil))
   ([str width indent] (doc-format str width indent nil))
   ([str width indent colorize]
 
-  (default indent 4)
   (def max-width (- (or width (dyn *doc-width* 80)) 8))
   (def has-color (if (not= nil colorize)
                    colorize
@@ -3833,7 +3825,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (buffer/push buf "\n")
     (set current-column 0)))
 
-  (defn emit-word ([word indent] (emit-word word indent nil))
+  (defn emit-word ([word indent] (emit-word word indent (length word)))
     ([word indent len]
     (def last-byte (last buf))
     (when (and
@@ -3842,7 +3834,6 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
             (not= last-byte (chr " ")))
       (buffer/push buf " ")
       (++ current-column))
-    (default len (length word))
     (when (and indent (> (+ 1 current-column len) max-width))
       (emit-nl)
       (emit-indent indent))
@@ -3893,9 +3884,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (def bindings (filter fltr (all-bindings)))
   (def dynamics (map describe (filter fltr (all-dynamics))))
   (print)
-  (print (doc-format (string "Bindings:\n\n" (string/join bindings " ")) nil nil false))
+  (print (doc-format (string "Bindings:\n\n" (string/join bindings " ")) nil 4 false))
   (print)
-  (print (doc-format (string "Dynamics:\n\n" (string/join dynamics " ")) nil nil false))
+  (print (doc-format (string "Dynamics:\n\n" (string/join dynamics " ")) nil 4 false))
   (print "\n    Use (doc sym) for more information on a binding.\n"))
 
 (defn- print-module-entry
@@ -4955,10 +4946,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/add-file
     "Add a file during an install relative to `(dyn *syspath*)`."
-    ([manifest src] (bundle/add-file manifest src nil nil))
+    ([manifest src] (bundle/add-file manifest src src nil))
     ([manifest src dest] (bundle/add-file manifest src dest nil))
     ([manifest src dest chmod-mode]
-    (default dest src)
     (def files (get-files manifest))
     (def s (sep))
     (def absdest (string (dyn *syspath*) s dest))
@@ -4978,10 +4968,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     Added files and directories will be recorded in the bundle manifest such
     that they are properly tracked and removed during an upgrade or uninstall.
     """
-    ([manifest src] (bundle/add manifest src nil nil))
+    ([manifest src] (bundle/add manifest src src nil))
     ([manifest src dest] (bundle/add manifest src dest nil))
     ([manifest src dest chmod-mode]
-    (default dest src)
     (def s (sep))
     (def mode (os/stat src :mode))
     (if-not mode (errorf "file %s does not exist" src))
@@ -4998,12 +4987,10 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     Add a file to the "bin" subdirectory of the current syspath. By default,
     files will be set to be executable.
     """
-    ([manifest src] (bundle/add-bin manifest src nil nil))
-    ([manifest src filename] (bundle/add-bin manifest src filename nil))
+    ([manifest src] (bundle/add-bin manifest src (last (string/split (sep) src)) 8r755))
+    ([manifest src filename] (bundle/add-bin manifest src filename 8r755))
     ([manifest src filename chmod-mode]
     (def s (sep))
-    (default filename (last (string/split s src)))
-    (default chmod-mode 8r755)
     (os/mkdir (string (dyn *syspath*) s "bin"))
     (put manifest :has-exe true)
     (put manifest :has-bin-script true) ; remove eventually
@@ -5014,10 +5001,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     Add a file to the man subdirectory of the current syspath. Files are
     copied inside a directory `mansec`. By default, `mansec` is "man1".
     """
-    ([manifest src] (bundle/add-manpage manifest src nil))
+    ([manifest src] (bundle/add-manpage manifest src "man1"))
     ([manifest src mansec]
     (def s (sep))
-    (default mansec "man1")
     (def filename (last (string/split s src)))
     (os/mkdir (string (dyn *syspath*) s "man"))
     (os/mkdir (string (dyn *syspath*) s "man" s mansec))
