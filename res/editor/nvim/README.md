@@ -4,11 +4,11 @@ Support for reading and writing `.wattle` source in Neovim. The directory is a
 Neovim runtime path. Highlighting comes from the grammar in
 `../tree-sitter/`. `zig build` does not build either.
 
-| path        | contents                                          |
-| ----------- | ------------------------------------------------- |
-| `ftdetect/` | the `wattle` filetype for `*.wattle`              |
-| `ftplugin/` | comment string, Lisp indenting, Tree-sitter start |
-| `syntax/`   | string and comment groups for vim-sexp            |
+| path        | contents                                                          |
+| ----------- | ----------------------------------------------------------------- |
+| `ftdetect/` | the `wattle` filetype for `*.wattle`                              |
+| `ftplugin/` | comment string, Lisp indenting, `"` unpairing, Tree-sitter start  |
+| `syntax/`   | string and comment groups for vim-sexp                            |
 
 ## Install with lazy.nvim
 

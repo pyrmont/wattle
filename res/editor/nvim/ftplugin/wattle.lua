@@ -16,3 +16,14 @@ vim.opt_local.lispwords:append({
 })
 
 pcall(vim.treesitter.start)
+
+-- vim-sexp pairs `"` and pads a quote that follows a non-blank with a space, so
+-- a third `"` after `""` gives `"" "|"`. In Wattle it opens a raw string, so
+-- the mapping is removed and a quote types a quote. vim-sexp maps on FileType,
+-- so this runs after the handlers have finished.
+local buf = vim.api.nvim_get_current_buf()
+vim.schedule(function()
+  if vim.api.nvim_buf_is_valid(buf) then
+    pcall(vim.keymap.del, "i", '"', { buffer = buf })
+  end
+end)
