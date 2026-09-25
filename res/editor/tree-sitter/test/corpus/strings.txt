@@ -1,0 +1,34 @@
+================
+Strings and escapes
+================
+
+"a; b" "\n\x41\u0041\U000041\"" "" !"buf" !""
+
+---
+
+(source_file
+  (string (string_content))
+  (string (escape_sequence) (escape_sequence) (escape_sequence) (escape_sequence) (escape_sequence))
+  (string)
+  (buffer (string_content))
+  (buffer))
+
+================
+Raw strings
+================
+
+"""a "" b"""
+""""a """ b""""
+!"""raw"""
+"""
+  spans
+  lines
+"""
+
+---
+
+(source_file
+  (raw_string)
+  (raw_string)
+  (raw_buffer)
+  (raw_string))

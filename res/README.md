@@ -15,6 +15,7 @@ and runs it against each wasm32-wasi binary it produces, it compiles
 | `bench/`      | benchmarks and their corpora                        |
 | `repo/`       | chores about the repository rather than the runtime |
 | `completion/` | shell completions for the `wattle` command          |
+| `editor/`     | editor support: a Tree-sitter grammar, Neovim files |
 
 `common.janet` is the module the Janet scripts share. It finds the repository
 root as the directory above its own, so it stays at this level.

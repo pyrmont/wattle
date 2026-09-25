@@ -1,0 +1,75 @@
+================
+Collections
+================
+
+(f x)
+[a b]
+{:a 1, :b 2}
+#{a b}
+#(+ $ 1)
+![a b]
+!(a b)
+!{:a 1}
+
+---
+
+(source_file
+  (call (symbol) (symbol))
+  (vector (symbol) (symbol))
+  (map (keyword) (number) (keyword) (number))
+  (set (symbol) (symbol))
+  (short_fn (symbol) (symbol) (number))
+  (array (symbol) (symbol))
+  (array (symbol) (symbol))
+  (table (keyword) (number)))
+
+================
+Prefixes
+================
+
+'x `x ~x |x
+
+---
+
+(source_file
+  (quote (symbol))
+  (quasiquote (symbol))
+  (unquote (symbol))
+  (splice (symbol)))
+
+================
+Atoms
+================
+
+nil true false :key assoc! !foo foo@bar -1 +.5 0xff 1e3 + -
+
+---
+
+(source_file
+  (nil)
+  (true)
+  (false)
+  (keyword)
+  (symbol)
+  (symbol)
+  (symbol)
+  (number)
+  (number)
+  (number)
+  (number)
+  (symbol)
+  (symbol))
+
+================
+Comments and the shebang
+================
+
+#!/usr/bin/env wattle
+(f) ; trailing
+
+---
+
+(source_file
+  (shebang)
+  (call (symbol))
+  (comment))
