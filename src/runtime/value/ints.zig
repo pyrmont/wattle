@@ -416,10 +416,10 @@ pub fn libInttypes(env: *tables.Table) raise.Error!void {
         corefn.reg("int/s64", &nfunS64New, @src(), "(int/s64 value)", "Creates a boxed signed 64 bit integer from a string value or a number."),
         corefn.reg("int/u64", &nfunU64New, @src(), "(int/u64 value)", "Creates a boxed unsigned 64 bit integer from a string value or a number."),
         corefn.reg("int/to-number", &nfunToNumber, @src(), "(int/to-number value)", "Converts an int/u64 or int/s64 to a number. Fails if the number is out of range for an int64."),
-        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes value [endianness [buffer]])", "Writes the bytes of an `int/s64` or `int/u64` into a buffer.\n" ++
-            "The `buffer` parameter specifies an existing buffer to write to, if unset a new buffer is created.\n" ++
+        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes value [endianness [buffer]])", "Writes the bytes of an ^int/s64 or ^int/u64 into a buffer.\n" ++
+            "The buffer parameter specifies an existing buffer to write to, if unset a new buffer is created.\n" ++
             "Returns the modified buffer.\n" ++
-            "The `endianness` parameter indicates the byte order:\n" ++
+            "The endianness parameter indicates the byte order:\n" ++
             "- `nil` (unset): system byte order\n" ++
             "- `:le`: little-endian, least significant byte first\n" ++
             "- `:be`: big-endian, most significant byte first\n"),

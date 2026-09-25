@@ -214,7 +214,7 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Error!repr.Value {
 /// Installs the `debug/` nfunctions into `env`.
 pub fn libDebug(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("debug/break", &nfunDebugBreak, @src(), "(debug/break source line col)", "Sets a breakpoint in `source` at a given line and column. " ++
+        corefn.reg("debug/break", &nfunDebugBreak, @src(), "(debug/break source line col)", "Sets a breakpoint in source at a given line and column. " ++
             "Will throw an error if the breakpoint location " ++
             "cannot be found. For example\n\n" ++
             "\t(debug/break \"core.wattle\" 10 4)\n\n" ++
@@ -243,7 +243,7 @@ pub fn libDebug(env: *tables.Table) void {
             "* :slots - array of all values in each slot\n\n" ++
             "* :tail - boolean indicating a tail call"),
         corefn.reg("debug/stacktrace", &nfunDebugStacktrace, @src(), "(debug/stacktrace fiber [err [prefix]])", "Prints a nice looking stacktrace for a fiber. Can optionally provide " ++
-            "an error value to print the stack trace with. If `prefix` is nil or not " ++
+            "an error value to print the stack trace with. If prefix is nil or not " ++
             "provided, will skip the error line. Returns the fiber."),
         corefn.reg("debug/lineage", &nfunDebugLineage, @src(), "(debug/lineage fib)", "Returns an array of all child fibers from a root fiber. This function " ++
             "is useful when a fiber signals or errors to an ancestor fiber. Using this function, " ++

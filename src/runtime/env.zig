@@ -522,21 +522,21 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
 
     quickAsmDef(env, .{ .tag = constants.fun_cmp }, "cmp", 2, 2, 2, 2, &opOnly(constants.Opcode.compare.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cmp x y)", "Returns -1 if x is strictly less than y, 1 if y is strictly greater " ++
         "than x, and 0 otherwise. To return 0, x and y must be the exact same type.");
-    quickAsmDef(env, .{ .tag = constants.fun_next }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x [key])", "Gets the next key in `x`. Can be used to iterate through " ++
-        "the keys of `x` in an unspecified order. Keys are guaranteed " ++
-        "to be seen only once per iteration if `x` is not mutated " ++
-        "during iteration. If `key` is `nil`, returns the first key. " ++
+    quickAsmDef(env, .{ .tag = constants.fun_next }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x [key])", "Gets the next key in x. Can be used to iterate through " ++
+        "the keys of x in an unspecified order. Keys are guaranteed " ++
+        "to be seen only once per iteration if x is not mutated " ++
+        "during iteration. If key is `nil`, returns the first key. " ++
         "If `nil` is returned, there are no more keys to iterate " ++
         "through.\n" ++
         "\n" ++
-        "`x` can be a bytes, indexed, dictionary, fiber, or abstract " ++
-        "type with a suitable `next` method.");
+        "x can be a bytes, indexed, dictionary, fiber, or abstract " ++
+        "type with a suitable ^next method.");
     quickAsmDef(env, .{ .tag = constants.fun_prop }, "propagate", 2, 2, 2, 2, &opOnly(constants.Opcode.propagate.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(propagate x fiber)", "Propagates a signal from a fiber to the current fiber and " ++
-        "set the last value of the current fiber to `x`.  The signal " ++
+        "set the last value of the current fiber to x.  The signal " ++
         "value is then available as the status of the current fiber. " ++
         "The resulting stack trace from the current fiber will include " ++
         "frames from fiber. If fiber is in a state that can be resumed, " ++
-        "resuming the current fiber will first resume `fiber`. " ++
+        "resuming the current fiber will first resume fiber. " ++
         "This function can be used to re-raise an error without losing " ++
         "the original stack trace.");
     quickAsmDef(env, .{ .tag = constants.fun_debug }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug [x])", "Throws a debug signal that can be caught by a parent fiber and used to inspect " ++
@@ -551,26 +551,26 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "will be returned to the last yield in the case of a pending fiber, or the argument to " ++
         "the dispatch function in the case of a new fiber. Returns either the return result of " ++
         "the fiber's dispatch function, or the value from the next yield call in fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])", "Gets the value in `x` at `key`. For bytes and indexed " ++
-        "types, `key` must be a non-negative interger in " ++
+    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])", "Gets the value in x at key. For bytes and indexed " ++
+        "types, key must be a non-negative interger in " ++
         "bounds or an error is raised. For dictionaries " ++
-        "`key` must be a non-nil value and if not found, " ++
-        "will return `dflt` if provided or `nil` otherwise.\n" ++
+        "key must be a non-nil value and if not found, " ++
+        "will return dflt if provided or `nil` otherwise.\n" ++
         "\n" ++
-        "`x` can be a bytes, indexed, dictionary, fiber, or " ++
-        "abstract type with a suitable `get` method.");
+        "x can be a bytes, indexed, dictionary, fiber, or " ++
+        "abstract type with a suitable ^get method.");
     // The slice below is `get_asm`'s own length. Upstream passes `in_asm`'s
     // here; the two arrays are the same length, so nothing observes the
     // difference.
-    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])", "Gets the value mapped to `key` in `x`. Returns `dflt` " ++
-        "or `nil` if `key` is not found. Similar to `in`, but " ++
-        "will not throw an error if `key` is invalid for `x`. " ++
-        "However, if `x` is an abstract type, its getter may " ++
+    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])", "Gets the value mapped to key in x. Returns dflt " ++
+        "or `nil` if key is not found. Similar to ^in, but " ++
+        "will not throw an error if key is invalid for x. " ++
+        "However, if x is an abstract type, its getter may " ++
         "throw an error.\n" ++
         "\n" ++
-        "`x` can be a bytes, indexed, dictionary, fiber, or " ++
-        "abstract type with a suitable `get` method.");
-    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)", "Associates `key` with `val` for mutable `x`. Arrays " ++
+        "x can be a bytes, indexed, dictionary, fiber, or " ++
+        "abstract type with a suitable ^get method.");
+    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)", "Associates key with val for mutable x. Arrays " ++
         "and buffers only accept non-negative integer keys, " ++
         "and will expand if an out of bounds value is " ++
         "provided. For an array, extra space will be filled " ++
@@ -580,7 +580,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "the prototype, but will not mutate the prototype " ++
         "table. Putting a `nil` value into a table will " ++
         "remove the table's corresponding association. " ++
-        "Returns `x`.");
+        "Returns x.");
     quickAsmDef(env, .{ .tag = constants.fun_length }, "length", 1, 1, 1, 1, &opOnly(constants.Opcode.length) ++ opOnly(constants.Opcode.@"return"), "(length ds)", "Returns the length or count of a data structure in constant time as an integer. For " ++
         "structs and tables, returns the number of key-value pairs in the data structure.");
     quickAsmDef(env, .{ .tag = constants.fun_bnot }, "bnot", 1, 1, 1, 1, &opOnly(constants.Opcode.bnot) ++ opOnly(constants.Opcode.@"return"), "(bnot x)", "Returns the bit-wise inverse of integer x.");
@@ -1231,21 +1231,21 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "usually a .so file on Unix systems, and a .dll file on Windows. " ++
             "Returns an environment table that contains functions and other values " ++
             "from the native module."),
-        corefn.reg("describe", &nfunDescribe, @src(), "(describe x)", "Returns a string that is a human-readable description of `x`. " ++
+        corefn.reg("describe", &nfunDescribe, @src(), "(describe x)", "Returns a string that is a human-readable description of x. " ++
             "For recursive data structures, the string returned contains a " ++
-            "pointer value from which the identity of `x` " ++
+            "pointer value from which the identity of x " ++
             "can be determined."),
-        corefn.reg("string", &Concat(finishString).nfun, @src(), "(string & xs)", "Creates a string by concatenating the elements of `xs` together. If an " ++
-            "element is not a byte sequence, it is converted to bytes via `describe`. " ++
+        corefn.reg("string", &Concat(finishString).nfun, @src(), "(string & xs)", "Creates a string by concatenating the elements of xs together. If an " ++
+            "element is not a byte sequence, it is converted to bytes via ^describe. " ++
             "Returns the new string."),
-        corefn.reg("symbol", &Concat(finishSymbol).nfun, @src(), "(symbol & xs)", "Creates a symbol by concatenating the elements of `xs` together. If an " ++
-            "element is not a byte sequence, it is converted to bytes via `describe`. " ++
+        corefn.reg("symbol", &Concat(finishSymbol).nfun, @src(), "(symbol & xs)", "Creates a symbol by concatenating the elements of xs together. If an " ++
+            "element is not a byte sequence, it is converted to bytes via ^describe. " ++
             "Returns the new symbol."),
-        corefn.reg("keyword", &Concat(finishKeyword).nfun, @src(), "(keyword & xs)", "Creates a keyword by concatenating the elements of `xs` together. If an " ++
-            "element is not a byte sequence, it is converted to bytes via `describe`. " ++
+        corefn.reg("keyword", &Concat(finishKeyword).nfun, @src(), "(keyword & xs)", "Creates a keyword by concatenating the elements of xs together. If an " ++
+            "element is not a byte sequence, it is converted to bytes via ^describe. " ++
             "Returns the new keyword."),
-        corefn.reg("buffer", &Concat(finishBuffer).nfun, @src(), "(buffer & xs)", "Creates a buffer by concatenating the elements of `xs` together. If an " ++
-            "element is not a byte sequence, it is converted to bytes via `describe`. " ++
+        corefn.reg("buffer", &Concat(finishBuffer).nfun, @src(), "(buffer & xs)", "Creates a buffer by concatenating the elements of xs together. If an " ++
+            "element is not a byte sequence, it is converted to bytes via ^describe. " ++
             "Returns the new buffer."),
         corefn.reg("abstract?", &nfunIsAbstract, @src(), "(abstract? x)", "Checks whether x is an abstract type."),
         corefn.reg("table", &nfunTable, @src(), "(table & kvs)", "Creates a new table from a variadic number of keys and values. " ++
@@ -1268,7 +1268,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "High values will be faster but use more memory."),
         corefn.reg("gcinterval", &nfunGcinterval, @src(), "(gcinterval)", "Returns the integer number of bytes to allocate before running an iteration " ++
             "of garbage collection."),
-        corefn.reg("type", &nfunType, @src(), "(type x)", "Returns the type of `x` as a keyword. `x` is one of:\n\n" ++
+        corefn.reg("type", &nfunType, @src(), "(type x)", "Returns the type of x as a keyword. x is one of:\n\n" ++
             "* :number\n" ++
             "* :nil\n" ++
             "* :boolean\n" ++
@@ -1296,12 +1296,12 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("setdyn", &nfunSetdyn, @src(), "(setdyn key value)", "Sets a dynamic binding. Returns value."),
         corefn.reg("trace", &nfunTrace, @src(), "(trace func)", "Enables tracing on a function. Returns the function."),
         corefn.reg("untrace", &nfunUntrace, @src(), "(untrace func)", "Disables tracing on a function. Returns the function."),
-        corefn.reg("module/expand-path", &nfunExpandPath, @src(), "(module/expand-path path template)", "Expands a path template as found in `module/paths` for `module/find`. " ++
+        corefn.reg("module/expand-path", &nfunExpandPath, @src(), "(module/expand-path path template)", "Expands a path template as found in ^module/paths for ^module/find. " ++
             "This takes in a path (the argument to require) and a template string, " ++
             "to expand the path to a path that can be used for importing files. " ++
             "The replacements are as follows:\n\n" ++
             "* :all: -- the value of path verbatim.\n\n" ++
-            "* :@all: -- Same as :all:, but if `path` starts with the @ character, " ++
+            "* :@all: -- Same as :all:, but if path starts with the @ character, " ++
             "the first path segment is replaced with a dynamic binding " ++
             "`(dyn <first path segment as keyword>)`.\n\n" ++
             "* :cur: -- the directory portion, if any, of (dyn :current-file)\n\n" ++
@@ -1319,7 +1319,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("range", &nfunRange, @src(), "(range & args)", "Creates an array of values [start, end) with a given step. " ++
             "With one argument, returns a range [0, end). With two arguments, returns " ++
             "a range [start, end). With three, returns a range with optional step size."),
-        corefn.reg("signal", &nfunSignal, @src(), "(signal what x)", "Raises a signal with payload x. `what` can be an integer\n" ++
+        corefn.reg("signal", &nfunSignal, @src(), "(signal what x)", "Raises a signal with payload x. what can be an integer\n" ++
             "from 0 through 7 indicating user(0-7), or one of:\n\n" ++
             "* :ok\n" ++
             "* :error\n" ++
@@ -1328,22 +1328,22 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :user(0-7)\n" ++
             "* :interrupt\n" ++
             "* :await"),
-        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b [len [offset-a [offset-b]]])", "Compares memory. Takes two byte sequences `a` and `b`, and " ++
+        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b [len [offset-a [offset-b]]])", "Compares memory. Takes two byte sequences a and b, and " ++
             "returns 0 if they have identical contents, a negative integer if a is less than b, " ++
             "and a positive integer if a is greater than b. Optionally takes a length and offsets " ++
             "to compare slices of the bytes sequences."),
-        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Gets the prototype of a table or struct. Will return nil if `x` has no prototype."),
+        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Gets the prototype of a table or struct. Will return nil if x has no prototype."),
         corefn.reg("sandbox", &nfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disables feature sets to prevent the interpreter from using certain system resources. " ++
             "Once a feature is disabled, there is no way to re-enable it. Capabilities can be:\n\n" ++
             "* :all - disallow all (except IO to stdout, stderr, and stdin)\n" ++
-            "* :asm - disallow calling `asm` and `disasm` functions.\n" ++
-            "* :chroot - disallow calling `os/posix-chroot`\n" ++
-            "* :compile - disallow calling `compile`. This will disable a lot of functionality, such as `eval`.\n" ++
+            "* :asm - disallow calling ^asm and ^disasm functions.\n" ++
+            "* :chroot - disallow calling ^os/posix-chroot\n" ++
+            "* :compile - disallow calling ^compile. This will disable a lot of functionality, such as ^eval.\n" ++
             "* :env - disallow reading and write env variables\n" ++
-            "* :exit - disallow calling `os/exit` or otherwise early exiting the process in trivial ways.\n" ++
+            "* :exit - disallow calling ^os/exit or otherwise early exiting the process in trivial ways.\n" ++
             "* :ffi - disallow FFI (recommended if disabling anything else)\n" ++
             "* :ffi-define - disallow loading new FFI modules and binding new functions\n" ++
-            "* :ffi-jit - disallow calling `ffi/jitfn`\n" ++
+            "* :ffi-jit - disallow calling ^ffi/jitfn\n" ++
             "* :ffi-use - disallow using any previously bound FFI functions and memory-unsafe functions.\n" ++
             "* :fs - disallow access to the file system\n" ++
             "* :fs-read - disallow read access to the file system\n" ++
@@ -1357,8 +1357,8 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :sandbox - disallow calling this function\n" ++
             "* :signal - disallow adding or removing signal handlers\n" ++
             "* :subprocess - disallow running subprocesses\n" ++
-            "* :threads - disallow spawning threads with `ev/thread`. Certain helper threads may still be spawned.\n" ++
-            "* :unmarshal - disallow calling the `unmarshal` function.\n"),
+            "* :threads - disallow spawning threads with ^ev/thread. Certain helper threads may still be spawned.\n" ++
+            "* :unmarshal - disallow calling the ^unmarshal function.\n"),
     };
     corefn.install(env, entries);
     try io_core.libIo(env);

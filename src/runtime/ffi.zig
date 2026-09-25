@@ -51,8 +51,8 @@ const AbstractNative = extern struct {
 pub fn libFfi(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
         corefn.reg("ffi/native", &nfunRawNative, @src(), "(ffi/native [path])", "Loads a shared object or dll from the given path, and does not extract" ++
-            " or run any code from it. This is different than `native`, which will " ++
-            "run initialization code to get a module table. If `path` is nil, opens the current running binary. " ++
+            " or run any code from it. This is different than ^native, which will " ++
+            "run initialization code to get a module table. If path is nil, opens the current running binary. " ++
             "Returns a `core/native`."),
         corefn.reg("ffi/lookup", &nfunNativeLookup, @src(), "(ffi/lookup native symbol-name)", "Looks up a symbol from a native object. All symbol lookups will return a raw pointer " ++
             "if the symbol is found, else nil."),
@@ -61,13 +61,13 @@ pub fn libFfi(env: *tables.Table) void {
         corefn.reg("ffi/signature", &ffi_call.nfunSignature, @src(), "(ffi/signature calling-convention ret-type & arg-types)", "Creates a function signature object that can be used to make calls " ++
             "with raw function pointers."),
         corefn.reg("ffi/call", &ffi_call.nfunCall, @src(), "(ffi/call pointer signature & args)", "Calls a raw pointer as a function pointer. The function signature specifies " ++
-            "how Wattle values in `args` are converted to native machine types."),
+            "how Wattle values in args are converted to native machine types."),
         corefn.reg("ffi/struct", &nfunFfiStruct, @src(), "(ffi/struct & types)", "Creates a struct type definition that can be used to pass structs into native functions. "),
         corefn.reg("ffi/write", &nfunBufferWrite, @src(), "(ffi/write ffi-type data [buffer [index]])", "Appends a native type to a buffer such as it would appear in memory. This can be used " ++
             "to pass pointers to structs in the ffi, or send C/C++/native structs over the network " ++
             "or to files. Returns a modified buffer or a new buffer if one is not supplied."),
         corefn.reg("ffi/read", &nfunBufferRead, @src(), "(ffi/read ffi-type bytes [offset])", "Parses a native struct out of a buffer and convert it to normal Wattle data structures. " ++
-            "This function is the inverse of `ffi/write`. `bytes` can also be a raw pointer, although " ++
+            "This function is the inverse of ^ffi/write. bytes can also be a raw pointer, although " ++
             "this is unsafe."),
         corefn.reg("ffi/size", &nfunFfiSize, @src(), "(ffi/size type)", "Gets the size of an ffi type in bytes."),
         corefn.reg("ffi/align", &nfunFfiAlign, @src(), "(ffi/align type)", "Gets the align of an ffi type in bytes."),
@@ -76,18 +76,18 @@ pub fn libFfi(env: *tables.Table) void {
             "the given calling convention. This is the only function signature supported. " ++
             "It is up to the programmer to ensure that the `userdata` argument contains a Wattle function " ++
             "the will be called with one argument, `ctx` which is an opaque pointer. This pointer can " ++
-            "be further inspected with `ffi/read`."),
-        corefn.reg("ffi/jitfn", &ffi_call.nfunJitfn, @src(), "(ffi/jitfn bytes)", "Creates an abstract type that can be used as the pointer argument to `ffi/call`. The content " ++
-            "of `bytes` is architecture specific machine code that will be copied into executable memory."),
+            "be further inspected with ^ffi/read."),
+        corefn.reg("ffi/jitfn", &ffi_call.nfunJitfn, @src(), "(ffi/jitfn bytes)", "Creates an abstract type that can be used as the pointer argument to ^ffi/call. The content " ++
+            "of bytes is architecture specific machine code that will be copied into executable memory."),
         corefn.reg("ffi/malloc", &nfunFfiMalloc, @src(), "(ffi/malloc size)", "Allocates memory directly using Wattle's memory allocator. Memory allocated in this way must be freed manually! Returns a raw pointer, or nil if size = 0."),
-        corefn.reg("ffi/free", &nfunFfiFree, @src(), "(ffi/free pointer)", "Frees memory allocated with `ffi/malloc`. Returns nil."),
+        corefn.reg("ffi/free", &nfunFfiFree, @src(), "(ffi/free pointer)", "Frees memory allocated with ^ffi/malloc. Returns nil."),
         corefn.reg("ffi/pointer-buffer", &nfunPointerBuffer, @src(), "(ffi/pointer-buffer pointer capacity [count [offset]])", "Creates a buffer from a pointer. The underlying memory of the buffer will not be " ++
             "reallocated or freed by the garbage collector, allowing unmanaged, mutable memory " ++
             "to be manipulated with buffer functions. Attempts to resize or extend the buffer " ++
             "beyond its initial capacity will raise an error. As with many FFI functions, this is memory " ++
             "unsafe and can potentially allow out of bounds memory access. Returns a new buffer."),
         corefn.reg("ffi/pointer-nfunction", &nfunPointerNfunction, @src(), "(ffi/pointer-nfunction pointer [name [source-file [source-line]]])", "Raises: a raw pointer names a C function, and an nfunction is not a C " ++
-            "function, so there is nothing to return. The alternatives are `ffi/signature` and `ffi/call`, " ++
+            "function, so there is nothing to return. The alternatives are ^ffi/signature and ^ffi/call, " ++
             "which describe the calling convention rather than assuming one. " ++
             "The arguments are still checked, so a wrong one is reported as such. Unused: a name and " ++
             "source location for stack traces and debugging."),

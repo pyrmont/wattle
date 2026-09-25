@@ -1042,8 +1042,8 @@ pub fn flagName(platform: Platform, index: usize) ?[:0]const u8 {
 pub fn libFilewatch(env: *tables.Table) void {
     assertTableIsWhole();
     const table = comptime [_]corefn.Entry{
-        corefn.reg("filewatch/new", &nfunMake, @src(), "(filewatch/new channel & default-flags)", "Creates a new filewatcher that will give events to a channel channel. See `filewatch/add` for available flags.\n\n" ++
-            "When an event is triggered by the filewatcher, a struct containing information will be given to channel as with `ev/give`. " ++
+        corefn.reg("filewatch/new", &nfunMake, @src(), "(filewatch/new channel & default-flags)", "Creates a new filewatcher that will give events to a channel channel. See ^filewatch/add for available flags.\n\n" ++
+            "When an event is triggered by the filewatcher, a struct containing information will be given to channel as with ^ev/give. " ++
             "The contents of the channel depend on the OS, but will contain some common keys:\n\n" ++
             "* `:type` -- the type of the event that was raised.\n\n" ++
             "* `:file-name` -- the base file name of the file that triggered the event.\n\n" ++
@@ -1051,7 +1051,7 @@ pub fn libFilewatch(env: *tables.Table) void {
             "Events also will contain keys specific to the host OS.\n\n" ++
             "Windows has no extra properties on events.\n\n" ++
             "Linux and the BSDs have the following extra properties on events:\n\n" ++
-            "* `:wd` -- the integer key returned by `filewatch/add` for the path that triggered this. This is a file descriptor integer on BSD and macos.\n\n" ++
+            "* `:wd` -- the integer key returned by ^filewatch/add for the path that triggered this. This is a file descriptor integer on BSD and macos.\n\n" ++
             "* `:wd-path` -- the string path for watched directory of file. For files, will be the same as `:file-name`, and for directories, will be the same as `:dir-name`.\n\n" ++
             "* `:cookie` -- a semi-randomized integer used to associate related events, such as :moved-from and :moved-to events.\n\n" ++
             ""),

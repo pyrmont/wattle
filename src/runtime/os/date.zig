@@ -91,11 +91,11 @@ pub fn entries() []const corefn.Entry {
         corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date [local])", "Gets the broken down date expressed as the number " ++
             "of seconds since January 1, 1970, the Unix epoch. " ++
             "Returns a real number. " ++
-            "Date is given in UTC unless `local` is truthy, in which case the " ++
+            "Date is given in UTC unless local is truthy, in which case the " ++
             "date is computed for the local timezone.\n\n" ++
             "Inverse function to os/date."),
-        corefn.reg("os/date", &nfunDate, @src(), "(os/date [time [local]])", "Returns the given time as a date map, or the current time if `time` is not given. " ++
-            "Date is given in UTC unless `local` is truthy, in which case the date is formatted for " ++
+        corefn.reg("os/date", &nfunDate, @src(), "(os/date [time [local]])", "Returns the given time as a date map, or the current time if time is not given. " ++
+            "Date is given in UTC unless local is truthy, in which case the date is formatted for " ++
             "the local timezone. Returns a map with following key values. Note that all numbers are 0-indexed.\n\n" ++
             "* :seconds - number of seconds [0-61]\n\n" ++
             "* :minutes - number of minutes [0-59]\n\n" ++
@@ -108,9 +108,9 @@ pub fn entries() []const corefn.Entry {
             "* :dst - if Day Light Savings is in effect\n\n" ++
             "You can set local timezone by setting TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
-        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt [time [local]])", "Formats the given time as a string, or the current time if `time` is not given. " ++
+        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt [time [local]])", "Formats the given time as a string, or the current time if time is not given. " ++
             "The time is formatted according to the same rules as the ISO C89 function strftime(). " ++
-            "The time is formatted in UTC unless `local` is truthy, in which case the date is formatted for " ++
+            "The time is formatted in UTC unless local is truthy, in which case the date is formatted for " ++
             "the local timezone. You can set local timezone by setting TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
     };

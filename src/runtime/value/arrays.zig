@@ -158,41 +158,41 @@ pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("array/new", &nfunArrayNew, @src(), "(array/new capacity)", "Creates a new empty array with a pre-allocated capacity. The same as " ++
             "`(array)` but can be more efficient if the maximum size of an array is known."),
-        corefn.reg("array/weak", &nfunArrayWeak, @src(), "(array/weak capacity)", "Creates a new empty array with a pre-allocated capacity and support for weak references. Similar to `array/new`."),
-        corefn.reg("array/new-filled", &nfunArrayNewFilled, @src(), "(array/new-filled count [value])", "Creates a new array of `count` elements, all set to `value`, which defaults to nil. Returns the new array."),
-        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill arr [value])", "Replaces all elements of an array with `value` (defaulting to nil) without changing the length of the array. " ++
+        corefn.reg("array/weak", &nfunArrayWeak, @src(), "(array/weak capacity)", "Creates a new empty array with a pre-allocated capacity and support for weak references. Similar to ^array/new."),
+        corefn.reg("array/new-filled", &nfunArrayNewFilled, @src(), "(array/new-filled count [value])", "Creates a new array of count elements, all set to value, which defaults to nil. Returns the new array."),
+        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill arr [value])", "Replaces all elements of an array with value (defaulting to nil) without changing the length of the array. " ++
             "Returns the modified array."),
         corefn.reg("array/pop", &nfunArrayPop, @src(), "(array/pop arr)", "Removes the last element of the array and returns it. If the array is empty, returns nil. Modifies " ++
             "the input array."),
         corefn.reg("array/peek", &nfunArrayPeek, @src(), "(array/peek arr)", "Returns the last element of the array. Does not modify the array."),
         corefn.reg("array/push", &nfunArrayPush, @src(), "(array/push arr & xs)", "Pushes all the elements of xs to the end of an array. Modifies the input array and returns it."),
-        corefn.reg("array/ensure", &nfunArrayEnsure, @src(), "(array/ensure arr capacity growth)", "Ensures that the memory backing the array is large enough for `capacity` " ++
-            "items at the given rate of growth. `capacity` and `growth` must be integers. " ++
+        corefn.reg("array/ensure", &nfunArrayEnsure, @src(), "(array/ensure arr capacity growth)", "Ensures that the memory backing the array is large enough for capacity " ++
+            "items at the given rate of growth. capacity and growth must be integers. " ++
             "If the backing capacity is already enough, then this function does nothing. " ++
             "Otherwise, the backing memory is reallocated so that there is enough space."),
-        corefn.reg("array/slice", &nfunArraySlice, @src(), "(array/slice arrtup [start [end]])", "Takes a slice of array or tuple from `start` to `end`. The range is half open, " ++
+        corefn.reg("array/slice", &nfunArraySlice, @src(), "(array/slice arrtup [start [end]])", "Takes a slice of array or tuple from start to end. The range is half open, " ++
             "[start, end). Indexes can also be negative, indicating indexing from the " ++
-            "end of the array. By default, `start` is 0 and `end` is the length of the array. " ++
+            "end of the array. By default, start is 0 and end is the length of the array. " ++
             "Note that if the range is negative, it is taken as (start, end] to allow a full " ++
             "negative slice range. Returns a new array."),
         corefn.reg("array/concat", &nfunArrayConcat, @src(), "(array/concat arr & parts)", "Concatenates a variable number of arrays (and tuples) into the first argument, " ++
             "which must be an array. If any of the parts are arrays or tuples, their elements are " ++
-            "inserted into the array. Otherwise, each part in `parts` is appended to `arr` in order. " ++
-            "Returns the modified array `arr`."),
-        corefn.reg("array/insert", &nfunArrayInsert, @src(), "(array/insert arr at & xs)", "Inserts all `xs` into array `arr` at index `at`. `at` should be an integer between " ++
-            "0 and the length of the array. A negative value for `at` indexes backwards from " ++
+            "inserted into the array. Otherwise, each part in parts is appended to arr in order. " ++
+            "Returns the modified array arr."),
+        corefn.reg("array/insert", &nfunArrayInsert, @src(), "(array/insert arr at & xs)", "Inserts all xs into array arr at index at. at should be an integer between " ++
+            "0 and the length of the array. A negative value for at indexes backwards from " ++
             "the end of the array, inserting after the index such that inserting at -1 appends to " ++
             "the array. Returns the array."),
-        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove arr at [n])", "Removes up to `n` elements starting at index `at` in array `arr`. `at` can index from " ++
-            "the end of the array with a negative index, and `n` must be a non-negative integer. " ++
-            "By default, `n` is 1. " ++
+        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove arr at [n])", "Removes up to n elements starting at index at in array arr. at can index from " ++
+            "the end of the array with a negative index, and n must be a non-negative integer. " ++
+            "By default, n is 1. " ++
             "Returns the array."),
         corefn.reg("array/trim", &nfunArrayTrim, @src(), "(array/trim arr)", "Sets the backing capacity of an array to its current length. Returns the modified array."),
         corefn.reg("array/clear", &nfunArrayClear, @src(), "(array/clear arr)", "Empties an array, setting it's count to 0 but does not free the backing capacity. " ++
             "Returns the modified array."),
         corefn.reg("array/join", &nfunArrayJoin, @src(), "(array/join arr & parts)", "Joins a variable number of arrays and tuples into the first argument, " ++
             "which must be an array. " ++
-            "Returns the modified array `arr`."),
+            "Returns the modified array arr."),
     };
     corefn.install(env, entries);
 }

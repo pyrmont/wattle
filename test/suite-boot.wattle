@@ -962,6 +962,42 @@
           (with-dyns [:out out] (doc* 'clause-signatures))
           (string/find "\n    (clause-signatures x y)\n    (clause-signatures x)\n\n    Body.\n" out))
         "doc prints the signatures ahead of the docstring")
+
+; A docstring marks arguments by their names in the signatures and marks a
+; reference to a binding with a leading ^
+(assert (= "\n    Sees x and get, module/paths. Not next or a^b or `x`.\n"
+           (string (doc-format "Sees x and ^get, ^module/paths. Not next or a^b or `x`." 80 4 false ["x"])))
+        "doc-format drops the sigil and marks nothing in plain text")
+(assert (= "\n    Sees \e[4mx\e[24m and \e[36mget\e[39m. Not next.\n"
+           (string (doc-format "Sees x and ^get. Not next." 80 4 true ["x"])))
+        "doc-format underlines an argument and colors a reference")
+(assert (= "\n    Sees \e[38;5;245mx\e[39m.\n"
+           (string (doc-format "Sees `x`." 80 4 true ["x"])))
+        "doc-format leaves a word in backticks as raw code")
+(defn underlined "Adds x to y." [x y] (+ x y))
+(assert (let [out !""]
+          (with-dyns [:out out :doc-color true] (doc* 'underlined))
+          (and (string/find "Adds \e[4mx\e[24m to \e[4my\e[24m." out)
+               (not (string/find "\e[4munderlined" out))))
+        "doc underlines the arguments named in the signatures")
+
+; Every ^name in a core docstring names a binding or a dynamic binding
+(def reference-scan
+  (let [word '(+ (range "az" "AZ" "09") (set "-_?!<>=/+%$&*"))]
+    `(any (+ (* "`" (any (if-not "`" 1)) "`")
+             (* (some ~word) (any (* "^" (some ~word))))
+             (* "^" (<- (* (opt ".") (some ~word) (any (* "." (some ~word))))))
+             1))))
+(def dangling ![])
+(each sym (all-bindings)
+  (each name (peg/match reference-scan (get (dyn sym) :doc ""))
+    (unless (or (dyn (symbol name))
+                (and (string/has-prefix? "*" name)
+                     (index-of (keyword (string/slice name 1 -2)) (all-dynamics))))
+      (array/push dangling (string sym " -> " name)))))
+(assert (empty? dangling)
+        (string "docstring references that name no binding: " (string/join dangling ", ")))
+
 (def expanded-clauses
   (macex '(fn ([x] (when true (+ x 1)))
               ([x y] (when y (+ x y))))))

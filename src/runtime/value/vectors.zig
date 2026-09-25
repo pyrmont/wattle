@@ -381,9 +381,9 @@ pub fn hash(v: *const Vector) i32 {
 pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("vector", &nfunVector, @src(), "(vector & xs)", "Creates a new persistent vector containing the elements xs."),
-        corefn.reg("vec", &nfunVec, @src(), "(vec ind)", "Creates a persistent vector with the elements of the indexed value `ind`. A vector is returned unchanged."),
-        corefn.reg("conj", &nfunConj, @src(), "(conj coll & xs)", "Returns a new collection with the elements xs added to `coll`, a vector or a set. For a vector, the elements are added at the end."),
-        corefn.reg("assoc", &nfunAssoc, @src(), "(assoc coll key val & kvs)", "Returns a new collection in which each key is associated with the value that follows it, in the vector or map `coll`. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a map, a nil value removes the key."),
+        corefn.reg("vec", &nfunVec, @src(), "(vec ind)", "Creates a persistent vector with the elements of the indexed value ind. A vector is returned unchanged."),
+        corefn.reg("conj", &nfunConj, @src(), "(conj coll & xs)", "Returns a new collection with the elements xs added to coll, a vector or a set. For a vector, the elements are added at the end."),
+        corefn.reg("assoc", &nfunAssoc, @src(), "(assoc coll key val & kvs)", "Returns a new collection in which each key is associated with the value that follows it, in the vector or map coll. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a map, a nil value removes the key."),
     };
     corefn.install(env, entries);
 }

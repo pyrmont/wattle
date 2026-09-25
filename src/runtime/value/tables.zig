@@ -257,26 +257,26 @@ pub inline fn isScratch(table: *const Table) bool {
 pub fn lib(env: *Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("table/new", &nfunTableNew, @src(), "(table/new capacity)", "Creates a new empty table with pre-allocated memory " ++
-            "for `capacity` entries. This means that if the number of " ++
+            "for capacity entries. This means that if the number of " ++
             "entries going into a table on creation is fixed in advance, extra memory allocation " ++
             "can be avoided. " ++
             "Returns the new table."),
-        corefn.reg("table/weak", &nfunTableWeak, @src(), "(table/weak capacity)", "Creates a new empty table with weak references to keys and values. Similar to `table/new`. " ++
+        corefn.reg("table/weak", &nfunTableWeak, @src(), "(table/weak capacity)", "Creates a new empty table with weak references to keys and values. Similar to ^table/new. " ++
             "Returns the new table."),
-        corefn.reg("table/weak-keys", &nfunTableWeakKeys, @src(), "(table/weak-keys capacity)", "Creates a new empty table with weak references to keys and normal references to values. Similar to `table/new`. " ++
+        corefn.reg("table/weak-keys", &nfunTableWeakKeys, @src(), "(table/weak-keys capacity)", "Creates a new empty table with weak references to keys and normal references to values. Similar to ^table/new. " ++
             "Returns the new table."),
-        corefn.reg("table/weak-values", &nfunTableWeakValues, @src(), "(table/weak-values capacity)", "Creates a new empty table with normal references to keys and weak references to values. Similar to `table/new`. " ++
+        corefn.reg("table/weak-values", &nfunTableWeakValues, @src(), "(table/weak-values capacity)", "Creates a new empty table with normal references to keys and weak references to values. Similar to ^table/new. " ++
             "Returns the new table."),
         corefn.reg("table/to-map", &nfunTableTomap, @src(), "(table/to-map tab)", "Converts a table to a map. The prototype is not followed. Returns a new map."),
         corefn.reg("table/getproto", &nfunTableGetproto, @src(), "(table/getproto tab)", "Gets the prototype table of a table. Returns nil if the table " ++
             "has no prototype, otherwise returns the prototype."),
-        corefn.reg("table/setproto", &nfunTableSetproto, @src(), "(table/setproto tab proto)", "Sets the prototype of a table. Returns the original table `tab`."),
-        corefn.reg("table/rawget", &nfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table `tab` without looking at the prototype table. " ++
-            "If `tab` does not contain the key directly, the function returns " ++
+        corefn.reg("table/setproto", &nfunTableSetproto, @src(), "(table/setproto tab proto)", "Sets the prototype of a table. Returns the original table tab."),
+        corefn.reg("table/rawget", &nfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table tab without looking at the prototype table. " ++
+            "If tab does not contain the key directly, the function returns " ++
             "nil without checking the prototype. Returns the value in the table."),
         corefn.reg("table/clone", &nfunTableClone, @src(), "(table/clone tab)", "Creates a copy of a table. Updates to the new table do not change the old table, " ++
             "and vice versa."),
-        corefn.reg("table/clear", &nfunTableClear, @src(), "(table/clear tab)", "Removes all key-value pairs in a table and returns the modified table `tab`."),
+        corefn.reg("table/clear", &nfunTableClear, @src(), "(table/clear tab)", "Removes all key-value pairs in a table and returns the modified table tab."),
         corefn.reg("table/proto-flatten", &nfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Creates a new table that is the result of merging all prototypes into a new table."),
     };
     corefn.install(env, entries);

@@ -386,7 +386,7 @@ pub fn entries() []const corefn.Entry {
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("ev/close", &nfunStreamClose, @src(), "(ev/close stream)", "Closes a stream. This should be the same as calling (:close stream) for all streams. " ++
                 "Closing ends every read and write outstanding on the stream."),
-            corefn.reg("ev/read", &nfunStreamRead, @src(), "(ev/read stream n [buffer [timeout]])", "Reads up to n bytes into a buffer asynchronously from a stream. `n` can also be the keyword " ++
+            corefn.reg("ev/read", &nfunStreamRead, @src(), "(ev/read stream n [buffer [timeout]])", "Reads up to n bytes into a buffer asynchronously from a stream. n can also be the keyword " ++
                 "`:all` to read into the buffer until end of stream. " ++
                 "Optionally accepts a buffer to write into " ++
                 "as well as a timeout in seconds after which to cancel the operation and raise an error. " ++

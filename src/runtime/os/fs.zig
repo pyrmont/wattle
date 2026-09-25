@@ -165,7 +165,7 @@ pub fn entries() []const corefn.Entry {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/cwd", &nfunCwd, @src(), "(os/cwd)", "Returns the current working directory."),
-            corefn.reg("os/perm-string", &nfunPermissionString, @src(), "(os/perm-string int)", "Converts a Unix octal permission value from a permission integer as returned by `os/stat` " ++
+            corefn.reg("os/perm-string", &nfunPermissionString, @src(), "(os/perm-string int)", "Converts a Unix octal permission value from a permission integer as returned by ^os/stat " ++
                 "to a human readable string, that follows the formatting " ++
                 "of Unix tools like `ls`. Returns the string as a 9-character string of r, w, x and - characters. Does not " ++
                 "include the file/directory/symlink character as rendered by `ls`."),
@@ -190,9 +190,9 @@ pub fn entries() []const corefn.Entry {
                 "* :changed - timestamp when file last changed (permissions changed)\n\n" ++
                 "* :modified - timestamp when file last modified (content changed)\n"),
             corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path [tab|key])", "Like os/stat, but does not follow symlinks.\n"),
-            corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Changes file permissions, where `mode` is a permission string as returned by " ++
-                "`os/perm-string`, or an integer as returned by `os/perm-int`. " ++
-                "When `mode` is an integer, it is interpreted as a Unix permission value, best specified in octal, like " ++
+            corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Changes file permissions, where mode is a permission string as returned by " ++
+                "^os/perm-string, or an integer as returned by ^os/perm-int. " ++
+                "When mode is an integer, it is interpreted as a Unix permission value, best specified in octal, like " ++
                 "8r666 or 8r400. Windows will not differentiate between user, group, and other permissions, and thus will combine all of these permissions. Returns nil." ++
                 "Unsupported on plan9."),
             corefn.reg("os/touch", &nfunTouch, @src(), "(os/touch path [actime [modtime]])", "Updates the access time and modification times for a file. By default, sets " ++
@@ -235,7 +235,7 @@ pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
         corefn.reg("os/open", &open_file.nfunOpen, @src(), "(os/open path [flags [mode]])", "Creates a stream from a file, like the POSIX open system call. Returns a new stream. " ++
-            "`mode` should be a file mode as passed to `os/chmod`, but only if the create flag is given. " ++
+            "mode should be a file mode as passed to ^os/chmod, but only if the create flag is given. " ++
             "The default mode is 8r666. " ++
             "Allowed flags are as follows:\n\n" ++
             "  * :r - opens this file for reading\n" ++

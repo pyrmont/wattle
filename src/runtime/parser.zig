@@ -219,17 +219,17 @@ pub fn libParse(env: *tables.Table) void {
         corefn.reg("parser/has-more", &nfunParserHasMore, @src(), "(parser/has-more parser)", "Checks whether the parser has more values in the value queue."),
         corefn.reg("parser/produce", &nfunParserProduce, @src(), "(parser/produce parser [wrap])", "Dequeues the next value in the parse queue. Will return nil if " ++
             "no parsed values are in the queue, otherwise will dequeue the " ++
-            "next value. If `wrap` is truthy, will return a 1-element tuple that " ++
+            "next value. If wrap is truthy, will return a 1-element tuple that " ++
             "wraps the result. This tuple can be used for source-mapping " ++
             "purposes."),
         corefn.reg("parser/consume", &nfunParserConsume, @src(), "(parser/consume parser bytes [index])", "Inputs bytes into the parser and parses them. Will not throw errors " ++
-            "if there is a parse error. Starts at the byte index given by `index`. Returns " ++
+            "if there is a parse error. Starts at the byte index given by index. Returns " ++
             "the number of bytes read."),
-        corefn.reg("parser/byte", &nfunParserByte, @src(), "(parser/byte parser b)", "Inputs a single byte `b` into the parser byte stream. Returns the parser."),
+        corefn.reg("parser/byte", &nfunParserByte, @src(), "(parser/byte parser b)", "Inputs a single byte b into the parser byte stream. Returns the parser."),
         corefn.reg("parser/error", &nfunParserError, @src(), "(parser/error parser)", "If the parser is in the error state, returns the message associated with " ++
             "that error. Otherwise, returns nil. Also flushes the parser state and parser " ++
             "queue, so be sure to handle everything in the queue before calling " ++
-            "`parser/error`."),
+            "^parser/error."),
         corefn.reg("parser/status", &nfunParserStatus, @src(), "(parser/status parser)", "Gets the current status of the parser state machine. The status will " ++
             "be one of:\n\n" ++
             "* :pending - a value is being parsed.\n\n" ++

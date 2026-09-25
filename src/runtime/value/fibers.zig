@@ -336,7 +336,7 @@ pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
 pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("fiber/new", &nfunFiberNew, @src(), "(fiber/new func [sigmask [env]])",
-            \\Creates a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these "blocked" signals result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
+            \\Creates a new fiber with function body func. Can optionally take a set of signals sigmask to capture from child fibers, and an environment table env. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to ^ev/go, these "blocked" signals result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
             \\
             \\    (fiber/new myfun :e123)
             \\

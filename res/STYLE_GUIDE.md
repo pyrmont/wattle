@@ -112,6 +112,19 @@ The rest of the `///` rules apply to a docstring unchanged, including the ban
 on personification and the plain vocabulary. Signatures are not part of the
 docstring; they are stored under `:sigs`.
 
+**A docstring marks a name with a sigil, not with backticks.** Three kinds of
+word appear in a docstring, and each is written one way:
+
+- An argument of the binding is written bare: "Checks whether xs is in
+  ascending order." `doc` underlines every whole word in the prose that is
+  an argument named in `:sigs`, so the docstring does not mark it.
+- Another binding is written with a leading `^`: "Like ^get, but returns nil
+  for a missing key." The name after `^` must be bound in the core
+  environment or be a core dynamic binding, which `test/suite-boot.wattle`
+  checks. A `^` inside a word, as in `a^b`, is an ordinary character.
+- Backticks enclose raw code only: an expression, a keyword, a literal, a
+  string of another language. A name is never raw code.
+
 ## The `//!` header
 
 **The `//!` header** says what the file is in one sentence, how it is

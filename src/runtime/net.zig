@@ -374,17 +374,17 @@ pub fn libNet(env: *tables.Table) void {
             "a handle that can be used to send datagrams over network without establishing a connection. " ++
             "On Posix platforms, you can use :unix for host to connect to a unix domain socket, where the name is " ++
             "given in the port argument. On Linux, abstract " ++
-            "unix domain sockets are specified with a leading '@' character in port. If `multi` is truthy, will " ++
+            "unix domain sockets are specified with a leading '@' character in port. If multi is truthy, will " ++
             "return all address that match in an array instead of just the first."),
         corefn.reg("net/listen", &nfunListen, @src(), "(net/listen host port [type [no-reuse]])", "Creates a server. Returns a new stream that is neither readable nor " ++
             "writeable. Use net/accept or net/accept-loop be to handle connections and start the server. " ++
             "The type parameter specifies the type of network connection, either " ++
             "a :stream (usually tcp), or :datagram (usually udp). If not specified, the default is " ++
-            ":stream. The host and port arguments are the same as in net/address. The last boolean parameter `no-reuse` will " ++
+            ":stream. The host and port arguments are the same as in net/address. The last boolean parameter no-reuse will " ++
             "disable the use of `SO_REUSEADDR` and `SO_REUSEPORT` when creating a server on some operating systems."),
         corefn.reg("net/socket", &nfunSocket, @src(), "(net/socket [type [address-family]])", "Creates a new unbound socket. Type is an optional keyword, " ++
             "either a :stream (usually tcp), or :datagram (usually udp). The default is :stream. " ++
-            "`address-family` should be one of :ipv4 or :ipv6."),
+            "address-family should be one of :ipv4 or :ipv6."),
         corefn.reg("net/accept", &nfunAccept, @src(), "(net/accept stream [timeout])", "Gets the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a new duplex stream which represents a connection to the client."),
@@ -413,7 +413,7 @@ pub fn libNet(env: *tables.Table) void {
             "Bindhost is an optional string to select from what address to make the outgoing " ++
             "connection, with the default being the same as using the OS's preferred address. "),
         corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream [mode])", "Stops communication on this socket in a graceful manner, either in both directions or just " ++
-            "reading/writing from the stream. The `mode` parameter controls which communication to stop on the socket. " ++
+            "reading/writing from the stream. The mode parameter controls which communication to stop on the socket. " ++
             "\n\n* `:wr` is the default and prevents both reading new data from the socket and writing new data to the socket.\n" ++
             "* `:r` disables reading new data from the socket.\n" ++
             "* `:w` disables writing data to the socket.\n\n" ++

@@ -452,7 +452,7 @@ pub fn libCompile(env: *tables.Table) void {
             "Pair the compile function with parsing functionality to implement " ++
             "eval. Returns a new function and does not modify ast. Returns an error " ++
             "struct with keys :line, :column, and :error if compilation fails. " ++
-            "If a `lints` array is given, linting messages will be appended to the array. " ++
+            "If a lints array is given, linting messages will be appended to the array. " ++
             "Each message will be a tuple of the form `(level line col message)`."),
     };
     corefn.install(env, entries);

@@ -1908,17 +1908,17 @@ fn selfEntries() []const corefn.Entry {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("ev/go", &nfunGo, @src(), "(ev/go fiber-or-fun [value [supervisor]])", "Puts a fiber on the event loop to be resumed later. If a " ++
-                "function is used, it is wrapped with `fiber/new` first. " ++
+                "function is used, it is wrapped with ^fiber/new first. " ++
                 "Returns a task fiber. Optionally pass a value to resume " ++
                 "with, otherwise resumes with nil. An optional `core/channel` " ++
                 "can be provided as a supervisor. When various events occur " ++
                 "in the newly scheduled fiber, an event will be pushed to the " ++
                 "supervisor. If not provided, the new fiber will inherit the " ++
                 "current supervisor."),
-            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main [value [flags [supervisor]]])", "Runs `main` in a new operating system thread, optionally passing `value` " ++
-                "to resume with. The parameter `main` can either be a fiber, or a function that accepts " ++
+            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main [value [flags [supervisor]]])", "Runs main in a new operating system thread, optionally passing value " ++
+                "to resume with. The parameter main can either be a fiber, or a function that accepts " ++
                 "0 or 1 arguments. " ++
-                "Unlike `ev/go`, this function will suspend the current fiber until the thread is complete. " ++
+                "Unlike ^ev/go, this function will suspend the current fiber until the thread is complete. " ++
                 "If you want to run the thread without waiting for a result, pass the `:i` flag to return nil immediately. " ++
                 "Otherwise, returns nil. Available flags:\n\n" ++
                 "* `:i` - return immediately\n" ++
@@ -1929,15 +1929,15 @@ fn selfEntries() []const corefn.Entry {
                 "tuple of all of the arguments combined into a single message, where the first element is tag. " ++
                 "By convention, tag should be a keyword indicating the type of message. Returns nil."),
             corefn.reg("ev/sleep", &nfunSleep, @src(), "(ev/sleep sec)", "Suspends the current fiber for sec seconds without blocking the event loop."),
-            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec [tocancel [tocheck [intr?]]])", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
-                "After `sec` seconds, the event loop will attempt cancellation of `tocancel` if the " ++
-                "`tocheck` fiber is resumable. `sec` is a number that can have a fractional part. " ++
-                "`tocancel` defaults to `(fiber/root)`, but if specified, must be a task (root " ++
-                "fiber). `tocheck` defaults to `(fiber/current)`, but if specified, must be a fiber. " ++
-                "Returns `tocancel` immediately. If `interrupt?` is set to true, will create a " ++
+            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec [tocancel [tocheck [intr?]]])", "Schedules the event loop to try to cancel the tocancel task as with ^ev/cancel. " ++
+                "After sec seconds, the event loop will attempt cancellation of tocancel if the " ++
+                "tocheck fiber is resumable. sec is a number that can have a fractional part. " ++
+                "tocancel defaults to `(fiber/root)`, but if specified, must be a task (root " ++
+                "fiber). tocheck defaults to `(fiber/current)`, but if specified, must be a fiber. " ++
+                "Returns tocancel immediately. If `interrupt?` is set to true, will create a " ++
                 "background thread to try to interrupt the VM if the timeout expires."),
             corefn.reg("ev/cancel", &nfunCancel, @src(), "(ev/cancel fiber err)", "Cancels a suspended task fiber in the event loop. Differs from " ++
-                "`cancel` in that it returns the canceled fiber immediately."),
+                "^cancel in that it returns the canceled fiber immediately."),
         };
         break :blk acc;
     };

@@ -153,8 +153,8 @@ var source_env: ?*tables.Table = null;
 /// The text `hint` returns for a binding with no docstring.
 var type_hint: [80]u8 = undefined;
 
-/// The text `hint` returns for a binding with signatures, which is the
-/// signatures followed by the docstring.
+/// The text `hint` returns for a binding with a docstring, which is the
+/// signatures, where it has them, followed by the docstring.
 var sigs_hint: std.ArrayList(u8) = .empty;
 
 /// Whether standard output is a terminal, read when a line is opened.
@@ -383,7 +383,7 @@ fn gather(token: []const u8, candidates: *lineedit.complete.Candidates) error{Ou
 
 /// Returns the hint for `token`: the first two paragraphs of its binding's
 /// signatures followed by its docstring, or its value's type, or null where the open line's
-/// environment does not bind `token`.
+/// environment does not bind `token`. The `^` of a reference in the docstring is left out.
 ///
 /// This is the `lineedit.session.Hint` `read` gives the session. The result
 /// is valid until the next call into the runtime.
@@ -396,10 +396,14 @@ fn hint(token: []const u8) ?[]const u8 {
         sigs_hint.clearRetainingCapacity();
         sigs_hint.appendSlice(std.heap.c_allocator, strings.bytesOf(wrap.toString(sigs))) catch return null;
         sigs_hint.appendSlice(std.heap.c_allocator, "\n\n") catch return null;
-        sigs_hint.appendSlice(std.heap.c_allocator, prose) catch return null;
+        appendProse(prose) catch return null;
         return paragraphs(sigs_hint.items, 2);
     }
-    if (repr.checkType(doc, repr.Tag.string)) return paragraphs(strings.bytesOf(wrap.toString(doc)), 2);
+    if (repr.checkType(doc, repr.Tag.string)) {
+        sigs_hint.clearRetainingCapacity();
+        appendProse(strings.bytesOf(wrap.toString(doc))) catch return null;
+        return paragraphs(sigs_hint.items, 2);
+    }
     var bound = tables.getKeyword(entry, "value");
     const ref = tables.getKeyword(entry, "ref");
     if (repr.checkType(ref, repr.Tag.array)) {
@@ -506,6 +510,23 @@ fn onStreamEvent(op: *ev_stream.Operation, event: ev.AsyncEvent) raise.Error!voi
         .err, .close => try resumeStream(op, (try apply(&.{})).?),
         .deinit => if (sessionPtr().open) abandon(),
         else => {},
+    }
+}
+
+/// Whether `byte` can be part of a name in a docstring's `^name` reference.
+fn isNameByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte >= 128 or std.mem.indexOfScalar(u8, "-_?!<>=/+%$&:*.", byte) != null;
+}
+
+/// Appends `prose` to `sigs_hint` without the `^` that begins a reference to a
+/// binding, as `doc` shows the name in plain text.
+///
+/// A `^` inside a word is kept, and so is one not followed by a name.
+fn appendProse(prose: []const u8) std.mem.Allocator.Error!void {
+    for (prose, 0..) |byte, index| {
+        const begins = byte == '^' and index + 1 < prose.len and isNameByte(prose[index + 1]) and
+            (index == 0 or !isNameByte(prose[index - 1]));
+        if (!begins) try sigs_hint.append(std.heap.c_allocator, byte);
     }
 }
 

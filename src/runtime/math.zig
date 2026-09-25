@@ -245,7 +245,7 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
     const written = comptime [_]corefn.Entry{
         corefn.reg("not", &nfunNot, @src(), "(not x)", "Returns the boolean inverse of x."),
         corefn.reg("math/random", &nfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
-        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Sets the seed for the random number generator. `seed` should be " ++
+        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Sets the seed for the random number generator. seed should be " ++
             "an integer or a buffer."),
         corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng [seed])", "Creates a Pseudo-Random number generator, with an optional seed. " ++
             "The seed should be an unsigned 32 bit integer or a buffer. " ++

@@ -289,18 +289,18 @@ pub inline fn lengthOf(s: [*]const u8) u32 {
 /// `env`.
 pub fn lib(env: *tables.Table) void {
     const slice_doc = "Returns a substring from a byte sequence. The substring is from " ++
-        "index `start` inclusive to index `end`, exclusive. All indexing " ++
-        "is from 0. `start` and `end` can also be negative to indicate indexing " ++
-        "from the end of the string. Note that if `start` is negative it is " ++
-        "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
+        "index start inclusive to index end, exclusive. All indexing " ++
+        "is from 0. start and end can also be negative to indicate indexing " ++
+        "from the end of the string. Note that if start is negative it is " ++
+        "exclusive, and if end is negative it is inclusive, to allow a full " ++
         "negative slice range.";
     const trim_doc_tail = "whitespace from a byte sequence. If the argument " ++
-        "`set` is provided, considers only characters in `set` to be whitespace.";
+        "set is provided, considers only characters in set to be whitespace.";
     const entries = comptime [_]corefn.Entry{
         corefn.reg("string/slice", &nfunStringSlice, @src(), "(string/slice bytes [start [end]])", slice_doc),
         corefn.reg("keyword/slice", &nfunKeywordSlice, @src(), "(keyword/slice bytes [start [end]])", "Behaves as string/slice, but returns a keyword."),
         corefn.reg("symbol/slice", &nfunSymbolSlice, @src(), "(symbol/slice bytes [start [end]])", "Behaves as string/slice, but returns a symbol."),
-        corefn.reg("string/repeat", &nfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is `n` copies of `bytes` concatenated."),
+        corefn.reg("string/repeat", &nfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is n copies of bytes concatenated."),
         corefn.reg("string/bytes", &nfunStringBytes, @src(), "(string/bytes str)", "Returns a tuple of integers that are the byte values of the string."),
         corefn.reg("string/from-bytes", &nfunStringFrombytes, @src(), "(string/from-bytes & byte-vals)", "Creates a string from integer parameters with byte values. All integers " ++
             "are coerced to the range of 1 byte 0-255."),
@@ -310,35 +310,35 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("string/ascii-upper", &nfunStringAsciiupper, @src(), "(string/ascii-upper str)", "Returns a new string where all bytes are replaced with the " ++
             "uppercase version of themselves in ASCII. Does only a very simple " ++
             "case check, meaning no unicode support."),
-        corefn.reg("string/reverse", &nfunStringReverse, @src(), "(string/reverse str)", "Returns a string that is the reversed version of `str`."),
-        corefn.reg("string/find", &nfunStringFind, @src(), "(string/find patt str [start-index])", "Searches for the first instance of pattern `patt` in string " ++
-            "`str`. Returns the index of the first character in `patt` if found, " ++
+        corefn.reg("string/reverse", &nfunStringReverse, @src(), "(string/reverse str)", "Returns a string that is the reversed version of str."),
+        corefn.reg("string/find", &nfunStringFind, @src(), "(string/find patt str [start-index])", "Searches for the first instance of pattern patt in string " ++
+            "str. Returns the index of the first character in patt if found, " ++
             "otherwise returns nil."),
-        corefn.reg("string/find-all", &nfunStringFindall, @src(), "(string/find-all patt str [start-index])", "Searches for all instances of pattern `patt` in string " ++
-            "`str`. Returns an array of all indices of found patterns. Overlapping " ++
-            "instances of the pattern are counted individually, meaning a byte in `str` " ++
+        corefn.reg("string/find-all", &nfunStringFindall, @src(), "(string/find-all patt str [start-index])", "Searches for all instances of pattern patt in string " ++
+            "str. Returns an array of all indices of found patterns. Overlapping " ++
+            "instances of the pattern are counted individually, meaning a byte in str " ++
             "may contribute to multiple found patterns."),
-        corefn.reg("string/has-prefix?", &nfunStringHasprefix, @src(), "(string/has-prefix? pfx str)", "Tests whether `str` starts with `pfx`."),
-        corefn.reg("string/has-suffix?", &nfunStringHassuffix, @src(), "(string/has-suffix? sfx str)", "Tests whether `str` ends with `sfx`."),
-        corefn.reg("string/replace", &nfunStringReplace, @src(), "(string/replace patt subst str)", "Replaces the first occurrence of `patt` with `subst` in the string `str`. " ++
-            "If `subst` is a function, it is called with `patt` only if a match is found, " ++
+        corefn.reg("string/has-prefix?", &nfunStringHasprefix, @src(), "(string/has-prefix? pfx str)", "Tests whether str starts with pfx."),
+        corefn.reg("string/has-suffix?", &nfunStringHassuffix, @src(), "(string/has-suffix? sfx str)", "Tests whether str ends with sfx."),
+        corefn.reg("string/replace", &nfunStringReplace, @src(), "(string/replace patt subst str)", "Replaces the first occurrence of patt with subst in the string str. " ++
+            "If subst is a function, it is called with patt only if a match is found, " ++
             "and returns the actual replacement text to use. " ++
-            "Returns the new string if `patt` is found, otherwise returns `str`."),
-        corefn.reg("string/replace-all", &nfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replaces all instances of `patt` with `subst` in the string `str`. Overlapping " ++
+            "Returns the new string if patt is found, otherwise returns str."),
+        corefn.reg("string/replace-all", &nfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replaces all instances of patt with subst in the string str. Overlapping " ++
             "matches are not counted, only the first match in such a span is replaced. " ++
-            "If `subst` is a function, it is called with `patt` once for each match, " ++
+            "If subst is a function, it is called with patt once for each match, " ++
             "and returns the actual replacement text to use. " ++
-            "Returns the new string if `patt` is found, otherwise returns `str`."),
-        corefn.reg("string/split", &nfunStringSplit, @src(), "(string/split delim str [start [limit]])", "Splits a string `str` with delimiter `delim` and returns an array of " ++
-            "substrings. The substrings do not contain the delimiter `delim`. If `delim` " ++
+            "Returns the new string if patt is found, otherwise returns str."),
+        corefn.reg("string/split", &nfunStringSplit, @src(), "(string/split delim str [start [limit]])", "Splits a string str with delimiter delim and returns an array of " ++
+            "substrings. The substrings do not contain the delimiter delim. If delim " ++
             "is not found, the returned array has one element. Starts searching " ++
-            "for `delim` at the index `start` (if provided), and returns up to a maximum " ++
-            "of `limit` results (if provided)."),
-        corefn.reg("string/check-set", &nfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string `str` only contains bytes that appear in the string `set`. " ++
-            "Returns true if all bytes in `str` appear in `set`, false if some bytes in `str` do " ++
-            "not appear in `set`."),
+            "for delim at the index start (if provided), and returns up to a maximum " ++
+            "of limit results (if provided)."),
+        corefn.reg("string/check-set", &nfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string str only contains bytes that appear in the string set. " ++
+            "Returns true if all bytes in str appear in set, false if some bytes in str do " ++
+            "not appear in set."),
         corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join parts [sep])", "Joins an array of strings into one string, optionally separated by " ++
-            "a separator string `sep`."),
+            "a separator string sep."),
         corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
             "a new string.\n\n" ++
             "The following conversion specifiers are supported, where the upper case specifiers generate " ++
