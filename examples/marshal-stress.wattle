@@ -3,15 +3,15 @@
   (var i 0)
   (repeat c
     (def n (string "client" i))
-    (put-in res [:clients n] !{:name n :projects !{}})
+    (put-in! res [:clients n] !{:name n :projects !{}})
     (++ i)
     (repeat c
       (def pn (string "project" i))
-      (put-in res [:clients n :projects pn] !{:name pn})
+      (put-in! res [:clients n :projects pn] !{:name pn})
       (++ i)
       (repeat c
         (def tn (string "task" i))
-        (put-in res [:clients n :projects pn :tasks tn] !{:name pn})
+        (put-in! res [:clients n :projects pn :tasks tn] !{:name pn})
         (++ i))))
   res)
 

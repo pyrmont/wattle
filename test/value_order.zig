@@ -1045,7 +1045,7 @@ fn fromWattle() void {
         " (compare \"a\" \"b\") " ++
         " (= (hash 0.0) (hash -0.0)) " ++
         " (deep= {:a [1 {:b 2}]} {:a [1 {:b 2}]}) " ++
-        " (sorted [3 1 2 :a \"s\" nil true]) " ++
+        " (sort [3 1 2 :a \"s\" nil true]) " ++
         " (= (do (var t nil) (for i 0 5000 (set t [i t])) t) " ++
         "    (do (var t nil) (for i 0 5000 (set t [i t])) t))]";
     expect(core_env.dostring(harness.coreEnv(), src, "value_order", &out) == 0);
@@ -1059,7 +1059,7 @@ fn fromWattle() void {
     expect(wrap.toInteger(r[6]) == -1);
     expect(repr.truthy(r[7]));
     expect(repr.truthy(r[8]));
-    // `sorted` puts the types in `repr.Tag` order, which is the ordering
+    // `sort` puts the types in `repr.Tag` order, which is the ordering
     // across types this file pins from the outside, and that order starts with
     // numbers because the number tag is zero. It returns an array rather than
     // a tuple.

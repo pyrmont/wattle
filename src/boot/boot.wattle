@@ -1065,7 +1065,7 @@
 (defn- sort-impl [x before?]
   (sort-help x 0 (- (length x) 1) before?))
 
-(defn sort
+(defn sort!
   """
   Sorts `x` in-place, and returns it. Uses quick-sort and is not a
   stable sort. An omitted `before?` uses `<`; a supplied comparator orders
@@ -1078,7 +1078,7 @@
   ([x before?]
     (sort-impl x before?)))
 
-(defn sort-by
+(defn sort-by!
   """
   Sorts `x` in-place by calling a function `f` on each element and
   comparing the results with `<`.
@@ -1089,7 +1089,7 @@
   [f x]
   (sort-impl x (fn :sort-by-comp [i j] (< (f i) (f j)))))
 
-(defn sorted
+(defn sort
   """
   Returns a new sorted array based on an indexed type `ind`. An omitted
   `before?` uses `<`; a supplied comparator orders the elements. Passing
@@ -1099,7 +1099,7 @@
   ([ind before?]
     (sort-impl (array/slice ind) before?)))
 
-(defn sorted-by
+(defn sort-by
   """
   Returns a new sorted array based on an indexed type `ind`.
   Comparison is done by invoking a function `f` on each element and
@@ -1851,7 +1851,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (loop [k :in ks :while (not (nil? d))] (set d (get d k)))
   (if (= nil d) dflt d)))
 
-(defn update-in
+(defn update-in!
   """
   Update a value in a nested data structure `ds`. Looks into `ds` via a sequence of keys,
   and replaces the value found there with `f` applied to that value.
@@ -1875,7 +1875,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (put d last-key (f last-val |args))
   ds)
 
-(defn put-in
+(defn put-in!
   """
   Put a value into a nested data structure `ds`. Looks into `ds` via
   a sequence of keys. Missing data structures will be replaced with tables. Returns
@@ -1898,7 +1898,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (put d last-key v)
   ds)
 
-(defn update
+(defn update!
   """
   For a given key in data structure `ds`, replace its corresponding value with the
   result of calling `func` on that value. If `args` are provided, they will be passed
@@ -1908,7 +1908,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (def old (get ds key))
   (put ds key (func old |args)))
 
-(defn merge-into
+(defn merge!
   """
   Merges multiple dictionaries into table `tab`. If a key appears in
   more than one dictionary in `dicts`, then later values replace any
@@ -2044,7 +2044,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (each x xs (if (in seen x) nil (do (put seen x true) (array/push ret x))))
   ret)
 
-(defn flatten-into
+(defn flatten!
   """
   Appends the depth-first traversal of an indexed type `ind` into a
   given array `into`. Returns `into`.
@@ -2052,7 +2052,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   [into ind]
   (each elt ind
     (if (indexed? elt)
-      (flatten-into into elt)
+      (flatten! into elt)
       (array/push into elt)))
   into)
 
@@ -2062,7 +2062,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   array.
   """
   [ind]
-  (flatten-into ![] ind))
+  (flatten! ![] ind))
 
 (defn kvs
   """
@@ -2374,12 +2374,12 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     ; Global unification
     (eachp [binding syms] gun
       (array/push unify (tuple = binding |syms)))
-    (sort unify)
+    (sort! unify)
     (array/concat anda unify)
     ; Final binding
-    (def defs (seq [[k v] :in (sort (pairs b2g))] (tuple 'def k (first v))))
+    (def defs (seq [[k v] :in (sort! (pairs b2g))] (tuple 'def k (first v))))
     (def unused-defs
-      (seq [[k v] :in (sort (pairs b2g))] (tuple 'def k :unused (first v))))
+      (seq [[k v] :in (sort! (pairs b2g))] (tuple 'def k :unused (first v))))
     ; Predicates
     (unless (empty? preds)
       (def pred-join `(do ~|unused-defs (and ~|preds)))
@@ -2699,15 +2699,15 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (cond
       (keyword? m) (put metadata m true)
       (string? m) (put metadata :doc m)
-      (dictionary? m) (merge-into metadata m)
+      (dictionary? m) (merge! metadata m)
       (error (string "invalid metadata " m))))
   (with-syms [entry old-entry f]
     `(as-macro ~let [~old-entry (~dyn '~name)]
        (def ~entry (as-macro ~or ~old-entry !{:ref ![nil]}))
        (~setdyn '~name ~entry)
        (def ~f ~fbody)
-       (~put-in ~entry [:ref 0] ~f)
-       (~merge-into ~entry '~metadata)
+       (~put-in! ~entry [:ref 0] ~f)
+       (~merge! ~entry '~metadata)
        ~f)))
 
 ;;;
@@ -3425,7 +3425,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (put nextenv :debug-level level)
   (put nextenv :signal (fiber/last-value fiber))
 
-  (merge-into nextenv debugger-env)
+  (merge! nextenv debugger-env)
   (defn debugger-chunks [buf p]
     (def status (:state p :delimiters))
     (def c ((:where p) 0))
@@ -3676,7 +3676,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
          k :keys envi
          :when (pred k)]
     (put ret-set k true))
-  (sort (keys ret-set))))
+  (sort! (keys ret-set))))
 
 (defn all-bindings
   """
@@ -4774,7 +4774,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     []
     (def d (bundle-dir))
     (if (os/stat d :mode)
-      (sort (os/dir d))
+      (sort! (os/dir d))
       ![]))
 
   (defn- bundle-uninstall-unchecked
@@ -4808,7 +4808,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
         (each d deps
           (if (= d bundle-name) (put breakage b true)))))
     (when (next breakage)
-      (def breakage-list (sorted (keys breakage)))
+      (def breakage-list (sort (keys breakage)))
       (errorf "cannot uninstall %s, breaks dependent bundles %n" bundle-name breakage-list))
     (bundle-uninstall-unchecked bundle-name))
 
@@ -4911,7 +4911,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (when (= :directory (os/stat implicit-sources :mode))
       (copyrf implicit-sources (bundle-dir bundle-name)))
     (def man !{:name bundle-name :local-source path :files ![]})
-    (merge-into man config)
+    (merge! man config)
     (sync-manifest man)
     (edefer (do (print "installation error, uninstalling") (bundle/uninstall bundle-name))
       (when info
@@ -5441,7 +5441,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     ; Drop simple types, otherwise we get odd issues when loading foreign data from a different Janet version.
     ; It also doesn't usually save any space to encode these anyway.
     (if (or (string? v) (keyword? v) (number? v)) (put load-dict k nil)))
-  (merge-into load-image-dict load-dict)
+  (merge! load-image-dict load-dict)
 
   (def image
     (let [env-pairs (pairs (env-lookup root-env))

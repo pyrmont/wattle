@@ -305,7 +305,7 @@
         "short-fn frame opens a reader macro and a container")
 
 ; A keyless call gives both, and an unknown key is an error.
-(assert (deep= ![:delimiters :frames] (sorted (keys (parser/state pd)))) "state keys")
+(assert (deep= ![:delimiters :frames] (sort (keys (parser/state pd)))) "state keys")
 (assert-error "unexpected keyword :nope" (parser/state pd :nope))
 
 ; parser/status over all four states.

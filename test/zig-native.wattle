@@ -420,7 +420,7 @@
 (def apply-fn (from-module 'apply))
 (def attempt (from-module 'attempt))
 (def status-of (from-module 'status-of))
-(def sorted (from-module 'sorted))
+(def sort (from-module 'sort))
 (def kept-across (from-module 'kept-across))
 (def unkept-across (from-module 'unkept-across))
 
@@ -521,17 +521,17 @@
 (assert (= 101 reached) "and every level ran")
 
 ; The shape that justifies the part: a comparator passed to a sort.
-(assert (deep= ![1 2 3 5 9] (sorted < ![5 1 9 2 3])) "an nfunction comparator")
-(assert (deep= ![9 5 3 2 1] (sorted > [5 1 9 2 3])) "and over a tuple")
-(assert (deep= ![9 5 3 2 1] (sorted (fn [a b] (> a b)) ![5 1 9 2 3]))
+(assert (deep= ![1 2 3 5 9] (sort < ![5 1 9 2 3])) "an nfunction comparator")
+(assert (deep= ![9 5 3 2 1] (sort > [5 1 9 2 3])) "and over a tuple")
+(assert (deep= ![9 5 3 2 1] (sort (fn [a b] (> a b)) ![5 1 9 2 3]))
         "and a Wattle function")
-(assert (deep= ![] (sorted < ![])) "the empty case")
-(assert (deep= ![1] (sorted < ![1])) "and the one-element case")
-(assert (= "boom" (refusal sorted (fn [a b] (error "boom")) ![2 1]))
+(assert (deep= ![] (sort < ![])) "the empty case")
+(assert (deep= ![1] (sort < ![1])) "and the one-element case")
+(assert (= "boom" (refusal sort (fn [a b] (error "boom")) ![2 1]))
         "a comparator that raises raises through the sort")
-(assert (deep= ![1 2 3 5 9] (sorted (fn [a b] (gccollect) (< a b)) ![5 1 9 2 3]))
+(assert (deep= ![1 2 3 5 9] (sort (fn [a b] (gccollect) (< a b)) ![5 1 9 2 3]))
         "and the working array survives a collection inside the comparator")
-(assert (deep= (sort (array |(string/bytes "keeper"))) (sorted < k))
+(assert (deep= (sort! (array |(string/bytes "keeper"))) (sort < k))
         "an indexed abstract is copied into the working array run by run")
 
 ; Forwarding an nfunction's own `argv` is the shortest thing a module does with

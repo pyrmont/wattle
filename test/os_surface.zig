@@ -738,7 +738,7 @@ fn theOptionalArguments() void {
     ++ "\n" ++ the_dst_span ++ "\n" ++
         \\  (assert (= (os/mktime base true)
         \\             (os/mktime (merge base {:dst false}) true)))
-        \\  (assert (= (os/mktime base true) (os/mktime (merge-into !{} base) true)))
+        \\  (assert (= (os/mktime base true) (os/mktime (merge! !{} base) true)))
         \\  (assert (= (os/mktime (merge base {:dst true}) true)
         \\             (os/mktime (hash-map |(kvs base) :dst true) true)))
         \\  (if saved-tz (os/setenv "TZ" saved-tz) (os/setenv "TZ")))

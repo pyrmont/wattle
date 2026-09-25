@@ -133,10 +133,10 @@
 (assert (= 0 (cmp v v)) "one vector against itself")
 (assert (= -1 (cmp (vector 1 2) (vector 1 3))) "order by element")
 (assert (= -1 (cmp (vector 1 2) (vector 1 2 0))) "a prefix orders first")
-(assert (deep= ![![] (vector) !{}] (sort ![!{} (vector) ![]]))
+(assert (deep= ![![] (vector) !{}] (sort! ![!{} (vector) ![]]))
   "a vector sorts between an array and a table")
 (assert (deep= ![(vector) (vector 0 9) (vector 1)]
-               (sort ![(vector 1) (vector) (vector 0 9)])) "sort")
+               (sort! ![(vector 1) (vector) (vector 0 9)])) "sort")
 
 ; Marshalling
 

@@ -400,7 +400,7 @@ fn defs(env: *wattle.Env) wattle.Error!void {
         wattle.reg("invoke", &invoke, "(invoke name & args)\n\nCall the method name on the first of args."),
         wattle.reg("attempt", &attempt, "(attempt f & args)\n\nCall f on a fresh fiber, returning [signal value fiber]."),
         wattle.reg("status-of", &statusOf, "(status-of x)\n\nThe status of a fiber, refusing anything else."),
-        wattle.reg("sorted", &sorted, "(sorted cmp indexed)\n\nAn insertion sort whose comparator is a Wattle function."),
+        wattle.reg("sort", &sort, "(sort cmp indexed)\n\nAn insertion sort whose comparator is a Wattle function."),
         wattle.reg("kept-across", &keptAcross, "(kept-across f)\n\nA rooted value carried across a call into f."),
         wattle.reg("unkept-across", &unkeptAcross, "(unkept-across f)\n\nThe same with no root: the case the root exists for."),
         wattle.reg("later", &later, "(later x)\n\nA value computed on this module's own thread, awaited and woken."),
@@ -788,7 +788,7 @@ fn size(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.number(@floatFromInt(try wattle.length(argv[0])));
 }
 
-/// `(sorted cmp indexed)`: an insertion sort whose comparator is Janet's.
+/// `(sort cmp indexed)`: an insertion sort whose comparator is Janet's.
 ///
 /// The working array is rooted for the whole sort, which is what the fixture
 /// is for rather than an aside. Every `call` re-enters the interpreter
@@ -801,7 +801,7 @@ fn size(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// The sort itself reads and writes through `get` and `put` rather than
 /// through the `Indexed` `getIndexed` returned, because an `Indexed` does not
 /// survive a re-entry.
-fn sorted(argv: []wattle.Value) wattle.Error!wattle.Value {
+fn sort(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 2);
     var items = try wattle.getIndexed(argv, 1);
     const count = items.len;
