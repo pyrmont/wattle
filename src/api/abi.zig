@@ -426,18 +426,20 @@ pub const Range = extern struct {
     end: i32 = 0,
 };
 
-/// One registration row: a name, an nfunction and three pieces of metadata.
+/// One registration row: a name, an nfunction and four pieces of metadata.
 ///
 /// `module.reg` returns a `Reg` and `module.nfuns` takes a table of `Reg`.
-/// `documentation` is the docstring, and `source_file` and `source_line` are
-/// where the nfunction is defined, for the source map. `module.reg` fills
-/// `documentation` and leaves the other two at their defaults.
+/// `documentation` is the docstring, and `signatures` is the function
+/// signatures, one per line. `source_file` and `source_line` are where the
+/// nfunction is defined, for the source map. `module.reg` fills
+/// `documentation` and `signatures` and leaves the other two at their defaults.
 pub const Reg = extern struct {
     name: ?[*:0]const u8 = null,
     nfun: NFunction = null,
     documentation: ?[*:0]const u8 = null,
     source_file: ?[*:0]const u8 = null,
     source_line: i32 = 0,
+    signatures: ?[*:0]const u8 = null,
 };
 
 /// The capability to append bytes to the buffer a value is being rendered

@@ -209,7 +209,8 @@ fn defs(env: *wattle.Env) wattle.Error!void {
         wattle.reg(
             "sha256",
             &sha256,
-            "(digest/sha256 bytes)\n\nThe SHA-256 of bytes, as lowercase hex, hashed on a thread of its own.",
+            "(digest/sha256 bytes)",
+            "The SHA-256 of bytes, as lowercase hex, hashed on a thread of its own.",
         ),
     });
 }

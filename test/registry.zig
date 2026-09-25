@@ -386,7 +386,7 @@ fn defAndVarBuildDifferentEntries() raise.Error!void {
     expect(harness.integerIs(tables.get(t, value.fromBytes("value", .keyword)), 7));
     expect(harness.isType(tables.get(t, value.fromBytes("ref", .keyword)), repr.Tag.nil));
 
-    try registry.defVarSm(env, "v", harness.wrapInteger(8), null, null, 0);
+    try registry.defVarSm(env, "v", harness.wrapInteger(8), null, null, null, 0);
     t = wrap.toTable(tables.get(env, value.fromBytes("v", .symbol)));
     // A var's value is in a one-element array under `:ref`, and there is no
     // `:value` key at all.
@@ -399,11 +399,11 @@ fn defAndVarBuildDifferentEntries() raise.Error!void {
 
     // A source line of zero suppresses the map even when the file is given,
     // because the file alone locates nothing.
-    registry.defSm(env, "nomap", wrap.fromNil(), null, "f.c", 0);
+    registry.defSm(env, "nomap", wrap.fromNil(), null, null, "f.c", 0);
     t = wrap.toTable(tables.get(env, value.fromBytes("nomap", .symbol)));
     expect(harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil));
 
-    try registry.defVarSm(env, "vmap", wrap.fromNil(), null, "f.c", 9);
+    try registry.defVarSm(env, "vmap", wrap.fromNil(), null, null, "f.c", 9);
     t = wrap.toTable(tables.get(env, value.fromBytes("vmap", .symbol)));
     expect(!harness.isType(tables.get(t, value.fromBytes("source-map", .keyword)), repr.Tag.nil));
 }
@@ -525,7 +525,7 @@ fn resolveDereferencesOnlyTheDynamicBindings() raise.Error!void {
     // A plain var resolves to the ref *array*, not to its contents: only the
     // two dynamic types are dereferenced. So `registry.resolve` and
     // `registry.resolveExt` agree here, and differ only below.
-    try registry.defVarSm(env, "v", harness.wrapInteger(4), null, null, 0);
+    try registry.defVarSm(env, "v", harness.wrapInteger(4), null, null, null, 0);
     const v = registry.resolve(env, symbols.csymbol("v"));
     expect(v.type == .@"var");
     expect(harness.isType(v.value, repr.Tag.array));

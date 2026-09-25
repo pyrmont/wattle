@@ -195,8 +195,10 @@
 (eval (tuple 'defn 'vec-doc "a docstring" (vector) 'nil))
 
 (assert (= 3 (vec-defn 2)) "defn takes a vector parameter list")
-(assert (= "(vec-doc)\n\na docstring" (get (dyn 'vec-doc) :doc))
+(assert (= "a docstring" (get (dyn 'vec-doc) :doc))
         "defn finds the docstring before a vector parameter list")
+(assert (= "(vec-doc)" (get (dyn 'vec-doc) :sigs))
+        "defn records the signature of a vector parameter list")
 
 (assert (= 1 (eval (tuple 'match (vector 1 2) (vector 'a 'b) 'a)))
         "match binds a vector pattern")

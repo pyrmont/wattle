@@ -274,10 +274,10 @@ fn defs(env: *wattle.Env) wattle.Error!void {
     // registry does not have raises `unknown abstract type`.
     try wattle.registerAbstract(&num_array_type);
     wattle.nfuns(env, "numarray", &.{
-        wattle.reg("new", &new, "(numarray/new size)\n\nCreate new numarray"),
-        wattle.reg("scale", &scale, "(numarray/scale numarray factor)\n\nScale numarray by factor"),
-        wattle.reg("sum", &sum, "(numarray/sum numarray)\n\nSum numarray"),
-        wattle.reg("length", &length, "(numarray/length numarray)\n\nLength of numarray"),
+        wattle.reg("new", &new, "(numarray/new size)", "Create new numarray"),
+        wattle.reg("scale", &scale, "(numarray/scale numarray factor)", "Scale numarray by factor"),
+        wattle.reg("sum", &sum, "(numarray/sum numarray)", "Sum numarray"),
+        wattle.reg("length", &length, "(numarray/length numarray)", "Length of numarray"),
     });
 }
 

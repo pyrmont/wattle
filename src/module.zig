@@ -222,7 +222,7 @@ pub const Marshal = abi.Marshal;
 /// ```
 pub const Range = abi.Range;
 
-/// One registration row: a name, an nfunction and three pieces of metadata.
+/// One registration row: a name, an nfunction and four pieces of metadata.
 /// `reg` returns a `Reg` and `nfuns` takes a table of `Reg`.
 pub const Reg = abi.Reg;
 
@@ -1469,14 +1469,17 @@ pub fn put(d: Value, key: Value, x: Value) Error!void {
 
 /// Builds one registration row.
 ///
-/// `nfun` must be of type `fn (argv: []Value) Error!Value`. A function of any
-/// other shape is a compile error describing what is wrong with it.
-pub fn reg(comptime name: [:0]const u8, nfun: anytype, comptime doc: ?[:0]const u8) Reg {
+/// `sigs` is the function signatures, one per line, and `doc` the
+/// docstring. `nfun` must be of type `fn (argv: []Value) Error!Value`. A
+/// function of any other shape is a compile error describing what is wrong
+/// with it.
+pub fn reg(comptime name: [:0]const u8, nfun: anytype, comptime sigs: ?[:0]const u8, comptime doc: ?[:0]const u8) Reg {
     comptime checkNFunction(name, @TypeOf(nfun));
     return .{
         .name = name.ptr,
         .nfun = raise.stored(nfun),
         .documentation = if (doc) |d| d.ptr else null,
+        .signatures = if (sigs) |g| g.ptr else null,
     };
 }
 

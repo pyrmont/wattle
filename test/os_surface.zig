@@ -509,7 +509,8 @@ fn theRegistration() void {
     if (!no_docstrings) {
         harness.inFiber(env,
             \\(assert (string? ((dyn 'os/stat) :doc)))
-            \\(assert (string/has-prefix? "(os/stat path" ((dyn 'os/stat) :doc)))
+            \\(assert (string/has-prefix? "(os/stat path" ((dyn 'os/stat) :sigs)))
+            \\(assert (not (string/has-prefix? "(" ((dyn 'os/stat) :doc))))
             \\(assert (string? ((dyn 'os/date) :doc)))
         );
         if (!no_processes) {

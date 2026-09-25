@@ -18,7 +18,7 @@ fn widened(argv: []wattle.Value) anyerror!wattle.Value {
 
 fn defs(env: *wattle.Env) wattle.Error!void {
     wattle.nfuns(env, "broad", &.{
-        wattle.reg("widened", &widened, null),
+        wattle.reg("widened", &widened, null, null),
     });
 }
 

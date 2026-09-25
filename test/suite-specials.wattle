@@ -151,9 +151,12 @@
   (identity x))
 (assert (= :quux (get (dyn 'foo-fn-with-meta) :baz))
         "extra struct in defn is metadata")
-(assert (= "(foo-fn-with-meta x)\n\nThis is a function"
+(assert (= "This is a function"
            (get (dyn 'foo-fn-with-meta) :doc))
         "extra string in defn is docstring")
+(assert (= "(foo-fn-with-meta x)"
+           (get (dyn 'foo-fn-with-meta) :sigs))
+        "defn keeps the signature out of the docstring")
 
 ; Break
 ; 4a111b38b

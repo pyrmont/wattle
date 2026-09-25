@@ -7,10 +7,8 @@
 ;;;
 ;;;
 
-(def defn :macro :flycheck
+(def defn :macro :flycheck {:sigs "(defn name & more)"}
   """
-  (defn name & more)
-
   Define a function. Equivalent to `(def name (fn name [args] ...))`.
   """
   (fn defn [name & more]
@@ -32,7 +30,7 @@
               (if (< i len) (recur (+ i 1))))))))
     (def start (fstart 0))
     (def args (in more start))
-    ; Add function signature to docstring
+    ; Record the function signatures under `:sigs`
     (def clauses? (= (type args) :tuple))
     (def buf (buffer))
     (var clause-index start)
@@ -58,7 +56,8 @@
         (set index (+ index 1)))
       (buffer/push-string buf ")\n")
       (set clause-index (if clauses? (+ clause-index 1) len)))
-    (array/push modifiers (string buf "\n" docstr))
+    (array/push modifiers docstr)
+    (array/push modifiers {:sigs (string/slice buf 0 (- (length buf) 1))})
     (if (dyn :debug) (array/push modifiers {:source-form (dyn :macro-form)}))
     ; Build return value
     `(def ~name ~|modifiers (fn ~name ~|(tuple/slice more start)))))
@@ -3798,15 +3797,6 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
       (finish-p)
       new-indent))
 
-  ; Handle first line specially for defn, defmacro, etc.
-  (when (= (chr "(") (in str 0))
-    (skipline)
-    (def first-line (string/slice str 0 (- cursor 1)))
-    (def fl-open (if has-color "\e[97m" ""))
-    (def fl-close (if has-color "\e[39m" ""))
-    ; `emit-node` prints a line only if it is a tuple, and `[...]` is a vector.
-    (push (tuple [(string fl-open first-line fl-close) (length first-line)])))
-
   (parse-blocks 0)
 
   ; Emission state
@@ -3901,13 +3891,25 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
               (type (x :value)))
             "\n"))
   (def sm (x :source-map))
+  (def sigs (x :sigs))
   (def d (x :doc))
+  (def sigs-text
+    (when sigs
+      (def has-color (dyn *doc-color*))
+      (string "\n"
+              (when has-color "\e[97m")
+              "    " (string/replace-all "\n" "\n    " sigs)
+              (when has-color "\e[39m")
+              "\n")))
   (print "\n\n"
          bind-type
          (when-let [[path line col] sm]
            (string "    " path (when (and line col) (string " on line " line ", column " col))))
          (when sm "\n")
-         (if d (doc-format d) "\n    no documentation found.\n")
+         sigs-text
+         (cond
+           d (doc-format d)
+           (not sigs) "\n    no documentation found.\n")
          "\n"))
 
 (defn- print-special-form-entry
@@ -5314,7 +5316,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
          :when (symbol? k)]
     (def flat (table/proto-flatten v))
     (when (boot/config :no-docstrings)
-      (put flat :doc nil))
+      (put flat :doc nil)
+      (put flat :sigs nil))
     (when (boot/config :no-sourcemaps)
       (put flat :source-map nil))
     (unless (boot/config :no-docstrings)

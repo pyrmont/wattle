@@ -290,10 +290,10 @@ fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// typed as raising, because that is the one shape `wattle.entry` takes.
 fn defs(env: *wattle.Env) wattle.Error!void {
     wattle.nfuns(env, "url", &.{
-        wattle.reg("slug", &slug, "(url/slug title &opt opts)\n\nA title as a URL path segment."),
-        wattle.reg("query", &query, "(url/query params)\n\nA map or table as a query string."),
-        wattle.reg("cut", &cut, "(url/cut text &opt start end)\n\nA slice of a byte argument."),
-        wattle.reg("parse-query", &parseQuery, "(url/parse-query query)\n\nA query string back into a map."),
+        wattle.reg("slug", &slug, "(url/slug title &opt opts)", "A title as a URL path segment."),
+        wattle.reg("query", &query, "(url/query params)", "A map or table as a query string."),
+        wattle.reg("cut", &cut, "(url/cut text &opt start end)", "A slice of a byte argument."),
+        wattle.reg("parse-query", &parseQuery, "(url/parse-query query)", "A query string back into a map."),
     });
 }
 

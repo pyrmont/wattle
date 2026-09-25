@@ -104,7 +104,7 @@ pub const BindingType = enum(u32) {
 /// installation rather than looked up per row.
 ///
 /// One `Reg` and one loop over one axis, whether each name is prefixed, because
-/// `def(env, n, f, doc)` is `defSm(env, n, f, doc, null, 0)`, and a source
+/// `def(env, n, f, doc)` is `defSm(env, n, f, doc, null, null, 0)`, and a source
 /// location the caller does not have is two nulls rather than a second entry
 /// point.
 ///
@@ -135,7 +135,7 @@ pub const Installer = struct {
         const fun = wrap.fromNfunction(entry.nfun);
         if (self.env) |env| {
             const name = if (self.nb) |*nb| nb.name(entry_name) else entry_name;
-            defSm(env, name, fun, entry.documentation, entry.source_file, entry.source_line);
+            defSm(env, name, fun, entry.documentation, entry.signatures, entry.source_file, entry.source_line);
         }
         putRow(self.registry, entry.nfun, entry_name, self.regprefix, entry.source_file, entry.source_line);
     }
@@ -318,17 +318,20 @@ pub fn coreNfunsExt(
 /// The runtime's definition of one core binding.
 ///
 /// `env` is the core lookup dictionary, `name` the binding and `x` its value.
-/// `p`, `sf` and `sl` are the documentation and source map the runtime drops;
-/// they are parameters so that this and `defSm` have one shape.
+/// `p`, `sg`, `sf` and `sl` are the documentation, signatures and source map
+/// the runtime drops; they are parameters so that this and `defSm` have one
+/// shape.
 pub fn coreDefSm(
     env: *tables.Table,
     name: [*:0]const u8,
     x: repr.Value,
     p: ?*const anyopaque,
+    sg: ?*const anyopaque,
     sf: ?*const anyopaque,
     sl: i32,
 ) void {
     _ = p;
+    _ = sg;
     _ = sf;
     _ = sl;
     const key = value.fromBytes(std.mem.span(name), .symbol);
@@ -343,24 +346,26 @@ pub fn coreDefSm(
 /// `env` is the environment, `name` the binding, `val` its value and `doc` its
 /// documentation.
 pub fn def(env: *tables.Table, name: [*:0]const u8, val: repr.Value, doc: ?[*:0]const u8) void {
-    defSm(env, name, val, doc, null, 0);
+    defSm(env, name, val, doc, null, null, 0);
 }
 
 /// Defines a binding, with documentation and a source map.
 ///
 /// `env` is the environment, `name` the binding, `val` its value, `doc` its
-/// documentation, and `source_file` and `source_line` where it was written.
+/// documentation, `sigs` its signatures, one per line, and `source_file` and
+/// `source_line` where it was written.
 pub fn defSm(
     env: *tables.Table,
     name: [*:0]const u8,
     val: repr.Value,
     doc: ?[*:0]const u8,
+    sigs: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
     source_line: i32,
 ) void {
     const subt = tables.new(2);
     tables.put(subt, value.fromBytes("value", .keyword), val);
-    addMeta(subt, doc, source_file, source_line);
+    addMeta(subt, doc, sigs, source_file, source_line);
     tables.put(env, value.fromBytes(std.mem.span(name), .symbol), wrap.fromTable(subt));
 }
 
@@ -369,7 +374,7 @@ pub fn defSm(
 /// `env` is the environment, `name` the binding, `val` its value and `doc` its
 /// documentation.
 pub fn defVarAbi(env: *tables.Table, name: [*:0]const u8, val: repr.Value, doc: ?[*:0]const u8) void {
-    raise.toAbi(defVarSm(env, name, val, doc, null, 0));
+    raise.toAbi(defVarSm(env, name, val, doc, null, null, 0));
 }
 
 /// Defines a var, with documentation and a source map.
@@ -385,6 +390,7 @@ pub fn defVarSm(
     name: [*:0]const u8,
     val: repr.Value,
     doc: ?[*:0]const u8,
+    sigs: ?[*:0]const u8,
     source_file: ?[*:0]const u8,
     source_line: i32,
 ) raise.Error!void {
@@ -392,7 +398,7 @@ pub fn defVarSm(
     const subt = tables.new(2);
     try arrays.push(array, val);
     tables.put(subt, value.fromBytes("ref", .keyword), wrap.fromArray(array));
-    addMeta(subt, doc, source_file, source_line);
+    addMeta(subt, doc, sigs, source_file, source_line);
     tables.put(env, value.fromBytes(std.mem.span(name), .symbol), wrap.fromTable(subt));
 }
 
@@ -563,14 +569,18 @@ pub fn textSubstitution(
 
 /// Attaches documentation and a source map to a binding's entry table.
 ///
-/// `table` is the entry, `doc` the documentation, and `source_file` and
-/// `source_line` the location. Both are optional and independent: a binding
-/// with no docstring gets no `:doc`, and one whose source is unknown gets no
+/// `table` is the entry, `doc` the documentation, `sigs` the signatures, and
+/// `source_file` and `source_line` the location. Each is optional and
+/// independent: a binding with no docstring gets no `:doc`, one with no
+/// signatures gets no `:sigs`, and one whose source is unknown gets no
 /// `:source-map`. The line number is tested rather than the file name, because
 /// the file alone locates nothing.
-fn addMeta(table: *tables.Table, doc: ?[*:0]const u8, source_file: ?[*:0]const u8, source_line: i32) void {
+fn addMeta(table: *tables.Table, doc: ?[*:0]const u8, sigs: ?[*:0]const u8, source_file: ?[*:0]const u8, source_line: i32) void {
     if (doc) |text| {
         tables.put(table, value.fromBytes("doc", .keyword), value.fromBytes(std.mem.span(text), .string));
+    }
+    if (sigs) |text| {
+        tables.put(table, value.fromBytes("sigs", .keyword), value.fromBytes(std.mem.span(text), .string));
     }
     if (source_file) |file| {
         if (source_line != 0) {

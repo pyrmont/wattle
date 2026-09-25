@@ -288,6 +288,15 @@ and the message names neither the cause nor the caller.
 report through a C-ABI function, and prints "no raising caller reaches a report"
 on a clean tree. Run it for every change that touches a raise.
 
+## Binding documentation
+
+A binding's entry table holds `:doc` and `:sigs`. `:doc` is the prose of the
+docstring. `:sigs` is a string of function signatures, one per line, such as
+`(f a)\n(f a b)`, and is absent for a binding that has none. `defn` fills both
+from its arity clauses and its docstring, and `corefn.reg` fills them from its
+`usage` and `doc` arguments. `doc` and the line editor's hint print `:sigs`
+first, then `:doc`. `-Ddocstrings=false` leaves out both keys.
+
 ## Boundaries
 
 Three things cross a boundary, and each is checked differently.

@@ -947,14 +947,21 @@
                                :doc "")))
         "no \\r in doc strings")
 
-; The signature line of a docstring is printed
-(assert (deep= (doc-format "(f x)\n\nBody." 80 4 false)
-               !"\n    (f x)\n\n    Body.\n")
-        "doc-format prints signature")
+; A docstring is formatted as prose, and signatures are kept apart
+(assert (deep= (doc-format "(f x) is prose.\n\nBody." 80 4 false)
+               !"\n    (f x) is prose.\n\n    Body.\n")
+        "doc-format does not treat a leading parenthesis as a signature")
 (defn clause-signatures "Body." ([x y] x) ([x] x))
-(assert (= "(clause-signatures x y)\n(clause-signatures x)\n\nBody."
-           (get ((fiber/getenv (fiber/current)) 'clause-signatures) :doc))
+(assert (= "(clause-signatures x y)\n(clause-signatures x)"
+           (get ((fiber/getenv (fiber/current)) 'clause-signatures) :sigs))
         "defn records every clause signature in source order")
+(assert (= "Body."
+           (get ((fiber/getenv (fiber/current)) 'clause-signatures) :doc))
+        "defn leaves the docstring as prose")
+(assert (let [out !""]
+          (with-dyns [:out out] (doc* 'clause-signatures))
+          (string/find "\n    (clause-signatures x y)\n    (clause-signatures x)\n\n    Body.\n" out))
+        "doc prints the signatures ahead of the docstring")
 (def expanded-clauses
   (macex '(fn ([x] (when true (+ x 1)))
               ([x y] (when y (+ x y))))))

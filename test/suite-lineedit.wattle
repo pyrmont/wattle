@@ -374,6 +374,12 @@
                           :args ["-e" documented]))
                 "a space after the token removes the hint"))
 
+  ; A binding with signatures is hinted with them ahead of its docstring.
+  (task (assert (= "a> zzdoc   (zzdoc x) (zzdoc x y) Does …\n@0,8\n"
+                   (drive """zzdoc""" :marker "a> " :screen true :cursor true :cols 40
+                          :args ["-e" (completing "'zzdoc (table :sigs \"(zzdoc x)\\n(zzdoc x y)\" :doc \"Does a long thing.\")")]))
+                "the hint for a binding with signatures starts with them"))
+
   ; A blank line that ends a paragraph may have a carriage return or spaces
   ; on it, as in a docstring from a file with CRLF line ends.
   (task (assert (= "a> zzdoc   (zzdoc x) First.\n"

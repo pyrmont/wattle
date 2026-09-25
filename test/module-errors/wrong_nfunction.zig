@@ -19,7 +19,7 @@ fn oldShape(argc: i32, argv: [*]wattle.Value) wattle.Value {
 
 fn defs(env: *wattle.Env) wattle.Error!void {
     wattle.nfuns(env, "wrong", &.{
-        wattle.reg("identity", &oldShape, null),
+        wattle.reg("identity", &oldShape, null, null),
     });
 }
 

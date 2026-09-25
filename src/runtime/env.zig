@@ -520,11 +520,9 @@ fn bitsText(buf: *[16]u8, bits: c_uint) [*:0]const u8 {
 fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     const env: *tables.Table = replacements orelse tables.new(0);
 
-    quickAsmDef(env, .{ .tag = constants.fun_cmp }, "cmp", 2, 2, 2, 2, &opOnly(constants.Opcode.compare.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cmp x y)\n\n" ++
-        "Returns -1 if x is strictly less than y, 1 if y is strictly greater " ++
+    quickAsmDef(env, .{ .tag = constants.fun_cmp }, "cmp", 2, 2, 2, 2, &opOnly(constants.Opcode.compare.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cmp x y)", "Returns -1 if x is strictly less than y, 1 if y is strictly greater " ++
         "than x, and 0 otherwise. To return 0, x and y must be the exact same type.");
-    quickAsmDef(env, .{ .tag = constants.fun_next }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x [key])\n\n" ++
-        "Gets the next key in `x`. Can be used to iterate through " ++
+    quickAsmDef(env, .{ .tag = constants.fun_next }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x [key])", "Gets the next key in `x`. Can be used to iterate through " ++
         "the keys of `x` in an unspecified order. Keys are guaranteed " ++
         "to be seen only once per iteration if `x` is not mutated " ++
         "during iteration. If `key` is `nil`, returns the first key. " ++
@@ -533,8 +531,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "\n" ++
         "`x` can be a bytes, indexed, dictionary, fiber, or abstract " ++
         "type with a suitable `next` method.");
-    quickAsmDef(env, .{ .tag = constants.fun_prop }, "propagate", 2, 2, 2, 2, &opOnly(constants.Opcode.propagate.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(propagate x fiber)\n\n" ++
-        "Propagate a signal from a fiber to the current fiber and " ++
+    quickAsmDef(env, .{ .tag = constants.fun_prop }, "propagate", 2, 2, 2, 2, &opOnly(constants.Opcode.propagate.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(propagate x fiber)", "Propagate a signal from a fiber to the current fiber and " ++
         "set the last value of the current fiber to `x`.  The signal " ++
         "value is then available as the status of the current fiber. " ++
         "The resulting stack trace from the current fiber will include " ++
@@ -542,25 +539,19 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "resuming the current fiber will first resume `fiber`. " ++
         "This function can be used to re-raise an error without losing " ++
         "the original stack trace.");
-    quickAsmDef(env, .{ .tag = constants.fun_debug }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug [x])\n\n" ++
-        "Throws a debug signal that can be caught by a parent fiber and used to inspect " ++
+    quickAsmDef(env, .{ .tag = constants.fun_debug }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug [x])", "Throws a debug signal that can be caught by a parent fiber and used to inspect " ++
         "the running state of the current fiber. Returns the value passed in by resume.");
-    quickAsmDef(env, .{ .tag = constants.fun_error }, "error", 1, 1, 1, 1, &opOnly(constants.Opcode.@"error"), "(error e)\n\n" ++
-        "Throws an error e that can be caught and handled by a parent fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_yield }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield [x])\n\n" ++
-        "Yield a value to a parent fiber. When a fiber yields, its execution is paused until " ++
+    quickAsmDef(env, .{ .tag = constants.fun_error }, "error", 1, 1, 1, 1, &opOnly(constants.Opcode.@"error"), "(error e)", "Throws an error e that can be caught and handled by a parent fiber.");
+    quickAsmDef(env, .{ .tag = constants.fun_yield }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield [x])", "Yield a value to a parent fiber. When a fiber yields, its execution is paused until " ++
         "another thread resumes it. The fiber will then resume, and the last yield call will " ++
         "return the value that was passed to resume.");
-    quickAsmDef(env, .{ .tag = constants.fun_cancel }, "cancel", 2, 2, 2, 2, &opOnly(constants.Opcode.cancel.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cancel fiber err)\n\n" ++
-        "Resume a fiber but have it immediately raise an error. This lets a programmer unwind a pending fiber. " ++
+    quickAsmDef(env, .{ .tag = constants.fun_cancel }, "cancel", 2, 2, 2, 2, &opOnly(constants.Opcode.cancel.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cancel fiber err)", "Resume a fiber but have it immediately raise an error. This lets a programmer unwind a pending fiber. " ++
         "Returns the same result as resume.");
-    quickAsmDef(env, .{ .tag = constants.fun_resume }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber [x])\n\n" ++
-        "Resume a new or suspended fiber and optionally pass in a value to the fiber that " ++
+    quickAsmDef(env, .{ .tag = constants.fun_resume }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber [x])", "Resume a new or suspended fiber and optionally pass in a value to the fiber that " ++
         "will be returned to the last yield in the case of a pending fiber, or the argument to " ++
         "the dispatch function in the case of a new fiber. Returns either the return result of " ++
         "the fiber's dispatch function, or the value from the next yield call in fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])\n\n" ++
-        "Get value in `x` at `key`. For bytes and indexed " ++
+    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])", "Get value in `x` at `key`. For bytes and indexed " ++
         "types, `key` must be a non-negative interger in " ++
         "bounds or an error is raised. For dictionaries " ++
         "`key` must be a non-nil value and if not found, " ++
@@ -571,8 +562,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     // The slice below is `get_asm`'s own length. Upstream passes `in_asm`'s
     // here; the two arrays are the same length, so nothing observes the
     // difference.
-    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])\n\n" ++
-        "Get the value mapped to `key` in `x`. Returns `dflt` " ++
+    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])", "Get the value mapped to `key` in `x`. Returns `dflt` " ++
         "or `nil` if `key` is not found. Similar to `in`, but " ++
         "will not throw an error if `key` is invalid for `x`. " ++
         "However, if `x` is an abstract type, its getter may " ++
@@ -580,8 +570,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "\n" ++
         "`x` can be a bytes, indexed, dictionary, fiber, or " ++
         "abstract type with a suitable `get` method.");
-    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)\n\n" ++
-        "Associate `key` with `val` for mutable `x`. Arrays " ++
+    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)", "Associate `key` with `val` for mutable `x`. Arrays " ++
         "and buffers only accept non-negative integer keys, " ++
         "and will expand if an out of bounds value is " ++
         "provided. For an array, extra space will be filled " ++
@@ -592,64 +581,44 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "table. Putting a `nil` value into a table will " ++
         "remove the table's corresponding association. " ++
         "Returns `x`.");
-    quickAsmDef(env, .{ .tag = constants.fun_length }, "length", 1, 1, 1, 1, &opOnly(constants.Opcode.length) ++ opOnly(constants.Opcode.@"return"), "(length ds)\n\n" ++
-        "Returns the length or count of a data structure in constant time as an integer. For " ++
+    quickAsmDef(env, .{ .tag = constants.fun_length }, "length", 1, 1, 1, 1, &opOnly(constants.Opcode.length) ++ opOnly(constants.Opcode.@"return"), "(length ds)", "Returns the length or count of a data structure in constant time as an integer. For " ++
         "structs and tables, returns the number of key-value pairs in the data structure.");
-    quickAsmDef(env, .{ .tag = constants.fun_bnot }, "bnot", 1, 1, 1, 1, &opOnly(constants.Opcode.bnot) ++ opOnly(constants.Opcode.@"return"), "(bnot x)\n\nReturns the bit-wise inverse of integer x.");
+    quickAsmDef(env, .{ .tag = constants.fun_bnot }, "bnot", 1, 1, 1, 1, &opOnly(constants.Opcode.bnot) ++ opOnly(constants.Opcode.@"return"), "(bnot x)", "Returns the bit-wise inverse of integer x.");
     makeApply(env);
 
     // Variadic operators
-    templatizeVarop(env, .{ .tag = constants.fun_add }, "+", 0, 0, constants.Opcode.add, "(+ & xs)\n\n" ++
-        "Returns the sum of all xs. If xs is empty, return 0.");
-    templatizeVarop(env, .{ .tag = constants.fun_subtract }, "-", 0, 0, constants.Opcode.subtract, "(- & xs)\n\n" ++
-        "Returns the difference of xs. If xs is empty, returns 0. If xs has one element, returns the " ++
+    templatizeVarop(env, .{ .tag = constants.fun_add }, "+", 0, 0, constants.Opcode.add, "(+ & xs)", "Returns the sum of all xs. If xs is empty, return 0.");
+    templatizeVarop(env, .{ .tag = constants.fun_subtract }, "-", 0, 0, constants.Opcode.subtract, "(- & xs)", "Returns the difference of xs. If xs is empty, returns 0. If xs has one element, returns the " ++
         "negative value of that element. Otherwise, returns the first element in xs minus the sum of " ++
         "the rest of the elements.");
-    templatizeVarop(env, .{ .tag = constants.fun_multiply }, "*", 1, 1, constants.Opcode.multiply, "(* & xs)\n\n" ++
-        "Returns the product of all elements in xs. If xs is empty, returns 1.");
-    templatizeVarop(env, .{ .tag = constants.fun_divide }, "/", 1, 1, constants.Opcode.divide, "(/ & xs)\n\n" ++
-        "Returns the quotient of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
+    templatizeVarop(env, .{ .tag = constants.fun_multiply }, "*", 1, 1, constants.Opcode.multiply, "(* & xs)", "Returns the product of all elements in xs. If xs is empty, returns 1.");
+    templatizeVarop(env, .{ .tag = constants.fun_divide }, "/", 1, 1, constants.Opcode.divide, "(/ & xs)", "Returns the quotient of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
         "the reciprocal of x. Otherwise return the first value of xs repeatedly divided by the remaining " ++
         "values.");
-    templatizeVarop(env, .{ .tag = constants.fun_divide_floor }, "div", 1, 1, constants.Opcode.divide_floor, "(div & xs)\n\n" ++
-        "Returns the floored division of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
+    templatizeVarop(env, .{ .tag = constants.fun_divide_floor }, "div", 1, 1, constants.Opcode.divide_floor, "(div & xs)", "Returns the floored division of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
         "the reciprocal of x. Otherwise return the first value of xs repeatedly divided by the remaining " ++
         "values.");
-    templatizeVarop(env, .{ .tag = constants.fun_modulo }, "mod", 0, 1, constants.Opcode.modulo, "(mod & xs)\n\n" ++
-        "Returns the result of applying the modulo operator on the first value of xs with each remaining value. " ++
+    templatizeVarop(env, .{ .tag = constants.fun_modulo }, "mod", 0, 1, constants.Opcode.modulo, "(mod & xs)", "Returns the result of applying the modulo operator on the first value of xs with each remaining value. " ++
         "`(mod x 0)` is defined to be `x`.");
-    templatizeVarop(env, .{ .tag = constants.fun_remainder }, "%", 0, 1, constants.Opcode.remainder, "(% & xs)\n\n" ++
-        "Returns the remainder of dividing the first value of xs by each remaining value.");
-    templatizeVarop(env, .{ .tag = constants.fun_band }, "band", -1, -1, constants.Opcode.band, "(band & xs)\n\n" ++
-        "Returns the bit-wise and of all values in xs. Each x in xs must be an integer.");
-    templatizeVarop(env, .{ .tag = constants.fun_bor }, "bor", 0, 0, constants.Opcode.bor, "(bor & xs)\n\n" ++
-        "Returns the bit-wise or of all values in xs. Each x in xs must be an integer.");
-    templatizeVarop(env, .{ .tag = constants.fun_bxor }, "bxor", 0, 0, constants.Opcode.bxor, "(bxor & xs)\n\n" ++
-        "Returns the bit-wise xor of all values in xs. Each x in xs must be an integer.");
-    templatizeVarop(env, .{ .tag = constants.fun_lshift }, "blshift", 1, 1, constants.Opcode.shift_left, "(blshift x & shifts)\n\n" ++
-        "Returns the value of x bit shifted left by the sum of all values in shifts. x " ++
+    templatizeVarop(env, .{ .tag = constants.fun_remainder }, "%", 0, 1, constants.Opcode.remainder, "(% & xs)", "Returns the remainder of dividing the first value of xs by each remaining value.");
+    templatizeVarop(env, .{ .tag = constants.fun_band }, "band", -1, -1, constants.Opcode.band, "(band & xs)", "Returns the bit-wise and of all values in xs. Each x in xs must be an integer.");
+    templatizeVarop(env, .{ .tag = constants.fun_bor }, "bor", 0, 0, constants.Opcode.bor, "(bor & xs)", "Returns the bit-wise or of all values in xs. Each x in xs must be an integer.");
+    templatizeVarop(env, .{ .tag = constants.fun_bxor }, "bxor", 0, 0, constants.Opcode.bxor, "(bxor & xs)", "Returns the bit-wise xor of all values in xs. Each x in xs must be an integer.");
+    templatizeVarop(env, .{ .tag = constants.fun_lshift }, "blshift", 1, 1, constants.Opcode.shift_left, "(blshift x & shifts)", "Returns the value of x bit shifted left by the sum of all values in shifts. x " ++
         "and each element in shift must be an integer.");
-    templatizeVarop(env, .{ .tag = constants.fun_rshift }, "brshift", 1, 1, constants.Opcode.shift_right, "(brshift x & shifts)\n\n" ++
-        "Returns the value of x bit shifted right by the sum of all values in shifts. x " ++
+    templatizeVarop(env, .{ .tag = constants.fun_rshift }, "brshift", 1, 1, constants.Opcode.shift_right, "(brshift x & shifts)", "Returns the value of x bit shifted right by the sum of all values in shifts. x " ++
         "and each element in shift must be an integer.");
-    templatizeVarop(env, .{ .tag = constants.fun_rshiftu }, "brushift", 1, 1, constants.Opcode.shift_right_unsigned, "(brushift x & shifts)\n\n" ++
-        "Returns the value of x bit shifted right by the sum of all values in shifts. x " ++
+    templatizeVarop(env, .{ .tag = constants.fun_rshiftu }, "brushift", 1, 1, constants.Opcode.shift_right_unsigned, "(brushift x & shifts)", "Returns the value of x bit shifted right by the sum of all values in shifts. x " ++
         "and each element in shift must be an integer. The sign of x is not preserved, so " ++
         "for positive shifts the return value will always be positive.");
 
     // Variadic comparators
-    templatizeComparator(env, .{ .tag = constants.fun_gt }, ">", false, constants.Opcode.greater_than, "(> & xs)\n\n" ++
-        "Check if xs is in descending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_lt }, "<", false, constants.Opcode.less_than, "(< & xs)\n\n" ++
-        "Check if xs is in ascending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_gte }, ">=", false, constants.Opcode.greater_than_equal, "(>= & xs)\n\n" ++
-        "Check if xs is in non-ascending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_lte }, "<=", false, constants.Opcode.less_than_equal, "(<= & xs)\n\n" ++
-        "Check if xs is in non-descending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_eq }, "=", false, constants.Opcode.equals, "(= & xs)\n\n" ++
-        "Check if all values in xs are equal. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_neq }, "not=", true, constants.Opcode.equals, "(not= & xs)\n\n" ++
-        "Check if any values in xs are not equal. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_gt }, ">", false, constants.Opcode.greater_than, "(> & xs)", "Check if xs is in descending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_lt }, "<", false, constants.Opcode.less_than, "(< & xs)", "Check if xs is in ascending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_gte }, ">=", false, constants.Opcode.greater_than_equal, "(>= & xs)", "Check if xs is in non-ascending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_lte }, "<=", false, constants.Opcode.less_than_equal, "(<= & xs)", "Check if xs is in non-descending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_eq }, "=", false, constants.Opcode.equals, "(= & xs)", "Check if all values in xs are equal. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_neq }, "not=", true, constants.Opcode.equals, "(not= & xs)", "Check if any values in xs are not equal. Returns a boolean.");
 
     // Platform detection
     registry.def(env, "wattle/version", value.fromBytes(version_z, .string), "The version number of the running Wattle program.");
@@ -1449,8 +1418,8 @@ fn makeApply(env: *tables.Table) void {
         std.math.maxInt(i32),
         6,
         &apply_asm,
-        "(apply f & args)\n\n" ++
-            "Applies a function f to a variable number of arguments. Each " ++
+        "(apply f & args)",
+        "Applies a function f to a variable number of arguments. Each " ++
             "element in args is used as an argument to f, except the last " ++
             "element in args, which is expected to be an array or a tuple. " ++
             "Each element in this last argument is then also pushed as an " ++
@@ -1656,7 +1625,8 @@ fn quickAsm(
     return def;
 }
 
-/// The same, and defines it into the environment with its docstring.
+/// The same, and defines it into the environment with its signatures, one
+/// per line in `usage`, and its docstring.
 fn quickAsmDef(
     env: *tables.Table,
     flags: functions.FuncDefFlags,
@@ -1666,10 +1636,11 @@ fn quickAsmDef(
     max_arity: i32,
     slots: i32,
     bytecode: []const u32,
+    usage: [*:0]const u8,
     doc: [*:0]const u8,
 ) void {
     const def = quickAsm(flags, name, arity, min_arity, max_arity, slots, bytecode);
-    registry.def(env, name, wrap.fromFunction(functions.thunk(def)), doc);
+    registry.defSm(env, name, wrap.fromFunction(functions.thunk(def)), doc, usage, null, 0);
 }
 
 /// The variadic comparators. Registers: 0 args, 1 argn, 2 jump flag, 3 last
@@ -1680,6 +1651,7 @@ fn templatizeComparator(
     name: [*:0]const u8,
     invert: bool,
     op: anytype,
+    usage: [*:0]const u8,
     doc: [*:0]const u8,
 ) void {
     const comparator_asm = [_]u32{
@@ -1717,6 +1689,7 @@ fn templatizeComparator(
         std.math.maxInt(i32),
         6,
         &comparator_asm,
+        usage,
         doc,
     );
 }
@@ -1730,6 +1703,7 @@ fn templatizeVarop(
     nullary: i32,
     unary: i32,
     op: anytype,
+    usage: [*:0]const u8,
     doc: [*:0]const u8,
 ) void {
     const varop_asm = [_]u32{
@@ -1770,6 +1744,7 @@ fn templatizeVarop(
         std.math.maxInt(i32),
         6,
         &varop_asm,
+        usage,
         doc,
     );
 }

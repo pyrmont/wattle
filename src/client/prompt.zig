@@ -153,6 +153,10 @@ var source_env: ?*tables.Table = null;
 /// The text `hint` returns for a binding with no docstring.
 var type_hint: [80]u8 = undefined;
 
+/// The text `hint` returns for a binding with signatures, which is the
+/// signatures followed by the docstring.
+var sigs_hint: std.ArrayList(u8) = .empty;
+
 /// Whether standard output is a terminal, read when a line is opened.
 var output_is_terminal = false;
 
@@ -378,7 +382,7 @@ fn gather(token: []const u8, candidates: *lineedit.complete.Candidates) error{Ou
 }
 
 /// Returns the hint for `token`: the first two paragraphs of its binding's
-/// docstring, or its value's type, or null where the open line's
+/// signatures followed by its docstring, or its value's type, or null where the open line's
 /// environment does not bind `token`.
 ///
 /// This is the `lineedit.session.Hint` `read` gives the session. The result
@@ -386,6 +390,15 @@ fn gather(token: []const u8, candidates: *lineedit.complete.Candidates) error{Ou
 fn hint(token: []const u8) ?[]const u8 {
     const entry = binding(token) orelse return null;
     const doc = tables.getKeyword(entry, "doc");
+    const sigs = tables.getKeyword(entry, "sigs");
+    if (repr.checkType(sigs, repr.Tag.string)) {
+        const prose = if (repr.checkType(doc, repr.Tag.string)) strings.bytesOf(wrap.toString(doc)) else "";
+        sigs_hint.clearRetainingCapacity();
+        sigs_hint.appendSlice(std.heap.c_allocator, strings.bytesOf(wrap.toString(sigs))) catch return null;
+        sigs_hint.appendSlice(std.heap.c_allocator, "\n\n") catch return null;
+        sigs_hint.appendSlice(std.heap.c_allocator, prose) catch return null;
+        return paragraphs(sigs_hint.items, 2);
+    }
     if (repr.checkType(doc, repr.Tag.string)) return paragraphs(strings.bytesOf(wrap.toString(doc)), 2);
     var bound = tables.getKeyword(entry, "value");
     const ref = tables.getKeyword(entry, "ref");

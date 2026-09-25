@@ -134,11 +134,12 @@ pub fn def(
             name.ptr,
             value,
             doc.ptr,
+            null,
             if (with_sourcemaps) sourcePath(where).ptr else null,
             if (with_sourcemaps) @intCast(where.line) else 0,
         );
     } else {
-        registry.coreDefSm(env, name.ptr, value, doc.ptr, null, 0);
+        registry.coreDefSm(env, name.ptr, value, doc.ptr, null, null, 0);
     }
 }
 
@@ -177,7 +178,7 @@ pub fn installTerminated(env: *tables.Table, entries: [*]const Entry) void {
 /// Builds one row of a core nfunction table.
 ///
 /// `name` is the binding, `nfun` the implementation, `where` the caller's
-/// `@src()`, and `usage` and `doc` the two halves of the docstring. `where` is
+/// `@src()`, `usage` the signatures, one per line, and `doc` the docstring. `where` is
 /// a parameter rather than something this could work out for itself, because
 /// `@src()` reports the line it is written on and taking it here would name
 /// this file.
@@ -194,7 +195,8 @@ pub fn reg(
     return .{
         .name = name.ptr,
         .nfun = raise.stored(nfun),
-        .documentation = if (with_docstrings) (usage ++ "\n\n" ++ doc).ptr else null,
+        .documentation = if (with_docstrings) doc.ptr else null,
+        .signatures = if (with_docstrings) usage.ptr else null,
         .source_file = if (with_sourcemaps) sourcePath(where).ptr else null,
         .source_line = if (with_sourcemaps) @intCast(where.line) else 0,
     };
