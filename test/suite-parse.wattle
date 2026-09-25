@@ -180,12 +180,13 @@
 
 ; Parser line and column numbers
 ; 77b79e989
-(defn parser-location [input &opt location]
+(defn parser-location ([input] (parser-location input nil))
+  ([input location]
   (def p (parser/new))
   (parser/consume p input)
   (if location
     (parser/where p |location)
-    (parser/where p)))
+    (parser/where p))))
 
 (assert (= [1 7] (parser-location !"(+ 1 2)")) "parser location 1")
 (assert (= [5 7] (parser-location !"(+ 1 2)" [5])) "parser location 2")

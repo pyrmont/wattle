@@ -297,9 +297,9 @@ pub fn lib(env: *tables.Table) void {
     const trim_doc_tail = "whitespace from a byte sequence. If the argument " ++
         "`set` is provided, consider only characters in `set` to be whitespace.";
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("string/slice", &nfunStringSlice, @src(), "(string/slice bytes &opt start end)", slice_doc),
-        corefn.reg("keyword/slice", &nfunKeywordSlice, @src(), "(keyword/slice bytes &opt start end)", "Same as string/slice, but returns a keyword."),
-        corefn.reg("symbol/slice", &nfunSymbolSlice, @src(), "(symbol/slice bytes &opt start end)", "Same as string/slice, but returns a symbol."),
+        corefn.reg("string/slice", &nfunStringSlice, @src(), "(string/slice bytes [start [end]])", slice_doc),
+        corefn.reg("keyword/slice", &nfunKeywordSlice, @src(), "(keyword/slice bytes [start [end]])", "Same as string/slice, but returns a keyword."),
+        corefn.reg("symbol/slice", &nfunSymbolSlice, @src(), "(symbol/slice bytes [start [end]])", "Same as string/slice, but returns a symbol."),
         corefn.reg("string/repeat", &nfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is `n` copies of `bytes` concatenated."),
         corefn.reg("string/bytes", &nfunStringBytes, @src(), "(string/bytes str)", "Returns a tuple of integers that are the byte values of the string."),
         corefn.reg("string/from-bytes", &nfunStringFrombytes, @src(), "(string/from-bytes & byte-vals)", "Creates a string from integer parameters with byte values. All integers " ++
@@ -311,10 +311,10 @@ pub fn lib(env: *tables.Table) void {
             "uppercase version of themselves in ASCII. Does only a very simple " ++
             "case check, meaning no unicode support."),
         corefn.reg("string/reverse", &nfunStringReverse, @src(), "(string/reverse str)", "Returns a string that is the reversed version of `str`."),
-        corefn.reg("string/find", &nfunStringFind, @src(), "(string/find patt str &opt start-index)", "Searches for the first instance of pattern `patt` in string " ++
+        corefn.reg("string/find", &nfunStringFind, @src(), "(string/find patt str [start-index])", "Searches for the first instance of pattern `patt` in string " ++
             "`str`. Returns the index of the first character in `patt` if found, " ++
             "otherwise returns nil."),
-        corefn.reg("string/find-all", &nfunStringFindall, @src(), "(string/find-all patt str &opt start-index)", "Searches for all instances of pattern `patt` in string " ++
+        corefn.reg("string/find-all", &nfunStringFindall, @src(), "(string/find-all patt str [start-index])", "Searches for all instances of pattern `patt` in string " ++
             "`str`. Returns an array of all indices of found patterns. Overlapping " ++
             "instances of the pattern are counted individually, meaning a byte in `str` " ++
             "may contribute to multiple found patterns."),
@@ -329,7 +329,7 @@ pub fn lib(env: *tables.Table) void {
             "If `subst` is a function, it will be called with `patt` once for each match, " ++
             "and should return the actual replacement text to use. " ++
             "Will return the new string if `patt` is found, otherwise returns `str`."),
-        corefn.reg("string/split", &nfunStringSplit, @src(), "(string/split delim str &opt start limit)", "Splits a string `str` with delimiter `delim` and returns an array of " ++
+        corefn.reg("string/split", &nfunStringSplit, @src(), "(string/split delim str [start [limit]])", "Splits a string `str` with delimiter `delim` and returns an array of " ++
             "substrings. The substrings will not contain the delimiter `delim`. If `delim` " ++
             "is not found, the returned array will have one element. Will start searching " ++
             "for `delim` at the index `start` (if provided), and return up to a maximum " ++
@@ -337,7 +337,7 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("string/check-set", &nfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string `str` only contains bytes that appear in the string `set`. " ++
             "Returns true if all bytes in `str` appear in `set`, false if some bytes in `str` do " ++
             "not appear in `set`."),
-        corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join parts &opt sep)", "Joins an array of strings into one string, optionally separated by " ++
+        corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join parts [sep])", "Joins an array of strings into one string, optionally separated by " ++
             "a separator string `sep`."),
         corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
             "a new string.\n\n" ++
@@ -367,9 +367,9 @@ pub fn lib(env: *tables.Table) void {
             "- `m`, `M`: pretty format without truncating.\n" ++
             "- `q`, `Q`: pretty format on one line, truncating if necessary.\n" ++
             "- `n`, `N`: pretty format on one line without truncation.\n"),
-        corefn.reg("string/trim", &nfunStringTrim, @src(), "(string/trim str &opt set)", "Trim leading and trailing " ++ trim_doc_tail),
-        corefn.reg("string/triml", &nfunStringTriml, @src(), "(string/triml str &opt set)", "Trim leading " ++ trim_doc_tail),
-        corefn.reg("string/trimr", &nfunStringTrimr, @src(), "(string/trimr str &opt set)", "Trim trailing " ++ trim_doc_tail),
+        corefn.reg("string/trim", &nfunStringTrim, @src(), "(string/trim str [set])", "Trim leading and trailing " ++ trim_doc_tail),
+        corefn.reg("string/triml", &nfunStringTriml, @src(), "(string/triml str [set])", "Trim leading " ++ trim_doc_tail),
+        corefn.reg("string/trimr", &nfunStringTrimr, @src(), "(string/trimr str [set])", "Trim trailing " ++ trim_doc_tail),
     };
     corefn.install(env, entries);
 }

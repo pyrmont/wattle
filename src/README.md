@@ -147,6 +147,18 @@ accessor. `os/` and `os/fs/` are split where the platform differs.
 `os/abi.zig`, `net/abi.zig` and `filewatch/abi.zig` are the three host-header
 translations.
 
+### Call frames
+
+Each call frame occupies four `Value` slots below its stack base. Its
+`StackFrame` fields are the function, program counter, captured environment,
+previous frame index and a 32-bit flag word. In that word bit 0 marks a tail
+call, bit 1 marks an entrance, bits 2 to 7 store the argument count saturated
+at 63, bits 8 to 30 are reserved, and bit 31 marks an environment in the
+marshalled form. The last bit is clear in a live frame. The clause prologue's
+`jump_if_not_arity` reads the stored count; its verifier limits the compared
+count to 32. The unmarshaller rejects a non-saturated count outside the
+function's arity range.
+
 ## Module graph
 
 `build.zig` builds each of the following as a separate module. A module's
@@ -248,6 +260,9 @@ rather than a channel that goes quiet.
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
 An nfunction is a Zig function: `raise.NFunction` takes `[]Value` and returns
 `raise.Error!Value` in Zig's calling convention, so `argv[n]` is bounds-checked.
+Its documented call shape uses nested square brackets for optional arguments:
+`(os/date [time [local]])` accepts zero, one or two arguments. The brackets
+are documentation notation, not Wattle vector literals.
 
 A caller that can propagate the error writes `try`. A caller that cannot
 flattens it into a report, in one of four forms:

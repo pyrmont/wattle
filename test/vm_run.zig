@@ -330,11 +330,11 @@ fn theCallArityMessage() void {
     expectError("(do (defn f [x] x) (defn g [] (+ 1 (f))) (g))", "<function f> called with 0 arguments, expected 1");
     expectError("(do (defn f [x y] x) (defn g [] (+ 1 (f 1))) (g))", "<function f> called with 1 argument, expected 2");
     expectError(
-        "(do (defn optional [x &opt y] x) (var v optional) (v))",
+        "(do (defn optional ([x] x) ([x _y] x)) (var v optional) (v))",
         "<function optional> called with 0 arguments, expected 1 to 2",
     );
     expectError(
-        "(do (defn optional [x &opt y] x) (var v optional) (+ 1 (v)))",
+        "(do (defn optional ([x] x) ([x _y] x)) (var v optional) (+ 1 (v)))",
         "<function optional> called with 0 arguments, expected 1 to 2",
     );
 }

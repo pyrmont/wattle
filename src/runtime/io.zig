@@ -321,7 +321,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
         corefn.reg("eflush", &Flush("err", stderrFile).nfun, @src(), "(eflush)", "Flush `(dyn :err stderr)` if it is a file, otherwise do nothing."),
         corefn.reg("file/temp", &nfunTemp, @src(), "(file/temp)", "Open an anonymous temporary file that is removed on close. " ++
             "Raises an error on failure."),
-        corefn.reg("file/open", &nfunFopen, @src(), "(file/open path &opt mode buffer-size)", "Open a file. `path` is an absolute or relative path, and " ++
+        corefn.reg("file/open", &nfunFopen, @src(), "(file/open path [mode [buffer-size]])", "Open a file. `path` is an absolute or relative path, and " ++
             "`mode` is a set of flags indicating the mode to open the file in. " ++
             "`mode` is a keyword where each character represents a flag. If the file " ++
             "cannot be opened, returns nil, otherwise returns the new file handle. " ++
@@ -337,7 +337,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
         corefn.reg("file/close", &nfunFclose, @src(), "(file/close f)", "Close a file and release all related resources. When you are " ++
             "done reading a file, close it to prevent a resource leak and let " ++
             "other processes read the file."),
-        corefn.reg("file/read", &nfunFread, @src(), "(file/read f what &opt buf)", "Read a number of bytes from a file `f` into a buffer. A buffer `buf` can " ++
+        corefn.reg("file/read", &nfunFread, @src(), "(file/read f what [buf])", "Read a number of bytes from a file `f` into a buffer. A buffer `buf` can " ++
             "be provided as an optional third argument, otherwise a new buffer " ++
             "is created. `what` can either be an integer or a keyword. Returns the " ++
             "buffer with file contents. " ++
@@ -349,7 +349,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "string, buffer, symbol, or keyword. Returns the file."),
         corefn.reg("file/flush", &nfunFflush, @src(), "(file/flush f)", "Flush any buffered bytes to the file system. In most files, writes are " ++
             "buffered for efficiency reasons. Returns the file handle."),
-        corefn.reg("file/seek", &nfunFseek, @src(), "(file/seek f &opt whence n)", "Jump to a relative location in the file `f`. `whence` must be one of:\n\n" ++
+        corefn.reg("file/seek", &nfunFseek, @src(), "(file/seek f [whence [n]])", "Jump to a relative location in the file `f`. `whence` must be one of:\n\n" ++
             "* :cur - jump relative to the current file location\n\n" ++
             "* :set - jump relative to the beginning of the file\n\n" ++
             "* :end - jump relative to the end of the file\n\n" ++
@@ -684,7 +684,7 @@ fn nfunFflush(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(file/open path &opt mode buffer-size)`.
+/// `(file/open path [mode [buffer-size]])`.
 ///
 /// The file is opened in binary mode on every platform. On Windows the `b`
 /// a mode keyword lacks is added before `fopen` sees it, so the `b` flag is
@@ -749,7 +749,7 @@ fn nfunFopen(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(file/read f what &opt buf)`, where `what` is `:all`, `:line` or a byte
+/// `(file/read f what [buf])`, where `what` is `:all`, `:line` or a byte
 /// count.
 ///
 /// The readability test covers all three arms rather than the two that go
@@ -800,7 +800,7 @@ fn nfunFread(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBuffer(buffer);
 }
 
-/// `(file/seek f whence &opt n)`.
+/// `(file/seek f whence [n])`.
 fn nfunFseek(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);

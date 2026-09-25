@@ -74,7 +74,7 @@ const strerror_buf_len = if (builtin.os.tag == .windows) 0 else 256;
 // Types
 // ==========================================================================
 
-/// A stack frame's two live bits, and the one the marshaller borrows.
+/// A stack frame's call flags and saturated argument count.
 ///
 /// The word is written to and read from a marshalled fiber as a signed 32-bit
 /// integer, so the width and the bit positions are the format. `marsh.zig`
@@ -84,8 +84,8 @@ pub const FrameFlags = packed struct(u32) {
     entrance: bool = false,
     /// The argument count the frame was entered with, saturated at the
     /// field's maximum. `jump_if_not_arity` reads it.
-    argc: u16 = 0,
-    _rest: u13 = 0,
+    argc: u6 = 0,
+    _rest: u23 = 0,
     /// Set by the marshaller just before it writes the frame, to say that an
     /// environment follows. It is the sign bit, it is never set in a live
     /// frame, and the unmarshaller clears it again.
@@ -105,7 +105,7 @@ pub const FramePc = extern union {
 };
 
 /// One call frame: the function, the program counter, the captured
-/// environment, the index of the frame below, and the two flags.
+/// environment, the index of the frame below, and the flag word.
 ///
 /// A frame lives in the `Value` slots immediately below its own stack base;
 /// `value/fibers.zig`'s `stackFrame` is what finds it.

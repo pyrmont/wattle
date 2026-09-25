@@ -224,11 +224,13 @@
 ; The process surface as a program sees it. A build without processes has
 ; none of these bindings, and a missing binding is a compile error.
 (compwhen (dyn 'os/spawn)
-  (defn child [code &opt flags env]
+  (defn child ([code] (child code nil nil))
+    ([code flags] (child code flags nil))
+    ([code flags env]
     (def p (os/spawn [|run wattle "-e" code] (or flags :p)
                      (merge {:out :pipe} (or env {}))))
     (def out (string (:read (p :out) :all)))
-    [(os/proc-wait p) out])
+    [(os/proc-wait p) out]))
 
   ; An exit flushes what the child printed, and a forced exit skips the
   ; flush, so output still in the buffer is discarded. This runtime does not

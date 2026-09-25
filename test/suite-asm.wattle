@@ -61,6 +61,17 @@
 (def f (asm (disasm (fn [x] (fn [y] (+ x y))))))
 (assert (= ((f 10) 37) 47) "asm environment tables")
 
+(def arity-dispatch
+  (asm '{:arity 2 :min-arity 1 :max-arity 2 :slotcount 2
+         :bytecode [(jmpna 1 :two) (ret 0) :two (ret 1)]}))
+(assert (= 3 (arity-dispatch 3)) "jmpna takes the matching count")
+(assert (= 4 (arity-dispatch 3 4)) "jmpna skips a different count")
+(assert (deep= (get (disasm arity-dispatch) :bytecode)
+               (get (disasm (asm (disasm arity-dispatch))) :bytecode))
+        "jmpna survives disassembly and assembly")
+(assert-error "invalid assembly (15)"
+              (asm '{:arity 1 :bytecode [(jmpna 33 :done) :done (retn)]}))
+
 ; issue #1424
 (assert-no-error "arity > used slots (issue #1424)"
                  (asm

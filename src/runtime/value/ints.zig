@@ -416,7 +416,7 @@ pub fn libInttypes(env: *tables.Table) raise.Error!void {
         corefn.reg("int/s64", &nfunS64New, @src(), "(int/s64 value)", "Create a boxed signed 64 bit integer from a string value or a number."),
         corefn.reg("int/u64", &nfunU64New, @src(), "(int/u64 value)", "Create a boxed unsigned 64 bit integer from a string value or a number."),
         corefn.reg("int/to-number", &nfunToNumber, @src(), "(int/to-number value)", "Convert an int/u64 or int/s64 to a number. Fails if the number is out of range for an int64."),
-        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes value &opt endianness buffer)", "Write the bytes of an `int/s64` or `int/u64` into a buffer.\n" ++
+        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes value [endianness [buffer]])", "Write the bytes of an `int/s64` or `int/u64` into a buffer.\n" ++
             "The `buffer` parameter specifies an existing buffer to write to, if unset a new buffer will be created.\n" ++
             "Returns the modified buffer.\n" ++
             "The `endianness` parameter indicates the byte order:\n" ++

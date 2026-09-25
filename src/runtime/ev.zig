@@ -1329,7 +1329,7 @@ fn nfunCancel(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(ev/deadline sec &opt tocancel body interrupt)`.
+/// `(ev/deadline sec [tocancel [body [interrupt]]])`.
 fn nfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var sec = try args_core.getNumber(argv, 0);
@@ -1404,7 +1404,7 @@ fn nfunGiveSupervisor(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(ev/go func &opt value supervisor)`.
+/// `(ev/go func [value [supervisor]])`.
 fn nfunGo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const val = if (argv.len >= 2) argv[1] else wrap.fromNil();
@@ -1514,7 +1514,7 @@ fn nfunSleep(argv: []repr.Value) raise.Error!repr.Value {
     return sleepAwait(sec);
 }
 
-/// `(ev/thread func &opt value flags supervisor)`.
+/// `(ev/thread func [value [flags [supervisor]]])`.
 fn nfunThread(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"threads"}));
     try args_core.arity(argv, 1, 4);
@@ -1907,7 +1907,7 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/go", &nfunGo, @src(), "(ev/go fiber-or-fun &opt value supervisor)", "Put a fiber on the event loop to be resumed later. If a " ++
+            corefn.reg("ev/go", &nfunGo, @src(), "(ev/go fiber-or-fun [value [supervisor]])", "Put a fiber on the event loop to be resumed later. If a " ++
                 "function is used, it is wrapped with `fiber/new` first. " ++
                 "Returns a task fiber. Optionally pass a value to resume " ++
                 "with, otherwise resumes with nil. An optional `core/channel` " ++
@@ -1915,7 +1915,7 @@ fn selfEntries() []const corefn.Entry {
                 "in the newly scheduled fiber, an event will be pushed to the " ++
                 "supervisor. If not provided, the new fiber will inherit the " ++
                 "current supervisor."),
-            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main &opt value flags supervisor)", "Run `main` in a new operating system thread, optionally passing `value` " ++
+            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main [value [flags [supervisor]]])", "Run `main` in a new operating system thread, optionally passing `value` " ++
                 "to resume with. The parameter `main` can either be a fiber, or a function that accepts " ++
                 "0 or 1 arguments. " ++
                 "Unlike `ev/go`, this function will suspend the current fiber until the thread is complete. " ++
@@ -1929,7 +1929,7 @@ fn selfEntries() []const corefn.Entry {
                 "tuple of all of the arguments combined into a single message, where the first element is tag. " ++
                 "By convention, tag should be a keyword indicating the type of message. Returns nil."),
             corefn.reg("ev/sleep", &nfunSleep, @src(), "(ev/sleep sec)", "Suspend the current fiber for sec seconds without blocking the event loop."),
-            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec &opt tocancel tocheck intr?)", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
+            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec [tocancel [tocheck [intr?]]])", "Schedules the event loop to try to cancel the `tocancel` task as with `ev/cancel`. " ++
                 "After `sec` seconds, the event loop will attempt cancellation of `tocancel` if the " ++
                 "`tocheck` fiber is resumable. `sec` is a number that can have a fractional part. " ++
                 "`tocancel` defaults to `(fiber/root)`, but if specified, must be a task (root " ++

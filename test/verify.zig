@@ -1,7 +1,7 @@
 //! Behavioral contract for `bytecode/verify.zig`'s `verify`, the bytecode
 //! validator.
 //!
-//! Every one of its fifteen numbered refusals is a function the compiler will
+//! Each numbered refusal is a function the compiler will
 //! never emit, so nothing written in Janet can reach any of them. They exist
 //! for bytecode that arrives from somewhere else, from `asm`, an unmarshalled
 //! image or a corrupted file, and the numbers are the contract: a caller
@@ -10,7 +10,7 @@
 //!
 //! ## Two halves
 //!
-//! The first walks the fifteen refusals in order. The second is about the
+//! The first walks the refusals in order. The second is about the
 //! *instruction table*, and it is the more interesting one.
 //!
 //! The table gives each opcode a shape: which of its operand bytes are slots,
@@ -94,7 +94,7 @@ fn theSymbolMapRefusals(bytecode: []u32, definition: *functions.FuncDef) void {
     expect(verify.verify(definition).number() == 14); // no name
 }
 
-/// The fifteen numbered refusals, in order. The numbers are the contract.
+/// The numbered refusals, in order. The numbers are the contract.
 fn theRefusalsAreNumbered() void {
     var bytecode = [_]u32{ harness.op(constants.Opcode.return_nil), harness.op(constants.Opcode.return_nil) };
     var definition = baseDefinition(&bytecode);
@@ -126,6 +126,13 @@ fn theRefusalsAreNumbered() void {
     expect(verify.verify(&definition).number() == 9); // does not terminate
 
     theSymbolMapRefusals(&bytecode, &definition);
+
+    definition = baseDefinition(&bytecode);
+    definition.bytecode_length = 2;
+    bytecode[0] = harness.op(constants.Opcode.jump_if_not_arity) | (@as(u32, 32) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 0);
+    bytecode[0] = harness.op(constants.Opcode.jump_if_not_arity) | (@as(u32, 33) << 8) | (@as(u32, 1) << 16);
+    expect(verify.verify(&definition).number() == 15); // arity test exceeds 32
 }
 
 /// Every row names a shape the validator recognises. This does not check

@@ -357,16 +357,6 @@ fn checkNilForm(val: repr.Value, function_tag: u32) ?repr.Value {
     return null;
 }
 
-/// `functionError` with the two parameter vectors released first.
-fn cleanupFunctionError(
-    compiler: *compiler_primitives.Compiler,
-    destructured_parameters: *scratch_vector.Vector(compiler_primitives.Slot),
-    message: [*:0]const u8,
-) raise.Error!compiler_primitives.Slot {
-    scratch_vector.free(destructured_parameters);
-    return functionError(compiler, message);
-}
-
 /// The body `def` and `var` share: the attributes, the value, and the
 /// destructuring of the name against it.
 fn compileBinding(
@@ -963,51 +953,38 @@ fn specialDo(
     return result;
 }
 
-/// `fn`: a function literal, with its parameters destructured into the new
-/// scope.
-fn specialFn(
-    options: compiler_primitives.FormOptions,
-    arguments: []const repr.Value,
-) raise.Error!compiler_primitives.Slot {
-    const compiler: *compiler_primitives.Compiler = options.compiler;
-    currentScope(compiler).flags.closure = true;
-    var function_scope: compiler_primitives.Scope = undefined;
-    compiler_primitives.pushScope(&function_scope, compiler, .{ .function = true }, "function");
+const FunctionParameters = struct {
+    arity: i32,
+    minimum_arity: i32,
+    maximum_arity: i32,
+    vararg: bool,
+    maparg: bool,
+};
 
-    if (arguments.len == 0) {
-        return functionError(compiler, "expected at least 1 argument to function literal");
-    }
+const FunctionClause = struct {
+    form: repr.Value,
+    arity: i32,
+    vararg: bool,
+    maparg: bool,
+};
 
-    var parameter_index: i32 = 0;
-    const head = arguments[0];
-    const self_reference = wrap.isSymbol(head);
-    const has_name = self_reference or wrap.isKeyword(head);
-    if (has_name) parameter_index = 1;
-    if (parameter_index >= arguments.len or
-        repr.typeOf(arguments[@intCast(parameter_index)]) != .vector)
-    {
-        return functionError(compiler, "expected function parameters as a vector");
-    }
-
-    // Gathered rather than read a run at a time: the list is walked twice and
-    // indexed against the arity, and a vector's elements are not one block.
-    // `free` is deferred because every refusal below returns early.
-    var gathered = (try args_core.gather(arguments[@intCast(parameter_index)])).?;
+/// Binds one parameter vector in the current function or clause scope.
+fn bindFunctionParameters(
+    compiler: *compiler_primitives.Compiler,
+    source: repr.Value,
+    allow_bare_amp: bool,
+) raise.Error!?FunctionParameters {
+    var gathered = (try args_core.gather(source)).?;
     defer gathered.free();
     const parameters = gathered.items;
-    // The arity arithmetic below subtracts one and two from this and compares
-    // the result with an index, which is a signed question: `parameter_count`
-    // is the list's length narrowed once, here, rather than a `usize` that
-    // would wrap under those subtractions.
     const parameter_count: i32 = @intCast(parameters.len);
     var destructured_parameters: scratch_vector.Vector(compiler_primitives.Slot) = .empty;
+    defer scratch_vector.free(&destructured_parameters);
     var arity = parameter_count;
-    var minimum_arity: i32 = 0;
     var vararg = false;
     var maparg = false;
     var allow_extra = false;
     var seen_amp = false;
-    var seen_optional = false;
 
     for (parameters, 0..) |parameter, index| {
         if (!wrap.isSymbol(parameter)) {
@@ -1024,96 +1001,282 @@ fn specialFn(
 
         if (utils.cstrcmp(symbol, "&") == 0) {
             if (seen_amp) {
-                return cleanupFunctionError(compiler, &destructured_parameters, "& in unexpected location");
-            } else if (index == parameter_count - 1) {
+                compiler_primitives.cerror(compiler, "& in unexpected location");
+                return null;
+            } else if (index == parameter_count - 1 and allow_bare_amp) {
                 allow_extra = true;
                 arity -= 1;
             } else if (index == parameter_count - 2) {
                 vararg = true;
                 arity -= 2;
             } else {
-                return cleanupFunctionError(compiler, &destructured_parameters, "& in unexpected location");
+                compiler_primitives.cerror(compiler, "& in unexpected location");
+                return null;
             }
             seen_amp = true;
-        } else if (utils.cstrcmp(symbol, "&opt") == 0) {
-            if (seen_optional) {
-                return cleanupFunctionError(compiler, &destructured_parameters, "only one &opt allowed");
-            } else if (index == parameter_count - 1) {
-                return cleanupFunctionError(compiler, &destructured_parameters, "&opt cannot be last item in parameter list");
-            }
-            minimum_arity = @intCast(index);
-            arity -= 1;
-            seen_optional = true;
         } else {
-            scratch_vector.free(&destructured_parameters);
             compiler_primitives.recordError(compiler, try pp_format.formatc("unknown parameter marker %s", .{symbol}));
-            try compiler_primitives.popscope(compiler);
-            return nilSlot();
+            return null;
         }
     }
 
     var destructured_index: usize = 0;
     for (parameters) |parameter| {
         if (wrap.isSymbol(parameter)) continue;
-        if (destructured_index >= destructured_parameters.items.len) unreachable;
         const parameter_slot = destructured_parameters.items[destructured_index];
         destructured_index += 1;
         _ = try destructure(compiler, parameter, parameter_slot, .definition, null);
         compiler_primitives.freeslot(compiler, parameter_slot);
     }
-    scratch_vector.free(&destructured_parameters);
+    if (compiler.result.status == .@"error") return null;
 
-    const maximum_arity: i32 = if (vararg or allow_extra) std_max_i32 else arity;
-    if (!seen_optional) minimum_arity = arity;
+    return .{
+        .arity = arity,
+        .minimum_arity = arity,
+        .maximum_arity = if (vararg or allow_extra) std_max_i32 else arity,
+        .vararg = vararg,
+        .maparg = maparg,
+    };
+}
 
-    if (self_reference) {
-        const symbol = wrap.toSymbol(head);
-        var found = false;
-        for (currentScope(compiler).syms.items) |pair| {
-            if (pair.sym == symbol) found = true;
-        }
-        if (!found) {
-            var slot = compiler_primitives.farslot(compiler) orelse nilSlot();
-            slot.flags = .{ .named = true, .types = .one(.function) };
-            _ = emit_core.emitSlot(compiler, constants.Opcode.load_self, slot, 1);
-            try compiler_primitives.nameslot(
-                compiler,
-                symbol,
-                slot,
-                constants.defflag_no_unused | constants.defflag_no_shadowcheck,
-            );
-        }
+/// Binds a named function's self reference unless a parameter has that name.
+fn bindFunctionSelf(compiler: *compiler_primitives.Compiler, head: repr.Value) raise.Error!void {
+    if (!wrap.isSymbol(head)) return;
+    const symbol = wrap.toSymbol(head);
+    for (currentScope(compiler).syms.items) |pair| {
+        if (pair.sym == symbol) return;
     }
+    var slot = compiler_primitives.farslot(compiler) orelse nilSlot();
+    slot.flags = .{ .named = true, .types = .one(.function) };
+    _ = emit_core.emitSlot(compiler, constants.Opcode.load_self, slot, 1);
+    try compiler_primitives.nameslot(
+        compiler,
+        symbol,
+        slot,
+        constants.defflag_no_unused | constants.defflag_no_shadowcheck,
+    );
+}
 
-    var suboptions = compiler_primitives.foptsDefault(compiler);
-    if (parameter_index + 1 == arguments.len) {
+/// Compiles one function body's forms and returns whether compilation succeeded.
+fn compileFunctionBody(compiler: *compiler_primitives.Compiler, body: []const repr.Value) raise.Error!bool {
+    if (body.len == 0) {
         _ = emit_core.emit(compiler, constants.Opcode.return_nil.number());
-    } else {
-        for (arguments[@intCast(parameter_index + 1)..], @as(usize, @intCast(parameter_index + 1))..) |argument, argument_index| {
-            suboptions.flags = if (argument_index == arguments.len - 1) .{ .tail = true } else .{ .drop = true };
-            _ = try compiler_primitives.valueImpl(suboptions, argument);
-            if (compiler.result.status == .@"error") {
-                try compiler_primitives.popscope(compiler);
-                return nilSlot();
-            }
-        }
+        return true;
     }
+    var suboptions = compiler_primitives.foptsDefault(compiler);
+    for (body, 0..) |argument, index| {
+        suboptions.flags = if (index == body.len - 1) .{ .tail = true } else .{ .drop = true };
+        _ = try compiler_primitives.valueImpl(suboptions, argument);
+        if (compiler.result.status == .@"error") return false;
+    }
+    return true;
+}
 
+/// Emits the closure after the function scope has compiled its body.
+fn finishFunction(
+    options: compiler_primitives.FormOptions,
+    head: repr.Value,
+    has_name: bool,
+    signature: FunctionParameters,
+) raise.Error!compiler_primitives.Slot {
+    const compiler = options.compiler;
     const definition = try compiler_primitives.popFuncdef(compiler);
-    definition.arity = arity;
-    definition.min_arity = minimum_arity;
-    definition.max_arity = maximum_arity;
-    if (vararg) definition.flags.vararg = true;
-    if (maparg) definition.flags.maparg = true;
+    definition.arity = signature.arity;
+    definition.min_arity = signature.minimum_arity;
+    definition.max_arity = signature.maximum_arity;
+    if (signature.vararg) definition.flags.vararg = true;
+    if (signature.maparg) definition.flags.maparg = true;
     if (has_name) definition.name = wrap.toSymbol(head);
     compiler_primitives.defAddflags(definition);
     const definition_index = addFunctionDefinition(compiler, definition);
-    const vararg_slot: i32 = if (vararg) 1 else 0;
-    if (arity + vararg_slot > definition.slotcount) definition.slotcount = arity + vararg_slot;
+    const vararg_slot: i32 = if (signature.vararg) 1 else 0;
+    if (signature.arity + vararg_slot > definition.slotcount) definition.slotcount = signature.arity + vararg_slot;
 
     const result = compiler_primitives.gettarget(options);
     _ = emit_core.emitSu(compiler, constants.Opcode.closure, result, @intCast(definition_index), 1);
     return result;
+}
+
+/// Reads a clause's parameter vector and its exact or variadic count.
+fn readFunctionClause(compiler: *compiler_primitives.Compiler, form: repr.Value) raise.Error!?FunctionClause {
+    if (repr.typeOf(form) != .tuple) {
+        compiler_primitives.cerror(compiler, "expected function clause");
+        return null;
+    }
+    var clause = (try args_core.gather(form)).?;
+    defer clause.free();
+    if (clause.items.len == 0 or repr.typeOf(clause.items[0]) != .vector) {
+        compiler_primitives.cerror(compiler, "expected clause parameter vector");
+        return null;
+    }
+    var gathered = (try args_core.gather(clause.items[0])).?;
+    defer gathered.free();
+    const parameters = gathered.items;
+    const parameter_count: i32 = @intCast(parameters.len);
+    var arity = parameter_count;
+    var vararg = false;
+    var maparg = false;
+    for (parameters, 0..) |parameter, index| {
+        if (!wrap.isSymbol(parameter)) continue;
+        const symbol = wrap.toSymbol(parameter);
+        if (utils.cstrcmp(symbol, "&opt") == 0) {
+            compiler_primitives.cerror(compiler, "unknown parameter marker &opt");
+            return null;
+        }
+        if (utils.cstrcmp(symbol, "&") != 0) continue;
+        if (index != parameter_count - 2 or vararg) {
+            compiler_primitives.cerror(compiler, "& in unexpected location");
+            return null;
+        }
+        arity -= 2;
+        vararg = true;
+        maparg = repr.typeOf(parameters[index + 1]) == .map;
+    }
+    return .{ .form = form, .arity = arity, .vararg = vararg, .maparg = maparg };
+}
+
+/// Compiles fixed clauses in source order and the variadic clause last.
+fn specialFnClauses(
+    options: compiler_primitives.FormOptions,
+    arguments: []const repr.Value,
+    parameter_index: usize,
+    head: repr.Value,
+    has_name: bool,
+) raise.Error!compiler_primitives.Slot {
+    const compiler = options.compiler;
+    var clauses: scratch_vector.Vector(FunctionClause) = .empty;
+    defer scratch_vector.free(&clauses);
+    var counts = [_]bool{false} ** 33;
+    var minimum_arity: i32 = std_max_i32;
+    var maximum_fixed: i32 = -1;
+    var fixed_count: usize = 0;
+    var variadic_index: ?usize = null;
+    var variadic_arity: i32 = 0;
+
+    for (arguments[parameter_index..]) |form| {
+        const clause = (try readFunctionClause(compiler, form)) orelse {
+            try compiler_primitives.popscope(compiler);
+            return nilSlot();
+        };
+        if (clause.vararg) {
+            if (variadic_index != null) return functionError(compiler, "only one variadic clause allowed");
+            variadic_index = clauses.items.len;
+            variadic_arity = clause.arity;
+        } else {
+            if (clause.arity > 32) return functionError(compiler, "fixed clause has more than 32 parameters");
+            if (counts[@intCast(clause.arity)]) return functionError(compiler, "duplicate function clause arity");
+            counts[@intCast(clause.arity)] = true;
+            maximum_fixed = @max(maximum_fixed, clause.arity);
+            fixed_count += 1;
+        }
+        minimum_arity = @min(minimum_arity, clause.arity);
+        scratch_vector.push(&clauses, clause);
+    }
+
+    if (variadic_index != null and maximum_fixed > variadic_arity) {
+        return functionError(compiler, "fixed clause exceeds variadic arity");
+    }
+    const last_count = if (variadic_index != null) variadic_arity else maximum_fixed;
+    var count = minimum_arity;
+    while (count < last_count) : (count += 1) {
+        if (count > 32 or !counts[@intCast(count)]) return functionError(compiler, "gap between function clauses");
+    }
+    if (variadic_index == null and !counts[@intCast(last_count)]) unreachable;
+
+    var fixed_left = fixed_count;
+    for (clauses.items) |clause| {
+        if (clause.vararg) continue;
+        const needs_jump = variadic_index != null or fixed_left > 1;
+        const jump = compiler.here();
+        if (needs_jump) emit_core.emit(compiler, constants.Opcode.jump_if_not_arity.number() | (@as(u32, @intCast(clause.arity)) << 8));
+        if (!try compileFunctionClause(compiler, clause.form, head)) {
+            try compiler_primitives.popscope(compiler);
+            return nilSlot();
+        }
+        if (needs_jump) {
+            const next = compiler.here();
+            checkJump16(compiler, jump, next);
+            compiler.buffer.items[@intCast(jump)] |= @as(u32, @intCast(next - jump)) << 16;
+        }
+        fixed_left -= 1;
+    }
+    if (variadic_index) |index| {
+        if (!try compileFunctionClause(compiler, clauses.items[index].form, head)) {
+            try compiler_primitives.popscope(compiler);
+            return nilSlot();
+        }
+    }
+
+    return finishFunction(options, head, has_name, .{
+        .arity = last_count,
+        .minimum_arity = minimum_arity,
+        .maximum_arity = if (variadic_index != null) std_max_i32 else maximum_fixed,
+        .vararg = variadic_index != null,
+        .maparg = if (variadic_index) |index| clauses.items[index].maparg else false,
+    });
+}
+
+/// Compiles one clause in a scope shared only with the function scope.
+fn compileFunctionClause(compiler: *compiler_primitives.Compiler, form: repr.Value, head: repr.Value) raise.Error!bool {
+    var gathered = (try args_core.gather(form)).?;
+    defer gathered.free();
+    const items = gathered.items;
+    var clause_scope: compiler_primitives.Scope = undefined;
+    compiler_primitives.pushScope(&clause_scope, compiler, .{}, "function clause");
+    clause_scope.ra.deinit();
+    clause_scope.ra = .{};
+    const signature = (try bindFunctionParameters(compiler, items[0], false)) orelse {
+        try compiler_primitives.popscope(compiler);
+        return false;
+    };
+    _ = signature;
+    try bindFunctionSelf(compiler, head);
+    const succeeded = try compileFunctionBody(compiler, items[1..]);
+    try compiler_primitives.popscope(compiler);
+    return succeeded;
+}
+
+/// `fn`: a function literal, with one parameter vector or several clauses.
+fn specialFn(
+    options: compiler_primitives.FormOptions,
+    arguments: []const repr.Value,
+) raise.Error!compiler_primitives.Slot {
+    const compiler = options.compiler;
+    currentScope(compiler).flags.closure = true;
+    var function_scope: compiler_primitives.Scope = undefined;
+    compiler_primitives.pushScope(&function_scope, compiler, .{ .function = true }, "function");
+
+    if (arguments.len == 0) return functionError(compiler, "expected at least 1 argument to function literal");
+
+    const head = arguments[0];
+    const has_name = wrap.isSymbol(head) or wrap.isKeyword(head);
+    const parameter_index: usize = @intFromBool(has_name);
+    if (parameter_index >= arguments.len) return functionError(compiler, "expected function parameters as a vector");
+    const source = arguments[parameter_index];
+    if (repr.typeOf(source) == .tuple) {
+        return specialFnClauses(options, arguments, parameter_index, head, has_name);
+    }
+    if (repr.typeOf(source) != .vector) return functionError(compiler, "expected function parameters as a vector");
+
+    for (arguments[parameter_index + 1 ..]) |form| {
+        if (repr.typeOf(form) != .tuple) continue;
+        var gathered = (try args_core.gather(form)).?;
+        defer gathered.free();
+        if (gathered.items.len > 0 and repr.typeOf(gathered.items[0]) == .vector) {
+            return functionError(compiler, "cannot mix parameter vector and clauses");
+        }
+    }
+
+    const signature = (try bindFunctionParameters(compiler, source, true)) orelse {
+        try compiler_primitives.popscope(compiler);
+        return nilSlot();
+    };
+    try bindFunctionSelf(compiler, head);
+    if (!try compileFunctionBody(compiler, arguments[parameter_index + 1 ..])) {
+        try compiler_primitives.popscope(compiler);
+        return nilSlot();
+    }
+    return finishFunction(options, head, has_name, signature);
 }
 
 /// `if`: the two-armed conditional, with the false arm optional.

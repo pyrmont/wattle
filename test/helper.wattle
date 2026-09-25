@@ -25,7 +25,8 @@
 
 (defn- assert-no-tail
   "Override's the default assert with some nice error handling."
-  [x &opt e]
+  ([x] (assert-no-tail x nil))
+  ([x e]
   (++ num-tests-run)
   (when (pos? skip-n)
     (-- skip-n)
@@ -43,7 +44,7 @@
       (eflush) (flush))
     (do
       (eprintf "\e[31m✘\e[0m %s: %s: %v" line-info (describe e) x) (eflush) (flush)))
-  x)
+  x))
 
 (defn skip-asserts
   "Skip some asserts"
@@ -52,13 +53,14 @@
   nil)
 
 (defmacro assert :shadow
-  [x &opt e]
+  ([x] (def self assert) (self x nil))
+  ([x e]
   (def xx (gensym))
   (default e (string/format "%w" x))
   `(do
      (def ~xx ~x)
      (~assert-no-tail ~xx ~e)
-     ~xx))
+     ~xx)))
 
 (defmacro assert-error
   [msg & forms]
@@ -86,14 +88,15 @@
   `(try (do ~|forms (as-macro ~assert true ~msg)) ([~e ~f] (as-macro ~assert false (string ~msg ": " (describe ~e))) (~debug/stacktrace ~f ~e "\e[31m✘\e[0m ")))
   `(try (do ~|forms (as-macro ~assert true ~msg)) ([~e] (as-macro ~assert false (string ~msg ": " (describe ~e)))))))
 
-(defn start-suite [&opt x]
+(defn start-suite ([] (start-suite nil))
+  ([x]
   (default x (dyn :current-file))
   (set suite-name
        (cond
          (number? x) (string x)
          (string x)))
   (set start-time (clock-now))
-  (eprint "Starting suite " suite-name "..."))
+  (eprint "Starting suite " suite-name "...")))
 
 (defn end-suite []
   (def delta (- (clock-now) start-time))

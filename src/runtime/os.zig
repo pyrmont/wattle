@@ -429,7 +429,7 @@ fn nfunArch(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.span(osArch()), .keyword);
 }
 
-/// `(os/clock &opt source format)`.
+/// `(os/clock [source [format]])`.
 fn nfunClock(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
     try args_core.arity(argv, 0, 2);
@@ -476,7 +476,7 @@ fn nfunCompiler(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.span(osCompiler()), .keyword);
 }
 
-/// `(os/cpu-count &opt dflt)`.
+/// `(os/cpu-count [dflt])`.
 fn nfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const count = osCpuCount();
@@ -484,7 +484,7 @@ fn nfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromInteger(count);
 }
 
-/// `(os/cryptorand n &opt buf)`.
+/// `(os/cryptorand n [buf])`.
 fn nfunCryptorand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const n = try args_core.getInteger(argv, 0);
@@ -531,7 +531,7 @@ fn nfunEnviron(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTable(t);
 }
 
-/// `(os/exit &opt x force)`.
+/// `(os/exit [x [force]])`.
 fn nfunExit(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"exit"}));
@@ -553,7 +553,7 @@ fn nfunExit(argv: []repr.Value) raise.Error!repr.Value {
     c.exit(status);
 }
 
-/// `(os/getenv variable &opt dflt)`.
+/// `(os/getenv variable [dflt])`.
 fn nfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
@@ -570,7 +570,7 @@ fn nfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     return ret;
 }
 
-/// `(os/isatty &opt file)`.
+/// `(os/isatty [file])`.
 fn nfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const f: ?*io_core.FILE = if (argv.len == 1)
@@ -603,7 +603,7 @@ fn nfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(os/setlocale &opt locale category)`.
+/// `(os/setlocale [locale [category]])`.
 fn nfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
@@ -672,7 +672,7 @@ fn fileTimeToInt(ft: c.FILETIME) i64 {
 /// last.
 fn hrtimeEntries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/clock", &nfunClock, @src(), "(os/clock &opt source format)", "Return the current time of the requested clock source.\n\n" ++
+        corefn.reg("os/clock", &nfunClock, @src(), "(os/clock [source [format]])", "Return the current time of the requested clock source.\n\n" ++
             "The `source` argument selects the clock source to use, when not specified the default " ++
             "is `:realtime`:\n" ++
             "- :realtime: Return the real (i.e., wall-clock) time. This clock is affected by discontinuous " ++
@@ -696,7 +696,7 @@ fn miscEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n &opt buf)", "Get or append `n` bytes of good quality random data provided by the OS. Returns a new buffer or `buf`."),
+            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n [buf])", "Get or append `n` bytes of good quality random data provided by the OS. Returns a new buffer or `buf`."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -731,10 +731,10 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/exit", &nfunExit, @src(), "(os/exit &opt x force)", "Exit from Wattle with an exit code equal to x. If x is not an integer, " ++
+            corefn.reg("os/exit", &nfunExit, @src(), "(os/exit [x [force]])", "Exit from Wattle with an exit code equal to x. If x is not an integer, " ++
                 "exits with status 1. If `force` is truthy will exit immediately and " ++
                 "skip cleanup code."),
-            corefn.reg("os/which", &nfunWhich, @src(), "(os/which &opt test)", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
+            corefn.reg("os/which", &nfunWhich, @src(), "(os/which [test])", "Check the current operating system. If `test` is nil or unset, Returns one of:\n\n" ++
                 "* :windows\n\n* :cygwin\n\n* :macos\n\n" ++
                 "* :web - Web assembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
                 "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
@@ -748,7 +748,7 @@ fn selfEntries() []const corefn.Entry {
         };
         if (!reduced_os) {
             acc = acc ++ [_]corefn.Entry{
-                corefn.reg("os/cpu-count", &nfunCpuCount, @src(), "(os/cpu-count &opt dflt)", "Get an approximate number of CPUs available on for this process to use. If " ++
+                corefn.reg("os/cpu-count", &nfunCpuCount, @src(), "(os/cpu-count [dflt])", "Get an approximate number of CPUs available on for this process to use. If " ++
                     "unable to get an approximation, will return a default value dflt."),
             };
         }
@@ -765,11 +765,11 @@ fn tailEntries() []const corefn.Entry {
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/sleep", &nfunSleep, @src(), "(os/sleep n)", "Suspend the program for `n` seconds. `n` can be a real number. Returns " ++
                 "nil."),
-            corefn.reg("os/isatty", &nfunIsatty, @src(), "(os/isatty &opt file)", "Returns true if `file` is a terminal. If `file` is not specified, " ++
+            corefn.reg("os/isatty", &nfunIsatty, @src(), "(os/isatty [file])", "Returns true if `file` is a terminal. If `file` is not specified, " ++
                 "it will default to standard output."),
         };
         if (!no_locales) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale &opt locale category)", "Set the system locale, which affects how dates and numbers are formatted. " ++
+            corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale [locale [category]])", "Set the system locale, which affects how dates and numbers are formatted. " ++
                 "Passing nil to locale will return the current locale. Category can be one of:\n\n" ++
                 " * :all (default)\n * :collate\n * :ctype\n * :monetary\n * :numeric\n * :time\n\n" ++
                 "Returns the new locale if set successfully, otherwise nil. Note that this will affect " ++
@@ -779,7 +779,7 @@ fn tailEntries() []const corefn.Entry {
             corefn.reg("os/environ", &nfunEnviron, @src(), "(os/environ)", "Get a copy of the OS environment table."),
         };
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/getenv", &nfunGetenv, @src(), "(os/getenv variable &opt dflt)", "Get the string value of an environment variable."),
+            corefn.reg("os/getenv", &nfunGetenv, @src(), "(os/getenv variable [dflt])", "Get the string value of an environment variable."),
             corefn.reg("os/setenv", &nfunSetenv, @src(), "(os/setenv variable value)", "Set an environment variable. A nil value removes it. " ++
                 "On Windows an empty string removes it as well, because the platform has no way to hold a variable whose value is " ++
                 "empty; on every other platform an empty string is stored and read back."),

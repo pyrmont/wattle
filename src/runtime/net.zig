@@ -271,7 +271,7 @@ pub fn nfunGetsockname(argv: []repr.Value) raise.Error!repr.Value {
     return endpointName(argv, false);
 }
 
-/// `(net/address host port &opt type)`.
+/// `(net/address host port [type])`.
 pub fn nfunSockaddr(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"})); // connect OR listen
     try args_core.arity(argv, 2, 4);
@@ -370,49 +370,49 @@ pub fn getAddrInfo(
 /// Installs the `net/` bindings, in upstream Janet's own registration order.
 pub fn libNet(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
-        corefn.reg("net/address", &nfunSockaddr, @src(), "(net/address host port &opt type multi)", "Look up the connection information for a given hostname, port, and connection type. Returns " ++
+        corefn.reg("net/address", &nfunSockaddr, @src(), "(net/address host port [type [multi]])", "Look up the connection information for a given hostname, port, and connection type. Returns " ++
             "a handle that can be used to send datagrams over network without establishing a connection. " ++
             "On Posix platforms, you can use :unix for host to connect to a unix domain socket, where the name is " ++
             "given in the port argument. On Linux, abstract " ++
             "unix domain sockets are specified with a leading '@' character in port. If `multi` is truthy, will " ++
             "return all address that match in an array instead of just the first."),
-        corefn.reg("net/listen", &nfunListen, @src(), "(net/listen host port &opt type no-reuse)", "Creates a server. Returns a new stream that is neither readable nor " ++
+        corefn.reg("net/listen", &nfunListen, @src(), "(net/listen host port [type [no-reuse]])", "Creates a server. Returns a new stream that is neither readable nor " ++
             "writeable. Use net/accept or net/accept-loop be to handle connections and start the server. " ++
             "The type parameter specifies the type of network connection, either " ++
             "a :stream (usually tcp), or :datagram (usually udp). If not specified, the default is " ++
             ":stream. The host and port arguments are the same as in net/address. The last boolean parameter `no-reuse` will " ++
             "disable the use of `SO_REUSEADDR` and `SO_REUSEPORT` when creating a server on some operating systems."),
-        corefn.reg("net/socket", &nfunSocket, @src(), "(net/socket &opt type address-family)", "Creates a new unbound socket. Type is an optional keyword, " ++
+        corefn.reg("net/socket", &nfunSocket, @src(), "(net/socket [type [address-family]])", "Creates a new unbound socket. Type is an optional keyword, " ++
             "either a :stream (usually tcp), or :datagram (usually udp). The default is :stream. " ++
             "`address-family` should be one of :ipv4 or :ipv6."),
-        corefn.reg("net/accept", &nfunAccept, @src(), "(net/accept stream &opt timeout)", "Get the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
+        corefn.reg("net/accept", &nfunAccept, @src(), "(net/accept stream [timeout])", "Get the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a new duplex stream which represents a connection to the client."),
         corefn.reg("net/accept-loop", &nfunAcceptLoop, @src(), "(net/accept-loop stream handler)", "Shorthand for running a server stream that will continuously accept new connections. " ++
             "Blocks the current fiber until the stream is closed, and will return the stream."),
-        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream nbytes &opt buf timeout)", "Read up to n bytes from a stream, suspending the current fiber until the bytes are available. " ++
+        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream nbytes [buf [timeout]])", "Read up to n bytes from a stream, suspending the current fiber until the bytes are available. " ++
             "`n` can also be the keyword `:all` to read into the buffer until end of stream. " ++
             "If less than n bytes are available (and more than 0), will push those bytes and return early. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a buffer with up to n more bytes in it, or raises an error if the read failed."),
-        corefn.reg("net/chunk", &nfunChunk, @src(), "(net/chunk stream nbytes &opt buf timeout)", "Same a net/read, but will wait for all n bytes to arrive rather than return early. " ++
+        corefn.reg("net/chunk", &nfunChunk, @src(), "(net/chunk stream nbytes [buf [timeout]])", "Same a net/read, but will wait for all n bytes to arrive rather than return early. " ++
             "Takes an optional timeout in seconds, after which will raise an error."),
-        corefn.reg("net/write", &nfunWrite, @src(), "(net/write stream data &opt timeout)", "Write data to a stream, suspending the current fiber until the write " ++
+        corefn.reg("net/write", &nfunWrite, @src(), "(net/write stream data [timeout])", "Write data to a stream, suspending the current fiber until the write " ++
             "completes. Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns nil, or raises an error if the write failed."),
-        corefn.reg("net/send-to", &nfunSendTo, @src(), "(net/send-to stream dest data &opt timeout)", "Writes a datagram to a server stream. dest is a the destination address of the packet. " ++
+        corefn.reg("net/send-to", &nfunSendTo, @src(), "(net/send-to stream dest data [timeout])", "Writes a datagram to a server stream. dest is a the destination address of the packet. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns stream."),
-        corefn.reg("net/recv-from", &nfunRecvFrom, @src(), "(net/recv-from stream nbytes buf &opt timeout)", "Receives data from a server stream and puts it into a buffer. Returns the socket-address the " ++
+        corefn.reg("net/recv-from", &nfunRecvFrom, @src(), "(net/recv-from stream nbytes buf [timeout])", "Receives data from a server stream and puts it into a buffer. Returns the socket-address the " ++
             "packet came from. Takes an optional timeout in seconds, after which will raise an error."),
         corefn.reg("net/flush", &nfunFlush, @src(), "(net/flush stream)", "Make sure that a stream is not buffering any data. This temporarily disables Nagle's algorithm. " ++
             "Use this to make sure data is sent without delay. Returns stream."),
-        corefn.reg("net/connect", &nfunConnect, @src(), "(net/connect host port &opt type bindhost bindport)", "Open a connection to communicate with a server. Returns a duplex stream " ++
+        corefn.reg("net/connect", &nfunConnect, @src(), "(net/connect host port [type [bindhost [bindport]]])", "Open a connection to communicate with a server. Returns a duplex stream " ++
             "that can be used to communicate with the server. Type is an optional keyword " ++
             "to specify a connection type, either :stream or :datagram. The default is :stream. " ++
             "Bindhost is an optional string to select from what address to make the outgoing " ++
             "connection, with the default being the same as using the OS's preferred address. "),
-        corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream &opt mode)", "Stop communication on this socket in a graceful manner, either in both directions or just " ++
+        corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream [mode])", "Stop communication on this socket in a graceful manner, either in both directions or just " ++
             "reading/writing from the stream. The `mode` parameter controls which communication to stop on the socket. " ++
             "\n\n* `:wr` is the default and prevents both reading new data from the socket and writing new data to the socket.\n" ++
             "* `:r` disables reading new data from the socket.\n" ++
@@ -539,7 +539,7 @@ pub inline fn sockOf(s: *const ev_stream.Stream) net_abi.JSock {
     return if (windows) @intFromPtr(s.handle) else s.handle;
 }
 
-/// The `&opt type` argument the socket nfunctions share: `:stream` or
+/// The optional `type` argument the socket nfunctions share: `:stream` or
 /// `:datagram`.
 pub fn socketType(argv: []repr.Value, n: usize) raise.Error!c_int {
     const stype = try args_core.optKeyword(argv, n, null);
@@ -670,7 +670,7 @@ fn bindWildcard(sock: JSock, family: c_int) bool {
     return false;
 }
 
-/// `(net/accept stream &opt timeout)`.
+/// `(net/accept stream [timeout])`.
 fn nfunAccept(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
@@ -698,7 +698,7 @@ fn nfunAcceptLoop(argv: []repr.Value) raise.Error!repr.Value {
     return schedAccept(stream, fun);
 }
 
-/// `(net/chunk stream n &opt buf timeout)`.
+/// `(net/chunk stream n [buf [timeout]])`.
 fn nfunChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
@@ -710,7 +710,7 @@ fn nfunChunk(argv: []repr.Value) raise.Error!repr.Value {
     return ev_stream.readGeneric(stream, buffer, n, true, ev_stream.read_mode_recv, net_abi.msg_nosignal);
 }
 
-/// `(net/connect host port &opt type bindhost bindport)`.
+/// `(net/connect host port [type [bindhost [bindport]]])`.
 fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"}));
     try args_core.arity(argv, 2, 5);
@@ -890,7 +890,7 @@ fn nfunFlush(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(net/listen host port &opt type no-reuse)`.
+/// `(net/listen host port [type [no-reuse]])`.
 fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_listen"}));
     try args_core.arity(argv, 2, 4);
@@ -948,7 +948,7 @@ fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(try makeStream(sfd, stream_acceptable));
 }
 
-/// `(net/read stream n &opt buf timeout)`.
+/// `(net/read stream n [buf [timeout]])`.
 fn nfunRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
@@ -965,7 +965,7 @@ fn nfunRead(argv: []repr.Value) raise.Error!repr.Value {
     }
 }
 
-/// `(net/recv-from stream n buf &opt timeout)`.
+/// `(net/recv-from stream n buf [timeout])`.
 fn nfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
@@ -977,7 +977,7 @@ fn nfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
     return ev_stream.readGeneric(stream, buffer, n, false, ev_stream.read_mode_recvfrom, net_abi.msg_nosignal);
 }
 
-/// `(net/send-to stream dest data &opt timeout)`.
+/// `(net/send-to stream dest data [timeout])`.
 fn nfunSendTo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
@@ -1067,7 +1067,7 @@ fn nfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(net/shutdown stream &opt mode)`.
+/// `(net/shutdown stream [mode])`.
 fn nfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
@@ -1097,7 +1097,7 @@ fn nfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(net/socket host port &opt type)`.
+/// `(net/socket host port [type])`.
 fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
 
@@ -1139,7 +1139,7 @@ fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(stream);
 }
 
-/// `(net/write stream data &opt timeout)`.
+/// `(net/write stream data [timeout])`.
 fn nfunWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const stream = try getStream(argv, 0);

@@ -995,7 +995,7 @@ pub fn getNumber(argv: []const Value, n: i32) Error!f64 {
 /// This function raises if either index is present and is not a valid index,
 /// or if `len` is above `maxInt(i32)`.
 ///
-/// This can be used for a function like `(f x &opt start end)`.
+/// This can be used for a function like `(f x [start [end]])`.
 pub fn getRange(argv: []const Value, n: i32, len: usize) Error!Range {
     if (len > std.math.maxInt(i32)) return panic("length exceeds the range a Wattle index can name");
     return fromAbi(interface.rt.getrange(argv.ptr, @intCast(argv.len), n, @intCast(len)));

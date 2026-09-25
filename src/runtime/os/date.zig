@@ -88,13 +88,13 @@ const timeint_t = if (windows) i32 else i64;
 /// The three registrations, which `os.zig` installs.
 pub fn entries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date &opt local)", "Get the broken down date expressed as the number " ++
+        corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date [local])", "Get the broken down date expressed as the number " ++
             "of seconds since January 1, 1970, the Unix epoch. " ++
             "Returns a real number. " ++
             "Date is given in UTC unless `local` is truthy, in which case the " ++
             "date is computed for the local timezone.\n\n" ++
             "Inverse function to os/date."),
-        corefn.reg("os/date", &nfunDate, @src(), "(os/date &opt time local)", "Returns the given time as a date map, or the current time if `time` is not given. " ++
+        corefn.reg("os/date", &nfunDate, @src(), "(os/date [time [local]])", "Returns the given time as a date map, or the current time if `time` is not given. " ++
             "Date is given in UTC unless `local` is truthy, in which case the date is formatted for " ++
             "the local timezone. Returns a map with following key values. Note that all numbers are 0-indexed.\n\n" ++
             "* :seconds - number of seconds [0-61]\n\n" ++
@@ -108,7 +108,7 @@ pub fn entries() []const corefn.Entry {
             "* :dst - if Day Light Savings is in effect\n\n" ++
             "You can set local timezone by setting TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
-        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt &opt time local)", "Format the given time as a string, or the current time if `time` is not given. " ++
+        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt [time [local]])", "Format the given time as a string, or the current time if `time` is not given. " ++
             "The time is formatted according to the same rules as the ISO C89 function strftime(). " ++
             "The time is formatted in UTC unless `local` is truthy, in which case the date is formatted for " ++
             "the local timezone. You can set local timezone by setting TZ environment variable. " ++
@@ -121,7 +121,7 @@ pub fn entries() []const corefn.Entry {
 // Private functions
 // ==========================================================================
 
-/// `(os/date &opt time local)`.
+/// `(os/date [time [local]])`.
 fn nfunDate(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     var t_info: h.struct_tm = undefined;
@@ -140,7 +140,7 @@ fn nfunDate(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromMap(maps.build(.map, &fields));
 }
 
-/// `(os/mktime date-struct &opt local)`.
+/// `(os/mktime date-struct [local])`.
 fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     // Zeroed whole, so that no field is left as whatever the frame had.
@@ -178,7 +178,7 @@ fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNumber(@floatFromInt(t));
 }
 
-/// `(os/strftime fmt &opt time local)`.
+/// `(os/strftime fmt [time [local]])`.
 fn nfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fmt = try args_core.getCString(argv, 0);

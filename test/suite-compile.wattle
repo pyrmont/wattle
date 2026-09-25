@@ -114,9 +114,12 @@
 (defn fnamed2 [_a _b _c & {:keys [x y z]}] [x y z])
 (defn fkeys2 [_a _b _c & {:as ks}] ks)
 (defn fnamed3 [{x :x} & {:keys [a b c]}] [x a b c])
-(defn fnamed4 [_y &opt _z & {:keys [a b c]}] [a b c])
-(defn fnamed5 [&opt _z & {:keys [a b c]}] [a b c])
-(defn g [x &opt y & {:keys [z]}] [x y z])
+(defn fnamed4 ([_y] (fnamed4 _y nil))
+  ([_y _z & {:keys [a b c]}] [a b c]))
+(defn fnamed5 ([] (fnamed5 nil))
+  ([_z & {:keys [a b c]}] [a b c]))
+(defn g ([x] (g x nil))
+  ([x y & {:keys [z]}] [x y z]))
 
 (defn check-good-compile
   [code msg]
@@ -219,7 +222,8 @@
 (assert (= "<function arity2> called with at least 3 arguments, expected 2"
            (errof '(arity2 |[1] 2 3 4)))
         "too many with a splice")
-(defn arity-optional [a &opt _b] a)
+(defn arity-optional ([a] (arity-optional a nil))
+  ([a _b] a))
 (assert (= "<function arity-optional> called with 0 arguments, expected 1 to 2"
            (errof '(arity-optional)))
         "an optional parameter has a range")
@@ -284,8 +288,8 @@
 ; A missing-symbol handler may take its argument optionally: the check is that
 ; the handler *can* be called with one argument, not that it must be.
 (def opt-handler-env (make-env))
-(put opt-handler-env :missing-symbol (fn [&opt _s] !{:value 7}))
-(assert (= 7 ((compile 'nope opt-handler-env "lint-src"))) "an &opt handler is accepted")
+(put opt-handler-env :missing-symbol (fn ([] !{:value 7}) ([_s] !{:value 7})))
+(assert (= 7 ((compile 'nope opt-handler-env "lint-src"))) "a two-clause handler is accepted")
 
 ; A macro that fails leaves its fiber on the result for the caller to inspect,
 ; and leaves nothing behind in the environment.
@@ -394,19 +398,50 @@
                        "expected function parameters as a vector"
                        "a named function literal needs a parameter list")
 (check-compile-message '(fn (x) x)
-                       "expected function parameters as a vector"
-                       "a tuple cannot be a function parameter list")
+                       "expected clause parameter vector"
+                       "a clause needs a parameter vector")
 (check-compile-message '(defn tuple-parameters (x) x)
-                       "expected function parameters as a vector"
-                       "defn refuses a tuple parameter list")
+                       "expected clause parameter vector"
+                       "defn refuses a clause without a parameter vector")
 (check-compile-message '(fn [& &] 1) "& in unexpected location"
                        "two ampersands in one parameter list")
 (check-compile-message '(fn [&keys kw] kw) "unknown parameter marker &keys"
                        "old keyword marker is refused")
 (check-compile-message '(fn [&named kw] kw) "unknown parameter marker &named"
                        "old named marker is refused")
+(check-compile-message '(fn [&opt kw] kw) "unknown parameter marker &opt"
+                       "old optional marker is refused")
+(check-compile-message '(fn ([&opt kw] kw)) "unknown parameter marker &opt"
+                       "old optional marker is refused in a clause")
 (check-compile-message '(fn [&otp kw] kw) "unknown parameter marker &otp"
                        "misspelled parameter marker is refused")
+(check-compile-message '(fn [x] x ([x y] y))
+                       "cannot mix parameter vector and clauses"
+                       "a parameter vector cannot precede clauses")
+(check-compile-message '(fn ([x] x) x)
+                       "expected function clause"
+                       "a non-clause cannot follow a clause")
+(check-compile-message '(fn ([x] x) ([y] y))
+                       "duplicate function clause arity"
+                       "two fixed clauses cannot take the same count")
+(check-compile-message '(fn ([x] x) ([x y z] z))
+                       "gap between function clauses"
+                       "fixed clauses cannot leave a count uncovered")
+(check-compile-message '(fn ([x & rest] rest) ([x y & more] more))
+                       "only one variadic clause allowed"
+                       "two variadic clauses are refused")
+(check-compile-message '(fn ([x & rest] rest) ([x y] y))
+                       "fixed clause exceeds variadic arity"
+                       "a fixed clause cannot exceed the variadic count")
+(def many-clause-params
+  (vector |(map (fn [i] (symbol (string "_p" i))) (range 33))))
+(def maximum-clause-params
+  (vector |(map (fn [i] (symbol (string "_p" i))) (range 32))))
+(check-good-compile (tuple 'fn (tuple maximum-clause-params nil))
+                    "a fixed clause accepts 32 parameters")
+(check-compile-message (tuple 'fn (tuple many-clause-params nil))
+                       "fixed clause has more than 32 parameters"
+                       "a fixed clause stops at 32 parameters")
 (check-compile-message '(fn [ks-a & {:as ks-b} ks-c] 1) "& in unexpected location"
                        "a map tail must be last")
 (check-compile-message '(fn [ks-c & {:as ks-d} &] 1) "& in unexpected location"

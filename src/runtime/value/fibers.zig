@@ -335,7 +335,7 @@ pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
 /// `try` is a compile error.
 pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("fiber/new", &nfunFiberNew, @src(), "(fiber/new func &opt sigmask env)",
+        corefn.reg("fiber/new", &nfunFiberNew, @src(), "(fiber/new func [sigmask [env]])",
             \\Create a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these "blocked" signals will result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
             \\
             \\    (fiber/new myfun :e123)
@@ -886,8 +886,8 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
 }
 
 /// An argument count as `FrameFlags.argc` holds it.
-inline fn saturatedArgc(argc: i32) u16 {
-    return @intCast(@min(argc, std.math.maxInt(u16)));
+inline fn saturatedArgc(argc: i32) u6 {
+    return @intCast(@min(argc, std.math.maxInt(u6)));
 }
 
 /// The first half of a tail call: arity, capacity, detaching the outgoing

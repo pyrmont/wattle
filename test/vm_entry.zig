@@ -442,7 +442,7 @@ fn nfunArityVariants(argv: []repr.Value) raise.Error!repr.Value {
     var fun = evalfn("(do (defn at-least-two [a b & rest] a) at-least-two)");
     expect(harness.raised(vm_entry.call, .{ fun, args[0..1] }).?.says("<function at-least-two> called with 1 argument, expected at least 2"));
 
-    fun = evalfn("(do (defn at-most-two [&opt a b] a) at-most-two)");
+    fun = evalfn("(do (defn at-most-two ([] nil) ([a] a) ([a _b] a)) at-most-two)");
     expect(harness.raised(vm_entry.call, .{ fun, args[0..3] }).?.says("<function at-most-two> called with 3 arguments, expected 0 to 2"));
 
     return wrap.fromNil();

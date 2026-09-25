@@ -80,6 +80,15 @@
 (def fixed-map (fiber/new (fn [x & {:as options}] [x options])))
 (assert (= [:value {}] (resume fixed-map :value))
         "the first resume fills a fixed parameter before the map tail")
+(def zero-clause (fiber/new (fn ([] :zero) ([x] [:one x]))))
+(assert (= :zero (resume zero-clause))
+        "a nil first resume selects the zero-argument clause")
+(def one-clause (fiber/new (fn ([] :zero) ([x] [:one x]))))
+(assert (= [:one :value] (resume one-clause :value))
+        "a non-nil first resume selects the one-argument clause")
+(def map-clause (fiber/new (fn ([] :empty) ([& {:as options}] options))))
+(assert (= {:a 1} (resume map-clause {:a 1}))
+        "a map first resume selects the variadic clause")
 
 ; Fix yields inside nested fibers
 ; 909c906
@@ -318,4 +327,3 @@
         "and so does the unsigned one")
 
 (end-suite)
-

@@ -82,7 +82,7 @@ const WindowsOpen = struct {
 // Public functions
 // ==========================================================================
 
-/// `(os/open path &opt flags mode)`, which returns a stream rather than a
+/// `(os/open path [flags [mode]])`, which returns a stream rather than a
 /// file.
 pub fn nfunOpen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);

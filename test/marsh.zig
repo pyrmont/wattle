@@ -815,6 +815,23 @@ fn aLiveFiberCannotBeMarshalled() raise.Error!void {
     expect(b.slice()[0] == lb_fiber);
     expect(harness.isType(try unmarshalled(b, 0), repr.Tag.fiber));
 
+    // Five encoded integers precede the first frame's flag word.
+    out = evaluate("(fiber/new (fn ([x] x) ([x y] y)))");
+    const counted = try marshalled(out, null, 0);
+    const wire = counted.slice();
+    var at: usize = 1;
+    for (0..5) |_| {
+        at += switch (wire[at]) {
+            0...127 => @as(usize, 1),
+            128...191 => @as(usize, 2),
+            0xcd => @as(usize, 5),
+            else => unreachable,
+        };
+    }
+    expect(wire[at] == 6);
+    wire[at] = 2;
+    expect(refusedBy(wire).?.says("fiber stackframe argument count mismatch"));
+
     expect(refusedBy("\xcc\x00\x01\x00\x00\x00").?.says("fiber has incorrect stack setup"));
     // A status field of 16 is one past the last `FiberStatus` and still inside
     // the six-bit status mask, so it survives every other check.

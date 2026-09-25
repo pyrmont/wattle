@@ -151,8 +151,8 @@ const Row = struct { op: constants.Opcode, type: constants.InstructionType };
 /// The numbers are user-visible, so each is written out and none may move: a
 /// Janet program that assembles bad bytecode sees the figure in the message,
 /// and `test/verify.zig` asserts one per case. The type is what makes the
-/// fifteen returns readable at the site, `return .no_such_constant` rather
-/// than `return 7`, and what makes a sixteenth check have to name itself.
+/// sixteen returns readable at the site, `return .no_such_constant` rather
+/// than `return 7`, and a new check must name itself.
 pub const Verdict = enum(u8) {
     ok = 0,
     no_bytecode = 1,
@@ -169,6 +169,7 @@ pub const Verdict = enum(u8) {
     symbol_birth_out_of_range = 12,
     symbol_death_out_of_range = 13,
     symbol_has_no_name = 14,
+    arity_test_out_of_range = 15,
 
     /// This verdict's number, which is what the message renders.
     pub inline fn number(self: Verdict) u8 {
@@ -216,6 +217,7 @@ pub fn verify(definition: *functions.FuncDef) Verdict {
                 if (destination < 0 or destination >= bytecode_length) return .jump_out_of_range;
             },
             constants.InstructionType.il => {
+                if (slotA(instruction) > 32) return .arity_test_out_of_range;
                 const destination = @as(i32, @intCast(index)) + signedField(instruction, 16);
                 if (destination < 0 or destination >= bytecode_length) return .jump_out_of_range;
             },

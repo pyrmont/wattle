@@ -152,12 +152,12 @@ pub const Field = enum(i32) {
 // Public functions
 // ==========================================================================
 
-/// `(os/lstat path &opt tab-or-key)`.
+/// `(os/lstat path [tab-or-key])`.
 pub fn nfunLstat(argv: []repr.Value) raise.Error!repr.Value {
     return statOrLstat(true, argv);
 }
 
-/// `(os/stat path &opt tab-or-key)`.
+/// `(os/stat path [tab-or-key])`.
 pub fn nfunStat(argv: []repr.Value) raise.Error!repr.Value {
     return statOrLstat(false, argv);
 }

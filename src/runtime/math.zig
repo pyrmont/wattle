@@ -247,13 +247,13 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
         corefn.reg("math/random", &nfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
         corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Set the seed for the random number generator. `seed` should be " ++
             "an integer or a buffer."),
-        corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng &opt seed)", "Creates a Pseudo-Random number generator, with an optional seed. " ++
+        corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng [seed])", "Creates a Pseudo-Random number generator, with an optional seed. " ++
             "The seed should be an unsigned 32 bit integer or a buffer. " ++
             "Do not use this for cryptography. Returns a core/rng abstract type."),
         corefn.reg("math/rng-uniform", &nfunRngUniform, @src(), "(math/rng-uniform rng)", "Extract a random number in the range [0, 1) from the RNG."),
-        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng &opt max)", "Extract a random integer in the range [0, max) for max > 0 from the RNG.  " ++
+        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng [max])", "Extract a random integer in the range [0, max) for max > 0 from the RNG.  " ++
             "If max is 0, return 0.  If no max is given, the default is 2^31 - 1."),
-        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n &opt buf)", "Get n random bytes and put them in a buffer. Creates a new buffer if no buffer is " ++
+        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n [buf])", "Get n random bytes and put them in a buffer. Creates a new buffer if no buffer is " ++
             "provided, otherwise appends to the given buffer. Returns the buffer."),
         corefn.reg("math/gcd", &nfunGcd, @src(), "(math/gcd x y)", "Returns the greatest common divisor between x and y."),
         corefn.reg("math/lcm", &nfunLcm, @src(), "(math/lcm x y)", "Returns the least common multiple of x and y."),
@@ -407,7 +407,7 @@ fn nfunRand(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNumber(rngDouble(&vm_state.current().rng));
 }
 
-/// `(math/rng-buffer rng n &opt buf)`. The space is reserved through
+/// `(math/rng-buffer rng n [buf])`. The space is reserved through
 /// `buffers.extra`, which raises before any byte is written.
 fn nfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
@@ -420,7 +420,7 @@ fn nfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBuffer(buffer);
 }
 
-/// `(math/rng-int rng &opt max)`. A `max` of zero gives zero, and no `max`
+/// `(math/rng-int rng [max])`. A `max` of zero gives zero, and no `max`
 /// means the whole non-negative `i32` range.
 fn nfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
@@ -431,7 +431,7 @@ fn nfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromInteger(rngInt(rng, max));
 }
 
-/// `(math/rng &opt seed)`, seeding from an integer or from a byte sequence.
+/// `(math/rng [seed])`, seeding from an integer or from a byte sequence.
 fn nfunRngMake(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const rng: *Rng = abstracts.newFor(Rng, &rngType);

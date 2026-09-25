@@ -222,10 +222,10 @@ pub fn libDebug(env: *tables.Table) void {
         corefn.reg("debug/unbreak", &nfunDebugUnbreak, @src(), "(debug/unbreak source line column)", "Remove a breakpoint with a source key at a given line and column. " ++
             "Will throw an error if the breakpoint " ++
             "cannot be found."),
-        corefn.reg("debug/fbreak", &nfunDebugFbreak, @src(), "(debug/fbreak fun &opt pc)", "Set a breakpoint in a given function. pc is an optional offset, which " ++
+        corefn.reg("debug/fbreak", &nfunDebugFbreak, @src(), "(debug/fbreak fun [pc])", "Set a breakpoint in a given function. pc is an optional offset, which " ++
             "is in bytecode instructions. fun is a function value. Will throw an error " ++
             "if the offset is too large or negative."),
-        corefn.reg("debug/unfbreak", &nfunDebugUnfbreak, @src(), "(debug/unfbreak fun &opt pc)", "Unset a breakpoint set with debug/fbreak."),
+        corefn.reg("debug/unfbreak", &nfunDebugUnfbreak, @src(), "(debug/unfbreak fun [pc])", "Unset a breakpoint set with debug/fbreak."),
         corefn.reg("debug/arg-stack", &nfunDebugArgstack, @src(), "(debug/arg-stack fiber)", "Gets all values currently on the fiber's argument stack. Normally, " ++
             "this should be empty unless the fiber signals while pushing arguments " ++
             "to make a function call. Returns a new array."),
@@ -242,14 +242,14 @@ pub fn libDebug(env: *tables.Table) void {
             "* :source - string with the file path or other identifier for the source code\n\n" ++
             "* :slots - array of all values in each slot\n\n" ++
             "* :tail - boolean indicating a tail call"),
-        corefn.reg("debug/stacktrace", &nfunDebugStacktrace, @src(), "(debug/stacktrace fiber &opt err prefix)", "Prints a nice looking stacktrace for a fiber. Can optionally provide " ++
+        corefn.reg("debug/stacktrace", &nfunDebugStacktrace, @src(), "(debug/stacktrace fiber [err [prefix]])", "Prints a nice looking stacktrace for a fiber. Can optionally provide " ++
             "an error value to print the stack trace with. If `prefix` is nil or not " ++
             "provided, will skip the error line. Returns the fiber."),
         corefn.reg("debug/lineage", &nfunDebugLineage, @src(), "(debug/lineage fib)", "Returns an array of all child fibers from a root fiber. This function " ++
             "is useful when a fiber signals or errors to an ancestor fiber. Using this function, " ++
             "the fiber handling the error can see which fiber raised the signal. This function should " ++
             "be used mostly for debugging purposes."),
-        corefn.reg("debug/step", &nfunDebugStep, @src(), "(debug/step fiber &opt x)", "Run a fiber for one virtual instruction of the Wattle machine. Can optionally " ++
+        corefn.reg("debug/step", &nfunDebugStep, @src(), "(debug/step fiber [x])", "Run a fiber for one virtual instruction of the Wattle machine. Can optionally " ++
             "pass in a value that will be passed as the resuming value. Returns the signal value, " ++
             "which will usually be nil, as breakpoints raise nil signals."),
     };
@@ -519,7 +519,7 @@ inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Error!void
     return pp_format.dynprintf("err", stdio.err(), format, args);
 }
 
-/// `(debug/fbreak fun &opt pc)`'s arguments, resolved to a location. The
+/// `(debug/fbreak fun [pc])`'s arguments, resolved to a location. The
 /// offset is not range-checked here; `debugBreak` does it.
 fn findByFunction(argv: []repr.Value) raise.Error!Breakpoint {
     try args_core.arity(argv, 1, 2);

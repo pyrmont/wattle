@@ -335,16 +335,16 @@ pub fn libPeg(env: *tables.Table) raise.Error!void {
         corefn.reg("peg/compile", &nfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
             "`default-peg-grammar` for the grammar of the peg."),
-        corefn.reg("peg/match", &nfunPegMatch, @src(), "(peg/match peg text &opt start & args)", "Match a Parsing Expression Grammar to a byte string and return an array of captured values. " ++
+        corefn.reg("peg/match", &nfunPegMatch, @src(), "(peg/match peg text [start [& [args]]])", "Match a Parsing Expression Grammar to a byte string and return an array of captured values. " ++
             "Returns nil if text does not match the language defined by peg. The syntax of PEGs is Janet's, documented at janet-lang.org."),
-        corefn.reg("peg/find", &nfunPegFind, @src(), "(peg/find peg text &opt start & args)", "Find first index where the peg matches in text. Returns an integer, or nil if not found."),
-        corefn.reg("peg/find-all", &nfunPegFindAll, @src(), "(peg/find-all peg text &opt start & args)", "Find all indexes where the peg matches in text. Returns an array of integers."),
-        corefn.reg("peg/replace", &nfunPegReplace, @src(), "(peg/replace peg subst text &opt start & args)", "Replace first match of `peg` in `text` with `subst`, returning a new buffer. " ++
+        corefn.reg("peg/find", &nfunPegFind, @src(), "(peg/find peg text [start [& [args]]])", "Find first index where the peg matches in text. Returns an integer, or nil if not found."),
+        corefn.reg("peg/find-all", &nfunPegFindAll, @src(), "(peg/find-all peg text [start [& [args]]])", "Find all indexes where the peg matches in text. Returns an array of integers."),
+        corefn.reg("peg/replace", &nfunPegReplace, @src(), "(peg/replace peg subst text [start [& [args]]])", "Replace first match of `peg` in `text` with `subst`, returning a new buffer. " ++
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures. " ++
             "If no matches are found, returns the input string in a new buffer."),
-        corefn.reg("peg/replace-all", &nfunPegReplaceAll, @src(), "(peg/replace-all peg subst text &opt start & args)", "Replace all matches of `peg` in `text` with `subst`, returning a new buffer. " ++
+        corefn.reg("peg/replace-all", &nfunPegReplaceAll, @src(), "(peg/replace-all peg subst text [start [& [args]]])", "Replace all matches of `peg` in `text` with `subst`, returning a new buffer. " ++
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures."),
@@ -415,7 +415,7 @@ fn nfunPegCompile(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(try compilePeg(argv[0]));
 }
 
-/// `(peg/find peg text &opt start & args)`, which is the first offset the
+/// `(peg/find peg text [start [& [args]]])`, which is the first offset the
 /// pattern matches at, or nil.
 fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
@@ -429,7 +429,7 @@ fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(peg/find-all peg text &opt start & args)`.
+/// `(peg/find-all peg text [start [& [args]]])`.
 fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
     const ret = arrays.new(0);
@@ -443,7 +443,7 @@ fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromArray(ret);
 }
 
-/// `(peg/match peg text &opt start & args)`, which is the captures as an
+/// `(peg/match peg text [start [& [args]]])`, which is the captures as an
 /// array, or nil where the pattern does not match.
 fn nfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
@@ -451,12 +451,12 @@ fn nfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
 
-/// `(peg/replace peg subst text &opt start & args)`.
+/// `(peg/replace peg subst text [start [& [args]]])`.
 fn nfunPegReplace(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, true);
 }
 
-/// `(peg/replace-all peg subst text &opt start & args)`.
+/// `(peg/replace-all peg subst text [start [& [args]]])`.
 fn nfunPegReplaceAll(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, false);
 }
@@ -1857,7 +1857,7 @@ fn specAny(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specRepeater(b, argv, 0);
 }
 
-/// `(argument n &opt tag)`, which captures one of the extra arguments
+/// `(argument n [tag])`, which captures one of the extra arguments
 /// `peg/match` was given.
 fn specArgument(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
@@ -1885,7 +1885,7 @@ fn specAtmost(b: *Builder, argv: []const repr.Value) raise.Error!void {
     emit3(r, constants.PegRule.between, 0, @bitCast(n), subrule);
 }
 
-/// `(backmatch &opt tag)`, which matches the text of a tagged capture.
+/// `(backmatch [tag])`, which matches the text of a tagged capture.
 fn specBackmatch(b: *Builder, argv: []const repr.Value) raise.Error!void {
     b.has_backref = true;
     return specTag1(b, argv, constants.PegRule.backmatch);
@@ -1925,7 +1925,7 @@ fn specCapture(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.capture);
 }
 
-/// `(number patt &opt base tag)`, which scans the matched text as a number.
+/// `(number patt [base [tag]])`, which scans the matched text as a number.
 fn specCaptureNumber(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 3);
     const r = reserve(b, 4);
@@ -1947,12 +1947,12 @@ fn specChoice(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specVariadic(b, argv, constants.PegRule.choice);
 }
 
-/// `(column &opt tag)`.
+/// `(column [tag])`.
 fn specColumn(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTag1(b, argv, constants.PegRule.column);
 }
 
-/// `(constant k &opt tag)`, which captures `k` without consuming text.
+/// `(constant k [tag])`, which captures `k` without consuming text.
 fn specConstant(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 1, 2);
     const r = reserve(b, 3);
@@ -1973,7 +1973,7 @@ fn specDrop(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.drop);
 }
 
-/// `(error &opt patt)`. With no argument the pattern is the empty match, so
+/// `(error [patt])`. With no argument the pattern is the empty match, so
 /// the error is raised wherever it is reached.
 fn specError(b: *Builder, argv: []const repr.Value) raise.Error!void {
     if (argv.len == 0) {
@@ -1985,7 +1985,7 @@ fn specError(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.@"error");
 }
 
-/// `(group patt &opt tag)`.
+/// `(group patt [tag])`.
 fn specGroup(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.group);
 }
@@ -2000,12 +2000,12 @@ fn specIfnot(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specBranch(b, argv, constants.PegRule.ifnot);
 }
 
-/// `(int-be width &opt tag)`.
+/// `(int-be width [tag])`.
 fn specIntBe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x30);
 }
 
-/// `(int width &opt tag)`.
+/// `(int width [tag])`.
 fn specIntLe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x10);
 }
@@ -2016,7 +2016,7 @@ fn specLenprefix(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specBranch(b, argv, constants.PegRule.lenprefix);
 }
 
-/// `(line &opt tag)`.
+/// `(line [tag])`.
 fn specLine(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTag1(b, argv, constants.PegRule.line);
 }
@@ -2032,7 +2032,7 @@ fn specLook(b: *Builder, argv: []const repr.Value) raise.Error!void {
     emit2(r, constants.PegRule.look, @bitCast(offset), subrule);
 }
 
-/// `(cmt patt fn &opt tag)`.
+/// `(cmt patt fn [tag])`.
 fn specMatchtime(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specMatchtimeImpl(b, argv, constants.PegRule.matchtime);
 }
@@ -2054,7 +2054,7 @@ fn specMatchtimeImpl(b: *Builder, argv: []const repr.Value, op: constants.PegRul
     emit3(r, op, subrule, cindex, tag);
 }
 
-/// `(cms patt fn &opt tag)`.
+/// `(cms patt fn [tag])`.
 fn specMatchtimeSplice(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specMatchtimeImpl(b, argv, constants.PegRule.matchsplice);
 }
@@ -2064,7 +2064,7 @@ fn specNot(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specOnerule(b, argv, constants.PegRule.not);
 }
 
-/// `(nth n patt &opt tag)`.
+/// `(nth n patt [tag])`.
 fn specNth(b: *Builder, argv: []const repr.Value) raise.Error!void {
     try pegArity(b, argv.len, 2, 3);
     const r = reserve(b, 4);
@@ -2095,7 +2095,7 @@ fn specOpt(b: *Builder, argv: []const repr.Value) raise.Error!void {
     emit3(r, constants.PegRule.between, 0, 1, subrule);
 }
 
-/// `($ &opt tag)` and `(position &opt tag)`.
+/// `($ [tag])` and `(position [tag])`.
 fn specPosition(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specTag1(b, argv, constants.PegRule.position);
 }
@@ -2235,17 +2235,17 @@ fn specTworule(b: *Builder, argv: []const repr.Value, op: constants.PegRule) rai
     emit2(r, op, subrule1, subrule2);
 }
 
-/// `(uint-be width &opt tag)`.
+/// `(uint-be width [tag])`.
 fn specUintBe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x20);
 }
 
-/// `(uint width &opt tag)`.
+/// `(uint width [tag])`.
 fn specUintLe(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specReadint(b, argv, 0x0);
 }
 
-/// `(unref patt &opt tag)`.
+/// `(unref patt [tag])`.
 fn specUnref(b: *Builder, argv: []const repr.Value) raise.Error!void {
     return specCap1(b, argv, constants.PegRule.unref);
 }

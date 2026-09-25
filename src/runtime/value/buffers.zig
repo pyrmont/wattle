@@ -228,11 +228,11 @@ pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("buffer/new", &nfunBufferNew, @src(), "(buffer/new capacity)", "Creates a new, empty buffer with enough backing memory for `capacity` bytes. " ++
             "Returns a new buffer of length 0."),
-        corefn.reg("buffer/new-filled", &nfunBufferNewFilled, @src(), "(buffer/new-filled count &opt byte)", "Creates a new buffer of length `count` filled with `byte`. By default, `byte` is 0. " ++
+        corefn.reg("buffer/new-filled", &nfunBufferNewFilled, @src(), "(buffer/new-filled count [byte])", "Creates a new buffer of length `count` filled with `byte`. By default, `byte` is 0. " ++
             "Returns the new buffer."),
         corefn.reg("buffer/from-bytes", &nfunBufferFrombytes, @src(), "(buffer/from-bytes & byte-vals)", "Creates a buffer from integer parameters with byte values. All integers " ++
             "will be coerced to the range of 1 byte 0-255."),
-        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill buffer &opt byte)", "Fill up a buffer with bytes, defaulting to 0s. Does not change the buffer's length. " ++
+        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill buffer [byte])", "Fill up a buffer with bytes, defaulting to 0s. Does not change the buffer's length. " ++
             "Returns the modified buffer."),
         corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim buffer)", "Set the backing capacity of the buffer to the current length of the buffer. Returns the " ++
             "modified buffer."),
@@ -260,7 +260,7 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("buffer/popn", &nfunBufferPopn, @src(), "(buffer/popn buffer n)", "Removes the last `n` bytes from the buffer. Returns the modified buffer."),
         corefn.reg("buffer/clear", &nfunBufferClear, @src(), "(buffer/clear buffer)", "Sets the size of a buffer to 0 and empties it. The buffer retains " ++
             "its memory so it can be efficiently refilled. Returns the modified buffer."),
-        corefn.reg("buffer/slice", &nfunBufferSlice, @src(), "(buffer/slice bytes &opt start end)", "Takes a slice of a byte sequence from `start` to `end`. The range is half open, " ++
+        corefn.reg("buffer/slice", &nfunBufferSlice, @src(), "(buffer/slice bytes [start [end]])", "Takes a slice of a byte sequence from `start` to `end`. The range is half open, " ++
             "[start, end). Indexes can also be negative, indicating indexing from the end of the " ++
             "end of the array. By default, `start` is 0 and `end` is the length of the buffer. " ++
             "Returns a new buffer."),
@@ -268,7 +268,7 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("buffer/bit-clear", &nfunBufferBitclear, @src(), "(buffer/bit-clear buffer index)", "Clears the bit at the given bit-index. Returns the buffer."),
         corefn.reg("buffer/bit", &nfunBufferBitget, @src(), "(buffer/bit buffer index)", "Gets the bit at the given bit-index. Returns true if the bit is set, false if not."),
         corefn.reg("buffer/bit-toggle", &nfunBufferBittoggle, @src(), "(buffer/bit-toggle buffer index)", "Toggles the bit at the given bit index in buffer. Returns the buffer."),
-        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit dest src &opt dest-start src-start src-end)", "Insert the contents of `src` into `dest`. Can optionally take indices that " ++
+        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit dest src [dest-start [src-start [src-end]]])", "Insert the contents of `src` into `dest`. Can optionally take indices that " ++
             "indicate which part of `src` to copy into which part of `dest`. Indices can be " ++
             "negative in order to index from the end of `src` or `dest`. Returns `dest`."),
         corefn.reg("buffer/format", &nfunBufferFormat, @src(), "(buffer/format buffer format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++

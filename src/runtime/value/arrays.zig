@@ -159,8 +159,8 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("array/new", &nfunArrayNew, @src(), "(array/new capacity)", "Creates a new empty array with a pre-allocated capacity. The same as " ++
             "`(array)` but can be more efficient if the maximum size of an array is known."),
         corefn.reg("array/weak", &nfunArrayWeak, @src(), "(array/weak capacity)", "Creates a new empty array with a pre-allocated capacity and support for weak references. Similar to `array/new`."),
-        corefn.reg("array/new-filled", &nfunArrayNewFilled, @src(), "(array/new-filled count &opt value)", "Creates a new array of `count` elements, all set to `value`, which defaults to nil. Returns the new array."),
-        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill arr &opt value)", "Replace all elements of an array with `value` (defaulting to nil) without changing the length of the array. " ++
+        corefn.reg("array/new-filled", &nfunArrayNewFilled, @src(), "(array/new-filled count [value])", "Creates a new array of `count` elements, all set to `value`, which defaults to nil. Returns the new array."),
+        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill arr [value])", "Replace all elements of an array with `value` (defaulting to nil) without changing the length of the array. " ++
             "Returns the modified array."),
         corefn.reg("array/pop", &nfunArrayPop, @src(), "(array/pop arr)", "Remove the last element of the array and return it. If the array is empty, will return nil. Modifies " ++
             "the input array."),
@@ -170,7 +170,7 @@ pub fn lib(env: *tables.Table) void {
             "items at the given rate of growth. `capacity` and `growth` must be integers. " ++
             "If the backing capacity is already enough, then this function does nothing. " ++
             "Otherwise, the backing memory will be reallocated so that there is enough space."),
-        corefn.reg("array/slice", &nfunArraySlice, @src(), "(array/slice arrtup &opt start end)", "Takes a slice of array or tuple from `start` to `end`. The range is half open, " ++
+        corefn.reg("array/slice", &nfunArraySlice, @src(), "(array/slice arrtup [start [end]])", "Takes a slice of array or tuple from `start` to `end`. The range is half open, " ++
             "[start, end). Indexes can also be negative, indicating indexing from the " ++
             "end of the array. By default, `start` is 0 and `end` is the length of the array. " ++
             "Note that if the range is negative, it is taken as (start, end] to allow a full " ++
@@ -183,7 +183,7 @@ pub fn lib(env: *tables.Table) void {
             "0 and the length of the array. A negative value for `at` will index backwards from " ++
             "the end of the array, inserting after the index such that inserting at -1 appends to " ++
             "the array. Returns the array."),
-        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove arr at &opt n)", "Remove up to `n` elements starting at index `at` in array `arr`. `at` can index from " ++
+        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove arr at [n])", "Remove up to `n` elements starting at index `at` in array `arr`. `at` can index from " ++
             "the end of the array with a negative index, and `n` must be a non-negative integer. " ++
             "By default, `n` is 1. " ++
             "Returns the array."),

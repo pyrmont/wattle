@@ -287,13 +287,13 @@ pub fn envLookupInto(
 /// Registers `marshal`, `unmarshal` and `env-lookup`.
 pub fn libMarsh(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal x &opt reverse-lookup buffer no-cycles)", "Marshal a value into a buffer and return the buffer. The buffer " ++
+        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal x [reverse-lookup [buffer [no-cycles]]])", "Marshal a value into a buffer and return the buffer. The buffer " ++
             "can then later be unmarshalled to reconstruct the initial value. " ++
             "Optionally, one can pass in a reverse lookup table to not marshal " ++
             "aliased values that are found in the table. Then a forward " ++
             "lookup table can be used to recover the original value when " ++
             "unmarshalling."),
-        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal buffer &opt lookup)", "Unmarshal a value from a buffer. An optional lookup table " ++
+        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal buffer [lookup])", "Unmarshal a value from a buffer. An optional lookup table " ++
             "can be provided to allow for aliases to be resolved. Returns the value " ++
             "unmarshalled from the buffer."),
         corefn.reg("env-lookup", &nfunEnvLookup, @src(), "(env-lookup env)", "Creates a forward lookup table for unmarshalling from an environment. " ++
@@ -565,7 +565,7 @@ fn nfunEnvLookup(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTable(envLookup(env));
 }
 
-/// `(marshal x &opt reverse-lookup buffer no-cycles)`.
+/// `(marshal x [reverse-lookup [buffer [no-cycles]]])`.
 fn nfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var rreg: ?*tables.Table = null;
@@ -577,7 +577,7 @@ fn nfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBuffer(buffer);
 }
 
-/// `(unmarshal buffer &opt lookup)`, which the sandbox can withhold.
+/// `(unmarshal buffer [lookup])`, which the sandbox can withhold.
 fn nfunUnmarshal(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"unmarshal"}));
     try args_core.arity(argv, 1, 2);
@@ -1941,6 +1941,12 @@ fn unmarshalOneFiber(
         try assertType(funcv.value, repr.Tag.function);
         const func = wrap.toFunction(funcv.value);
         const def = func.def.?;
+
+        if (frameflags.argc != 63 and
+            (frameflags.argc < def.min_arity or frameflags.argc > def.max_arity))
+        {
+            return raise.panic("fiber stackframe argument count mismatch");
+        }
 
         if (frameflags.has_env) {
             frameflags.has_env = false;

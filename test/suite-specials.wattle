@@ -206,8 +206,9 @@
 
 ; a117252
 (defn named-opt-arguments
-  [&opt x & {:keys [a b c]}]
-  (+ x a b c))
+  ([] (named-opt-arguments nil))
+  ([x & {:keys [a b c]}]
+  (+ x a b c)))
 
 (assert (= 10 (named-opt-arguments 1 :a 2 :b 3 :c 4)) "named arguments 2")
 
@@ -230,6 +231,30 @@
 (assert-error-value "a tail call refuses a key without a value"
                     "<function map-tail> called with no value for key :a"
                     (map-tail-call :a))
+
+; Fixed clauses dispatch by count in either source order. A variadic clause
+; receives calls above its fixed count.
+(defn clause-dispatch
+  ([x y & more] [:rest x y more])
+  ([x y] [:two x y])
+  ([x] [:one x]))
+(assert (= [:one 4] (clause-dispatch 4)) "one-argument clause")
+(assert (= [:two 4 5] (clause-dispatch 4 5)) "two-argument clause")
+(assert (= [:rest 4 5 [6 7]] (clause-dispatch 4 5 6 7))
+        "variadic clause follows the fixed clauses")
+(assert (= 9 ((fn ([x] x)) 9)) "a single clause is a function")
+(assert (nil? ((fn ([] ) ([x] x)))) "an empty clause body returns nil")
+(assert (= 10 ((fn sum ([n] (sum n 0))
+                       ([n total] (if (zero? n) total (sum (- n 1) (+ total n))))) 4))
+        "a clause can call the named function")
+(assert (= 7 (((fn ([x] (fn [] x)) ([x y] (fn [] y))) 3 7)))
+        "each clause binds its own captured parameters")
+(defn clause-map
+  ([x] [:fixed x])
+  ([x & {y :y}] [:map x y]))
+(assert (= [:fixed 1] (clause-map 1)) "a fixed clause takes its exact count")
+(assert (= [:map 1 2] (clause-map 1 :y 2))
+        "a map tail enters the variadic clause")
 
 ;
 ; fn compilation special

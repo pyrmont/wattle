@@ -937,6 +937,17 @@
 (assert (deep= (doc-format "(f x)\n\nBody." 80 4 false)
                !"\n    (f x)\n\n    Body.\n")
         "doc-format prints signature")
+(defn clause-signatures "Body." ([x y] x) ([x] x))
+(assert (= "(clause-signatures x y)\n(clause-signatures x)\n\nBody."
+           (get ((fiber/getenv (fiber/current)) 'clause-signatures) :doc))
+        "defn records every clause signature in source order")
+(def expanded-clauses
+  (macex '(fn ([x] (when true (+ x 1)))
+              ([x y] (when y (+ x y))))))
+(assert (= 4 ((eval expanded-clauses) 3))
+        "macex expands the first clause body")
+(assert (= 7 ((eval expanded-clauses) 3 4))
+        "macex expands the second clause body")
 
 ; cff718f37
 (var counter 0)

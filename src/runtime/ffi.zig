@@ -50,7 +50,7 @@ const AbstractNative = extern struct {
 /// Install the `ffi/` bindings, in upstream Janet's own registration order.
 pub fn libFfi(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
-        corefn.reg("ffi/native", &nfunRawNative, @src(), "(ffi/native &opt path)", "Load a shared object or dll from the given path, and do not extract" ++
+        corefn.reg("ffi/native", &nfunRawNative, @src(), "(ffi/native [path])", "Load a shared object or dll from the given path, and do not extract" ++
             " or run any code from it. This is different than `native`, which will " ++
             "run initialization code to get a module table. If `path` is nil, opens the current running binary. " ++
             "Returns a `core/native`."),
@@ -63,10 +63,10 @@ pub fn libFfi(env: *tables.Table) void {
         corefn.reg("ffi/call", &ffi_call.nfunCall, @src(), "(ffi/call pointer signature & args)", "Call a raw pointer as a function pointer. The function signature specifies " ++
             "how Wattle values in `args` are converted to native machine types."),
         corefn.reg("ffi/struct", &nfunFfiStruct, @src(), "(ffi/struct & types)", "Create a struct type definition that can be used to pass structs into native functions. "),
-        corefn.reg("ffi/write", &nfunBufferWrite, @src(), "(ffi/write ffi-type data &opt buffer index)", "Append a native type to a buffer such as it would appear in memory. This can be used " ++
+        corefn.reg("ffi/write", &nfunBufferWrite, @src(), "(ffi/write ffi-type data [buffer [index]])", "Append a native type to a buffer such as it would appear in memory. This can be used " ++
             "to pass pointers to structs in the ffi, or send C/C++/native structs over the network " ++
             "or to files. Returns a modified buffer or a new buffer if one is not supplied."),
-        corefn.reg("ffi/read", &nfunBufferRead, @src(), "(ffi/read ffi-type bytes &opt offset)", "Parse a native struct out of a buffer and convert it to normal Wattle data structures. " ++
+        corefn.reg("ffi/read", &nfunBufferRead, @src(), "(ffi/read ffi-type bytes [offset])", "Parse a native struct out of a buffer and convert it to normal Wattle data structures. " ++
             "This function is the inverse of `ffi/write`. `bytes` can also be a raw pointer, although " ++
             "this is unsafe."),
         corefn.reg("ffi/size", &nfunFfiSize, @src(), "(ffi/size type)", "Get the size of an ffi type in bytes."),
@@ -81,12 +81,12 @@ pub fn libFfi(env: *tables.Table) void {
             "of `bytes` is architecture specific machine code that will be copied into executable memory."),
         corefn.reg("ffi/malloc", &nfunFfiMalloc, @src(), "(ffi/malloc size)", "Allocates memory directly using Wattle's memory allocator. Memory allocated in this way must be freed manually! Returns a raw pointer, or nil if size = 0."),
         corefn.reg("ffi/free", &nfunFfiFree, @src(), "(ffi/free pointer)", "Free memory allocated with `ffi/malloc`. Returns nil."),
-        corefn.reg("ffi/pointer-buffer", &nfunPointerBuffer, @src(), "(ffi/pointer-buffer pointer capacity &opt count offset)", "Create a buffer from a pointer. The underlying memory of the buffer will not be " ++
+        corefn.reg("ffi/pointer-buffer", &nfunPointerBuffer, @src(), "(ffi/pointer-buffer pointer capacity [count [offset]])", "Create a buffer from a pointer. The underlying memory of the buffer will not be " ++
             "reallocated or freed by the garbage collector, allowing unmanaged, mutable memory " ++
             "to be manipulated with buffer functions. Attempts to resize or extend the buffer " ++
             "beyond its initial capacity will raise an error. As with many FFI functions, this is memory " ++
             "unsafe and can potentially allow out of bounds memory access. Returns a new buffer."),
-        corefn.reg("ffi/pointer-nfunction", &nfunPointerNfunction, @src(), "(ffi/pointer-nfunction pointer &opt name source-file source-line)", "Raises: a raw pointer names a C function, and an nfunction is not a C " ++
+        corefn.reg("ffi/pointer-nfunction", &nfunPointerNfunction, @src(), "(ffi/pointer-nfunction pointer [name [source-file [source-line]]])", "Raises: a raw pointer names a C function, and an nfunction is not a C " ++
             "function, so there is nothing to hand back. Use `ffi/signature` and `ffi/call`, " ++
             "which describe the calling convention rather than assuming one. " ++
             "The arguments are still checked, so a wrong one is reported as such. Unused: a name and " ++
@@ -104,7 +104,7 @@ pub fn libFfi(env: *tables.Table) void {
 // Private functions
 // ==========================================================================
 
-/// `(ffi/buffer-read type buffer &opt offset)`.
+/// `(ffi/buffer-read type buffer [offset])`.
 fn nfunBufferRead(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 3);
@@ -120,7 +120,7 @@ fn nfunBufferRead(argv: []const repr.Value) raise.Error!repr.Value {
     return marshal.readOne(bytes.bytes.? + offset, ty, ffi_types.max_recur);
 }
 
-/// `(ffi/buffer-write type value &opt buffer offset)`.
+/// `(ffi/buffer-write type value [buffer [offset]])`.
 fn nfunBufferWrite(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
@@ -210,7 +210,7 @@ fn nfunNativeLookup(argv: []const repr.Value) raise.Error!repr.Value {
     return wrap.fromPointer(val);
 }
 
-/// `(ffi/pointer-buffer pointer capacity &opt count offset)`.
+/// `(ffi/pointer-buffer pointer capacity [count [offset]])`.
 fn nfunPointerBuffer(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
@@ -250,7 +250,7 @@ fn nfunPointerNfunction(argv: []const repr.Value) raise.Error!repr.Value {
     );
 }
 
-/// `(ffi/native &opt path)`.
+/// `(ffi/native [path])`.
 fn nfunRawNative(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.arity(argv, 0, 1);

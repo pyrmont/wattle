@@ -1166,8 +1166,8 @@ fn theSigaction() void {
         \\(assert (string/has-prefix?
         \\           "signal handler must accept zero arguments"
         \\           (in (protect (os/sigaction :usr1 (fn [x] nil))) 1)))
-        \\; A handler with an optional parameter still accepts zero.
-        \\(os/sigaction :usr1 (fn [&opt x] nil))
+        \\; A handler with zero- and one-argument clauses accepts zero.
+        \\(os/sigaction :usr1 (fn ([] nil) ([_x] nil)))
         \\(os/sigaction :usr1 nil)
     );
 }

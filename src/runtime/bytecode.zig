@@ -653,7 +653,7 @@ pub fn libAsm(env: *tables.Table) raise.Error!void {
             "The syntax for the assembly is Janet's, documented at janet-lang.org, and should correspond\n" ++
             "to the return value of disasm. Will throw an\n" ++
             "error on invalid assembly."),
-        corefn.reg("disasm", &nfunDisasm, @src(), "(disasm func &opt field)", "Returns assembly that could be used to compile the given function. " ++
+        corefn.reg("disasm", &nfunDisasm, @src(), "(disasm func [field])", "Returns assembly that could be used to compile the given function. " ++
             "func must be a function, not an nfunction. Will throw on error on a badly " ++
             "typed argument. If given a field name, will only return that part of the function assembly. " ++
             "Possible fields are:\n\n" ++

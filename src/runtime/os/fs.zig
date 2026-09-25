@@ -170,9 +170,9 @@ pub fn entries() []const corefn.Entry {
                 "of Unix tools like `ls`. Returns the string as a 9-character string of r, w, x and - characters. Does not " ++
                 "include the file/directory/symlink character as rendered by `ls`."),
             corefn.reg("os/perm-int", &nfunPermissionInt, @src(), "(os/perm-int bytes)", "Parse a 9-character permission string and return an integer that can be used by chmod."),
-            corefn.reg("os/dir", &nfunDir, @src(), "(os/dir dir &opt array)", "Iterate over files and subdirectories in a directory. Returns an array of paths parts, " ++
+            corefn.reg("os/dir", &nfunDir, @src(), "(os/dir dir [array])", "Iterate over files and subdirectories in a directory. Returns an array of paths parts, " ++
                 "with only the file name or directory name and no prefix."),
-            corefn.reg("os/stat", &stat.nfunStat, @src(), "(os/stat path &opt tab|key)", "Gets information about a file or directory. Returns a table unless the second argument is a keyword, " ++
+            corefn.reg("os/stat", &stat.nfunStat, @src(), "(os/stat path [tab|key])", "Gets information about a file or directory. Returns a table unless the second argument is a keyword, " ++
                 "in which case it returns only that field/value from stat. If the file or directory does not exist, returns nil." ++
                 "The keys are:\n\n" ++
                 "* :dev - the device that the file is on\n\n" ++
@@ -189,13 +189,13 @@ pub fn entries() []const corefn.Entry {
                 "* :accessed - timestamp when file last accessed\n\n" ++
                 "* :changed - timestamp when file last changed (permissions changed)\n\n" ++
                 "* :modified - timestamp when file last modified (content changed)\n"),
-            corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path &opt tab|key)", "Like os/stat, but don't follow symlinks.\n"),
+            corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path [tab|key])", "Like os/stat, but don't follow symlinks.\n"),
             corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Change file permissions, where `mode` is a permission string as returned by " ++
                 "`os/perm-string`, or an integer as returned by `os/perm-int`. " ++
                 "When `mode` is an integer, it is interpreted as a Unix permission value, best specified in octal, like " ++
                 "8r666 or 8r400. Windows will not differentiate between user, group, and other permissions, and thus will combine all of these permissions. Returns nil." ++
                 "Unsupported on plan9."),
-            corefn.reg("os/touch", &nfunTouch, @src(), "(os/touch path &opt actime modtime)", "Update the access time and modification times for a file. By default, sets " ++
+            corefn.reg("os/touch", &nfunTouch, @src(), "(os/touch path [actime [modtime]])", "Update the access time and modification times for a file. By default, sets " ++
                 "times to the current time."),
             corefn.reg("os/realpath", &nfunRealpath, @src(), "(os/realpath path)", "Get the absolute path for a given path, following ../, ./, and symlinks. " ++
                 "Returns an absolute path as a string."),
@@ -213,7 +213,7 @@ pub fn entries() []const corefn.Entry {
                 "errors otherwise."),
             corefn.reg("os/rmdir", &nfunRmdir, @src(), "(os/rmdir path)", "Delete a directory. The directory must be empty to succeed."),
             corefn.reg("os/rm", &nfunRemove, @src(), "(os/rm path)", "Delete a file. Returns nil."),
-            corefn.reg("os/link", &nfunLink, @src(), "(os/link oldpath newpath &opt symlink)", "Create a link at newpath that points to oldpath and returns nil. " ++
+            corefn.reg("os/link", &nfunLink, @src(), "(os/link oldpath newpath [symlink])", "Create a link at newpath that points to oldpath and returns nil. " ++
                 "Iff symlink is truthy, creates a symlink. " ++
                 "Iff symlink is falsey or not provided, " ++
                 "creates a hard link. Does not work on Windows or Plan 9."),
@@ -234,7 +234,7 @@ pub fn entries() []const corefn.Entry {
 pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/open", &open_file.nfunOpen, @src(), "(os/open path &opt flags mode)", "Create a stream from a file, like the POSIX open system call. Returns a new stream. " ++
+        corefn.reg("os/open", &open_file.nfunOpen, @src(), "(os/open path [flags [mode]])", "Create a stream from a file, like the POSIX open system call. Returns a new stream. " ++
             "`mode` should be a file mode as passed to `os/chmod`, but only if the create flag is given. " ++
             "The default mode is 8r666. " ++
             "Allowed flags are as follows:\n\n" ++
@@ -394,7 +394,7 @@ fn nfunCwd(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
 }
 
-/// `(os/dir path &opt array)`.
+/// `(os/dir path [array])`.
 fn nfunDir(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
@@ -404,7 +404,7 @@ fn nfunDir(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromArray(paths);
 }
 
-/// `(os/link oldpath newpath &opt symlink)`.
+/// `(os/link oldpath newpath [symlink])`.
 fn nfunLink(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 2, 3);
@@ -528,7 +528,7 @@ fn nfunSymlink(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(os/touch path &opt actime modtime)`.
+/// `(os/touch path [actime [modtime]])`.
 fn nfunTouch(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 1, 3);

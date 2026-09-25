@@ -523,7 +523,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     quickAsmDef(env, .{ .tag = constants.fun_cmp }, "cmp", 2, 2, 2, 2, &opOnly(constants.Opcode.compare.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cmp x y)\n\n" ++
         "Returns -1 if x is strictly less than y, 1 if y is strictly greater " ++
         "than x, and 0 otherwise. To return 0, x and y must be the exact same type.");
-    quickAsmDef(env, .{ .tag = constants.fun_next }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x &opt key)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.fun_next }, "next", 2, 1, 2, 2, &opOnly(constants.Opcode.next.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(next x [key])\n\n" ++
         "Gets the next key in `x`. Can be used to iterate through " ++
         "the keys of `x` in an unspecified order. Keys are guaranteed " ++
         "to be seen only once per iteration if `x` is not mutated " ++
@@ -542,24 +542,24 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "resuming the current fiber will first resume `fiber`. " ++
         "This function can be used to re-raise an error without losing " ++
         "the original stack trace.");
-    quickAsmDef(env, .{ .tag = constants.fun_debug }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug &opt x)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.fun_debug }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug [x])\n\n" ++
         "Throws a debug signal that can be caught by a parent fiber and used to inspect " ++
         "the running state of the current fiber. Returns the value passed in by resume.");
     quickAsmDef(env, .{ .tag = constants.fun_error }, "error", 1, 1, 1, 1, &opOnly(constants.Opcode.@"error"), "(error e)\n\n" ++
         "Throws an error e that can be caught and handled by a parent fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_yield }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield &opt x)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.fun_yield }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield [x])\n\n" ++
         "Yield a value to a parent fiber. When a fiber yields, its execution is paused until " ++
         "another thread resumes it. The fiber will then resume, and the last yield call will " ++
         "return the value that was passed to resume.");
     quickAsmDef(env, .{ .tag = constants.fun_cancel }, "cancel", 2, 2, 2, 2, &opOnly(constants.Opcode.cancel.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cancel fiber err)\n\n" ++
         "Resume a fiber but have it immediately raise an error. This lets a programmer unwind a pending fiber. " ++
         "Returns the same result as resume.");
-    quickAsmDef(env, .{ .tag = constants.fun_resume }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber &opt x)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.fun_resume }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber [x])\n\n" ++
         "Resume a new or suspended fiber and optionally pass in a value to the fiber that " ++
         "will be returned to the last yield in the case of a pending fiber, or the argument to " ++
         "the dispatch function in the case of a new fiber. Returns either the return result of " ++
         "the fiber's dispatch function, or the value from the next yield call in fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key &opt dflt)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])\n\n" ++
         "Get value in `x` at `key`. For bytes and indexed " ++
         "types, `key` must be a non-negative interger in " ++
         "bounds or an error is raised. For dictionaries " ++
@@ -571,7 +571,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     // The slice below is `get_asm`'s own length. Upstream passes `in_asm`'s
     // here; the two arrays are the same length, so nothing observes the
     // difference.
-    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key &opt dflt)\n\n" ++
+    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])\n\n" ++
         "Get the value mapped to `key` in `x`. Returns `dflt` " ++
         "or `nil` if `key` is not found. Similar to `in`, but " ++
         "will not throw an error if `key` is invalid for `x`. " ++
@@ -699,7 +699,7 @@ fn nfunDescribe(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(b.slice(), .string);
 }
 
-/// `(dyn key &opt default)`.
+/// `(dyn key [default])`.
 fn nfunDyn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const env = vm_state.current().fiber.?.env;
@@ -817,7 +817,7 @@ fn nfunGensym(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromSymbol(symbols.gen());
 }
 
-/// `(getline &opt prompt buf env)`.
+/// `(getline [prompt [buf [env]]])`.
 fn nfunGetline(argv: []repr.Value) raise.Error!repr.Value {
     const in = io_core.dynfile("in", stdio.in());
     const out = io_core.dynfile("out", stdio.out());
@@ -874,7 +874,7 @@ fn nfunIsIndexed(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(args_core.checkindexed(argv[0]));
 }
 
-/// `(memcmp a b &opt len offset-a offset-b)`.
+/// `(memcmp a b [len [offset-a [offset-b]]])`.
 fn nfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
     const a = try args_core.getBytes(argv, 0);
@@ -900,7 +900,7 @@ fn nfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromInteger(result);
 }
 
-/// `(native path &opt env)`: loads a `.so` and runs its `_wattle_init`.
+/// `(native path [env])`: loads a `.so` and runs its `_wattle_init`.
 fn nfunNative(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const argv0 = argv[0];
@@ -919,7 +919,7 @@ fn nfunNative(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTable(env);
 }
 
-/// `(range start &opt end step)`.
+/// `(range start [end [step]])`.
 fn nfunRange(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     var start: f64 = 0;
@@ -979,7 +979,7 @@ fn nfunSandbox(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(scan-number str &opt base)`.
+/// `(scan-number str [base])`.
 fn nfunScanNumber(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -1005,7 +1005,7 @@ fn nfunSetdyn(argv: []repr.Value) raise.Error!repr.Value {
     return argv[1];
 }
 
-/// `(signal what &opt payload)`, where `what` is a user signal number or a
+/// `(signal what [payload])`, where `what` is a user signal number or a
 /// keyword from `utils.signalNames`.
 fn nfunSignal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
@@ -1051,7 +1051,7 @@ fn vectorFromChunks(it: *args_core.Chunks, length: usize) raise.Error!*vectors.V
     return vectors.fromSlice(block);
 }
 
-/// `(slice x &opt start end)`.
+/// `(slice x [start [end]])`.
 ///
 /// An indexed value gives a vector, which is Wattle's immutable sequence; a
 /// tuple is the call form and is what `tuple/slice` gives.
@@ -1257,7 +1257,7 @@ inline fn isPathSep(ch: u8) bool {
 /// build has no code for.
 fn loadLibs(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("native", &nfunNative, @src(), "(native path &opt env)", "Load a native module from the given path. The path " ++
+        corefn.reg("native", &nfunNative, @src(), "(native path [env])", "Load a native module from the given path. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
             "usually a .so file on Unix systems, and a .dll file on Windows. " ++
             "Returns an environment table that contains functions and other values " ++
@@ -1284,7 +1284,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "an odd number of elements, an error will be thrown. Returns the " ++
             "new table."),
         corefn.reg("array", &nfunArray, @src(), "(array & items)", "Create a new array that contains items. Returns the new array."),
-        corefn.reg("scan-number", &nfunScanNumber, @src(), "(scan-number str &opt base)", "Parse a number from a byte sequence and return that number, either an integer " ++
+        corefn.reg("scan-number", &nfunScanNumber, @src(), "(scan-number str [base])", "Parse a number from a byte sequence and return that number, either an integer " ++
             "or a real. The number " ++
             "must be in the same format as numbers in Wattle source code. Will return nil " ++
             "on an invalid number. Optionally provide a base - if a base is provided, no " ++
@@ -1319,11 +1319,11 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("hash", &nfunHash, @src(), "(hash value)", "Gets a hash for any value. The hash is an integer can be used " ++
             "as a cheap hash function for all values. If two values are strictly equal, " ++
             "then they will have the same hash value."),
-        corefn.reg("getline", &nfunGetline, @src(), "(getline &opt prompt buf env)", "Reads a line of input into a buffer, including the newline character, using a prompt. " ++
+        corefn.reg("getline", &nfunGetline, @src(), "(getline [prompt [buf [env]]])", "Reads a line of input into a buffer, including the newline character, using a prompt. " ++
             "An optional environment table can be provided for auto-complete. " ++
             "Returns the modified buffer. " ++
             "Use this function to implement a simple interface for a terminal program."),
-        corefn.reg("dyn", &nfunDyn, @src(), "(dyn key &opt default)", "Get a dynamic binding. Returns the default value (or nil) if no binding found."),
+        corefn.reg("dyn", &nfunDyn, @src(), "(dyn key [default])", "Get a dynamic binding. Returns the default value (or nil) if no binding found."),
         corefn.reg("setdyn", &nfunSetdyn, @src(), "(setdyn key value)", "Set a dynamic binding. Returns value."),
         corefn.reg("trace", &nfunTrace, @src(), "(trace func)", "Enable tracing on a function. Returns the function."),
         corefn.reg("untrace", &nfunUntrace, @src(), "(untrace func)", "Disables tracing on a function. Returns the function."),
@@ -1346,7 +1346,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
         corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Check if x is a table, a struct, or an abstract type that implements the dictionary protocol."),
         corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
-        corefn.reg("slice", &nfunSlice, @src(), "(slice x &opt start end)", "Extract a sub-range of an indexed data structure or byte sequence."),
+        corefn.reg("slice", &nfunSlice, @src(), "(slice x [start [end]])", "Extract a sub-range of an indexed data structure or byte sequence."),
         corefn.reg("range", &nfunRange, @src(), "(range & args)", "Create an array of values [start, end) with a given step. " ++
             "With one argument, returns a range [0, end). With two arguments, returns " ++
             "a range [start, end). With three, returns a range with optional step size."),
@@ -1359,7 +1359,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :user(0-7)\n" ++
             "* :interrupt\n" ++
             "* :await"),
-        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b &opt len offset-a offset-b)", "Compare memory. Takes two byte sequences `a` and `b`, and " ++
+        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b [len [offset-a [offset-b]]])", "Compare memory. Takes two byte sequences `a` and `b`, and " ++
             "return 0 if they have identical contents, a negative integer if a is less than b, " ++
             "and a positive integer if a is greater than b. Optionally take a length and offsets " ++
             "to compare slices of the bytes sequences."),

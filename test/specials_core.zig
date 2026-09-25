@@ -446,12 +446,12 @@ fn theBindingForms(arguments: []repr.Value) !void {
     expect(compiler.scope == &scope);
     clearError();
 
-    // A tuple is refused as a parameter list.
+    // A clause needs a parameter vector as its first form.
     const tuple = tuples.begin(0);
     arguments[0] = wrap.fromTuple(tuples.end(tuple));
     result = try compile("fn", options, 1, arguments);
     expect(harness.isType(result.constant, repr.Tag.nil));
-    expect(failedWith("expected function parameters as a vector"));
+    expect(failedWith("expected clause parameter vector"));
     expect(compiler.scope == &scope);
     clearError();
 
@@ -595,12 +595,12 @@ fn theWholeCompilations() void {
         expect(harness.stringValueIs(doc, "binding documentation"));
     }
 
-    // The five parameter forms: destructured, optional, rest, named, and a
+    // The five parameter forms: destructured, clauses, rest, named, and a
     // self-referential name for recursion.
     expect(core_env.dostring(
         environment,
         "[ ((fn [[a b]] (+ a b)) [2 3]) " ++
-            "  ((fn [a &opt b] [a b]) 1) " ++
+            "  ((fn ([a] [a nil]) ([a b] [a b])) 1) " ++
             "  ((fn [a & rest] rest) 1 2 3) " ++
             "  ((fn [& {:keys [x y]}] [x y]) :y 2 :x 1) " ++
             "  ((fn recur [n] " ++

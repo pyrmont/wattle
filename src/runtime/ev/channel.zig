@@ -202,9 +202,9 @@ pub fn entries() []const corefn.Entry {
                 "channel was closed while waiting, or that the channel was already " ++
                 "closed."),
             corefn.reg("ev/rselect", &nfunRchoice, @src(), "(ev/rselect & clauses)", "Similar to ev/select, but will try clauses in a random order for fairness."),
-            corefn.reg("ev/chan", &nfunNew, @src(), "(ev/chan &opt capacity)", "Create a new channel. capacity is the number of values to queue before " ++
+            corefn.reg("ev/chan", &nfunNew, @src(), "(ev/chan [capacity])", "Create a new channel. capacity is the number of values to queue before " ++
                 "blocking writers, defaults to 0 if not provided. Returns a new channel."),
-            corefn.reg("ev/thread-chan", &nfunNewThreaded, @src(), "(ev/thread-chan &opt limit)", "Create a threaded channel. A threaded channel is a channel that can be shared between threads and " ++
+            corefn.reg("ev/thread-chan", &nfunNewThreaded, @src(), "(ev/thread-chan [limit])", "Create a threaded channel. A threaded channel is a channel that can be shared between threads and " ++
                 "used to communicate between any number of operating system threads."),
             corefn.reg("ev/chan-close", &nfunClose, @src(), "(ev/chan-close chan)", "Close a channel. A closed channel will cause all pending reads and writes to return nil. " ++
                 "Returns the channel."),
@@ -416,7 +416,7 @@ fn nfunGive(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(ev/chan &opt capacity)`.
+/// `(ev/chan [capacity])`.
 fn nfunNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
@@ -425,7 +425,7 @@ fn nfunNew(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(chan);
 }
 
-/// `(ev/thread-chan &opt limit)`.
+/// `(ev/thread-chan [limit])`.
 fn nfunNewThreaded(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
