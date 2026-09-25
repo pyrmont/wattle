@@ -88,7 +88,7 @@
         "the port may be a string")
 (def multi (net/address "127.0.0.1" 8123 :stream true))
 (assert (indexed? multi) "multi returns an array")
-(assert (all #(= ["127.0.0.1" 8123] (net/address-unpack $)) multi)
+(assert (every? (map #(= ["127.0.0.1" 8123] (net/address-unpack $)) multi))
         "every address multi returns unpacks")
 (assert-error "net/address rejects an unknown type"
               (net/address "127.0.0.1" 8123 :tcp false))

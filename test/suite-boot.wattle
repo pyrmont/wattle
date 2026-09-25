@@ -308,11 +308,11 @@
 
 (assert (= (count = [1 3 2 4 3 5 4 2 1] [1 2 3 4 5 4 3 2 1]) 4))
 
-(assert (= (some not= (range 5) (range 5)) nil))
-(assert (= (some = [1 2 3 4 5] [5 4 3 2 1]) true))
+(assert (= (any? (map not= (range 5) (range 5))) false))
+(assert (= (any? (map = [1 2 3 4 5] [5 4 3 2 1])) true))
 
-(assert (= (all = (range 5) (range 5)) true))
-(assert (= (all not= [1 2 3 4 5] [5 4 3 2 1]) false))
+(assert (= (every? (map = (range 5) (range 5))) true))
+(assert (= (every? (map not= [1 2 3 4 5] [5 4 3 2 1])) false))
 
 ; 4194374
 (assert (= false (deep-not= [1] [1])) "issue #1149")
@@ -837,28 +837,20 @@
 (check-threading '-> '(y (x 0)))
 (check-threading '->> '(y (x 0)))
 
-; keep-syntax
-; b6175e429
-;
-; There are no bracket tuples, so what `keep-syntax` carries is a source map
-; and nothing else. A vector has none, so one given as `before` falls through
-; to `after` unchanged, which is the arm every non-tuple takes.
-(let [par '(1 2 3)
-      vec3 '[1 2 3]]
+; A threaded form that is a bare symbol has no source map to carry.
+(assert (= '(inc 1) (macex1 '(-> 1 inc))) "-> expands a bare symbol")
+(assert (= '(inc 1) (macex1 '(->> 1 inc))) "->> expands a bare symbol")
+(assert (= 2 (-?> 1 inc)) "-?> threads a bare symbol")
+(assert (= 2 (-?>> 1 inc)) "-?>> threads a bare symbol")
+(assert (= nil (-?> nil inc)) "-?> stops at nil on a bare symbol")
+(assert (= nil (-?>> nil inc)) "-?>> stops at nil on a bare symbol")
 
+; A tuple rebuilt by `walk` carries the source map of the tuple it came from.
+(let [par '(1 2 3)]
   (tuple/setmap par 2 1)
-
-  (assert (deep= (keep-syntax par ![1 2 3]) ![1 2 3])
-          "keep-syntax ignores an array")
-  (assert (= (keep-syntax! par (map inc ![1 2 3])) '(2 3 4))
-          "keep-syntax! coerces an array")
-  (assert (= (tuple/sourcemap par)
-             (tuple/sourcemap (keep-syntax! par ![1 2 3])))
-          "keep-syntax! keeps the source map")
-
-  (assert (deep= (keep-syntax vec3 ![1 2 3]) ![1 2 3])
-          "keep-syntax over a vector gives `after`")
-  (assert (= (keep-syntax 1 par) par) "keep-syntax ignores a non-tuple"))
+  (assert (= '(2 3 4) (walk inc par)) "walk rebuilds a tuple")
+  (assert (= (tuple/sourcemap par) (tuple/sourcemap (walk inc par)))
+          "and keeps its source map"))
 
 ; Curenv
 ; 28439d822, f7c556e

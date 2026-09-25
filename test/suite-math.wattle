@@ -29,9 +29,9 @@
 ; aee168721
 (defn test-rng
   [rng]
-  (assert (all identity (seq [i :range [0 1000]]
-                             (<= (math/rng-int rng i) i))) "math/rng-int test")
-  (assert (all identity (seq [_ :range [0 1000]]
+  (assert (every? (seq [i :range [0 1000]]
+                        (<= (math/rng-int rng i) i))) "math/rng-int test")
+  (assert (every? (seq [_ :range [0 1000]]
     (def x (math/rng-uniform rng))
     (and (>= x 0) (< x 1))))
           "math/rng-uniform test"))

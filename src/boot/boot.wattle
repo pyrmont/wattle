@@ -1170,9 +1170,7 @@
     :map `(array/push ~res ~val)
     :mapcat `(array/concat ~res ~val)
     :keep `(if (def y ~val) (array/push ~res y))
-    :count `(if ~val (++ ~res))
-    :some `(if (def y ~val) (do (set ~res y) (break)))
-    :all `(if (def y ~val) nil (do (set ~res y) (break)))))
+    :count `(if ~val (++ ~res))))
 
 (defmacro- map-n
   """
@@ -1537,31 +1535,6 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
      (~eprintf (~dyn :pretty-format "%q") ~s)
      ~s))
 
-(defn keep-syntax
-  """
-  Creates a tuple with the sourcemap of `before` but the
-  elements of `after`. If either one of its arguments is not a tuple, returns
-  `after` unmodified. Useful to preserve syntactic information when transforming
-  an ast in macros.
-  """
-  [before after]
-  (if (and (= :tuple (type before))
-           (= :tuple (type after)))
-    (do
-      (def res (tuple/slice after))
-      (tuple/setmap res |(tuple/sourcemap before)))
-    after))
-
-(defn keep-syntax!
-  """
-  Like `keep-syntax`, but if `after` is an array, it is coerced into a tuple.
-  Useful to preserve syntactic information when transforming an ast in macros.
-  """
-  [before after]
-  (keep-syntax before (if (= :array (type after))
-                        (tuple/slice after)
-                        after)))
-
 (defmacro ->
   """
   Threading macro. Inserts x as the second value in the first form
@@ -1573,8 +1546,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def [h t] (if (= :tuple (type n))
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
-    (def parts (array/concat ![h last] t))
-    (keep-syntax! n parts))
+    (def parts (tuple/slice (array/concat ![h last] t)))
+    (if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))
   (reduce fop x forms))
 
 (defmacro ->>
@@ -1588,8 +1561,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def [h t] (if (= :tuple (type n))
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
-    (def parts (array/concat ![h] t ![last]))
-    (keep-syntax! n parts))
+    (def parts (tuple/slice (array/concat ![h] t ![last])))
+    (if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))
   (reduce fop x forms))
 
 (defmacro -?>
@@ -1606,8 +1579,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
     (def sym (gensym))
-    (def parts (array/concat ![h sym] t))
-    `(as-macro ~let [~sym ~last] (if ~sym ~(keep-syntax! n parts))))
+    (def parts (tuple/slice (array/concat ![h sym] t)))
+    `(as-macro ~let [~sym ~last]
+       (if ~sym ~(if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))))
   (reduce fop x forms))
 
 (defmacro -?>>
@@ -1624,8 +1598,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
     (def sym (gensym))
-    (def parts (array/concat ![h] t ![sym]))
-    `(as-macro ~let [~sym ~last] (if ~sym ~(keep-syntax! n parts))))
+    (def parts (tuple/slice (array/concat ![h] t ![sym])))
+    `(as-macro ~let [~sym ~last]
+       (if ~sym ~(if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))))
   (reduce fop x forms))
 
 (defn- walk-ind [f form]
@@ -1658,7 +1633,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     :map (table/to-map (walk-dict f form))
     :array (walk-ind f form)
     :vector (vector |(walk-ind f form))
-    :tuple (keep-syntax! form (walk-ind f form))
+    :tuple (tuple/setmap (tuple/slice (walk-ind f form)) |(tuple/sourcemap form))
     form))
 
 (defn postwalk
@@ -2432,7 +2407,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (case (type x)
       :array (map expand-bindings x)
       :vector (vector |(map expand-bindings x))
-      :tuple (keep-syntax! x (map expand-bindings x))
+      :tuple (tuple/setmap (tuple/slice (map expand-bindings x)) |(tuple/sourcemap x))
       :table (dotable x expand-bindings)
       :map (table/to-map (dotable x expand-bindings))
       (recur x)))
@@ -2440,11 +2415,13 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (defn expanddef [t]
     (def last (in t (- (length t) 1)))
     (def bound (in t 1))
-    (keep-syntax! t
-                  (array/concat
-                    ![(in t 0) (expand-bindings bound)]
-                    (tuple/slice t 2 -2)
-                    ![(recur last)])))
+    (tuple/setmap
+      (tuple/slice
+        (array/concat
+          ![(in t 0) (expand-bindings bound)]
+          (tuple/slice t 2 -2)
+          ![(recur last)]))
+      |(tuple/sourcemap t)))
 
   (defn expandall [t]
     (def args (map recur (tuple/slice t 1)))
@@ -2461,13 +2438,13 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
                  (tuple (in clause 0) |(map recur (tuple/slice clause 1))))
                (tuple/slice t start)))
         (if named?
-          (keep-syntax t (tuple 'fn t1 |clauses))
-          (keep-syntax t (tuple 'fn |clauses))))
+          (tuple/setmap (tuple 'fn t1 |clauses) |(tuple/sourcemap t))
+          (tuple/setmap (tuple 'fn |clauses) |(tuple/sourcemap t))))
       (do
         (def args (map recur (tuple/slice t (+ start 1))))
         (if named?
-          (keep-syntax t (tuple 'fn t1 (in t start) |args))
-          (keep-syntax t (tuple 'fn t1 |args))))))
+          (tuple/setmap (tuple 'fn t1 (in t start) |args) |(tuple/sourcemap t))
+          (tuple/setmap (tuple 'fn t1 |args) |(tuple/sourcemap t))))))
 
   (defn expandqq [t]
     (defn qq [x]
@@ -2505,9 +2482,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def m (do (def r (get entry :ref)) (if r (in r 0) (get entry :value))))
     (def m? (in entry :macro))
     (cond
-      s (keep-syntax t (s t))
+      s (tuple/setmap (tuple/slice (s t)) |(tuple/sourcemap t))
       m? (do (setdyn *macro-form* t) (m |(tuple/slice t 1)))
-      (keep-syntax! t (map recur t))))
+      (tuple/setmap (tuple/slice (map recur t)) |(tuple/sourcemap t))))
 
   (def ret
     (case (type x)
@@ -2518,38 +2495,6 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
       :table (dotable x recur)
       x))
   ret))
-
-(defn all
-  """
-  Returns true if applying `pred` to every value in a data
-  structure `ind` results in only truthy values, but only if no
-  `inds` are provided. Multiple data structures can be handled
-  if each `inds` is a data structure and `pred` is a function
-  of arity one more than the number of `inds`. Returns the first
-  falsey result encountered. Note that `pred` is only called as
-  many times as the length of the shortest of `ind` and each of
-  `inds`. If `ind` or any of `inds` are empty, returns true.
-  """
-  [pred ind & inds]
-  (var res true)
-  (map-template :all res pred ind inds)
-  res)
-
-(defn some
-  """
-  Returns nil if applying `pred` to every value in a data
-  structure `ind` results in only falsey values, but only if no
-  `inds` are provided. Multiple data structures can be handled
-  if each `inds` is a data structure and `pred` is a function
-  of arity one more than the number of `inds`. Returns the first
-  truthy result encountered. Note that `pred` is only called as
-  many times as the length of the shortest of `ind` and each of
-  `inds`. If `ind` or any of `inds` are empty, returns nil.
-  """
-  [pred ind & inds]
-  (var res nil)
-  (map-template :some res pred ind inds)
-  res)
 
 (defn freeze
   """
@@ -4582,10 +4527,10 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (tuple? src)
     nil
     (or (array? src) (vector? src))
-    (all no-side-effects src)
+    (every? (map no-side-effects src))
     (dictionary? src)
-    (and (all no-side-effects (keys src))
-         (all no-side-effects (values src)))
+    (and (every? (map no-side-effects (keys src)))
+         (every? (map no-side-effects (values src))))
     true))
 
 (defn- is-safe-def [thunk source env where]

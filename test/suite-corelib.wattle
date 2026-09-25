@@ -65,9 +65,9 @@
 (assert (= 1 (div -20 -13)) "div 4")
 (assert (= math/inf (div 20 0)) "div 5")
 
-(assert (all = (seq [n :range [0 10]] (mod n 5 3))
-               (seq [n :range [0 10]] (% n 5 3))
-               [0 1 2 0 1 0 1 2 0 1]) "variadic mod")
+(assert (every? (map = (seq [n :range [0 10]] (mod n 5 3))
+                       (seq [n :range [0 10]] (% n 5 3))
+                       [0 1 2 0 1 0 1 2 0 1])) "variadic mod")
 
 ; linspace range
 (assert (deep= ![0 1 2 3] (range 4)) "range 1")
@@ -608,13 +608,13 @@
 ; supported platform whose own name for a shared object could not be imported
 ; by an explicit path.
 (defn- native-extension? [ext]
-  (some (fn [entry]
-          (and (indexed? entry)
-               (= ":all:" (first entry))
-               (= :native (get entry 1))
-               (function? (get entry 2))
-               ((get entry 2) (string "mymod" ext))))
-        module/paths))
+  (any? (map (fn [entry]
+               (and (indexed? entry)
+                    (= ":all:" (first entry))
+                    (= :native (get entry 1))
+                    (function? (get entry 2))
+                    ((get entry 2) (string "mymod" ext))))
+             module/paths)))
 
 (assert (native-extension? ".so") "module/paths imports a .so by path")
 (assert (native-extension? ".dll") "module/paths imports a .dll by path")

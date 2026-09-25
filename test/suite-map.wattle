@@ -62,7 +62,7 @@
 (gccollect)
 (assert (= 5000 (length big)) "a large set")
 (assert (= (sum (range 5000)) (sum (keys big))) "every element of a large set")
-(assert (all #(= $ (get big $)) (range 5000)) "every element found")
+(assert (every? (map #(= $ (get big $)) (range 5000))) "every element found")
 
 ; Updating
 
@@ -96,7 +96,7 @@
 (for i 0 3000 (set grown (assoc grown i (* i i))))
 (gccollect)
 (assert (= 3000 (length grown)) "assoc one at a time")
-(assert (all #(= (* $ $) (get grown $)) (range 3000)) "every value after growing")
+(assert (every? (map #(= (* $ $) (get grown $)) (range 3000))) "every value after growing")
 (var shrunk grown)
 (loop [i :range [0 3000 2]] (set shrunk (dissoc shrunk i)))
 (assert (= 1500 (length shrunk)) "dissoc one at a time")

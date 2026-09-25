@@ -263,7 +263,7 @@ fn theRngInt() void {
     // Bounds are respected, and a fixed seed gives a fixed sequence.
     truthy(
         \\(let [r (math/rng 42)]
-        \\  (all #(and (>= $ 0) (< $ 10)) (seq [_ :range [0 500]] (math/rng-int r 10))))
+        \\  (every? (map #(and (>= $ 0) (< $ 10)) (seq [_ :range [0 500]] (math/rng-int r 10)))))
     );
     truthy(
         \\(deep= (seq [_ :range [0 20]] (math/rng-int (math/rng 3) 1000))
@@ -295,7 +295,7 @@ fn theRngBuffer() void {
     );
 
     // Every length from 0 to 16 produces exactly that many bytes.
-    truthy("(all #(= $ (length (math/rng-buffer (math/rng 1) $))) (range 17))");
+    truthy("(every? (map #(= $ (length (math/rng-buffer (math/rng 1) $))) (range 17)))");
 }
 
 /// The state survives marshalling exactly, which is what makes every vector

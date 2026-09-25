@@ -327,7 +327,7 @@
   (def lints ![])
   (def compiled (compile code (curenv) "suite-compile.janet" lints))
   (assert (and (function? compiled)
-               (some #(string/find expected (in $ 3)) lints))
+               (any? (map #(string/find expected (in $ 3)) lints)))
           note))
 
 ; A position of zero is a position. `tuple/setmap` is the only way to write
