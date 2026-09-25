@@ -147,6 +147,10 @@ accessor. `os/` and `os/fs/` are split where the platform differs.
 `os/abi.zig`, `net/abi.zig` and `filewatch/abi.zig` are the three host-header
 translations.
 
+The Windows process CPU clock may read zero. If `GetProcessTimes` fails,
+`os.gettime` returns null and `os.gettimeAbi` returns -1. The failed call's
+output fields are not read.
+
 ### Call frames
 
 Each call frame occupies four `Value` slots below its stack base. Its

@@ -140,16 +140,20 @@ fn theMonotonicClockDoesNotGoBackwards() void {
 
 fn theCputimeClockAccumulates() void {
     const before = read(.cputime);
+    expect(seconds(before) >= 0);
 
-    // Work the optimiser cannot remove, so that the clock has something to
-    // measure: a mutable sink, read afterwards so nothing can fold it away.
+    // The sink is read below, so the optimiser cannot remove this work.
     var sink: f64 = 0;
-    var i: i32 = 0;
-    while (i < 8_000_000) : (i += 1) sink += @floatFromInt(i);
+    var after = before;
+    for (0..8) |_| {
+        var i: i32 = 0;
+        while (i < 8_000_000) : (i += 1) sink += @floatFromInt(i);
+        after = read(.cputime);
+        if (seconds(after) > seconds(before)) break;
+    }
     expect(sink > 0);
 
-    const after = read(.cputime);
-    if (builtin.os.tag == .windows and seconds(before) <= 0) {
+    if (builtin.os.tag == .windows and seconds(after) <= seconds(before)) {
         var creation: c.FILETIME = .{ .low = 0, .high = 0 };
         var exit_time: c.FILETIME = .{ .low = 0, .high = 0 };
         var kernel: c.FILETIME = .{ .low = 0, .high = 0 };
@@ -161,9 +165,7 @@ fn theCputimeClockAccumulates() void {
             .{ before.seconds, before.nanoseconds, after.seconds, after.nanoseconds, ok, error_code, kernel.high, kernel.low, user.high, user.low },
         );
     }
-    // Measured from process start, so it is positive and never decreases.
-    expect(seconds(before) > 0);
-    expect(seconds(after) >= seconds(before));
+    expect(seconds(after) > seconds(before));
 }
 
 /// An unrecognised source falls back to the real-time clock; see the header.

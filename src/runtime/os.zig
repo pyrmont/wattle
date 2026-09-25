@@ -259,7 +259,7 @@ pub fn gettime(source: i32) ?TimeParts {
                 var exit_time: c.FILETIME = undefined;
                 var kernel: c.FILETIME = undefined;
                 var user: c.FILETIME = undefined;
-                _ = c.GetProcessTimes(c.GetCurrentProcess(), &creation, &exit_time, &kernel, &user);
+                if (c.GetProcessTimes(c.GetCurrentProcess(), &creation, &exit_time, &kernel, &user) == 0) return null;
                 const ticks = fileTimeToInt(user);
                 return .{
                     .sec = @divTrunc(ticks, hundred_ns_per_second),
