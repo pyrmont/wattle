@@ -34,6 +34,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const c = @import("cabi");
 const core_env = @import("subsystems").env;
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
@@ -148,6 +149,18 @@ fn theCputimeClockAccumulates() void {
     expect(sink > 0);
 
     const after = read(.cputime);
+    if (builtin.os.tag == .windows and seconds(before) <= 0) {
+        var creation: c.FILETIME = .{ .low = 0, .high = 0 };
+        var exit_time: c.FILETIME = .{ .low = 0, .high = 0 };
+        var kernel: c.FILETIME = .{ .low = 0, .high = 0 };
+        var user: c.FILETIME = .{ .low = 0, .high = 0 };
+        const ok = c.GetProcessTimes(c.GetCurrentProcess(), &creation, &exit_time, &kernel, &user);
+        const error_code = if (ok == 0) c.GetLastError() else 0;
+        std.debug.print(
+            "os_time cputime: before={d}.{d}, after={d}.{d}, GetProcessTimes={d}, error={d}, kernel={d}:{d}, user={d}:{d}\n",
+            .{ before.seconds, before.nanoseconds, after.seconds, after.nanoseconds, ok, error_code, kernel.high, kernel.low, user.high, user.low },
+        );
+    }
     // Measured from process start, so it is positive and never decreases.
     expect(seconds(before) > 0);
     expect(seconds(after) >= seconds(before));
