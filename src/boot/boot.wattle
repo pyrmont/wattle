@@ -1547,7 +1547,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
     (def parts (tuple/slice (array/concat ![h last] t)))
-    (if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))
+    (if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
   (reduce fop x forms))
 
 (defmacro ->>
@@ -1562,7 +1562,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
     (def parts (tuple/slice (array/concat ![h] t ![last])))
-    (if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))
+    (if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
   (reduce fop x forms))
 
 (defmacro -?>
@@ -1581,7 +1581,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def sym (gensym))
     (def parts (tuple/slice (array/concat ![h sym] t)))
     `(as-macro ~let [~sym ~last]
-       (if ~sym ~(if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))))
+       (if ~sym ~(if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))))
   (reduce fop x forms))
 
 (defmacro -?>>
@@ -1600,7 +1600,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def sym (gensym))
     (def parts (tuple/slice (array/concat ![h] t ![sym])))
     `(as-macro ~let [~sym ~last]
-       (if ~sym ~(if (= :tuple (type n)) (tuple/setmap parts |(tuple/sourcemap n)) parts))))
+       (if ~sym ~(if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))))
   (reduce fop x forms))
 
 (defn- walk-ind [f form]
@@ -1633,7 +1633,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     :map (table/to-map (walk-dict f form))
     :array (walk-ind f form)
     :vector (vector |(walk-ind f form))
-    :tuple (tuple/setmap (tuple/slice (walk-ind f form)) |(tuple/sourcemap form))
+    :tuple (tuple/sourcemap! (tuple/slice (walk-ind f form)) (tuple/sourcemap form))
     form))
 
 (defn postwalk
@@ -2407,7 +2407,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (case (type x)
       :array (map expand-bindings x)
       :vector (vector |(map expand-bindings x))
-      :tuple (tuple/setmap (tuple/slice (map expand-bindings x)) |(tuple/sourcemap x))
+      :tuple (tuple/sourcemap! (tuple/slice (map expand-bindings x)) (tuple/sourcemap x))
       :table (dotable x expand-bindings)
       :map (table/to-map (dotable x expand-bindings))
       (recur x)))
@@ -2415,13 +2415,13 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (defn expanddef [t]
     (def last (in t (- (length t) 1)))
     (def bound (in t 1))
-    (tuple/setmap
+    (tuple/sourcemap!
       (tuple/slice
         (array/concat
           ![(in t 0) (expand-bindings bound)]
           (tuple/slice t 2 -2)
           ![(recur last)]))
-      |(tuple/sourcemap t)))
+      (tuple/sourcemap t)))
 
   (defn expandall [t]
     (def args (map recur (tuple/slice t 1)))
@@ -2438,13 +2438,13 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
                  (tuple (in clause 0) |(map recur (tuple/slice clause 1))))
                (tuple/slice t start)))
         (if named?
-          (tuple/setmap (tuple 'fn t1 |clauses) |(tuple/sourcemap t))
-          (tuple/setmap (tuple 'fn |clauses) |(tuple/sourcemap t))))
+          (tuple/sourcemap! (tuple 'fn t1 |clauses) (tuple/sourcemap t))
+          (tuple/sourcemap! (tuple 'fn |clauses) (tuple/sourcemap t))))
       (do
         (def args (map recur (tuple/slice t (+ start 1))))
         (if named?
-          (tuple/setmap (tuple 'fn t1 (in t start) |args) |(tuple/sourcemap t))
-          (tuple/setmap (tuple 'fn t1 |args) |(tuple/sourcemap t))))))
+          (tuple/sourcemap! (tuple 'fn t1 (in t start) |args) (tuple/sourcemap t))
+          (tuple/sourcemap! (tuple 'fn t1 |args) (tuple/sourcemap t))))))
 
   (defn expandqq [t]
     (defn qq [x]
@@ -2482,9 +2482,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (def m (do (def r (get entry :ref)) (if r (in r 0) (get entry :value))))
     (def m? (in entry :macro))
     (cond
-      s (tuple/setmap (tuple/slice (s t)) |(tuple/sourcemap t))
+      s (tuple/sourcemap! (tuple/slice (s t)) (tuple/sourcemap t))
       m? (do (setdyn *macro-form* t) (m |(tuple/slice t 1)))
-      (tuple/setmap (tuple/slice (map recur t)) |(tuple/sourcemap t))))
+      (tuple/sourcemap! (tuple/slice (map recur t)) (tuple/sourcemap t))))
 
   (def ret
     (case (type x)
@@ -4549,7 +4549,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 (defn- flycheck-importer
   [thunk source env where]
   (let [[l c] (tuple/sourcemap source)
-        newtup (tuple/setmap (tuple |source :evaluator flycheck-evaluator) l c)]
+        newtup (tuple/sourcemap! (tuple |source :evaluator flycheck-evaluator) [l c])]
     ((compile newtup env where))))
 
 (defn- flycheck-use

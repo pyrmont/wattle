@@ -137,8 +137,8 @@ pub fn lib(env: *tables.Table) void {
             "negative slice range. Returns the new tuple."),
         corefn.reg("tuple/sourcemap", &nfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
             "which is another tuple (line, column)."),
-        corefn.reg("tuple/setmap", &nfunTupleSetmap, @src(), "(tuple/setmap tup line column)", "Set the sourcemap metadata on a tuple. `line` and `column` " ++
-            "should be integers. Returns the modified tuple."),
+        corefn.reg("tuple/sourcemap!", &nfunTupleSetSourcemap, @src(), "(tuple/sourcemap! tup sourcemap)", "Set the sourcemap metadata on a tuple. `sourcemap` " ++
+            "is a pair of integers (line, column), as `tuple/sourcemap` returns. Returns the modified tuple."),
         corefn.reg("tuple/join", &nfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
     };
     corefn.install(env, entries);
@@ -215,11 +215,26 @@ fn nfunTupleJoin(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTuple(end(tup));
 }
 
-fn nfunTupleSetmap(argv: []repr.Value) raise.Error!repr.Value {
-    try args_core.fixarity(argv, 3);
+fn nfunTupleSetSourcemap(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 2);
     const tup = try args_core.getTuple(argv, 0);
-    head(tup).sm_line = try args_core.getInteger(argv, 1);
-    head(tup).sm_column = try args_core.getInteger(argv, 2);
+    var source = try args_core.chunks(argv[1]) orelse {
+        return args_core.panicIndexed(argv[1], 1, repr.TagSet.none);
+    };
+    if (source.len != 2) return raise.panic("expected a sourcemap of two integers");
+    var pair: [2]repr.Value = undefined;
+    var filled: usize = 0;
+    while (try source.next()) |run| {
+        for (run) |element| {
+            pair[filled] = element;
+            filled += 1;
+        }
+    }
+    var fault: args_core.Fault = undefined;
+    const line = args_core.argInteger(&pair, 0, &fault) orelse return raise.panic("expected a sourcemap of two integers");
+    const column = args_core.argInteger(&pair, 1, &fault) orelse return raise.panic("expected a sourcemap of two integers");
+    head(tup).sm_line = line;
+    head(tup).sm_column = column;
     return argv[0];
 }
 

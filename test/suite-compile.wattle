@@ -330,12 +330,12 @@
                (any? (map #(string/find expected (in $ 3)) lints)))
           note))
 
-; A position of zero is a position. `tuple/setmap` is the only way to write
+; A position of zero is a position. `tuple/sourcemap!` is the only way to write
 ; one, since the parser counts lines from one, and the compiler reports a
 ; line only above zero. The inner form carries zero and the outer form seven,
 ; so a compiler that skipped the inner map would report the outer position.
-(def zero-mapped-inner (tuple/setmap (tuple 'no-such-symbol-at-all) 0 0))
-(def zero-mapped (tuple/setmap (tuple 'do zero-mapped-inner) 7 3))
+(def zero-mapped-inner (tuple/sourcemap! (tuple 'no-such-symbol-at-all) [0 0]))
+(def zero-mapped (tuple/sourcemap! (tuple 'do zero-mapped-inner) [7 3]))
 (def zero-mapped-error (compile zero-mapped (curenv) "lint-src"))
 (assert (and (nil? (get zero-mapped-error :line))
              (nil? (get zero-mapped-error :column)))

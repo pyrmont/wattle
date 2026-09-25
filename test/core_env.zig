@@ -228,10 +228,10 @@ fn aCompileErrorPrefersTheSourceMapping() raise.Error!void {
     expectErrPrefix("contract:2:1: compile error: ");
 
     // A mapping is used only when both its line and its column are positive.
-    // `tuple/setmap` gives a form any mapping, and the compiler takes any whose
+    // `tuple/sourcemap!` gives a form any mapping, and the compiler takes any whose
     // line is not negative, so a zero at either end reaches this choice and
     // the parser's position is reported instead.
-    const macro = "(defmacro contract-mapped [l c] (tuple/setmap (tuple 'def) l c))\n";
+    const macro = "(defmacro contract-mapped [l c] (tuple/sourcemap! (tuple 'def) [l c]))\n";
     errReset();
     expect(try doString(macro ++ "(contract-mapped 0 5)", "contract", &out) == constants.do_error_compile);
     expectErrPrefix("contract:2:21: compile error: ");

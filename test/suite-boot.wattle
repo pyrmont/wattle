@@ -847,10 +847,25 @@
 
 ; A tuple rebuilt by `walk` carries the source map of the tuple it came from.
 (let [par '(1 2 3)]
-  (tuple/setmap par 2 1)
+  (tuple/sourcemap! par [2 1])
   (assert (= '(2 3 4) (walk inc par)) "walk rebuilds a tuple")
   (assert (= (tuple/sourcemap par) (tuple/sourcemap (walk inc par)))
           "and keeps its source map"))
+
+; `tuple/sourcemap!` takes the pair `tuple/sourcemap` gives, as any indexed
+; value of two integers.
+(let [t '(1 2 3)]
+  (assert (= t (tuple/sourcemap! t [4 5])) "tuple/sourcemap! returns the tuple")
+  (assert (= [4 5] (tuple/sourcemap t)) "and sets a vector pair")
+  (tuple/sourcemap! t ![6 7])
+  (assert (= [6 7] (tuple/sourcemap t)) "an array pair")
+  (tuple/sourcemap! t '(8 9))
+  (assert (= [8 9] (tuple/sourcemap t)) "a tuple pair")
+  (assert-error "a pair of one integer" (tuple/sourcemap! t [1]))
+  (assert-error "a pair of three integers" (tuple/sourcemap! t [1 2 3]))
+  (assert-error "a pair that is not integers" (tuple/sourcemap! t [1 :a]))
+  (assert-error "a pair that is not indexed" (tuple/sourcemap! t 1))
+  (assert-error "a target that is not a tuple" (tuple/sourcemap! ![] [1 2])))
 
 ; Curenv
 ; 28439d822, f7c556e
@@ -953,7 +968,7 @@
 (def env (table/clone (curenv)))
 ((compile '(defmacro foo [] (maclintf :strict "oops")) env :anonymous))
 (def lints ![])
-(compile (tuple/setmap '(foo) 1 2) env :anonymous lints)
+(compile (tuple/sourcemap! '(foo) [1 2]) env :anonymous lints)
 (assert (deep= lints ![[:strict 1 2 "oops"]]) "maclintf 1")
 
 (def env (table/clone (curenv)))
@@ -961,8 +976,8 @@
 ((compile '(defmacro bar [] (maclintf :strict "bar-oops")) env :anonymous))
 (def lints ![])
 ; Compile (foo (bar)), but with explicit source map values
-(def bar-invoke (tuple/setmap '(bar) 3 4))
-(compile (tuple/setmap `(foo ~bar-invoke) 1 2) env :anonymous lints)
+(def bar-invoke (tuple/sourcemap! '(bar) [3 4]))
+(compile (tuple/sourcemap! `(foo ~bar-invoke) [1 2]) env :anonymous lints)
 (assert (deep= lints ![[:strict 1 2 "foo-oops"]
                        [:strict 3 4 "bar-oops"]])
         "maclintf 2")
