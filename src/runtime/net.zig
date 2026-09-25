@@ -370,7 +370,7 @@ pub fn getAddrInfo(
 /// Installs the `net/` bindings, in upstream Janet's own registration order.
 pub fn libNet(env: *tables.Table) void {
     const table = comptime [_]corefn.Entry{
-        corefn.reg("net/address", &nfunSockaddr, @src(), "(net/address host port [type [multi]])", "Look up the connection information for a given hostname, port, and connection type. Returns " ++
+        corefn.reg("net/address", &nfunSockaddr, @src(), "(net/address host port [type [multi]])", "Looks up the connection information for a given hostname, port, and connection type. Returns " ++
             "a handle that can be used to send datagrams over network without establishing a connection. " ++
             "On Posix platforms, you can use :unix for host to connect to a unix domain socket, where the name is " ++
             "given in the port argument. On Linux, abstract " ++
@@ -385,19 +385,19 @@ pub fn libNet(env: *tables.Table) void {
         corefn.reg("net/socket", &nfunSocket, @src(), "(net/socket [type [address-family]])", "Creates a new unbound socket. Type is an optional keyword, " ++
             "either a :stream (usually tcp), or :datagram (usually udp). The default is :stream. " ++
             "`address-family` should be one of :ipv4 or :ipv6."),
-        corefn.reg("net/accept", &nfunAccept, @src(), "(net/accept stream [timeout])", "Get the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
+        corefn.reg("net/accept", &nfunAccept, @src(), "(net/accept stream [timeout])", "Gets the next connection on a server stream. This would usually be called in a loop in a dedicated fiber. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a new duplex stream which represents a connection to the client."),
         corefn.reg("net/accept-loop", &nfunAcceptLoop, @src(), "(net/accept-loop stream handler)", "Shorthand for running a server stream that will continuously accept new connections. " ++
             "Blocks the current fiber until the stream is closed, and will return the stream."),
-        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream nbytes [buf [timeout]])", "Read up to n bytes from a stream, suspending the current fiber until the bytes are available. " ++
+        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream nbytes [buf [timeout]])", "Reads up to n bytes from a stream, suspending the current fiber until the bytes are available. " ++
             "`n` can also be the keyword `:all` to read into the buffer until end of stream. " ++
             "If less than n bytes are available (and more than 0), will push those bytes and return early. " ++
             "Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns a buffer with up to n more bytes in it, or raises an error if the read failed."),
         corefn.reg("net/chunk", &nfunChunk, @src(), "(net/chunk stream nbytes [buf [timeout]])", "Same a net/read, but will wait for all n bytes to arrive rather than return early. " ++
             "Takes an optional timeout in seconds, after which will raise an error."),
-        corefn.reg("net/write", &nfunWrite, @src(), "(net/write stream data [timeout])", "Write data to a stream, suspending the current fiber until the write " ++
+        corefn.reg("net/write", &nfunWrite, @src(), "(net/write stream data [timeout])", "Writes data to a stream, suspending the current fiber until the write " ++
             "completes. Takes an optional timeout in seconds, after which will raise an error. " ++
             "Returns nil, or raises an error if the write failed."),
         corefn.reg("net/send-to", &nfunSendTo, @src(), "(net/send-to stream dest data [timeout])", "Writes a datagram to a server stream. dest is a the destination address of the packet. " ++
@@ -405,24 +405,24 @@ pub fn libNet(env: *tables.Table) void {
             "Returns stream."),
         corefn.reg("net/recv-from", &nfunRecvFrom, @src(), "(net/recv-from stream nbytes buf [timeout])", "Receives data from a server stream and puts it into a buffer. Returns the socket-address the " ++
             "packet came from. Takes an optional timeout in seconds, after which will raise an error."),
-        corefn.reg("net/flush", &nfunFlush, @src(), "(net/flush stream)", "Make sure that a stream is not buffering any data. This temporarily disables Nagle's algorithm. " ++
+        corefn.reg("net/flush", &nfunFlush, @src(), "(net/flush stream)", "Makes sure that a stream is not buffering any data. This temporarily disables Nagle's algorithm. " ++
             "Use this to make sure data is sent without delay. Returns stream."),
-        corefn.reg("net/connect", &nfunConnect, @src(), "(net/connect host port [type [bindhost [bindport]]])", "Open a connection to communicate with a server. Returns a duplex stream " ++
+        corefn.reg("net/connect", &nfunConnect, @src(), "(net/connect host port [type [bindhost [bindport]]])", "Opens a connection to communicate with a server. Returns a duplex stream " ++
             "that can be used to communicate with the server. Type is an optional keyword " ++
             "to specify a connection type, either :stream or :datagram. The default is :stream. " ++
             "Bindhost is an optional string to select from what address to make the outgoing " ++
             "connection, with the default being the same as using the OS's preferred address. "),
-        corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream [mode])", "Stop communication on this socket in a graceful manner, either in both directions or just " ++
+        corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream [mode])", "Stops communication on this socket in a graceful manner, either in both directions or just " ++
             "reading/writing from the stream. The `mode` parameter controls which communication to stop on the socket. " ++
             "\n\n* `:wr` is the default and prevents both reading new data from the socket and writing new data to the socket.\n" ++
             "* `:r` disables reading new data from the socket.\n" ++
-            "* `:w` disable writing data to the socket.\n\n" ++
+            "* `:w` disables writing data to the socket.\n\n" ++
             "Returns the original socket."),
         corefn.reg("net/peername", &nfunGetpeername, @src(), "(net/peername stream)", "Gets the remote peer's address and port in a tuple in that order."),
         corefn.reg("net/localname", &nfunGetsockname, @src(), "(net/localname stream)", "Gets the local address and port in a tuple in that order."),
-        corefn.reg("net/address-unpack", &nfunAddressUnpack, @src(), "(net/address-unpack address)", "Given an address returned by net/address, return a host, port pair. Unix domain sockets " ++
+        corefn.reg("net/address-unpack", &nfunAddressUnpack, @src(), "(net/address-unpack address)", "Given an address returned by net/address, returns a host, port pair. Unix domain sockets " ++
             "will have only the path in the returned tuple."),
-        corefn.reg("net/setsockopt", &nfunSetsockopt, @src(), "(net/setsockopt stream option value)", "set socket options.\n" ++
+        corefn.reg("net/setsockopt", &nfunSetsockopt, @src(), "(net/setsockopt stream option value)", "Sets socket options.\n" ++
             "\n" ++
             "supported options and associated value types:\n" ++
             "- :so-broadcast boolean\n" ++

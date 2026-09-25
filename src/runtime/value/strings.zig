@@ -295,15 +295,15 @@ pub fn lib(env: *tables.Table) void {
         "exclusive, and if `end` is negative it is inclusive, to allow a full " ++
         "negative slice range.";
     const trim_doc_tail = "whitespace from a byte sequence. If the argument " ++
-        "`set` is provided, consider only characters in `set` to be whitespace.";
+        "`set` is provided, considers only characters in `set` to be whitespace.";
     const entries = comptime [_]corefn.Entry{
         corefn.reg("string/slice", &nfunStringSlice, @src(), "(string/slice bytes [start [end]])", slice_doc),
-        corefn.reg("keyword/slice", &nfunKeywordSlice, @src(), "(keyword/slice bytes [start [end]])", "Same as string/slice, but returns a keyword."),
-        corefn.reg("symbol/slice", &nfunSymbolSlice, @src(), "(symbol/slice bytes [start [end]])", "Same as string/slice, but returns a symbol."),
+        corefn.reg("keyword/slice", &nfunKeywordSlice, @src(), "(keyword/slice bytes [start [end]])", "Behaves as string/slice, but returns a keyword."),
+        corefn.reg("symbol/slice", &nfunSymbolSlice, @src(), "(symbol/slice bytes [start [end]])", "Behaves as string/slice, but returns a symbol."),
         corefn.reg("string/repeat", &nfunStringRepeat, @src(), "(string/repeat bytes n)", "Returns a string that is `n` copies of `bytes` concatenated."),
         corefn.reg("string/bytes", &nfunStringBytes, @src(), "(string/bytes str)", "Returns a tuple of integers that are the byte values of the string."),
         corefn.reg("string/from-bytes", &nfunStringFrombytes, @src(), "(string/from-bytes & byte-vals)", "Creates a string from integer parameters with byte values. All integers " ++
-            "will be coerced to the range of 1 byte 0-255."),
+            "are coerced to the range of 1 byte 0-255."),
         corefn.reg("string/ascii-lower", &nfunStringAsciilower, @src(), "(string/ascii-lower str)", "Returns a new string where all bytes are replaced with the " ++
             "lowercase version of themselves in ASCII. Does only a very simple " ++
             "case check, meaning no unicode support."),
@@ -320,19 +320,19 @@ pub fn lib(env: *tables.Table) void {
             "may contribute to multiple found patterns."),
         corefn.reg("string/has-prefix?", &nfunStringHasprefix, @src(), "(string/has-prefix? pfx str)", "Tests whether `str` starts with `pfx`."),
         corefn.reg("string/has-suffix?", &nfunStringHassuffix, @src(), "(string/has-suffix? sfx str)", "Tests whether `str` ends with `sfx`."),
-        corefn.reg("string/replace", &nfunStringReplace, @src(), "(string/replace patt subst str)", "Replace the first occurrence of `patt` with `subst` in the string `str`. " ++
-            "If `subst` is a function, it will be called with `patt` only if a match is found, " ++
-            "and should return the actual replacement text to use. " ++
-            "Will return the new string if `patt` is found, otherwise returns `str`."),
-        corefn.reg("string/replace-all", &nfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replace all instances of `patt` with `subst` in the string `str`. Overlapping " ++
-            "matches will not be counted, only the first match in such a span will be replaced. " ++
-            "If `subst` is a function, it will be called with `patt` once for each match, " ++
-            "and should return the actual replacement text to use. " ++
-            "Will return the new string if `patt` is found, otherwise returns `str`."),
+        corefn.reg("string/replace", &nfunStringReplace, @src(), "(string/replace patt subst str)", "Replaces the first occurrence of `patt` with `subst` in the string `str`. " ++
+            "If `subst` is a function, it is called with `patt` only if a match is found, " ++
+            "and returns the actual replacement text to use. " ++
+            "Returns the new string if `patt` is found, otherwise returns `str`."),
+        corefn.reg("string/replace-all", &nfunStringReplaceall, @src(), "(string/replace-all patt subst str)", "Replaces all instances of `patt` with `subst` in the string `str`. Overlapping " ++
+            "matches are not counted, only the first match in such a span is replaced. " ++
+            "If `subst` is a function, it is called with `patt` once for each match, " ++
+            "and returns the actual replacement text to use. " ++
+            "Returns the new string if `patt` is found, otherwise returns `str`."),
         corefn.reg("string/split", &nfunStringSplit, @src(), "(string/split delim str [start [limit]])", "Splits a string `str` with delimiter `delim` and returns an array of " ++
-            "substrings. The substrings will not contain the delimiter `delim`. If `delim` " ++
-            "is not found, the returned array will have one element. Will start searching " ++
-            "for `delim` at the index `start` (if provided), and return up to a maximum " ++
+            "substrings. The substrings do not contain the delimiter `delim`. If `delim` " ++
+            "is not found, the returned array has one element. Starts searching " ++
+            "for `delim` at the index `start` (if provided), and returns up to a maximum " ++
             "of `limit` results (if provided)."),
         corefn.reg("string/check-set", &nfunStringCheckset, @src(), "(string/check-set set str)", "Checks that the string `str` only contains bytes that appear in the string `set`. " ++
             "Returns true if all bytes in `str` appear in `set`, false if some bytes in `str` do " ++
@@ -352,7 +352,7 @@ pub fn lib(env: *tables.Table) void {
             "- `g`, `G`: floating point number, formatted in its shortest form.\n" ++
             "- `a`, `A`: floating point number, formatted as a hexadecimal number.\n" ++
             "- `s`: formatted as a string, precision indicates padding and maximum length.\n" ++
-            "- `t`: emit the type of the given value.\n" ++
+            "- `t`: emits the type of the given value.\n" ++
             "- `v`: format with (describe x)\n" ++
             "- `V`: format with (string x)\n" ++
             "- `w`: format to Wattle source, which reads back through parse.\n" ++
@@ -367,9 +367,9 @@ pub fn lib(env: *tables.Table) void {
             "- `m`, `M`: pretty format without truncating.\n" ++
             "- `q`, `Q`: pretty format on one line, truncating if necessary.\n" ++
             "- `n`, `N`: pretty format on one line without truncation.\n"),
-        corefn.reg("string/trim", &nfunStringTrim, @src(), "(string/trim str [set])", "Trim leading and trailing " ++ trim_doc_tail),
-        corefn.reg("string/triml", &nfunStringTriml, @src(), "(string/triml str [set])", "Trim leading " ++ trim_doc_tail),
-        corefn.reg("string/trimr", &nfunStringTrimr, @src(), "(string/trimr str [set])", "Trim trailing " ++ trim_doc_tail),
+        corefn.reg("string/trim", &nfunStringTrim, @src(), "(string/trim str [set])", "Trims leading and trailing " ++ trim_doc_tail),
+        corefn.reg("string/triml", &nfunStringTriml, @src(), "(string/triml str [set])", "Trims leading " ++ trim_doc_tail),
+        corefn.reg("string/trimr", &nfunStringTrimr, @src(), "(string/trimr str [set])", "Trims trailing " ++ trim_doc_tail),
     };
     corefn.install(env, entries);
 }

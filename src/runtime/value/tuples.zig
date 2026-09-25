@@ -128,7 +128,7 @@ pub inline fn head(t: [*]const repr.Value) *TupleHead {
 /// Installs the `tuple/*` nfunctions into the core environment.
 pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("tuple/slice", &nfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Take a sub-sequence of an array or tuple from index `start` " ++
+        corefn.reg("tuple/slice", &nfunTupleSlice, @src(), "(tuple/slice arrtup [,start=0 [,end=(length arrtup)]])", "Takes a sub-sequence of an array or tuple from index `start` " ++
             "inclusive to index `end` exclusive. If `start` or `end` are not provided, " ++
             "they default to 0 and the length of `arrtup`, respectively. " ++
             "`start` and `end` can also be negative to indicate indexing " ++
@@ -137,9 +137,9 @@ pub fn lib(env: *tables.Table) void {
             "negative slice range. Returns the new tuple."),
         corefn.reg("tuple/sourcemap", &nfunTupleSourcemap, @src(), "(tuple/sourcemap tup)", "Returns the sourcemap metadata attached to a tuple, " ++
             "which is another tuple (line, column)."),
-        corefn.reg("tuple/sourcemap!", &nfunTupleSetSourcemap, @src(), "(tuple/sourcemap! tup sourcemap)", "Set the sourcemap metadata on a tuple. `sourcemap` " ++
+        corefn.reg("tuple/sourcemap!", &nfunTupleSetSourcemap, @src(), "(tuple/sourcemap! tup sourcemap)", "Sets the sourcemap metadata on a tuple. `sourcemap` " ++
             "is a pair of integers (line, column), as `tuple/sourcemap` returns. Returns the modified tuple."),
-        corefn.reg("tuple/join", &nfunTupleJoin, @src(), "(tuple/join & parts)", "Create a tuple by joining together other tuples and arrays."),
+        corefn.reg("tuple/join", &nfunTupleJoin, @src(), "(tuple/join & parts)", "Creates a tuple by joining together other tuples and arrays."),
     };
     corefn.install(env, entries);
 }

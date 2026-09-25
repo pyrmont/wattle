@@ -1042,7 +1042,7 @@ pub fn flagName(platform: Platform, index: usize) ?[:0]const u8 {
 pub fn libFilewatch(env: *tables.Table) void {
     assertTableIsWhole();
     const table = comptime [_]corefn.Entry{
-        corefn.reg("filewatch/new", &nfunMake, @src(), "(filewatch/new channel & default-flags)", "Create a new filewatcher that will give events to a channel channel. See `filewatch/add` for available flags.\n\n" ++
+        corefn.reg("filewatch/new", &nfunMake, @src(), "(filewatch/new channel & default-flags)", "Creates a new filewatcher that will give events to a channel channel. See `filewatch/add` for available flags.\n\n" ++
             "When an event is triggered by the filewatcher, a struct containing information will be given to channel as with `ev/give`. " ++
             "The contents of the channel depend on the OS, but will contain some common keys:\n\n" ++
             "* `:type` -- the type of the event that was raised.\n\n" ++
@@ -1055,7 +1055,7 @@ pub fn libFilewatch(env: *tables.Table) void {
             "* `:wd-path` -- the string path for watched directory of file. For files, will be the same as `:file-name`, and for directories, will be the same as `:dir-name`.\n\n" ++
             "* `:cookie` -- a semi-randomized integer used to associate related events, such as :moved-from and :moved-to events.\n\n" ++
             ""),
-        corefn.reg("filewatch/add", &nfunAdd, @src(), "(filewatch/add watcher path flag & more-flags)", "Add a path to the watcher. Available flags depend on the current OS, and are as follows:\n\n" ++
+        corefn.reg("filewatch/add", &nfunAdd, @src(), "(filewatch/add watcher path flag & more-flags)", "Adds a path to the watcher. Available flags depend on the current OS, and are as follows:\n\n" ++
             "Windows/MINGW (flags correspond to `FILE_NOTIFY_CHANGE_*` flags in win32 documentation):\n\n" ++
             "FLAGS\n\n" ++
             "* `:all` - trigger an event for all of the below triggers.\n\n" ++
@@ -1109,9 +1109,9 @@ pub fn libFilewatch(env: *tables.Table) void {
             "* `:renamed-new`\n\n" ++
             "On Linux and BSDs, events will have a `:type` corresponding to the possible flags, excluding `:all`.\n" ++
             ""),
-        corefn.reg("filewatch/remove", &nfunRemove, @src(), "(filewatch/remove watcher path)", "Remove a path from the watcher."),
-        corefn.reg("filewatch/listen", &nfunListen, @src(), "(filewatch/listen watcher)", "Listen for changes in the watcher."),
-        corefn.reg("filewatch/unlisten", &nfunUnlisten, @src(), "(filewatch/unlisten watcher)", "Stop listening for changes on a given watcher."),
+        corefn.reg("filewatch/remove", &nfunRemove, @src(), "(filewatch/remove watcher path)", "Removes a path from the watcher."),
+        corefn.reg("filewatch/listen", &nfunListen, @src(), "(filewatch/listen watcher)", "Listens for changes in the watcher."),
+        corefn.reg("filewatch/unlisten", &nfunUnlisten, @src(), "(filewatch/unlisten watcher)", "Stops listening for changes on a given watcher."),
     };
     corefn.install(env, table);
 }

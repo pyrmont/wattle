@@ -9,7 +9,7 @@
 
 (def defn :macro :flycheck {:sigs "(defn name & more)"}
   """
-  Define a function. Equivalent to `(def name (fn name [args] ...))`.
+  Defines a function. Equivalent to `(def name (fn name [args] ...))`.
   """
   (fn defn [name & more]
     (def len (length more))
@@ -63,13 +63,13 @@
     `(def ~name ~|modifiers (fn ~name ~|(tuple/slice more start)))))
 
 (defn defmacro :macro :flycheck
-  "Define a macro."
+  "Defines a macro."
   [name & more]
   (apply defn name :macro more))
 
 (defmacro as-macro
   """
-  Use a function or macro literal `f` as a macro. This lets
+  Uses a function or macro literal `f` as a macro. This lets
   any function be used as a macro. Inside a quasiquote, the
   idiom `(as-macro ,my-custom-macro arg1 arg2...)` can be used
   to avoid unwanted variable capture of `my-custom-macro`.
@@ -78,65 +78,65 @@
   (f |args))
 
 (defmacro defmacro- :flycheck
-  "Define a private macro that will not be exported."
+  "Defines a private macro that will not be exported."
   [name & more]
   (apply defn name :macro :private more))
 
 (defmacro defn- :flycheck
-  "Define a private function that will not be exported."
+  "Defines a private function that will not be exported."
   [name & more]
   (apply defn name :private more))
 
 (defmacro def-
-  "Define a private value that will not be exported."
+  "Defines a private value that will not be exported."
   [name & more]
   `(def ~name :private ~|more))
 
 (defmacro var-
-  "Define a private var that will not be exported."
+  "Defines a private var that will not be exported."
   [name & more]
   `(var ~name :private ~|more))
 
 (defmacro toggle
-  "Set a value to its boolean inverse. Same as `(set value (not value))`."
+  "Sets a value to its boolean inverse. Same as `(set value (not value))`."
   [value]
   `(set ~value (~not ~value)))
 
 (defn defglobal
-  "Dynamically create a global def."
+  "Dynamically creates a global def."
   [name value]
   (def name* (symbol name))
   (setdyn name* !{:value value})
   nil)
 
 (defn varglobal
-  "Dynamically create a global var."
+  "Dynamically creates a global var."
   [name init]
   (def name* (symbol name))
   (setdyn name* !{:ref ![init]})
   nil)
 
 ; Basic predicates
-(defn nan? "Check if x is NaN." [x] (not= x x))
-(defn number? "Check if x is a number." [x] (= (type x) :number))
-(defn fiber? "Check if x is a fiber." [x] (= (type x) :fiber))
-(defn string? "Check if x is a string." [x] (= (type x) :string))
-(defn symbol? "Check if x is a symbol." [x] (= (type x) :symbol))
-(defn keyword? "Check if x is a keyword." [x] (= (type x) :keyword))
-(defn buffer? "Check if x is a buffer." [x] (= (type x) :buffer))
-(defn function? "Check if x is a function (not an nfunction)." [x] (= (type x) :function))
-(defn nfunction? "Check if x is an nfunction." [x] (= (type x) :nfunction))
-(defn table? "Check if x is a table." [x] (= (type x) :table))
-(defn map? "Check if x is a map." [x] (= (type x) :map))
-(defn array? "Check if x is an array." [x] (= (type x) :array))
-(defn vector? "Check if x is a vector." [x] (= (type x) :vector))
-(defn tuple? "Check if x is a tuple." [x] (= (type x) :tuple))
-(defn boolean? "Check if x is a boolean." [x] (= (type x) :boolean))
-(defn truthy? "Check if x is truthy." [x] (if x true false))
-(defn true? "Check if x is true." [x] (= x true))
-(defn false? "Check if x is false." [x] (= x false))
-(defn nil? "Check if x is nil." [x] (= x nil))
-(defn empty? "Check if an iterable, `iter`, is empty." [iter] (= nil (next iter nil)))
+(defn nan? "Checks whether x is NaN." [x] (not= x x))
+(defn number? "Checks whether x is a number." [x] (= (type x) :number))
+(defn fiber? "Checks whether x is a fiber." [x] (= (type x) :fiber))
+(defn string? "Checks whether x is a string." [x] (= (type x) :string))
+(defn symbol? "Checks whether x is a symbol." [x] (= (type x) :symbol))
+(defn keyword? "Checks whether x is a keyword." [x] (= (type x) :keyword))
+(defn buffer? "Checks whether x is a buffer." [x] (= (type x) :buffer))
+(defn function? "Checks whether x is a function (not an nfunction)." [x] (= (type x) :function))
+(defn nfunction? "Checks whether x is an nfunction." [x] (= (type x) :nfunction))
+(defn table? "Checks whether x is a table." [x] (= (type x) :table))
+(defn map? "Checks whether x is a map." [x] (= (type x) :map))
+(defn array? "Checks whether x is an array." [x] (= (type x) :array))
+(defn vector? "Checks whether x is a vector." [x] (= (type x) :vector))
+(defn tuple? "Checks whether x is a tuple." [x] (= (type x) :tuple))
+(defn boolean? "Checks whether x is a boolean." [x] (= (type x) :boolean))
+(defn truthy? "Checks whether x is truthy." [x] (if x true false))
+(defn true? "Checks whether x is true." [x] (= x true))
+(defn false? "Checks whether x is false." [x] (= x false))
+(defn nil? "Checks whether x is nil." [x] (= x nil))
+(defn empty? "Checks whether an iterable, `iter`, is empty." [iter] (= nil (next iter nil)))
 
 ; For macros, we define an incomplete odd? function that will be overridden.
 (defn odd? [x] (= 1 (mod x 2)))
@@ -151,7 +151,7 @@
    :symbol true})
 
 (defn idempotent?
-  "Check if x is a value that evaluates to itself when compiled."
+  "Checks whether x is a value that evaluates to itself when compiled."
   [x]
   (not (in non-atomic-types (type x))))
 
@@ -167,7 +167,7 @@
 (defmacro %= "Shorthand for (set x (% x n))." [x & ns] `(set ~x (~% ~x ~|ns)))
 
 (defmacro assert :flycheck ; should top level assert flycheck?
-  "Throw an error if x is not truthy. Will not evaluate `err` if x is truthy."
+  "Throws an error if x is not truthy. Will not evaluate `err` if x is truthy."
   ([x] (def self assert) (self x nil))
   ([x err]
   (def v (gensym))
@@ -179,7 +179,7 @@
 
 (defmacro defdyn :flycheck
   """
-  Define an alias for a keyword that is used as a dynamic binding. The
+  Defines an alias for a keyword that is used as a dynamic binding. The
   alias is a normal, lexically scoped binding that can be used instead of
   a keyword to prevent typos. `defdyn` does not set dynamic bindings or otherwise
   replace `dyn` and `setdyn`. The alias *must* start and end with the `*` character, usually
@@ -197,7 +197,7 @@
   "Inside a macro, is bound to the source form that invoked the macro")
 
 (defdyn *flychecking*
-  "Check if the current form is being evaluated inside `flycheck`. Will be `true` while flychecking.")
+  "Indicates whether the current form is being evaluated inside `flycheck`. Will be `true` while flychecking.")
 
 (defdyn *lint-error*
   "The current lint error level. The error level is the lint level at which compilation will exit with an error and not continue.")
@@ -216,7 +216,7 @@
 
 (defn maclintf
   """
-  When inside a macro, call this function to add a linter warning. Takes
+  When called inside a macro, adds a linter warning. Takes
   a `fmt` argument like `string/format`, which is used to format the message.
   """
   [level fmt & args]
@@ -248,7 +248,7 @@
 
 (defmacro default
   """
-  Define a default value for an optional argument.
+  Defines a default value for an optional argument.
   Expands to `(def sym :shadow (if (= nil sym) val sym))`.
   """
   [sym val]
@@ -293,7 +293,7 @@
 
 (defmacro case
   """
-  Select the body that equals the dispatch value. When `pairs`
+  Selects the body that equals the dispatch value. When `pairs`
   has an odd number of elements, the last is the default expression.
   If no match is found, returns nil.
   """
@@ -315,7 +315,7 @@
 
 (defmacro let
   """
-  Create a scope and bind values to symbols. Each pair in `bindings` is
+  Creates a scope and binds values to symbols. Each pair in `bindings` is
   assigned as if with `def`, and the body of the `let` form returns the last
   value.
   """
@@ -333,7 +333,7 @@
 
 (defmacro protect
   """
-  Evaluate expressions, while capturing any errors. Evaluates to a tuple
+  Evaluates expressions, while capturing any errors. Evaluates to a tuple
   of two elements. The first element is true if successful, false if an
   error, and the second is the return value or error.
   """
@@ -385,7 +385,7 @@
 
 (defmacro try
   """
-  Try something and catch errors. `body` is any expression,
+  Tries something and catches errors. `body` is any expression,
   and `catch` should be a form, the first element of which is a tuple. This tuple
   should contain a binding for errors and an optional binding for
   the fiber wrapping the body. Returns the result of `body` if no error,
@@ -417,7 +417,7 @@
   `(let (~|accum) ~|body))
 
 (defn- defer-impl
-  "Defer but allow custom name for stack traces"
+  "Defers but allows custom name for stack traces"
   [name form body]
   (with-syms [f r]
     `(do
@@ -430,16 +430,16 @@
 
 (defmacro defer
   """
-  Run `form` unconditionally after `body`, even if the body throws an error.
-  Will also run `form` if a user signal 0-4 is received.
+  Runs `form` unconditionally after `body`, even if the body throws an error.
+  Also runs `form` if a user signal 0-4 is received.
   """
   [form & body]
   (defer-impl :defer form body))
 
 (defmacro edefer
   """
-  Run `form` after `body` in the case that body terminates abnormally (an error or user signal 0-4).
-  Otherwise, return last form in `body`.
+  Runs `form` after `body` in the case that body terminates abnormally (an error or user signal 0-4).
+  Otherwise, returns last form in `body`.
   """
   [form & body]
   (with-syms [f r]
@@ -452,7 +452,7 @@
 
 (defmacro prompt
   """
-  Set up a checkpoint that can be returned to. `tag` should be a value
+  Sets up a checkpoint that can be returned to. `tag` should be a value
   that is used in a `return` statement, like a keyword.
   """
   [tag & body]
@@ -466,7 +466,7 @@
          (~propagate ~res ~fib)))))
 
 (defmacro chr
-  "Convert a string of length 1 to its byte (ascii) value at compile time."
+  "Converts a string of length 1 to its byte (ascii) value at compile time."
   [c]
   (unless (and (string? c) (= (length c) 1))
     (error (string/format "expected string of length 1, got %v" c)))
@@ -474,7 +474,7 @@
 
 (defmacro label
   """
-  Set a label point that is lexically scoped. `name` should be a symbol
+  Sets a label point that is lexically scoped. `name` should be a symbol
   that will be bound to the label.
   """
   [name & body]
@@ -483,14 +483,14 @@
      ~(apply prompt name body)))
 
 (defn return
-  "Return to a prompt point."
+  "Returns to a prompt point."
   ([to] (return to nil))
   ([to value]
   (signal 0 [to value])))
 
 (defmacro with
   """
-  Evaluate `body` with some resource, which will be automatically cleaned up
+  Evaluates `body` with some resource, which will be automatically cleaned up
   if there is an error in `body`. `binding` is bound to the expression `ctor`, and
   `dtor` is a function or callable that is passed the binding. If no destructor
   (`dtor`) is given, will call :close on the resource.
@@ -505,8 +505,8 @@
 
 (defmacro if-let
   """
-  Make multiple bindings, and if all are truthy,
-  evaluate the `tru` form. If any are false or nil, evaluate
+  Makes multiple bindings, and if all are truthy,
+  evaluates the `tru` form. If any are false or nil, evaluates
   the `fal` form. Bindings have the same syntax as the `let` macro.
   """
   ([bindings tru] (def self if-let) (self bindings tru nil))
@@ -654,40 +654,40 @@
 
 (defmacro forv
   """
-  Do a C-style for-loop for side effects. The iteration variable `i`
+  Does a C-style for-loop for side effects. The iteration variable `i`
   can be mutated in the loop, unlike normal `for`. Returns nil.
   """
   [i start stop & body]
   (for-var-template i start stop 1 < + body))
 
 (defmacro for
-  "Do a C-style for-loop for side effects. Returns nil."
+  "Does a C-style for-loop for side effects. Returns nil."
   [i start stop & body]
   (for-template i start stop 1 < + body))
 
 (defmacro eachk
-  "Loop over each key in `ds`. Returns nil."
+  "Loops over each key in `ds`. Returns nil."
   [x ds & body]
   (each-template x ds :keys body))
 
 (defmacro eachp
-  "Loop over each (key, value) pair in `ds`. Returns nil."
+  "Loops over each (key, value) pair in `ds`. Returns nil."
   [x ds & body]
   (each-template x ds :pairs body))
 
 (defmacro repeat
-  "Evaluate body n times. If n is negative, body will be evaluated 0 times. Evaluates to nil."
+  "Evaluates body n times. If n is negative, body will be evaluated 0 times. Evaluates to nil."
   [n & body]
   (with-syms [iter]
     `(do (var ~iter ~n) (while (~> ~iter 0) ~|body (as-macro ~-- ~iter)))))
 
 (defmacro forever
-  "Evaluate body forever in a loop, or until a break statement."
+  "Evaluates body forever in a loop, or until a break statement."
   [& body]
   `(while true ~|body))
 
 (defmacro each
-  "Loop over each value in `ds`. Returns nil."
+  "Loops over each value in `ds`. Returns nil."
   [x ds & body]
   (each-template x ds :each body))
 
@@ -800,7 +800,7 @@
 
 (defmacro generate
   """
-  Create a generator expression using the `loop` syntax. Returns a fiber
+  Creates a generator expression using the `loop` syntax. Returns a fiber
   that yields all values inside the loop in order. See `loop` for details.
   """
   [head & body]
@@ -922,24 +922,24 @@
 
 (defn first
   """
-  Get the first value in `x`.
+  Gets the first value in `x`.
 
-  If `x` is a non-empty bytes or indexed type value, return the first
+  If `x` is a non-empty bytes or indexed type value, returns the first
   element.
 
-  If `x` is a fiber, return the fiber's last value or `nil` if there
+  If `x` is a fiber, returns the fiber's last value or `nil` if there
   isn't one yet.
 
-  If `x` is an abstract type value with a `get` method, call the method
+  If `x` is an abstract type value with a `get` method, calls the method
   with a key of `0`.
 
-  In all other cases, return `nil`.
+  In all other cases, returns `nil`.
   """
   [x]
   (get x 0))
 
 (defn last
-  "Get the last element from an indexed data structure."
+  "Gets the last element from an indexed data structure."
   [xs]
   (get xs (- (length xs) 1)))
 
@@ -1010,12 +1010,12 @@
   [& xs]
   (compare-reduce >= xs))
 
-(defn zero? "Check if x is zero." [x] (= (compare x 0) 0))
-(defn pos? "Check if x is greater than 0." [x] (= (compare x 0) 1))
-(defn neg? "Check if x is less than 0." [x] (= (compare x 0) -1))
-(defn one? "Check if x is equal to 1." [x] (= (compare x 1) 0))
-(defn even? "Check if x is even." [x] (= 0 (compare 0 (mod x 2))))
-(defn odd? "Check if x is odd." [x] (= 0 (compare 1 (mod x 2))))
+(defn zero? "Checks whether x is zero." [x] (= (compare x 0) 0))
+(defn pos? "Checks whether x is greater than 0." [x] (= (compare x 0) 1))
+(defn neg? "Checks whether x is less than 0." [x] (= (compare x 0) -1))
+(defn one? "Checks whether x is equal to 1." [x] (= (compare x 1) 0))
+(defn even? "Checks whether x is even." [x] (= 0 (compare 0 (mod x 2))))
+(defn odd? "Checks whether x is odd." [x] (= 0 (compare 1 (mod x 2))))
 
 ;;;
 ;;;
@@ -1108,7 +1108,7 @@
 
 (defn reduce
   """
-  Reduce, also know as fold-left in many languages, transforms
+  The reduce operation, also called fold-left in many languages, transforms
   an indexed type (array, tuple) with a function to produce a value by applying `f` to
   each element in order. `f` is a function of 2 arguments, `(f accum el)`, where
   `accum` is the initial value and `el` is the next value in the indexed type `ind`.
@@ -1210,8 +1210,8 @@
 
 (defn map
   """
-  Map a function `f` over every value in a data structure `ind`
-  and return an array of results, but only if no `inds` are
+  Maps a function `f` over every value in a data structure `ind`
+  and returns an array of results, but only if no `inds` are
   provided. Multiple data structures can be handled if each
   `inds` is a data structure and `f` is a function of arity
   one more than the number of `inds`.  The resulting array has
@@ -1224,8 +1224,8 @@
 
 (defn mapcat
   """
-  Map a function `f` over every value in a data structure `ind`
-  and use `array/concat` to concatenate the results, but only if
+  Maps a function `f` over every value in a data structure `ind`
+  and uses `array/concat` to concatenate the results, but only if
   no `inds` are provided. Multiple data structures can be handled
   if each `inds` is a data structure and `f` is a function of
   arity one more than the number of `inds`. Note that `f` is only
@@ -1239,7 +1239,7 @@
 
 (defn filter
   """
-  Given a predicate, take only elements from an array or tuple for
+  Given a predicate, takes only elements from an array or tuple for
   which `(pred element)` is truthy. Returns a new array.
   """
   [pred ind]
@@ -1251,7 +1251,7 @@
 
 (defn count
   """
-  Count the number of values in a data structure `ind` for which
+  Counts the number of values in a data structure `ind` for which
   applying `pred` yields a truthy value, but only if no `inds` are
   provided. Multiple data structures can be handled if each `inds`
   is a data structure and `pred` is a function of arity one more
@@ -1266,7 +1266,7 @@
 
 (defn keep
   """
-  Given a predicate `pred`, return a new array containing the
+  Given a predicate `pred`, returns a new array containing the
   truthy results of applying `pred` to each value in the data
   structure `ind`, but only if no `inds` are provided. Multiple
   data structures can be handled if each `inds` is a data
@@ -1280,7 +1280,7 @@
   res)
 
 (defn find-index
-  "Find the index of indexed type for which `pred` is true. Returns `dflt` if not found."
+  "Finds the index of indexed type for which `pred` is true. Returns `dflt` if not found."
   ([pred ind] (find-index pred ind nil))
   ([pred ind dflt]
   (var k nil)
@@ -1296,7 +1296,7 @@
 
 (defn find
   """
-  Find the first value in `x` that satisfies `pred`. If not found,
+  Finds the first value in `x` that satisfies `pred`. If not found,
   returns `dflt` if given, or `nil` otherwise.
 
   `x` can be a bytes, indexed, dictionary, fiber, or abstract type
@@ -1317,7 +1317,7 @@
 
 (defn index-of
   """
-  Find the first key associated with a value x in a data structure, acting like a reverse lookup.
+  Finds the first key associated with a value x in a data structure, acting like a reverse lookup.
   Will not look at table prototypes.
   Returns `dflt` if not found.
   """
@@ -1342,7 +1342,7 @@
 
 (defn take
   """
-  Take the first `n` elements of an iterable other than a dictionary. Returns a
+  Takes the first `n` elements of an iterable other than a dictionary. Returns a
   fiber that yields them. Nothing is read from `ind` until the fiber is
   resumed. `n` must not be negative.
   """
@@ -1358,7 +1358,7 @@
 
 (defn take-until
   """
-  Take the elements of an iterable other than a dictionary that precede the
+  Takes the elements of an iterable other than a dictionary that precede the
   first for which `(pred element)` is truthy. Returns a fiber that yields
   them. Nothing is read from `ind` until the fiber is resumed. The matching
   element is not yielded.
@@ -1372,7 +1372,7 @@
 
 (defn take-while
   """
-  Take the leading elements of an iterable other than a dictionary for which
+  Takes the leading elements of an iterable other than a dictionary for which
   `(pred element)` is truthy. Returns a fiber that yields them. Same as
   `(take-until (complement pred) ind)`.
   """
@@ -1381,7 +1381,7 @@
 
 (defn drop
   """
-  Drop the first `n` elements of an iterable other than a dictionary. Returns a
+  Drops the first `n` elements of an iterable other than a dictionary. Returns a
   fiber that yields the rest. Nothing is read from `ind` until the fiber is
   resumed. `n` must not be negative.
   """
@@ -1395,7 +1395,7 @@
 
 (defn drop-until
   """
-  Drop the elements of an iterable other than a dictionary that precede the
+  Drops the elements of an iterable other than a dictionary that precede the
   first for which `(pred element)` is truthy. Returns a fiber that yields that
   element and the rest. Nothing is read from `ind` until the fiber is resumed.
   """
@@ -1409,7 +1409,7 @@
 
 (defn drop-while
   """
-  Drop the leading elements of an iterable other than a dictionary for which
+  Drops the leading elements of an iterable other than a dictionary for which
   `(pred element)` is truthy. Returns a fiber that yields the rest. Same as
   `(drop-until (complement pred) ind)`.
   """
@@ -1439,7 +1439,7 @@
 
 (defn has-key?
   """
-  Check if `x` maps `key` to a non-nil value.
+  Checks whether `x` maps `key` to a non-nil value.
 
   `x` can be a bytes, indexed, dictionary, fiber, or abstract type
   with a suitable `get` method.
@@ -1449,7 +1449,7 @@
 
 (defn has-value?
   """
-  Checks if `x` contains `value`.
+  Checks whether `x` contains `value`.
 
   `x` can be a bytes, indexed, dictionary, fiber, or abstract type with
   suitable `get` and `next` methods.
@@ -1464,10 +1464,10 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 """)
 (defdyn *out* "Where normal print functions print output to.")
 (defdyn *err* "Where error printing prints output to.")
-(defdyn *redef* "When set, allow dynamically rebinding top level defs. Will slow generated code and is intended to be used for development.")
+(defdyn *redef* "When set, allows dynamically rebinding top level defs. Will slow generated code and is intended to be used for development.")
 (defdyn *debug* "Enables a built in debugger on errors and other useful features for debugging in a repl.")
 (defdyn *exit* "When set, will cause the current context to complete. Can be set to exit from repl (or file), for example.")
-(defdyn *exit-value* "Set the return value from `run-context` upon an exit.")
+(defdyn *exit-value* "Sets the return value from `run-context` upon an exit.")
 (defdyn *task-id* "When spawning a thread or fiber, the task-id can be assigned for concurrency control.")
 
 (defdyn *current-file*
@@ -1475,7 +1475,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defmacro tracev
   """
-  Print to stderr a value and a description of the form that produced that value.
+  Prints to stderr a value and a description of the form that produced that value.
   Evaluates to x.
   """
   [x]
@@ -1578,8 +1578,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn walk
   """
-  Iterate over the values in ast and apply `f`
-  to them. Collect the results in a data structure. If ast is not a
+  Iterates over the values in ast and applies `f`
+  to them. Collects the results in a data structure. If ast is not a
   table, map, array, or tuple,
   returns form.
   """
@@ -1594,20 +1594,20 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn postwalk
   """
-  Do a post-order traversal of a data structure and call `(f x)`
+  Does a post-order traversal of a data structure and calls `(f x)`
   on every visitation.
   """
   [f form]
   (f (walk (fn [x] (postwalk f x)) form)))
 
 (defn prewalk
-  "Similar to `postwalk`, but do pre-order traversal."
+  "Similar to `postwalk`, but does pre-order traversal."
   [f form]
   (walk (fn [x] (prewalk f x)) (f form)))
 
 (defmacro as->
   """
-  Thread forms together, replacing `as` in `forms` with the value
+  Threads forms together, replacing `as` in `forms` with the value
   of the previous form. The first form is the value x. Returns the
   last value.
   """
@@ -1621,9 +1621,9 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defmacro as?->
   """
-  Thread forms together, replacing `as` in `forms` with the value
+  Threads forms together, replacing `as` in `forms` with the value
   of the previous form. The first form is the value x. If any
-  intermediate values are falsey, return nil; otherwise, returns the
+  intermediate values are falsey, returns nil; otherwise, returns the
   last value.
   """
   [x as & forms]
@@ -1636,7 +1636,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defmacro with-dyns
   """
-  Run a block of code in a new fiber that has some
+  Runs a block of code in a new fiber that has some
   dynamic bindings set. The fiber will not mask errors
   or signals, but the dynamic bindings will be properly
   unset, as dynamic bindings are fiber-local.
@@ -1648,7 +1648,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   `(~resume (~fiber/new (fn :with-dyns [] ~|dyn-forms ~|body) :p)))
 
 (defmacro with-env
-  "Run a block of code with a given environment table"
+  "Runs a block of code with a given environment table"
   [env & body]
   `(~resume (~fiber/new (fn :with-env [] ~|body) : ~env)))
 
@@ -1766,7 +1766,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn get-in
   """
-  Access a value in a nested data structure. Looks into the data structure via
+  Accesses a value in a nested data structure. Looks into the data structure via
   a sequence of keys. If value is not found, and `dflt` is provided, returns `dflt`.
   """
   ([ds ks] (get-in ds ks nil))
@@ -1777,7 +1777,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn update-in!
   """
-  Update a value in a nested data structure `ds`. Looks into `ds` via a sequence of keys,
+  Updates a value in a nested data structure `ds`. Looks into `ds` via a sequence of keys,
   and replaces the value found there with `f` applied to that value.
   Missing data structures will be replaced with tables. Returns
   the modified, original data structure.
@@ -1801,7 +1801,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn put-in!
   """
-  Put a value into a nested data structure `ds`. Looks into `ds` via
+  Puts a value into a nested data structure `ds`. Looks into `ds` via
   a sequence of keys. Missing data structures will be replaced with tables. Returns
   the modified, original data structure.
   """
@@ -1824,7 +1824,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn update!
   """
-  For a given key in data structure `ds`, replace its corresponding value with the
+  For a given key in data structure `ds`, replaces its corresponding value with the
   result of calling `func` on that value. If `args` are provided, they will be passed
   along to `func` as well. Returns `ds`, updated.
   """
@@ -1859,7 +1859,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn keys
   """
-  Get the keys of `x` as an array.
+  Gets the keys of `x` as an array.
 
   `x` can be a bytes, indexed, dictionary, or abstract type with a
   suitable `next` method.
@@ -1877,7 +1877,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn values
   """
-  Get the values of `x` as an array.
+  Gets the values of `x` as an array.
 
   `x` can be a bytes, indexed, dictionary, fiber, or abstract type
   with suitable `get` and `next` methods.
@@ -1895,7 +1895,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn pairs
   """
-  Return an array of tuples of the key-value pairs of `x`. For bytes
+  Returns an array of tuples of the key-value pairs of `x`. For bytes
   and indexed types, the integer indices are considered the keys.
 
   `x` can be a bytes, indexed, dictionary, or abstract type with
@@ -1913,7 +1913,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (seq [p :pairs x] p)))
 
 (defn frequencies
-  "Get the number of occurrences of each value in an indexed data structure."
+  "Gets the number of occurrences of each value in an indexed data structure."
   [ind]
   (def freqs !{})
   (each x ind
@@ -1922,7 +1922,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn group-by
   """
-  Group elements of `ind` by a function `f` and put the results into a new table. The keys of
+  Groups elements of `ind` by a function `f` and put the results into a new table. The keys of
   the table are the distinct return values from calling `f` on the elements of `ind`. The values
   of the table are arrays of all elements of `ind` for which `f` called on the element equals
   that corresponding key.
@@ -1938,7 +1938,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn partition-by
   """
-  Partition elements of a sequential data structure by a representative function `f`. Partitions
+  Partitions elements of a sequential data structure by a representative function `f`. Partitions
   split when `(f x)` changes values when iterating to the next element `x` of `ind`. Returns a new array
   of arrays.
   """
@@ -2035,7 +2035,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn- vector-slice
   """
-  The indexed slice `partition` wants: a vector, whatever the value is.
+  The indexed slice `partition` needs: a vector, whatever the value is.
 
   `slice` prefers bytes where a value is both bytes and indexed, which is
   right for `slice` and wrong here, since the branch has already chosen
@@ -2062,7 +2062,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn partition
   """
-  Partition an indexed data structure `ind` into tuples
+  Partitions an indexed data structure `ind` into tuples
   of size `n`. Returns a new array.
   """
   [n ind]
@@ -2078,7 +2078,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 ;;;
 
 (defn slurp
-  "Read all data from a file with name `path` and then close the file."
+  "Reads all data from a file with name `path` and then close the file."
   [path]
   (def f (file/open path :rb))
   (if-not f (error (string "could not open file " path)))
@@ -2087,7 +2087,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   contents)
 
 (defn spit
-  "Write `contents` to a file at `path`. Can optionally append to the file."
+  "Writes `contents` to a file at `path`. Can optionally append to the file."
   ([path contents] (spit path contents :wb))
   ([path contents mode]
   (def f (file/open path mode))
@@ -2100,16 +2100,16 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   "Format specifier for the `pp` function")
 
 (defdyn *repl-prompt*
-  "Allow setting a custom prompt at the default REPL. Not all REPLs will respect this binding.")
+  "Allows setting a custom prompt at the default REPL. Not all REPLs will respect this binding.")
 
 (defn pp
-  """Pretty-print to stdout or `(dyn *out*)`. The format string used is `(dyn *pretty-format* "%q")`."""
+  """Pretty-prints to stdout or `(dyn *out*)`. The format string used is `(dyn *pretty-format* "%q")`."""
   [x]
   (printf (dyn *pretty-format* "%q") x)
   (flush))
 
 (defn file/lines
-  "Return an iterator over the lines of a file."
+  "Returns an iterator over the lines of a file."
   [file]
   (coro
     (while (def line (file/read file :line))
@@ -2123,7 +2123,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defmacro match
   """
-  Pattern matching. Match an expression `x` against any number of cases.
+  Pattern matching. Matches an expression `x` against any number of cases.
   Each case is a pattern to match against, followed by an expression to
   evaluate to if that case is matched.  Legal patterns are:
 
@@ -2351,7 +2351,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn macex1
   """
-  Expand macros in a form, but do not recursively expand macros.
+  Expands macros in a form, but does not recursively expand macros.
   See `macex` docs for info on `on-binding`.
   """
   ([x] (macex1 x nil))
@@ -2466,7 +2466,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn freeze
   """
-  Freeze an object (make it immutable) and do a deep copy, making
+  Freezes an object (make it immutable) and do a deep copy, making
   child values also immutable. Closures, fibers, and abstract types
   will not be recursively frozen, but all other types will.
   """
@@ -2500,7 +2500,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn thaw
   """
-  Thaw an object (make it mutable) and do a deep copy, making
+  Thaws an object (make it mutable) and do a deep copy, making
   child values also mutable. Closures, fibers, and abstract
   types will not be recursively thawed, but all other types will.
   """
@@ -2516,7 +2516,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn thaw-keep-keys
   """
-  Similar to `thaw`, but do not modify table or map keys.
+  Similar to `thaw`, but does not modify table or map keys.
   """
   [ds]
   (case (type ds)
@@ -2569,7 +2569,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn macex
   """
-  Expand macros completely.
+  Expands macros completely.
   `on-binding` is an optional callback for whenever a normal symbolic binding
   is encountered. This allows macros to easily see all bindings used by their
   arguments by calling `macex` on their contents. The binding itself is also
@@ -2591,7 +2591,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defmacro varfn :flycheck
   """
-  Create a function that can be rebound. `varfn` has the same signature
+  Creates a function that can be rebound. `varfn` has the same signature
   as `defn`, but defines functions in the environment as vars. If a var `name`
   already exists in the environment, it is rebound to the new function. Returns
   a function.
@@ -2735,7 +2735,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn make-env
   """
-  Create a new environment table. The new environment
+  Creates a new environment table. The new environment
   will inherit bindings from the parent environment, but new
   bindings will not pollute the parent environment.
   """
@@ -2803,7 +2803,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn curenv
   """
-  Get the current environment table. Same as `(fiber/getenv (fiber/current))`. If `n`
+  Gets the current environment table. Same as `(fiber/getenv (fiber/current))`. If `n`
   is provided, gets the nth prototype of the environment table.
   """
   ([] (curenv nil))
@@ -2821,7 +2821,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn run-context
   """
-  Run a context. This evaluates expressions in an environment,
+  Runs a context. This evaluates expressions in an environment,
   and encapsulates the parsing, compilation, and evaluation.
   Returns `(in environment :exit-value environment)` when complete.
   `opts` is a table or map of options. The options are as follows:
@@ -2849,7 +2849,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     * `:expander` -- an optional function that is called on each top level form before
       being compiled.
 
-    * `:parser` -- provide a custom parser that implements the same interface as Wattle's
+    * `:parser` -- provides a custom parser that implements the same interface as Wattle's
       built-in parser.
 
     * `:read` -- optional function to get the next form, called like `(read env source)`.
@@ -2939,7 +2939,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (def p-has-more (p :has-more))
 
   (defn parse-err
-    "Handle parser error in the correct environment"
+    "Handles parser error in the correct environment"
     [p where]
     (def f (coro (on-parse-error p where)))
     (fiber/setenv f env)
@@ -3009,7 +3009,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 (defn eval
   """
   Evaluates a form in the current environment. If more control over the
-  environment is needed, use `run-context`. Optionally pass in an `env` table with available bindings.
+  environment is needed, use `run-context`. Optionally takes an `env` table with available bindings.
   """
   ([form] (eval form nil))
   ([form env]
@@ -3020,7 +3020,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn parse
   """
-  Parse a string and return the first value. For complex parsing, such as for a repl with error handling,
+  Parses a string and returns the first value. For complex parsing, such as for a repl with error handling,
   use the parser api.
   """
   [str]
@@ -3037,7 +3037,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn parse-all
   """
-  Parse a string and return all parsed values. For complex parsing, such as for a repl with error handling,
+  Parses a string and returns all parsed values. For complex parsing, such as for a repl with error handling,
   use the parser api.
   """
   [str]
@@ -3056,7 +3056,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 (defn eval-string
   """
   Evaluates a string in the current environment. If more control over the
-  environment is needed, use `run-context`. Optionally pass in an `env` table with available bindings.
+  environment is needed, use `run-context`. Optionally takes an `env` table with available bindings.
   """
   ([str] (eval-string str nil))
   ([str env]
@@ -3085,7 +3085,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   y)
 
 (defmacro compif
-  "Check the condition `cnd` at compile time -- if truthy, compile `tru`, else compile `fals`."
+  "Checks the condition `cnd` at compile time -- if truthy, compiles `tru`, else compiles `fals`."
   ([cnd tru] (def self compif) (self cnd tru nil))
   ([cnd tru fals]
   (if (eval cnd)
@@ -3093,14 +3093,14 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     fals)))
 
 (defmacro compwhen
-  "Check the condition `cnd` at compile time -- if truthy, compile `(upscope ;body)`, else compile nil."
+  "Checks the condition `cnd` at compile time -- if truthy, compiles `(upscope ;body)`, else compiles nil."
   [cnd & body]
   (if (eval cnd)
     `(upscope ~|body)))
 
 (defn make-image
   """
-  Create an image from an environment returned by `require`.
+  Creates an image from an environment returned by `require`.
   Returns the image source as a string.
   """
   [env]
@@ -3145,7 +3145,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn module/add-paths
   """
-  Add paths to `module/paths` for a given loader such that
+  Adds paths to `module/paths` for a given loader such that
   the generated paths behave like other module types, including
   relative imports and syspath imports. `ext` is the file extension
   to associate with this module type, including the dot. `loader` is the
@@ -3168,7 +3168,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn module/add-file-extension
   """
-  Add paths to `module/paths` for a given file extension such that
+  Adds paths to `module/paths` for a given file extension such that
   the programmer can import a module by relative or absolute path from
   the current working directory.
   Returns the modified `module/paths`.
@@ -3181,7 +3181,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn module/add-native
   """
-  Add the environment `env` of a native module to `module/cache` under
+  Adds the environment `env` of a native module to `module/cache` under
   `name`, so that `(import name)` finds it without a file. Each nfunction
   and abstract value bound in `env` is also added to `make-image-dict` and
   `load-image-dict` under the symbol `name/sym`, so that an image made with
@@ -3203,7 +3203,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 ; Don't expose this externally yet - could break if custom module/paths is setup.
 (defn module/add-syspath
   """
-  Add a custom syspath to `module/paths` by duplicating all entries that being with `:sys:` and
+  Adds a custom syspath to `module/paths` by duplicating all entries that being with `:sys:` and
   adding duplicates with a specific path prefix instead.
   """
   [path]
@@ -3259,7 +3259,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn module/find
   """
-  Try to match a module or path name from the patterns in `module/paths`.
+  Tries to match a module or path name from the patterns in `module/paths`.
   Returns a tuple (fullpath kind) where the kind is one of :source, :native,
   or :image if the module is found, otherwise a tuple with nil followed by
   an error message.
@@ -3322,7 +3322,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 (var- debugger-on-status-var nil)
 
 (defn debugger
-  "Run a repl-based debugger on a fiber. Optionally pass in a level  to differentiate nested debuggers."
+  "Runs a repl-based debugger on a fiber. Optionally pass in a level  to differentiate nested debuggers."
   ([fiber] (debugger fiber 1))
   ([fiber level]
   (def nextenv (make-env (fiber/getenv fiber)))
@@ -3347,7 +3347,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (nextenv :resume-value)))
 
 (defn debugger-on-status
-  "Create a function that can be passed to `run-context`'s `:on-status`  argument that will drop into a debugger on errors. The debugger will  only start on abnormal signals if the env table has the `:debug` dyn  set to a truthy value."
+  "Creates a function that can be passed to `run-context`'s `:on-status`  argument that will drop into a debugger on errors. The debugger will  only start on abnormal signals if the env table has the `:debug` dyn  set to a truthy value."
   ([env] (debugger-on-status env 1 nil))
   ([env level] (debugger-on-status env level nil))
   ([env level is-repl]
@@ -3372,7 +3372,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn dofile
   """
-  Evaluate a file, file path, or stream and return the resulting environment. :env, :expander,
+  Evaluates a file, file path, or stream and return the resulting environment. :env, :expander,
   :source, :evaluator, :read, and :parser are passed through to the underlying
   `run-context` call. If `exit` is true, any top level errors will trigger a
   call to `(os/exit 1)` after printing the error.
@@ -3489,7 +3489,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn require
   """
-  Require a module with the given name. Will search all of the paths in
+  Requires a module with the given name. Will search all of the paths in
   `module/paths`. Returns the new environment
   returned from compiling and running the file.
   """
@@ -3498,7 +3498,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn merge-module
   """
-  Merge a module source into the `target` environment with a `prefix`, as with the `import` macro.
+  Merges a module source into the `target` environment with a `prefix`, as with the `import` macro.
   This lets users emulate the behavior of `import` with a custom module table.
   If `export` is truthy, then merged functions are not marked as private. Returns
   the modified target environment. If a tuple or array `only` is passed, only merge keys in `only`.
@@ -3534,10 +3534,10 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defmacro import
   """
-  Import a module. First requires the module, and then merges its
+  Imports a module. First requires the module, and then merges its
   symbols into the current environment, prepending a given prefix as needed.
   (use the :as or :prefix option to set a prefix). If no prefix is provided,
-  use the name of the module as a prefix. One can also use "`:export true`"
+  uses the name of the module as a prefix. One can also use "`:export true`"
   to re-export the imported symbols. If "`:exit true`" is given as an argument,
   any errors encountered at the top level in the module will cause `(os/exit 1)`
   to be called. Dynamic bindings will NOT be imported. Use :fresh with a truthy
@@ -3581,7 +3581,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn all-bindings
   """
-  Get all symbols available in an environment. Defaults to the current
+  Gets all symbols available in an environment. Defaults to the current
   fiber's environment. If `local` is truthy, will not show inherited bindings
   (from prototype tables).
   """
@@ -3592,7 +3592,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn all-dynamics
   """
-  Get all dynamic bindings in an environment. Defaults to the current
+  Gets all dynamic bindings in an environment. Defaults to the current
   fiber's environment. If `local` is truthy, will not show inherited bindings
   (from prototype tables).
   """
@@ -3609,7 +3609,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn doc-format
   """
-  Reformat a docstring to wrap a certain width. Docstrings can either be plaintext
+  Reformats a docstring to wrap a certain width. Docstrings can either be plaintext
   or a subset of markdown. This allows a long single line of prose or formatted text to be
   a well-formed docstring. Returns a buffer containing the formatted text.
   """
@@ -3869,7 +3869,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   buf))
 
 (defn- print-index
-  "Print bindings in the current environment given a filter function."
+  "Prints bindings in the current environment given a filter function."
   [fltr]
   (def bindings (filter fltr (all-bindings)))
   (def dynamics (map describe (filter fltr (all-dynamics))))
@@ -3920,7 +3920,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
          "    See https://janet-lang.org/docs/specials.html\n\n"))
 
 (defn doc*
-  "Get the documentation for a symbol in a given environment. Function form of `doc`."
+  "Gets the documentation for a symbol in a given environment. Function form of `doc`."
   ([] (doc* nil))
   ([sym]
 
@@ -3984,49 +3984,49 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 ;;;
 
 (defn .fiber
-  "Get the current fiber being debugged."
+  "Gets the current fiber being debugged."
   []
   (dyn :fiber))
 
 (defn .signal
-  "Get the current signal being debugged."
+  "Gets the current signal being debugged."
   []
   (dyn :signal))
 
 (defn .stack
-  "Print the current fiber stack."
+  "Prints the current fiber stack."
   []
   (print)
   (with-dyns [*err-color* false] (debug/stacktrace (.fiber) (.signal) ""))
   (print))
 
 (defn .frame
-  "Show a stack frame"
+  "Shows a stack frame"
   ([] (.frame nil))
   ([n]
   (def stack (debug/stack (.fiber)))
   (in stack (or n 0))))
 
 (defn .locals
-  "Show local bindings"
+  "Shows local bindings"
   ([] (.locals nil))
   ([n]
   (get (.frame n) :locals)))
 
 (defn .fn
-  "Get the current function."
+  "Gets the current function."
   ([] (.fn nil))
   ([n]
   (in (.frame n) :function)))
 
 (defn .slots
-  "Get an array of slots in a stack frame."
+  "Gets an array of slots in a stack frame."
   ([] (.slots nil))
   ([n]
   (in (.frame n) :slots)))
 
 (defn .slot
-  "Get the value of the nth slot."
+  "Gets the value of the nth slot."
   ([] (.slot nil nil))
   ([nth] (.slot nth nil))
   ([nth frame-idx]
@@ -4044,7 +4044,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (disasm func)))
 
   (defn .bytecode
-    "Get the bytecode for the current function."
+    "Gets the bytecode for the current function."
     ([] (.bytecode nil))
     ([n]
     ((.disasm n) :bytecode)))
@@ -4099,7 +4099,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (eprint)))
 
   (defn .breakall
-    "Set breakpoints on all instructions in the current function."
+    "Sets breakpoints on all instructions in the current function."
     ([] (.breakall nil))
     ([n]
     (def fun (.fn n))
@@ -4109,7 +4109,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (eprint "set " (length bytecode) " breakpoints in " fun)))
 
   (defn .clearall
-    "Clear all breakpoints on the current function."
+    "Clears all breakpoints on the current function."
     ([] (.clearall nil))
     ([n]
     (def fun (.fn n))
@@ -4119,7 +4119,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (eprint "cleared " (length bytecode) " breakpoints in " fun))))
 
 (defn .source
-  "Show the source code for the function being debugged."
+  "Shows the source code for the function being debugged."
   ([] (.source nil))
   ([n]
   (def frame (.frame n))
@@ -4128,7 +4128,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (eprint "\n" all-source "\n")))
 
 (defn .break
-  "Set breakpoint at the current pc."
+  "Sets breakpoint at the current pc."
   []
   (def frame (.frame))
   (def fun (frame :function))
@@ -4137,7 +4137,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (eprint "set breakpoint in " fun " at pc=" pc))
 
 (defn .clear
-  "Clear the current breakpoint."
+  "Clears the current breakpoint."
   []
   (def frame (.frame))
   (def fun (frame :function))
@@ -4146,7 +4146,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   (eprint "cleared breakpoint in " fun " at pc=" pc))
 
 (defn .next
-  "Go to the next breakpoint."
+  "Goes to the next breakpoint."
   ([] (.next nil))
   ([n]
   (var res nil)
@@ -4155,14 +4155,14 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
   res))
 
 (defn .nextc
-  "Go to the next breakpoint, clearing the current breakpoint."
+  "Goes to the next breakpoint, clearing the current breakpoint."
   ([] (.nextc nil))
   ([n]
   (.clear)
   (.next n)))
 
 (defn .step
-  "Execute the next n instructions."
+  "Executes the next n instructions."
   ([] (.step nil))
   ([n]
   (var res nil)
@@ -4181,7 +4181,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn repl
   """
-  Run a repl. The first parameter is an optional function to call to
+  Runs a repl. The first parameter is an optional function to call to
   get a chunk of source code that should return nil for end of file.
   The second parameter is a function that is called when a signal is
   caught. One can provide an optional environment table to run
@@ -4226,7 +4226,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn ev/call
     """
-    Call a function asynchronously.
+    Calls a function asynchronously.
     Returns a task fiber that is scheduled to run the function.
     """
     [f & args]
@@ -4234,7 +4234,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defmacro ev/spawn
     """
-    Run some code in a new task fiber. This is shorthand for
+    Runs some code in a new task fiber. This is shorthand for
     `(ev/go (fn [] ;body))`."
     """
     [& body]
@@ -4242,7 +4242,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defmacro ev/do-thread
     """
-    Run some code in a new thread. Suspends the current fiber until the thread is complete, and
+    Runs some code in a new thread. Suspends the current fiber until the thread is complete, and
     evaluates to nil.
     """
     [& body]
@@ -4258,29 +4258,29 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
          ~|body)))
 
   (defmacro ev/with-lock
-    "Run a body of code after acquiring a lock. Will automatically release the lock when done."
+    "Runs a body of code after acquiring a lock. Will automatically release the lock when done."
     [lock & body]
     (acquire-release ev/acquire-lock ev/release-lock lock body))
 
   (defmacro ev/with-rlock
-    "Run a body of code after acquiring read access to an rwlock. Will automatically release the lock when done."
+    "Runs a body of code after acquiring read access to an rwlock. Will automatically release the lock when done."
     [lock & body]
     (acquire-release ev/acquire-rlock ev/release-rlock lock body))
 
   (defmacro ev/with-wlock
-    "Run a body of code after acquiring write access to an rwlock. Will automatically release the lock when done."
+    "Runs a body of code after acquiring write access to an rwlock. Will automatically release the lock when done."
     [lock & body]
     (acquire-release ev/acquire-wlock ev/release-wlock lock body))
 
   (defmacro ev/spawn-thread
-    "Run some code in a new thread. Like `ev/do-thread`, but returns nil immediately."
+    "Runs some code in a new thread. Like `ev/do-thread`, but returns nil immediately."
     [& body]
     `(~ev/thread (fn :spawn-thread [&] ~|body) nil :i))
 
   (defmacro ev/with-deadline
     """
-    Create a fiber to execute `body`, schedule the event loop to cancel
-    the task (root fiber) associated with `body`'s fiber, and start
+    Creates a fiber to execute `body`, schedules the event loop to cancel
+    the task (root fiber) associated with `body`'s fiber, and starts
     `body`'s fiber by resuming it.
 
     The event loop will try to cancel the root fiber if `body`'s fiber
@@ -4313,7 +4313,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn ev/go-gather
     """
-    Run a dyanmic number of fibers in parallel and resume the current fiber after they complete. Takes
+    Runs a dyanmic number of fibers in parallel and resume the current fiber after they complete. Takes
     an array of functions or fibers, `thunks`, that will be run via `ev/go` in another task.
     Returns the gathered results in an array.
     """
@@ -4332,7 +4332,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defmacro ev/gather
     """
-    Create and run a number of fibers in parallel (created from `bodies`) and resume the
+    Creates and runs a number of fibers in parallel (created from `bodies`) and resumes the
     current fiber after they complete. Shorthand for `ev/go-gather`. Returns the gathered results in an
     array.
     """
@@ -4364,7 +4364,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 ;;;
 
 (defmacro delay
-  "Lazily evaluate a series of expressions. Returns a function that  returns the result of the last expression. Will only evaluate the  body once, and then memoizes the result."
+  "Lazily evaluates a series of expressions. Returns a function that  returns the result of the last expression. Will only evaluate the  body once, and then memoizes the result."
   [& forms]
   (def state (gensym))
   (def loaded (gensym))
@@ -4387,7 +4387,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (string/replace-all "-" "_" name))
 
   (defn ffi/context
-    "Set the path of the dynamic library to implicitly bind, as well     as other global state for ease of creating native bindings."
+    "Sets the path of the dynamic library to implicitly bind, as well     as other global state for ease of creating native bindings."
     ([] (ffi/context nil))
     ([native-path & {:keys [map-symbols lazy]}]
     (default map-symbols default-mangle)
@@ -4401,7 +4401,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
               :map-symbols map-symbols})))
 
   (defmacro ffi/defbind-alias :flycheck
-    "Generate bindings for native functions in a convenient manner.     Similar to defbind but allows for the wattle function name to be     different than the FFI function."
+    "Generates bindings for native functions in a convenient manner.     Similar to defbind but allows for the wattle function name to be     different than the FFI function."
     [name alias ret-type & body]
     (def real-ret-type (eval ret-type))
     (def meta (slice body 0 -2))
@@ -4427,7 +4427,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
          (~ffi/call ~(make-ptr) ~(make-sig) ~|formal-args))))
 
   (defmacro ffi/defbind :flycheck
-    "Generate bindings for native functions in a convenient manner."
+    "Generates bindings for native functions in a convenient manner."
     [name ret-type & body]
     `(as-macro ~ffi/defbind-alias ~name ~name ~ret-type ~|body)))
 
@@ -4461,7 +4461,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn flycheck
   """
-  Check a file for errors without running the file. Found errors
+  Checks a file for errors without running the file. Found errors
   will be printed to stderr in the usual format. Top level functions
   and macros that have the metadata `:flycheck` will also be evaluated
   during flychecking. For full control, the `:flycheck` metadata can
@@ -4483,7 +4483,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn- no-side-effects
   """
-  Check if form may have side effects. If returns true, then the src
+  Checks whether form may have side effects. If returns true, then the src
   must not have side effects, such as calling a C function.
   """
   [src]
@@ -4626,7 +4626,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (spit manifest-name b))
 
   (defn bundle/manifest
-    "Get the manifest for a given installed bundle."
+    "Gets the manifest for a given installed bundle."
     [bundle-name]
     (def name (get-manifest-filename bundle-name))
     (assertf (fexists name) "no bundle %v found" bundle-name)
@@ -4672,7 +4672,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
       (hookf |args)))
 
   (defn bundle/list
-    "Get a list of all installed bundles in lexical order."
+    "Gets a list of all installed bundles in lexical order."
     []
     (def d (bundle-dir))
     (if (os/stat d :mode)
@@ -4697,7 +4697,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/uninstall
     """
-    Remove a bundle from the current syspath. There is 1 hook called during
+    Removes a bundle from the current syspath. There is 1 hook called during
     uninstallation (uninstall). A user can register a hook by defining a
     function with the same name in the bundle script.
     """
@@ -4715,7 +4715,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (bundle-uninstall-unchecked bundle-name))
 
   (defn bundle/topolist
-    "Get topological order of all bundles, such that each bundle is listed after its dependencies."
+    "Gets topological order of all bundles, such that each bundle is listed after its dependencies."
     []
     (def visited !{})
     (def cycle-detect !{})
@@ -4737,7 +4737,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/prune
     """
-    Remove all orphaned bundles from the current syspath. An orphaned bundle is a
+    Removes all orphaned bundles from the current syspath. An orphaned bundle is a
     bundle that is marked for :auto-remove and is not depended on by any other bundle.
     """
     []
@@ -4763,13 +4763,13 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
       (bundle-uninstall-unchecked b)))
 
   (defn bundle/installed?
-    "Check if a bundle is installed."
+    "Checks whether a bundle is installed."
     [bundle-name]
     (not (not (os/stat (bundle-dir bundle-name) :mode))))
 
   (defn bundle/install
     """
-    Install a bundle from the local filesystem. The name of the bundle is
+    Installs a bundle from the local filesystem. The name of the bundle is
     the value mapped to :name in either `config` or the info file. There are
     5 hooks called during installation (postdeps, clean, build, install and
     check). A user can register a hook by defining a function with the same name
@@ -4852,7 +4852,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn- bundle/pack
     """
-    Take an installed bundle and create a bundle source directory that can be
+    Takes an installed bundle and creates a bundle source directory that can be
     used to reinstall the bundle on a compatible system. This is used to create
     backups for installed bundles without rebuilding, or make a prebuilt bundle
     for other systems.
@@ -4888,7 +4888,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/replace
     """
-    Reinstall an existing bundle from a new directory. Similar to
+    Reinstalls an existing bundle from a new directory. Similar to
     bundle/reinstall, but installs the replacement bundle from any directory.
     This is necessary to replace a package without breaking any dependencies.
     """
@@ -4910,7 +4910,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     bundle-name)
 
   (defn bundle/reinstall
-    "Reinstall an existing bundle from the local source code."
+    "Reinstalls an existing bundle from the local source code."
     [bundle-name & {:as new-config}]
     (def manifest (bundle/manifest bundle-name))
     (def path (get manifest :local-source))
@@ -4918,7 +4918,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     bundle-name)
 
   (defn bundle/add-directory
-    "Add a directory during an install relative to `(dyn *syspath*)`."
+    "Adds a directory during an install relative to `(dyn *syspath*)`."
     ([manifest dest] (bundle/add-directory manifest dest nil))
     ([manifest dest chmod-mode]
     (def files (get-files manifest))
@@ -4934,7 +4934,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     absdest))
 
   (defn bundle/whois
-    "Given a file path, figure out which bundle installed it."
+    "Given a file path, figures out which bundle installed it."
     [path]
     (var ret nil)
     (def rpath (bundle-rpath path))
@@ -4947,7 +4947,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     ret)
 
   (defn bundle/add-file
-    "Add a file during an install relative to `(dyn *syspath*)`."
+    "Adds a file during an install relative to `(dyn *syspath*)`."
     ([manifest src] (bundle/add-file manifest src src nil))
     ([manifest src dest] (bundle/add-file manifest src dest nil))
     ([manifest src dest chmod-mode]
@@ -4966,7 +4966,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/add
     """
-    Add a file or directory during an install relative to `(dyn *syspath*)`.
+    Adds a file or directory during an install relative to `(dyn *syspath*)`.
     Added files and directories will be recorded in the bundle manifest such
     that they are properly tracked and removed during an upgrade or uninstall.
     """
@@ -4986,7 +4986,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/add-bin
     """
-    Add a file to the "bin" subdirectory of the current syspath. By default,
+    Adds a file to the "bin" subdirectory of the current syspath. By default,
     files will be set to be executable.
     """
     ([manifest src] (bundle/add-bin manifest src (last (string/split (sep) src)) 8r755))
@@ -5000,7 +5000,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
   (defn bundle/add-manpage
     """
-    Add a file to the man subdirectory of the current syspath. Files are
+    Adds a file to the man subdirectory of the current syspath. Files are
     copied inside a directory `mansec`. By default, `mansec` is "man1".
     """
     ([manifest src] (bundle/add-manpage manifest src "man1"))
@@ -5013,7 +5013,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
     (bundle/add-file manifest src (string "man" s mansec s filename))))
 
   (defn bundle/update-all
-    "Reinstall all bundles."
+    "Reinstalls all bundles."
     [& {:as configs}]
     (each bundle (bundle/topolist)
       (bundle/reinstall bundle |(kvs configs)))))
@@ -5058,7 +5058,7 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn run-image
   """
-  Load `image`, the bytes of an image made by `make-image`, and call the
+  Loads `image`, the bytes of an image made by `make-image`, and calls the
   `main` it defines with the elements of `args`, as `wattle -i` does for an
   image file. `args` is also put in the image's environment as `*args*`.
   `natives`, when given, maps module names to functions of no arguments that
@@ -5117,8 +5117,8 @@ Optional namespace prefix to add to keywords declared with `defdyn`.
 
 (defn cli-main
   """
-  Entrance for the Wattle CLI tool. Call this function with the command line
-  arguments as an array or tuple of strings to invoke the CLI interface.
+  Entrance for the Wattle CLI tool. Invokes the CLI interface when called with the command line
+  arguments as an array or tuple of strings.
   """
   [args]
 

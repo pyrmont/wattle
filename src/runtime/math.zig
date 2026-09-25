@@ -175,7 +175,7 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
         .{ .name = "floor", .fop = &c.floor, .doc = "Returns the largest integer value number that is not greater than x." },
         .{ .name = "trunc", .fop = &c.trunc, .doc = "Returns the integer between x and 0 nearest to x." },
         .{ .name = "round", .fop = &c.round, .doc = "Returns the integer nearest to x." },
-        .{ .name = "abs", .fop = &c.fabs, .doc = "Return the absolute value of x." },
+        .{ .name = "abs", .fop = &c.fabs, .doc = "Returns the absolute value of x." },
     };
     const plan9_absent_ops = [_]MathEntry{
         .{ .name = "expm1", .fop = &c.expm1, .doc = "Returns e to the power of x minus 1." },
@@ -245,15 +245,15 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
     const written = comptime [_]corefn.Entry{
         corefn.reg("not", &nfunNot, @src(), "(not x)", "Returns the boolean inverse of x."),
         corefn.reg("math/random", &nfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
-        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Set the seed for the random number generator. `seed` should be " ++
+        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Sets the seed for the random number generator. `seed` should be " ++
             "an integer or a buffer."),
         corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng [seed])", "Creates a Pseudo-Random number generator, with an optional seed. " ++
             "The seed should be an unsigned 32 bit integer or a buffer. " ++
             "Do not use this for cryptography. Returns a core/rng abstract type."),
-        corefn.reg("math/rng-uniform", &nfunRngUniform, @src(), "(math/rng-uniform rng)", "Extract a random number in the range [0, 1) from the RNG."),
-        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng [max])", "Extract a random integer in the range [0, max) for max > 0 from the RNG.  " ++
-            "If max is 0, return 0.  If no max is given, the default is 2^31 - 1."),
-        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n [buf])", "Get n random bytes and put them in a buffer. Creates a new buffer if no buffer is " ++
+        corefn.reg("math/rng-uniform", &nfunRngUniform, @src(), "(math/rng-uniform rng)", "Extracts a random number in the range [0, 1) from the RNG."),
+        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng [max])", "Extracts a random integer in the range [0, max) for max > 0 from the RNG.  " ++
+            "If max is 0, returns 0.  If no max is given, the default is 2^31 - 1."),
+        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n [buf])", "Gets n random bytes and puts them in a buffer. Creates a new buffer if no buffer is " ++
             "provided, otherwise appends to the given buffer. Returns the buffer."),
         corefn.reg("math/gcd", &nfunGcd, @src(), "(math/gcd x y)", "Returns the greatest common divisor between x and y."),
         corefn.reg("math/lcm", &nfunLcm, @src(), "(math/lcm x y)", "Returns the least common multiple of x and y."),

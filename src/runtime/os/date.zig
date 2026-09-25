@@ -88,7 +88,7 @@ const timeint_t = if (windows) i32 else i64;
 /// The three registrations, which `os.zig` installs.
 pub fn entries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date [local])", "Get the broken down date expressed as the number " ++
+        corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date [local])", "Gets the broken down date expressed as the number " ++
             "of seconds since January 1, 1970, the Unix epoch. " ++
             "Returns a real number. " ++
             "Date is given in UTC unless `local` is truthy, in which case the " ++
@@ -108,7 +108,7 @@ pub fn entries() []const corefn.Entry {
             "* :dst - if Day Light Savings is in effect\n\n" ++
             "You can set local timezone by setting TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
-        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt [time [local]])", "Format the given time as a string, or the current time if `time` is not given. " ++
+        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt [time [local]])", "Formats the given time as a string, or the current time if `time` is not given. " ++
             "The time is formatted according to the same rules as the ISO C89 function strftime(). " ++
             "The time is formatted in UTC unless `local` is truthy, in which case the date is formatted for " ++
             "the local timezone. You can set local timezone by setting TZ environment variable. " ++

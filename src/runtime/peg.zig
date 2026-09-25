@@ -335,16 +335,16 @@ pub fn libPeg(env: *tables.Table) raise.Error!void {
         corefn.reg("peg/compile", &nfunPegCompile, @src(), "(peg/compile peg)", "Compiles a peg source data structure into a <core/peg>. This will speed up matching " ++
             "if the same peg will be used multiple times. `(dyn :peg-grammar)` replaces " ++
             "`default-peg-grammar` for the grammar of the peg."),
-        corefn.reg("peg/match", &nfunPegMatch, @src(), "(peg/match peg text [start [& [args]]])", "Match a Parsing Expression Grammar to a byte string and return an array of captured values. " ++
+        corefn.reg("peg/match", &nfunPegMatch, @src(), "(peg/match peg text [start [& [args]]])", "Matches a Parsing Expression Grammar to a byte string and returns an array of captured values. " ++
             "Returns nil if text does not match the language defined by peg. The syntax of PEGs is Janet's, documented at janet-lang.org."),
-        corefn.reg("peg/find", &nfunPegFind, @src(), "(peg/find peg text [start [& [args]]])", "Find first index where the peg matches in text. Returns an integer, or nil if not found."),
-        corefn.reg("peg/find-all", &nfunPegFindAll, @src(), "(peg/find-all peg text [start [& [args]]])", "Find all indexes where the peg matches in text. Returns an array of integers."),
-        corefn.reg("peg/replace", &nfunPegReplace, @src(), "(peg/replace peg subst text [start [& [args]]])", "Replace first match of `peg` in `text` with `subst`, returning a new buffer. " ++
+        corefn.reg("peg/find", &nfunPegFind, @src(), "(peg/find peg text [start [& [args]]])", "Finds the first index where the peg matches in text. Returns an integer, or nil if not found."),
+        corefn.reg("peg/find-all", &nfunPegFindAll, @src(), "(peg/find-all peg text [start [& [args]]])", "Finds all indexes where the peg matches in text. Returns an array of integers."),
+        corefn.reg("peg/replace", &nfunPegReplace, @src(), "(peg/replace peg subst text [start [& [args]]])", "Replaces the first match of `peg` in `text` with `subst`, returning a new buffer. " ++
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures. " ++
             "If no matches are found, returns the input string in a new buffer."),
-        corefn.reg("peg/replace-all", &nfunPegReplaceAll, @src(), "(peg/replace-all peg subst text [start [& [args]]])", "Replace all matches of `peg` in `text` with `subst`, returning a new buffer. " ++
+        corefn.reg("peg/replace-all", &nfunPegReplaceAll, @src(), "(peg/replace-all peg subst text [start [& [args]]])", "Replaces all matches of `peg` in `text` with `subst`, returning a new buffer. " ++
             "The peg does not need to make captures to do replacement. " ++
             "If `subst` is a function, it will be called with the " ++
             "matching text followed by any captures."),

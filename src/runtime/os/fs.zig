@@ -165,12 +165,12 @@ pub fn entries() []const corefn.Entry {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/cwd", &nfunCwd, @src(), "(os/cwd)", "Returns the current working directory."),
-            corefn.reg("os/perm-string", &nfunPermissionString, @src(), "(os/perm-string int)", "Convert a Unix octal permission value from a permission integer as returned by `os/stat` " ++
+            corefn.reg("os/perm-string", &nfunPermissionString, @src(), "(os/perm-string int)", "Converts a Unix octal permission value from a permission integer as returned by `os/stat` " ++
                 "to a human readable string, that follows the formatting " ++
                 "of Unix tools like `ls`. Returns the string as a 9-character string of r, w, x and - characters. Does not " ++
                 "include the file/directory/symlink character as rendered by `ls`."),
-            corefn.reg("os/perm-int", &nfunPermissionInt, @src(), "(os/perm-int bytes)", "Parse a 9-character permission string and return an integer that can be used by chmod."),
-            corefn.reg("os/dir", &nfunDir, @src(), "(os/dir dir [array])", "Iterate over files and subdirectories in a directory. Returns an array of paths parts, " ++
+            corefn.reg("os/perm-int", &nfunPermissionInt, @src(), "(os/perm-int bytes)", "Parses a 9-character permission string and returns an integer that can be used by chmod."),
+            corefn.reg("os/dir", &nfunDir, @src(), "(os/dir dir [array])", "Iterates over files and subdirectories in a directory. Returns an array of paths parts, " ++
                 "with only the file name or directory name and no prefix."),
             corefn.reg("os/stat", &stat.nfunStat, @src(), "(os/stat path [tab|key])", "Gets information about a file or directory. Returns a table unless the second argument is a keyword, " ++
                 "in which case it returns only that field/value from stat. If the file or directory does not exist, returns nil." ++
@@ -189,38 +189,38 @@ pub fn entries() []const corefn.Entry {
                 "* :accessed - timestamp when file last accessed\n\n" ++
                 "* :changed - timestamp when file last changed (permissions changed)\n\n" ++
                 "* :modified - timestamp when file last modified (content changed)\n"),
-            corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path [tab|key])", "Like os/stat, but don't follow symlinks.\n"),
-            corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Change file permissions, where `mode` is a permission string as returned by " ++
+            corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path [tab|key])", "Like os/stat, but does not follow symlinks.\n"),
+            corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Changes file permissions, where `mode` is a permission string as returned by " ++
                 "`os/perm-string`, or an integer as returned by `os/perm-int`. " ++
                 "When `mode` is an integer, it is interpreted as a Unix permission value, best specified in octal, like " ++
                 "8r666 or 8r400. Windows will not differentiate between user, group, and other permissions, and thus will combine all of these permissions. Returns nil." ++
                 "Unsupported on plan9."),
-            corefn.reg("os/touch", &nfunTouch, @src(), "(os/touch path [actime [modtime]])", "Update the access time and modification times for a file. By default, sets " ++
+            corefn.reg("os/touch", &nfunTouch, @src(), "(os/touch path [actime [modtime]])", "Updates the access time and modification times for a file. By default, sets " ++
                 "times to the current time."),
-            corefn.reg("os/realpath", &nfunRealpath, @src(), "(os/realpath path)", "Get the absolute path for a given path, following ../, ./, and symlinks. " ++
+            corefn.reg("os/realpath", &nfunRealpath, @src(), "(os/realpath path)", "Gets the absolute path for a given path, following ../, ./, and symlinks. " ++
                 "Returns an absolute path as a string."),
-            corefn.reg("os/cd", &nfunCd, @src(), "(os/cd path)", "Change current directory to path. Returns nil on success, errors on failure."),
+            corefn.reg("os/cd", &nfunCd, @src(), "(os/cd path)", "Changes current directory to path. Returns nil on success, errors on failure."),
         };
         if (!no_umask) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/umask", &nfunUmask, @src(), "(os/umask mask)", "Set a new umask, returns the old umask."),
+            corefn.reg("os/umask", &nfunUmask, @src(), "(os/umask mask)", "Sets a new umask and returns the old umask."),
         };
         if (!no_symlinks) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/readlink", &nfunReadlink, @src(), "(os/readlink path)", "Read the contents of a symbolic link. Does not work on Windows.\n"),
+            corefn.reg("os/readlink", &nfunReadlink, @src(), "(os/readlink path)", "Reads the contents of a symbolic link. Does not work on Windows.\n"),
         };
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/mkdir", &nfunMkdir, @src(), "(os/mkdir path)", "Create a new directory. The path will be relative to the current directory if relative, otherwise " ++
+            corefn.reg("os/mkdir", &nfunMkdir, @src(), "(os/mkdir path)", "Creates a new directory. The path will be relative to the current directory if relative, otherwise " ++
                 "it will be an absolute path. Returns true if the directory was created, false if the directory already exists, and " ++
                 "errors otherwise."),
-            corefn.reg("os/rmdir", &nfunRmdir, @src(), "(os/rmdir path)", "Delete a directory. The directory must be empty to succeed."),
-            corefn.reg("os/rm", &nfunRemove, @src(), "(os/rm path)", "Delete a file. Returns nil."),
-            corefn.reg("os/link", &nfunLink, @src(), "(os/link oldpath newpath [symlink])", "Create a link at newpath that points to oldpath and returns nil. " ++
+            corefn.reg("os/rmdir", &nfunRmdir, @src(), "(os/rmdir path)", "Deletes a directory. The directory must be empty to succeed."),
+            corefn.reg("os/rm", &nfunRemove, @src(), "(os/rm path)", "Deletes a file. Returns nil."),
+            corefn.reg("os/link", &nfunLink, @src(), "(os/link oldpath newpath [symlink])", "Creates a link at newpath that points to oldpath and returns nil. " ++
                 "Iff symlink is truthy, creates a symlink. " ++
                 "Iff symlink is falsey or not provided, " ++
                 "creates a hard link. Does not work on Windows or Plan 9."),
-            corefn.reg("os/rename", &nfunRename, @src(), "(os/rename oldname newname)", "Rename a file on disk to a new path. Returns nil."),
+            corefn.reg("os/rename", &nfunRename, @src(), "(os/rename oldname newname)", "Renames a file on disk to a new path. Returns nil."),
         };
         if (!no_symlinks) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/symlink", &nfunSymlink, @src(), "(os/symlink oldpath newpath)", "Create a symlink from oldpath to newpath, returning nil. Same as `(os/link oldpath newpath true)`."),
+            corefn.reg("os/symlink", &nfunSymlink, @src(), "(os/symlink oldpath newpath)", "Creates a symlink from oldpath to newpath, returning nil. Same as `(os/link oldpath newpath true)`."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -234,31 +234,31 @@ pub fn entries() []const corefn.Entry {
 pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/open", &open_file.nfunOpen, @src(), "(os/open path [flags [mode]])", "Create a stream from a file, like the POSIX open system call. Returns a new stream. " ++
+        corefn.reg("os/open", &open_file.nfunOpen, @src(), "(os/open path [flags [mode]])", "Creates a stream from a file, like the POSIX open system call. Returns a new stream. " ++
             "`mode` should be a file mode as passed to `os/chmod`, but only if the create flag is given. " ++
             "The default mode is 8r666. " ++
             "Allowed flags are as follows:\n\n" ++
-            "  * :r - open this file for reading\n" ++
-            "  * :w - open this file for writing\n" ++
-            "  * :c - create a new file (O\\_CREATE)\n" ++
-            "  * :e - fail if the file exists (O\\_EXCL)\n" ++
-            "  * :t - shorten an existing file to length 0 (O\\_TRUNC)\n\n" ++
-            "  * :a - append to a file (O\\_APPEND on posix, FILE_APPEND_DATA on windows)\n" ++
+            "  * :r - opens this file for reading\n" ++
+            "  * :w - opens this file for writing\n" ++
+            "  * :c - creates a new file (O\\_CREATE)\n" ++
+            "  * :e - fails if the file exists (O\\_EXCL)\n" ++
+            "  * :t - shortens an existing file to length 0 (O\\_TRUNC)\n\n" ++
+            "  * :a - appends to a file (O\\_APPEND on posix, FILE_APPEND_DATA on windows)\n" ++
             "Posix-only flags:\n\n" ++
             "  * :x - O\\_SYNC\n" ++
             "  * :C - O\\_NOCTTY\n\n" ++
-            "  * :N - Turn off O\\_NONBLOCK and disable ev reading/writing\n\n" ++
+            "  * :N - Turns off O\\_NONBLOCK and disables ev reading/writing\n\n" ++
             "Windows-only flags:\n\n" ++
-            "  * :R - share reads (FILE\\_SHARE\\_READ)\n" ++
-            "  * :W - share writes (FILE\\_SHARE\\_WRITE)\n" ++
-            "  * :D - share deletes (FILE\\_SHARE\\_DELETE)\n" ++
+            "  * :R - shares reads (FILE\\_SHARE\\_READ)\n" ++
+            "  * :W - shares writes (FILE\\_SHARE\\_WRITE)\n" ++
+            "  * :D - shares deletes (FILE\\_SHARE\\_DELETE)\n" ++
             "  * :H - FILE\\_ATTRIBUTE\\_HIDDEN\n" ++
             "  * :O - FILE\\_ATTRIBUTE\\_READONLY\n" ++
             "  * :F - FILE\\_ATTRIBUTE\\_OFFLINE\n" ++
             "  * :T - FILE\\_ATTRIBUTE\\_TEMPORARY\n" ++
             "  * :d - FILE\\_FLAG\\_DELETE\\_ON\\_CLOSE\n" ++
-            "  * :V - Turn off FILE\\_FLAG\\_OVERLAPPED and disable ev reading/writing\n" ++
-            "  * :I - set bInheritHandle on the created file so it can be passed to other processes.\n" ++
+            "  * :V - Turns off FILE\\_FLAG\\_OVERLAPPED and disables ev reading/writing\n" ++
+            "  * :I - sets bInheritHandle on the created file so it can be passed to other processes.\n" ++
             "  * :b - FILE\\_FLAG\\_NO\\_BUFFERING\n"),
     };
     return &list;

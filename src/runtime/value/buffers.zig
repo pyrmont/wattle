@@ -231,31 +231,31 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("buffer/new-filled", &nfunBufferNewFilled, @src(), "(buffer/new-filled count [byte])", "Creates a new buffer of length `count` filled with `byte`. By default, `byte` is 0. " ++
             "Returns the new buffer."),
         corefn.reg("buffer/from-bytes", &nfunBufferFrombytes, @src(), "(buffer/from-bytes & byte-vals)", "Creates a buffer from integer parameters with byte values. All integers " ++
-            "will be coerced to the range of 1 byte 0-255."),
-        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill buffer [byte])", "Fill up a buffer with bytes, defaulting to 0s. Does not change the buffer's length. " ++
+            "are coerced to the range of 1 byte 0-255."),
+        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill buffer [byte])", "Fills a buffer with bytes, defaulting to 0s. Does not change the buffer's length. " ++
             "Returns the modified buffer."),
-        corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim buffer)", "Set the backing capacity of the buffer to the current length of the buffer. Returns the " ++
+        corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim buffer)", "Sets the backing capacity of the buffer to the current length of the buffer. Returns the " ++
             "modified buffer."),
-        corefn.reg("buffer/push-byte", &nfunBufferU8, @src(), "(buffer/push-byte buffer & xs)", "Append bytes to a buffer. Returns the modified buffer. " ++
+        corefn.reg("buffer/push-byte", &nfunBufferU8, @src(), "(buffer/push-byte buffer & xs)", "Appends bytes to a buffer. Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word buffer & xs)", "Append machine words to a buffer. The 4 bytes of the integer are appended " ++
+        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word buffer & xs)", "Appends machine words to a buffer. The 4 bytes of the integer are appended " ++
             "in twos complement, little endian order, unsigned for all x. Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-string", &nfunBufferChars, @src(), "(buffer/push-string buffer & xs)", "Push byte sequences onto the end of a buffer. " ++
-            "Will accept any of strings, keywords, symbols, and buffers. " ++
+        corefn.reg("buffer/push-string", &nfunBufferChars, @src(), "(buffer/push-string buffer & xs)", "Pushes byte sequences onto the end of a buffer. " ++
+            "Accepts any of strings, keywords, symbols, and buffers. " ++
             "Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-uint16", &nfunBufferPushUint16, @src(), "(buffer/push-uint16 buffer order data)", "Push a 16 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-uint32", &nfunBufferPushUint32, @src(), "(buffer/push-uint32 buffer order data)", "Push a 32 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-uint64", &nfunBufferPushUint64, @src(), "(buffer/push-uint64 buffer order data)", "Push a 64 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-float32", &nfunBufferPushFloat32, @src(), "(buffer/push-float32 buffer order data)", "Push the underlying bytes of a 32 bit float data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push-float64", &nfunBufferPushFloat64, @src(), "(buffer/push-float64 buffer order data)", "Push the underlying bytes of a 64 bit float data onto the end of the buffer. " ++ push_tail),
-        corefn.reg("buffer/push", &nfunBufferPush, @src(), "(buffer/push buffer & xs)", "Push both individual bytes and byte sequences to a buffer. For each x in xs, " ++
-            "push the byte if x is an integer, otherwise push the bytesequence to the buffer. " ++
+        corefn.reg("buffer/push-uint16", &nfunBufferPushUint16, @src(), "(buffer/push-uint16 buffer order data)", "Pushes a 16 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-uint32", &nfunBufferPushUint32, @src(), "(buffer/push-uint32 buffer order data)", "Pushes a 32 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-uint64", &nfunBufferPushUint64, @src(), "(buffer/push-uint64 buffer order data)", "Pushes a 64 bit unsigned integer data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-float32", &nfunBufferPushFloat32, @src(), "(buffer/push-float32 buffer order data)", "Pushes the underlying bytes of a 32 bit float data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push-float64", &nfunBufferPushFloat64, @src(), "(buffer/push-float64 buffer order data)", "Pushes the underlying bytes of a 64 bit float data onto the end of the buffer. " ++ push_tail),
+        corefn.reg("buffer/push", &nfunBufferPush, @src(), "(buffer/push buffer & xs)", "Pushes both individual bytes and byte sequences to a buffer. For each x in xs, " ++
+            "pushes the byte if x is an integer, otherwise pushes the bytesequence to the buffer. " ++
             "Thus, this function behaves like both `buffer/push-string` and `buffer/push-byte`. " ++
             "Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-at", &nfunBufferPushAt, @src(), "(buffer/push-at buffer index & xs)", "Same as buffer/push, but copies the new data into the buffer " ++
+        corefn.reg("buffer/push-at", &nfunBufferPushAt, @src(), "(buffer/push-at buffer index & xs)", "Behaves as buffer/push, but copies the new data into the buffer " ++
             " at index `index`."),
         corefn.reg("buffer/popn", &nfunBufferPopn, @src(), "(buffer/popn buffer n)", "Removes the last `n` bytes from the buffer. Returns the modified buffer."),
         corefn.reg("buffer/clear", &nfunBufferClear, @src(), "(buffer/clear buffer)", "Sets the size of a buffer to 0 and empties it. The buffer retains " ++
@@ -268,12 +268,12 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("buffer/bit-clear", &nfunBufferBitclear, @src(), "(buffer/bit-clear buffer index)", "Clears the bit at the given bit-index. Returns the buffer."),
         corefn.reg("buffer/bit", &nfunBufferBitget, @src(), "(buffer/bit buffer index)", "Gets the bit at the given bit-index. Returns true if the bit is set, false if not."),
         corefn.reg("buffer/bit-toggle", &nfunBufferBittoggle, @src(), "(buffer/bit-toggle buffer index)", "Toggles the bit at the given bit index in buffer. Returns the buffer."),
-        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit dest src [dest-start [src-start [src-end]]])", "Insert the contents of `src` into `dest`. Can optionally take indices that " ++
+        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit dest src [dest-start [src-start [src-end]]])", "Inserts the contents of `src` into `dest`. Can optionally take indices that " ++
             "indicate which part of `src` to copy into which part of `dest`. Indices can be " ++
             "negative in order to index from the end of `src` or `dest`. Returns `dest`."),
-        corefn.reg("buffer/format", &nfunBufferFormat, @src(), "(buffer/format buffer format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++
+        corefn.reg("buffer/format", &nfunBufferFormat, @src(), "(buffer/format buffer format & args)", "Provides snprintf like functionality for printing values into a buffer. Returns " ++
             "the modified buffer."),
-        corefn.reg("buffer/format-at", &nfunBufferFormatAt, @src(), "(buffer/format-at buffer at format & args)", "Snprintf like functionality for printing values into a buffer. Returns " ++
+        corefn.reg("buffer/format-at", &nfunBufferFormatAt, @src(), "(buffer/format-at buffer at format & args)", "Provides snprintf like functionality for printing values into a buffer. Returns " ++
             "the modified buffer."),
     };
     corefn.install(env, entries);

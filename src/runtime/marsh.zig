@@ -287,13 +287,13 @@ pub fn envLookupInto(
 /// Registers `marshal`, `unmarshal` and `env-lookup`.
 pub fn libMarsh(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal x [reverse-lookup [buffer [no-cycles]]])", "Marshal a value into a buffer and return the buffer. The buffer " ++
+        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal x [reverse-lookup [buffer [no-cycles]]])", "Marshals a value into a buffer and returns the buffer. The buffer " ++
             "can then later be unmarshalled to reconstruct the initial value. " ++
             "Optionally, one can pass in a reverse lookup table to not marshal " ++
             "aliased values that are found in the table. Then a forward " ++
             "lookup table can be used to recover the original value when " ++
             "unmarshalling."),
-        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal buffer [lookup])", "Unmarshal a value from a buffer. An optional lookup table " ++
+        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal buffer [lookup])", "Unmarshals a value from a buffer. An optional lookup table " ++
             "can be provided to allow for aliases to be resolved. Returns the value " ++
             "unmarshalled from the buffer."),
         corefn.reg("env-lookup", &nfunEnvLookup, @src(), "(env-lookup env)", "Creates a forward lookup table for unmarshalling from an environment. " ++

@@ -531,7 +531,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "\n" ++
         "`x` can be a bytes, indexed, dictionary, fiber, or abstract " ++
         "type with a suitable `next` method.");
-    quickAsmDef(env, .{ .tag = constants.fun_prop }, "propagate", 2, 2, 2, 2, &opOnly(constants.Opcode.propagate.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(propagate x fiber)", "Propagate a signal from a fiber to the current fiber and " ++
+    quickAsmDef(env, .{ .tag = constants.fun_prop }, "propagate", 2, 2, 2, 2, &opOnly(constants.Opcode.propagate.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(propagate x fiber)", "Propagates a signal from a fiber to the current fiber and " ++
         "set the last value of the current fiber to `x`.  The signal " ++
         "value is then available as the status of the current fiber. " ++
         "The resulting stack trace from the current fiber will include " ++
@@ -542,16 +542,16 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     quickAsmDef(env, .{ .tag = constants.fun_debug }, "debug", 1, 0, 1, 1, &opOnly(constants.Opcode.signal.number() | @as(u32, 2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(debug [x])", "Throws a debug signal that can be caught by a parent fiber and used to inspect " ++
         "the running state of the current fiber. Returns the value passed in by resume.");
     quickAsmDef(env, .{ .tag = constants.fun_error }, "error", 1, 1, 1, 1, &opOnly(constants.Opcode.@"error"), "(error e)", "Throws an error e that can be caught and handled by a parent fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_yield }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield [x])", "Yield a value to a parent fiber. When a fiber yields, its execution is paused until " ++
+    quickAsmDef(env, .{ .tag = constants.fun_yield }, "yield", 1, 0, 1, 2, &opOnly(constants.Opcode.signal.number() | @as(u32, 3 << 24)) ++ opOnly(constants.Opcode.@"return"), "(yield [x])", "Yields a value to a parent fiber. When a fiber yields, its execution is paused until " ++
         "another thread resumes it. The fiber will then resume, and the last yield call will " ++
         "return the value that was passed to resume.");
-    quickAsmDef(env, .{ .tag = constants.fun_cancel }, "cancel", 2, 2, 2, 2, &opOnly(constants.Opcode.cancel.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cancel fiber err)", "Resume a fiber but have it immediately raise an error. This lets a programmer unwind a pending fiber. " ++
+    quickAsmDef(env, .{ .tag = constants.fun_cancel }, "cancel", 2, 2, 2, 2, &opOnly(constants.Opcode.cancel.number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(cancel fiber err)", "Resumes a fiber but has it immediately raise an error. This lets a programmer unwind a pending fiber. " ++
         "Returns the same result as resume.");
-    quickAsmDef(env, .{ .tag = constants.fun_resume }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber [x])", "Resume a new or suspended fiber and optionally pass in a value to the fiber that " ++
+    quickAsmDef(env, .{ .tag = constants.fun_resume }, "resume", 2, 1, 2, 2, &opOnly(constants.Opcode.@"resume".number() | @as(u32, 1 << 24)) ++ opOnly(constants.Opcode.@"return"), "(resume fiber [x])", "Resumes a new or suspended fiber and optionally passes in a value to the fiber that " ++
         "will be returned to the last yield in the case of a pending fiber, or the argument to " ++
         "the dispatch function in the case of a new fiber. Returns either the return result of " ++
         "the fiber's dispatch function, or the value from the next yield call in fiber.");
-    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])", "Get value in `x` at `key`. For bytes and indexed " ++
+    quickAsmDef(env, .{ .tag = constants.fun_in }, "in", 3, 2, 3, 4, &in_asm, "(in x key [dflt])", "Gets the value in `x` at `key`. For bytes and indexed " ++
         "types, `key` must be a non-negative interger in " ++
         "bounds or an error is raised. For dictionaries " ++
         "`key` must be a non-nil value and if not found, " ++
@@ -562,7 +562,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     // The slice below is `get_asm`'s own length. Upstream passes `in_asm`'s
     // here; the two arrays are the same length, so nothing observes the
     // difference.
-    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])", "Get the value mapped to `key` in `x`. Returns `dflt` " ++
+    quickAsmDef(env, .{ .tag = constants.fun_get }, "get", 3, 2, 3, 4, &get_asm, "(get x key [dflt])", "Gets the value mapped to `key` in `x`. Returns `dflt` " ++
         "or `nil` if `key` is not found. Similar to `in`, but " ++
         "will not throw an error if `key` is invalid for `x`. " ++
         "However, if `x` is an abstract type, its getter may " ++
@@ -570,7 +570,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "\n" ++
         "`x` can be a bytes, indexed, dictionary, fiber, or " ++
         "abstract type with a suitable `get` method.");
-    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)", "Associate `key` with `val` for mutable `x`. Arrays " ++
+    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)", "Associates `key` with `val` for mutable `x`. Arrays " ++
         "and buffers only accept non-negative integer keys, " ++
         "and will expand if an out of bounds value is " ++
         "provided. For an array, extra space will be filled " ++
@@ -587,16 +587,16 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     makeApply(env);
 
     // Variadic operators
-    templatizeVarop(env, .{ .tag = constants.fun_add }, "+", 0, 0, constants.Opcode.add, "(+ & xs)", "Returns the sum of all xs. If xs is empty, return 0.");
+    templatizeVarop(env, .{ .tag = constants.fun_add }, "+", 0, 0, constants.Opcode.add, "(+ & xs)", "Returns the sum of all xs. If xs is empty, returns 0.");
     templatizeVarop(env, .{ .tag = constants.fun_subtract }, "-", 0, 0, constants.Opcode.subtract, "(- & xs)", "Returns the difference of xs. If xs is empty, returns 0. If xs has one element, returns the " ++
         "negative value of that element. Otherwise, returns the first element in xs minus the sum of " ++
         "the rest of the elements.");
     templatizeVarop(env, .{ .tag = constants.fun_multiply }, "*", 1, 1, constants.Opcode.multiply, "(* & xs)", "Returns the product of all elements in xs. If xs is empty, returns 1.");
     templatizeVarop(env, .{ .tag = constants.fun_divide }, "/", 1, 1, constants.Opcode.divide, "(/ & xs)", "Returns the quotient of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
-        "the reciprocal of x. Otherwise return the first value of xs repeatedly divided by the remaining " ++
+        "the reciprocal of x. Otherwise returns the first value of xs repeatedly divided by the remaining " ++
         "values.");
     templatizeVarop(env, .{ .tag = constants.fun_divide_floor }, "div", 1, 1, constants.Opcode.divide_floor, "(div & xs)", "Returns the floored division of xs. If xs is empty, returns 1. If xs has one value x, returns " ++
-        "the reciprocal of x. Otherwise return the first value of xs repeatedly divided by the remaining " ++
+        "the reciprocal of x. Otherwise returns the first value of xs repeatedly divided by the remaining " ++
         "values.");
     templatizeVarop(env, .{ .tag = constants.fun_modulo }, "mod", 0, 1, constants.Opcode.modulo, "(mod & xs)", "Returns the result of applying the modulo operator on the first value of xs with each remaining value. " ++
         "`(mod x 0)` is defined to be `x`.");
@@ -613,12 +613,12 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "for positive shifts the return value will always be positive.");
 
     // Variadic comparators
-    templatizeComparator(env, .{ .tag = constants.fun_gt }, ">", false, constants.Opcode.greater_than, "(> & xs)", "Check if xs is in descending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_lt }, "<", false, constants.Opcode.less_than, "(< & xs)", "Check if xs is in ascending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_gte }, ">=", false, constants.Opcode.greater_than_equal, "(>= & xs)", "Check if xs is in non-ascending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_lte }, "<=", false, constants.Opcode.less_than_equal, "(<= & xs)", "Check if xs is in non-descending order. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_eq }, "=", false, constants.Opcode.equals, "(= & xs)", "Check if all values in xs are equal. Returns a boolean.");
-    templatizeComparator(env, .{ .tag = constants.fun_neq }, "not=", true, constants.Opcode.equals, "(not= & xs)", "Check if any values in xs are not equal. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_gt }, ">", false, constants.Opcode.greater_than, "(> & xs)", "Checks whether xs is in descending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_lt }, "<", false, constants.Opcode.less_than, "(< & xs)", "Checks whether xs is in ascending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_gte }, ">=", false, constants.Opcode.greater_than_equal, "(>= & xs)", "Checks whether xs is in non-ascending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_lte }, "<=", false, constants.Opcode.less_than_equal, "(<= & xs)", "Checks whether xs is in non-descending order. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_eq }, "=", false, constants.Opcode.equals, "(= & xs)", "Checks whether all values in xs are equal. Returns a boolean.");
+    templatizeComparator(env, .{ .tag = constants.fun_neq }, "not=", true, constants.Opcode.equals, "(not= & xs)", "Checks whether any values in xs are not equal. Returns a boolean.");
 
     // Platform detection
     registry.def(env, "wattle/version", value.fromBytes(version_z, .string), "The version number of the running Wattle program.");
@@ -1226,7 +1226,7 @@ inline fn isPathSep(ch: u8) bool {
 /// build has no code for.
 fn loadLibs(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("native", &nfunNative, @src(), "(native path [env])", "Load a native module from the given path. The path " ++
+        corefn.reg("native", &nfunNative, @src(), "(native path [env])", "Loads a native module from the given path. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
             "usually a .so file on Unix systems, and a .dll file on Windows. " ++
             "Returns an environment table that contains functions and other values " ++
@@ -1247,13 +1247,13 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("buffer", &Concat(finishBuffer).nfun, @src(), "(buffer & xs)", "Creates a buffer by concatenating the elements of `xs` together. If an " ++
             "element is not a byte sequence, it is converted to bytes via `describe`. " ++
             "Returns the new buffer."),
-        corefn.reg("abstract?", &nfunIsAbstract, @src(), "(abstract? x)", "Check if x is an abstract type."),
+        corefn.reg("abstract?", &nfunIsAbstract, @src(), "(abstract? x)", "Checks whether x is an abstract type."),
         corefn.reg("table", &nfunTable, @src(), "(table & kvs)", "Creates a new table from a variadic number of keys and values. " ++
             "kvs is a sequence k1, v1, k2, v2, k3, v3, ... If kvs has " ++
             "an odd number of elements, an error will be thrown. Returns the " ++
             "new table."),
-        corefn.reg("array", &nfunArray, @src(), "(array & items)", "Create a new array that contains items. Returns the new array."),
-        corefn.reg("scan-number", &nfunScanNumber, @src(), "(scan-number str [base])", "Parse a number from a byte sequence and return that number, either an integer " ++
+        corefn.reg("array", &nfunArray, @src(), "(array & items)", "Creates a new array that contains items. Returns the new array."),
+        corefn.reg("scan-number", &nfunScanNumber, @src(), "(scan-number str [base])", "Parses a number from a byte sequence and returns that number, either an integer " ++
             "or a real. The number " ++
             "must be in the same format as numbers in Wattle source code. Will return nil " ++
             "on an invalid number. Optionally provide a base - if a base is provided, no " ++
@@ -1262,8 +1262,8 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("gensym", &nfunGensym, @src(), "(gensym)", "Returns a new symbol that is unique across the runtime. This means it " ++
             "will not collide with any already created symbols during compilation, so " ++
             "it can be used in macros to generate automatic bindings."),
-        corefn.reg("gccollect", &nfunGccollect, @src(), "(gccollect)", "Run garbage collection. You should probably not call this manually."),
-        corefn.reg("gcsetinterval", &nfunGcsetinterval, @src(), "(gcsetinterval interval)", "Set an integer number of bytes to allocate before running garbage collection. " ++
+        corefn.reg("gccollect", &nfunGccollect, @src(), "(gccollect)", "Runs garbage collection. You should probably not call this manually."),
+        corefn.reg("gcsetinterval", &nfunGcsetinterval, @src(), "(gcsetinterval interval)", "Sets an integer number of bytes to allocate before running garbage collection. " ++
             "Low values for interval will be slower but use less memory. " ++
             "High values will be faster but use more memory."),
         corefn.reg("gcinterval", &nfunGcinterval, @src(), "(gcinterval)", "Returns the integer number of bytes to allocate before running an iteration " ++
@@ -1292,9 +1292,9 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "An optional environment table can be provided for auto-complete. " ++
             "Returns the modified buffer. " ++
             "Use this function to implement a simple interface for a terminal program."),
-        corefn.reg("dyn", &nfunDyn, @src(), "(dyn key [default])", "Get a dynamic binding. Returns the default value (or nil) if no binding found."),
-        corefn.reg("setdyn", &nfunSetdyn, @src(), "(setdyn key value)", "Set a dynamic binding. Returns value."),
-        corefn.reg("trace", &nfunTrace, @src(), "(trace func)", "Enable tracing on a function. Returns the function."),
+        corefn.reg("dyn", &nfunDyn, @src(), "(dyn key [default])", "Gets a dynamic binding. Returns the default value (or nil) if no binding found."),
+        corefn.reg("setdyn", &nfunSetdyn, @src(), "(setdyn key value)", "Sets a dynamic binding. Returns value."),
+        corefn.reg("trace", &nfunTrace, @src(), "(trace func)", "Enables tracing on a function. Returns the function."),
         corefn.reg("untrace", &nfunUntrace, @src(), "(untrace func)", "Disables tracing on a function. Returns the function."),
         corefn.reg("module/expand-path", &nfunExpandPath, @src(), "(module/expand-path path template)", "Expands a path template as found in `module/paths` for `module/find`. " ++
             "This takes in a path (the argument to require) and a template string, " ++
@@ -1309,17 +1309,17 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :name: -- the name component of path, with extension if given\n\n" ++
             "* :native: -- the extension used to load natives, .so or .dll\n\n" ++
             "* :sys: -- the system path, or (dyn :syspath)"),
-        corefn.reg("int?", &nfunCheckInt, @src(), "(int? x)", "Check if x can be exactly represented as a 32 bit signed two's complement integer."),
-        corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? x)", "Check if x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
-        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Check if x is a string, symbol, keyword, or buffer."),
-        corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Check if x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
-        corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Check if x is a table, a struct, or an abstract type that implements the dictionary protocol."),
-        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? x)", "Check if x is a bytes, indexed, or dictionary."),
-        corefn.reg("slice", &nfunSlice, @src(), "(slice x [start [end]])", "Extract a sub-range of an indexed data structure or byte sequence."),
-        corefn.reg("range", &nfunRange, @src(), "(range & args)", "Create an array of values [start, end) with a given step. " ++
+        corefn.reg("int?", &nfunCheckInt, @src(), "(int? x)", "Checks whether x can be exactly represented as a 32 bit signed two's complement integer."),
+        corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? x)", "Checks whether x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
+        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Checks whether x is a string, symbol, keyword, or buffer."),
+        corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Checks whether x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
+        corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Checks whether x is a table, a struct, or an abstract type that implements the dictionary protocol."),
+        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? x)", "Checks whether x is a bytes, indexed, or dictionary."),
+        corefn.reg("slice", &nfunSlice, @src(), "(slice x [start [end]])", "Extracts a sub-range of an indexed data structure or byte sequence."),
+        corefn.reg("range", &nfunRange, @src(), "(range & args)", "Creates an array of values [start, end) with a given step. " ++
             "With one argument, returns a range [0, end). With two arguments, returns " ++
             "a range [start, end). With three, returns a range with optional step size."),
-        corefn.reg("signal", &nfunSignal, @src(), "(signal what x)", "Raise a signal with payload x. `what` can be an integer\n" ++
+        corefn.reg("signal", &nfunSignal, @src(), "(signal what x)", "Raises a signal with payload x. `what` can be an integer\n" ++
             "from 0 through 7 indicating user(0-7), or one of:\n\n" ++
             "* :ok\n" ++
             "* :error\n" ++
@@ -1328,12 +1328,12 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :user(0-7)\n" ++
             "* :interrupt\n" ++
             "* :await"),
-        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b [len [offset-a [offset-b]]])", "Compare memory. Takes two byte sequences `a` and `b`, and " ++
-            "return 0 if they have identical contents, a negative integer if a is less than b, " ++
-            "and a positive integer if a is greater than b. Optionally take a length and offsets " ++
+        corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b [len [offset-a [offset-b]]])", "Compares memory. Takes two byte sequences `a` and `b`, and " ++
+            "returns 0 if they have identical contents, a negative integer if a is less than b, " ++
+            "and a positive integer if a is greater than b. Optionally takes a length and offsets " ++
             "to compare slices of the bytes sequences."),
-        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Get the prototype of a table or struct. Will return nil if `x` has no prototype."),
-        corefn.reg("sandbox", &nfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disable feature sets to prevent the interpreter from using certain system resources. " ++
+        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Gets the prototype of a table or struct. Will return nil if `x` has no prototype."),
+        corefn.reg("sandbox", &nfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disables feature sets to prevent the interpreter from using certain system resources. " ++
             "Once a feature is disabled, there is no way to re-enable it. Capabilities can be:\n\n" ++
             "* :all - disallow all (except IO to stdout, stderr, and stdin)\n" ++
             "* :asm - disallow calling `asm` and `disasm` functions.\n" ++

@@ -216,16 +216,16 @@ pub fn libParse(env: *tables.Table) void {
         corefn.reg("parser/clone", &nfunParserClone, @src(), "(parser/clone p)", "Creates a deep clone of a parser that is identical to the input parser. " ++
             "This cloned parser can be used to continue parsing from a good checkpoint " ++
             "if parsing later fails. Returns a new parser."),
-        corefn.reg("parser/has-more", &nfunParserHasMore, @src(), "(parser/has-more parser)", "Check if the parser has more values in the value queue."),
-        corefn.reg("parser/produce", &nfunParserProduce, @src(), "(parser/produce parser [wrap])", "Dequeue the next value in the parse queue. Will return nil if " ++
+        corefn.reg("parser/has-more", &nfunParserHasMore, @src(), "(parser/has-more parser)", "Checks whether the parser has more values in the value queue."),
+        corefn.reg("parser/produce", &nfunParserProduce, @src(), "(parser/produce parser [wrap])", "Dequeues the next value in the parse queue. Will return nil if " ++
             "no parsed values are in the queue, otherwise will dequeue the " ++
             "next value. If `wrap` is truthy, will return a 1-element tuple that " ++
             "wraps the result. This tuple can be used for source-mapping " ++
             "purposes."),
-        corefn.reg("parser/consume", &nfunParserConsume, @src(), "(parser/consume parser bytes [index])", "Input bytes into the parser and parse them. Will not throw errors " ++
+        corefn.reg("parser/consume", &nfunParserConsume, @src(), "(parser/consume parser bytes [index])", "Inputs bytes into the parser and parses them. Will not throw errors " ++
             "if there is a parse error. Starts at the byte index given by `index`. Returns " ++
             "the number of bytes read."),
-        corefn.reg("parser/byte", &nfunParserByte, @src(), "(parser/byte parser b)", "Input a single byte `b` into the parser byte stream. Returns the parser."),
+        corefn.reg("parser/byte", &nfunParserByte, @src(), "(parser/byte parser b)", "Inputs a single byte `b` into the parser byte stream. Returns the parser."),
         corefn.reg("parser/error", &nfunParserError, @src(), "(parser/error parser)", "If the parser is in the error state, returns the message associated with " ++
             "that error. Otherwise, returns nil. Also flushes the parser state and parser " ++
             "queue, so be sure to handle everything in the queue before calling " ++
@@ -249,8 +249,8 @@ pub fn libParse(env: *tables.Table) void {
         corefn.reg("parser/where", &nfunParserWhere, @src(), "(parser/where parser [line [col]])", "Returns the current line number and column of the parser's internal state. If line is " ++
             "provided, the current line number of the parser is first set to that value. If column is " ++
             "also provided, the current column number of the parser is also first set to that value."),
-        corefn.reg("parser/eof", &nfunParserEof, @src(), "(parser/eof parser)", "Indicate to the parser that the end of file was reached. This puts the parser in the :dead state."),
-        corefn.reg("parser/insert", &nfunParserInsert, @src(), "(parser/insert parser value)", "Insert a value into the parser. This means that the parser state can be manipulated " ++
+        corefn.reg("parser/eof", &nfunParserEof, @src(), "(parser/eof parser)", "Indicates to the parser that the end of file was reached. This puts the parser in the :dead state."),
+        corefn.reg("parser/insert", &nfunParserInsert, @src(), "(parser/insert parser value)", "Inserts a value into the parser. This means that the parser state can be manipulated " ++
             "in between chunks of bytes. This would allow a user to add extra elements to arrays " ++
             "and tuples, for example. Returns the parser."),
     };

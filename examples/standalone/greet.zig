@@ -54,7 +54,7 @@ fn hello(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// This function cannot raise.
 fn defs(env: *wattle.Env) wattle.Error!void {
     wattle.nfuns(env, "standalone", &.{
-        wattle.reg("hello", &hello, "(standalone/hello)", "Answer a greeting."),
+        wattle.reg("hello", &hello, "(standalone/hello)", "Returns a greeting."),
     });
 }
 

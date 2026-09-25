@@ -336,29 +336,29 @@ pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
 pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("fiber/new", &nfunFiberNew, @src(), "(fiber/new func [sigmask [env]])",
-            \\Create a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these "blocked" signals will result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
+            \\Creates a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these "blocked" signals result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
             \\
             \\    (fiber/new myfun :e123)
             \\
             \\blocks error signals and user signals 1, 2 and 3. The signals are as follows:
             \\
-            \\* :a - block all signals
-            \\* :d - block debug signals
-            \\* :e - block error signals
-            \\* :t - block termination signals: error + user[0-4]
-            \\* :u - block user signals
-            \\* :y - block yield signals
-            \\* :w - block await signals (user9)
-            \\* :r - block interrupt signals (user8)
-            \\* :0-9 - block a specific user signal
+            \\* :a - blocks all signals
+            \\* :d - blocks debug signals
+            \\* :e - blocks error signals
+            \\* :t - blocks termination signals: error + user[0-4]
+            \\* :u - blocks user signals
+            \\* :y - blocks yield signals
+            \\* :w - blocks await signals (user9)
+            \\* :r - blocks interrupt signals (user8)
+            \\* :0-9 - blocks a specific user signal
             \\
             \\The sigmask argument also can take environment flags. If any mutually exclusive flags are present, the last flag takes precedence.
             \\
-            \\* :i - inherit the environment from the current fiber
+            \\* :i - inherits the environment from the current fiber
             \\* :p - the environment table's prototype is the current environment table
         ),
         corefn.reg("fiber/status", &nfunFiberStatus, @src(), "(fiber/status fib)",
-            \\Get the status of a fiber. The status will be one of:
+            \\Gets the status of a fiber. The status is one of:
             \\
             \\* :dead - the fiber has finished
             \\* :error - the fiber has errored out
@@ -375,16 +375,16 @@ pub fn lib(env: *tables.Table) raise.Error!void {
             "is also a task fiber."),
         corefn.reg("fiber/current", &nfunFiberCurrent, @src(), "(fiber/current)", "Returns the currently running fiber."),
         corefn.reg("fiber/maxstack", &nfunFiberMaxstack, @src(), "(fiber/maxstack fib)", "Gets the maximum stack size in Wattle values allowed for a fiber. While memory for " ++
-            "the fiber's stack is not allocated up front, the fiber will not allocated more " ++
-            "than this amount and will throw a stack-overflow error if more memory is needed. "),
+            "the fiber's stack is not allocated up front, the fiber does not allocate more " ++
+            "than this amount and throws a stack-overflow error if more memory is needed. "),
         corefn.reg("fiber/setmaxstack", &nfunFiberSetmaxstack, @src(), "(fiber/setmaxstack fib maxstack)", "Sets the maximum stack size in Wattle values for a fiber. By default, the " ++
             "maximum stack size is usually 8192."),
         corefn.reg("fiber/getenv", &nfunFiberGetenv, @src(), "(fiber/getenv fiber)", "Gets the environment for a fiber. Returns nil if no such table is " ++
             "set yet."),
-        corefn.reg("fiber/setenv", &nfunFiberSetenv, @src(), "(fiber/setenv fiber table)", "Sets the environment table for a fiber. Set to nil to remove the current " ++
+        corefn.reg("fiber/setenv", &nfunFiberSetenv, @src(), "(fiber/setenv fiber table)", "Sets the environment table for a fiber. Setting it to nil removes the current " ++
             "environment."),
-        corefn.reg("fiber/can-resume?", &nfunFiberCanResume, @src(), "(fiber/can-resume? fiber)", "Check if a fiber is finished and cannot be resumed."),
-        corefn.reg("fiber/last-value", &nfunFiberLastValue, @src(), "(fiber/last-value fiber)", "Get the last value returned or signaled from the fiber."),
+        corefn.reg("fiber/can-resume?", &nfunFiberCanResume, @src(), "(fiber/can-resume? fiber)", "Checks whether a fiber is finished and cannot be resumed."),
+        corefn.reg("fiber/last-value", &nfunFiberLastValue, @src(), "(fiber/last-value fiber)", "Gets the last value returned or signaled from the fiber."),
     };
     corefn.install(env, entries);
 }

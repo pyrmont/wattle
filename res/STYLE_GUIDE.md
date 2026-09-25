@@ -97,6 +97,21 @@ a `*Loop` and `post` takes a `*Loop`", never "`loop` returns one and `post`
 takes one": a reader should not have to recover what "one" refers to. The
 same holds for any noun: "the later entry runs", never "the later one runs".
 
+## Wattle docstrings
+
+**A Wattle docstring is in the indicative mood.** It applies to the docstrings
+in `src/boot/boot.wattle` and to the docstring argument of `corefn.reg`,
+`module.reg` and the other registration helpers. The first sentence is present
+tense, third person, verb first: "Defines a function.", "Checks whether `x` is
+empty.", "Returns the current fiber." A sentence that describes behaviour is
+indicative throughout: "Returns nil if `key` is absent", never "Return nil if
+`key` is absent". A binding that is a value rather than a function gets a noun
+phrase: "Bound to an array of lint messages."
+
+The rest of the `///` rules apply to a docstring unchanged, including the ban
+on personification and the plain vocabulary. Signatures are not part of the
+docstring; they are stored under `:sigs`.
+
 ## The `//!` header
 
 **The `//!` header** says what the file is in one sentence, how it is

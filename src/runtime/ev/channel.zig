@@ -185,13 +185,13 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/give", &nfunGive, @src(), "(ev/give channel value)", "Write a value to a channel, suspending the current fiber if the channel is full. " ++
+            corefn.reg("ev/give", &nfunGive, @src(), "(ev/give channel value)", "Writes a value to a channel, suspending the current fiber if the channel is full. " ++
                 "Returns the channel if the write succeeded, nil otherwise."),
-            corefn.reg("ev/take", &nfunTake, @src(), "(ev/take channel)", "Read from a channel, suspending the current fiber if no value is available."),
-            corefn.reg("ev/full", &nfunFull, @src(), "(ev/full channel)", "Check if a channel is full or not."),
-            corefn.reg("ev/capacity", &nfunCapacity, @src(), "(ev/capacity channel)", "Get the number of items a channel will store before blocking writers."),
-            corefn.reg("ev/count", &nfunCount, @src(), "(ev/count channel)", "Get the number of items currently waiting in a channel."),
-            corefn.reg("ev/select", &nfunChoice, @src(), "(ev/select & clauses)", "Block until the first of several channel operations occur. Returns a " ++
+            corefn.reg("ev/take", &nfunTake, @src(), "(ev/take channel)", "Reads from a channel, suspending the current fiber if no value is available."),
+            corefn.reg("ev/full", &nfunFull, @src(), "(ev/full channel)", "Checks whether a channel is full."),
+            corefn.reg("ev/capacity", &nfunCapacity, @src(), "(ev/capacity channel)", "Gets the number of items a channel will store before blocking writers."),
+            corefn.reg("ev/count", &nfunCount, @src(), "(ev/count channel)", "Gets the number of items currently waiting in a channel."),
+            corefn.reg("ev/select", &nfunChoice, @src(), "(ev/select & clauses)", "Blocks until the first of several channel operations occur. Returns a " ++
                 "tuple of the form [:give chan], [:take chan x], or [:close chan], " ++
                 "where a :give tuple is the result of a write and a :take tuple is the " ++
                 "result of a read. Each clause must be either a channel (for a channel " ++
@@ -202,11 +202,11 @@ pub fn entries() []const corefn.Entry {
                 "channel was closed while waiting, or that the channel was already " ++
                 "closed."),
             corefn.reg("ev/rselect", &nfunRchoice, @src(), "(ev/rselect & clauses)", "Similar to ev/select, but will try clauses in a random order for fairness."),
-            corefn.reg("ev/chan", &nfunNew, @src(), "(ev/chan [capacity])", "Create a new channel. capacity is the number of values to queue before " ++
+            corefn.reg("ev/chan", &nfunNew, @src(), "(ev/chan [capacity])", "Creates a new channel. capacity is the number of values to queue before " ++
                 "blocking writers, defaults to 0 if not provided. Returns a new channel."),
-            corefn.reg("ev/thread-chan", &nfunNewThreaded, @src(), "(ev/thread-chan [limit])", "Create a threaded channel. A threaded channel is a channel that can be shared between threads and " ++
+            corefn.reg("ev/thread-chan", &nfunNewThreaded, @src(), "(ev/thread-chan [limit])", "Creates a threaded channel. A threaded channel is a channel that can be shared between threads and " ++
                 "used to communicate between any number of operating system threads."),
-            corefn.reg("ev/chan-close", &nfunClose, @src(), "(ev/chan-close chan)", "Close a channel. A closed channel will cause all pending reads and writes to return nil. " ++
+            corefn.reg("ev/chan-close", &nfunClose, @src(), "(ev/chan-close chan)", "Closes a channel. A closed channel will cause all pending reads and writes to return nil. " ++
                 "Returns the channel."),
         };
         break :blk acc;
