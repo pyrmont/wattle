@@ -98,15 +98,15 @@
   `(var ~name :private ~|more))
 
 (defmacro toggle
-  "Sets a value to its boolean inverse. Same as `(set value (not value))`."
-  [value]
-  `(set ~value (~not ~value)))
+  "Sets a value to its boolean inverse. Same as `(set val (not val))`."
+  [val]
+  `(set ~val (~not ~val)))
 
 (defn defglobal
   "Dynamically creates a global def."
-  [name value]
+  [name val]
   (def name* (symbol name))
-  (setdyn name* !{:value value})
+  (setdyn name* !{:value val})
   nil)
 
 (defn varglobal
@@ -136,7 +136,7 @@
 (defn true? "Checks whether x is true." [x] (= x true))
 (defn false? "Checks whether x is false." [x] (= x false))
 (defn nil? "Checks whether x is nil." [x] (= x nil))
-(defn empty? "Checks whether an iterable, iter, is empty." [iter] (= nil (next iter nil)))
+(defn empty? "Checks whether coll, an iterable, is empty." [coll] (= nil (next coll nil)))
 
 ; For macros, we define an incomplete odd? function that will be overridden.
 (defn odd? [x] (= 1 (mod x 2)))
@@ -232,7 +232,7 @@
   nil)
 
 (defn errorf
-  "A combination of ^error and ^string/format. Equivalent to `(error (string/format fmt ;args))`."
+  "A combination of ^error and ^string/format. Equivalent to `(error (string/format fmt |args))`."
   [fmt & args]
   (error (string/format fmt |args)))
 
@@ -259,20 +259,20 @@
   [&])
 
 (defmacro if-not
-  "Shorthand for `(if (not condition) else then)`."
-  ([condition then] (def self if-not) (self condition then nil))
-  ([condition then else]
-  `(if ~condition ~else ~then)))
+  "Shorthand for `(if (not test) then else)`."
+  ([test then] (def self if-not) (self test then nil))
+  ([test then else]
+  `(if ~test ~else ~then)))
 
 (defmacro when
-  "Evaluates the body when the condition is true. Otherwise returns nil."
-  [condition & body]
-  `(if ~condition (do ~|body)))
+  "Evaluates the body when test is truthy. Otherwise returns nil."
+  [test & body]
+  `(if ~test (do ~|body)))
 
 (defmacro unless
-  "Shorthand for `(when (not condition) ;body)`. "
-  [condition & body]
-  `(if ~condition nil (do ~|body)))
+  "Shorthand for `(when (not test) |body)`."
+  [test & body]
+  `(if ~test nil (do ~|body)))
 
 (defmacro cond
   """
@@ -281,31 +281,31 @@
   odd number of forms, and no forms are matched, the last expression
   is executed. If there are no matches, returns nil.
   """
-  [& pairs]
+  [& clauses]
   (defn aux [i]
-    (def restlen (- (length pairs) i))
+    (def restlen (- (length clauses) i))
     (if (= restlen 0) nil
-      (if (= restlen 1) (in pairs i)
-        (tuple 'if (in pairs i)
-               (in pairs (+ i 1))
+      (if (= restlen 1) (in clauses i)
+        (tuple 'if (in clauses i)
+               (in clauses (+ i 1))
                (aux (+ i 2))))))
   (aux 0))
 
 (defmacro case
   """
-  Selects the body that equals the dispatch value. When pairs
+  Selects the body that equals the dispatch value. When clauses
   has an odd number of elements, the last is the default expression.
   If no match is found, returns nil.
   """
-  [dispatch & pairs]
+  [dispatch & clauses]
   (def atm (idempotent? dispatch))
   (def sym (if atm dispatch (gensym)))
   (defn aux [i]
-    (def restlen (- (length pairs) i))
+    (def restlen (- (length clauses) i))
     (if (= restlen 0) nil
-      (if (= restlen 1) (in pairs i)
-        (tuple 'if (tuple = sym (in pairs i))
-               (in pairs (+ i 1))
+      (if (= restlen 1) (in clauses i)
+        (tuple 'if (tuple = sym (in clauses i))
+               (in clauses (+ i 1))
                (aux (+ i 2))))))
   (if atm
     (aux 0)
@@ -316,7 +316,7 @@
 (defmacro let
   """
   Creates a scope and binds values to symbols. Each pair in bindings is
-  assigned as if with `def`, and the body of the ^let form returns the last
+  assigned as if with def, and the body of the ^let form returns the last
   value.
   """
   [bindings & body]
@@ -345,8 +345,8 @@
 
 (defmacro and
   """
-  Evaluates to the last argument if all preceding elements are truthy, otherwise
-  evaluates to the first falsey argument.
+  Evaluates to the last argument if all preceding arguments are truthy,
+  otherwise evaluates to the first falsey argument.
   """
   [& forms]
   (var ret true)
@@ -365,8 +365,8 @@
 
 (defmacro or
   """
-  Evaluates to the last argument if all preceding elements are falsey, otherwise
-  evaluates to the first truthy element.
+  Evaluates to the last argument if all preceding arguments are falsey,
+  otherwise evaluates to the first truthy element.
   """
   [& forms]
   (def len (length forms))
@@ -385,11 +385,10 @@
 
 (defmacro try
   """
-  Tries something and catches errors. body is any expression,
-  and catch should be a form, the first element of which is a tuple. This tuple
-  should contain a binding for errors and an optional binding for
-  the fiber wrapping the body. Returns the result of body if no error,
-  or the result of catch if an error.
+  Tries something and catches errors. body is any expression, and catch should
+  be a form, the first element of which is a vector. This tuple should contain
+  a binding for errors and an optional binding for the fiber wrapping the body.
+  Returns the result of body if no error, or the result of catch if an error.
   """
   [body catch]
   (assert (and (not (empty? catch)) (indexed? (catch 0))) "the first element of `catch` must be a tuple or array")
@@ -417,7 +416,7 @@
   `(let (~|accum) ~|body))
 
 (defn- defer-impl
-  "Defers but allows custom name for stack traces"
+  "Defers but allows custom name for stack traces."
   [name form body]
   (with-syms [f r]
     `(do
@@ -430,16 +429,16 @@
 
 (defmacro defer
   """
-  Runs form unconditionally after body, even if the body throws an error.
-  Also runs form if a user signal 0-4 is received.
+  Runs form unconditionally after body, even if body throws an error. Also runs
+  form if a user signal 0-4 is received.
   """
   [form & body]
   (defer-impl :defer form body))
 
 (defmacro edefer
   """
-  Runs form after body in the case that body terminates abnormally (an error or user signal 0-4).
-  Otherwise, returns last form in body.
+  Runs form after body in the case that body terminates abnormally (an error or
+  user signal 0-4). Otherwise, returns last form in body.
   """
   [form & body]
   (with-syms [f r]
@@ -452,8 +451,8 @@
 
 (defmacro prompt
   """
-  Sets up a checkpoint that can be returned to. tag should be a value
-  that is used in a ^return statement, like a keyword.
+  Sets up a checkpoint that can be returned to. tag should be a value that is
+  used in a ^return statement, like a keyword.
   """
   [tag & body]
   (with-syms [res target payload fib]
@@ -474,8 +473,8 @@
 
 (defmacro label
   """
-  Sets a label point that is lexically scoped. name should be a symbol
-  that will be bound to the label.
+  Sets a label point that is lexically scoped. name should be a symbol that
+  will be bound to the label.
   """
   [name & body]
   `(do
@@ -485,15 +484,15 @@
 (defn return
   "Returns to a prompt point."
   ([to] (return to nil))
-  ([to value]
-  (signal 0 [to value])))
+  ([to val]
+  (signal 0 [to val])))
 
 (defmacro with
   """
-  Evaluates body with some resource, which will be automatically cleaned up
-  if there is an error in body. binding is bound to the expression ctor, and
-  dtor is a function or callable that is passed the binding. If no destructor
-  (dtor) is given, will call :close on the resource.
+  Evaluates body with some resource, which will be automatically cleaned up if
+  there is an error in body. binding is bound to the expression ctor, and dtor
+  is a function or callable that is called with binding at the end of
+  evaluation. If no dtor is given, `(:close binding)` is called instead.
   """
   [[binding ctor dtor] & body]
   `(do
@@ -505,33 +504,33 @@
 
 (defmacro if-let
   """
-  Makes multiple bindings, and if all are truthy,
-  evaluates the tru form. If any are false or nil, evaluates
-  the fal form. Bindings have the same syntax as the ^let macro.
+  Makes multiple bindings, and if all are truthy, evaluates the then form. If
+  any are false or nil, evaluates the else form. Bindings have the same syntax
+  as ^let.
   """
-  ([bindings tru] (def self if-let) (self bindings tru nil))
-  ([bindings tru fal]
+  ([bindings then] (def self if-let) (self bindings then nil))
+  ([bindings then else]
   (def len (length bindings))
   (if (= 0 len) (error "expected at least 1 binding"))
   (if (odd? len) (error "expected an even number of bindings"))
-  (def fal2 (if macexvar (macexvar fal) fal))
+  (def else2 (if macexvar (macexvar else) else))
   (defn aux [i]
     (if (>= i len)
-      tru
+      then
       (do
         (def bl (in bindings i))
         (def br (in bindings (+ 1 i)))
         (if (symbol? bl)
-          `(if (def ~bl ~br) ~(aux (+ 2 i)) ~fal2)
+          `(if (def ~bl ~br) ~(aux (+ 2 i)) ~else2)
           `(if (def ~(def sym (gensym)) ~br)
              (do (def ~bl ~sym) ~(aux (+ 2 i)))
-             ~fal2)))))
+             ~else2)))))
   (aux 0)))
 
 (defmacro when-with
   """
-  Similar to with, but if binding is false or nil, returns
-  nil without evaluating the body. Otherwise, the same as ^with.
+  Similar to ^with, but if binding is false or nil, returns nil without
+  evaluating the body. Otherwise, the same as ^with.
   """
   [[binding ctor dtor] & body]
   `(as-macro ~if-let [~binding ~ctor]
@@ -539,15 +538,15 @@
 
 (defmacro if-with
   """
-  Similar to ^with, but if binding is false or nil, evaluates
-  the falsey path. Otherwise, evaluates the truthy path. In both cases,
-  ctor is bound to binding.
+  Similar to ^with, but if binding is false or nil, evaluates the else form.
+  Otherwise, evaluates the then form. In both cases, ctor is bound to
+  binding.
   """
-  ([__wattle_arg_0 truthy] (def self if-with) (self __wattle_arg_0 truthy nil))
-  ([[binding ctor dtor] truthy falsey]
-  `(as-macro ~if-let [~binding ~ctor]
-     ~(defer-impl :if-with (tuple (or dtor :close) binding) [truthy])
-     ~falsey)))
+  ([head then] (if-with head then nil))
+  ([[binding ctor dtor] then else]
+    `(as-macro ~if-let [~binding ~ctor]
+       ~(defer-impl :if-with (tuple (or dtor :close) binding) [then])
+       ~else)))
 
 (defn- for-var-template
   [i start stop step comparison delta body]
@@ -614,14 +613,11 @@
 
 (defn- loop1
   [body head i]
-
   ; Terminate recursion
   (when (<= (length head) i)
     (break `(do ~|body)))
-
   (def {binding i
         verb (+ i 1)} head)
-
   ; 2 term expression
   (when (keyword? binding)
     (break
@@ -637,7 +633,6 @@
           :when `(as-macro ~when ~verb ~rest)
           :unless `(as-macro ~unless ~verb ~rest)
           (error (string "unexpected loop modifier " binding))))))
-
   ; 3 term expression
   (def {object (+ i 2)} head)
   (let [rest (loop1 body head (+ i 3))]
@@ -654,42 +649,49 @@
 
 (defmacro forv
   """
-  Does a C-style for-loop for side effects. The iteration variable i
-  can be mutated in the loop, unlike normal ^for. Returns nil.
+  Repeats body in a C-style for-loop. This is useful for side effects. The
+  iteration variable i can be mutated in the loop, unlike normal ^for. Returns
+  nil.
   """
   [i start stop & body]
   (for-var-template i start stop 1 < + body))
 
 (defmacro for
-  "Does a C-style for-loop for side effects. Returns nil."
+  """
+  Repeats body in a C-style for-loop. This is useful for side effects. Returns
+  nil.
+  """
   [i start stop & body]
   (for-template i start stop 1 < + body))
 
 (defmacro eachk
-  "Loops over each key in ds. Returns nil."
-  [x ds & body]
-  (each-template x ds :keys body))
+  "Loops over each key in coll, an iterable. Returns nil."
+  [binding coll & body]
+  (each-template binding coll :keys body))
 
 (defmacro eachp
-  "Loops over each (key, value) pair in ds. Returns nil."
-  [x ds & body]
-  (each-template x ds :pairs body))
+  "Loops over each `[key value]` pair in coll, an iterable. Returns nil."
+  [binding coll & body]
+  (each-template binding coll :pairs body))
 
 (defmacro repeat
-  "Evaluates body n times. If n is negative, body will be evaluated 0 times. Evaluates to nil."
+  """
+  Evaluates body n times. If n is negative, body will be evaluated 0 times.
+  Evaluates to nil.
+  """
   [n & body]
   (with-syms [iter]
     `(do (var ~iter ~n) (while (~> ~iter 0) ~|body (as-macro ~-- ~iter)))))
 
 (defmacro forever
-  "Evaluates body forever in a loop, or until a break statement."
+  "Evaluates body forever in a loop, or until a break call."
   [& body]
   `(while true ~|body))
 
 (defmacro each
-  "Loops over each value in ds. Returns nil."
-  [x ds & body]
-  (each-template x ds :each body))
+  "Loops over each value in coll, an iterable. Returns nil."
+  [binding coll & body]
+  (each-template binding coll :each body))
 
 (defn- check-empty-body
   [body]
@@ -698,81 +700,81 @@
 
 (defmacro loop
   """
-  A general purpose loop macro. This macro is similar to the Common Lisp loop
-  macro, although intentionally much smaller in scope.  The head of the loop
+  Runs body a number of times. This macro is similar to the Common Lisp loop
+  macro, although intentionally much smaller in scope. The head of the loop
   should be a tuple that contains a sequence of either bindings or
   conditionals. A binding is a sequence of three values that define something
   to loop over. Bindings are written in the format:
 
       binding :verb object/expression
 
-  where `binding` is a binding as passed to def, `:verb` is one of a set of
-  keywords, and `object` is any expression. Each subsequent binding creates a
+  where binding is a binding as passed to def, :verb is one of a set of
+  keywords, and object is any expression. Each subsequent binding creates a
   nested loop within the loop created by the previous binding.
 
   The available verbs are:
 
-  * `:iterate` -- repeatedly evaluate and bind to the expression while it is
+  * :iterate -- repeatedly evaluate and bind to the expression while it is
     truthy.
 
-  * `:range` -- loop over a range. The object should be a two-element tuple with
+  * :range -- loop over a range. The object should be a two-element tuple with
     a start and end value, and an optional positive step. The range is half
     open, [start, end).
 
-  * `:range-to` -- same as :range, but the range is inclusive [start, end].
+  * :range-to -- same as :range, but the range is inclusive [start, end].
 
-  * `:down` -- loop over a range, stepping downwards. The object should be a
-    two-element tuple with a start and (exclusive) end value, and an optional
-    (positive!) step size.
+  * :down -- loop over a range, stepping downwards. The object should be a
+    two-element tuple with a start and end value, and an optional
+    (positive!) step. The range is half open, [start, end).
 
-  * `:down-to` -- same as :down, but the range is inclusive [start, end].
+  * :down-to -- same as :down, but the range is inclusive [start, end].
 
-  * `:keys` -- iterate over the keys in a data structure.
+  * :keys -- iterate over the keys in a data structure.
 
-  * `:pairs` -- iterate over the key-value pairs as tuples in a data structure.
+  * :pairs -- iterate over the key-value pairs as tuples in a data structure.
 
-  * `:in` -- iterate over the values in a data structure or fiber.
+  * :in -- iterate over the values in a data structure or fiber.
 
   ^loop also accepts conditionals to refine the looping further. Conditionals are of
   the form:
 
       :modifier argument
 
-  where `:modifier` is one of a set of keywords, and `argument` is keyword-dependent.
-  `:modifier` can be one of:
+  where :modifier is one of a set of keywords, and argument is keyword-dependent.
+  :modifier can be one of:
 
-  * `:while expression` -- breaks from the current loop if `expression` is
+  * :while expression -- breaks from the current loop if expression is
     falsey.
 
-  * `:until expression` -- breaks from the current loop if `expression` is
+  * :until expression -- breaks from the current loop if expression is
     truthy.
 
-  * `:let bindings` -- defines bindings inside the current loop as passed to the
+  * :let bindings -- defines bindings inside the current loop as passed to the
     ^let macro.
 
-  * `:before form` -- evaluates a form for a side effect before the next inner
+  * :before form -- evaluates a form for a side effect before the next inner
     loop.
 
-  * `:after form` -- same as `:before`, but the side effect happens after the
+  * :after form -- same as :before, but the side effect happens after the
     next inner loop.
 
-  * `:repeat n` -- repeats the next inner loop `n` times.
+  * :repeat n -- repeats the next inner loop n times.
 
-  * `:when condition` -- only evaluates the current loop body when `condition`
+  * :when condition -- only evaluates the current loop body when condition
     is truthy.
 
-  * `:unless condition` -- only evaluates the current loop body when `condition`
+  * :unless condition -- only evaluates the current loop body when condition
     is falsey.
 
-  The ^loop macro always evaluates to nil.
+  The loop macro always evaluates to nil.
   """
   [head & body]
   (loop1 body head 0))
 
 (defmacro seq
   """
-  Similar to ^loop, but accumulates the loop body into an array and returns that.
-  See ^loop for details.
+  Accomulates body into an array and returns that. It is similar to ^loop. See
+  it for details.
   """
   [head & body]
   (def $accum (gensym))
@@ -781,8 +783,8 @@
 
 (defmacro catseq
   """
-  Similar to ^loop, but concatenates each element from the loop body into an array and returns that.
-  See ^loop for details.
+  Concatenates each element from the loop body into an array and returns that.
+  It is similar to ^loop. See it for details.
   """
   [head & body]
   (def $accum (gensym))
@@ -791,8 +793,8 @@
 
 (defmacro tabseq
   """
-  Similar to ^loop, but accumulates key value pairs into a table.
-  See ^loop for details.
+  Accumulates key-value pairs into a table. It is similar to ^loop. See it for
+  details.
   """
   [head key-body & value-body]
   (def $accum (gensym))
@@ -800,69 +802,77 @@
 
 (defmacro generate
   """
-  Creates a generator expression using the ^loop syntax. Returns a fiber
-  that yields all values inside the loop in order. See ^loop for details.
+  Creates a generator expression using the ^loop syntax. Returns a fiber that
+  yields all values inside the loop in order. See ^loop for details.
   """
   [head & body]
   (check-empty-body body)
   `(~fiber/new (fn :generate [] (as-macro ~loop ~head (~yield (do ~|body)))) :yi))
 
 (defmacro coro
-  "A wrapper for making fibers that may yield multiple values (coroutine). Same as `(fiber/new (fn [] ;body) :yi)`."
+  """
+  Returns a fiber that wraps body. Same as `(fiber/new (fn [] |body) :yi)`.
+  """
   [& body]
   (tuple fiber/new (tuple 'fn :coro '[] |body) :yi))
 
 (defmacro fiber-fn
-  "A wrapper for making fibers. Same as `(fiber/new (fn [] ;body) flags)`."
+  """
+  Returns a fiber with flags that wraps body. Same as `(fiber/new (fn []
+  |body) flags)`.
+  """
   [flags & body]
   (tuple fiber/new (tuple 'fn :fiber-fn '[] |body) flags))
 
 (defn sum
-  "Returns the sum of xs. If xs is empty, returns 0."
-  [xs]
+  "Returns the sum of the values in coll, an iterable. If coll is empty, returns 0."
+  [coll]
   (var accum 0)
-  (each x xs (+= accum x))
+  (each x coll (+= accum x))
   accum)
 
 (defn mean
-  "Returns the mean of xs. If empty, returns NaN."
-  [xs]
-  (if (lengthable? xs)
-    (/ (sum xs) (length xs))
+  "Returns the mean of the values in coll, an iterable. If coll is empty, returns NaN."
+  [coll]
+  (if (lengthable? coll)
+    (/ (sum coll) (length coll))
     (do
       (var [accum total] [0 0])
-      (each x xs (+= accum x) (++ total))
+      (each x coll (+= accum x) (++ total))
       (/ accum total))))
 
 (defn geomean
-  "Returns the geometric mean of xs. If empty, returns NaN."
-  [xs]
-  (if (lengthable? xs)
+  "Returns the geometric mean of the values in coll, an iterable. If coll is empty, returns NaN."
+  [coll]
+  (if (lengthable? coll)
     (do
       (var accum 0)
-      (each x xs (+= accum (math/log x)))
-      (math/exp (/ accum (length xs))))
+      (each x coll (+= accum (math/log x)))
+      (math/exp (/ accum (length coll))))
     (do
       (var [accum total] [0 0])
-      (each x xs (+= accum (math/log x)) (++ total))
+      (each x coll (+= accum (math/log x)) (++ total))
       (math/exp (/ accum total)))))
 
 (defn product
-  "Returns the product of xs. If xs is empty, returns 1."
-  [xs]
+  "Returns the product of the values in coll, an iterable. If coll is empty, returns 1."
+  [coll]
   (var accum 1)
-  (each x xs (*= accum x))
+  (each x coll (*= accum x))
   accum)
 
 (defmacro when-let
-  "Same as `(if-let bindings (do ;body))`."
+  """
+  Runs body if bindings resolves to true. Same as `(if-let bindings (do
+  |body))`.
+  """
   [bindings & body]
   `(as-macro ~if-let ~bindings (do ~|body)))
 
 (defn comp
   """
-  Takes multiple functions and returns a function that is the composition
-  of those functions.
+  Takes multiple functions and returns a function that is the composition of
+  those functions.
   """
   [& functions]
   (case (length functions)
@@ -876,7 +886,7 @@
             |(tuple/slice functions 4 -1)))))
 
 (defn identity
-  "A function that returns its argument."
+  "Returns its argument."
   [x]
   x)
 
@@ -898,50 +908,43 @@
 
 (defn extreme
   """
-  Returns the most extreme value in args based on the function order.
-  order should take two values and return true or false (a comparison).
-  Returns nil if args is empty.
+  Returns the most extreme value in args based on order. order should be a
+  function that takes two values and return true if the first value is more
+  extreme than the second value. Returns nil if args is empty.
   """
   [order args] (do-extreme order args))
 
 (defn max
-  "Returns the numeric maximum of the arguments."
+  "Returns the maximum of args, comparing with ^>."
   [& args] (do-extreme > args))
 
 (defn min
-  "Returns the numeric minimum of the arguments."
+  "Returns the minimum of args, comparing with ^<."
   [& args] (do-extreme < args))
 
 (defn max-of
-  "Returns the numeric maximum of the argument sequence."
+  """
+  Returns the maximum value in args, an iterable, comparing with ^>. Returns
+  nil if args is empty.
+  """
   [args] (do-extreme > args))
 
 (defn min-of
-  "Returns the numeric minimum of the argument sequence."
+  """
+  Returns the minimum value in args, an iterable, comparing with ^<. Returns
+  nil if args is empty.
+  """
   [args] (do-extreme < args))
 
 (defn first
-  """
-  Gets the first value in x.
-
-  If x is a non-empty bytes or indexed type value, returns the first
-  element.
-
-  If x is a fiber, returns the fiber's last value or `nil` if there
-  isn't one yet.
-
-  If x is an abstract type value with a ^get method, calls the method
-  with a key of `0`.
-
-  In all other cases, returns `nil`.
-  """
-  [x]
-  (get x 0))
+  "Gets the first value in ind, an indexed type. Same as `(get ind 0)`. Returns nil if ind is empty."
+  [ind]
+  (get ind 0))
 
 (defn last
-  "Gets the last element from an indexed data structure."
-  [xs]
-  (get xs (- (length xs) 1)))
+  "Gets the last value in ind, an indexed type. Returns nil if ind is empty."
+  [ind]
+  (get ind (- (length ind) 1)))
 
 ;; Polymorphic comparisons
 
@@ -965,11 +968,16 @@
 
 (defn compare
   """
-  Polymorphic compare. Returns -1, 0, 1 for x < y, x = y, x > y respectively.
-  Differs from the primitive comparators in that it first checks to
-  see whether either x or y implement a ^compare method which can
-  compare x and y. If so, it uses that method. If not, it
-  delegates to the primitive comparators.
+  Compares x and y polymorphically.
+
+  Returns:
+  - -1 for x < y
+  - 0 for x = y
+  - 1 for x > y
+
+  Differs from the primitive comparators in that it first checks to see whether
+  either x or y implement a ^compare method which can compare x and y. If so,
+  it uses that method. If not, it delegates to the primitive comparators.
   """
   [x y]
   (do-compare x y))
@@ -986,27 +994,27 @@
      res))
 
 (defn compare=
-  "Equivalent of ^= but using polymorphic ^compare instead of primitive comparator."
+  "Compares using polymorphic = instead of ^=."
   [& xs]
   (compare-reduce = xs))
 
 (defn compare<
-  "Equivalent of ^< but using polymorphic ^compare instead of primitive comparator."
+  "Compares using polymorphic < instead of ^<."
   [& xs]
   (compare-reduce < xs))
 
 (defn compare<=
-  "Equivalent of ^<= but using polymorphic ^compare instead of primitive comparator."
+  "Compares using polymorphic <= instead of ^<=."
   [& xs]
   (compare-reduce <= xs))
 
 (defn compare>
-  "Equivalent of ^> but using polymorphic ^compare instead of primitive comparator."
+  "Compares using polymorphic > instead of ^>."
   [& xs]
   (compare-reduce > xs))
 
 (defn compare>=
-  "Equivalent of ^>= but using polymorphic ^compare instead of primitive comparator."
+  "Compares using polymorphic >= instead of ^>=."
   [& xs]
   (compare-reduce >= xs))
 
@@ -1030,68 +1038,67 @@
      (if (<= ~z ~y) ~y (if (<= ~x ~z) ~x ~z))))
 
 (defmacro- sort-partition-template
-  [ind before? left right pivot]
+  [ds before? left right pivot]
   `(do
-     (while (~before? (in ~ind ~left) ~pivot) (++ ~left))
-     (while (~before? ~pivot (in ~ind ~right)) (-- ~right))))
+     (while (~before? (in ~ds ~left) ~pivot) (++ ~left))
+     (while (~before? ~pivot (in ~ds ~right)) (-- ~right))))
 
-(defn- sort-help [a lo hi before?]
+(defn- sort-help [ds lo hi before?]
   (when (< lo hi)
-    (def [x y z] [(in a lo)
-                  (in a (div (+ lo hi) 2))
-                  (in a hi)])
+    (def [x y z] [(in ds lo)
+                  (in ds (div (+ lo hi) 2))
+                  (in ds hi)])
     (def pivot (median-of-three x y z))
     (var left lo)
     (var right hi)
     (while true
       (case before?
-        < (sort-partition-template a < left right pivot)
-        > (sort-partition-template a > left right pivot)
-        (sort-partition-template a before? left right pivot))
+        < (sort-partition-template ds < left right pivot)
+        > (sort-partition-template ds > left right pivot)
+        (sort-partition-template ds before? left right pivot))
       (when (<= left right)
-        (def tmp (in a left))
-        (set (a left) (in a right))
-        (set (a right) tmp)
+        (def tmp (in ds left))
+        (set (ds left) (in ds right))
+        (set (ds right) tmp)
         (++ left)
         (-- right))
       (if (>= left right) (break)))
     (if (< lo right)
-      (sort-help a lo right before?))
+      (sort-help ds lo right before?))
     (if (< left hi)
-      (sort-help a left hi before?)))
-  a)
+      (sort-help ds left hi before?)))
+  ds)
 
-(defn- sort-impl [x before?]
-  (sort-help x 0 (- (length x) 1) before?))
+(defn- sort-impl [ds before?]
+  (sort-help ds 0 (- (length ds) 1) before?))
 
 (defn sort!
   """
-  Sorts x in-place, and returns it. Uses quick-sort and is not a
-  stable sort. An omitted before? uses ^<; a supplied comparator orders
-  the elements.
+  Sorts ds in-place and returns it. Uses quick-sort and is not a stable sort. If
+  before? is omitted, uses ^< for ordering.
 
-  x can be a buffer, array, or abstract type with suitable ^get,
-  ^put, and ^length methods.
+  ds can be an array, a buffer or an abstract type with get, put and length
+  callbacks defined. A tuple or vector is rejected.
   """
-  ([x] (sort-impl x <))
-  ([x before?]
-    (sort-impl x before?)))
+  ([ds] (sort-impl ds <))
+  ([ds before?]
+    (sort-impl ds before?)))
 
 (defn sort-by!
   """
-  Sorts x in-place by calling a function f on each element and
-  comparing the results with ^<.
+  Sorts ds in-place and returns it. Uses f on each element and compares the
+  results with ^<.
 
-  x can be a buffer, array, or abstract type with suitable ^get,
-  ^put, and ^length methods.
+  ds can be an array, a buffer or an abstract type with get, put and length
+  callbacks defined. A tuple or vector is rejected.
   """
-  [f x]
-  (sort-impl x (fn :sort-by-comp [i j] (< (f i) (f j)))))
+  [f ds]
+  (sort-impl ds (fn :sort-by-comp [i j] (< (f i) (f j)))))
 
 (defn sort
   """
-  Returns a new sorted array based on an indexed type ind. An omitted
-  before? uses ^<; a supplied comparator orders the elements.
+  Sorts the elements of ind, an indexed type, into a new array and returns it.
+  If before? is omitted, uses ^< for ordering.
   """
   ([ind] (sort-impl (array/slice ind) <))
   ([ind before?]
@@ -1099,70 +1106,74 @@
 
 (defn sort-by
   """
-  Returns a new sorted array based on an indexed type ind.
-  Comparison is done by invoking a function f on each element and
-  comparing the results with ^<.
+  Sorts the elements of ind, an indexed type, into a new array and returns it.
+  Uses f on each element and compares the results with ^<.
   """
   [f ind]
   (sort-impl (array/slice ind) (fn :sorted-by-comp [x y] (< (f x) (f y)))))
 
 (defn reduce
   """
-  The reduce operation, also called fold-left in many languages, transforms
-  an indexed type (array, tuple) with a function to produce a value by applying f to
-  each element in order. f is a function of 2 arguments, `(f accum el)`, where
-  `accum` is the initial value and `el` is the next value in the indexed type ind.
-  f returns a value that will be used as `accum` in the next call to f. ^reduce
-  returns the value of the final call to f.
+  Reduces coll, an iterable, applying f on each element in coll in order.
 
-  Without an initialization value init, the first element of ind is used
-  for initialization. If ind is empty, evaluates to nil.
+  Iterates over each element in coll, holding the result of the previous call to
+  f. Returns the result of the final call to f.
+
+  f is a function of 2 arguments, `(f accum el)`. The first argument is the
+  previous call to f. The second argument is the current element. For the
+  initial iteration, init is used as the first argument. If init is not
+  provided, f is skipped for the initial iteration and the first element is
+  used as the first argument when f is applied to the second element.
+
+  If coll is empty, evaluates to nil.
   """
-  ([f ind]
-    (var k (next ind))
+  ([f coll]
+    (var k (next coll))
     (if (= nil k) (break nil))
-    (var res (in ind k))
-    (set k (next ind k))
+    (var res (in coll k))
+    (set k (next coll k))
     (while (not= nil k)
-      (set res (f res (in ind k)))
-      (set k (next ind k)))
+      (set res (f res (in coll k)))
+      (set k (next coll k)))
     res)
-  ([f init ind]
+  ([f init coll]
     (var accum init)
-    (each el ind (set accum (f accum el)))
+    (each el coll (set accum (f accum el)))
     accum))
 
 (defn accumulate
   """
-  Similar to ^reduce, but accumulates intermediate values into an array.
-  The last element in the array is what would be the return value from ^reduce.
-  The init value is not added to the array (the return value will have the same
-  number of elements as ind).
-  Returns a new array.
+  Accumulates values for elements in coll, an iterable, into an array.
 
-  Without an initialization value init, the first value in ind is added
-  to the array as is, so the length of the return value is `(length ind)`.
+  Similar to ^reduce, but accumulates the results of each application of f into
+  an array. The last element in the array is what would be the return value
+  from ^reduce. The init value is not added to the array (the return value will
+  have the same number of elements as coll). Returns a new array.
+
+  Without an initialization value init, the first value in coll is added
+  to the array as-is (the return value will have the same number of elements as
+  coll).
   """
-  ([f ind]
-    (var k (next ind))
+  ([f coll]
+    (var k (next coll))
     (def ret ![])
     (if (= nil k) (break ret))
-    (var res (in ind k))
+    (var res (in coll k))
     (array/push ret res)
-    (set k (next ind k))
+    (set k (next coll k))
     (while (not= nil k)
-      (set res (f res (in ind k)))
+      (set res (f res (in coll k)))
       (array/push ret res)
-      (set k (next ind k)))
+      (set k (next coll k)))
     ret)
-  ([f init ind]
+  ([f init coll]
     (var res init)
     (def ret ![])
-    (each x ind (array/push ret (set res (f res x))))
+    (each x coll (array/push ret (set res (f res x))))
     ret))
 
 (defmacro- map-aggregator
-  "Aggregation logic for various map functions."
+  "Performs operations for various mapping functions."
   [maptype res val]
   (case maptype
     :map `(array/push ~res ~val)
@@ -1173,34 +1184,34 @@
 (defmacro- map-n
   """
   Generates efficient map logic for a specific number of
-  indexed beyond the first.
+  collections beyond the first.
   """
-  [n maptype res f ind inds]
+  [n maptype res f coll colls]
   `(do
-     (def ~(seq [k :range [0 n]] (symbol 'ind k)) ~inds)
+     (def ~(seq [k :range [0 n]] (symbol 'coll k)) ~colls)
      ~|(seq [k :range [0 n]] `(var ~(symbol 'key k) nil))
-     (each x ~ind
+     (each x ~coll
        ~|(seq [k :range [0 n]]
-           `(if (= nil (set ~(symbol 'key k) (next ~(symbol 'ind k) ~(symbol 'key k)))) (break)))
-       (map-aggregator ~maptype ~res (~f x ~|(seq [k :range [0 n]] `(in ~(symbol 'ind k) ~(symbol 'key k))))))))
+           `(if (= nil (set ~(symbol 'key k) (next ~(symbol 'coll k) ~(symbol 'key k)))) (break)))
+       (map-aggregator ~maptype ~res (~f x ~|(seq [k :range [0 n]] `(in ~(symbol 'coll k) ~(symbol 'key k))))))))
 
 (defmacro- map-template
-  [maptype res f ind inds]
+  [maptype res f coll colls]
   `(do
-     (def ninds (length ~inds))
-     (case ninds
-       0 (each x ~ind (map-aggregator ~maptype ~res (~f x)))
-       1 (map-n 1 ~maptype ~res ~f ~ind ~inds)
-       2 (map-n 2 ~maptype ~res ~f ~ind ~inds)
-       3 (map-n 3 ~maptype ~res ~f ~ind ~inds)
+     (def ncolls (length ~colls))
+     (case ncolls
+       0 (each x ~coll (map-aggregator ~maptype ~res (~f x)))
+       1 (map-n 1 ~maptype ~res ~f ~coll ~colls)
+       2 (map-n 2 ~maptype ~res ~f ~coll ~colls)
+       3 (map-n 3 ~maptype ~res ~f ~coll ~colls)
        (do
-         (def iter-keys (array/new-filled ninds))
-         (def call-buffer (array/new-filled ninds))
+         (def iter-keys (array/new-filled ncolls))
+         (def call-buffer (array/new-filled ncolls))
          (var done false)
-         (each x ~ind
-           (forv i 0 ninds
+         (each x ~coll
+           (forv i 0 ncolls
              (let [old-key (in iter-keys i)
-                   ii (in ~inds i)
+                   ii (in ~colls i)
                    new-key (next ii old-key)]
                (if (= nil new-key)
                  (do (set done true) (break))
@@ -1210,130 +1221,151 @@
 
 (defn map
   """
-  Maps a function f over every value in a data structure ind
-  and returns an array of results, but only if no inds are
-  provided. Multiple data structures can be handled if each
-  inds is a data structure and f is a function of arity
-  one more than the number of inds.  The resulting array has
-  a length that is the shortest of ind and each of inds.
+  Returns a new array of `(f x)` for each value in coll, an iterable.
+
+  If colls is provided, (each of which is also an iterable), returns a new
+  array of `(f x y ...)` for the values of coll and colls taken together, so f
+  takes one argument for coll and one for each of colls. The array has the
+  length of the shortest of coll and colls.
   """
-  [f ind & inds]
+  [f coll & colls]
   (def res ![])
-  (map-template :map res f ind inds)
+  (map-template :map res f coll colls)
   res)
 
 (defn mapcat
   """
-  Maps a function f over every value in a data structure ind
-  and uses ^array/concat to concatenate the results, but only if
-  no inds are provided. Multiple data structures can be handled
-  if each inds is a data structure and f is a function of
-  arity one more than the number of inds. Note that f is only
-  applied to values at indices up to the largest index of the
-  shortest of ind and each of inds.
+  Returns a new array that concatenates the results of `(f x)` for each value
+  in coll, an iterable.
+
+  Similar to ^map, but the results are concatenated. An indexed result is
+  spliced in, so `(mapcat (fn [x] [x x]) [1 2])` returns `![1 1 2 2]` where
+  ^map returns `![[1 1] [2 2]]`. Any other result is appended as one element.
+  To add nothing for a value, return an empty indexed result.
+
+  If colls is provided, (each of which is also an iterable), f is called as
+  `(f x y ...)` for the values of coll and colls taken together, and is applied
+  only as many times as the length of the shortest of coll and colls.
   """
-  [f ind & inds]
+  [f coll & colls]
   (def res ![])
-  (map-template :mapcat res f ind inds)
+  (map-template :mapcat res f coll colls)
   res)
 
 (defn filter
   """
-  Given a predicate, takes only elements from an array or tuple for
-  which `(pred element)` is truthy. Returns a new array.
+  Returns a new array of the values x in coll, an iterable, for which `(pred
+  x)` is truthy.
   """
-  [pred ind]
+  [pred coll]
   (def res ![])
-  (each item ind
+  (each item coll
     (if (pred item)
       (array/push res item)))
   res)
 
 (defn count
   """
-  Counts the number of values in a data structure ind for which
-  applying pred yields a truthy value, but only if no inds are
-  provided. Multiple data structures can be handled if each inds
-  is a data structure and pred is a function of arity one more
-  than the number of inds. Note that pred is only applied to
-  values at indices up to the largest index of the shortest of
-  ind and each of inds.
+  Returns the number of values x in coll, an iterable, for which `(pred x)` is
+  truthy.
+
+  If colls is provided, (each of which is also an iterable), pred is called as
+  `(pred x y ...)` for the values of coll and colls taken together, and is
+  applied only as many times as the length of the shortest of coll and colls.
   """
-  [pred ind & inds]
+  [pred coll & colls]
   (var res 0)
-  (map-template :count res pred ind inds)
+  (map-template :count res pred coll colls)
   res)
 
 (defn keep
   """
-  Given a predicate pred, returns a new array containing the
-  truthy results of applying pred to each value in the data
-  structure ind, but only if no inds are provided. Multiple
-  data structures can be handled if each inds is a data
-  structure and pred is a function of arity one more than the
-  number of inds. The resulting array has a length that is no
-  longer than the shortest of ind and each of inds.
+  Returns a new array of the truthy results of `(pred x)` for each value x in
+  coll, an iterable. Similar to ^map, but nil and false results are dropped.
+
+  If colls is provided, (each of which is also an iterable), pred is called as
+  `(pred x y ...)` for the values of coll and colls taken together. The array
+  is no longer than the shortest of coll and colls.
   """
-  [pred ind & inds]
+  [pred coll & colls]
   (def res ![])
-  (map-template :keep res pred ind inds)
+  (map-template :keep res pred coll colls)
   res)
 
+(defn- check-keyed
+  [name coll]
+  (if (fiber? coll)
+    (errorf "%s does not accept a fiber, got %v" name coll)))
+
 (defn find-index
-  "Finds the index of indexed type for which pred is true. Returns dflt if not found."
-  ([pred ind] (find-index pred ind nil))
-  ([pred ind dflt]
-  (var k nil)
-  (var ret dflt)
-  (while true
-    (set k (next ind k))
-    (if (= k nil) (break))
-    (def item (in ind k))
-    (when (pred item)
-      (set ret k)
-      (break)))
-  ret))
+  """
+  Returns the key of the first value x in coll, an iterable, for which
+  `(pred x)` is truthy. Returns dflt if there is none, or nil if dflt is not
+  given.
+
+  The key of an array, tuple, vector, string or buffer is the index of x. The
+  key of a table or map is the key of x, and the key of a set is x itself. A
+  fiber has no keys, so coll may not be a fiber.
+  """
+  ([pred coll] (find-index pred coll nil))
+  ([pred coll dflt]
+    (check-keyed :find-index coll)
+    (var k nil)
+    (var ret dflt)
+    (while true
+      (set k (next coll k))
+      (if (= k nil) (break))
+      (def item (in coll k))
+      (when (pred item)
+        (set ret k)
+        (break)))
+    ret))
 
 (defn find
   """
-  Finds the first value in x that satisfies pred. If not found,
-  returns dflt if given, or `nil` otherwise.
-
-  x can be a bytes, indexed, dictionary, fiber, or abstract type
-  with suitable ^get and ^next methods.
+  Returns the first value x in coll, an iterable, for which `(pred x)` is
+  truthy. Returns dflt if there is none, or nil if dflt is not given. A
+  matching value that is itself nil is returned as nil, so give dflt to tell it
+  apart from no match.
   """
-  ([pred x] (find pred x nil))
-  ([pred x dflt]
-  (var k nil)
-  (var ret dflt)
-  (while true
-    (set k (next x k))
-    (if (= k nil) (break))
-    (def item (in x k))
-    (when (pred item)
-      (set ret item)
-      (break)))
-  ret))
+  ([pred coll] (find pred coll nil))
+  ([pred coll dflt]
+    (var k nil)
+    (var ret dflt)
+    (while true
+      (set k (next coll k))
+      (if (= k nil) (break))
+      (def item (in coll k))
+      (when (pred item)
+        (set ret item)
+        (break)))
+    ret))
 
 (defn index-of
   """
-  Finds the first key associated with a value x in a data structure, acting like a reverse lookup.
-  Will not look at table prototypes.
-  Returns dflt if not found.
+  Returns the key of the first value in coll, an iterable, that is equal to x,
+  acting like a reverse lookup. Returns dflt if there is none, or nil if dflt
+  is not given.
+
+  Values are compared with ^=. The key of an array, tuple, vector, string or
+  buffer is the index of the value. The key of a table or map is the key of the
+  value, and the key of a set is the value itself. A fiber has no keys, so coll
+  may not be a fiber. Table prototypes are not searched.
   """
-  ([x ind] (index-of x ind nil))
-  ([x ind dflt]
-  (var k (next ind nil))
-  (var ret dflt)
-  (while (not= nil k)
-    (when (= (in ind k) x) (set ret k) (break))
-    (set k (next ind k)))
-  ret))
+  ([x coll] (index-of x coll nil))
+  ([x coll dflt]
+    (check-keyed :index-of coll)
+    (var k (next coll nil))
+    (var ret dflt)
+    (while (not= nil k)
+      (when (= (in coll k) x) (set ret k) (break))
+      (set k (next coll k)))
+    ret))
 
 (defn- check-sliceable
-  [name ind]
-  (if (dictionary? ind)
-    (errorf "%s does not accept a dictionary, got %v" name ind)))
+  [name coll]
+  (if (dictionary? coll)
+    (errorf "%s does not accept a dictionary, got %v" name coll)))
 
 (defn- check-count
   [name n]
@@ -1342,79 +1374,80 @@
 
 (defn take
   """
-  Takes the first n elements of an iterable other than a dictionary. Returns a
-  fiber that yields them. Nothing is read from ind until the fiber is
-  resumed. n must not be negative.
+  Takes the first n elements of coll, an iterable other than a dictionary.
+  Returns a fiber that yields them. Nothing is read from coll until the fiber
+  is resumed. n must not be negative.
   """
-  [n ind]
+  [n coll]
   (check-count :take n)
-  (check-sliceable :take ind)
+  (check-sliceable :take coll)
   (coro
     (var left n)
     (when (> left 0)
-      (each x ind
+      (each x coll
         (yield x)
         (if (zero? (-- left)) (break))))))
 
 (defn take-until
   """
-  Takes the elements of an iterable other than a dictionary that precede the
-  first for which `(pred element)` is truthy. Returns a fiber that yields
-  them. Nothing is read from ind until the fiber is resumed. The matching
-  element is not yielded.
+  Takes the elements of coll, an iterable other than a dictionary, that
+  precede the first for which `(pred element)` is truthy. Returns a fiber that
+  yields them. Nothing is read from coll until the fiber is resumed. The
+  matching element is not yielded.
   """
-  [pred ind]
-  (check-sliceable :take-until ind)
+  [pred coll]
+  (check-sliceable :take-until coll)
   (coro
-    (each x ind
+    (each x coll
       (if (pred x) (break))
       (yield x))))
 
 (defn take-while
   """
-  Takes the leading elements of an iterable other than a dictionary for which
-  `(pred element)` is truthy. Returns a fiber that yields them. Same as
-  `(take-until (complement pred) ind)`.
+  Takes the leading elements of coll, an iterable other than a dictionary, for
+  which `(pred element)` is truthy. Returns a fiber that yields them. Same as
+  `(take-until (complement pred) coll)`.
   """
-  [pred ind]
-  (take-until (complement pred) ind))
+  [pred coll]
+  (take-until (complement pred) coll))
 
 (defn drop
   """
-  Drops the first n elements of an iterable other than a dictionary. Returns a
-  fiber that yields the rest. Nothing is read from ind until the fiber is
-  resumed. n must not be negative.
+  Drops the first n elements of coll, an iterable other than a dictionary.
+  Returns a fiber that yields the rest. Nothing is read from coll until the
+  fiber is resumed. n must not be negative.
   """
-  [n ind]
+  [n coll]
   (check-count :drop n)
-  (check-sliceable :drop ind)
+  (check-sliceable :drop coll)
   (coro
     (var left n)
-    (each x ind
+    (each x coll
       (if (> left 0) (-- left) (yield x)))))
 
 (defn drop-until
   """
-  Drops the elements of an iterable other than a dictionary that precede the
-  first for which `(pred element)` is truthy. Returns a fiber that yields that
-  element and the rest. Nothing is read from ind until the fiber is resumed.
+  Drops the elements of coll, an iterable other than a dictionary, that
+  precede the first for which `(pred element)` is truthy. Returns a fiber that
+  yields that element and the rest. Nothing is read from coll until the fiber
+  is resumed.
   """
-  [pred ind]
-  (check-sliceable :drop-until ind)
+  [pred coll]
+  (check-sliceable :drop-until coll)
   (coro
     (var skipping true)
-    (each x ind
+    (each x coll
       (if (and skipping (pred x)) (set skipping false))
       (if (not skipping) (yield x)))))
 
 (defn drop-while
   """
-  Drops the leading elements of an iterable other than a dictionary for which
-  `(pred element)` is truthy. Returns a fiber that yields the rest. Same as
-  `(drop-until (complement pred) ind)`.
+  Drops the leading elements of coll, an iterable other than a dictionary, for
+  which `(pred element)` is truthy. Returns a fiber that yields the rest. Same
+  as `(drop-until (complement pred) coll)`.
   """
-  [pred ind]
-  (drop-until (complement pred) ind))
+  [pred coll]
+  (drop-until (complement pred) coll))
 
 (defn juxt*
   """
@@ -1449,13 +1482,15 @@
 
 (defn has-value?
   """
-  Checks whether x contains value.
-
-  x can be a bytes, indexed, dictionary, fiber, or abstract type with
-  suitable ^get and ^next methods.
+  Checks whether coll, an iterable, contains a value equal to val.
   """
-  [x value]
-  (not= nil (index-of value x)))
+  [coll val]
+  (var found false)
+  (each v coll
+    (when (= v val)
+      (set found true)
+      (break)))
+  found)
 
 (defdyn *defdyn-prefix*
 """
@@ -1680,71 +1715,73 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn every?
   """
-  Evaluates to the last element of ind if all preceding elements are truthy,
-  otherwise evaluates to the first falsey element.
+  Evaluates to the last element of coll, an iterable, if all preceding
+  elements are truthy, otherwise evaluates to the first falsey element.
   """
-  [ind]
+  [coll]
   (var res true)
-  (loop [x :in ind :while res]
+  (loop [x :in coll :while res]
     (set res x))
   res)
 
 (defn any?
   """
-  Evaluates to the last element of ind if all preceding elements are falsey,
-  otherwise evaluates to the first truthy element.
+  Evaluates to the last element of coll, an iterable, if all preceding
+  elements are falsey, otherwise evaluates to the first truthy element.
   """
-  [ind]
+  [coll]
   (var res nil)
-  (loop [x :in ind :until res]
+  (loop [x :in coll :until res]
     (set res x))
   res)
 
 (defn reverse!
   """
-  Reverses the order of the elements in a given array or buffer and returns it
+  Reverses the order of the elements in ds, an array or buffer, and returns it
   mutated.
   """
-  [t]
+  [ds]
   (var i 0)
-  (var j (length t))
+  (var j (length ds))
   (while (< i (-- j))
-    (def ti (in t i))
-    (put t i (in t j))
-    (put t j ti)
+    (def di (in ds i))
+    (put ds i (in ds j))
+    (put ds j di)
     (++ i))
-  t)
+  ds)
 
 (defn reverse
   """
-  Reverses the order of the elements in a given array or tuple and returns
-  a new array. If a string or buffer is provided, returns a buffer instead.
+  Reverses the order of the elements in coll, an iterable, and returns a new
+  array. If coll is a string or buffer, returns a new buffer instead.
   """
-  [t]
-  (if (lengthable? t)
+  [coll]
+  (if (lengthable? coll)
     (do
-      (var n (length t))
-      (def ret (if (bytes? t)
+      (var n (length coll))
+      (def ret (if (bytes? coll)
                  (buffer/new-filled n)
                  (array/new-filled n)))
-      (each v t
+      (each v coll
         (put ret (-- n) v))
       ret)
-    (reverse! (seq [v :in t] v))))
+    (reverse! (seq [v :in coll] v))))
 
 (defn invert
   """
-  Returns a table where the keys of x are the values, and the values
-  are the keys. If multiple keys in x are mapped to the same value,
+  Returns a table where the keys of coll, an iterable, are the values, and the
+  values are the keys. If multiple keys in coll are mapped to the same value,
   only one of those values will become a key in the returned table.
 
-  x can be a bytes, indexed, dictionary, or abstract type with a
-  `suitable next` method.
+  The key of an array, tuple, vector, string or buffer is the index of the
+  value. The key of a table or map is its key, and the key of a set is the
+  element itself. A fiber has no keys, so coll may not be a fiber.
   """
-  [x]
+  [coll]
+  (check-keyed :invert coll)
   (def ret !{})
-  (loop [k :keys x]
-    (put ret (in x k) k))
+  (loop [k :keys coll]
+    (put ret (in coll k) k))
   ret)
 
 (defn zipcoll
@@ -1766,8 +1803,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn get-in
   """
-  Accesses a value in a nested data structure. Looks into the data structure via
-  a sequence of keys. If value is not found, and dflt is provided, returns dflt.
+  Accesses a value in a nested data structure ds. Looks into ds via ks, an
+  iterable of keys. If value is not found, and dflt is provided, returns dflt.
   """
   ([ds ks] (get-in ds ks nil))
   ([ds ks dflt]
@@ -1777,8 +1814,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn update-in!
   """
-  Updates a value in a nested data structure ds. Looks into ds via a sequence of keys,
-  and replaces the value found there with f applied to that value.
+  Updates a value in a nested data structure ds, an array, buffer or table.
+  Looks into ds via ks, an indexed type of keys, and replaces the value found
+  there with f applied to that value.
   Missing data structures will be replaced with tables. Returns
   the modified, original data structure.
   """
@@ -1801,11 +1839,11 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn put-in!
   """
-  Puts a value into a nested data structure ds. Looks into ds via
-  a sequence of keys. Missing data structures will be replaced with tables. Returns
-  the modified, original data structure.
+  Puts a value into a nested data structure ds, an array, buffer or table.
+  Looks into ds via ks, an indexed type of keys. Missing data structures will
+  be replaced with tables. Returns the modified, original data structure.
   """
-  [ds ks v]
+  [ds ks val]
   (var d ds)
   (def len-1 (- (length ks) 1))
   (if (< len-1 0) (error "expected at least 1 key in ks"))
@@ -1819,22 +1857,22 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (set d v)))
   (def last-key (get ks len-1))
   (def last-val (get d last-key))
-  (put d last-key v)
+  (put d last-key val)
   ds)
 
 (defn update!
   """
-  For a given key in data structure ds, replaces its corresponding value with the
-  result of calling func on that value. If args are provided, they will be passed
-  along to func as well. Returns ds, updated.
+  For a given key in ds, an array, buffer or table, replaces its corresponding value with the
+  result of calling f on that value. If args are provided, they will be passed
+  along to f as well. Returns ds, updated.
   """
-  [ds key func & args]
+  [ds key f & args]
   (def old (get ds key))
-  (put ds key (func old |args)))
+  (put ds key (f old |args)))
 
 (defn merge!
   """
-  Merges multiple dictionaries into table tab. If a key appears in
+  Merges multiple dictionaries (tables or maps) into table tab. If a key appears in
   more than one dictionary in dicts, then later values replace any
   previous ones. Returns tab.
   """
@@ -1846,7 +1884,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn merge
   """
-  Merges multiple dictionaries into one new table. If a key appears in
+  Merges multiple dictionaries (tables or maps) into one new table. If a key appears in
   more than one dictionary in dicts then later values replace any
   previous ones. Returns the new table.
   """
@@ -1859,77 +1897,79 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn keys
   """
-  Gets the keys of x as an array.
+  Gets the keys of coll, an iterable, as an array.
 
-  x can be a bytes, indexed, dictionary, or abstract type with a
-  suitable ^next method.
+  The key of an array, tuple, vector, string or buffer is the index of the
+  value. The key of a table or map is its key, and the key of a set is the
+  element itself. A fiber has no keys, so coll may not be a fiber.
   """
-  [x]
-  (if (lengthable? x)
+  [coll]
+  (check-keyed :keys coll)
+  (if (lengthable? coll)
     (do
-      (def arr (array/new-filled (length x)))
+      (def arr (array/new-filled (length coll)))
       (var i 0)
-      (eachk k x
+      (eachk k coll
         (put arr i k)
         (++ i))
       arr)
-    (seq [k :keys x] k)))
+    (seq [k :keys coll] k)))
 
 (defn values
   """
-  Gets the values of x as an array.
-
-  x can be a bytes, indexed, dictionary, fiber, or abstract type
-  with suitable ^get and ^next methods.
+  Gets the values of coll, an iterable, as an array. The values of a string or
+  buffer are its bytes, and those of a table or map are its values.
   """
-  [x]
-  (if (lengthable? x)
+  [coll]
+  (if (lengthable? coll)
     (do
-      (def arr (array/new-filled (length x)))
+      (def arr (array/new-filled (length coll)))
       (var i 0)
-      (each v x
+      (each v coll
         (put arr i v)
         (++ i))
       arr)
-    (seq [v :in x] v)))
+    (seq [v :in coll] v)))
 
 (defn pairs
   """
-  Returns an array of tuples of the key-value pairs of x. For bytes
-  and indexed types, the integer indices are considered the keys.
+  Returns a new array of `[key value]` vectors for the pairs of coll, an
+  iterable.
 
-  x can be a bytes, indexed, dictionary, or abstract type with
-  suitable ^get and ^in methods.
+  The key of an array, tuple, vector, string or buffer is the index of the
+  value. The key of a table or map is its key, and the key of a set is the
+  element itself. A fiber has no keys, so coll may not be a fiber.
   """
-  [x]
-  (if (lengthable? x)
+  [coll]
+  (check-keyed :pairs coll)
+  (if (lengthable? coll)
     (do
-      (def arr (array/new-filled (length x)))
+      (def arr (array/new-filled (length coll)))
       (var i 0)
-      (eachp p x
+      (eachp p coll
         (put arr i p)
         (++ i))
       arr)
-    (seq [p :pairs x] p)))
+    (seq [p :pairs coll] p)))
 
 (defn frequencies
-  "Gets the number of occurrences of each value in an indexed data structure."
-  [ind]
+  "Gets the number of occurrences of each value in coll, an iterable."
+  [coll]
   (def freqs !{})
-  (each x ind
+  (each x coll
     (put freqs x (inc (in freqs x 0))))
   freqs)
 
 (defn group-by
   """
-  Groups elements of ind by a function f and put the results into a new table. The keys of
-  the table are the distinct return values from calling f on the elements of ind. The values
-  of the table are arrays of all elements of ind for which f called on the element equals
+  Groups elements of coll, an iterable, by a function f and puts the results into a new table. The keys of
+  the table are the distinct return values from calling f on the elements of coll. The values
+  of the table are arrays of all elements of coll for which f called on the element equals
   that corresponding key.
   """
-  [f ind]
+  [f coll]
   (def ret !{})
-  (each x ind
+  (each x coll
     (def y (f x))
     (if-let [arr (get ret y)]
       (array/push arr x)
@@ -1938,16 +1978,16 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn partition-by
   """
-  Partitions elements of a sequential data structure by a representative function f. Partitions
-  split when `(f x)` changes values when iterating to the next element `x` of ind. Returns a new array
+  Partitions the elements of coll, an iterable, by a representative function f. Partitions
+  split when `(f x)` changes values when iterating to the next element `x` of coll. Returns a new array
   of arrays.
   """
-  [f ind]
+  [f coll]
   (def ret ![])
   (var span nil)
   (var category nil)
   (var is-new true)
-  (each x ind
+  (each x coll
     (def y (f x))
     (cond
       is-new (do (set is-new false) (set category y) (set span ![x]) (array/push ret span))
@@ -1956,25 +1996,26 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   ret)
 
 (defn interleave
-  "Returns an array of the first elements of each col, then the second elements, etc."
-  [& cols]
-  (mapcat tuple |cols))
+  "Returns an array of the first elements of each of colls, iterables, then the second elements, etc."
+  [& colls]
+  (mapcat tuple |colls))
 
 (defn distinct
-  "Returns an array of the deduplicated values in xs."
-  [xs]
+  "Returns an array of the deduplicated values in coll, an iterable."
+  [coll]
   (def ret ![])
   (def seen !{})
-  (each x xs (if (in seen x) nil (do (put seen x true) (array/push ret x))))
+  (each x coll (if (in seen x) nil (do (put seen x true) (array/push ret x))))
   ret)
 
 (defn flatten!
   """
-  Appends the depth-first traversal of an indexed type ind into a
-  given array into. Returns into.
+  Appends the depth-first traversal of coll, an iterable, into the array into.
+  Elements of coll that are indexed types are traversed recursively and other
+  elements are appended as they are. Returns into.
   """
-  [into ind]
-  (each elt ind
+  [into coll]
+  (each elt coll
     (if (indexed? elt)
       (flatten! into elt)
       (array/push into elt)))
@@ -1982,11 +2023,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn flatten
   """
-  Returns a depth-first traversal of an indexed type ind as a new
-  array.
+  Returns a depth-first traversal of coll, an iterable, as a new array.
+  Elements of coll that are indexed types are traversed recursively and other
+  elements are kept as they are.
   """
-  [ind]
-  (flatten! ![] ind))
+  [coll]
+  (flatten! ![] coll))
 
 (defn kvs
   """
@@ -2011,25 +2053,24 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn interpose
   """
-  Returns a sequence of the elements of ind separated by
-  sep. Returns a new array.
+  Returns a new array of the elements of coll, an iterable, separated by sep.
   """
-  [sep ind]
-  (var k (next ind nil))
+  [sep coll]
+  (var k (next coll nil))
   (if (not= nil k)
-    (if (lengthable? ind)
+    (if (lengthable? coll)
       (do
-        (def ret (array/new-filled (- (* 2 (length ind)) 1) sep))
+        (def ret (array/new-filled (- (* 2 (length coll)) 1) sep))
         (var i 0)
         (while (not= nil k)
-          (put ret i (in ind k))
-          (set k (next ind k))
+          (put ret i (in coll k))
+          (set k (next coll k))
           (+= i 2))
         ret)
       (do
-        (def ret ![(in ind k)])
-        (while (not= nil (set k (next ind k)))
-          (array/push ret sep (in ind k)))
+        (def ret ![(in coll k)])
+        (while (not= nil (set k (next coll k)))
+          (array/push ret sep (in coll k)))
         ret))
     ![]))
 
@@ -2062,14 +2103,15 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn partition
   """
-  Partitions an indexed data structure ind into tuples
-  of size n. Returns a new array.
+  Partitions coll, an iterable, into vectors of size n. If coll is a string or
+  buffer, the parts are strings. Returns a new array. The last part may be
+  shorter than n.
   """
-  [n ind]
+  [n coll]
   (cond
-    (indexed? ind) (partition-slice vector-slice n ind)
-    (bytes? ind) (partition-slice string/slice n ind)
-    (partition-slice vector-slice n (values ind))))
+    (indexed? coll) (partition-slice vector-slice n coll)
+    (bytes? coll) (partition-slice string/slice n coll)
+    (partition-slice vector-slice n (values coll))))
 
 ;;;
 ;;;
@@ -2504,29 +2546,29 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   child values also mutable. Closures, fibers, and abstract
   types will not be recursively thawed, but all other types will.
   """
-  [ds]
-  (case (type ds)
-    :array (walk-ind thaw ds)
-    :vector (walk-ind thaw ds)
-    :tuple (walk-ind thaw ds)
-    :table (walk-dict thaw (table/proto-flatten ds))
-    :map (walk-dict thaw ds)
-    :string (buffer ds)
-    ds))
+  [x]
+  (case (type x)
+    :array (walk-ind thaw x)
+    :vector (walk-ind thaw x)
+    :tuple (walk-ind thaw x)
+    :table (walk-dict thaw (table/proto-flatten x))
+    :map (walk-dict thaw x)
+    :string (buffer x)
+    x))
 
 (defn thaw-keep-keys
   """
   Similar to ^thaw, but does not modify table or map keys.
   """
-  [ds]
-  (case (type ds)
-    :array (walk-ind thaw-keep-keys ds)
-    :vector (walk-ind thaw-keep-keys ds)
-    :tuple (walk-ind thaw-keep-keys ds)
-    :table (walk-dict-values thaw-keep-keys (table/proto-flatten ds))
-    :map (walk-dict-values thaw-keep-keys ds)
-    :string (buffer ds)
-    ds))
+  [x]
+  (case (type x)
+    :array (walk-ind thaw-keep-keys x)
+    :vector (walk-ind thaw-keep-keys x)
+    :tuple (walk-ind thaw-keep-keys x)
+    :table (walk-dict-values thaw-keep-keys (table/proto-flatten x))
+    :map (walk-dict-values thaw-keep-keys x)
+    :string (buffer x)
+    x))
 
 (defn deep-not=
   """
@@ -3001,9 +3043,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   run-context to return that value.
   """
   ([] (quit nil))
-  ([value]
+  ([val]
   (setdyn :exit true)
-  (setdyn :exit-value value)
+  (setdyn :exit-value val)
   nil))
 
 (defn eval
@@ -3085,17 +3127,17 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   y)
 
 (defmacro compif
-  "Checks the condition cnd at compile time -- if truthy, compiles tru, else compiles fals."
-  ([cnd tru] (def self compif) (self cnd tru nil))
-  ([cnd tru fals]
-  (if (eval cnd)
-    tru
-    fals)))
+  "Checks test at compile time -- if truthy, compiles then, otherwise compiles else."
+  ([test then] (def self compif) (self test then nil))
+  ([test then else]
+  (if (eval test)
+    then
+    else)))
 
 (defmacro compwhen
-  "Checks the condition cnd at compile time -- if truthy, compiles `(upscope ;body)`, else compiles nil."
-  [cnd & body]
-  (if (eval cnd)
+  "Checks test at compile time -- if truthy, compiles `(upscope |body)`, otherwise compiles nil."
+  [test & body]
+  (if (eval test)
     `(upscope ~|body)))
 
 (defn make-image
@@ -4314,7 +4356,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (defmacro ev/spawn
     """
     Runs some code in a new task fiber. This is shorthand for
-    `(ev/go (fn [] ;body))`."
+    `(ev/go (fn [] |body))`.
     """
     [& body]
     `(~ev/go (fn :spawn [&] ~|body)))

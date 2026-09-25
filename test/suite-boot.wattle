@@ -366,6 +366,14 @@
         "sort 5")
 (assert (<= |(sort! (map (fn [x] (math/random)) (range 1000)))) "sort 6")
 
+; find and find-index
+(assert (= 2 (find-index even? [1 3 2])) "find-index in a vector")
+(assert (= :b (find-index even? !{:a 1 :b 2})) "find-index in a table")
+(assert (= :d (find-index even? [1 3] :d)) "find-index default")
+(assert-error "find-index fiber" (find-index even? (coro (yield 1) (yield 2))))
+(assert (= 2 (find even? (coro (yield 1) (yield 2)))) "find in a fiber")
+(assert (= :d (find even? [1 3] :d)) "find default")
+
 ; #1283
 (assert (deep=
           (partition 2 (generate [ i :in [:a :b :c :d :e]] i))
@@ -730,6 +738,17 @@
 (assert (= nil (index-of (chr "a") "")) "index-of 9")
 (assert (= nil (index-of 10 ![])) "index-of 10")
 (assert (= nil (index-of 10 ![1 2 3])) "index-of 11")
+(assert (= :d (index-of 10 [1 2 3] :d)) "index-of default")
+(assert-error "index-of fiber" (index-of 2 (coro (yield 1) (yield 2))))
+(assert-error "keys fiber" (keys (coro (yield 1) (yield 2))))
+(assert-error "pairs fiber" (pairs (coro (yield 1) (yield 2))))
+(assert-error "invert fiber" (invert (coro (yield 1) (yield 2))))
+(assert (deep= ![1 2] (values (coro (yield 1) (yield 2)))) "values of a fiber")
+(assert (deep= ![[0 10] [1 20]] (pairs [10 20])) "pairs of a vector")
+(assert (deep= ![7] (keys (hash-set 7))) "keys of a set are its elements")
+(assert (= true (has-value? (coro (yield 1) (yield 2)) 2)) "has-value? in a fiber")
+(assert (= false (has-value? (coro (yield 1) (yield 2)) 3))
+        "has-value? not in a fiber")
 
 ; e78a3d1
 ; NOTE: These is a motivation for the has-value? and has-key? functions below

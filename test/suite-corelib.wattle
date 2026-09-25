@@ -182,8 +182,8 @@
 
 ; iterating over generator
 (assert-no-error "iterate over coro 1" (values (generate [x :range [0 10]] x)))
-(assert-no-error "iterate over coro 2" (keys (generate [x :range [0 10]] x)))
-(assert-no-error "iterate over coro 3" (pairs (generate [x :range [0 10]] x)))
+(assert-error "keys of a coro" (keys (generate [x :range [0 10]] x)))
+(assert-error "pairs of a coro" (pairs (generate [x :range [0 10]] x)))
 
 ; thaw
 (def ds1 [1 2 3 {:a 2} {:b 3} 4 5 6])
