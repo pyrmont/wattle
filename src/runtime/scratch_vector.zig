@@ -98,10 +98,9 @@ pub fn flatten(comptime T: type, list: std.ArrayListUnmanaged(T)) ?[*]T {
 /// `list` is the vector. It is left empty rather than `undefined`, which is
 /// what makes a second free a no-op and a later read see an empty vector.
 /// `deinit` on its own ends with `self.* = undefined`, and callers depend on
-/// the weaker state: `compiler/specials.zig` frees `named_parameters` on one
-/// path and reaches `cleanupFunctionError`, which frees it again, on another.
-/// Resetting here settles that for every call site at once, and `deinit` is
-/// still what releases the block.
+/// the weaker state: a vector that one path frees may be freed again by a
+/// cleanup path. Resetting here settles that for every call site at once, and
+/// `deinit` is still what releases the block.
 pub fn free(list: anytype) void {
     list.deinit(gc_alloc.scratch_heap);
     list.* = .empty;
