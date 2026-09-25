@@ -31,8 +31,7 @@ const wattle = @import("wattle");
 /// `linker_allow_shlib_undefined`. The module resolves no runtime symbol at
 /// load time. The runtime exports no `janet_*` name, and the module reaches
 /// it through the table `_wattle_init` is given. The setting lets the library
-/// link with the symbols the loading process supplies left undefined, and
-/// `res/check/exports.janet` measures that set.
+/// link with the symbols the loading process supplies left undefined.
 ///
 /// The executable takes two instances of the dependency. `dep` is built for
 /// the target and is what the executable links. `host` is built for the

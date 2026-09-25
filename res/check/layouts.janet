@@ -1,9 +1,8 @@
 #!/usr/bin/env janet
 # Every C-compatible layout in the tree, with the evidence that fixes it.
 #
-# Phase 13 Part 2, increment 2e.  The exit condition asks for every exported
-# symbol *and every C-compatible layout* to be classified, and `exports.janet`
-# only answers the first half.
+# Phase 13 Part 2, increment 2e.  The exit condition asks for every
+# C-compatible layout to be classified.
 #
 # ## The compiler is not the oracle here, and that was measured
 #

@@ -74,7 +74,7 @@ pub const Decision = struct {
 /// What `signalPlan` decides.
 ///
 /// It is this file's because nothing outside the raise protocol names a plan
-/// and no symbol takes one: `res/check/exports.txt` has no row for it.
+/// and no symbol takes one.
 pub const Plan = enum(c_uint) {
     /// No protected scope above, so the raise ends the process.
     top_level = 0,

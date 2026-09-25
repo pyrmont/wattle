@@ -101,9 +101,8 @@ three host-header translations includes first.
 The directories state the boundary but do not enforce it. Both package roots sit
 at `src/`, so a relative import can cross between directories, and several do
 by design: `api/raise.zig` names four runtime files for the branch that a module
-build does not take. Two things enforce the boundary instead.
-`res/check/exports.janet` builds the author package the way an outside author
-does, and `examples/standalone` consumes the package by path. A
+build does not take. `examples/standalone` enforces the boundary instead: it
+consumes the package by path, the way an outside author does. A
 compiler-enforced split would make `api` a build module with the runtime
 imported back into it by name. That is possible, and not what the tree does.
 

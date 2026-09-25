@@ -38,7 +38,6 @@ invocation, including one with an unrecognised argument, regenerates the file.
 
 | script             | inventory                               | must be empty |
 | ------------------ | --------------------------------------- | ------------- |
-| `exports.janet`    | symbols the shared library exports      | —             |
 | `layouts.janet`    | `extern` layouts and their evidence     | —             |
 | `seam.janet`       | `c.janet_*` names and their publisher   | see below     |
 | `counters.janet`   | signed counters that index a container  | `e`           |
