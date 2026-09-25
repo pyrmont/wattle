@@ -122,12 +122,12 @@ pub fn fromVector(v: *const vectors.Vector) *Transient {
 /// `env` is the environment. This function raises if the registration does.
 pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("transient", &nfunTransient, @src(), "(transient coll)", "Returns a transient of the persistent vector, map or set coll, which ^conj!, ^assoc!, ^dissoc! and ^disj! change in place. coll itself does not change."),
-        corefn.reg("persistent!", &nfunPersistent, @src(), "(persistent! coll)", "Returns a persistent collection with the contents of the transient coll. Every later operation on coll raises an error."),
-        corefn.reg("conj!", &nfunConjBang, @src(), "(conj! coll & xs)", "Adds the elements xs to the transient coll, of a vector or a set, in place, and returns it. For a transient of a vector, the elements are added at the end."),
-        corefn.reg("assoc!", &nfunAssocBang, @src(), "(assoc! coll key val & kvs)", "Associates each key with the value that follows it in the transient coll, of a vector or a map, in place, and returns it. For a transient of a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a transient of a map, a nil value removes the key."),
-        corefn.reg("dissoc!", &nfunDissocBang, @src(), "(dissoc! coll & ks)", "Removes the keys ks from the transient of a map coll in place, and returns it."),
-        corefn.reg("disj!", &nfunDisjBang, @src(), "(disj! coll & xs)", "Removes the elements xs from the transient of a set coll in place, and returns it."),
+        corefn.reg("transient", &nfunTransient, @src(), "(transient p)", "Returns a transient of p, a persistent vector, map or set. ^conj!, ^assoc!, ^dissoc! and ^disj! change the transient in place. p itself does not change."),
+        corefn.reg("persistent!", &nfunPersistent, @src(), "(persistent! t)", "Returns a persistent collection with the contents of t, a transient. Every later operation on t raises an error."),
+        corefn.reg("conj!", &nfunConjBang, @src(), "(conj! t & vals)", "Adds vals to t, a transient of a vector or a set, in place, and returns t. For a transient of a vector, the elements are added at the end. An element of a set cannot be nil or NaN."),
+        corefn.reg("assoc!", &nfunAssocBang, @src(), "(assoc! t key val & kvs)", "Associates each key with the value that follows it in t, a transient of a vector or a map, in place, and returns t. For a transient of a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. For a transient of a map, a nil value removes the key."),
+        corefn.reg("dissoc!", &nfunDissocBang, @src(), "(dissoc! t & ks)", "Removes the keys ks from t, a transient of a map, in place, and returns t."),
+        corefn.reg("disj!", &nfunDisjBang, @src(), "(disj! t & vals)", "Removes vals from t, a transient of a set, in place, and returns t."),
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&transient_type);

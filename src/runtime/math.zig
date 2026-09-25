@@ -166,7 +166,7 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
         .{ .name = "tanh", .fop = &c.tanh, .doc = "Returns the hyperbolic tangent of x." },
         .{ .name = "exp", .fop = &c.exp, .doc = "Returns e to the power of x." },
         .{ .name = "exp2", .fop = &c.exp2, .doc = "Returns 2 to the power of x." },
-        .{ .name = "log1p", .fop = &c.log1p, .doc = "Returns (log base e of x) + 1 more accurately than (+ (math/log x) 1)" },
+        .{ .name = "log1p", .fop = &c.log1p, .doc = "Returns the natural logarithm of 1 + x, more accurately than `(math/log (+ 1 x))` for small x." },
         .{ .name = "log", .fop = &c.log, .doc = "Returns the natural logarithm of x." },
         .{ .name = "log10", .fop = &c.log10, .doc = "Returns the log base 10 of x." },
         .{ .name = "log2", .fop = &c.log2, .doc = "Returns the log base 2 of x." },
@@ -243,21 +243,21 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
     };
 
     const written = comptime [_]corefn.Entry{
-        corefn.reg("not", &nfunNot, @src(), "(not x)", "Returns the boolean inverse of x."),
+        corefn.reg("not", &nfunNot, @src(), "(not val)", "Returns true if val is nil or false, and false otherwise."),
         corefn.reg("math/random", &nfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
-        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Sets the seed for the random number generator. seed should be " ++
-            "an integer or a buffer."),
-        corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng [seed])", "Creates a Pseudo-Random number generator, with an optional seed. " ++
-            "The seed should be an unsigned 32 bit integer or a buffer. " ++
+        corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Sets the seed for the random number generator. seed is " ++
+            "an integer or a byte sequence."),
+        corefn.reg("math/rng", &nfunRngMake, @src(), "(math/rng)\n(math/rng seed)", "Creates a pseudo-random number generator, with an optional seed. " ++
+            "The seed is an integer or a byte sequence. " ++
             "Do not use this for cryptography. Returns a core/rng abstract type."),
         corefn.reg("math/rng-uniform", &nfunRngUniform, @src(), "(math/rng-uniform rng)", "Extracts a random number in the range [0, 1) from the RNG."),
-        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng [max])", "Extracts a random integer in the range [0, max) for max > 0 from the RNG.  " ++
-            "If max is 0, returns 0.  If no max is given, the default is 2^31 - 1."),
-        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n [buf])", "Gets n random bytes and puts them in a buffer. Creates a new buffer if no buffer is " ++
-            "provided, otherwise appends to the given buffer. Returns the buffer."),
+        corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng)\n(math/rng-int rng max)", "Extracts a random integer in the range [0, max) for max > 0 from the RNG. " ++
+            "If max is 0, returns 0. If no max is given, the default is 2^31 - 1."),
+        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n)\n(math/rng-buffer rng n ds)", "Gets n random bytes and puts them in a buffer. Creates a new buffer if ds is " ++
+            "not provided, otherwise appends to ds. Returns the buffer."),
         corefn.reg("math/gcd", &nfunGcd, @src(), "(math/gcd x y)", "Returns the greatest common divisor between x and y."),
         corefn.reg("math/lcm", &nfunLcm, @src(), "(math/lcm x y)", "Returns the least common multiple of x and y."),
-        corefn.reg("math/frexp", &nfunFrexp, @src(), "(math/frexp x)", "Returns a tuple of (mantissa, exponent) from number."),
+        corefn.reg("math/frexp", &nfunFrexp, @src(), "(math/frexp x)", "Returns a vector of the mantissa and the exponent of x."),
         corefn.reg("math/ldexp", &nfunLdexp, @src(), "(math/ldexp m e)", "Creates a new number from a mantissa and an exponent."),
     };
 

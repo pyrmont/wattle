@@ -88,15 +88,15 @@ const timeint_t = if (windows) i32 else i64;
 /// The three registrations, which `os.zig` installs.
 pub fn entries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date [local])", "Gets the broken down date expressed as the number " ++
-            "of seconds since January 1, 1970, the Unix epoch. " ++
-            "Returns a real number. " ++
-            "Date is given in UTC unless local is truthy, in which case the " ++
-            "date is computed for the local timezone.\n\n" ++
-            "Inverse function to os/date."),
-        corefn.reg("os/date", &nfunDate, @src(), "(os/date [time [local]])", "Returns the given time as a date map, or the current time if time is not given. " ++
-            "Date is given in UTC unless local is truthy, in which case the date is formatted for " ++
-            "the local timezone. Returns a map with following key values. Note that all numbers are 0-indexed.\n\n" ++
+        corefn.reg("os/mktime", &nfunMktime, @src(), "(os/mktime date)\n(os/mktime date local)", "Returns the number of seconds since January 1, 1970, the Unix epoch, " ++
+            "as a number, for date, a table or map in the form ^os/date returns. " ++
+            "Fields that are absent default to 0, and :dst to unknown. Field values must be integers. " ++
+            "date is read as UTC unless local is truthy, in which case it is read in the local timezone.\n\n" ++
+            "Inverse of ^os/date."),
+        corefn.reg("os/date", &nfunDate, @src(), "(os/date)\n(os/date time)\n(os/date time local)", "Returns the given time as a date map, or the current time if time is not given. " ++
+            "time is an integer number of seconds since the Unix epoch. " ++
+            "The date is in UTC unless local is truthy, in which case it is for " ++
+            "the local timezone. Returns a map with the following key values. Note that all numbers except :year are 0-indexed.\n\n" ++
             "* :seconds - number of seconds [0-61]\n\n" ++
             "* :minutes - number of minutes [0-59]\n\n" ++
             "* :hours - number of hours [0-23]\n\n" ++
@@ -105,13 +105,15 @@ pub fn entries() []const corefn.Entry {
             "* :year - years since year 0 (e.g. 2019)\n\n" ++
             "* :week-day - day of the week [0-6]\n\n" ++
             "* :year-day - day of the year [0-365]\n\n" ++
-            "* :dst - if Day Light Savings is in effect\n\n" ++
-            "You can set local timezone by setting TZ environment variable. " ++
+            "* :dst - true if daylight saving time is in effect, otherwise false\n\n" ++
+            "The local timezone is set with the TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
-        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt [time [local]])", "Formats the given time as a string, or the current time if time is not given. " ++
+        corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt)\n(os/strftime fmt time)\n(os/strftime fmt time local)", "Formats the given time as a string, or the current time if time is not given. " ++
+            "time is an integer number of seconds since the Unix epoch. " ++
             "The time is formatted according to the same rules as the ISO C89 function strftime(). " ++
-            "The time is formatted in UTC unless local is truthy, in which case the date is formatted for " ++
-            "the local timezone. You can set local timezone by setting TZ environment variable. " ++
+            "Only the conversion specifiers a, A, b, B, c, d, H, I, j, m, M, p, S, U, w, W, x, X, y, Y, Z and % are accepted, and any other raises an error. " ++
+            "The time is formatted in UTC unless local is truthy, in which case it is formatted for " ++
+            "the local timezone. The local timezone is set with the TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
     };
     return &list;

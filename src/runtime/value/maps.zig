@@ -524,10 +524,10 @@ pub fn kindOf(header: *const abi.GCObject) ?Kind {
 pub fn lib(env: *tables.Table) raise.Error!void {
     const bindings = comptime [_]corefn.Entry{
         corefn.reg("hash-map", &nfunHashMap, @src(), "(hash-map & kvs)", "Creates a new persistent map from alternating keys and values. The pairs are added in order, so a later value for a key replaces an earlier one, and a nil value removes its key. A key cannot be nil or NaN."),
-        corefn.reg("hash-set", &nfunHashSet, @src(), "(hash-set & xs)", "Creates a new persistent set containing the elements xs. An element cannot be nil or NaN."),
+        corefn.reg("hash-set", &nfunHashSet, @src(), "(hash-set & vals)", "Creates a new persistent set containing vals. An element cannot be nil or NaN."),
         corefn.reg("map/to-table", &nfunMapTotable, @src(), "(map/to-table m)", "Converts a map to a table. Returns a new table."),
-        corefn.reg("dissoc", &nfunDissoc, @src(), "(dissoc map & ks)", "Returns a new persistent map without the keys ks. map is unchanged."),
-        corefn.reg("disj", &nfunDisj, @src(), "(disj set & xs)", "Returns a new persistent set without the elements xs. set is unchanged."),
+        corefn.reg("dissoc", &nfunDissoc, @src(), "(dissoc m & ks)", "Returns a new persistent map without the keys ks. A key not in m is ignored. m is unchanged."),
+        corefn.reg("disj", &nfunDisj, @src(), "(disj s & vals)", "Returns a new persistent set without vals. s is unchanged."),
     };
     corefn.install(env, bindings);
     try registry.registerAbstractType(&set_type);

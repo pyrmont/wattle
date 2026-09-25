@@ -335,8 +335,8 @@ pub fn funcframeTail(fiber: *Fiber, func: *functions.Function) ArityError!void {
 /// `try` is a compile error.
 pub fn lib(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("fiber/new", &nfunFiberNew, @src(), "(fiber/new func [sigmask [env]])",
-            \\Creates a new fiber with function body func. Can optionally take a set of signals sigmask to capture from child fibers, and an environment table env. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to ^ev/go, these "blocked" signals result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
+        corefn.reg("fiber/new", &nfunFiberNew, @src(), "(fiber/new f)\n(fiber/new f sigmask)\n(fiber/new f sigmask env)",
+            \\Creates a new fiber with function body f. Can optionally take a set of signals sigmask to capture from child fibers, and an environment table env. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to ^ev/go, these "blocked" signals result in messages being sent to the supervisor channel. The default sigmask is :y. For example,
             \\
             \\    (fiber/new myfun :e123)
             \\
@@ -358,7 +358,7 @@ pub fn lib(env: *tables.Table) raise.Error!void {
             \\* :p - the environment table's prototype is the current environment table
         ),
         corefn.reg("fiber/status", &nfunFiberStatus, @src(), "(fiber/status fib)",
-            \\Gets the status of a fiber. The status is one of:
+            \\Gets the status of fib. The status is one of:
             \\
             \\* :dead - the fiber has finished
             \\* :error - the fiber has errored out
@@ -374,17 +374,17 @@ pub fn lib(env: *tables.Table) raise.Error!void {
             "ancestor that does not have a parent. Note that a root fiber " ++
             "is also a task fiber."),
         corefn.reg("fiber/current", &nfunFiberCurrent, @src(), "(fiber/current)", "Returns the currently running fiber."),
-        corefn.reg("fiber/maxstack", &nfunFiberMaxstack, @src(), "(fiber/maxstack fib)", "Gets the maximum stack size in Wattle values allowed for a fiber. While memory for " ++
-            "the fiber's stack is not allocated up front, the fiber does not allocate more " ++
-            "than this amount and throws a stack-overflow error if more memory is needed. "),
-        corefn.reg("fiber/setmaxstack", &nfunFiberSetmaxstack, @src(), "(fiber/setmaxstack fib maxstack)", "Sets the maximum stack size in Wattle values for a fiber. By default, the " ++
-            "maximum stack size is usually 8192."),
-        corefn.reg("fiber/getenv", &nfunFiberGetenv, @src(), "(fiber/getenv fiber)", "Gets the environment for a fiber. Returns nil if no such table is " ++
+        corefn.reg("fiber/maxstack", &nfunFiberMaxstack, @src(), "(fiber/maxstack fib)", "Gets the maximum stack size in Wattle values allowed for fib. While memory for " ++
+            "the stack of fib is not allocated up front, fib does not allocate more " ++
+            "than this amount and raises a stack-overflow error if more memory is needed. "),
+        corefn.reg("fiber/setmaxstack", &nfunFiberSetmaxstack, @src(), "(fiber/setmaxstack fib n)", "Sets the maximum stack size in Wattle values for fib to n, a non-negative integer, and returns fib. " ++
+            "The default maximum stack size is 2147483647."),
+        corefn.reg("fiber/getenv", &nfunFiberGetenv, @src(), "(fiber/getenv fib)", "Gets the environment for fib. Returns nil if no such table is " ++
             "set yet."),
-        corefn.reg("fiber/setenv", &nfunFiberSetenv, @src(), "(fiber/setenv fiber table)", "Sets the environment table for a fiber. Setting it to nil removes the current " ++
+        corefn.reg("fiber/setenv", &nfunFiberSetenv, @src(), "(fiber/setenv fib env)", "Sets the environment for fib to env, a table, and returns fib. Setting it to nil removes the current " ++
             "environment."),
-        corefn.reg("fiber/can-resume?", &nfunFiberCanResume, @src(), "(fiber/can-resume? fiber)", "Checks whether a fiber is finished and cannot be resumed."),
-        corefn.reg("fiber/last-value", &nfunFiberLastValue, @src(), "(fiber/last-value fiber)", "Gets the last value returned or signaled from the fiber."),
+        corefn.reg("fiber/can-resume?", &nfunFiberCanResume, @src(), "(fiber/can-resume? fib)", "Checks whether fib can be resumed. Returns false once fib is dead or has errored."),
+        corefn.reg("fiber/last-value", &nfunFiberLastValue, @src(), "(fiber/last-value fib)", "Gets the last value returned or signaled from fib. Returns nil if fib has not run."),
     };
     corefn.install(env, entries);
 }

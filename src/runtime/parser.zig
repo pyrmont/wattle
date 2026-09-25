@@ -213,16 +213,15 @@ pub fn libParse(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("parser/new", &nfunParserNew, @src(), "(parser/new)", "Creates and returns a new parser object. Parsers are state machines " ++
             "that can receive bytes and generate a stream of values."),
-        corefn.reg("parser/clone", &nfunParserClone, @src(), "(parser/clone p)", "Creates a deep clone of a parser that is identical to the input parser. " ++
+        corefn.reg("parser/clone", &nfunParserClone, @src(), "(parser/clone parser)", "Creates a deep clone of a parser that is identical to the input parser. " ++
             "This cloned parser can be used to continue parsing from a good checkpoint " ++
             "if parsing later fails. Returns a new parser."),
         corefn.reg("parser/has-more", &nfunParserHasMore, @src(), "(parser/has-more parser)", "Checks whether the parser has more values in the value queue."),
-        corefn.reg("parser/produce", &nfunParserProduce, @src(), "(parser/produce parser [wrap])", "Dequeues the next value in the parse queue. Will return nil if " ++
-            "no parsed values are in the queue, otherwise will dequeue the " ++
-            "next value. If wrap is truthy, will return a 1-element tuple that " ++
+        corefn.reg("parser/produce", &nfunParserProduce, @src(), "(parser/produce parser)\n(parser/produce parser wrap)", "Dequeues the next value in the parse queue. Returns nil if " ++
+            "no parsed values are in the queue. If wrap is truthy, returns a 1-element tuple that " ++
             "wraps the result. This tuple can be used for source-mapping " ++
             "purposes."),
-        corefn.reg("parser/consume", &nfunParserConsume, @src(), "(parser/consume parser bytes [index])", "Inputs bytes into the parser and parses them. Will not throw errors " ++
+        corefn.reg("parser/consume", &nfunParserConsume, @src(), "(parser/consume parser bytes)\n(parser/consume parser bytes index)", "Inputs bytes into the parser and parses them. Does not raise an error " ++
             "if there is a parse error. Starts at the byte index given by index. Returns " ++
             "the number of bytes read."),
         corefn.reg("parser/byte", &nfunParserByte, @src(), "(parser/byte parser b)", "Inputs a single byte b into the parser byte stream. Returns the parser."),
@@ -230,15 +229,16 @@ pub fn libParse(env: *tables.Table) void {
             "that error. Otherwise, returns nil. Also flushes the parser state and parser " ++
             "queue, so be sure to handle everything in the queue before calling " ++
             "^parser/error."),
-        corefn.reg("parser/status", &nfunParserStatus, @src(), "(parser/status parser)", "Gets the current status of the parser state machine. The status will " ++
-            "be one of:\n\n" ++
+        corefn.reg("parser/status", &nfunParserStatus, @src(), "(parser/status parser)", "Gets the current status of the parser state machine. The status is " ++
+            "one of:\n\n" ++
             "* :pending - a value is being parsed.\n\n" ++
             "* :error - a parsing error was encountered.\n\n" ++
-            "* :root - the parser can either read more values or safely terminate."),
+            "* :root - the parser can either read more values or safely terminate.\n\n" ++
+            "* :dead - the parser has been ended with ^parser/eof."),
         corefn.reg("parser/flush", &nfunParserFlush, @src(), "(parser/flush parser)", "Clears the parser state and parse queue. Can be used to reset the parser " ++
             "if an error was encountered. Does not reset the line and column counter, so " ++
             "to begin parsing in a new context, create a new parser."),
-        corefn.reg("parser/state", &nfunParserState, @src(), "(parser/state parser [key])", "Returns a representation of the internal state of the parser. If a key is passed, " ++
+        corefn.reg("parser/state", &nfunParserState, @src(), "(parser/state parser)\n(parser/state parser key)", "Returns a representation of the internal state of the parser. If a key is passed, " ++
             "only that information about the state is returned. Allowed keys are:\n\n" ++
             "* :delimiters - Each byte in the string represents a nested data structure. For example, " ++
             "if the parser state is '([\"', then the parser is in the middle of parsing a " ++
@@ -246,13 +246,13 @@ pub fn libParse(env: *tables.Table) void {
             "* :frames - Each table in the array represents a 'frame' in the parser state. Frames " ++
             "contain information about the start of the expression being parsed as well as the " ++
             "type of that expression and some type-specific information."),
-        corefn.reg("parser/where", &nfunParserWhere, @src(), "(parser/where parser [line [col]])", "Returns the current line number and column of the parser's internal state. If line is " ++
+        corefn.reg("parser/where", &nfunParserWhere, @src(), "(parser/where parser)\n(parser/where parser line)\n(parser/where parser line col)", "Returns the current line number and column of the parser's internal state. If line is " ++
             "provided, the current line number of the parser is first set to that value. If column is " ++
             "also provided, the current column number of the parser is also first set to that value."),
-        corefn.reg("parser/eof", &nfunParserEof, @src(), "(parser/eof parser)", "Indicates to the parser that the end of file was reached. This puts the parser in the :dead state."),
-        corefn.reg("parser/insert", &nfunParserInsert, @src(), "(parser/insert parser value)", "Inserts a value into the parser. This means that the parser state can be manipulated " ++
-            "in between chunks of bytes. This would allow a user to add extra elements to arrays " ++
-            "and tuples, for example. Returns the parser."),
+        corefn.reg("parser/eof", &nfunParserEof, @src(), "(parser/eof parser)", "Indicates to the parser that the end of file was reached. This puts the parser in the :dead state, or in the :error state if a value is unfinished."),
+        corefn.reg("parser/insert", &nfunParserInsert, @src(), "(parser/insert parser val)", "Inserts val into the parser. This means that the parser state can be manipulated " ++
+            "in between chunks of bytes. This allows extra elements to be added to an array " ++
+            "or a tuple being parsed, for example. Returns the parser."),
     };
     corefn.install(env, entries);
 }

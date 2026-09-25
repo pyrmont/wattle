@@ -379,30 +379,30 @@ pub fn entries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/execute", &nfunExecute, @src(), "(os/execute args [flags [env]])", "Executes a program on the system and returns the exit code. args is an array/tuple " ++
+            corefn.reg("os/execute", &nfunExecute, @src(), "(os/execute ind)\n(os/execute ind flags)\n(os/execute ind flags env)", "Executes a program on the system and returns the exit code. ind is an indexed type " ++
                 "of strings. The first string is the name of the program and the remainder are " ++
                 "arguments passed to the program. flags is a keyword made from the following " ++
                 "characters that modifies how the program executes:\n" ++
                 "* :e - enables passing an environment to the program. Without 'e', the " ++
                 "current environment is inherited.\n" ++
                 "* :p - allows searching the current PATH for the program to execute. " ++
-                "Without this flag, the first element of args must be an absolute path.\n" ++
+                "Without this flag, the first element of ind must be an absolute path.\n" ++
                 "* :x - raises error if exit code is non-zero.\n" ++
                 "* :d - prevents the garbage collector terminating the program (if still running) " ++
                 "and calling the equivalent of ^os/proc-wait (allows zombie processes).\n" ++
-                "env is a table/struct mapping environment variables to values. It can also " ++
-                "contain the keys :in, :out, and :err, which allow redirecting stdio in the " ++
+                "env is a table or map mapping environment variable names to values. It can also " ++
+                "contain the key :cd, a string naming the working directory of the subprocess, and the keys :in, :out, and :err, which allow redirecting stdio in the " ++
                 "subprocess. :in, :out, and :err should be core/file or core/stream values. " ++
                 "If core/stream values are used, the caller is responsible for ensuring pipes do not " ++
                 "cause the program to block and deadlock."),
-            corefn.reg("os/spawn", &nfunSpawn, @src(), "(os/spawn args [flags [env]])", "Executes a program on the system and returns a core/process value representing the " ++
+            corefn.reg("os/spawn", &nfunSpawn, @src(), "(os/spawn ind)\n(os/spawn ind flags)\n(os/spawn ind flags env)", "Executes a program on the system and returns a core/process value representing the " ++
                 "spawned subprocess. Takes the same arguments as ^os/execute but does not wait for " ++
                 "the subprocess to complete. Unlike ^os/execute, the value `:pipe` can be used for " ++
                 ":in, :out and :err keys in env. If used, the returned core/process will have a " ++
                 "writable stream in the :in field and readable streams in the :out and :err fields. " ++
                 "On non-Windows systems, the subprocess PID will be in the :pid field. The caller is " ++
                 "responsible for waiting on the process (e.g. by calling ^os/proc-wait on the " ++
-                "returned core/process value) to avoid creating zombie process. After the subprocess " ++
+                "returned core/process value) to avoid creating zombie processes. After the subprocess " ++
                 "completes, the exit value is in the :return-code field. If flags includes 'x', a " ++
                 "non-zero exit code will cause a waiting fiber to raise an error. The use of " ++
                 "`:pipe` may fail if there are too many active file descriptors. The caller is " ++
@@ -410,13 +410,14 @@ pub fn entries() []const corefn.Entry {
                 "^os/proc-close). Similar to ^os/execute, the caller is responsible for ensuring " ++
                 "pipes do not cause the program to block and deadlock. As a special case, the stream passed to `:err` " ++
                 "can be the keyword `:out` to redirect stderr to stdout in the subprocess."),
-            corefn.reg("os/shell", &nfunShell, @src(), "(os/shell str)", "Passes a command string str directly to the system shell."),
-            corefn.reg("os/posix-fork", &nfunPosixFork, @src(), "(os/posix-fork)", "Makes a `fork` system call and creates a new process. Returns nil if in the new process, otherwise a core/process object (as returned by os/spawn). " ++
+            corefn.reg("os/shell", &nfunShell, @src(), "(os/shell)\n(os/shell str)", "Passes the command string str directly to the system shell and returns its status as an integer. " ++
+                "With no argument, returns a boolean that is true if a shell is available."),
+            corefn.reg("os/posix-fork", &nfunPosixFork, @src(), "(os/posix-fork)", "Makes a `fork` system call and creates a new process. Returns nil if in the new process, otherwise a core/process object (as returned by ^os/spawn). " ++
                 "Not supported on all systems (POSIX and Plan 9 only)."),
-            corefn.reg("os/posix-exec", &nfunPosixExec, @src(), "(os/posix-exec args [flags [env]])", "Uses the execvpe or execve system calls to replace the current process with an interface similar to os/execute. " ++
-                "However, instead of creating a subprocess, the current process is replaced. Is not supported on Windows, and " ++
+            corefn.reg("os/posix-exec", &nfunPosixExec, @src(), "(os/posix-exec ind)\n(os/posix-exec ind flags)\n(os/posix-exec ind flags env)", "Uses the execvp or execv system calls to replace the current process with an interface similar to ^os/execute. " ++
+                "However, instead of creating a subprocess, the current process is replaced. Raises an error on Windows, and " ++
                 "does not allow redirection of stdio."),
-            corefn.reg("os/posix-chroot", &nfunPosixChroot, @src(), "(os/posix-chroot dirname)", "Calls `chroot` to change the root directory to dirname. " ++
+            corefn.reg("os/posix-chroot", &nfunPosixChroot, @src(), "(os/posix-chroot path)", "Calls `chroot` to change the root directory to path. " ++
                 "Not supported on all systems (POSIX only)."),
             // Process management is not sandboxed: a build that cannot create
             // processes can still be handed one by an embedder's nfunction.
@@ -425,7 +426,7 @@ pub fn entries() []const corefn.Entry {
                 "core/process value, will raise an error. When creating subprocesses using " ++
                 "^os/spawn, this function should be called on the returned value to avoid zombie " ++
                 "processes."),
-            corefn.reg("os/proc-kill", &nfunProcKill, @src(), "(os/proc-kill proc [wait [signal]])", "Kills the subprocess proc by sending SIGKILL to it on POSIX systems, or by closing " ++
+            corefn.reg("os/proc-kill", &nfunProcKill, @src(), "(os/proc-kill proc)\n(os/proc-kill proc wait)\n(os/proc-kill proc wait signal)", "Kills the subprocess proc by sending SIGKILL to it on POSIX systems, or by closing " ++
                 "the process handle on Windows. If proc has already completed, raises an error. If " ++
                 "wait is truthy, will wait for proc to complete and return the exit code (this " ++
                 "will raise an error if proc is being waited for). Otherwise, returns proc. If " ++
@@ -438,8 +439,10 @@ pub fn entries() []const corefn.Entry {
             corefn.reg("os/getpid", &nfunProcGetpid, @src(), "(os/getpid)", "Gets the process ID of the current process."),
         };
         if (has_ev) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/sigaction", &nfunSigaction, @src(), "(os/sigaction which [handler [interrupt-interpreter]])", "Adds a signal handler for a given action. Use nil for the handler argument to remove a signal handler. " ++
-                "All signal handlers are the same as supported by ^os/proc-kill."),
+            corefn.reg("os/sigaction", &nfunSigaction, @src(), "(os/sigaction signal)\n(os/sigaction signal handler)\n(os/sigaction signal handler interrupt)", "Adds a signal handler for signal, a keyword. handler is a function that takes no arguments and is " ++
+                "called on the main thread when the signal arrives. Use nil for handler to remove a signal handler. " ++
+                "If interrupt is true, the handler also interrupts the running interpreter, which raises an error if the build does not support it. " ++
+                "The signal keywords are the same as supported by ^os/proc-kill. Raises an error on Windows. Returns nil."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -543,13 +546,13 @@ pub fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) i32 {
 pub fn evEntries() []const corefn.Entry {
     if (!has_ev) return &.{};
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/pipe", &nfunPipe, @src(), "(os/pipe [flags])", "Creates a readable stream and a writable stream that are connected. Returns a two-element " ++
-            "tuple where the first element is a readable stream and the second element is the writable " ++
+        corefn.reg("os/pipe", &nfunPipe, @src(), "(os/pipe)\n(os/pipe flags)", "Creates a readable stream and a writable stream that are connected. Returns a two-element " ++
+            "vector where the first element is a readable stream and the second element is the writable " ++
             "stream. flags is a keyword set of flags to disable non-blocking settings on the ends of the pipe. " ++
             "This may be desired if passing the pipe to a subprocess with ^os/spawn.\n\n" ++
             "* :W - sets the writable end of the pipe to a blocking stream.\n" ++
             "* :R - sets the readable end of the pipe to a blocking stream.\n\n" ++
-            "By default, both ends of the pipe are non-blocking for use with the `ev` module."),
+            "By default, both ends of the pipe are non-blocking for use with the event loop."),
     };
     return &list;
 }

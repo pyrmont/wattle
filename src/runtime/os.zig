@@ -672,14 +672,14 @@ fn fileTimeToInt(ft: c.FILETIME) i64 {
 /// last.
 fn hrtimeEntries() []const corefn.Entry {
     const list = comptime [_]corefn.Entry{
-        corefn.reg("os/clock", &nfunClock, @src(), "(os/clock [source [format]])", "Returns the current time of the requested clock source.\n\n" ++
+        corefn.reg("os/clock", &nfunClock, @src(), "(os/clock)\n(os/clock source)\n(os/clock source format)", "Returns the current time of the requested clock source.\n\n" ++
             "The source argument selects the clock source to use, when not specified the default " ++
             "is `:realtime`:\n" ++
             "- :realtime: Returns the real (i.e., wall-clock) time. This clock is affected by discontinuous " ++
             "  jumps in the system time\n" ++
             "- :monotonic: Returns the number of whole + fractional seconds since some fixed point in " ++
             "  time. The clock is guaranteed to be non-decreasing in real time.\n" ++
-            "- :cputime: Returns the CPU time consumed by this process  (i.e. all threads in the process)\n" ++
+            "- :cputime: Returns the CPU time consumed by this process (i.e. all threads in the process)\n" ++
             "The format argument selects the type of output, when not specified the default is `:double`:\n" ++
             "- :double: Returns the number of seconds + fractional seconds as a double\n" ++
             "- :int: Returns the number of seconds as an integer\n" ++
@@ -696,7 +696,7 @@ fn miscEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n [buf])", "Gets or appends n bytes of good quality random data provided by the OS. Returns a new buffer or buf."),
+            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n)\n(os/cryptorand n ds)", "Gets n bytes of good quality random data provided by the OS. Appends them to ds, a buffer, if given, otherwise to a new buffer. Returns that buffer."),
         };
         break :blk acc[0..acc.len].*;
     };
@@ -731,25 +731,26 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/exit", &nfunExit, @src(), "(os/exit [x [force]])", "Exits from Wattle with an exit code equal to x. If x is not an integer, " ++
-                "exits with status 1. If force is truthy will exit immediately and " ++
-                "skip cleanup code."),
-            corefn.reg("os/which", &nfunWhich, @src(), "(os/which [test])", "Checks the current operating system. If test is nil or unset, returns one of:\n\n" ++
-                "* :windows\n\n* :cygwin\n\n* :macos\n\n" ++
-                "* :web - Web assembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
+            corefn.reg("os/exit", &nfunExit, @src(), "(os/exit)\n(os/exit code)\n(os/exit code force)", "Exits from Wattle with the exit status code, 0 if omitted. If code is not an integer, " ++
+                "exits with status 1. If force is truthy, exits immediately and " ++
+                "skips cleanup code."),
+            corefn.reg("os/which", &nfunWhich, @src(), "(os/which)\n(os/which name)", "Checks the current operating system. If name is nil or false or omitted, returns one of:\n\n" ++
+                "* :windows\n\n* :macos\n\n" ++
+                "* :web - WebAssembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
                 "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
-                "* :dragonfly\n\n* :bsd\n\n" ++
-                "* :posix - A POSIX compatible system (default)\n\n" ++
-                "May also return a custom keyword specified at build time. Is test is truthy, will check if the current operating system equals test and return true if they are the same, false otherwise."),
-            corefn.reg("os/arch", &nfunArch, @src(), "(os/arch)", "Checks the ISA that Wattle was compiled for. Returns one of:\n\n" ++
+                "* :dragonfly\n\n* :illumos\n\n" ++
+                "* :posix - Any other POSIX compatible system\n\n" ++
+                "May also return a custom keyword specified at build time. If name is truthy, it must be a keyword, and the function returns true if the current operating system equals name and false otherwise."),
+            corefn.reg("os/arch", &nfunArch, @src(), "(os/arch)", "Gets the ISA that Wattle was compiled for. Returns one of:\n\n" ++
                 "* :x86\n\n* :x64\n\n* :arm\n\n* :aarch64\n\n* :riscv32\n\n* :riscv64\n\n" ++
-                "* :sparc\n\n* :wasm\n\n* :s390\n\n* :s390x\n\n* :unknown\n"),
+                "* :sparc\n\n* :ppc\n\n* :ppc64\n\n* :wasm\n\n* :s390x\n\n* :unknown\n\n" ++
+                "May also return a custom keyword specified at build time."),
             corefn.reg("os/compiler", &nfunCompiler, @src(), "(os/compiler)", "Gets the compiler used to compile the interpreter. Returns :zig."),
         };
         if (!reduced_os) {
             acc = acc ++ [_]corefn.Entry{
-                corefn.reg("os/cpu-count", &nfunCpuCount, @src(), "(os/cpu-count [dflt])", "Gets an approximate number of CPUs available on for this process to use. If " ++
-                    "unable to get an approximation, will return a default value dflt."),
+                corefn.reg("os/cpu-count", &nfunCpuCount, @src(), "(os/cpu-count)\n(os/cpu-count dflt)", "Gets an approximate number of CPUs available for this process to use. If " ++
+                    "the number cannot be determined, returns dflt, or nil if dflt is not given."),
             };
         }
         break :blk acc[0..acc.len].*;
@@ -763,13 +764,14 @@ fn tailEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/sleep", &nfunSleep, @src(), "(os/sleep n)", "Suspends the program for n seconds. n can be a real number. Returns " ++
+            corefn.reg("os/sleep", &nfunSleep, @src(), "(os/sleep n)", "Suspends the whole program for n seconds without yielding to the event loop (see ^ev/sleep for a yielding version). " ++
+                "n is a non-negative real number. Raises an error if n is negative, NaN or out of range. Returns " ++
                 "nil."),
-            corefn.reg("os/isatty", &nfunIsatty, @src(), "(os/isatty [file])", "Returns true if file is a terminal. If file is not specified, " ++
-                "it will default to standard output."),
+            corefn.reg("os/isatty", &nfunIsatty, @src(), "(os/isatty)\n(os/isatty file)", "Returns true if file, a core/file, is a terminal. If file is not specified, " ++
+                "it defaults to standard output. Raises an error if file is not a core/file or is closed."),
         };
         if (!no_locales) acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale [locale [category]])", "Sets the system locale, which affects how dates and numbers are formatted. " ++
+            corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale)\n(os/setlocale locale)\n(os/setlocale locale category)", "Sets the system locale, which affects how dates and numbers are formatted. " ++
                 "Passing nil to locale will return the current locale. Category can be one of:\n\n" ++
                 " * :all (default)\n * :collate\n * :ctype\n * :monetary\n * :numeric\n * :time\n\n" ++
                 "Returns the new locale if set successfully, otherwise nil. Note that this will affect " ++
@@ -779,8 +781,8 @@ fn tailEntries() []const corefn.Entry {
             corefn.reg("os/environ", &nfunEnviron, @src(), "(os/environ)", "Gets a copy of the OS environment table."),
         };
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/getenv", &nfunGetenv, @src(), "(os/getenv variable [dflt])", "Gets the string value of an environment variable."),
-            corefn.reg("os/setenv", &nfunSetenv, @src(), "(os/setenv variable value)", "Sets an environment variable. A nil value removes it. " ++
+            corefn.reg("os/getenv", &nfunGetenv, @src(), "(os/getenv name)\n(os/getenv name dflt)", "Gets the value of the environment variable name, a string, as a string. Returns dflt, or nil if dflt is not given, when the variable is not set."),
+            corefn.reg("os/setenv", &nfunSetenv, @src(), "(os/setenv name)\n(os/setenv name val)", "Sets the environment variable name to val. A nil or omitted val removes it. " ++
                 "On Windows an empty string removes it as well, because the platform has no way to hold a variable whose value is " ++
                 "empty; on every other platform an empty string is stored and read back."),
         };

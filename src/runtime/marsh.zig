@@ -287,17 +287,19 @@ pub fn envLookupInto(
 /// Registers `marshal`, `unmarshal` and `env-lookup`.
 pub fn libMarsh(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal x [reverse-lookup [buffer [no-cycles]]])", "Marshals a value into a buffer and returns the buffer. The buffer " ++
+        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal val)\n(marshal val reverse-lookup)\n(marshal val reverse-lookup ds)\n(marshal val reverse-lookup ds no-cycles)", "Marshals val into a buffer and returns the buffer. The buffer " ++
             "can then later be unmarshalled to reconstruct the initial value. " ++
-            "Optionally, one can pass in a reverse lookup table to not marshal " ++
+            "The bytes are appended to ds, a buffer, if it is given. " ++
+            "Optionally, one can pass in reverse-lookup, a table, to not marshal " ++
             "aliased values that are found in the table. Then a forward " ++
             "lookup table can be used to recover the original value when " ++
-            "unmarshalling."),
-        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal buffer [lookup])", "Unmarshals a value from a buffer. An optional lookup table " ++
+            "unmarshalling. A nil reverse-lookup raises an error. " ++
+            "If no-cycles is truthy, cycles in val are not tracked, so marshalling a value that contains one raises an error."),
+        corefn.reg("unmarshal", &nfunUnmarshal, @src(), "(unmarshal bytes)\n(unmarshal bytes lookup)", "Unmarshals a value from bytes, a string or a buffer. An optional lookup table " ++
             "can be provided to allow for aliases to be resolved. Returns the value " ++
             "unmarshalled from the buffer."),
         corefn.reg("env-lookup", &nfunEnvLookup, @src(), "(env-lookup env)", "Creates a forward lookup table for unmarshalling from an environment. " ++
-            "To create a reverse lookup table, use the invert function to swap keys " ++
+            "To create a reverse lookup table, use ^invert to swap keys " ++
             "and values in the returned table."),
     };
     corefn.install(env, entries);

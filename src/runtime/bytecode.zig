@@ -650,19 +650,20 @@ pub fn invalidError(status: verify.Verdict) [*:0]const u8 {
 pub fn libAsm(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("asm", &nfunAsm, @src(), "(asm assembly)", "Returns a new function that is the compiled result of the assembly.\n" ++
-            "The syntax for the assembly is Janet's, documented at janet-lang.org, and should correspond\n" ++
-            "to the return value of disasm. Will throw an\n" ++
+            "The assembly is a map or table and should correspond\n" ++
+            "to the return value of ^disasm. Each instruction is a list or vector\n" ++
+            "whose first element is a symbol, so the assembly is quoted. Raises an\n" ++
             "error on invalid assembly."),
-        corefn.reg("disasm", &nfunDisasm, @src(), "(disasm func [field])", "Returns assembly that could be used to compile the given function. " ++
-            "func must be a function, not an nfunction. Will throw on error on a badly " ++
-            "typed argument. If given a field name, will only return that part of the function assembly. " ++
+        corefn.reg("disasm", &nfunDisasm, @src(), "(disasm f)\n(disasm f field)", "Returns assembly, a map, that could be used to compile the given function. " ++
+            "f must be a function, not an nfunction. Raises an error on a badly " ++
+            "typed argument. If given a field name, returns only that part of the function assembly, and an unknown field raises an error. " ++
             "Possible fields are:\n\n" ++
             "* :arity - number of required and optional arguments.\n" ++
             "* :min-arity - minimum number of arguments function can be called with.\n" ++
             "* :max-arity - maximum number of arguments function can be called with.\n" ++
             "* :vararg - true if function can take a variable number of arguments.\n" ++
             "* :maparg - true if a map pattern after & receives the variable arguments.\n" ++
-            "* :bytecode - array of parsed bytecode instructions. Each instruction is a tuple.\n" ++
+            "* :bytecode - array of parsed bytecode instructions. Each instruction is a vector.\n" ++
             "* :source - name of source file that this function was compiled from.\n" ++
             "* :name - name of function.\n" ++
             "* :slotcount - how many virtual registers, or slots, this function uses. Corresponds to stack space used by function.\n" ++

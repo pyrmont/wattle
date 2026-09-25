@@ -448,10 +448,10 @@ pub fn gettarget(options: FormOptions) Slot {
 /// Installs `compile` into `env`.
 pub fn libCompile(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("compile", &nfunCompile, @src(), "(compile ast [env [source [lints]]])", "Compiles an Abstract Syntax Tree (ast) into a function. " ++
+        corefn.reg("compile", &nfunCompile, @src(), "(compile ast)\n(compile ast env)\n(compile ast env source)\n(compile ast env source lints)", "Compiles an Abstract Syntax Tree (ast) into a function. " ++
             "Pair the compile function with parsing functionality to implement " ++
             "eval. Returns a new function and does not modify ast. Returns an error " ++
-            "struct with keys :line, :column, and :error if compilation fails. " ++
+            "table with keys :line, :column, and :error if compilation fails. " ++
             "If a lints array is given, linting messages will be appended to the array. " ++
             "Each message will be a tuple of the form `(level line col message)`."),
     };

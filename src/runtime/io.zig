@@ -298,65 +298,66 @@ pub fn getjfile(argv: []const repr.Value, n: usize) raise.Error!*File {
 /// streams.
 pub fn libIo(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("print", &Print(true, "out", stdoutFile).nfun, @src(), "(print & xs)", "Prints values to the console (standard out). Value are converted " ++
-            "to strings if they are not already. After printing all values, a " ++
-            "newline character is printed. The value of `(dyn :out stdout)` determines " ++
-            "what to push characters to. Expects `(dyn :out stdout)` to be either a core/file or " ++
-            "a buffer. Returns nil."),
-        corefn.reg("prin", &Print(false, "out", stdoutFile).nfun, @src(), "(prin & xs)", "Same as ^print, but does not add trailing newline."),
-        corefn.reg("printf", &Printf(true, "out", stdoutFile).nfun, @src(), "(printf fmt & xs)", "Prints output formatted as if with `(string/format fmt ;xs)` to `(dyn :out stdout)` with a trailing newline."),
+        corefn.reg("print", &Print(true, "out", stdoutFile).nfun, @src(), "(print & xs)", "Prints the string form of each value in xs to `(dyn :out stdout)`, followed by a " ++
+            "newline character. Values are converted to strings if they are not already. " ++
+            "The destination is a core/file, a buffer to append to, or a function called " ++
+            "with the resulting string. Returns nil."),
+        corefn.reg("prin", &Print(false, "out", stdoutFile).nfun, @src(), "(prin & xs)", "Same as ^print, but does not add a trailing newline."),
+        corefn.reg("printf", &Printf(true, "out", stdoutFile).nfun, @src(), "(printf fmt & xs)", "Prints output formatted as if with `(string/format fmt |xs)` to `(dyn :out stdout)` with a trailing newline."),
         corefn.reg("prinf", &Printf(false, "out", stdoutFile).nfun, @src(), "(prinf fmt & xs)", "Like ^printf but with no trailing newline."),
         corefn.reg("eprin", &Print(false, "err", stderrFile).nfun, @src(), "(eprin & xs)", "Same as ^prin, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
         corefn.reg("eprint", &Print(true, "err", stderrFile).nfun, @src(), "(eprint & xs)", "Same as ^print, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
-        corefn.reg("eprintf", &Printf(true, "err", stderrFile).nfun, @src(), "(eprintf fmt & xs)", "Prints output formatted as if with `(string/format fmt ;xs)` to `(dyn :err stderr)` with a trailing newline."),
+        corefn.reg("eprintf", &Printf(true, "err", stderrFile).nfun, @src(), "(eprintf fmt & xs)", "Prints output formatted as if with `(string/format fmt |xs)` to `(dyn :err stderr)` with a trailing newline."),
         corefn.reg("eprinf", &Printf(false, "err", stderrFile).nfun, @src(), "(eprinf fmt & xs)", "Like ^eprintf but with no trailing newline."),
-        corefn.reg("xprint", &XPrint(true).nfun, @src(), "(xprint to & xs)", "Prints to a file or other value explicitly (no dynamic bindings) with a trailing " ++
-            "newline character. The value to print " ++
-            "to is the first argument, and is otherwise the same as ^print. Returns nil."),
-        corefn.reg("xprin", &XPrint(false).nfun, @src(), "(xprin to & xs)", "Prints to a file or other value explicitly (no dynamic bindings). The value to print " ++
-            "to is the first argument, and is otherwise the same as ^prin. Returns nil."),
-        corefn.reg("xprintf", &XPrintf(true).nfun, @src(), "(xprintf to fmt & xs)", "Like ^printf but prints to an explicit file or value to. Returns nil."),
-        corefn.reg("xprinf", &XPrintf(false).nfun, @src(), "(xprinf to fmt & xs)", "Like ^prinf but prints to an explicit file or value to. Returns nil."),
-        corefn.reg("flush", &Flush("out", stdoutFile).nfun, @src(), "(flush)", "Flushes `(dyn :out stdout)` if it is a file, otherwise does nothing."),
-        corefn.reg("eflush", &Flush("err", stderrFile).nfun, @src(), "(eflush)", "Flushes `(dyn :err stderr)` if it is a file, otherwise does nothing."),
-        corefn.reg("file/temp", &nfunTemp, @src(), "(file/temp)", "Opens an anonymous temporary file that is removed on close. " ++
+        corefn.reg("xprint", &XPrint(true).nfun, @src(), "(xprint dest & xs)", "Prints to dest, a core/file, a buffer or a function, with a trailing " ++
+            "newline character. No dynamic bindings are read. Otherwise the same as ^print. Returns nil."),
+        corefn.reg("xprin", &XPrint(false).nfun, @src(), "(xprin dest & xs)", "Prints to dest, a core/file, a buffer or a function. No dynamic bindings are read. " ++
+            "Otherwise the same as ^prin. Returns nil."),
+        corefn.reg("xprintf", &XPrintf(true).nfun, @src(), "(xprintf dest fmt & xs)", "Like ^printf but prints to dest, a core/file, a buffer or a function, instead of `(dyn :out stdout)`. Returns nil."),
+        corefn.reg("xprinf", &XPrintf(false).nfun, @src(), "(xprinf dest fmt & xs)", "Like ^prinf but prints to dest, a core/file, a buffer or a function, instead of `(dyn :out stdout)`. Returns nil."),
+        corefn.reg("flush", &Flush("out", stdoutFile).nfun, @src(), "(flush)", "Flushes `(dyn :out stdout)` if it is a file, otherwise does nothing. Returns nil."),
+        corefn.reg("eflush", &Flush("err", stderrFile).nfun, @src(), "(eflush)", "Flushes `(dyn :err stderr)` if it is a file, otherwise does nothing. Returns nil."),
+        corefn.reg("file/temp", &nfunTemp, @src(), "(file/temp)", "Opens an anonymous temporary file for reading and writing that is removed on close. " ++
             "Raises an error on failure."),
-        corefn.reg("file/open", &nfunFopen, @src(), "(file/open path [mode [buffer-size]])", "Opens a file. path is an absolute or relative path, and " ++
-            "mode is a set of flags indicating the mode to open the file in. " ++
-            "mode is a keyword where each character represents a flag. If the file " ++
-            "cannot be opened, returns nil, otherwise returns the new file handle. " ++
+        corefn.reg("file/open", &nfunFopen, @src(), "(file/open path)\n(file/open path mode)\n(file/open path mode n)", "Opens the file at path, an absolute or relative path. " ++
+            "mode is a keyword of 1 to 10 characters, `:r` by default, where each character " ++
+            "represents a flag. n is the buffer size in bytes, and 0 means unbuffered. " ++
+            "Returns the new file, or nil if the file cannot be opened. " ++
+            "Raises an error if path is a directory. " ++
             "Mode flags:\n\n" ++
             "* r - allow reading from the file\n\n" ++
             "* w - allow writing to the file\n\n" ++
             "* a - append to the file\n\n" ++
             "Following one of the initial flags, 0 or more of the following flags can be appended:\n\n" ++
             "* b - accepted and has no effect: a file is always opened in binary mode\n\n" ++
-            "* + - append to the file instead of overwriting it\n\n" ++
+            "* + - open for update: allow both reading and writing, without appending\n\n" ++
             "* n - error if the file cannot be opened instead of returning nil\n\n" ++
             "See fopen (<stdio.h>, C99) for further details."),
-        corefn.reg("file/close", &nfunFclose, @src(), "(file/close f)", "Closes a file and releases all related resources. Closing a file " ++
+        corefn.reg("file/close", &nfunFclose, @src(), "(file/close file)", "Closes file and releases all related resources. Closing a file " ++
             "after reading prevents a resource leak and lets " ++
-            "other processes read the file."),
-        corefn.reg("file/read", &nfunFread, @src(), "(file/read f what [buf])", "Reads a number of bytes from a file f into a buffer. A buffer buf can " ++
-            "be provided as an optional third argument, otherwise a new buffer " ++
-            "is created. what can either be an integer or a keyword. Returns the " ++
-            "buffer with file contents. " ++
+            "other processes read the file. Returns nil, also if file is already closed. " ++
+            "Raises an error for stdin, stdout and stderr."),
+        corefn.reg("file/read", &nfunFread, @src(), "(file/read file what)\n(file/read file what ds)", "Reads bytes from file into a buffer. If ds, a buffer, is given, the bytes " ++
+            "are appended to it, otherwise a new buffer is created. what is an integer or a keyword. " ++
+            "Returns the buffer, or nil if no bytes were read (never nil for `:all`). " ++
+            "Raises an error if file is closed or not open for reading. " ++
             "Values for what:\n\n" ++
             "* :all - read the whole file\n\n" ++
             "* :line - read up to and including the next newline character\n\n" ++
             "* n (integer) - read up to n bytes from the file"),
-        corefn.reg("file/write", &nfunFwrite, @src(), "(file/write f & bytes)", "Writes to a file f. Each value of bytes must be a " ++
-            "string, buffer, symbol, or keyword. Returns the file."),
-        corefn.reg("file/flush", &nfunFflush, @src(), "(file/flush f)", "Flushes any buffered bytes to the file system. In most files, writes are " ++
-            "buffered for efficiency reasons. Returns the file handle."),
-        corefn.reg("file/seek", &nfunFseek, @src(), "(file/seek f [whence [n]])", "Jumps to a relative location in the file f. whence must be one of:\n\n" ++
-            "* :cur - jump relative to the current file location\n\n" ++
-            "* :set - jump relative to the beginning of the file\n\n" ++
-            "* :end - jump relative to the end of the file\n\n" ++
-            "By default, whence is :cur. Optionally a value n may be passed " ++
-            "for the relative number of bytes to seek in the file. n may be a real " ++
-            "number to handle large files of more than 4GB. Returns the file handle."),
-        corefn.reg("file/tell", &nfunFtell, @src(), "(file/tell f)", "Gets the current value of the file position for file f."),
+        corefn.reg("file/write", &nfunFwrite, @src(), "(file/write file & vals)", "Writes to file. Each value of vals must be a " ++
+            "string, buffer, symbol, or keyword. Raises an error if file is closed or not open for writing. " ++
+            "Returns file."),
+        corefn.reg("file/flush", &nfunFflush, @src(), "(file/flush file)", "Flushes any buffered bytes of file to the file system. In most files, writes are " ++
+            "buffered for efficiency reasons. Raises an error if file is not open for writing. Returns file."),
+        corefn.reg("file/seek", &nfunFseek, @src(), "(file/seek file whence)\n(file/seek file whence n)", "Moves the position in file to a location relative to whence, " ++
+            "which must be one of:\n\n" ++
+            "* :cur - relative to the current file location\n\n" ++
+            "* :set - relative to the beginning of the file\n\n" ++
+            "* :end - relative to the end of the file\n\n" ++
+            "n is the number of bytes to move, 0 if omitted. It must be an integer and may exceed " ++
+            "4GB. Returns file."),
+        corefn.reg("file/tell", &nfunFtell, @src(), "(file/tell file)", "Gets the current position in file, in bytes, as a number. Raises an error if file is closed."),
     };
     corefn.install(env, entries);
     try registry.registerAbstractType(&fileType);

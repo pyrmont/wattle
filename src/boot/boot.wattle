@@ -167,7 +167,7 @@
 (defmacro %= "Shorthand for (set x (% x n))." [x & ns] `(set ~x (~% ~x ~|ns)))
 
 (defmacro assert :flycheck ; should top level assert flycheck?
-  "Throws an error if x is not truthy. Will not evaluate err if x is truthy."
+  "Raises an error if x is not truthy. Will not evaluate err if x is truthy."
   ([x] (def self assert) (self x nil))
   ([x err]
   (def v (gensym))
@@ -194,30 +194,44 @@
   `(def ~alias :dyn ~|more ~kw))
 
 (defdyn *macro-form*
-  "Inside a macro, is bound to the source form that invoked the macro")
+  """
+  The source form that invoked a macro. Visible inside a macro.
+  """)
 
 (defdyn *flychecking*
-  "Indicates whether the current form is being evaluated inside ^flycheck. Will be `true` while flychecking.")
+  """
+  Indicates whether the current form is being evaluated inside ^flycheck. Will
+  be true while flychecking.
+  """)
 
 (defdyn *lint-error*
-  "The current lint error level. The error level is the lint level at which compilation will exit with an error and not continue.")
+  """
+  The current lint error level. The error level is the lint level at which
+  compilation will exit with an error and not continue.
+  """)
 
 (defdyn *lint-warn*
-  "The current lint warning level. The warning level is the lint level at which and error will be printed but compilation will continue as normal.")
+  """
+  The current lint warning level. The warning level is the lint level at which
+  and error will be printed but compilation will continue as normal.
+  """)
 
 (defdyn *lint-levels*
-  "A table of keyword alias to numbers denoting a lint level. Can be used to provided custom aliases for numeric lint levels.")
+  """
+  A table of keyword alias to numbers denoting a lint level. Can be used to
+  provided custom aliases for numeric lint levels.
+  """)
 
 (defdyn *macro-lints*
   """
-  Bound to an array of lint messages that will be reported by the compiler inside a macro.
-  To indicate an error or warning, a macro author should use ^maclintf.
+  An array of lint messages that will be reported by the compiler inside a
+  macro. To indicate an error or warning, a macro author should use ^maclintf.
   """)
 
 (defn maclintf
   """
-  When called inside a macro, adds a linter warning. Takes
-  a fmt argument like ^string/format, which is used to format the message.
+  Adds a linter warning when called inside a macro. fmt formats the message and
+  works the same as the formatting argument to ^string/format.
   """
   [level fmt & args]
   (def lints (dyn *macro-lints*))
@@ -232,12 +246,19 @@
   nil)
 
 (defn errorf
-  "A combination of ^error and ^string/format. Equivalent to `(error (string/format fmt |args))`."
+  """
+  Raises an error. fmt formats the mssage and works the same as the formatting
+  argument to ^string/format. Same as `(error (string/format fmt |args))`.
+  """
   [fmt & args]
   (error (string/format fmt |args)))
 
 (defmacro assertf
-  "Convenience macro that combines ^assert and ^string/format."
+  """
+  Raises an error if x is not truthy. Will not evaluate err if x is truthy. fmt
+  formats the message and works the same as the formatting argument to
+  ^string/format.
+  """
   [x fmt & args]
   (def v (gensym))
   `(do
@@ -3365,12 +3386,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn debugger
   "Runs a repl-based debugger on a fiber. Optionally pass in a level  to differentiate nested debuggers."
-  ([fiber] (debugger fiber 1))
-  ([fiber level]
-  (def nextenv (make-env (fiber/getenv fiber)))
-  (put nextenv :fiber fiber)
+  ([fib] (debugger fib 1))
+  ([fib level]
+  (def nextenv (make-env (fiber/getenv fib)))
+  (put nextenv :fiber fib)
   (put nextenv :debug-level level)
-  (put nextenv :signal (fiber/last-value fiber))
+  (put nextenv :signal (fiber/last-value fib))
 
   (merge! nextenv debugger-env)
   (defn debugger-chunks [buf p]

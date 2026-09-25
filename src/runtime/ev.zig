@@ -1817,15 +1817,15 @@ fn lockEntries() []const corefn.Entry {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("ev/lock", &nfunMutex, @src(), "(ev/lock)", "Creates a new lock to coordinate threads."),
-            corefn.reg("ev/acquire-lock", &nfunMutexAcquire, @src(), "(ev/acquire-lock lock)", "Acquires a lock such that this operating system thread is the only thread with access to this resource." ++
+            corefn.reg("ev/acquire-lock", &nfunMutexAcquire, @src(), "(ev/acquire-lock lock)", "Acquires a lock such that this operating system thread is the only thread with access to this resource, and returns the lock." ++
                 " This will block this entire thread until the lock becomes available, and will not yield to other fibers " ++
                 "on this system thread."),
-            corefn.reg("ev/release-lock", &nfunMutexRelease, @src(), "(ev/release-lock lock)", "Releases a lock such that other threads may acquire it."),
+            corefn.reg("ev/release-lock", &nfunMutexRelease, @src(), "(ev/release-lock lock)", "Releases a lock such that other threads may acquire it, and returns the lock. Raises an error if the lock is not held."),
             corefn.reg("ev/rwlock", &nfunRwlock, @src(), "(ev/rwlock)", "Creates a new read-write lock to coordinate threads."),
-            corefn.reg("ev/acquire-rlock", &nfunRwlockReadLock, @src(), "(ev/acquire-rlock rwlock)", "Acquires a read lock an a read-write lock."),
+            corefn.reg("ev/acquire-rlock", &nfunRwlockReadLock, @src(), "(ev/acquire-rlock rwlock)", "Acquires a read lock on a read-write lock."),
             corefn.reg("ev/acquire-wlock", &nfunRwlockWriteLock, @src(), "(ev/acquire-wlock rwlock)", "Acquires a write lock on a read-write lock."),
-            corefn.reg("ev/release-rlock", &nfunRwlockReadRelease, @src(), "(ev/release-rlock rwlock)", "Releases a read lock on a read-write lock"),
-            corefn.reg("ev/release-wlock", &nfunRwlockWriteRelease, @src(), "(ev/release-wlock rwlock)", "Releases a write lock on a read-write lock"),
+            corefn.reg("ev/release-rlock", &nfunRwlockReadRelease, @src(), "(ev/release-rlock rwlock)", "Releases a read lock on a read-write lock."),
+            corefn.reg("ev/release-wlock", &nfunRwlockWriteRelease, @src(), "(ev/release-wlock rwlock)", "Releases a write lock on a read-write lock."),
         };
         break :blk acc;
     };
@@ -1907,36 +1907,37 @@ fn selfEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("ev/go", &nfunGo, @src(), "(ev/go fiber-or-fun [value [supervisor]])", "Puts a fiber on the event loop to be resumed later. If a " ++
-                "function is used, it is wrapped with ^fiber/new first. " ++
-                "Returns a task fiber. Optionally pass a value to resume " ++
+            corefn.reg("ev/go", &nfunGo, @src(), "(ev/go fib-or-f)\n(ev/go fib-or-f val)\n(ev/go fib-or-f val supervisor)", "Puts a fiber on the event loop to be resumed later. If a " ++
+                "function is used, it must take 0 or 1 parameters and is wrapped with ^fiber/new first. " ++
+                "If fib-or-f is a fiber, it must be new. " ++
+                "Returns a task fiber. Optionally pass val to resume " ++
                 "with, otherwise resumes with nil. An optional `core/channel` " ++
                 "can be provided as a supervisor. When various events occur " ++
                 "in the newly scheduled fiber, an event will be pushed to the " ++
                 "supervisor. If not provided, the new fiber will inherit the " ++
                 "current supervisor."),
-            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main [value [flags [supervisor]]])", "Runs main in a new operating system thread, optionally passing value " ++
+            corefn.reg("ev/thread", &nfunThread, @src(), "(ev/thread main)\n(ev/thread main val)\n(ev/thread main val flags)\n(ev/thread main val flags supervisor)", "Runs main in a new operating system thread, optionally passing val " ++
                 "to resume with. The parameter main can either be a fiber, or a function that accepts " ++
                 "0 or 1 arguments. " ++
                 "Unlike ^ev/go, this function will suspend the current fiber until the thread is complete. " ++
                 "If you want to run the thread without waiting for a result, pass the `:i` flag to return nil immediately. " ++
-                "Otherwise, returns nil. Available flags:\n\n" ++
+                "Returns nil in every case, so a result of main reaches the caller only through a supervisor. Available flags:\n\n" ++
                 "* `:i` - return immediately\n" ++
-                "* `:t` - set the task-id of the new thread to value. The task-id is passed in messages to the supervisor channel.\n" ++
+                "* `:t` - set the task-id of the new thread to val. The task-id is passed in messages to the supervisor channel.\n" ++
                 "* `:a` - don't copy abstract registry to new thread (performance optimization)\n" ++
                 "* `:n` - don't copy nfunction registry to new thread (performance optimization)"),
             corefn.reg("ev/give-supervisor", &nfunGiveSupervisor, @src(), "(ev/give-supervisor tag & payload)", "Sends a message to the current supervisor channel if there is one. The message will be a " ++
-                "tuple of all of the arguments combined into a single message, where the first element is tag. " ++
-                "By convention, tag should be a keyword indicating the type of message. Returns nil."),
-            corefn.reg("ev/sleep", &nfunSleep, @src(), "(ev/sleep sec)", "Suspends the current fiber for sec seconds without blocking the event loop."),
-            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec [tocancel [tocheck [intr?]]])", "Schedules the event loop to try to cancel the tocancel task as with ^ev/cancel. " ++
-                "After sec seconds, the event loop will attempt cancellation of tocancel if the " ++
-                "tocheck fiber is resumable. sec is a number that can have a fractional part. " ++
-                "tocancel defaults to `(fiber/root)`, but if specified, must be a task (root " ++
-                "fiber). tocheck defaults to `(fiber/current)`, but if specified, must be a fiber. " ++
-                "Returns tocancel immediately. If `interrupt?` is set to true, will create a " ++
+                "vector of all of the arguments combined into a single message, where the first element is tag. " ++
+                "By convention, tag should be a keyword indicating the type of message. Returns nil, also if there is no supervisor."),
+            corefn.reg("ev/sleep", &nfunSleep, @src(), "(ev/sleep sec)", "Suspends the current fiber for sec seconds without blocking the event loop. Returns nil."),
+            corefn.reg("ev/deadline", &nfunDeadline, @src(), "(ev/deadline sec)\n(ev/deadline sec task)\n(ev/deadline sec task fib)\n(ev/deadline sec task fib interrupt?)", "Schedules the event loop to try to cancel task as with ^ev/cancel. " ++
+                "After sec seconds, the event loop will attempt cancellation of task if " ++
+                "fib is resumable. sec is a number that can have a fractional part. " ++
+                "task defaults to `(fiber/root)`, but if specified, must be a task (root " ++
+                "fiber). fib defaults to `(fiber/current)`, but if specified, must be a fiber. " ++
+                "Returns task immediately. If `interrupt?` is set to true, will create a " ++
                 "background thread to try to interrupt the VM if the timeout expires."),
-            corefn.reg("ev/cancel", &nfunCancel, @src(), "(ev/cancel fiber err)", "Cancels a suspended task fiber in the event loop. Differs from " ++
+            corefn.reg("ev/cancel", &nfunCancel, @src(), "(ev/cancel fib err)", "Cancels a suspended task fib in the event loop by raising err in it. Raises an error if fib is not a task fiber. Differs from " ++
                 "^cancel in that it returns the canceled fiber immediately."),
         };
         break :blk acc;
