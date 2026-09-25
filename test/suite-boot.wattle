@@ -690,19 +690,19 @@
 ; issue 304 - 77343e02e
 (assert (= (chr "a") 97) "chr 1")
 
-; Reduce2
+; Reduce without an initial value
 ; 3eb0927a2
-(assert (= (reduce + 0 (range 1 10)) (reduce2 + (range 10))) "reduce2 1")
+(assert (= (reduce + 0 (range 1 10)) (reduce + (range 10))) "reduce 2-arg 1")
 ; 65379741f
-(assert (= (reduce * 1 (range 2 10)) (reduce2 * (range 1 10))) "reduce2 2")
-(assert (= nil (reduce2 * [])) "reduce2 3")
+(assert (= (reduce * 1 (range 2 10)) (reduce * (range 1 10))) "reduce 2-arg 2")
+(assert (= nil (reduce * [])) "reduce 2-arg 3")
 
 ; Accumulate
 ; 3eb0927a2
 (assert (deep= (accumulate + 0 (range 5)) ![0 1 3 6 10]) "accumulate 1")
-(assert (deep= (accumulate2 + (range 5)) ![0 1 3 6 10]) "accumulate2 1")
+(assert (deep= (accumulate + (range 5)) ![0 1 3 6 10]) "accumulate 2-arg 1")
 ; 65379741f
-(assert (deep= ![] (accumulate2 + [])) "accumulate2 2")
+(assert (deep= ![] (accumulate + [])) "accumulate 2-arg 2")
 (assert (deep= ![] (accumulate 0 + [])) "accumulate 2")
 
 ; in vs get regression
