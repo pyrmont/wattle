@@ -927,6 +927,8 @@ fn nfunRange(argv: []repr.Value) raise.Error!repr.Value {
     count = if (count > 0.0) count else 0.0;
     assert(count >= 0.0, "bad range code");
     if (count > @as(f64, @floatFromInt(std.math.maxInt(i32)))) {
+        // `%f` renders 1e300 as 300 digits, which overflows the format buffer.
+        if (count >= 1e100) return pp_format.panicf("range is too large, %e elements", .{count});
         return pp_format.panicf("range is too large, %f elements", .{count});
     }
     const int_count: i32 = @intFromFloat(@ceil(count));

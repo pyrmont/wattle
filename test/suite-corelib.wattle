@@ -367,6 +367,8 @@
 (assert-error-value "range NaN start" "NaN argument not allowed" (range math/nan 10))
 (assert-error-value "range NaN step" "NaN argument not allowed" (range 0 10 math/nan))
 (assert-error-value "range too large" "range is too large, 1099511627775.000000 elements" (range 0xFFFFFFFFFF))
+(assert-error-value "range too large by far" "range is too large, 1.000000e+300 elements" (range -1e300 5))
+(assert-error-value "range too large by an infinite end" "range is too large, inf elements" (range math/inf))
 (assert (deep= ![] (range 3 3 0)) "a zero step gives an empty range")
 
 ; dyn reads the running fiber's env, which a fresh fiber does not have
