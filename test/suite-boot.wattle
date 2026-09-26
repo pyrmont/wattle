@@ -910,7 +910,7 @@
            (get ((fiber/getenv (fiber/current)) 'clause-signatures) :doc))
         "defn leaves the docstring as prose")
 (assert (let [out !""]
-          (with-dyns [:out out] (doc* 'clause-signatures))
+          (with-dyns [:out out :doc-color false] (doc* 'clause-signatures))
           (string/find "\n    (clause-signatures x y)\n    (clause-signatures x)\n\n    Body.\n" out))
         "doc prints the signatures ahead of the docstring")
 
