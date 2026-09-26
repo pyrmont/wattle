@@ -115,6 +115,7 @@ const order = @import("helpers/order.zig");
 const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
+const scratch_vector = @import("../scratch_vector.zig");
 const tables = @import("tables.zig");
 const value = @import("../value.zig");
 const wrap = @import("helpers/wrap.zig");
@@ -381,7 +382,7 @@ pub fn hash(v: *const Vector) i32 {
 pub fn lib(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("vector", &nfunVector, @src(), "(vector & vals)", "Creates a new persistent vector containing vals."),
-        corefn.reg("vec", &nfunVec, @src(), "(vec ind)", "Creates a persistent vector with the elements of the indexed value ind. A vector is returned unchanged."),
+        corefn.reg("vec", &nfunVec, @src(), "(vec coll)", "Creates a persistent vector with the elements of coll, an indexed value or a dictionary. The element of a table or map is the vector `[key value]`, in iteration order. A vector is returned unchanged."),
         corefn.reg("conj", &nfunConj, @src(), "(conj p & vals)", "Returns a new collection with vals added to p, a persistent vector or set. For a vector, the elements are added at the end. An element of a set cannot be nil or NaN."),
         corefn.reg("assoc", &nfunAssoc, @src(), "(assoc p key val & kvs)", "Returns a new collection in which each key is associated with the value that follows it, in p, a persistent vector or map. For a vector, a key is an index from 0 up to the length, and a key equal to the length adds the value at the end. Any other index raises an error, and a nil value is stored. For a map, a nil value removes the key."),
     };
@@ -632,16 +633,41 @@ fn nfunConj(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromVector(v);
 }
 
-/// `vec`: a vector of an indexed value's elements.
+/// `vec`: a vector of an indexed value's elements, or of a dictionary's
+/// entries.
 fn nfunVec(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     if (repr.checkType(argv[0], .vector)) return argv[0];
+    if (try args_core.keyvals(argv[0])) |pairs| return wrap.fromVector(try entriesOf(pairs));
     // Gathered rather than read a run at a time, because building allocates
     // and a run does not survive an allocation.
     var gathered = try args_core.gatherArg(argv, 0);
     const v = fromSlice(gathered.items);
     gathered.free();
     return wrap.fromVector(v);
+}
+
+/// Returns a new vector of the entries `[k v]` that `pairs` reads, in the
+/// order it reads them.
+///
+/// Every key and value is copied out before the first entry is built, because
+/// building allocates and a run does not survive an allocation. This function
+/// raises where `Keyvals.next` does.
+fn entriesOf(pairs: args_core.Keyvals) raise.Error!*Vector {
+    var reader = pairs;
+    var flat: scratch_vector.Vector(repr.Value) = .empty;
+    defer scratch_vector.free(&flat);
+    scratch_vector.ensure(&flat, 2 * reader.count);
+    while (try reader.next()) |kv| {
+        scratch_vector.push(&flat, kv.key);
+        scratch_vector.push(&flat, kv.value);
+    }
+    const n = flat.items.len / 2;
+    var built: scratch_vector.Vector(repr.Value) = .empty;
+    defer scratch_vector.free(&built);
+    scratch_vector.ensure(&built, n);
+    for (0..n) |i| scratch_vector.push(&built, wrap.fromVector(fromSlice(flat.items[2 * i ..][0..2])));
+    return fromSlice(built.items);
 }
 
 /// `vector`: a vector of the arguments.

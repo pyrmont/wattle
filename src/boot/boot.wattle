@@ -607,19 +607,55 @@
       [a b c]))
   (for-template binding start stop step comparison op [rest]))
 
+(defmacro- element
+  """
+  The element of ds at key k: the entry `[k v]` where dict is truthy, and the
+  value at k otherwise. dict is whether ds is a dictionary, read once before
+  the loop that reads the elements.
+  """
+  [ds dict k]
+  `(if ~dict [~k (~in ~ds ~k)] (~in ~ds ~k)))
+
 (defn- each-template
+  """
+  Returns a loop over the keys of inx that binds binding to what kind names:
+  the element (`:each`), the value (`:values`), the key (`:keys`) or the pair
+  `[k v]` (`:pairs`).
+
+  A pair bound to a literal pattern is not built: `def` binds a literal vector
+  to a pattern element by element. Where binding is a two-element pattern, an
+  element is read into two locals, the key and value of an entry or the first
+  two elements of anything else, and binding is bound to a literal vector of
+  them. Any other binding of an entry gets a vector.
+  """
   [binding inx kind body]
-  (with-syms [k]
+  (with-syms [k dict first-slot second-slot first-part second-part]
     (def ds (if (idempotent? inx) inx (gensym)))
+    (def two? (and (indexed? binding)
+                   (= 2 (length binding))
+                   (not= '& (in binding 0))
+                   (not= '& (in binding 1))))
+    (def bind
+      (case kind
+        :each (if two?
+                [`(if ~dict
+                    (do (set ~first-slot ~k) (set ~second-slot (~in ~ds ~k)))
+                    (do
+                      (def [~first-part ~second-part] (~in ~ds ~k))
+                      (set ~first-slot ~first-part)
+                      (set ~second-slot ~second-part)))
+                 `(def ~binding [~first-slot ~second-slot])]
+                [`(def ~binding (if ~dict [~k (~in ~ds ~k)] (~in ~ds ~k)))])
+        :values [`(def ~binding (~in ~ds ~k))]
+        :keys [`(def ~binding ~k)]
+        :pairs [`(def ~binding [~k (~in ~ds ~k)])]))
     `(do
        ~(unless (= ds inx) `(def ~ds ~inx))
+       ~(if (= kind :each) `(def ~dict (~dictionary? ~ds)))
+       ~|(if (and two? (= kind :each)) [`(var ~first-slot nil) `(var ~second-slot nil)] [])
        (var ~k (~next ~ds nil))
        (while (~not= nil ~k)
-         (def ~binding
-           ~(case kind
-              :each `(~in ~ds ~k)
-              :keys k
-              :pairs `[~k (~in ~ds ~k)]))
+         ~|bind
          ~|body
          (set ~k (~next ~ds ~k))))))
 
@@ -690,10 +726,13 @@
   [binding coll & body]
   (each-template binding coll :keys body))
 
-(defmacro eachp
-  "Loops over each `[key value]` pair in coll, an iterable. Returns nil."
+(defmacro eachv
+  """
+  Loops over each value in coll, an iterable. The value of a table or map is
+  the value of an entry, without its key. Returns nil.
+  """
   [binding coll & body]
-  (each-template binding coll :pairs body))
+  (each-template binding coll :values body))
 
 (defmacro repeat
   """
@@ -710,7 +749,11 @@
   `(while true ~|body))
 
 (defmacro each
-  "Loops over each value in coll, an iterable. Returns nil."
+  """
+  Loops over each element in coll, an iterable. The element of a table or map
+  is an entry, the vector `[key value]`, and the element of any other iterable
+  is its value. Returns nil.
+  """
   [binding coll & body]
   (each-template binding coll :each body))
 
@@ -752,9 +795,11 @@
 
   * :keys -- iterate over the keys in a data structure.
 
-  * :pairs -- iterate over the key-value pairs as tuples in a data structure.
+  * :pairs -- iterate over the `[key value]` pairs in a data structure. The key
+    of an array, tuple, vector, string or buffer is the index of the value.
 
-  * :in -- iterate over the values in a data structure or fiber.
+  * :in -- iterate over the elements in a data structure or fiber. The element
+    of a table or map is the vector `[key value]`.
 
   ^loop also accepts conditionals to refine the looping further. Conditionals are of
   the form:
@@ -846,7 +891,7 @@
   (tuple fiber/new (tuple 'fn :fiber-fn '[] |body) flags))
 
 (defn sum
-  "Returns the sum of the values in coll, an iterable. If coll is empty, returns 0."
+  "Returns the sum of the elements in coll, an iterable. If coll is empty, returns 0."
   [coll]
   (var accum 0)
   (each x coll (+= accum x))
@@ -860,7 +905,7 @@
   (and (lengthable? coll) (not (abstract? coll))))
 
 (defn mean
-  "Returns the mean of the values in coll, an iterable. If coll is empty, returns NaN."
+  "Returns the mean of the elements in coll, an iterable. If coll is empty, returns NaN."
   [coll]
   (if (counted? coll)
     (/ (sum coll) (length coll))
@@ -870,7 +915,7 @@
       (/ accum total))))
 
 (defn geomean
-  "Returns the geometric mean of the values in coll, an iterable. If coll is empty, returns NaN."
+  "Returns the geometric mean of the elements in coll, an iterable. If coll is empty, returns NaN."
   [coll]
   (if (counted? coll)
     (do
@@ -883,7 +928,7 @@
       (math/exp (/ accum total)))))
 
 (defn product
-  "Returns the product of the values in coll, an iterable. If coll is empty, returns 1."
+  "Returns the product of the elements in coll, an iterable. If coll is empty, returns 1."
   [coll]
   (var accum 1)
   (each x coll (*= accum x))
@@ -927,10 +972,11 @@
   [order args]
   `(do
      (def ds ~args)
+     (def dict (dictionary? ds))
      (var k (next ds nil))
-     (var ret (get ds k))
+     (var ret (if (= nil k) nil (element ds dict k)))
      (while (~not= nil (set k (next ds k)))
-       (def x (in ds k))
+       (def x (element ds dict k))
        (if (~order x ret) (set ret x)))
      ret))
 
@@ -952,14 +998,14 @@
 
 (defn max-of
   """
-  Returns the maximum value in args, an iterable, comparing with ^>. Returns
+  Returns the maximum element in args, an iterable, comparing with ^>. Returns
   nil if args is empty.
   """
   [args] (do-extreme > args))
 
 (defn min-of
   """
-  Returns the minimum value in args, an iterable, comparing with ^<. Returns
+  Returns the minimum element in args, an iterable, comparing with ^<. Returns
   nil if args is empty.
   """
   [args] (do-extreme < args))
@@ -1156,12 +1202,13 @@
   If coll is empty, evaluates to nil.
   """
   ([f coll]
+    (def dict (dictionary? coll))
     (var k (next coll))
     (if (= nil k) (break nil))
-    (var res (in coll k))
+    (var res (element coll dict k))
     (set k (next coll k))
     (while (not= nil k)
-      (set res (f res (in coll k)))
+      (set res (f res (element coll dict k)))
       (set k (next coll k)))
     res)
   ([f init coll]
@@ -1178,19 +1225,20 @@
   from ^reduce. The init value is not added to the array (the return value will
   have the same number of elements as coll). Returns a new array.
 
-  Without an initialization value init, the first value in coll is added
+  Without an initialization value init, the first element in coll is added
   to the array as-is (the return value will have the same number of elements as
   coll).
   """
   ([f coll]
+    (def dict (dictionary? coll))
     (var k (next coll))
     (def ret ![])
     (if (= nil k) (break ret))
-    (var res (in coll k))
+    (var res (element coll dict k))
     (array/push ret res)
     (set k (next coll k))
     (while (not= nil k)
-      (set res (f res (in coll k)))
+      (set res (f res (element coll dict k)))
       (array/push ret res)
       (set k (next coll k)))
     ret)
@@ -1217,11 +1265,12 @@
   [n maptype res f coll colls]
   `(do
      (def ~(seq [k :range [0 n]] (symbol 'coll k)) ~colls)
+     ~|(seq [k :range [0 n]] `(def ~(symbol 'dict k) (dictionary? ~(symbol 'coll k))))
      ~|(seq [k :range [0 n]] `(var ~(symbol 'key k) nil))
      (each x ~coll
        ~|(seq [k :range [0 n]]
            `(if (= nil (set ~(symbol 'key k) (next ~(symbol 'coll k) ~(symbol 'key k)))) (break)))
-       (map-aggregator ~maptype ~res (~f x ~|(seq [k :range [0 n]] `(in ~(symbol 'coll k) ~(symbol 'key k))))))))
+       (map-aggregator ~maptype ~res (~f x ~|(seq [k :range [0 n]] `(element ~(symbol 'coll k) ~(symbol 'dict k) ~(symbol 'key k))))))))
 
 (defmacro- map-template
   [maptype res f coll colls]
@@ -1234,6 +1283,8 @@
        3 (map-n 3 ~maptype ~res ~f ~coll ~colls)
        (do
          (def iter-keys (array/new-filled ncolls))
+         (def dicts (array/new-filled ncolls))
+         (forv i 0 ncolls (put dicts i (dictionary? (in ~colls i))))
          (def call-buffer (array/new-filled ncolls))
          (var done false)
          (each x ~coll
@@ -1243,16 +1294,16 @@
                    new-key (next ii old-key)]
                (if (= nil new-key)
                  (do (set done true) (break))
-                 (do (set (iter-keys i) new-key) (set (call-buffer i) (in ii new-key))))))
+                 (do (set (iter-keys i) new-key) (set (call-buffer i) (element ii (in dicts i) new-key))))))
            (if done (break))
            (map-aggregator ~maptype ~res (~f x |call-buffer)))))))
 
 (defn map
   """
-  Returns a new array of `(f x)` for each value in coll, an iterable.
+  Returns a new array of `(f x)` for each element in coll, an iterable.
 
   If colls is provided, (each of which is also an iterable), returns a new
-  array of `(f x y ...)` for the values of coll and colls taken together, so f
+  array of `(f x y ...)` for the elements of coll and colls taken together, so f
   takes one argument for coll and one for each of colls. The array has the
   length of the shortest of coll and colls.
   """
@@ -1263,16 +1314,16 @@
 
 (defn mapcat
   """
-  Returns a new array that concatenates the results of `(f x)` for each value
-  in coll, an iterable.
+  Returns a new array that concatenates the results of `(f x)` for each
+  element in coll, an iterable.
 
   Similar to ^map, but the results are concatenated. An indexed result is
   spliced in, so `(mapcat (fn [x] [x x]) [1 2])` returns `![1 1 2 2]` where
   ^map returns `![[1 1] [2 2]]`. Any other result is appended as one element.
-  To add nothing for a value, return an empty indexed result.
+  To add nothing for an element, return an empty indexed result.
 
   If colls is provided, (each of which is also an iterable), f is called as
-  `(f x y ...)` for the values of coll and colls taken together, and is applied
+  `(f x y ...)` for the elements of coll and colls taken together, and is applied
   only as many times as the length of the shortest of coll and colls.
   """
   [f coll & colls]
@@ -1282,8 +1333,8 @@
 
 (defn filter
   """
-  Returns a new array of the values x in coll, an iterable, for which `(pred
-  x)` is truthy.
+  Returns a new array of the elements x in coll, an iterable, for which
+  `(pred x)` is truthy.
   """
   [pred coll]
   (def res ![])
@@ -1294,11 +1345,11 @@
 
 (defn count
   """
-  Returns the number of values x in coll, an iterable, for which `(pred x)` is
-  truthy.
+  Returns the number of elements x in coll, an iterable, for which `(pred x)`
+  is truthy.
 
   If colls is provided, (each of which is also an iterable), pred is called as
-  `(pred x y ...)` for the values of coll and colls taken together, and is
+  `(pred x y ...)` for the elements of coll and colls taken together, and is
   applied only as many times as the length of the shortest of coll and colls.
   """
   [pred coll & colls]
@@ -1308,11 +1359,12 @@
 
 (defn keep
   """
-  Returns a new array of the truthy results of `(pred x)` for each value x in
-  coll, an iterable. Similar to ^map, but nil and false results are dropped.
+  Returns a new array of the truthy results of `(pred x)` for each element x
+  in coll, an iterable. Similar to ^map, but nil and false results are
+  dropped.
 
   If colls is provided, (each of which is also an iterable), pred is called as
-  `(pred x y ...)` for the values of coll and colls taken together. The array
+  `(pred x y ...)` for the elements of coll and colls taken together. The array
   is no longer than the shortest of coll and colls.
   """
   [pred coll & colls]
@@ -1327,23 +1379,25 @@
 
 (defn find-index
   """
-  Returns the key of the first value x in coll, an iterable, for which
+  Returns the key of the first element x in coll, an iterable, for which
   `(pred x)` is truthy. Returns dflt if there is none, or nil if dflt is not
   given.
 
   The key of an array, tuple, vector, string or buffer is the index of x. The
-  key of a table or map is the key of x, and the key of a set is x itself. A
-  fiber has no keys, so coll may not be a fiber.
+  element of a table or map is the entry `[key value]`, and its key is the key
+  of the entry. The key of a set is x itself. A fiber has no keys, so coll may
+  not be a fiber.
   """
   ([pred coll] (find-index pred coll nil))
   ([pred coll dflt]
     (check-keyed :find-index coll)
+    (def dict (dictionary? coll))
     (var k nil)
     (var ret dflt)
     (while true
       (set k (next coll k))
       (if (= k nil) (break))
-      (def item (in coll k))
+      (def item (element coll dict k))
       (when (pred item)
         (set ret k)
         (break)))
@@ -1351,19 +1405,20 @@
 
 (defn find
   """
-  Returns the first value x in coll, an iterable, for which `(pred x)` is
+  Returns the first element x in coll, an iterable, for which `(pred x)` is
   truthy. Returns dflt if there is none, or nil if dflt is not given. A
-  matching value that is itself nil is returned as nil, so give dflt to tell it
-  apart from no match.
+  matching element that is itself nil is returned as nil, so give dflt to tell
+  it apart from no match.
   """
   ([pred coll] (find pred coll nil))
   ([pred coll dflt]
+    (def dict (dictionary? coll))
     (var k nil)
     (var ret dflt)
     (while true
       (set k (next coll k))
       (if (= k nil) (break))
-      (def item (in coll k))
+      (def item (element coll dict k))
       (when (pred item)
         (set ret item)
         (break)))
@@ -1390,11 +1445,6 @@
       (set k (next coll k)))
     ret))
 
-(defn- check-sliceable
-  [name coll]
-  (if (dictionary? coll)
-    (errorf "%s does not accept a dictionary, got %v" name coll)))
-
 (defn- check-count
   [name n]
   (if (neg? n)
@@ -1402,13 +1452,12 @@
 
 (defn take
   """
-  Takes the first n elements of coll, an iterable other than a dictionary.
+  Takes the first n elements of coll, an iterable.
   Returns a fiber that yields them. Nothing is read from coll until the fiber
   is resumed. n must not be negative.
   """
   [n coll]
   (check-count :take n)
-  (check-sliceable :take coll)
   (coro
     (var left n)
     (when (> left 0)
@@ -1418,13 +1467,12 @@
 
 (defn take-until
   """
-  Takes the elements of coll, an iterable other than a dictionary, that
-  precede the first for which `(pred element)` is truthy. Returns a fiber that
+  Takes the elements of coll, an iterable, that precede the first for which
+  `(pred element)` is truthy. Returns a fiber that
   yields them. Nothing is read from coll until the fiber is resumed. The
   matching element is not yielded.
   """
   [pred coll]
-  (check-sliceable :take-until coll)
   (coro
     (each x coll
       (if (pred x) (break))
@@ -1432,8 +1480,8 @@
 
 (defn take-while
   """
-  Takes the leading elements of coll, an iterable other than a dictionary, for
-  which `(pred element)` is truthy. Returns a fiber that yields them. Same as
+  Takes the leading elements of coll, an iterable, for which `(pred element)`
+  is truthy. Returns a fiber that yields them. Same as
   `(take-until (complement pred) coll)`.
   """
   [pred coll]
@@ -1441,13 +1489,12 @@
 
 (defn drop
   """
-  Drops the first n elements of coll, an iterable other than a dictionary.
+  Drops the first n elements of coll, an iterable.
   Returns a fiber that yields the rest. Nothing is read from coll until the
   fiber is resumed. n must not be negative.
   """
   [n coll]
   (check-count :drop n)
-  (check-sliceable :drop coll)
   (coro
     (var left n)
     (each x coll
@@ -1455,13 +1502,12 @@
 
 (defn drop-until
   """
-  Drops the elements of coll, an iterable other than a dictionary, that
-  precede the first for which `(pred element)` is truthy. Returns a fiber that
+  Drops the elements of coll, an iterable, that precede the first for which
+  `(pred element)` is truthy. Returns a fiber that
   yields that element and the rest. Nothing is read from coll until the fiber
   is resumed.
   """
   [pred coll]
-  (check-sliceable :drop-until coll)
   (coro
     (var skipping true)
     (each x coll
@@ -1470,8 +1516,8 @@
 
 (defn drop-while
   """
-  Drops the leading elements of coll, an iterable other than a dictionary, for
-  which `(pred element)` is truthy. Returns a fiber that yields the rest. Same
+  Drops the leading elements of coll, an iterable, for which `(pred element)`
+  is truthy. Returns a fiber that yields the rest. Same
   as `(drop-until (complement pred) coll)`.
   """
   [pred coll]
@@ -1510,11 +1556,12 @@
 
 (defn has-value?
   """
-  Checks whether coll, an iterable, contains a value equal to val.
+  Checks whether coll, an iterable, contains a value equal to val. The values
+  of a table or map are the values of its entries, not the entries.
   """
   [coll val]
   (var found false)
-  (each v coll
+  (eachv v coll
     (when (= v val)
       (set found true)
       (break)))
@@ -1953,11 +2000,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (do
       (def arr (array/new-filled (length coll)))
       (var i 0)
-      (each v coll
+      (eachv v coll
         (put arr i v)
         (++ i))
       arr)
-    (seq [v :in coll] v)))
+    (do
+      (def arr ![])
+      (eachv v coll (array/push arr v))
+      arr)))
 
 (defn pairs
   """
@@ -1974,14 +2024,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (do
       (def arr (array/new-filled (length coll)))
       (var i 0)
-      (eachp p coll
+      (loop [p :pairs coll]
         (put arr i p)
         (++ i))
       arr)
     (seq [p :pairs coll] p)))
 
 (defn frequencies
-  "Gets the number of occurrences of each value in coll, an iterable."
+  "Gets the number of occurrences of each element in coll, an iterable."
   [coll]
   (def freqs !{})
   (each x coll
@@ -2029,7 +2079,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (mapcat tuple |colls))
 
 (defn distinct
-  "Returns an array of the deduplicated values in coll, an iterable."
+  "Returns an array of the deduplicated elements in coll, an iterable."
   [coll]
   (def ret ![])
   (def seen !{})
@@ -2084,6 +2134,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   Returns a new array of the elements of coll, an iterable, separated by sep.
   """
   [sep coll]
+  (def dict (dictionary? coll))
   (var k (next coll nil))
   (if (not= nil k)
     (if (counted? coll)
@@ -2091,14 +2142,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def ret (array/new-filled (- (* 2 (length coll)) 1) sep))
         (var i 0)
         (while (not= nil k)
-          (put ret i (in coll k))
+          (put ret i (element coll dict k))
           (set k (next coll k))
           (+= i 2))
         ret)
       (do
-        (def ret ![(in coll k)])
+        (def ret ![(element coll dict k)])
         (while (not= nil (set k (next coll k)))
-          (array/push ret sep (in coll k)))
+          (array/push ret sep (element coll dict k)))
         ret))
     ![]))
 
@@ -2139,7 +2190,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (cond
     (indexed? coll) (partition-slice vector-slice n coll)
     (bytes? coll) (partition-slice string/slice n coll)
-    (partition-slice vector-slice n (values coll))))
+    (partition-slice vector-slice n (seq [x :in coll] x))))
 
 ;;;
 ;;;
@@ -2279,13 +2330,13 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
       ; match data structure template
       (or (= t :map) (= t :table))
-      (eachp [i sub-pattern] pattern
+      (each [i sub-pattern] pattern
         (visit-pattern-1 b2g s i sub-pattern))
 
       isarr
       (do
         (get-length-sym s)
-        (eachp [i sub-pattern] pattern
+        (loop [[i sub-pattern] :pairs pattern]
           (when (= sub-pattern '&)
             (when (<= (length pattern) (inc i))
               (errorf "expected symbol following & in pattern"))
@@ -2331,12 +2382,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
       ; match data structure template
       (or (= t :map) (= t :table))
-      (eachp [i sub-pattern] pattern
+      (each [i sub-pattern] pattern
         (array/push anda (tuple not= nil (get-sym s i)))
         (visit-pattern-2 anda gun preds s i sub-pattern))
 
       isarr
-      (eachp [i sub-pattern] pattern
+      (loop [[i sub-pattern] :pairs pattern]
         ; stop recursing to sub-patterns if the rest sigil is found
         (when (or (= sub-pattern '$) (= sub-pattern '&))
           (break))
@@ -2374,11 +2425,11 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (visit-pattern-2 anda gun preds nil nil pattern)
     ; Local unification
     (def unify ![])
-    (each syms b2g
+    (eachv syms b2g
       (when (< 1 (length syms))
         (array/push unify (tuple = |syms))))
     ; Global unification
-    (eachp [binding syms] gun
+    (each [binding syms] gun
       (array/push unify (tuple = binding |syms)))
     (sort! unify)
     (array/concat anda unify)
@@ -2555,7 +2606,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (let [temp-tab !{}]
       ; Handle multiple unique keys that freeze. Result should
       ; be independent of iteration order.
-      (eachp [k v] x
+      (each [k v] x
         (def kk (freeze k))
         (def vv (freeze v))
         (def old (get temp-tab kk))
@@ -2623,7 +2674,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           (do
             (def rawget (if (= tx :map) get table/rawget))
             (var ret false)
-            (eachp [k v] x
+            (each [k v] x
               (if (deep-not= (rawget y k) v) (break (set ret true))))
             ret))
       (= tx :buffer) (not= 0 (- (length x) (length y)) (memcmp x y))
@@ -3261,7 +3312,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [name env]
   (put (dyn *module-cache* module/cache) name env)
-  (eachp [sym entry] env
+  (each [sym entry] env
     (when (and (symbol? sym) (table? entry))
       (def v (get entry :value))
       (when (or (nfunction? v) (abstract? v))
@@ -3280,7 +3331,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def copies ![])
   (var last-index 0)
   (def mp (dyn *module-paths* module/paths))
-  (eachp [index entry] mp
+  (loop [[index entry] :pairs mp]
     (def pattern (first entry))
     (when (and (string? pattern) (string/has-prefix? ":sys:/" pattern))
       (set last-index index)
@@ -4276,9 +4327,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [x]
   (var found false)
-  (loop [module-set :in [[root-env] module/cache]
-         module :in module-set
-         value :in module]
+  (loop [module :in [root-env |(values module/cache)]
+         [_ value] :in module]
     (let [check (or (get value :ref) (get value :value))]
       (when (= check x)
         (print-module-entry value)
@@ -4605,7 +4655,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
          (~resume ~f))))
 
   (defn- cancel-all [chan fibers reason]
-    (each f fibers (ev/cancel f reason))
+    (eachv f fibers (ev/cancel f reason))
     (let [n (length fibers)]
       (table/clear fibers)
       (repeat n (ev/take chan))))
@@ -5377,7 +5427,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   ([image args] (run-image image args nil))
   ([image args natives]
-    (eachp [name load] (or natives {})
+    (each [name load] (or natives {})
       (module/add-native name (load)))
     (def env (load-image image))
     (put env *args* args)
@@ -5658,7 +5708,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           reverse-lookup (invert lookup)]
       ; Check no duplicate values
       (def temp !{})
-      (eachp [k v] lookup
+      (each [k v] lookup
         (if (in temp v) (errorf "duplicate value: %v" v))
         (put temp v k))
       (marshal root-env reverse-lookup)))

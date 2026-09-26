@@ -341,7 +341,8 @@
 
 ; find and find-index
 (assert (= 2 (find-index even? [1 3 2])) "find-index in a vector")
-(assert (= :b (find-index even? !{:a 1 :b 2})) "find-index in a table")
+(assert (= :b (find-index (fn [[k v]] (even? v)) !{:a 1 :b 2}))
+        "find-index in a table passes the entry and returns the key")
 (assert (= :d (find-index even? [1 3] :d)) "find-index default")
 (assert-error "find-index fiber" (find-index even? (coro (yield 1) (yield 2))))
 (assert (= 2 (find even? (coro (yield 1) (yield 2)))) "find in a fiber")
@@ -469,7 +470,7 @@
 (assert (deep= (drain (take 10 [1 2 3])) ![1 2 3]) "take 4")
 (assert (deep= (drain (take 2 "abc")) ![97 98]) "take from bytes")
 (assert-error "take negative" (take -1 [:a :b :c]))
-(assert-error "take dictionary" (take 1 !{:a 1}))
+(assert (deep= (drain (take 1 !{:a 1})) ![[:a 1]]) "take from a dictionary")
 (assert (deep= (drain (take 3 (generate [x :in [1 2 3 4 5]] x))) ![1 2 3])
         "take from fiber")
 (assert (deep= (drain (take 4 (generate [x :in [1 2]] x))) ![1 2])
@@ -492,7 +493,8 @@
         "take-until 6")
 (assert (deep= (drain (take-until #(= $ 115) (generate [x :in "books"] x)))
                ![98 111 111 107]) "take-until from fiber")
-(assert-error "take-until dictionary" (take-until pos? !{:a 1}))
+(assert (deep= (drain (take-until (fn [[k v]] (neg? v)) !{:a 1})) ![[:a 1]])
+        "take-until from a dictionary")
 
 (assert (deep= (drain (take-while neg? ![])) ![]) "take-while 1")
 (assert (deep= (drain (take-while neg? ![1 2 3])) ![]) "take-while 2")
@@ -509,7 +511,8 @@
 (assert (deep= (drain (drop 1 "abc")) ![98 99]) "drop from bytes")
 (assert (deep= (drain (drop 10 "abc")) ![]) "drop past the end of bytes")
 (assert-error "drop negative" (drop -1 [1 2 3]))
-(assert-error "drop dictionary" (drop 1 !{:a 1}))
+(assert (deep= (drain (drop 0 !{:a 1})) ![[:a 1]]) "drop from a dictionary")
+(assert (deep= (drain (drop 1 !{:a 1})) ![]) "drop past the end of a dictionary")
 (assert (deep= (drain (drop 1 (generate [x :in [1 2 3]] x))) ![2 3])
         "drop from fiber")
 
@@ -521,7 +524,8 @@
 (assert (deep= (drain (drop-until #(= $ 115) "books")) ![115]) "drop-until 6")
 (assert (deep= (drain (drop-until pos? ![-1 1 -2 -3])) ![1 -2 -3])
         "drop-until stops testing after the first match")
-(assert-error "drop-until dictionary" (drop-until pos? !{:a 1}))
+(assert (deep= (drain (drop-until (fn [[k v]] (pos? v)) !{:a 1})) ![[:a 1]])
+        "drop-until from a dictionary")
 
 (assert (deep= (drain (drop-while neg? ![-1 -2 3 -4])) ![3 -4]) "drop-while 1")
 (assert (deep= (drain (drop-while neg? ![1 2])) ![1 2]) "drop-while 2")
@@ -1081,7 +1085,8 @@
 ; frequencies
 (assert (deep= (frequencies :lol) !{108 2 111 1}))
 (assert (deep= (frequencies [:duck :duck :duck :goose]) !{:duck 3 :goose 1}))
-(assert (deep= (frequencies {1 :a 2 :x 3 :x 8 :a}) !{:a 2 :x 2}))
+(assert (deep= (frequencies {1 :a 2 :x}) !{[1 :a] 1 [2 :x] 1}))
+(assert (deep= (frequencies (values {1 :a 2 :x 3 :x 8 :a})) !{:a 2 :x 2}))
 (assert (deep= (frequencies !{}) !{}))
 (assert (deep= (frequencies (coro (yield 1) (yield 8) (yield 2) (yield 8)))
                !{1 1 2 1 8 2}))
@@ -1101,7 +1106,8 @@
 ; distinct
 (assert (deep= (distinct :hello) ![104 101 108 111]))
 (assert (deep= (distinct [1 0 1 0 1 1 0 1 1 1]) ![1 0]))
-(assert (deep= (distinct !{0 :a 1 :b 2 :b 3 :a}) ![:a :b]))
+(assert (deep= (sort (distinct !{0 :a 1 :b})) ![[0 :a] [1 :b]]))
+(assert (deep= (sort (distinct (values !{0 :a 1 :b 2 :b 3 :a}))) ![:a :b]))
 (assert (deep= (distinct (coro (yield 8) (yield 11) (yield 8))) ![8 11]))
 
 (end-suite)

@@ -44,7 +44,7 @@
   (bench (string "miss-map-" n) (fn [] (var a 0) (for i 0 look (if (get m1 :absent) (++ a))) a))
 
   (def iter (div reps 4))
-  (bench (string "each-map-" n) (fn [] (var a 0) (for i 0 iter (eachp [k v] m1 (+= a v))) a))
+  (bench (string "each-map-" n) (fn [] (var a 0) (for i 0 iter (each [k v] m1 (+= a v))) a))
 
   (bench (string "eq-map-" n) (fn [] (var a 0) (for i 0 reps (if (= m1 m2) (++ a))) a))
 

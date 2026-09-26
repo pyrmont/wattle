@@ -13,7 +13,10 @@
 (assert (= v (vec v)) "vec of a vector")
 (assert (= 1000 (length (vec (range 1000)))) "vec of a long array")
 (assert-error "vec refuses a string" (vec "abc"))
-(assert-error "vec refuses a table" (vec !{}))
+(assert (= [[:a 1]] (vec !{:a 1})) "vec of a table is its entries")
+(assert (deep= ![[:a 1] [:b 2]] (sort (vec {:a 1 :b 2})))
+        "vec of a map is its entries")
+(assert (= [] (vec {})) "vec of an empty map")
 
 ; Reading
 

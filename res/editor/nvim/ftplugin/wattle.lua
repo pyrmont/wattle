@@ -10,7 +10,7 @@ vim.bo.iskeyword = "@,48-57,_,192-255,!,$,%,&,*,+,-,.,/,<,=,>,?"
 -- `lispwords` for the forms that indent their body by two.
 vim.opt_local.lispwords:append({
   "defn", "defn-", "defmacro", "defmacro-", "fn", "let", "loop", "for",
-  "forv", "each", "eachk", "eachp", "when", "unless", "when-let", "if-let",
+  "forv", "each", "eachk", "eachv", "when", "unless", "when-let", "if-let",
   "with", "with-dyns", "with-syms", "try", "protect", "defer", "edefer",
   "match", "case", "cond", "while", "repeat", "generate", "coro",
 })

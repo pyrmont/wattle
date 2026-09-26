@@ -1152,7 +1152,7 @@ fn putOnANonWritablePanics() void {
 
 fn fromWattle() void {
     const out = run_(
-        "[(do (var n 0) (each x !{:a 1 :b 2 :c 3} (+= n x)) n) " ++
+        "[(do (var n 0) (each [k v] !{:a 1 :b 2 :c 3} (+= n v)) n) " ++
             " (do (var n 0) (eachk k [:a :b :c] (+= n k)) n) " ++
             " (length \"abc\") " ++
             " (length !{:a 1}) " ++
