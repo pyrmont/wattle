@@ -229,7 +229,7 @@ pub const ModuleEntry = ?*const fn (*abi.Env, *const interface.Runtime) callconv
 /// One row of `sandbox_options`: the keyword, and the permissions it names.
 const SandboxOption = struct { name: [:0]const u8, flag: vm_lifecycle.Sandbox };
 
-/// The four type-mask predicates, which differ only in the mask.
+/// A predicate that is true for the types in a mask.
 fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
     return struct {
         fn nfun(argv: []repr.Value) raise.Error!repr.Value {
@@ -843,6 +843,18 @@ fn nfunIsIndexed(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(args_core.checkindexed(argv[0]));
 }
 
+/// `(lengthable? x)`: a type `length` reads directly, or an abstract whose type
+/// declares a `length` callback.
+fn nfunIsLengthable(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 1);
+    const x = argv[0];
+    if (repr.checkTypes(x, repr.TagSet.lengthable)) return wrap.fromBoolean(true);
+    if (repr.checkType(x, repr.Tag.abstract)) {
+        return wrap.fromBoolean(abi.abstractHead(wrap.toAbstract(x)).type.length != null);
+    }
+    return wrap.fromBoolean(false);
+}
+
 /// `(memcmp a b [len [offset-a [offset-b]]])`.
 fn nfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
@@ -1315,7 +1327,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Checks whether x is a string, symbol, keyword, or buffer."),
         corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Checks whether x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
         corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Checks whether x is a table, a map, or an abstract type that implements the dictionary protocol."),
-        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? x)", "Checks whether x is a byte sequence, an indexed type or a dictionary. A set and a fiber are not."),
+        corefn.reg("lengthable?", &nfunIsLengthable, @src(), "(lengthable? x)", "Checks whether x is a byte sequence, an indexed type, a dictionary, or an abstract type that has a length. A fiber is not."),
         corefn.reg("slice", &nfunSlice, @src(), "(slice ind)\n(slice ind start)\n(slice ind start end)", "Returns the sub-range of ind, an indexed type or a byte sequence, from " ++
             "start (default 0) up to but excluding end (default the length). A negative index counts " ++
             "from the end. Returns a vector for an indexed type and a string for a byte sequence. " ++

@@ -852,10 +852,17 @@
   (each x coll (+= accum x))
   accum)
 
+; True when (length coll) is the number of elements iterating coll yields. An
+; abstract type's length callback need not agree with its iteration, so only a
+; core type qualifies.
+(defn- counted?
+  [coll]
+  (and (lengthable? coll) (not (abstract? coll))))
+
 (defn mean
   "Returns the mean of the values in coll, an iterable. If coll is empty, returns NaN."
   [coll]
-  (if (lengthable? coll)
+  (if (counted? coll)
     (/ (sum coll) (length coll))
     (do
       (var [accum total] [0 0])
@@ -865,7 +872,7 @@
 (defn geomean
   "Returns the geometric mean of the values in coll, an iterable. If coll is empty, returns NaN."
   [coll]
-  (if (lengthable? coll)
+  (if (counted? coll)
     (do
       (var accum 0)
       (each x coll (+= accum (math/log x)))
@@ -1777,7 +1784,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   array. If coll is a string or buffer, returns a new buffer instead.
   """
   [coll]
-  (if (lengthable? coll)
+  (if (counted? coll)
     (do
       (var n (length coll))
       (def ret (if (bytes? coll)
@@ -1926,7 +1933,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [coll]
   (check-keyed :keys coll)
-  (if (lengthable? coll)
+  (if (counted? coll)
     (do
       (def arr (array/new-filled (length coll)))
       (var i 0)
@@ -1942,7 +1949,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   buffer are its bytes, and those of a table or map are its values.
   """
   [coll]
-  (if (lengthable? coll)
+  (if (counted? coll)
     (do
       (def arr (array/new-filled (length coll)))
       (var i 0)
@@ -1963,7 +1970,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [coll]
   (check-keyed :pairs coll)
-  (if (lengthable? coll)
+  (if (counted? coll)
     (do
       (def arr (array/new-filled (length coll)))
       (var i 0)
@@ -2079,7 +2086,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   [sep coll]
   (var k (next coll nil))
   (if (not= nil k)
-    (if (lengthable? coll)
+    (if (counted? coll)
       (do
         (def ret (array/new-filled (- (* 2 (length coll)) 1) sep))
         (var i 0)
