@@ -878,18 +878,13 @@
   (def stream-env (dofile r))
   (assert (= (stream-env :x) 10) "dofile stream 1"))
 
-; Test thaw and freeze
-; A map has no prototype, so freezing a table flattens nothing and drops the
-; prototype's own bindings; what thaws back is the frozen table's own pairs.
+; Test freeze
+; A map has no prototype, so freezing a table drops the prototype's bindings.
 (def table-to-freeze !{:c 22 :b [1 2 3 4] :d !"test" :e "test2"})
-(def thawed-again
-  !{:b ![1 2 3 4] :c 22 :d !"test" :e !"test2"})
-(def map-to-thaw {:c 22 :b [1 2 3 4] :d "test" :e "test2"})
+(def frozen-map {:c 22 :b [1 2 3 4] :d "test" :e "test2"})
 (table/setproto table-to-freeze !{:a ![1 2 3]})
 
-(assert (deep= map-to-thaw (freeze table-to-freeze)))
-(assert (deep= (merge !{:a ![1 2 3]} thawed-again) (thaw table-to-freeze)))
-(assert (deep= thawed-again (thaw map-to-thaw)))
+(assert (deep= frozen-map (freeze table-to-freeze)))
 
 ; Check that freezing mutable keys is deterministic
 (def hashes !{})

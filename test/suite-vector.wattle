@@ -220,7 +220,6 @@
 (assert (= (vector 1 (vector 2)) (freeze (vector 1 (vector 2))))
         "freeze a vector")
 (assert (= :vector (type (freeze (vector 1)))) "freeze keeps a vector")
-(assert (deep= ![1 ![2]] (thaw (vector 1 (vector 2)))) "thaw a vector")
 (assert (deep-not= (vector 1 !"a") (vector 1 !"b")) "deep-not= over a vector")
 (assert (not (deep-not= (vector 1 !"a") (vector 1 !"a")))
         "deep= over a vector")

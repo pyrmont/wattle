@@ -62,8 +62,7 @@
 (assert (deep= !{:a 1 :b 2} (map/to-table {:a 1 :b 2})) "map/to-table")
 (assert (= :table (type (map/to-table {:a 1}))) "map/to-table gives a table")
 
-; `freeze` gives a map, and `thaw` gives a table again.
+; `freeze` gives a map.
 (assert (= {:a 1 :b [1 2]} (freeze !{:a 1 :b ![1 2]})) "freeze gives a map")
-(assert (deep= !{:a 1} (thaw {:a 1})) "thaw gives a table")
 
 (end-suite)

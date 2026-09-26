@@ -1684,12 +1684,6 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (put ret (f k) (f (in form k))))
   ret)
 
-(defn- walk-dict-values [f form]
-  (def ret !{})
-  (loop [k :keys form]
-    (put ret k (f (in form k))))
-  ret)
-
 (defn walk
   """
   Iterates over the values in ast and applies f
@@ -2621,36 +2615,6 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (= tx :buffer)
     (string x)
 
-    x))
-
-(defn thaw
-  """
-  Thaws an object (make it mutable) and do a deep copy, making
-  child values also mutable. Closures, fibers, and abstract
-  types will not be recursively thawed, but all other types will.
-  """
-  [x]
-  (case (type x)
-    :array (walk-ind thaw x)
-    :vector (walk-ind thaw x)
-    :tuple (walk-ind thaw x)
-    :table (walk-dict thaw (table/proto-flatten x))
-    :map (walk-dict thaw x)
-    :string (buffer x)
-    x))
-
-(defn thaw-keep-keys
-  """
-  Similar to ^thaw, but does not modify table or map keys.
-  """
-  [x]
-  (case (type x)
-    :array (walk-ind thaw-keep-keys x)
-    :vector (walk-ind thaw-keep-keys x)
-    :tuple (walk-ind thaw-keep-keys x)
-    :table (walk-dict-values thaw-keep-keys (table/proto-flatten x))
-    :map (walk-dict-values thaw-keep-keys x)
-    :string (buffer x)
     x))
 
 (defn deep-not=
