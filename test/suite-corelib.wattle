@@ -386,8 +386,12 @@
 (assert (lengthable? (hash-set)) "an empty set is lengthable")
 (assert (not (lengthable? (fiber/new (fn [] 1)))) "a fiber is not lengthable")
 (assert (not (lengthable? (file/temp))) "an abstract type with no length is not lengthable")
-(each x [[1 2] ![1 2] "ab" !"ab" :key 'sym {:a 1} !{:a 1} (hash-set 1 2)
-         (fiber/new (fn [] 1)) (file/temp) (ev/chan) 5 nil true]
+(def lengthable-samples
+  ![[1 2] ![1 2] "ab" !"ab" :key 'sym {:a 1} !{:a 1} (hash-set 1 2)
+    (fiber/new (fn [] 1)) (file/temp) 5 nil true])
+(compwhen (dyn 'ev/chan)
+  (array/push lengthable-samples (ev/chan)))
+(each x lengthable-samples
   (assert (= (lengthable? x) (get (protect (length x)) 0))
           (string/format "lengthable? agrees with length for %q" (type x))))
 

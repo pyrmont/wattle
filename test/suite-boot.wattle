@@ -961,9 +961,17 @@
              (* "^" (<- (* (opt ".") (some ~word) (any (* "." (some ~word))))))
              1))))
 (def dangling ![])
+
+; A docstring may name a binding that a reduced configuration leaves out: the
+; ev module, the ffi module, or os/posix-chroot on a target without chroot
+(defn absent-by-configuration? [name]
+  (or (and (string/has-prefix? "ev/" name) (not (dyn 'ev/chan)))
+      (and (string/has-prefix? "ffi/" name) (not (dyn 'ffi/native)))
+      (= name "os/posix-chroot")))
 (each sym (all-bindings)
   (each name (peg/match reference-scan (get (dyn sym) :doc ""))
     (unless (or (dyn (symbol name))
+                (absent-by-configuration? name)
                 (and (string/has-prefix? "*" name)
                      (index-of (keyword (string/slice name 1 -2)) (all-dynamics))))
       (array/push dangling (string sym " -> " name)))))
