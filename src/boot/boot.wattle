@@ -1392,15 +1392,13 @@
   ([pred coll dflt]
     (check-keyed :find-index coll)
     (def dict (dictionary? coll))
-    (var k nil)
+    (var k (next coll nil))
     (var ret dflt)
-    (while true
-      (set k (next coll k))
-      (if (= k nil) (break))
-      (def item (element coll dict k))
-      (when (pred item)
+    (while (not= nil k)
+      (when (pred (element coll dict k))
         (set ret k)
-        (break)))
+        (break))
+      (set k (next coll k)))
     ret))
 
 (defn find
@@ -1413,15 +1411,14 @@
   ([pred coll] (find pred coll nil))
   ([pred coll dflt]
     (def dict (dictionary? coll))
-    (var k nil)
+    (var k (next coll nil))
     (var ret dflt)
-    (while true
-      (set k (next coll k))
-      (if (= k nil) (break))
+    (while (not= nil k)
       (def item (element coll dict k))
       (when (pred item)
         (set ret item)
-        (break)))
+        (break))
+      (set k (next coll k)))
     ret))
 
 (defn index-of
