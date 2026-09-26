@@ -741,10 +741,10 @@
   (loop [i :range [0 16]]
     (assert (string/has-prefix? "item-" (ev/take items)) "item survived")))
 
-; `janet_schedule_general` adds a fiber to `janet_vm.active_tasks` the first
-; time it is scheduled, and `janet_loop1` removes it when it can no longer be
-; resumed. `ev/all-tasks` is the only window onto that table, and nothing above
-; looked through it.
+; `scheduleGeneral` adds a fiber to `ev.active_tasks` the first time it is
+; scheduled, and `loop1` removes it when it can no longer be resumed.
+; `ev/all-tasks` is the only window onto that table, and nothing above looked
+; through it.
 ; all-tasks tracks live tasks
 (do
   (def before (length (ev/all-tasks)))
