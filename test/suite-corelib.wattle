@@ -363,6 +363,9 @@
 
 ; range
 (assert-error-value "range infinite step" "infinite step not allowed" (range 0 10 math/inf))
+(assert-error-value "range NaN end" "NaN argument not allowed" (range math/nan))
+(assert-error-value "range NaN start" "NaN argument not allowed" (range math/nan 10))
+(assert-error-value "range NaN step" "NaN argument not allowed" (range 0 10 math/nan))
 (assert-error-value "range too large" "range is too large, 1099511627775.000000 elements" (range 0xFFFFFFFFFF))
 (assert (deep= ![] (range 3 3 0)) "a zero step gives an empty range")
 

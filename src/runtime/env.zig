@@ -920,6 +920,9 @@ fn nfunRange(argv: []repr.Value) raise.Error!repr.Value {
         stop = try args_core.getNumber(argv, 0);
         count = stop;
     }
+    if (std.math.isNan(start) or std.math.isNan(stop) or std.math.isNan(step)) {
+        return raise.panic("NaN argument not allowed");
+    }
     if (std.math.isInf(step)) return raise.panic("infinite step not allowed");
     count = if (count > 0.0) count else 0.0;
     assert(count >= 0.0, "bad range code");
@@ -1336,7 +1339,8 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "With one argument, returns a range [0, end). With two arguments, returns " ++
             "a range [start, end). With three, the third is the step, which may be " ++
             "negative or fractional. Returns an empty array if the step does not move " ++
-            "toward end."),
+            "toward end. Raises if an argument is NaN, if the step is infinite or if " ++
+            "the range would have too many elements."),
         corefn.reg("signal", &nfunSignal, @src(), "(signal what val)", "Raises a signal with payload val. what can be an integer\n" ++
             "from 0 through 7 indicating user(0-7), or one of:\n\n" ++
             "- :ok\n" ++
