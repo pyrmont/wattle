@@ -99,7 +99,7 @@ pub const fileType = abstract_type.define(File, .{
 /// beside them. The three the abstract sets for itself are below.
 const file_append: i32 = 4;
 const file_binary: i32 = 64;
-const file_nonil: i32 = 512;
+const file_error: i32 = 512;
 const file_read: i32 = 2;
 const file_update: i32 = 8;
 const file_write: i32 = 1;
@@ -336,7 +336,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "| ---- | ------------------------------------------------------------------ |\n" ++
             "| b    | accepted and has no effect: a file is always opened in binary mode |\n" ++
             "| +    | open for update: allow both reading and writing, without appending |\n" ++
-            "| n    | error if the file cannot be opened instead of returning nil        |\n" ++
+            "| e    | error if the file cannot be opened instead of returning nil        |\n" ++
             "\n" ++
             "See fopen (<stdio.h>, C99) for further details."),
         corefn.reg("file/close", &nfunFclose, @src(), "(file/close file)", "Closes file and releases all related resources. Closing a file " ++
@@ -490,9 +490,9 @@ pub fn scanMode(
                 if (flags & file_binary != 0) return repeated(flags_out);
                 flags |= file_binary;
             },
-            'n' => {
-                if (flags & file_nonil != 0) return repeated(flags_out);
-                flags |= file_nonil;
+            'e' => {
+                if (flags & file_error != 0) return repeated(flags_out);
+                flags |= file_error;
             },
             else => return mode_bad_later,
         }
@@ -755,7 +755,7 @@ fn nfunFopen(argv: []repr.Value) raise.Error!repr.Value {
         }
     }
     if (f) |handle| return wrap.fromAbstract(makef(@ptrCast(handle), flags, bufsize));
-    if (flags & file_nonil != 0) {
+    if (flags & file_error != 0) {
         return pp_format.panicf("failed to open file %s: %s", .{ fname, utils.strerrorSafe(c.errno()) });
     }
     return wrap.fromNil();
@@ -891,7 +891,7 @@ fn checkFlags(str: strings.String) raise.Error!i32 {
     }
     try vm_lifecycle.sandboxAssert(sandbox_flags);
     if (status == mode_bad_later) {
-        return pp_format.panicf("invalid flag %c, expected +, b, or n", .{@as(c_int, str[@intCast(index)])});
+        return pp_format.panicf("invalid flag %c, expected +, b, or e", .{@as(c_int, str[@intCast(index)])});
     }
     // A repeat gets its own message: naming `+` as one of the flags expected
     // while refusing a `+` would be no diagnosis at all.
@@ -1339,9 +1339,9 @@ test "mode scanning accepts the documented flags" {
     try std.testing.expectEqual(file_read, r.flags);
     try std.testing.expectEqual(vm_lifecycle.Sandbox.of(&.{"fs_read"}), r.sandbox);
 
-    const wbn = scan("wbn");
+    const wbn = scan("wbe");
     try std.testing.expectEqual(mode_ok, wbn.status);
-    try std.testing.expectEqual(file_write | file_binary | file_nonil, wbn.flags);
+    try std.testing.expectEqual(file_write | file_binary | file_error, wbn.flags);
     try std.testing.expectEqual(vm_lifecycle.Sandbox.of(&.{"fs_write"}), wbn.sandbox);
 
     const ap = scan("a+");
@@ -1363,7 +1363,7 @@ test "mode scanning reports where it stopped" {
 }
 
 test "a repeated flag yields the flag word the C implementation returned" {
-    for ([_][]const u8{ "r++", "rbb", "rnn" }) |mode| {
+    for ([_][]const u8{ "r++", "rbb", "ree" }) |mode| {
         const result = scan(mode);
         try std.testing.expectEqual(mode_repeated, result.status);
         try std.testing.expectEqual(@as(i32, -1), result.flags);

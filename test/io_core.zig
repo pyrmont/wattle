@@ -192,12 +192,12 @@ fn theModeScanning() void {
     expect(r.sandbox == vm_lifecycle.Sandbox.fs);
 
     // Trailing flags accumulate in any order and are independent.
-    r = scan("wnb");
+    r = scan("web");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == (constants.file_write | constants.file_nonil | constants.file_binary));
-    r = scan("wbn");
+    expect(r.flags == (constants.file_write | constants.file_error | constants.file_binary));
+    r = scan("wbe");
     expect(r.status == io_core.mode_ok);
-    expect(r.flags == (constants.file_write | constants.file_nonil | constants.file_binary));
+    expect(r.flags == (constants.file_write | constants.file_error | constants.file_binary));
 
     // An update flag adds the write permission even to a read mode.
     r = scan("r+");
@@ -210,7 +210,7 @@ fn theModeScanning() void {
     r = scan("");
     expect(r.status == io_core.mode_bad_length);
     expect(r.sandbox == vm_lifecycle.Sandbox.none);
-    expect(scan("rbnbnbnbnb").status == io_core.mode_repeated);
+    expect(scan("rbebebebeb").status == io_core.mode_repeated);
     r = scan("qqqqqqqqqqq");
     expect(r.status == io_core.mode_bad_length);
     expect(r.sandbox == vm_lifecycle.Sandbox.none);
@@ -250,12 +250,12 @@ fn theModeScanning() void {
     expect(r.status == io_core.mode_repeated);
     expect(r.flags == -1);
     expect(r.sandbox == vm_lifecycle.Sandbox.of(&.{"fs_read"}));
-    r = scan("rnn");
+    r = scan("ree");
     expect(r.status == io_core.mode_repeated);
     expect(r.flags == -1);
 
     // A repeat is detected across intervening flags, not only next to itself.
-    r = scan("rbnb");
+    r = scan("rbeb");
     expect(r.status == io_core.mode_repeated);
     expect(r.flags == -1);
 
@@ -754,7 +754,7 @@ fn theCoreFunctions() void {
     // A missing file is nil, or an error when the mode asks for one.
     doString(env,
         \\(assert (nil? (file/open "wattle-io-core-absent-9d24" :r)))
-        \\(assert (not (first (protect (file/open "wattle-io-core-absent-9d24" :rn)))))
+        \\(assert (not (first (protect (file/open "wattle-io-core-absent-9d24" :re)))))
     );
 
     // Malformed modes are rejected by position, and each names the byte that
@@ -762,18 +762,18 @@ fn theCoreFunctions() void {
     doString(env,
         \\(defn why [mode] (last (protect (file/open "wattle-io-core-public-9d24" mode))))
         \\(assert (= "file mode must have a length between 1 and 10" (why (keyword ""))))
-        \\(assert (= "file mode must have a length between 1 and 10" (why :rbnbnbnbnbn)))
+        \\(assert (= "file mode must have a length between 1 and 10" (why :rbebebebebe)))
         \\(assert (= "invalid flag q, expected w, a, or r" (why :q)))
         \\(assert (= "invalid flag +, expected w, a, or r" (why (keyword "+"))))
-        \\(assert (= "invalid flag q, expected +, b, or n" (why :rq)))
-        \\(assert (= "invalid flag q, expected +, b, or n" (why :r+q)))
+        \\(assert (= "invalid flag q, expected +, b, or e" (why :rq)))
+        \\(assert (= "invalid flag q, expected +, b, or e" (why :r+q)))
         \\; A repeat gets its own message: naming `+` among the flags expected
         \\; while refusing a `+` would be no diagnosis at all.
         \\(assert (= "repeated flag + in file mode" (why :r++)))
         \\(assert (= "repeated flag b in file mode" (why :rbb)))
-        \\(assert (= "repeated flag n in file mode" (why :rnn)))
+        \\(assert (= "repeated flag e in file mode" (why :ree)))
         \\; Across intervening flags, not only next to itself.
-        \\(assert (= "repeated flag b in file mode" (why :rbnb)))
+        \\(assert (= "repeated flag b in file mode" (why :rbeb)))
     );
 
     // A repeated flag opens nothing. The -1 the scan reports is not a flag

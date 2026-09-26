@@ -175,7 +175,7 @@
     (assert-error-value "write mode read" "file is not readable" (file/read f :all)))
   (assert-error-value "open a directory" "cannot open directory: ." (file/open "." :r))
   (assert (nil? (file/open "wattle-suite-io-11-absent" :r)) "a missing file is nil")
-  (assert-error "missing file with :n" (file/open "wattle-suite-io-11-absent" :rn)))
+  (assert-error "missing file with :e" (file/open "wattle-suite-io-11-absent" :re)))
 
 ; Printing to a file takes the other branch of the same conversion: a buffer
 ; argument is written raw and everything else goes through `describe`
@@ -268,7 +268,7 @@
 (assert-error-value "empty mode" "file mode must have a length between 1 and 10"
                     (file/open "wattle-suite-io-11-absent" (keyword "")))
 (assert-error-value "eleven-byte mode" "file mode must have a length between 1 and 10"
-                    (file/open "wattle-suite-io-11-absent" :rbnbnbnbnbn))
+                    (file/open "wattle-suite-io-11-absent" :rbebebebebe))
 
 ; A file this runtime will close does not survive an exec.
 ;

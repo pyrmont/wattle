@@ -88,7 +88,7 @@ pub const file_update = @as(c_int, 8);
 pub const file_not_closeable = @as(c_int, 16);
 pub const file_closed = @as(c_int, 32);
 pub const file_binary = @as(c_int, 64);
-pub const file_nonil = @as(c_int, 512);
+pub const file_error = @as(c_int, 512);
 
 /// A stack frame's size in `Value` slots. `src/runtime/vm.zig` and
 /// `src/runtime/marsh.zig` subtract it from a stack pointer to reach the frame
