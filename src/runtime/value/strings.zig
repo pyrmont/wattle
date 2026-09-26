@@ -337,7 +337,7 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("string/check-set", &nfunStringCheckset, @src(), "(string/check-set chars bytes)", "Checks that bytes only contains bytes that appear in chars. " ++
             "Returns true if all bytes in bytes appear in chars, false if some bytes in bytes do " ++
             "not appear in chars."),
-        corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join ind)\n(string/join ind sep)", "Joins the byte sequences (strings, keywords, symbols or buffers) in ind, an indexed type, " ++
+        corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join ind)\n(string/join sep ind)", "Joins the byte sequences (strings, keywords, symbols or buffers) in ind, an indexed type, " ++
             "into one string, optionally separated by the byte sequence sep."),
         corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format fmt & vals)", "Formats vals into a formatted string using fmt.\n\n" ++
             "The formatting syntax borrows from C's `snprintf`, but is specialized for operating with Wattle values. " ++
@@ -510,14 +510,16 @@ fn nfunStringHassuffix(argv: []repr.Value) raise.Error!repr.Value {
 }
 
 /// `string/join`: the parts concatenated, optionally with a separator between
-/// them.
+/// them. The parts are the last argument and the separator, if given, the
+/// first.
 fn nfunStringJoin(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
-    var source = try args_core.chunks(argv[0]) orelse {
-        return args_core.panicIndexed(argv[0], 0, repr.TagSet.none);
+    const parts_at = argv.len - 1;
+    var source = try args_core.chunks(argv[parts_at]) orelse {
+        return args_core.panicIndexed(argv[parts_at], @intCast(parts_at), repr.TagSet.none);
     };
     const joiner: abi.ByteView = if (argv.len == 2)
-        try args_core.getBytes(argv, 1)
+        try args_core.getBytes(argv, 0)
     else
         .{ .bytes = "", .len = 0 };
 

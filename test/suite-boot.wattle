@@ -104,7 +104,7 @@
   (assert (compare> 4 n3 2) "compare> poly")
   (assert (compare<= 2 3 n3 4) "compare<= poly")
   (assert (compare= 3 n3 (table/setproto !{:v 3} mynum)) "compare= poly")
-  (assert (deep= (sort ![4 5 n3 2] compare<) ![2 n3 4 5])
+  (assert (deep= (sort compare< ![4 5 n3 2]) ![2 n3 4 5])
           "polymorphic sort"))
 
 ; Add any? predicate to core
@@ -331,6 +331,12 @@
 (assert (deep= ![1 2 3 4 5] (sort [5 3 4 1 2])) "sort 3")
 (assert (deep= ![{:a 1} {:a 4} {:a 7}]
                (sort-by #($ :a) [{:a 4} {:a 7} {:a 1}])) "sort 4")
+
+; sort and sort! take the comparator before the collection, as sort-by does
+(assert (deep= ![5 4 3 2 1] (sort > [5 3 4 1 2])) "sort takes the comparator first")
+(assert (deep= ![5 4 3 2 1] (sort! > ![5 3 4 1 2])) "sort! takes the comparator first")
+(assert (not (first (protect (sort [5 3 4 1 2] >))))
+        "sort no longer takes the comparator last")
 
 ; Sort function
 (assert (deep=
@@ -976,7 +982,7 @@
                      (index-of (keyword (string/slice name 1 -2)) (all-dynamics))))
       (array/push dangling (string sym " -> " name)))))
 (assert (empty? dangling)
-        (string "docstring references that name no binding: " (string/join dangling ", ")))
+        (string "docstring references that name no binding: " (string/join ", " dangling)))
 
 (def expanded-clauses
   (macex '(fn ([x] (when true (+ x 1)))

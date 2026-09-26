@@ -527,7 +527,7 @@
 ; while the index fits in one, and with a constant key past that. 257
 ; elements is one more than fits.
 (def wide-pattern
-  (string "(def [" (string/join (map #(string "wide" $) (range 257)) " ") "] (range 257))"))
+  (string "(def [" (string/join " " (map #(string "wide" $) (range 257))) "] (range 257))"))
 (assert (function? (compile (parse wide-pattern) (make-env) "suite-compile.janet"))
         "a destructuring pattern of 257 elements")
 

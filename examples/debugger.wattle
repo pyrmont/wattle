@@ -73,7 +73,7 @@
   (loop [i :range [0 (length bytecode)]
          :let [instr (bytecode i)]]
     (prin (if (= i pc) "> " "  "))
-    (prinf "\e[33m%.20s\e[0m" (string (string/join (map string instr) " ") padding))
+    (prinf "\e[33m%.20s\e[0m" (string (string/join " " (map string instr)) padding))
     (when sourcemap
       (let [[sl sc] (sourcemap i)
             loc [sl sc]]

@@ -350,7 +350,7 @@
   ; need four rows, and four rows of terminal leave three beneath the line:
   ; a page of two rows and its footer. The seventh Tab selects the seventh
   ; candidate, which is on the second page.
-  (def twelve (completing (string/join (map (fn [i] (string/format "'zz%02d %d" i i)) (range 1 13)) " ")))
+  (def twelve (completing (string/join " " (map (fn [i] (string/format "'zz%02d %d" i i)) (range 1 13)))))
   (task (assert (= "a> zz01\nzz01  zz03  zz05\nzz02  zz04  zz06\n1-6 of 12\n"
                    (drive """zz\t""" :marker "a> " :screen true :cols 20 :rows 4
                           :args ["-e" twelve]))

@@ -42,7 +42,7 @@
 (assert (= '(997 998 999) (tuple/slice big 997)) "tuple/slice")
 (assert (deep= ![31 32 33] (array/slice big 31 34)) "array/slice across a leaf")
 (assert (= 499500 (sum big)) "sum")
-(assert (= "1,2,3" (string/join (map string v) ",")) "string/join")
+(assert (= "1,2,3" (string/join "," (map string v))) "string/join")
 (let [[a b] v] (assert (= [1 2] [a b]) "destructuring"))
 (assert (= 3 (match v [_ _ c] c)) "match")
 (def seen ![])

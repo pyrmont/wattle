@@ -132,7 +132,7 @@
 
 (defn- string-join []
   (var acc 0)
-  (for i 0 1900000 (set acc (+ acc (length (string/join parts "-")))))
+  (for i 0 1900000 (set acc (+ acc (length (string/join "-" parts)))))
   acc)
 
 ; A `cms` rule splices what its function returns into the captures, and is the

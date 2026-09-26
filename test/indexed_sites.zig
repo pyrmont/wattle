@@ -277,7 +277,7 @@ fn joinAndSelectReadAnIndexedAbstract() void {
         \\(check "string/join over runs of two"
         \\       (= (string/join (sites/held 2 "ab" "cd" "ef")) (string/join oracle)))
         \\(check "and with a separator between the parts"
-        \\       (= (string/join (sites/held 2 "ab" "cd" "ef") "-") (string/join oracle "-")))
+        \\       (= (string/join "-" (sites/held 2 "ab" "cd" "ef")) (string/join "-" oracle)))
         \\(check "runs of one reach the same string"
         \\       (= (string/join (sites/held 1 "ab" "cd" "ef")) (string/join oracle)))
         \\(check "an empty abstract joins to the empty string"
