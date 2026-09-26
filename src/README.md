@@ -298,10 +298,10 @@ first, then `:doc`. `-Ddocstrings=false` leaves out both keys.
 
 `doc` formats `:doc` with the argument names read from `:sigs`: every token
 after the head of a line, leaving out `&`-words and keywords. A whole word in
-the prose equal to one of them is underlined, and a word written `^name` is a
+the prose equal to one of them is yellow, and a word written `^name` is a
 cross-reference to a binding and is shown as `name` in cyan. With colour off
 neither is marked, and the `^` is dropped. The line editor's hint drops the `^`
-and does not underline.
+and does not color arguments.
 
 ## Boundaries
 

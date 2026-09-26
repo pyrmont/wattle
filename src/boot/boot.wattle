@@ -3677,7 +3677,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   a well-formed docstring. Backticks enclose raw code, and a word written `^name` refers to a
   binding. A table is a header row, a delimiter row and body rows, each beginning with `|`; it is
   drawn with a centred header row and rules under the header and between rows. With color on,
-  each word in str equal to an element of args, a sequence of argument names, is underlined.
+  each word in str equal to an element of args, a sequence of argument names, is yellow.
   Returns a buffer containing the formatted text.
   """
   ([str] (doc-format str nil 4 nil nil))
@@ -3698,7 +3698,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
        :italics ["\e[4m" "\e[24m"]
        :bold ["\e[1m" "\e[22m"]
        :ref ["\e[36m" "\e[39m"]
-       :arg ["\e[4m" "\e[24m"]}
+       :arg ["\e[33m" "\e[39m"]}
       {:code ["`" "`"]
        :italics ["*" "*"]
        :bold ["**" "**"]
@@ -4200,7 +4200,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (when sigs
       (def has-color (dyn *doc-color*))
       (string "\n"
-              (when has-color "\e[38;5;245m")
+              (when has-color "\e[32m")
               "    " (string/replace-all "\n" "\n    " sigs)
               (when has-color "\e[39m")
               "\n")))
