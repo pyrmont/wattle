@@ -125,6 +125,35 @@ word appear in a docstring, and each is written one way:
 - Backticks enclose raw code only: an expression, a keyword, a literal, a
   string of another language. A name is never raw code.
 
+**A signature names each argument by its role.** The same name means the same
+thing in every signature, so a docstring reads the same way wherever it
+appears:
+
+| name                | role                                                    |
+| ------------------- | ------------------------------------------------------- |
+| `x`, `xs`           | The value the function reads or transforms.             |
+| `val`, `vals`       | A value the function stores, sends, writes or converts. |
+| `arr`, `buf`, `tbl` | An array, a buffer or a table the function modifies.    |
+| `coll`              | A collection, in a function written in Wattle.          |
+| `fmt`               | A format string.                                        |
+| `i`                 | An index.                                               |
+
+`x` is the first argument, and `xs` is the rest argument of that role when it
+is in first position. `vals` is the rest argument of the `val` role, and also
+the rest argument that follows `fmt`. `at` is the position in `array/insert`,
+`array/remove` and `buffer/format-at`.
+
+Two rules decide between `x` and `val`. A name is `x` only when the argument is
+first, so a value in any later position is `val`. A conversion that writes into
+a container, such as `int/to-bytes` and `marshal`, takes `val`, because the
+value goes into the container. A conversion that returns a new value, such as
+`int/to-number` and `int/s64`, takes `x`.
+
+The exceptions are `math/atan2`, which is `(math/atan2 y x)`, `math/pow`, which
+is `(math/pow x exp)`, and `os/clock`, whose `format` is the type of the output
+and not a format string. A docstring that names a container writes its type
+after the name: "Appends the bytes to buf, a buffer."
+
 ## The `//!` header
 
 **The `//!` header** says what the file is in one sentence, how it is

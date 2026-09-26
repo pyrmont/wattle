@@ -233,7 +233,7 @@
   Adds a linter warning when called inside a macro. fmt formats the message and
   works the same as the formatting argument to ^string/format.
   """
-  [level fmt & args]
+  [level fmt & vals]
   (def lints (dyn *macro-lints*))
   (if lints
     (do
@@ -241,17 +241,17 @@
       (def [l c] (if (tuple? form) (tuple/sourcemap form) [nil nil]))
       (def l (if (not= -1 l) l))
       (def c (if (not= -1 c) c))
-      (def msg (string/format fmt |args))
+      (def msg (string/format fmt |vals))
       (array/push lints [level l c msg])))
   nil)
 
 (defn errorf
   """
   Raises an error. fmt formats the mssage and works the same as the formatting
-  argument to ^string/format. Same as `(error (string/format fmt |args))`.
+  argument to ^string/format. Same as `(error (string/format fmt |vals))`.
   """
-  [fmt & args]
-  (error (string/format fmt |args)))
+  [fmt & vals]
+  (error (string/format fmt |vals)))
 
 (defmacro assertf
   """
@@ -259,13 +259,13 @@
   formats the message and works the same as the formatting argument to
   ^string/format.
   """
-  [x fmt & args]
+  [x fmt & vals]
   (def v (gensym))
   `(do
      (def ~v ~x)
      (if ~v
        ~v
-       (~errorf ~fmt ~|args))))
+       (~errorf ~fmt ~|vals))))
 
 (defmacro default
   """
@@ -1860,12 +1860,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn put-in!
   """
-  Puts a value into a nested data structure ds, an array, buffer or table.
-  Looks into ds via ks, an indexed type of keys. Missing data structures will
+  Puts a value into a nested data structure coll, an array, buffer or table.
+  Looks into coll via ks, an indexed type of keys. Missing data structures will
   be replaced with tables. Returns the modified, original data structure.
   """
-  [ds ks val]
-  (var d ds)
+  [coll ks val]
+  (var d coll)
   (def len-1 (- (length ks) 1))
   (if (< len-1 0) (error "expected at least 1 key in ks"))
   (forv i 0 len-1
@@ -1879,7 +1879,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def last-key (get ks len-1))
   (def last-val (get d last-key))
   (put d last-key val)
-  ds)
+  coll)
 
 (defn update!
   """

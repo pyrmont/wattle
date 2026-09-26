@@ -223,8 +223,8 @@ pub inline fn isForeign(buffer: *const Buffer) bool {
 
 /// Installs the `buffer/` nfunctions into `env`.
 pub fn lib(env: *tables.Table) void {
-    const push_tail = "Returns ds. " ++
-        "Expands ds as necessary. Raises an error if the size limit is exceeded. " ++
+    const push_tail = "Returns buf. " ++
+        "Expands buf as necessary. Raises an error if the size limit is exceeded. " ++
         "order is `:le`, `:be` or `:native`.";
     const entries = comptime [_]corefn.Entry{
         corefn.reg("buffer/new", &nfunBufferNew, @src(), "(buffer/new capacity)", "Creates a new, empty buffer with enough backing memory for capacity bytes. " ++
@@ -233,49 +233,49 @@ pub fn lib(env: *tables.Table) void {
             "byte is reduced modulo 256. Returns the new buffer."),
         corefn.reg("buffer/from-bytes", &nfunBufferFrombytes, @src(), "(buffer/from-bytes & byte-vals)", "Creates a buffer from integer parameters with byte values. Each integer " ++
             "is reduced modulo 256."),
-        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill ds)\n(buffer/fill ds byte)", "Fills ds, a buffer, with byte, which defaults to 0. Does not change the length of ds. " ++
-            "Returns ds mutated."),
-        corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim ds)", "Sets the backing capacity of ds, a buffer, to its current length. Returns ds mutated."),
-        corefn.reg("buffer/push-byte", &nfunBufferU8, @src(), "(buffer/push-byte ds & bytes)", "Appends each of bytes, integers reduced modulo 256, to ds, a buffer. Returns ds mutated. " ++
-            "Expands ds as necessary. Raises an error if the size limit is exceeded."),
-        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word ds & vals)", "Appends machine words to a buffer. The 4 bytes of the integer are appended " ++
+        corefn.reg("buffer/fill", &nfunBufferFill, @src(), "(buffer/fill buf)\n(buffer/fill buf byte)", "Fills buf, a buffer, with byte, which defaults to 0. Does not change the length of buf. " ++
+            "Returns buf mutated."),
+        corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim buf)", "Sets the backing capacity of buf, a buffer, to its current length. Returns buf mutated."),
+        corefn.reg("buffer/push-byte", &nfunBufferU8, @src(), "(buffer/push-byte buf & bytes)", "Appends each of bytes, integers reduced modulo 256, to buf, a buffer. Returns buf mutated. " ++
+            "Expands buf as necessary. Raises an error if the size limit is exceeded."),
+        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word buf & vals)", "Appends machine words to a buffer. The 4 bytes of the integer are appended " ++
             "in twos complement, little endian order, unsigned for all vals. Returns the modified buffer. " ++
             "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
-        corefn.reg("buffer/push-string", &nfunBufferChars, @src(), "(buffer/push-string ds & bytes)", "Appends each of bytes, a string, keyword, symbol or buffer, to the end of ds, a buffer. " ++
-            "Returns ds mutated. " ++
-            "Expands ds as necessary. Raises an error if the size limit is exceeded."),
-        corefn.reg("buffer/push-uint16", &nfunBufferPushUint16, @src(), "(buffer/push-uint16 ds order n)", "Appends n, a 16 bit unsigned integer, to the end of ds, a buffer. " ++ push_tail),
-        corefn.reg("buffer/push-uint32", &nfunBufferPushUint32, @src(), "(buffer/push-uint32 ds order n)", "Appends n, a 32 bit unsigned integer, to the end of ds, a buffer. " ++ push_tail),
-        corefn.reg("buffer/push-uint64", &nfunBufferPushUint64, @src(), "(buffer/push-uint64 ds order n)", "Appends n, a 64 bit unsigned integer, to the end of ds, a buffer. " ++ push_tail),
-        corefn.reg("buffer/push-float32", &nfunBufferPushFloat32, @src(), "(buffer/push-float32 ds order val)", "Appends the underlying bytes of val, a 32 bit float, to the end of ds, a buffer. " ++ push_tail),
-        corefn.reg("buffer/push-float64", &nfunBufferPushFloat64, @src(), "(buffer/push-float64 ds order val)", "Appends the underlying bytes of val, a 64 bit float, to the end of ds, a buffer. " ++ push_tail),
-        corefn.reg("buffer/push", &nfunBufferPush, @src(), "(buffer/push ds & vals)", "Appends both individual bytes and byte sequences to ds, a buffer. For each val in vals, " ++
+        corefn.reg("buffer/push-string", &nfunBufferChars, @src(), "(buffer/push-string buf & bytes)", "Appends each of bytes, a string, keyword, symbol or buffer, to the end of buf, a buffer. " ++
+            "Returns buf mutated. " ++
+            "Expands buf as necessary. Raises an error if the size limit is exceeded."),
+        corefn.reg("buffer/push-uint16", &nfunBufferPushUint16, @src(), "(buffer/push-uint16 buf order n)", "Appends n, a 16 bit unsigned integer, to the end of buf, a buffer. " ++ push_tail),
+        corefn.reg("buffer/push-uint32", &nfunBufferPushUint32, @src(), "(buffer/push-uint32 buf order n)", "Appends n, a 32 bit unsigned integer, to the end of buf, a buffer. " ++ push_tail),
+        corefn.reg("buffer/push-uint64", &nfunBufferPushUint64, @src(), "(buffer/push-uint64 buf order n)", "Appends n, a 64 bit unsigned integer, to the end of buf, a buffer. " ++ push_tail),
+        corefn.reg("buffer/push-float32", &nfunBufferPushFloat32, @src(), "(buffer/push-float32 buf order val)", "Appends the underlying bytes of val, a 32 bit float, to the end of buf, a buffer. " ++ push_tail),
+        corefn.reg("buffer/push-float64", &nfunBufferPushFloat64, @src(), "(buffer/push-float64 buf order val)", "Appends the underlying bytes of val, a 64 bit float, to the end of buf, a buffer. " ++ push_tail),
+        corefn.reg("buffer/push", &nfunBufferPush, @src(), "(buffer/push buf & vals)", "Appends both individual bytes and byte sequences to buf, a buffer. For each val in vals, " ++
             "appends the byte if val is an integer, otherwise appends the byte sequence. " ++
             "Thus, this function behaves like both ^buffer/push-string and ^buffer/push-byte. " ++
-            "Returns ds mutated. " ++
-            "Expands ds as necessary. Raises an error if the size limit is exceeded."),
-        corefn.reg("buffer/push-at", &nfunBufferPushAt, @src(), "(buffer/push-at ds index & vals)", "Behaves as ^buffer/push, but overwrites the bytes of ds from index onward, " ++
-            "extending ds if the data runs past its end. index must be between 0 and the length of ds. Returns ds mutated."),
-        corefn.reg("buffer/popn", &nfunBufferPopn, @src(), "(buffer/popn ds n)", "Removes the last n bytes from ds, a buffer, or all of them if ds is shorter. n must be non-negative. Returns ds mutated."),
-        corefn.reg("buffer/clear", &nfunBufferClear, @src(), "(buffer/clear ds)", "Sets the length of ds, a buffer, to 0. ds retains " ++
-            "its backing memory. Returns ds mutated."),
+            "Returns buf mutated. " ++
+            "Expands buf as necessary. Raises an error if the size limit is exceeded."),
+        corefn.reg("buffer/push-at", &nfunBufferPushAt, @src(), "(buffer/push-at buf i & vals)", "Behaves as ^buffer/push, but overwrites the bytes of buf from i onward, " ++
+            "extending buf if the data runs past its end. i must be between 0 and the length of buf. Returns buf mutated."),
+        corefn.reg("buffer/popn", &nfunBufferPopn, @src(), "(buffer/popn buf n)", "Removes the last n bytes from buf, a buffer, or all of them if buf is shorter. n must be non-negative. Returns buf mutated."),
+        corefn.reg("buffer/clear", &nfunBufferClear, @src(), "(buffer/clear buf)", "Sets the length of buf, a buffer, to 0. buf retains " ++
+            "its backing memory. Returns buf mutated."),
         corefn.reg("buffer/slice", &nfunBufferSlice, @src(), "(buffer/slice bytes)\n(buffer/slice bytes start)\n(buffer/slice bytes start end)", "Returns a new buffer holding the bytes of bytes, a string, keyword, symbol or buffer, " ++
             "from start to end. The range is half open, [start, end). All indexing " ++
             "is from 0. start and end can also be negative to indicate indexing " ++
             "from the end. A negative start is exclusive and a negative end is inclusive. " ++
             "By default, start is 0 and end is the length of bytes."),
-        corefn.reg("buffer/bit-set", &nfunBufferBitset, @src(), "(buffer/bit-set ds index)", "Sets the bit at index in ds, a buffer. Bit 0 is the least significant bit of the first byte. Raises if index is beyond the length of ds. Returns ds mutated."),
-        corefn.reg("buffer/bit-clear", &nfunBufferBitclear, @src(), "(buffer/bit-clear ds index)", "Clears the bit at index in ds, a buffer. Bit 0 is the least significant bit of the first byte. Raises if index is beyond the length of ds. Returns ds mutated."),
-        corefn.reg("buffer/bit", &nfunBufferBitget, @src(), "(buffer/bit ds index)", "Gets the bit at index in ds, a buffer. Bit 0 is the least significant bit of the first byte. Returns true if the bit is set, false if not."),
-        corefn.reg("buffer/bit-toggle", &nfunBufferBittoggle, @src(), "(buffer/bit-toggle ds index)", "Toggles the bit at index in ds, a buffer. Bit 0 is the least significant bit of the first byte. Raises if index is beyond the length of ds. Returns ds mutated."),
-        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit ds src)\n(buffer/blit ds src ds-start)\n(buffer/blit ds src ds-start src-start)\n(buffer/blit ds src ds-start src-start src-end)", "Copies the bytes of src, a string, keyword, symbol or buffer, into ds, a buffer, " ++
+        corefn.reg("buffer/bit-set", &nfunBufferBitset, @src(), "(buffer/bit-set buf i)", "Sets the bit at i in buf, a buffer. Bit 0 is the least significant bit of the first byte. Raises if i is beyond the length of buf. Returns buf mutated."),
+        corefn.reg("buffer/bit-clear", &nfunBufferBitclear, @src(), "(buffer/bit-clear buf i)", "Clears the bit at i in buf, a buffer. Bit 0 is the least significant bit of the first byte. Raises if i is beyond the length of buf. Returns buf mutated."),
+        corefn.reg("buffer/bit", &nfunBufferBitget, @src(), "(buffer/bit buf i)", "Gets the bit at i in buf, a buffer. Bit 0 is the least significant bit of the first byte. Returns true if the bit is set, false if not."),
+        corefn.reg("buffer/bit-toggle", &nfunBufferBittoggle, @src(), "(buffer/bit-toggle buf i)", "Toggles the bit at i in buf, a buffer. Bit 0 is the least significant bit of the first byte. Raises if i is beyond the length of buf. Returns buf mutated."),
+        corefn.reg("buffer/blit", &nfunBufferBlit, @src(), "(buffer/blit buf src)\n(buffer/blit buf src buf-start)\n(buffer/blit buf src buf-start src-start)\n(buffer/blit buf src buf-start src-start src-end)", "Copies the bytes of src, a string, keyword, symbol or buffer, into buf, a buffer, " ++
             "overwriting its bytes and extending it as needed. Can optionally take indices that " ++
-            "indicate which part of src to copy into which part of ds. Indices can be " ++
-            "negative in order to index from the end of src or ds. Returns ds mutated."),
-        corefn.reg("buffer/format", &nfunBufferFormat, @src(), "(buffer/format ds format & args)", "Formats args as ^string/format does and appends the result to ds, a buffer. Returns " ++
-            "ds mutated."),
-        corefn.reg("buffer/format-at", &nfunBufferFormatAt, @src(), "(buffer/format-at ds at format & args)", "Formats args as ^string/format does and writes the result into ds, a buffer, starting at at. " ++
-            "A negative at indexes from the end of ds. Returns ds mutated."),
+            "indicate which part of src to copy into which part of buf. Indices can be " ++
+            "negative in order to index from the end of src or buf. Returns buf mutated."),
+        corefn.reg("buffer/format", &nfunBufferFormat, @src(), "(buffer/format buf fmt & vals)", "Formats vals as ^string/format does and appends the result to buf, a buffer. Returns " ++
+            "buf mutated."),
+        corefn.reg("buffer/format-at", &nfunBufferFormatAt, @src(), "(buffer/format-at buf at fmt & vals)", "Formats vals as ^string/format does and writes the result into buf, a buffer, starting at at. " ++
+            "A negative at indexes from the end of buf. Returns buf mutated."),
     };
     corefn.install(env, entries);
 }

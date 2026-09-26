@@ -394,7 +394,7 @@ fn defs(env: *wattle.Env) wattle.Error!void {
         wattle.reg("built", &built, "(built bytes)", "One of every composite, built from the argument."),
         wattle.reg("pointer-value", &pointerValue, "(pointer-value)", "A raw pointer as a value."),
         wattle.reg("mutate", &mutate, "(mutate array table buffer)", "The three mutations, through the Value."),
-        wattle.reg("fetch", &fetch, "(fetch ds key)", "Wattle's own get, over anything."),
+        wattle.reg("fetch", &fetch, "(fetch x key)", "Wattle's own get, over anything."),
         wattle.reg("size", &size, "(size x)", "The generic length."),
         wattle.reg("odd", &oddValue, "(odd)", "An abstract with a :length method and no length slot."),
         wattle.reg("apply", &apply, "(apply f & args)", "Call f on the current fiber, raising on anything but a return."),

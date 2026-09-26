@@ -581,7 +581,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "table. Putting a `nil` value into a table will " ++
         "remove the table's corresponding association. " ++
         "Returns x.");
-    quickAsmDef(env, .{ .tag = constants.fun_length }, "length", 1, 1, 1, 1, &opOnly(constants.Opcode.length) ++ opOnly(constants.Opcode.@"return"), "(length ds)", "Returns the length or count of a data structure in constant time as an integer. For " ++
+    quickAsmDef(env, .{ .tag = constants.fun_length }, "length", 1, 1, 1, 1, &opOnly(constants.Opcode.length) ++ opOnly(constants.Opcode.@"return"), "(length x)", "Returns the length or count of a data structure in constant time as an integer. For " ++
         "structs and tables, returns the number of key-value pairs in the data structure.");
     quickAsmDef(env, .{ .tag = constants.fun_bnot }, "bnot", 1, 1, 1, 1, &opOnly(constants.Opcode.bnot) ++ opOnly(constants.Opcode.@"return"), "(bnot x)", "Returns the bit-wise inverse of integer x.");
     makeApply(env);
@@ -1231,22 +1231,22 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "usually a .so file on Unix systems, and a .dll file on Windows. " ++
             "Returns an environment table that contains functions and other values " ++
             "from the native module."),
-        corefn.reg("describe", &nfunDescribe, @src(), "(describe val)", "Returns a string that is a human-readable description of val. " ++
+        corefn.reg("describe", &nfunDescribe, @src(), "(describe x)", "Returns a string that is a human-readable description of x. " ++
             "For a recursive data structure, the string contains a pointer value " ++
-            "that identifies val."),
-        corefn.reg("string", &Concat(finishString).nfun, @src(), "(string & vals)", "Creates a string by concatenating vals. A byte sequence contributes its " ++
+            "that identifies x."),
+        corefn.reg("string", &Concat(finishString).nfun, @src(), "(string & xs)", "Creates a string by concatenating xs. A byte sequence contributes its " ++
             "bytes, nil contributes nothing, and any other value contributes its " ++
             "printed form. Returns the new string."),
-        corefn.reg("symbol", &Concat(finishSymbol).nfun, @src(), "(symbol & vals)", "Creates a symbol by concatenating vals. A byte sequence contributes its " ++
+        corefn.reg("symbol", &Concat(finishSymbol).nfun, @src(), "(symbol & xs)", "Creates a symbol by concatenating xs. A byte sequence contributes its " ++
             "bytes, nil contributes nothing, and any other value contributes its " ++
             "printed form. Returns the new symbol."),
-        corefn.reg("keyword", &Concat(finishKeyword).nfun, @src(), "(keyword & vals)", "Creates a keyword by concatenating vals. A byte sequence contributes its " ++
+        corefn.reg("keyword", &Concat(finishKeyword).nfun, @src(), "(keyword & xs)", "Creates a keyword by concatenating xs. A byte sequence contributes its " ++
             "bytes, nil contributes nothing, and any other value contributes its " ++
             "printed form. Returns the new keyword."),
-        corefn.reg("buffer", &Concat(finishBuffer).nfun, @src(), "(buffer & vals)", "Creates a buffer by concatenating vals. A byte sequence contributes its " ++
+        corefn.reg("buffer", &Concat(finishBuffer).nfun, @src(), "(buffer & xs)", "Creates a buffer by concatenating xs. A byte sequence contributes its " ++
             "bytes, nil contributes nothing, and any other value contributes its " ++
             "printed form. Returns the new buffer."),
-        corefn.reg("abstract?", &nfunIsAbstract, @src(), "(abstract? val)", "Checks whether val is an abstract type."),
+        corefn.reg("abstract?", &nfunIsAbstract, @src(), "(abstract? x)", "Checks whether x is an abstract type."),
         corefn.reg("table", &nfunTable, @src(), "(table & kvs)", "Creates a new table from a variadic number of keys and values. " ++
             "kvs is a sequence k1, v1, k2, v2, k3, v3, ... Raises an error if kvs has " ++
             "an odd number of elements. Returns the new table."),
@@ -1267,7 +1267,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "High values are faster but use more memory."),
         corefn.reg("gcinterval", &nfunGcinterval, @src(), "(gcinterval)", "Returns the integer number of bytes to allocate before running an iteration " ++
             "of garbage collection."),
-        corefn.reg("type", &nfunType, @src(), "(type val)", "Returns the type of val as a keyword. The keyword is one of:\n\n" ++
+        corefn.reg("type", &nfunType, @src(), "(type x)", "Returns the type of x as a keyword. The keyword is one of:\n\n" ++
             "* :number\n" ++
             "* :nil\n" ++
             "* :boolean\n" ++
@@ -1286,10 +1286,10 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :nfunction\n" ++
             "* :pointer\n\n" ++
             "or another keyword for an abstract type."),
-        corefn.reg("hash", &nfunHash, @src(), "(hash val)", "Gets a hash for any value. The hash is an integer that can be used " ++
+        corefn.reg("hash", &nfunHash, @src(), "(hash x)", "Gets a hash for any value. The hash is an integer that can be used " ++
             "as a cheap hash function for all values. Two values that are strictly equal " ++
             "have the same hash value."),
-        corefn.reg("getline", &nfunGetline, @src(), "(getline)\n(getline prompt)\n(getline prompt ds)\n(getline prompt ds env)", "Reads a line of input into the buffer ds, including the newline character, using prompt. " ++
+        corefn.reg("getline", &nfunGetline, @src(), "(getline)\n(getline prompt)\n(getline prompt buf)\n(getline prompt buf env)", "Reads a line of input into the buffer buf, including the newline character, using prompt. " ++
             "An optional environment table env can be provided for auto-complete. " ++
             "Returns the modified buffer. " ++
             "It suits a simple interface for a terminal program."),
@@ -1310,12 +1310,12 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "* :name: -- the name component of path, with extension if given\n\n" ++
             "* :native: -- the extension used to load natives, .so or .dll\n\n" ++
             "* :sys: -- the system path, or (dyn :syspath)"),
-        corefn.reg("int?", &nfunCheckInt, @src(), "(int? val)", "Checks whether val can be exactly represented as a 32 bit signed two's complement integer."),
-        corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? val)", "Checks whether val can be exactly represented as a non-negative 32 bit signed two's complement integer."),
-        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? val)", "Checks whether val is a string, symbol, keyword, or buffer."),
-        corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? val)", "Checks whether val is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
-        corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? val)", "Checks whether val is a table, a map, or an abstract type that implements the dictionary protocol."),
-        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? val)", "Checks whether val is a byte sequence, an indexed type or a dictionary. A set and a fiber are not."),
+        corefn.reg("int?", &nfunCheckInt, @src(), "(int? x)", "Checks whether x can be exactly represented as a 32 bit signed two's complement integer."),
+        corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? x)", "Checks whether x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
+        corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Checks whether x is a string, symbol, keyword, or buffer."),
+        corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Checks whether x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
+        corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Checks whether x is a table, a map, or an abstract type that implements the dictionary protocol."),
+        corefn.reg("lengthable?", &TypeFlagPredicate(repr.TagSet.lengthable).nfun, @src(), "(lengthable? x)", "Checks whether x is a byte sequence, an indexed type or a dictionary. A set and a fiber are not."),
         corefn.reg("slice", &nfunSlice, @src(), "(slice ind)\n(slice ind start)\n(slice ind start end)", "Returns the sub-range of ind, an indexed type or a byte sequence, from " ++
             "start (default 0) up to but excluding end (default the length). A negative index counts " ++
             "from the end. Returns a vector for an indexed type and a string for a byte sequence. " ++
@@ -1338,7 +1338,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "returns 0 if they have identical contents, a negative integer if a is less than b, " ++
             "and a positive integer if a is greater than b. Optionally takes a length and offsets " ++
             "to compare slices of the byte sequences."),
-        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto val)", "Gets the prototype of val, a table. Returns nil if val has no prototype."),
+        corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Gets the prototype of x, a table. Returns nil if x has no prototype."),
         corefn.reg("sandbox", &nfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disables feature sets to prevent the interpreter from using certain system resources. " ++
             "Once a feature is disabled, there is no way to re-enable it. Capabilities can be:\n\n" ++
             "* :all - disallow all (except IO to stdout, stderr, and stdin)\n" ++

@@ -391,14 +391,14 @@ pub fn libNet(env: *tables.Table) void {
         corefn.reg("net/accept-loop", &nfunAcceptLoop, @src(), "(net/accept-loop stream f)", "Shorthand for running a server stream that will continuously accept new connections. " ++
             "Calls f, a function of exactly one parameter, in a new fiber with each accepted connection. " ++
             "Blocks the current fiber until the stream is closed, and then returns nil."),
-        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream n)\n(net/read stream n ds)\n(net/read stream n ds timeout)", "Reads up to n bytes from stream into ds, a buffer, suspending the current fiber until the bytes are available. " ++
+        corefn.reg("net/read", &nfunRead, @src(), "(net/read stream n)\n(net/read stream n buf)\n(net/read stream n buf timeout)", "Reads up to n bytes from stream into buf, a buffer, suspending the current fiber until the bytes are available. " ++
             "n can also be the keyword `:all` to read until end of stream. " ++
             "If fewer than n bytes are available (and more than 0), appends those bytes and returns early. " ++
             "Takes an optional timeout in seconds, after which it raises an error. " ++
-            "Returns ds, or a new buffer if ds is not given, with up to n more bytes in it. " ++
+            "Returns buf, or a new buffer if buf is not given, with up to n more bytes in it. " ++
             "Returns nil if the end of the stream is reached before any byte arrives. " ++
             "Raises an error if the read failed."),
-        corefn.reg("net/chunk", &nfunChunk, @src(), "(net/chunk stream n)\n(net/chunk stream n ds)\n(net/chunk stream n ds timeout)", "Same as ^net/read, but waits for all n bytes to arrive rather than returning early. " ++
+        corefn.reg("net/chunk", &nfunChunk, @src(), "(net/chunk stream n)\n(net/chunk stream n buf)\n(net/chunk stream n buf timeout)", "Same as ^net/read, but waits for all n bytes to arrive rather than returning early. " ++
             "If the end of the stream is reached first, returns the bytes collected so far, or nil if there are none. " ++
             "Takes an optional timeout in seconds, after which it raises an error."),
         corefn.reg("net/write", &nfunWrite, @src(), "(net/write stream val)\n(net/write stream val timeout)", "Writes val, a string or buffer, to stream, suspending the current fiber until the write " ++
@@ -407,7 +407,7 @@ pub fn libNet(env: *tables.Table) void {
         corefn.reg("net/send-to", &nfunSendTo, @src(), "(net/send-to stream dest val)\n(net/send-to stream dest val timeout)", "Writes a datagram containing val, a string or buffer, to stream. dest is the destination address of the packet, as returned by ^net/address. " ++
             "Takes an optional timeout in seconds, after which it raises an error. " ++
             "Returns nil."),
-        corefn.reg("net/recv-from", &nfunRecvFrom, @src(), "(net/recv-from stream n ds)\n(net/recv-from stream n ds timeout)", "Receives up to n bytes from stream and appends them to ds, a buffer. Returns the socket address the " ++
+        corefn.reg("net/recv-from", &nfunRecvFrom, @src(), "(net/recv-from stream n buf)\n(net/recv-from stream n buf timeout)", "Receives up to n bytes from stream and appends them to buf, a buffer. Returns the socket address the " ++
             "packet came from. Takes an optional timeout in seconds, after which it raises an error."),
         corefn.reg("net/flush", &nfunFlush, @src(), "(net/flush stream)", "Makes sure that a stream is not buffering any data. This temporarily disables Nagle's algorithm. " ++
             "Use this to make sure data is sent without delay. Returns stream."),

@@ -270,13 +270,13 @@ pub fn lib(env: *Table) void {
         corefn.reg("table/to-map", &nfunTableTomap, @src(), "(table/to-map tab)", "Converts a table to a map. The prototype is not followed. Returns a new map."),
         corefn.reg("table/getproto", &nfunTableGetproto, @src(), "(table/getproto tab)", "Gets the prototype table of a table. Returns nil if the table " ++
             "has no prototype, otherwise returns the prototype."),
-        corefn.reg("table/setproto", &nfunTableSetproto, @src(), "(table/setproto ds proto)", "Sets the prototype of ds, a table, to proto, a table or nil. A nil proto removes the prototype. Returns ds."),
+        corefn.reg("table/setproto", &nfunTableSetproto, @src(), "(table/setproto tbl proto)", "Sets the prototype of tbl, a table, to proto, a table or nil. A nil proto removes the prototype. Returns tbl."),
         corefn.reg("table/rawget", &nfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table tab without looking at the prototype table. " ++
             "If tab does not contain the key directly, the function returns " ++
             "nil without checking the prototype. Returns the value in the table."),
         corefn.reg("table/clone", &nfunTableClone, @src(), "(table/clone tab)", "Creates a shallow copy of tab, a table, with the same prototype. Updates to the new table do not change the old table, " ++
             "and vice versa."),
-        corefn.reg("table/clear", &nfunTableClear, @src(), "(table/clear ds)", "Removes all key-value pairs in ds, a table, and returns ds."),
+        corefn.reg("table/clear", &nfunTableClear, @src(), "(table/clear tbl)", "Removes all key-value pairs in tbl, a table, and returns tbl."),
         corefn.reg("table/proto-flatten", &nfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Creates a new table with the entries of tab and of the tables in its prototype chain. The new table has no prototype."),
     };
     corefn.install(env, entries);

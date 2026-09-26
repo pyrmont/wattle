@@ -160,13 +160,13 @@ pub fn lib(env: *tables.Table) void {
             "`(array)` but can be more efficient if the maximum size of an array is known."),
         corefn.reg("array/weak", &nfunArrayWeak, @src(), "(array/weak capacity)", "Creates a new empty array with a pre-allocated capacity and support for weak references. Similar to ^array/new."),
         corefn.reg("array/new-filled", &nfunArrayNewFilled, @src(), "(array/new-filled n)\n(array/new-filled n val)", "Creates a new array of n elements, all set to val, which defaults to nil. n must be non-negative. Returns the new array."),
-        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill ds)\n(array/fill ds val)", "Replaces all elements of ds, an array, with val (defaulting to nil) without changing the length of ds. " ++
-            "Returns ds mutated."),
-        corefn.reg("array/pop", &nfunArrayPop, @src(), "(array/pop ds)", "Removes the last element of ds, an array, and returns it. If ds is empty, returns nil. Modifies " ++
-            "ds."),
-        corefn.reg("array/peek", &nfunArrayPeek, @src(), "(array/peek ds)", "Returns the last element of ds, an array, or nil if ds is empty. Does not modify ds."),
-        corefn.reg("array/push", &nfunArrayPush, @src(), "(array/push ds & vals)", "Pushes all of vals to the end of ds, an array. Modifies ds and returns it."),
-        corefn.reg("array/ensure", &nfunArrayEnsure, @src(), "(array/ensure ds capacity growth)", "Ensures that the memory backing ds, an array, is large enough for capacity " ++
+        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill arr)\n(array/fill arr val)", "Replaces all elements of arr, an array, with val (defaulting to nil) without changing the length of arr. " ++
+            "Returns arr mutated."),
+        corefn.reg("array/pop", &nfunArrayPop, @src(), "(array/pop arr)", "Removes the last element of arr, an array, and returns it. If arr is empty, returns nil. Modifies " ++
+            "arr."),
+        corefn.reg("array/peek", &nfunArrayPeek, @src(), "(array/peek arr)", "Returns the last element of arr, an array, or nil if arr is empty. Does not modify arr."),
+        corefn.reg("array/push", &nfunArrayPush, @src(), "(array/push arr & vals)", "Pushes all of vals to the end of arr, an array. Modifies arr and returns it."),
+        corefn.reg("array/ensure", &nfunArrayEnsure, @src(), "(array/ensure arr capacity growth)", "Ensures that the memory backing arr, an array, is large enough for capacity " ++
             "items at the given rate of growth. capacity and growth must be integers. " ++
             "If the backing capacity is already enough, then this function does nothing. " ++
             "Otherwise, the backing memory is reallocated so that there is enough space."),
@@ -175,25 +175,25 @@ pub fn lib(env: *tables.Table) void {
             "end of ind. A negative start is exclusive and a negative end is inclusive. " ++
             "By default, start is 0 and end is the length of ind. " ++
             "Raises if start is outside the length of ind. Returns a new array."),
-        corefn.reg("array/concat", &nfunArrayConcat, @src(), "(array/concat ds & parts)", "Appends the elements of each of parts to ds, an array, in order. " ++
+        corefn.reg("array/concat", &nfunArrayConcat, @src(), "(array/concat arr & parts)", "Appends the elements of each of parts to arr, an array, in order. " ++
             "If a part is an array or vector, its elements are appended. " ++
             "Otherwise, the part itself is appended as one element. " ++
-            "Returns ds mutated."),
-        corefn.reg("array/insert", &nfunArrayInsert, @src(), "(array/insert ds at & vals)", "Inserts all of vals into ds, an array, at index at. at should be an integer between " ++
+            "Returns arr mutated."),
+        corefn.reg("array/insert", &nfunArrayInsert, @src(), "(array/insert arr at & vals)", "Inserts all of vals into arr, an array, at index at. at should be an integer between " ++
             "0 and the length of the array. A negative value for at indexes backwards from " ++
             "the end of the array, inserting after the index such that inserting at -1 appends to " ++
-            "the array. Returns ds mutated."),
-        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove ds at)\n(array/remove ds at n)", "Removes up to n elements starting at index at in ds, an array. at must be within " ++
-            "the length of ds and can index from " ++
+            "the array. Returns arr mutated."),
+        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove arr at)\n(array/remove arr at n)", "Removes up to n elements starting at index at in arr, an array. at must be within " ++
+            "the length of arr and can index from " ++
             "the end with a negative index, and n must be a non-negative integer. " ++
             "By default, n is 1. " ++
-            "Returns ds mutated."),
-        corefn.reg("array/trim", &nfunArrayTrim, @src(), "(array/trim ds)", "Sets the backing capacity of ds, an array, to its current length. Returns ds mutated."),
-        corefn.reg("array/clear", &nfunArrayClear, @src(), "(array/clear ds)", "Empties ds, an array, setting its count to 0 but does not free the backing capacity. " ++
-            "Returns ds mutated."),
-        corefn.reg("array/join", &nfunArrayJoin, @src(), "(array/join ds & inds)", "Appends the elements of each of inds, an indexed type, to ds, an array. " ++
+            "Returns arr mutated."),
+        corefn.reg("array/trim", &nfunArrayTrim, @src(), "(array/trim arr)", "Sets the backing capacity of arr, an array, to its current length. Returns arr mutated."),
+        corefn.reg("array/clear", &nfunArrayClear, @src(), "(array/clear arr)", "Empties arr, an array, setting its count to 0 but does not free the backing capacity. " ++
+            "Returns arr mutated."),
+        corefn.reg("array/join", &nfunArrayJoin, @src(), "(array/join arr & inds)", "Appends the elements of each of inds, an indexed type, to arr, an array. " ++
             "Raises if any of inds is not indexed. " ++
-            "Returns ds mutated."),
+            "Returns arr mutated."),
     };
     corefn.install(env, entries);
 }

@@ -413,12 +413,12 @@ pub fn isInt(x: repr.Value) constants.IntType {
 /// types.
 pub fn libInttypes(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("int/s64", &nfunS64New, @src(), "(int/s64 val)", "Creates a boxed signed 64 bit integer from val, a string, an integer-valued number or another boxed integer. Raises an error if val cannot be represented."),
-        corefn.reg("int/u64", &nfunU64New, @src(), "(int/u64 val)", "Creates a boxed unsigned 64 bit integer from val, a string, an integer-valued number or another boxed integer. Raises an error if val cannot be represented."),
-        corefn.reg("int/to-number", &nfunToNumber, @src(), "(int/to-number val)", "Converts val, an ^int/u64 or ^int/s64, to a number. Raises an error if val is outside the range from -2^53 to 2^53, the integers a number holds exactly."),
-        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes val)\n(int/to-bytes val endianness)\n(int/to-bytes val endianness ds)", "Appends the 8 bytes of val, an ^int/s64 or ^int/u64, to ds, a buffer.\n" ++
-            "If ds is unset, a new buffer is created.\n" ++
-            "Returns ds.\n" ++
+        corefn.reg("int/s64", &nfunS64New, @src(), "(int/s64 x)", "Creates a boxed signed 64 bit integer from x, a string, an integer-valued number or another boxed integer. Raises an error if x cannot be represented."),
+        corefn.reg("int/u64", &nfunU64New, @src(), "(int/u64 x)", "Creates a boxed unsigned 64 bit integer from x, a string, an integer-valued number or another boxed integer. Raises an error if x cannot be represented."),
+        corefn.reg("int/to-number", &nfunToNumber, @src(), "(int/to-number x)", "Converts x, an ^int/u64 or ^int/s64, to a number. Raises an error if x is outside the range from -2^53 to 2^53, the integers a number holds exactly."),
+        corefn.reg("int/to-bytes", &nfunToBytes, @src(), "(int/to-bytes val)\n(int/to-bytes val endianness)\n(int/to-bytes val endianness buf)", "Appends the 8 bytes of val, an ^int/s64 or ^int/u64, to buf, a buffer.\n" ++
+            "If buf is unset, a new buffer is created.\n" ++
+            "Returns buf.\n" ++
             "The endianness parameter indicates the byte order:\n" ++
             "- `nil` (unset): system byte order\n" ++
             "- `:le`: little-endian, least significant byte first\n" ++

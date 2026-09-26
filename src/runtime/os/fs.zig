@@ -170,12 +170,12 @@ pub fn entries() []const corefn.Entry {
                 "of Unix tools like `ls`. Returns a 9-character string of r, w, x and - characters. Does not " ++
                 "include the file/directory/symlink character as rendered by `ls`."),
             corefn.reg("os/perm-int", &nfunPermissionInt, @src(), "(os/perm-int perm)", "Parses perm, a 9-character permission string (or an integer in [0, 8r777]), and returns an integer that can be passed to ^os/chmod."),
-            corefn.reg("os/dir", &nfunDir, @src(), "(os/dir path)\n(os/dir path ds)", "Returns an array of the names of the files and subdirectories in the directory path, " ++
+            corefn.reg("os/dir", &nfunDir, @src(), "(os/dir path)\n(os/dir path arr)", "Returns an array of the names of the files and subdirectories in the directory path, " ++
                 "with only the file name or directory name and no prefix, and without . and .. . " ++
-                "If ds, an array, is given, the names are appended to it. Raises an error if path cannot be opened."),
-            corefn.reg("os/stat", &stat.nfunStat, @src(), "(os/stat path)\n(os/stat path ds)\n(os/stat path key)", "Gets information about a file or directory. Returns a table unless the second argument is a keyword, " ++
-                "in which case it returns only the value of that field. If the second argument is a table ds, " ++
-                "the fields are put into ds, which is returned. Raises an error for an unknown keyword. " ++
+                "If arr, an array, is given, the names are appended to it. Raises an error if path cannot be opened."),
+            corefn.reg("os/stat", &stat.nfunStat, @src(), "(os/stat path)\n(os/stat path tbl)\n(os/stat path key)", "Gets information about a file or directory. Returns a table unless the second argument is a keyword, " ++
+                "in which case it returns only the value of that field. If the second argument is a table tbl, " ++
+                "the fields are put into tbl, which is returned. Raises an error for an unknown keyword. " ++
                 "If the file or directory does not exist, returns nil. " ++
                 "The keys are:\n\n" ++
                 "* :dev - the device that the file is on\n\n" ++
@@ -193,7 +193,7 @@ pub fn entries() []const corefn.Entry {
                 "* :accessed - timestamp when file last accessed\n\n" ++
                 "* :changed - timestamp when file last changed (permissions changed)\n\n" ++
                 "* :modified - timestamp when file last modified (content changed)\n"),
-            corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path)\n(os/lstat path ds)\n(os/lstat path key)", "Like ^os/stat, but does not follow symlinks.\n"),
+            corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path)\n(os/lstat path tbl)\n(os/lstat path key)", "Like ^os/stat, but does not follow symlinks.\n"),
             corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Changes file permissions, where mode is a permission string as returned by " ++
                 "^os/perm-string, or an integer as returned by ^os/perm-int. " ++
                 "When mode is an integer, it is interpreted as a Unix permission value, best specified in octal, like " ++

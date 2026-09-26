@@ -65,11 +65,11 @@ pub fn libFfi(env: *tables.Table) void {
             "how Wattle values in args are converted to native machine types."),
         corefn.reg("ffi/struct", &nfunFfiStruct, @src(), "(ffi/struct & types)", "Creates a struct type definition that can be used to pass structs into native functions. " ++
             "A member type can be preceded by `:pack` to pack that member, or by `:pack-all` to pack the members that follow."),
-        corefn.reg("ffi/write", &nfunBufferWrite, @src(), "(ffi/write type val)\n(ffi/write type val ds)\n(ffi/write type val ds index)", "Writes val, as native type type, into ds, a buffer, such as it would appear in memory. " ++
-            "If index is given, writes at that byte offset, otherwise appends. If type is a struct type, val is an indexed value. " ++
+        corefn.reg("ffi/write", &nfunBufferWrite, @src(), "(ffi/write type val)\n(ffi/write type val buf)\n(ffi/write type val buf i)", "Writes val, as native type type, into buf, a buffer, such as it would appear in memory. " ++
+            "If i is given, writes at that byte offset, otherwise appends. If type is a struct type, val is an indexed value. " ++
             "This can be used " ++
             "to pass pointers to structs in the ffi, or send C/C++/native structs over the network " ++
-            "or to files. Returns ds, or a new buffer if ds is not given."),
+            "or to files. Returns buf, or a new buffer if buf is not given."),
         corefn.reg("ffi/read", &nfunBufferRead, @src(), "(ffi/read type bytes)\n(ffi/read type bytes offset)", "Parses a native struct out of bytes, starting at offset, and converts it to normal Wattle data structures. " ++
             "This function is the inverse of ^ffi/write. bytes is a buffer or string, or a raw pointer, although " ++
             "a raw pointer is unsafe. Raises an error if bytes is too short."),

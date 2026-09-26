@@ -287,9 +287,9 @@ pub fn envLookupInto(
 /// Registers `marshal`, `unmarshal` and `env-lookup`.
 pub fn libMarsh(env: *tables.Table) void {
     const entries = comptime [_]corefn.Entry{
-        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal val)\n(marshal val reverse-lookup)\n(marshal val reverse-lookup ds)\n(marshal val reverse-lookup ds no-cycles)", "Marshals val into a buffer and returns the buffer. The buffer " ++
+        corefn.reg("marshal", &nfunMarshal, @src(), "(marshal val)\n(marshal val reverse-lookup)\n(marshal val reverse-lookup buf)\n(marshal val reverse-lookup buf no-cycles)", "Marshals val into a buffer and returns the buffer. The buffer " ++
             "can then later be unmarshalled to reconstruct the initial value. " ++
-            "The bytes are appended to ds, a buffer, if it is given. " ++
+            "The bytes are appended to buf, a buffer, if it is given. " ++
             "Optionally, one can pass in reverse-lookup, a table, to not marshal " ++
             "aliased values that are found in the table. Then a forward " ++
             "lookup table can be used to recover the original value when " ++

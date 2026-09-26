@@ -696,7 +696,7 @@ fn miscEntries() []const corefn.Entry {
     const list = comptime blk: {
         var acc: []const corefn.Entry = &.{};
         acc = acc ++ [_]corefn.Entry{
-            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n)\n(os/cryptorand n ds)", "Gets n bytes of good quality random data provided by the OS. Appends them to ds, a buffer, if given, otherwise to a new buffer. Returns that buffer."),
+            corefn.reg("os/cryptorand", &nfunCryptorand, @src(), "(os/cryptorand n)\n(os/cryptorand n buf)", "Gets n bytes of good quality random data provided by the OS. Appends them to buf, a buffer, if given, otherwise to a new buffer. Returns that buffer."),
         };
         break :blk acc[0..acc.len].*;
     };

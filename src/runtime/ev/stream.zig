@@ -386,16 +386,16 @@ pub fn entries() []const corefn.Entry {
         acc = acc ++ [_]corefn.Entry{
             corefn.reg("ev/close", &nfunStreamClose, @src(), "(ev/close stream)", "Closes a stream. This should be the same as calling (:close stream) for all streams. " ++
                 "Closing ends every read and write outstanding on the stream."),
-            corefn.reg("ev/read", &nfunStreamRead, @src(), "(ev/read stream n)\n(ev/read stream n ds)\n(ev/read stream n ds timeout)", "Reads up to n bytes into ds, a buffer, asynchronously from a stream. n can also be the keyword " ++
-                "`:all` to read into ds until end of stream. " ++
-                "Optionally accepts ds to write into " ++
+            corefn.reg("ev/read", &nfunStreamRead, @src(), "(ev/read stream n)\n(ev/read stream n buf)\n(ev/read stream n buf timeout)", "Reads up to n bytes into buf, a buffer, asynchronously from a stream. n can also be the keyword " ++
+                "`:all` to read into buf until end of stream. " ++
+                "Optionally accepts buf to write into " ++
                 "as well as a timeout in seconds after which to cancel the operation and raise an error. " ++
-                "Returns ds if the read was successful or nil if end-of-stream reached. Will raise an " ++
+                "Returns buf if the read was successful or nil if end-of-stream reached. Will raise an " ++
                 "error if there are problems with the IO operation. " ++
                 "Several fibers may read one stream at once. They compete for the input, so which bytes " ++
                 "reach which fiber is not settled here, and a program that needs a particular assignment " ++
                 "coordinates for itself."),
-            corefn.reg("ev/chunk", &nfunStreamChunk, @src(), "(ev/chunk stream n)\n(ev/chunk stream n ds)\n(ev/chunk stream n ds timeout)", "Same as ^ev/read, but will not return early if fewer than n bytes are available. If an end of " ++
+            corefn.reg("ev/chunk", &nfunStreamChunk, @src(), "(ev/chunk stream n)\n(ev/chunk stream n buf)\n(ev/chunk stream n buf timeout)", "Same as ^ev/read, but will not return early if fewer than n bytes are available. If an end of " ++
                 "stream is reached, will also return early with the collected bytes, or nil if there are none."),
             corefn.reg("ev/write", &nfunStreamWrite, @src(), "(ev/write stream val)\n(ev/write stream val timeout)", "Writes val, a string or buffer, to a stream, suspending the current fiber until the write " ++
                 "completes. Takes an optional timeout in seconds, after which it raises an error. " ++

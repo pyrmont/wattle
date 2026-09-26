@@ -195,7 +195,7 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
         doc: [:0]const u8,
     }{
         .{ .name = "atan2", .fop = &c.atan2, .usage = "(math/atan2 y x)", .doc = "Returns the arctangent of y/x. Works even when x is 0." },
-        .{ .name = "pow", .fop = &c.pow, .usage = "(math/pow a x)", .doc = "Returns a to the power of x." },
+        .{ .name = "pow", .fop = &c.pow, .usage = "(math/pow x exp)", .doc = "Returns x to the power of exp." },
         .{ .name = "hypot", .fop = &c.hypot, .usage = "(math/hypot a b)", .doc = "Returns c from the equation c^2 = a^2 + b^2." },
     };
 
@@ -243,7 +243,7 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
     };
 
     const written = comptime [_]corefn.Entry{
-        corefn.reg("not", &nfunNot, @src(), "(not val)", "Returns true if val is nil or false, and false otherwise."),
+        corefn.reg("not", &nfunNot, @src(), "(not x)", "Returns true if x is nil or false, and false otherwise."),
         corefn.reg("math/random", &nfunRand, @src(), "(math/random)", "Returns a uniformly distributed random number between 0 and 1."),
         corefn.reg("math/seedrandom", &nfunSrand, @src(), "(math/seedrandom seed)", "Sets the seed for the random number generator. seed is " ++
             "an integer or a byte sequence."),
@@ -253,8 +253,8 @@ pub fn libMath(env: *tables.Table) raise.Error!void {
         corefn.reg("math/rng-uniform", &nfunRngUniform, @src(), "(math/rng-uniform rng)", "Extracts a random number in the range [0, 1) from the RNG."),
         corefn.reg("math/rng-int", &nfunRngInt, @src(), "(math/rng-int rng)\n(math/rng-int rng max)", "Extracts a random integer in the range [0, max) for max > 0 from the RNG. " ++
             "If max is 0, returns 0. If no max is given, the default is 2^31 - 1."),
-        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n)\n(math/rng-buffer rng n ds)", "Gets n random bytes and puts them in a buffer. Creates a new buffer if ds is " ++
-            "not provided, otherwise appends to ds. Returns the buffer."),
+        corefn.reg("math/rng-buffer", &nfunRngBuffer, @src(), "(math/rng-buffer rng n)\n(math/rng-buffer rng n buf)", "Gets n random bytes and puts them in a buffer. Creates a new buffer if buf is " ++
+            "not provided, otherwise appends to buf. Returns the buffer."),
         corefn.reg("math/gcd", &nfunGcd, @src(), "(math/gcd x y)", "Returns the greatest common divisor between x and y."),
         corefn.reg("math/lcm", &nfunLcm, @src(), "(math/lcm x y)", "Returns the least common multiple of x and y."),
         corefn.reg("math/frexp", &nfunFrexp, @src(), "(math/frexp x)", "Returns a vector of the mantissa and the exponent of x."),

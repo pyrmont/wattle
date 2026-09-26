@@ -339,7 +339,7 @@ pub fn lib(env: *tables.Table) void {
             "not appear in chars."),
         corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join ind)\n(string/join ind sep)", "Joins the byte sequences (strings, keywords, symbols or buffers) in ind, an indexed type, " ++
             "into one string, optionally separated by the byte sequence sep."),
-        corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format format & values)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
+        corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format fmt & vals)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
             "a new string.\n\n" ++
             "The following conversion specifiers are supported, where the upper case specifiers generate " ++
             "upper case output:\n" ++

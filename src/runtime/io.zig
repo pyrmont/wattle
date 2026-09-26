@@ -303,18 +303,18 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "The destination is a core/file, a buffer to append to, or a function called " ++
             "with the resulting string. Returns nil."),
         corefn.reg("prin", &Print(false, "out", stdoutFile).nfun, @src(), "(prin & xs)", "Same as ^print, but does not add a trailing newline."),
-        corefn.reg("printf", &Printf(true, "out", stdoutFile).nfun, @src(), "(printf fmt & xs)", "Prints output formatted as if with `(string/format fmt |xs)` to `(dyn :out stdout)` with a trailing newline."),
-        corefn.reg("prinf", &Printf(false, "out", stdoutFile).nfun, @src(), "(prinf fmt & xs)", "Like ^printf but with no trailing newline."),
+        corefn.reg("printf", &Printf(true, "out", stdoutFile).nfun, @src(), "(printf fmt & vals)", "Prints output formatted as if with `(string/format fmt |vals)` to `(dyn :out stdout)` with a trailing newline."),
+        corefn.reg("prinf", &Printf(false, "out", stdoutFile).nfun, @src(), "(prinf fmt & vals)", "Like ^printf but with no trailing newline."),
         corefn.reg("eprin", &Print(false, "err", stderrFile).nfun, @src(), "(eprin & xs)", "Same as ^prin, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
         corefn.reg("eprint", &Print(true, "err", stderrFile).nfun, @src(), "(eprint & xs)", "Same as ^print, but uses `(dyn :err stderr)` instead of `(dyn :out stdout)`."),
-        corefn.reg("eprintf", &Printf(true, "err", stderrFile).nfun, @src(), "(eprintf fmt & xs)", "Prints output formatted as if with `(string/format fmt |xs)` to `(dyn :err stderr)` with a trailing newline."),
-        corefn.reg("eprinf", &Printf(false, "err", stderrFile).nfun, @src(), "(eprinf fmt & xs)", "Like ^eprintf but with no trailing newline."),
+        corefn.reg("eprintf", &Printf(true, "err", stderrFile).nfun, @src(), "(eprintf fmt & vals)", "Prints output formatted as if with `(string/format fmt |vals)` to `(dyn :err stderr)` with a trailing newline."),
+        corefn.reg("eprinf", &Printf(false, "err", stderrFile).nfun, @src(), "(eprinf fmt & vals)", "Like ^eprintf but with no trailing newline."),
         corefn.reg("xprint", &XPrint(true).nfun, @src(), "(xprint dest & xs)", "Prints to dest, a core/file, a buffer or a function, with a trailing " ++
             "newline character. No dynamic bindings are read. Otherwise the same as ^print. Returns nil."),
         corefn.reg("xprin", &XPrint(false).nfun, @src(), "(xprin dest & xs)", "Prints to dest, a core/file, a buffer or a function. No dynamic bindings are read. " ++
             "Otherwise the same as ^prin. Returns nil."),
-        corefn.reg("xprintf", &XPrintf(true).nfun, @src(), "(xprintf dest fmt & xs)", "Like ^printf but prints to dest, a core/file, a buffer or a function, instead of `(dyn :out stdout)`. Returns nil."),
-        corefn.reg("xprinf", &XPrintf(false).nfun, @src(), "(xprinf dest fmt & xs)", "Like ^prinf but prints to dest, a core/file, a buffer or a function, instead of `(dyn :out stdout)`. Returns nil."),
+        corefn.reg("xprintf", &XPrintf(true).nfun, @src(), "(xprintf dest fmt & vals)", "Like ^printf but prints to dest, a core/file, a buffer or a function, instead of `(dyn :out stdout)`. Returns nil."),
+        corefn.reg("xprinf", &XPrintf(false).nfun, @src(), "(xprinf dest fmt & vals)", "Like ^prinf but prints to dest, a core/file, a buffer or a function, instead of `(dyn :out stdout)`. Returns nil."),
         corefn.reg("flush", &Flush("out", stdoutFile).nfun, @src(), "(flush)", "Flushes `(dyn :out stdout)` if it is a file, otherwise does nothing. Returns nil."),
         corefn.reg("eflush", &Flush("err", stderrFile).nfun, @src(), "(eflush)", "Flushes `(dyn :err stderr)` if it is a file, otherwise does nothing. Returns nil."),
         corefn.reg("file/temp", &nfunTemp, @src(), "(file/temp)", "Opens an anonymous temporary file for reading and writing that is removed on close. " ++
@@ -337,7 +337,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "after reading prevents a resource leak and lets " ++
             "other processes read the file. Returns nil, also if file is already closed. " ++
             "Raises an error for stdin, stdout and stderr."),
-        corefn.reg("file/read", &nfunFread, @src(), "(file/read file what)\n(file/read file what ds)", "Reads bytes from file into a buffer. If ds, a buffer, is given, the bytes " ++
+        corefn.reg("file/read", &nfunFread, @src(), "(file/read file what)\n(file/read file what buf)", "Reads bytes from file into a buffer. If buf, a buffer, is given, the bytes " ++
             "are appended to it, otherwise a new buffer is created. what is an integer or a keyword. " ++
             "Returns the buffer, or nil if no bytes were read (never nil for `:all`). " ++
             "Raises an error if file is closed or not open for reading. " ++
