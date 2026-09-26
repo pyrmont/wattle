@@ -384,6 +384,13 @@
                  (exec-slurp |run wattle "-e" "(print :hi)")))
             "exec-slurp 1")))
 
+; a delay too large for the clock never expires: a shorter deadline still
+; fires, and a body shorter than the huge deadline finishes
+(assert-error "huge sleep is cut short by a deadline"
+              (ev/with-deadline 0.01 (ev/sleep 1e30)))
+(assert (= :done (ev/with-deadline 1e30 (ev/sleep 0.01) :done))
+        "a huge deadline does not fire")
+
 ; valgrind-able check
 (def superv (ev/chan 10))
 (def f (ev/go #(ev/sleep 1e9) nil superv))

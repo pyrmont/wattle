@@ -1244,12 +1244,13 @@ pub fn threadedCall(
 /// unchanged; a positive infinity means never and gives `INT64_MAX`. C leaves
 /// the conversion of a NaN or an out-of-range delay undefined, exactly as
 /// `os/sleep` and `os/touch` do; this saturates for the same reason and with
-/// the same result on the development target.
+/// the same result on the development target. The sum saturates as well, so a
+/// delay too large for the clock also means never, as an infinite one does.
 pub fn tsDelta(ts: i64, delta: f64) i64 {
     if (std.math.isInf(delta)) {
         return if (delta < 0) ts else std.math.maxInt(i64);
     }
-    return ts +% saturatingCast(i64, @round(delta * 1000));
+    return ts +| saturatingCast(i64, @round(delta * 1000));
 }
 
 /// Converts a clock reading into Janet's millisecond timestamp.
@@ -2013,7 +2014,7 @@ fn timeoutBodyPosix(ptr: ?*anyopaque) callconv(.c) ?*anyopaque {
     const copy = tto.*;
     utils.free(ptr);
     var ts: std.c.timespec = .{
-        .sec = @intFromFloat(copy.sec),
+        .sec = saturatingCast(@FieldType(std.c.timespec, "sec"), copy.sec),
         .nsec = if (copy.sec <= @as(f64, std.math.maxInt(u32)))
             @intFromFloat((copy.sec - @as(f64, @floatFromInt(@as(u32, @intFromFloat(copy.sec))))) * 1000000000)
         else
@@ -2032,12 +2033,12 @@ fn timeoutBodyWindows(ptr: ?*anyopaque) callconv(.winapi) u32 {
     const copy = tto.*;
     utils.free(ptr);
     const wait_begin = tsNow();
-    const duration: u32 = @intFromFloat(@round(copy.sec * 1000));
+    const duration = saturatingCast(u32, @round(copy.sec * 1000));
     var res: u32 = WAIT_TIMEOUT;
     var wait_end = tsNow();
     var i: u32 = 1;
     while (res == WAIT_TIMEOUT and (wait_end - wait_begin) < duration) : (i += 1) {
-        res = c.WaitForSingleObject(copy.cancel_event, duration + i);
+        res = c.WaitForSingleObject(copy.cancel_event, duration +| i);
         wait_end = tsNow();
     }
     if (res == WAIT_TIMEOUT) {
