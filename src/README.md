@@ -378,7 +378,7 @@ comptime block for that reason only.
 
 | step                | what it runs                                        |
 | ------------------- | --------------------------------------------------- |
-| `install`           | libraries, client, contract driver, fuzz artifact   |
+| `install`           | libraries, client, man page                         |
 | `fuzz`              | each fuzz target once over its corpus               |
 | `image`             | the core image, as `<prefix>/wattle-image.bin`       |
 | `run`               | the client                                          |
@@ -416,8 +416,8 @@ the 37 suites. On a native build it also runs `quickbin`.
 
 No header is installed.
 
-The contract driver is installed on every target but wasm, where none of its
-readers could run the file they would find. It takes a contract name, or no
+The contract driver is installed under `-Dinstall-tests=true` on every target
+but wasm, where none of its readers could run the file they would find. It takes a contract name, or no
 name to run all 68 in a single process. Running it with no name is the only
 thing in the tree that initialises and tears down the runtime 68 times in a
 row, and the only instrument that catches an edit breaking a contract the
@@ -511,9 +511,9 @@ These constraints are invisible when building only for the development host.
   report a model the code generator rejects. The generator must run on the build
   machine, so this is also what makes cross-compiling work.
 
-- `-Dinstall-tests=true` adds the runtime-test executable and the native-module
-  and module-load fixtures to `<prefix>/test`, beside the contract and fuzz
-  drivers that every non-wasm build installs there. A cross-compiled build is
+- `-Dinstall-tests=true` installs the contract and fuzz drivers, the
+  runtime-test executable, the line-editor tools and the native-module and
+  module-load fixtures under `<prefix>/test`. A cross-compiled build is
   tested this way, because `zig build test` runs what it builds and cannot run a
   binary for another target.
 

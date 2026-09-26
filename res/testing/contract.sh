@@ -48,10 +48,10 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
-# `build.zig` installs this unconditionally for exactly this loop.
+# `build.zig` installs this under `-Dinstall-tests=true`.
 driver=zig-out/test/wattle-contract-test
 if [ ! -x "$driver" ]; then
-    echo "contract.sh: no $driver -- run \`zig build\` first" >&2
+    echo "contract.sh: no $driver -- run \`zig build -Dinstall-tests=true\` first" >&2
     exit 2
 fi
 

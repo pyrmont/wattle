@@ -1,8 +1,8 @@
 //! A pseudo-terminal harness: runs a command behind a pty, types at it, and
 //! prints what it drew.
 //!
-//! `build.zig` installs this as `<prefix>/test/wattle-pty` on POSIX targets
-//! other than wasm, and passes its path to `test/suite-lineedit.wattle`, which
+//! `build.zig` installs this under `-Dinstall-tests` as
+//! `<prefix>/test/wattle-pty` on POSIX targets other than wasm, and passes its path to `test/suite-lineedit.wattle`, which
 //! does the asserting.
 //!
 //!     wattle-pty -w 'repl:1:> ' -i '(+ 1 2)\r' -- zig-out/bin/wattle -q

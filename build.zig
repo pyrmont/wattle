@@ -575,6 +575,7 @@ pub fn build(b: *std.Build) void {
     // would be size spent on symbols nothing can reach.
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
+    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
 
     const built: Built = .{
         .b = b,
@@ -815,25 +816,18 @@ pub fn build(b: *std.Build) void {
         // visible for the same reason the client does.
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
-        // Installed unconditionally, for the same reason
-        // `wattle-contract-support.o` is: the narrow loop is a first-class
-        // instrument here. `res/testing/contract.sh` runs one contract by name, and
-        // for a Zig contract that is this binary with an argument rather than
-        // a `zig cc` of its own -- there is no source for a shallow link to
-        // compile, and no link either, because the runtime it tests is inside.
-        //
-        // Into `test` rather than `bin`, which is `installTest`'s directory, so
-        // that an install for use carries `wattle` and nothing else. This is the
-        // unconditional install and `installTest` is the flagged one, so the
-        // driver is not passed to it: that would install it twice.
+        // Installed under `-Dinstall-tests`, because the narrow loop is a
+        // first-class instrument here. `res/testing/contract.sh` runs one
+        // contract by name, and for a Zig contract that is this binary with an
+        // argument rather than a `zig cc` of its own -- there is no source for
+        // a shallow link to compile, and no link either, because the runtime
+        // it tests is inside.
         //
         // Not on wasm, where none of the four readers of it --
         // `contract.sh`, `leaks.sh`, `mutate.janet` and `matrix.janet` --
         // can run the file they would find: it needs a wasm host, and each of
         // them executes `<prefix>/test/wattle-contract-test` directly.
-        if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
-            .dest_dir = .{ .override = .{ .custom = "test" } },
-        }).step);
+        if (!wasm) installTest(b, options, exe);
         const run = b.addRunArtifact(exe);
         run.setCwd(b.path("."));
         zig_contracts_step.dependOn(&run.step);
@@ -1051,11 +1045,8 @@ pub fn build(b: *std.Build) void {
         applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
-        // Beside the contract driver, in the same directory and not through
-        // `installTest` for the same reasons, and off on wasm for the same one.
-        if (!wasm) b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{
-            .dest_dir = .{ .override = .{ .custom = "test" } },
-        }).step);
+        // Beside the contract driver, and off on wasm for the same reason.
+        if (!wasm) installTest(b, options, exe);
         const run = b.addRunArtifact(exe);
         run.setCwd(b.path("."));
         fuzz_step.dependOn(&run.step);
@@ -1121,9 +1112,7 @@ pub fn build(b: *std.Build) void {
         });
         layout_module.addImport("lineedit", lineedit_module);
         const layout_tool = selectBackend(b.addExecutable(.{ .name = "wattle-layout", .root_module = layout_module }));
-        b.getInstallStep().dependOn(&b.addInstallArtifact(layout_tool, .{
-            .dest_dir = .{ .override = .{ .custom = "test" } },
-        }).step);
+        installTest(b, options, layout_tool);
 
         // The pseudo-terminal harness `test/suite-lineedit.wattle` drives the
         // client through. It opens a pty with `posix_openpt`, so it is not
@@ -1136,9 +1125,7 @@ pub fn build(b: *std.Build) void {
                 .link_libc = true,
             });
             const tool = selectBackend(b.addExecutable(.{ .name = "wattle-pty", .root_module = pty_module }));
-            b.getInstallStep().dependOn(&b.addInstallArtifact(tool, .{
-                .dest_dir = .{ .override = .{ .custom = "test" } },
-            }).step);
+            installTest(b, options, tool);
             pty_tool = tool;
         }
     }
@@ -1858,12 +1845,8 @@ fn checkContractsListed(b: *std.Build) void {
 ///
 /// `zig build test` runs what it builds, which is impossible when the target is
 /// not the host. Installing the artifacts lets a cross-compiled build be
-/// carried to the target machine and run there.
-///
-/// The contract and fuzz drivers are not among them. Both install themselves
-/// into this same directory unconditionally, because `contract.sh` and its
-/// three fellow readers need one there on every build, so passing either here
-/// would install it twice.
+/// carried to the target machine and run there. Without the option an install
+/// carries `wattle`, the libraries and the man page, and nothing else.
 fn installTest(b: *std.Build, options: BuildOptions, exe: *std.Build.Step.Compile) void {
     if (!options.install_tests) return;
     const install = b.addInstallArtifact(exe, .{
@@ -1925,7 +1908,7 @@ fn readOptions(b: *std.Build) BuildOptions {
     const pointer_shift = b.option(i32, "nanbox-pointer-shift", "Override the NaN-box pointer shift (0 through 2 on aarch64, 0 elsewhere)");
 
     const options: BuildOptions = .{
-        .install_tests = b.option(bool, "install-tests", "Also install the runtime-test executable and the native-module and module-load fixtures under <prefix>/test, beside the contract and fuzz drivers, so a cross-compiled build can be run on another machine") orelse false,
+        .install_tests = b.option(bool, "install-tests", "Also install the contract and fuzz drivers, the runtime-test executable, the line-editor tools and the native-module and module-load fixtures under <prefix>/test, so a cross-compiled build can be run on another machine") orelse false,
         .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .omit_frame_pointer = b.option(bool, "omit-frame-pointer", "Omit the frame pointer: unset omits it in ReleaseFast and keeps it in Debug, ReleaseSafe and ReleaseSmall, true omits it in every mode, false keeps it in every mode"),

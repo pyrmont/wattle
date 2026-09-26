@@ -117,8 +117,8 @@ leaves its current mutant in the working tree. Read
 
 ## tools
 
-`layout.zig` is built as `<prefix>/test/wattle-layout` on every target but
-wasm. It reads a buffer on standard input and prints the line editor's layout
+`layout.zig` is installed by `-Dinstall-tests=true` as
+`<prefix>/test/wattle-layout` on every target but wasm. It reads a buffer on standard input and prints the line editor's layout
 of it as a picture, one bracketed row per terminal row, placed by
 `layout.position` alone:
 
@@ -131,8 +131,8 @@ the editor runs, without a terminal and without the runtime. Its header has the
 flags and the output format. The layout's `test` blocks use the same picture,
 through `picture.draw`.
 
-`pty.zig` is built as `<prefix>/test/wattle-pty` on every target but wasm and
-Windows. It runs a command behind a pseudo-terminal, types at it, and prints
+`pty.zig` is installed by `-Dinstall-tests=true` as `<prefix>/test/wattle-pty`
+on every target but wasm and Windows. It runs a command behind a pseudo-terminal, types at it, and prints
 the bytes the command wrote, or with `-s` the screen those bytes draw:
 
 ```sh

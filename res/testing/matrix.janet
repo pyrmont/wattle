@@ -437,7 +437,7 @@
 
   (defn build-cmd [target]
     (string "JANET_TEST_PORT=" (+ 8761 slot) " zig build " target
-            " --cache-dir " cache " -p " prefix " "
+            " --cache-dir " cache " -p " prefix " -Dinstall-tests=true "
             (string/join (j :flags) " ")))
 
   (defn build [target]
@@ -503,7 +503,7 @@
             # function with no C-ABI abi between them -- and Part 22 took
             # the last C contract, so every name here is a `test/*.zig`
             # already inside the driver `build.zig` installs
-            # unconditionally. This runs it by name, which is what
+            # under `-Dinstall-tests`. This runs it by name, which is what
             # `res/testing/contract.sh` does too.
             (def run (tools/sh (string prefix "/test/wattle-contract-test " t)
                                :timeout run-timeout))

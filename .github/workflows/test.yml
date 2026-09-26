@@ -68,8 +68,8 @@ jobs:
   # static `dlopen` is a stub that always fails -- so `zig build test` is not
   # run here and its three parts are run by hand instead: the contracts, the
   # in-file runtime tests, and the suites. `-Dinstall-tests=true` is what puts
-  # the runtime-test binary under `<prefix>/test` beside the contract driver;
-  # a plain build installs only the contract and fuzz drivers. The `glibc` job
+  # the contract driver and the runtime-test binary under `<prefix>/test`;
+  # a plain build installs neither. The `glibc` job
   # below runs the native-module half. The two libcs are not interchangeable:
   # glibc's allocator checks what musl's does not, so both are run
   # (`test/README.md`).

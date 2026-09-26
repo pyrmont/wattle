@@ -1,8 +1,8 @@
 //! Prints the line editor's layout of a buffer as a picture, and the answers
 //! to position and offset queries.
 //!
-//! `zig build` builds this file as `<prefix>/test/wattle-layout`, which is not
-//! installed for use. It imports the `lineedit` module, the code the editor
+//! `zig build -Dinstall-tests=true` installs this file as
+//! `<prefix>/test/wattle-layout`, which is not installed for use. It imports the `lineedit` module, the code the editor
 //! runs, and needs no terminal and no runtime.
 //!
 //! Usage: `wattle-layout -w COLS [-p PROMPT] [-m MARKER] [-o OFFSET]...

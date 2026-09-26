@@ -15,8 +15,8 @@ Six layers, and a change is believed when the layers it touches pass:
   Without the argument, which is the case on Windows and under
   `-Dlineedit=false`, its terminal cases are skipped and its plain-reader case
   still runs.
-- The contracts, `test/*.zig`, one per subject, run by the driver `zig build`
-  installs. What no Wattle program can reach: an argument fault's exact message,
+- The contracts, `test/*.zig`, one per subject, run by the driver
+  `zig build -Dinstall-tests=true` installs. What no Wattle program can reach: an argument fault's exact message,
   a flag table's order, a collector's block list. Each is compiled into a second
   copy of the runtime, so it calls its subject by import and a raise arrives as
   a value.
@@ -45,9 +45,9 @@ what a case should assert.
 A second platform can be exercised locally, before any public CI exists.  `zig
 build test` cannot do this on its own: it runs what it builds, which is
 impossible when the target is not the host. Build with `-Dinstall-tests=true`
-instead, which adds the runtime-test executable and the native-module and
-module-load fixtures to `<prefix>/test`, beside the contract and fuzz drivers
-every non-wasm build installs there, then run them on the target machine.
+instead, which installs the contract and fuzz drivers, the runtime-test
+executable and the native-module and module-load fixtures under
+`<prefix>/test`, then run them on the target machine.
 
 The development recipe uses a container for the target userland:
 
@@ -174,8 +174,8 @@ passed under it, which is how the 32-bit NaN-boxing arm of
 `test/value_wrap.zig` was validated. Running them is deliberately not part of
 the per-increment set. It costs a container and an emulator, and `wasm32-wasi`
 runs the suites and the contracts on the same 32-bit layout without either. The
-contract driver needs no build option: every non-wasm build installs it under
-`<prefix>/test`. The recipe is the aarch64 example above, with `apk add
+contract driver is installed under `<prefix>/test` by
+`-Dinstall-tests=true`, as on any target. The recipe is the aarch64 example above, with `apk add
 qemu-riscv32` and `qemu-riscv32` in front of each binary.
 
 ### The riscv32 ABI hazard

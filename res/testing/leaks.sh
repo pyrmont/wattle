@@ -45,7 +45,7 @@ cd "$root"
 
 driver=zig-out/test/wattle-contract-test
 if [ ! -x "$driver" ]; then
-    echo "leaks.sh: no $driver -- run \`zig build\` first" >&2
+    echo "leaks.sh: no $driver -- run \`zig build -Dinstall-tests=true\` first" >&2
     exit 2
 fi
 
