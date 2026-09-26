@@ -41,6 +41,16 @@
                     (buffer/bit !"\xff" -1))
 (assert-error-value "buffer/bit with a fractional index" "invalid bit index 1.5"
                     (buffer/bit !"\xff" 1.5))
+(assert-error-value "buffer/bit with a huge index" "invalid bit index 1e+30"
+                    (buffer/bit !"a" 1e30))
+(assert-error-value "buffer/bit with a hugely negative index" "invalid bit index -1e+30"
+                    (buffer/bit !"a" -1e30))
+(assert-error-value "buffer/bit-set with a huge index" "invalid bit index 1e+30"
+                    (buffer/bit-set !"a" 1e30))
+(assert-error-value "buffer/bit-clear with infinity" "invalid bit index inf"
+                    (buffer/bit-clear !"a" math/inf))
+(assert-error-value "buffer/bit-toggle with NaN" "invalid bit index nan"
+                    (buffer/bit-toggle !"a" math/nan))
 
 ; buffer/fill
 (assert (deep= !"AAA" (buffer/fill !"abc" 65)) "buffer/fill with a byte")
@@ -81,6 +91,14 @@
 (assert (= 8 (length b3)) "buffer/push-word 3")
 (assert (= "\xFF\xFF\xFF\xFF\0\x11\0\0" (string b3)) "buffer/push-word 4")
 (assert-error "cannot convert 0.5 to machine word" (buffer/push-word !"" 0.5))
+(assert-error-value "buffer/push-word of -1" "cannot convert -1 to machine word"
+                    (buffer/push-word !"" -1))
+(assert-error-value "buffer/push-word just past the word" "cannot convert 4294967296 to machine word"
+                    (buffer/push-word !"" 4294967296))
+(assert-error-value "buffer/push-word of infinity" "cannot convert inf to machine word"
+                    (buffer/push-word !"" math/inf))
+(assert-error-value "buffer/push-word of NaN" "cannot convert nan to machine word"
+                    (buffer/push-word !"" math/nan))
 
 ; Buffer push string
 (def b4 (buffer/new-filled 10 0))

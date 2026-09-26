@@ -238,9 +238,9 @@ pub fn lib(env: *tables.Table) void {
         corefn.reg("buffer/trim", &nfunBufferTrim, @src(), "(buffer/trim buf)", "Sets the backing capacity of buf, a buffer, to its current length. Returns buf mutated."),
         corefn.reg("buffer/push-byte", &nfunBufferU8, @src(), "(buffer/push-byte buf & bytes)", "Appends each of bytes, integers reduced modulo 256, to buf, a buffer. Returns buf mutated. " ++
             "Expands buf as necessary. Raises an error if the size limit is exceeded."),
-        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word buf & vals)", "Appends machine words to a buffer. The 4 bytes of the integer are appended " ++
-            "in twos complement, little endian order, unsigned for all vals. Returns the modified buffer. " ++
-            "Expands the buffer as necessary. Throws an error if size limit is exceeded."),
+        corefn.reg("buffer/push-word", &nfunBufferWord, @src(), "(buffer/push-word buf & vals)", "Appends each of vals, an integer from 0 to 4294967295, to buf, a buffer, as 4 bytes in " ++
+            "little endian order. Returns buf mutated. Expands buf as necessary. " ++
+            "Raises an error if a val is out of range or if the size limit is exceeded."),
         corefn.reg("buffer/push-string", &nfunBufferChars, @src(), "(buffer/push-string buf & bytes)", "Appends each of bytes, a string, keyword, symbol or buffer, to the end of buf, a buffer. " ++
             "Returns buf mutated. " ++
             "Expands buf as necessary. Raises an error if the size limit is exceeded."),
@@ -402,16 +402,19 @@ pub fn setcount(buffer: *Buffer, count: usize) raise.Error!void {
 /// Decodes a bit index into a byte index and a bit within that byte.
 ///
 /// `argv` is the nfunction's arguments, the buffer at 0 and the bit index at
-/// 1. The test `bitindex != x` is what rejects a fractional index, a check the
-/// argument layer cannot make because the value is legitimately wider than the
-/// byte index it becomes.
+/// 1. A fractional index, NaN and an index outside the range of `i64` are
+/// refused before the conversion, so no number reaches it out of range. The
+/// value is legitimately wider than the byte index it becomes, so the argument
+/// layer's byte-index helpers do not apply.
 fn bitloc(argv: []repr.Value) raise.Error!BitLoc {
     try args_core.fixarity(argv, 2);
     const buffer = try args_core.getBuffer(argv, 0);
-    const x = try args_core.getNumber(argv, 1);
-    const bitindex: i64 = @intFromFloat(x);
+    if (!args_core.checkint64(argv[1])) {
+        return pp_format.panicf("invalid bit index %v", .{argv[1]});
+    }
+    const bitindex: i64 = @intFromFloat(wrap.toNumber(argv[1]));
     const byteindex = bitindex >> 3;
-    if (@as(f64, @floatFromInt(bitindex)) != x or bitindex < 0 or byteindex >= buffer.count) {
+    if (bitindex < 0 or byteindex >= buffer.count) {
         return pp_format.panicf("invalid bit index %v", .{argv[1]});
     }
     return .{ .buffer = buffer, .index = @intCast(byteindex), .bit = @intCast(bitindex & 7) };
@@ -730,12 +733,11 @@ fn nfunBufferWord(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const buffer = try args_core.getBuffer(argv, 0);
     for (1..argv.len) |i| {
-        const number = try args_core.getNumber(argv, i);
-        const word: u32 = @intFromFloat(number);
-        if (@as(f64, @floatFromInt(word)) != number) {
+        _ = try args_core.getNumber(argv, i);
+        if (!args_core.checkuint(argv[i])) {
             return pp_format.panicf("cannot convert %v to machine word", .{argv[i]});
         }
-        try pushU32(buffer, word);
+        try pushU32(buffer, @intFromFloat(wrap.toNumber(argv[i])));
     }
     return argv[0];
 }
