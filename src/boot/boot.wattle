@@ -1155,26 +1155,26 @@
 
 (defn sort!
   """
-  Sorts ds in-place and returns it. Uses quick-sort and is not a stable sort. If
+  Sorts mut in-place and returns it. Uses quick-sort and is not a stable sort. If
   before? is omitted, uses ^< for ordering.
 
-  ds can be an array, a buffer or an abstract type with get, put and length
+  mut can be an array, a buffer or an abstract type with get, put and length
   callbacks defined. A tuple or vector is rejected.
   """
-  ([ds] (sort-impl ds <))
-  ([before? ds]
-    (sort-impl ds before?)))
+  ([mut] (sort-impl mut <))
+  ([before? mut]
+    (sort-impl mut before?)))
 
 (defn sort-by!
   """
-  Sorts ds in-place and returns it. Uses f on each element and compares the
+  Sorts mut in-place and returns it. Uses f on each element and compares the
   results with ^<.
 
-  ds can be an array, a buffer or an abstract type with get, put and length
+  mut can be an array, a buffer or an abstract type with get, put and length
   callbacks defined. A tuple or vector is rejected.
   """
-  [f ds]
-  (sort-impl ds (fn :sort-by-comp [i j] (< (f i) (f j)))))
+  [f mut]
+  (sort-impl mut (fn :sort-by-comp [i j] (< (f i) (f j)))))
 
 (defn sort
   """
@@ -1816,18 +1816,18 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn reverse!
   """
-  Reverses the order of the elements in ds, an array or buffer, and returns it
+  Reverses the order of the elements in mut, an array or buffer, and returns it
   mutated.
   """
-  [ds]
+  [mut]
   (var i 0)
-  (var j (length ds))
+  (var j (length mut))
   (while (< i (-- j))
-    (def di (in ds i))
-    (put ds i (in ds j))
-    (put ds j di)
+    (def di (in mut i))
+    (put mut i (in mut j))
+    (put mut j di)
     (++ i))
-  ds)
+  mut)
 
 (defn reverse
   """
@@ -1882,25 +1882,25 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defn get-in
   """
-  Accesses a value in a nested data structure ds. Looks into ds via ks, an
+  Accesses a value in a nested data structure x. Looks into x via ks, an
   iterable of keys. If value is not found, and dflt is provided, returns dflt.
   """
-  ([ds ks] (get-in ds ks nil))
-  ([ds ks dflt]
-    (var d ds)
+  ([x ks] (get-in x ks nil))
+  ([x ks dflt]
+    (var d x)
     (loop [k :in ks :while (not (nil? d))] (set d (get d k)))
     (if (= nil d) dflt d)))
 
 (defn update-in!
   """
-  Updates a value in a nested data structure ds, an array, buffer or table.
-  Looks into ds via ks, an indexed type of keys, and replaces the value found
+  Updates a value in a nested data structure mut, an array, buffer or table.
+  Looks into mut via ks, an indexed type of keys, and replaces the value found
   there with f applied to that value.
   Missing data structures will be replaced with tables. Returns
   the modified, original data structure.
   """
-  [ds ks f & args]
-  (var d ds)
+  [mut ks f & args]
+  (var d mut)
   (def len-1 (- (length ks) 1))
   (if (< len-1 0) (error "expected at least 1 key in ks"))
   (forv i 0 len-1
@@ -1914,16 +1914,16 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def last-key (get ks len-1))
   (def last-val (get d last-key))
   (put d last-key (f last-val |args))
-  ds)
+  mut)
 
 (defn put-in!
   """
-  Puts a value into a nested data structure coll, an array, buffer or table.
-  Looks into coll via ks, an indexed type of keys. Missing data structures will
+  Puts a value into a nested data structure mut, an array, buffer or table.
+  Looks into mut via ks, an indexed type of keys. Missing data structures will
   be replaced with tables. Returns the modified, original data structure.
   """
-  [coll ks val]
-  (var d coll)
+  [mut ks val]
+  (var d mut)
   (def len-1 (- (length ks) 1))
   (if (< len-1 0) (error "expected at least 1 key in ks"))
   (forv i 0 len-1
@@ -1937,17 +1937,17 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def last-key (get ks len-1))
   (def last-val (get d last-key))
   (put d last-key val)
-  coll)
+  mut)
 
 (defn update!
   """
-  For a given key in ds, an array, buffer or table, replaces its corresponding value with the
+  For a given key in mut, an array, buffer or table, replaces its corresponding value with the
   result of calling f on that value. If args are provided, they will be passed
-  along to f as well. Returns ds, updated.
+  along to f as well. Returns mut, updated.
   """
-  [ds key f & args]
-  (def old (get ds key))
-  (put ds key (f old |args)))
+  [mut key f & args]
+  (def old (get mut key))
+  (put mut key (f old |args)))
 
 (defn merge!
   """
