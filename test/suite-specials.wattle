@@ -199,7 +199,7 @@
 (defn named-opt-arguments
   ([] (named-opt-arguments nil))
   ([x & {:keys [a b c]}]
-  (+ x a b c)))
+    (+ x a b c)))
 
 (assert (= 10 (named-opt-arguments 1 :a 2 :b 3 :c 4)) "named arguments 2")
 

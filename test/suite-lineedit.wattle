@@ -26,14 +26,14 @@
   ([argv] (run argv nil nil))
   ([argv input] (run argv input nil))
   ([argv input extra]
-  (def env (merge (os/environ) {"TERM" "xterm-256color" :in :pipe :out :pipe :err :pipe} (or extra {})))
-  (def p (os/spawn argv :pe env))
-  (when input (:write (p :in) input))
-  (:close (p :in))
-  (def out (string (or (:read (p :out) :all) "")))
-  (def err (string (or (:read (p :err) :all) "")))
-  (os/proc-wait p)
-  [out err]))
+    (def env (merge (os/environ) {"TERM" "xterm-256color" :in :pipe :out :pipe :err :pipe} (or extra {})))
+    (def p (os/spawn argv :pe env))
+    (when input (:write (p :in) input))
+    (:close (p :in))
+    (def out (string (or (:read (p :out) :all) "")))
+    (def err (string (or (:read (p :err) :all) "")))
+    (os/proc-wait p)
+    [out err]))
 
 ; On Windows the C library writes standard output in text mode, which writes
 ; each newline as `\r\n`.
@@ -194,12 +194,12 @@
     "Returns a path for a history file that does not exist, and writes `contents` to it when given."
     ([] (history-file nil))
     ([contents]
-    (++ history-count)
-    (def path (string (or (os/getenv "TMPDIR") "/tmp/") "/wattle-history-"
-                      (os/getpid) "-" history-count))
-    (when (os/stat path) (os/rm path))
-    (when contents (spit path contents))
-    path))
+      (++ history-count)
+      (def path (string (or (os/getenv "TMPDIR") "/tmp/") "/wattle-history-"
+                        (os/getpid) "-" history-count))
+      (when (os/stat path) (os/rm path))
+      (when contents (spit path contents))
+      path))
   (defn- slurp-and-remove
     "Returns the contents of the file at `path`, or nil when there is none, and removes it."
     [path]

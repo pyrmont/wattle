@@ -640,10 +640,10 @@
   (defn ev/slurp
     ([f] (ev/slurp f nil))
     ([f buf]
-    (default buf !"")
-    (if (ev/read f 0x10000 buf)
-      (ev/slurp f buf)
-      buf)))
+      (default buf !"")
+      (if (ev/read f 0x10000 buf)
+        (ev/slurp f buf)
+        buf)))
   (def p (os/spawn [|run wattle "-e" (string/format "%w" subproc-code)] :px {:out :pipe :err :out}))
   (def [exit-code data]
     (ev/gather

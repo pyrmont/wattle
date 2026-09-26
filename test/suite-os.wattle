@@ -216,10 +216,10 @@
   (defn child ([code] (child code nil nil))
     ([code flags] (child code flags nil))
     ([code flags env]
-    (def p (os/spawn [|run wattle "-e" code] (or flags :p)
-                     (merge {:out :pipe} (or env {}))))
-    (def out (string (:read (p :out) :all)))
-    [(os/proc-wait p) out]))
+      (def p (os/spawn [|run wattle "-e" code] (or flags :p)
+                       (merge {:out :pipe} (or env {}))))
+      (def out (string (:read (p :out) :all)))
+      [(os/proc-wait p) out]))
 
   ; An exit flushes what the child printed, and a forced exit skips the
   ; flush, so output still in the buffer is discarded. This runtime does not
