@@ -22,7 +22,6 @@
 (start-suite)
 
 ; Tuple types
-; c6edf03ae
 ;
 ; There are no bracket tuples: `[ ]` is a vector, so no source spells one and
 ; every tuple is a parenthesised one. `tuple/type` and `tuple/brackets` went
@@ -34,7 +33,6 @@
         "a vector marshals as a vector")
 
 ; Dynamic bindings
-; 7918add47, 513d551d
 (setdyn :a 10)
 (assert (= 40 (with-dyns [:a 25 :b 15] (+ (dyn :a) (dyn :b)))) "dyn usage 1")
 (assert (= 10 (dyn :a)) "dyn usage 2")

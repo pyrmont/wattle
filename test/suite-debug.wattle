@@ -22,7 +22,6 @@
 (start-suite)
 
 ; Simple function break
-; a8afc5b81
 (debug/fbreak map 1)
 (def f (fiber/new (fn [] (map inc [1 2 3])) :a))
 (resume f)

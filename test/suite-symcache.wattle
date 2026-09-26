@@ -22,11 +22,9 @@
 (start-suite)
 
 ; Symbol function
-; 5460ff1
 (assert (= (symbol "abc" 1 2 3) 'abc123) "symbol function")
 
 ; Gensym tests
-; 3ccd68843
 (assert (not= (gensym) (gensym)) "two gensyms not equal")
 ((fn []
    (def syms (table))
@@ -36,8 +34,7 @@
      (set counter (+ 1 counter)))
    (assert (= (length syms) 128) "many symbols")))
 
-; issue #753 - a78cbd91d
-(assert (pos? (length (gensym))) "gensym not empty, regression #753")
+(assert (pos? (length (gensym))) "gensym not empty")
 
 ; A keyword is a symbol of the other kind: one tag, and two interned objects
 ; for one name.

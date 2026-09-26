@@ -33,7 +33,6 @@
   (os/exit 0))
 
 ; some tests for bigint
-; 319575c
 (def i64 int/s64)
 (def u64 int/u64)
 
@@ -51,7 +50,6 @@
     (def d (u64 "123456789"))))
 
 ; Conversion back to an int32
-; 88db9751d
 (assert (= (int/to-number (u64 0xFaFa)) 0xFaFa))
 (assert (= (int/to-number (i64 0xFaFa)) 0xFaFa))
 (assert (= (int/to-number (u64 9007199254740991)) 9007199254740991))
@@ -107,17 +105,14 @@
 (assert (let [a (u64 0xff)] (= (:+ a a a a) (:* a 2 2)))
         "bigint operations 2")
 
-; 5ae520a2c
 (assert (= (string (i64 -123)) "-123") "i64 prints reasonably")
 (assert (= (string (u64 123)) "123") "u64 prints reasonably")
 
-; 1db6d0e0b
 (assert-error
   "trap INT64_MIN / -1"
   (:/ (int/s64 "-0x8000_0000_0000_0000") -1))
 
 ; int/s64 and int/u64 serialization
-; 6aea7c7f7
 (assert (deep= (int/to-bytes (u64 0)) !"\x00\x00\x00\x00\x00\x00\x00\x00"))
 
 (assert (deep= (int/to-bytes (i64 1) :le)
@@ -137,7 +132,6 @@
                !"\x00\x00\x00\x00\x00\x00\x01\x2C"))
 
 ; int/s64 int/u64 to existing buffer
-; bbb3e16fd
 (let [buf1 !""
       buf2 !"abcd"]
   (assert (deep= (int/to-bytes (i64 1) :le buf1)
@@ -147,19 +141,16 @@
                  !"abcd\x00\x00\x00\x00\x00\x00\x01\x2C")))
 
 ; int/s64 and int/u64 parameter type checking
-; 6aea7c7f7
 (assert-error-value
   "bad value passed to int/to-bytes"
   "int/to-bytes: expected an int/s64 or int/u64, got 1"
   (int/to-bytes 1))
 
-; 6aea7c7f7
 (assert-error-value
   "invalid endianness passed to int/to-bytes"
   "int/to-bytes: expected endianness :le, :be or nil, got :little"
   (int/to-bytes (u64 0) :little))
 
-; bbb3e16fd
 ; A valid order, so the refusal is the buffer's and not the endianness's.
 (assert-error-value
   "invalid buffer passed to int/to-bytes"
@@ -167,7 +158,6 @@
   (int/to-bytes (u64 0) :le :buffer))
 
 ; Right hand operators
-; 4fe005e3c
 (assert (= (int/s64 (sum (range 10))) (sum (map int/s64 (range 10))))
         "right hand operators 1")
 (assert (= (int/s64
@@ -177,7 +167,6 @@
         "right hand operators 3")
 
 ; Integer type checks
-; 11067d7a5
 (assert (compare= 0 (- (int/u64 "1000") 1000)) "subtract from int/u64")
 
 (assert (odd? (int/u64 "1001")) "odd? 1")
@@ -234,8 +223,7 @@
           (bxor (int/u64 x) (bnot (int/u64 x))))
           "int/u64 bnot"))
 
-; Check for issue #1130
-; 7e65c2bda
+; mod of negative numbers by an s64
 (var d (int/s64 7))
 (mod 0 d)
 
@@ -243,9 +231,9 @@
 (def result (seq [n :in (range -21 0)] (mod n d)))
 (assert (deep= result
                (map int/s64 ![0 1 2 3 4 5 6 0 1 2 3 4 5 6 0 1 2 3 4 5 6]))
-        "issue #1130")
+        "s64 mod of negative numbers")
 
-; issue #272 - 81d301a42
+; polymorphic compare of boxed integers, doubles and infinities
 (let [MAX_INT_64_STRING "9223372036854775807"
       MAX_UINT_64_STRING "18446744073709551615"
       MAX_INT_IN_DBL_STRING "9007199254740991"
@@ -300,13 +288,11 @@
 (assert (= (compare (i64 -1) (u64 0)) -1) "compare 12")
 
 ; off by 1 error in inttypes
-; a3e812b86
 (assert (= (int/s64 "-0x8000_0000_0000_0000")
            (+ (int/s64 "0x7FFF_FFFF_FFFF_FFFF") 1)) "int types wrap around")
 (assert (= (int/s64 "0x7FFF_FFFF_FFFF_FFFF")
            (- (int/s64 "-0x8000_0000_0000_0000") 1)) "int types wrap around")
 
-; Issue #1217
 (assert (= (- (int/u64 "0xFFFFFFFF") 1) (int/u64 "0xFFFFFFFE")) "u64 subtract")
 
 ; The r-prefixed methods, which the interpreter reaches when the boxed integer

@@ -22,7 +22,6 @@
 (start-suite)
 
 ; Buffer blitting
-; 16ebb1118
 (def b (buffer/new-filled 100))
 (buffer/bit-set b 100)
 (buffer/bit-clear b 100)
@@ -73,7 +72,6 @@
 (assert-error "bad slot #1, expected 32 bit signed integer" (buffer/push-byte !"AA" :flap))
 
 ; Buffer push word
-; e755f9830
 (def b3 !"")
 (buffer/push-word b3 0xFF 0x11)
 (assert (= 8 (length b3)) "buffer/push-word 1")
@@ -85,7 +83,6 @@
 (assert-error "cannot convert 0.5 to machine word" (buffer/push-word !"" 0.5))
 
 ; Buffer push string
-; 175925207
 (def b4 (buffer/new-filled 10 0))
 (buffer/push-string b4 b4)
 (assert (= "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0" (string b4))
@@ -148,7 +145,6 @@
 (assert-error "bad slot #1, expected 32 bit signed integer" (buffer/from-bytes :abc))
 
 ; some tests for buffer/format
-; 029394d
 (assert (= (string (buffer/format !"" "pi = %6.3f" math/pi)) "pi =  3.142")
         "%6.3f")
 (assert (= (string (buffer/format !"" "pi = %+6.3f" math/pi)) "pi = +3.142")
@@ -163,8 +159,7 @@
 (assert (= (string (buffer/format !"" "\xCF\x80 = %.8g" math/pi))
            "\xCF\x80 = 3.1415927") "\xCF\x80")
 
-; Regression #301
-; a3d4ecddb
+; buffer/blit from an offset in the source
 (def b8 (buffer/new-filled 128 0x78))
 (assert (= 38 (length (buffer/blit !"" b8 -1 90))) "buffer/blit 1")
 
@@ -176,7 +171,6 @@
 (assert (deep= !"de" (buffer/blit !"" a nil 3 5)) "buffer/blit 6")
 
 ; buffer/push-at
-; c55d93512
 (assert (deep= !"abc456" (buffer/push-at !"abc123" 3 "456"))
         "buffer/push-at 1")
 (assert (deep= !"abc456789" (buffer/push-at !"abc123" 3 "456789"))
@@ -207,10 +201,10 @@
 (assert (= (string buf) "xxxxxx") "buffer/format-at negative index")
 (assert-error "expected index at to be in range [0, 0), got 1" (buffer/format-at !"" 1 "abc"))
 
-; Regression 1714
+; put beyond the end extends the buffer with zeros
 (repeat 10
-  (assert (deep= (put !"" 100 10) (put (buffer (string/repeat "\0" 101)) 100 10)) "regression 1714")
-  (assert (deep= (put !"" 200 10) (put (buffer (string/repeat "\0" 201)) 200 10)) "regression 1714"))
+  (assert (deep= (put !"" 100 10) (put (buffer (string/repeat "\0" 101)) 100 10)) "put extends buffer with zeros")
+  (assert (deep= (put !"" 200 10) (put (buffer (string/repeat "\0" 201)) 200 10)) "put extends buffer with zeros"))
 
 (end-suite)
 

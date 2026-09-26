@@ -22,7 +22,6 @@
 (start-suite)
 
 ; Array tests
-; e05022f
 (defn array=
   "Check if two arrays are equal in an element by element comparison"
   [a b]
@@ -40,7 +39,6 @@
 (assert (array= (array/slice ![0 7 3 9 1 4] 2 -2) ![3 9 1]) "array/slice 2")
 
 ; Array remove
-; 687a3c9
 (assert (deep= (array/remove ![1 2 3 4 5] 2) ![1 2 4 5]) "array/remove 1")
 (assert (deep= (array/remove ![1 2 3 4 5] 2 2) ![1 2 5]) "array/remove 2")
 (assert (deep= (array/remove ![1 2 3 4 5] 2 200) ![1 2]) "array/remove 3")
@@ -125,10 +123,10 @@
 (assert-error "array/join error 4" (array/join ![] "abc123"))
 (assert-error "array/join error 5" (array/join ![] "abc123"))
 
-; Regression 1714
+; put beyond the end extends the array with nils
 (repeat 10
-  (assert (deep= (put ![] 100 10) (put (seq [_ :range [0 101]] nil) 100 10)) "regression 1714")
-  (assert (deep= (put ![] 200 10) (put (seq [_ :range [0 201]] nil) 200 10)) "regression 1714"))
+  (assert (deep= (put ![] 100 10) (put (seq [_ :range [0 101]] nil) 100 10)) "put extends array with nils")
+  (assert (deep= (put ![] 200 10) (put (seq [_ :range [0 201]] nil) 200 10)) "put extends array with nils"))
 
 (end-suite)
 

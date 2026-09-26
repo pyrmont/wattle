@@ -36,7 +36,6 @@
          (> (length (fficc)) 1)))) ; all arches support :none
 
 ; FFI check
-; d80356158
 (compwhen has-ffi
   (ffi/context))
 
@@ -48,7 +47,6 @@
   (memcpy buffer1 buffer2 4)
   (assert (= (string buffer1) "bbbb") "ffi 1 - memcpy"))
 
-; cfaae47ce
 (compwhen has-ffi
   (assert (= 8 (ffi/size [:int :char])) "size unpacked struct 1")
   (assert (= 5 (ffi/size [:pack :int :char])) "size packed struct 1")
@@ -60,7 +58,7 @@
           "array struct size"))
 
 (compwhen has-ffi
-  (assert-error "bad struct issue #1512" (ffi/struct :void)))
+  (assert-error "bad struct" (ffi/struct :void)))
 
 (compwhen has-ffi
   (def buf !"")

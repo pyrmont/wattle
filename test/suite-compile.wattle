@@ -22,11 +22,9 @@
 (start-suite)
 
 ; Regression Test
-; 0378ba78
 (assert (= 1 (((compile '(fn [] 1) !{})))) "regression test")
 
 ; Fix a compiler bug in the do special form
-; 3e1e2585
 (defn myfun [x]
   (var a 10)
   (set a (do
@@ -37,7 +35,6 @@
 (assert (= (myfun false) 9) "check do form regression")
 
 ; Check x:digits: works as symbol and not a hex number
-; 5baf70f4
 (def x1 100)
 (assert (= x1 100) "x1 as symbol")
 (def X1 100)
@@ -45,7 +42,6 @@
 
 ; Edge case should cause old compilers to fail due to
 ; if statement optimization
-; 17283241
 (setdyn *lint-warn* :relaxed)
 (var var-a 1)
 (var var-b (if false 2 (string "hello")))
@@ -53,12 +49,10 @@
 
 (assert (= var-b "hello") "regression 1")
 
-; d28925fda
 (assert (= '() (tuple)) "empty tuple literal")
 (assert (= [] (vector)) "empty vector literal")
 
 ; A vector is never a call
-; 340a6c4
 ;
 ; `[ ]` was a bracket tuple and is a vector; what it never was, and still is
 ; not, is a form the compiler dispatches on. Its head is evaluated like every
@@ -68,8 +62,7 @@
 (assert (= (vector defn 1 2 3) [defn 1 2 3]) "a vector is never a macro call")
 (assert (= (vector + 1 2 3) [+ 1 2 3]) "a vector is never a function call")
 
-; Crash issue #1174 - bad debug info
-; e97299f
+; bad debug info
 (defn crash []
   (debug/stack (fiber/current)))
 (do
@@ -80,7 +73,7 @@
   (foo 0)
   10)
 
-; Issue #1699 - fuzz case with bad def
+; fuzz case with bad def
 (def result
   (compile '(defn sum3
               "Solve the 3SUM problem in O(n^2) time."
@@ -88,7 +81,7 @@
               (def)tab !{})))
 (assert (get result :error) "bad sum3 fuzz issue valgrind")
 
-; Issue #1700
+; fuzz case with a rest parameter that compiles to an error
 (def result1
   (compile
     '(defn fuzz-case-1
@@ -96,9 +89,9 @@
       (if end
         (if e start (lazy-range (+ 1 start) end)))
       1)))
-(assert (get result1 :error) "fuzz case issue #1700")
+(assert (get result1 :error) "fuzz case compile error")
 
-; Issue #1702 - fuzz case with upvalues
+; fuzz case with upvalues
 (def result2
   (compile
   '(each item [1 2 3]

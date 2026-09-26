@@ -22,7 +22,6 @@
 (start-suite)
 
 ; More fiber semantics
-; 0fd9224e4
 (var myvar 0)
 (defn fiberstuff [&]
   (++ myvar)
@@ -42,7 +41,6 @@
         "fiber properly dies from debug state")
 
 ; yield tests
-; 171c0ce
 (def t (fiber/new (fn [&] (yield 1) (yield 2) 3)))
 
 (assert (= 1 (resume t)) "initial transfer to new fiber")
@@ -91,7 +89,6 @@
         "a map first resume selects the variadic clause")
 
 ; Fix yields inside nested fibers
-; 909c906
 (def yielder
   (coro
     (defer (yield :end)
@@ -101,7 +98,6 @@
         "yield within nested fibers")
 
 ; Calling non functions
-; b9c0fc820
 (assert (= 1 ({:ok 1} :ok)) "calling struct")
 (assert (= 2 (!{:ok 2} :ok)) "calling table")
 (assert (= :bad (try ((identity !{:ok 2}) :ok :no) ([_err] :bad)))
@@ -112,7 +108,6 @@
         "calling number fails")
 
 ; Method test
-; d5bab7262
 (def Dog !{:bark (fn bark [self what]
                    (string (self :name) " says " what "!"))})
 (defn make-dog
@@ -124,7 +119,6 @@
 (assert (= "spot says hi!" (:bark spot "hi")) "oo 2")
 
 ; Negative tests
-; 67f26b7d7
 (assert-error "+ check types" (+ 1 ()))
 (assert-error "- check types" (- 1 ()))
 (assert-error "* check types" (* 1 ()))
@@ -135,22 +129,18 @@
 (assert-error "bnot check types" (bnot ()))
 
 ; Comparisons
-; 10dcbc639
 (assert (> 1e23 100) "less than immediate 1")
 (assert (> 1e23 1000) "less than immediate 2")
 (assert (< 100 1e23) "greater than immediate 1")
 (assert (< 1000 1e23) "greater than immediate 2")
 
 ; Quasiquote over a vector
-; e239980da
 ;
 ; `[ ]` is a vector, so what a quasiquote rebuilds is one. The bracketed
 ; tuple this pinned has no spelling left.
 (assert (= :vector (type `[1 2 3])) "quasiquote rebuilds a vector")
 (assert (= `[1 2 3] '[1 2 3]) "and gives what the quote gives")
 
-; Regression #638
-; c68264802
 (compwhen
   (dyn 'ev/go)
   (assert
@@ -163,18 +153,16 @@
                (ev/sleep 0)
                (error "oops")))
            ([_err] :caught))))
-    "regression #638"))
+    "error after ev/sleep inside with-dyns"))
 
 ;
 ; Test propagation of signals via fibers
 ;
-; b8032ec61
 (def f (fiber/new (fn [] (error :abc) 1) :ei))
 (def res (resume f))
 (assert-error :abc (propagate res f) "propagate 1")
 
 ; Cancel test
-; 28439d822
 (def fc (fiber/new (fn [&] (yield 1) (yield 2) (yield 3) 4) :yti))
 (assert (= 1 (resume fc)) "cancel resume 1")
 (assert (= 2 (resume fc)) "cancel resume 2")

@@ -33,7 +33,6 @@
 
 ; Assembly test
 ; Fibonacci sequence, implemented with naive recursion.
-; a679f60
 (def fibasm (asm '{
   :arity 1
   :bytecode [
@@ -57,7 +56,6 @@
 (assert (= 55 (fibasm 10)) "fibasm 3")
 (assert (= 6765 (fibasm 20)) "fibasm 4")
 
-; dacbe29
 (def f (asm (disasm (fn [x] (fn [y] (+ x y))))))
 (assert (= ((f 10) 37) 47) "asm environment tables")
 
@@ -72,8 +70,7 @@
 (assert-error "invalid assembly (15)"
               (asm '{:arity 1 :bytecode [(jmpna 33 :done) :done (retn)]}))
 
-; issue #1424
-(assert-no-error "arity > used slots (issue #1424)"
+(assert-no-error "arity > used slots"
                  (asm
                    (disasm
                      (fn []

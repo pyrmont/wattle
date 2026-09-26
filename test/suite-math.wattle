@@ -22,11 +22,9 @@
 (start-suite)
 
 ; First commit removing the integer number type
-; 6b95326d7
 (assert (= 400 (math/sqrt 160000)) "sqrt(160000)=400")
 
 ; RNGs
-; aee168721
 (defn test-rng
   [rng]
   (assert (every? (seq [i :range [0 1000]]
@@ -40,7 +38,6 @@
 (for _ 0 75
   (test-rng (math/rng (:int seedrng))))
 
-; 70328437f
 (assert (deep-not= (-> 123 math/rng (:buffer 16))
                    (-> 456 math/rng (:buffer 16))) "math/rng-buffer 1")
 
@@ -53,7 +50,6 @@
 (assert (= 0 (math/rng-int (math/rng 8) 1930819283))
         "math/rng-int keeps a draw at the rejection bound")
 
-; 027b2a8
 (defn assert-many [f n e]
  (var good true)
  (loop [_ :range [0 n]]
@@ -63,12 +59,10 @@
 
 (assert-many (fn [] (>= 1 (math/random) 0)) 200 "(random) between 0 and 1")
 
-; 06aa0a124
 (assert (= (math/gcd 462 1071) 21) "math/gcd 1")
 (assert (= (math/lcm 462 1071) 23562) "math/lcm 1")
 
 ; math gamma
-; e6babd8
 (assert (< 11899423.08 (math/gamma 11.5) 11899423.085) "math/gamma")
 (assert (< 2605.1158 (math/log-gamma 500) 2605.1159) "math/log-gamma")
 

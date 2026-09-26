@@ -22,7 +22,6 @@
 (start-suite)
 
 ; Appending buffer to self
-; 6b76ac3d1
 (with-dyns [:out !""]
   (prin "abcd")
   (prin (dyn :out))
@@ -30,7 +29,6 @@
   (assert (deep= (dyn :out) !"abcdabcdabcdabcd") "print buffer to self"))
 
 ; Buffer self blitting, check for use after free
-; bbcfaf128
 (def buf1 !"1234567890")
 (buffer/blit buf1 buf1 -1)
 (buffer/blit buf1 buf1 -1)
@@ -43,7 +41,6 @@
 ; conversion families and one of them, `%s`, read the byte view it had taken
 ; before a push reallocated the block, so it copied freed memory. Refused on
 ; 2026-09-19 rather than specified; see notes/INCREMENTS.md.
-; bbcfaf128
 (def buftemp !"abcd")
 (assert-error "cannot format a buffer into itself"
               (buffer/format buftemp "---%p---" buftemp))
@@ -58,7 +55,6 @@
 (assert (= "abcd--!\"xy\"--" (string (buffer/format buftemp "--%w--" !"xy")))
         "a different buffer is unaffected")
 
-; 5c364e0
 (defn check-source [x]
   (assert (deep= (parse (string/format "%w" x)) x) "round trip as source"))
 
@@ -71,7 +67,7 @@
 (check-source "a string")
 (check-source !"a buffer")
 
-; Issue 1737
+; %M formats an empty array
 (assert (deep= "![]" (string/format "%M" ![])))
 (assert (deep= " ![]" (string/format " %M" ![])))
 (assert (deep= "  ![]" (string/format "  %M" ![])))
@@ -136,7 +132,6 @@
   ...} !{true !Foo{:bar [:keyword "string" !"buffer"] :baz 42}
          [:keyword "string" !"buffer"] <cycle 1>}}""")))
 
-; Issue 1737
 ; The (??) debug pattern is a peg feature, absent without JANET_PEG.
 (compwhen (dyn 'peg/match)
   (def capture-buf !"")

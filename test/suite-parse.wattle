@@ -21,7 +21,6 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
-; 7e46ead2f
 (assert (not false) "false literal")
 (assert true "true literal")
 (assert (not nil) "nil literal")
@@ -29,13 +28,11 @@
 (assert (= '(1 2 3) (quote (1 2 3)) (tuple 1 2 3)) "quote shorthand")
 
 ; String literals
-; 45f8db0
 (assert (= "abcd" "\x61\x62\x63\x64") "hex escapes")
 (assert (= "\e" "\x1B") "escape character")
 (assert (= "\x09" "\t") "tab character")
 
 ; Long strings
-; 7e6342720
 (assert (= "hello, world" """hello, world""") "simple long string")
 (assert (= "hello, \"world\"" "hello, \"world\"")
         "long string with embedded quotes")
@@ -49,7 +46,6 @@
   ;
   ; Longstring indentation
   ;
-  ; 7aa4241
   (defn reindent
     """
     Reindent the contents of a raw string as the parser would.
@@ -136,7 +132,6 @@
   (check-indent "\r\n    Hello, world!\r\n    indented text\r\n    " 4))
 
 ; `@` and `^` are reserved at the head of a form
-; d68eae9
 ;
 ; Janet read `@`, `@--` and `@hey` as symbols. Wattle holds both characters
 ; free for a syntactic meaning not yet chosen, and a parse error is the
@@ -158,7 +153,6 @@
 (assert (= '! (parse "!")) "a bare ! is a symbol")
 
 ; Parser clone
-; 43520ac67
 (def p0 (parser/new))
 (assert (= 7 (parser/consume p0 "(1 2 3 ")) "parser 1")
 (def p2 (parser/clone p0))
@@ -168,7 +162,6 @@
 (assert (deep= (parser/state p0) (parser/state p2)) "parser 3")
 
 ; Parser errors
-; 976dfc719
 (defn parse-error [input]
   (def p (parser/new))
   (parser/consume p input)
@@ -179,7 +172,6 @@
 (assert (not= nil (parse-error !":\xc3\x28")) "reject invalid utf-8 keyword")
 
 ; Parser line and column numbers
-; 77b79e989
 (defn parser-location ([input] (parser-location input nil))
   ([input location]
   (def p (parser/new))
@@ -192,8 +184,7 @@
 (assert (= [5 7] (parser-location !"(+ 1 2)" [5])) "parser location 2")
 (assert (= [10 10] (parser-location !"(+ 1 2)" [10 10])) "parser location 3")
 
-; Issue #861 - should be valgrind clean
-; 39c6be7cb
+; should be valgrind clean
 (def step1 "(a b c d)\n")
 (def step2 "(a b)\n")
 (def p1 (parser/new))

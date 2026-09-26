@@ -38,7 +38,7 @@
   (when ok (resume f))
   (set interrupt-available? ok))
 
-; Issue #1629
+; deadline expiry in a thread
 (when interrupt-available?
   (def thread-channel (ev/thread-chan 100))
   (def super (ev/thread-chan 10))
@@ -73,7 +73,7 @@
 (ev/sleep 0.2)
 (assert (deep= [:error "deadline expired" nil] (ev/take super)) "deadline expirataion")
 
-; Issue #1705 - ev select
+; ev select
 (def supervisor (ev/chan 10))
 
 (def ch (ev/chan))
@@ -96,7 +96,6 @@
 (ev/sleep 0.1) ; can we do better?
 (assert (= 0 (ev/count supervisor)) "empty supervisor")
 
-; Issue #1707
 (def f (coro (repeat 10 (yield 1))))
 (resume f)
 (assert-error "cannot schedule non-new fiber"

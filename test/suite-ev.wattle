@@ -36,7 +36,6 @@
 (def test-host (os/getenv "WATTLE_TEST_HOST" "127.0.0.1"))
 
 ; Subprocess
-; 5e1a8c86f
 (def wattle (dyn *executable*))
 
 ; Subprocess should inherit the "RUN" parameter for fancy testing
@@ -82,7 +81,6 @@
     (assert (not= retval 24) "Process was *not* terminated by parent"))
 
   ; Parallel subprocesses
-  ; 5e1a8c86f
   (defn calc-1
     "Run subprocess, read from stdout, then wait on subprocess."
     [code]
@@ -123,7 +121,6 @@
   ; (print "file piping")
 
   ; File piping
-  ; a1cc5ca04
   (assert-no-error "file writing 1"
     (with [f (file/temp)]
       (os/execute [|run wattle "-e" """(repeat 20 (print :hello))"""] :p {:out f})))
@@ -133,8 +130,6 @@
       (os/execute [|run wattle "-e" """(repeat 20 (print :hello))"""] :p {:out f})
       (file/flush f)))
 
-  ; Issue #593
-  ; a1cc5ca04
   (assert-no-error "file writing 3"
     (def outfile (file/open "unique.txt" :w))
     (os/execute [|run wattle "-e" "(pp (seq [i :range (1 10)] i))"] :p
@@ -144,7 +139,6 @@
     (os/rm "unique.txt")))
 
 ; each-line iterator
-; 70f13f1
 (assert-no-error "file/lines iterator"
    (def outstream (os/open "unique.txt" :wct))
    (def buf1 "123\n456\n")
@@ -158,7 +152,6 @@
    (os/rm "unique.txt"))
 
 ; Ensure that the stream created by os/open works
-; e8a86013d
 (assert-no-error "File writing 4.1"
    (def outstream (os/open "unique.txt" :wct))
    (defer (:close outstream)
@@ -170,7 +163,6 @@
    (os/rm "unique.txt"))
 
 ; Test that the stream created by os/open can be read from
-; 8d8a6534e
 (comment
   (assert-no-error "File reading 1.1"
     (def outstream (os/open "unique.txt" :wct))
@@ -185,7 +177,6 @@
     (os/rm "unique.txt")))
 
 ; ev/gather
-; 4f2d1cdc0
 (assert (deep= ![1 2 3] (ev/gather 1 2 3)) "ev/gather 1")
 (assert (deep= ![] (ev/gather)) "ev/gather 2")
 (assert-error "ev/gather 3" (ev/gather 1 2 (error 3)))
@@ -201,7 +192,6 @@
 ; compile error rather than a runtime one.
 (compwhen (dyn 'net/server)
   ; Net testing
-  ; 2904c19ed
   (repeat 10
 
     (defn handler
@@ -231,7 +221,6 @@
     (gccollect))
 
   ; Test on both server and client
-  ; 504411e
   (var iterations 0)
   (defn names-handler
     [stream]
@@ -247,7 +236,6 @@
   ; (print "local name / peer name testing")
 
   ; Test localname and peername
-  ; 077bf5eba
   (repeat 10
     (with [s (net/server test-host test-port names-handler)]
       (repeat 10
@@ -263,7 +251,6 @@
   (assert (= iterations 200) "localname and peername not enough checks"))
 
 ; Create pipe
-; 12f09ad2d
 (var pipe-counter 0)
 (def chan (ev/chan 10))
 (let [[reader writer] (os/pipe)]
@@ -279,7 +266,6 @@
   (ev/close writer)
   (ev/take chan))
 
-; cff52ded5
 (var result nil)
 (var fiber nil)
 (set fiber
@@ -292,11 +278,9 @@
 ; os/spawn and os/execute are absent from a build without JANET_PROCESSES,
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
-  ; f0dbc2e
   (assert (os/execute [|run wattle "-e" """(+ 1 2 3)"""] :xp) "os/execute self"))
 
 ; Test some channel
-; e76b8da26
 (def c1 (ev/chan))
 (def c2 (ev/chan))
 (def arr ![])
@@ -338,7 +322,6 @@
 (assert (= (slice arr) (slice (range 100))) "ev/chan-close 3")
 
 ; threaded channels
-; 868cdb9
 (def ch (ev/thread-chan 2))
 (def att (ev/thread-chan 109))
 (assert att "`att` was nil after creation")
@@ -348,7 +331,6 @@
           "channel packing bug for threaded abstracts on threaded channels."))
 
 ; marshal channels
-; 76be8006a
 (def ch (ev/chan 10))
 (ev/give ch "hello")
 (ev/give ch "world")
@@ -402,7 +384,7 @@
                  (exec-slurp |run wattle "-e" "(print :hi)")))
             "exec-slurp 1")))
 
-; valgrind-able check for #1337
+; valgrind-able check
 (def superv (ev/chan 10))
 (def f (ev/go #(ev/sleep 1e9) nil superv))
 (ev/cancel f (gensym))
@@ -507,7 +489,7 @@
   ; Close chat server
   (:close chat-server)
 
-  ; Issue #1531
+  ; printing through a sleeping *out* function, then a level-trigger server
   (defn sleep-print [x] (ev/sleep 0) (print x))
   (protect (with-dyns [*out* sleep-print] (prin :foo)))
   (defn level-trigger-handling [conn &] (:close conn))
@@ -515,7 +497,6 @@
   (def c (assert (net/connect test-host test-port)))
   (:close s))
 
-; Issue #1531 no. 2
 (def c (ev/chan 0))
 (ev/spawn (while (def x (ev/take c))))
 (defn print-to-chan [x] (ev/give c x))

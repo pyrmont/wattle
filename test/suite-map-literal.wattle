@@ -23,10 +23,8 @@
 
 ; A map literal is order-independent, because a map's entries are ordered by
 ; the hash of each key and by nothing else.
-; 21bd960
 (assert (= {1 2 3 4 5 6 7 8} {7 8 5 6 3 4 1 2})
         "map literal order does not matter 1")
-; 42a88de
 (assert (= {:apple 1 6 :bork '(1 2 3) 5}
            {6 :bork '(1 2 3) 5 :apple 1})
         "map literal order does not matter 2")
@@ -34,7 +32,6 @@
         "a literal and the constructor build one map")
 
 ; A nil value removes its key, in a literal as in `hash-map`.
-; 38a7e4faf
 (assert (= (length {2 1 3 nil}) 1) "nil value map literal")
 (assert (= (length (hash-map 2 1 3 nil)) 1) "nil value map constructor")
 
@@ -47,7 +44,6 @@
 (assert-error "cannot use nan as a key" (hash-map 1 2 (/ 0 0) 3))
 
 ; Duplicate keys take the last value.
-; 8bc2987a7
 (assert (= {:a 3 :b 2} {:a 1 :b 2 :a 3}) "map literal duplicate keys")
 (assert (= {:a 3 :b 2} (hash-map :a 1 :b 2 :a 3))
         "map constructor duplicate keys")

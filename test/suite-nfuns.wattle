@@ -22,13 +22,11 @@
 (start-suite)
 
 ; Inline 3 argument get
-; a1ea62a
 (assert (= 10 (do (var a 10) (set a (get '{} :a a)))) "inline get 1")
 
-; Regression #24
-; f28477649
+; put on an empty map literal
 (def t (put !{} :hi 1))
-(assert (deep= t !{:hi 1}) "regression #24")
+(assert (deep= t !{:hi 1}) "put on empty map literal")
 
 (end-suite)
 

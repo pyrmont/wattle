@@ -22,7 +22,6 @@
 (start-suite)
 
 ; Denormal tables
-; 38a7e4faf
 (assert (= (length !{1 2 nil 3}) 1) "nil key table literal")
 (assert (= (length (table 1 2 nil 3)) 1) "nil key table ctor")
 
@@ -38,7 +37,6 @@
         "table constructor duplicate keys")
 
 ;; Table prototypes
-; 027b2a81c
 (def roottab !{
  :parentprop 123
 })
@@ -54,13 +52,11 @@
 (assert (= nil (get roottab :childprop)) "table get 2")
 (assert (= 456 (get childtab :childprop)) "proto no effect")
 
-; b3aed1356
 (assert-error
   "table rawget regression"
   (table/new -1))
 
 ; table/clone
-; 392813667
 (defn check-table-clone [x msg]
   (assert (= (table/to-map x) (table/to-map (table/clone x))) msg))
 
