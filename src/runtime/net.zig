@@ -418,9 +418,9 @@ pub fn libNet(env: *tables.Table) void {
             "connection from, with the default being the same as using the operating system's preferred address."),
         corefn.reg("net/shutdown", &nfunShutdown, @src(), "(net/shutdown stream)\n(net/shutdown stream mode)", "Stops communication on this socket in a graceful manner, either in both directions or just " ++
             "reading/writing from the stream. The mode parameter controls which communication to stop on the socket. " ++
-            "\n\n* `:rw` is the default and prevents both reading new data from the socket and writing new data to the socket.\n" ++
-            "* `:r` disables reading new data from the socket.\n" ++
-            "* `:w` disables writing data to the socket.\n\n" ++
+            "\n\n- `:rw` is the default and prevents both reading new data from the socket and writing new data to the socket.\n" ++
+            "- `:r` disables reading new data from the socket.\n" ++
+            "- `:w` disables writing data to the socket.\n\n" ++
             "Returns the original socket."),
         corefn.reg("net/peername", &nfunGetpeername, @src(), "(net/peername stream)", "Gets the remote peer's address and port in a vector in that order."),
         corefn.reg("net/localname", &nfunGetsockname, @src(), "(net/localname stream)", "Gets the local address and port in a vector in that order."),

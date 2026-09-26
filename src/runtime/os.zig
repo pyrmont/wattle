@@ -735,15 +735,15 @@ fn selfEntries() []const corefn.Entry {
                 "exits with status 1. If force is truthy, exits immediately and " ++
                 "skips cleanup code."),
             corefn.reg("os/which", &nfunWhich, @src(), "(os/which)\n(os/which name)", "Checks the current operating system. If name is nil or false or omitted, returns one of:\n\n" ++
-                "* :windows\n\n* :macos\n\n" ++
-                "* :web - WebAssembly (emscripten)\n\n* :wasi - WebAssembly System Interface\n\n" ++
-                "* :linux\n\n* :hurd\n\n* :freebsd\n\n* :openbsd\n\n* :netbsd\n\n" ++
-                "* :dragonfly\n\n* :illumos\n\n" ++
-                "* :posix - Any other POSIX compatible system\n\n" ++
+                "- :windows\n\n- :macos\n\n" ++
+                "- :web - WebAssembly (emscripten)\n\n- :wasi - WebAssembly System Interface\n\n" ++
+                "- :linux\n\n- :hurd\n\n- :freebsd\n\n- :openbsd\n\n- :netbsd\n\n" ++
+                "- :dragonfly\n\n- :illumos\n\n" ++
+                "- :posix - Any other POSIX compatible system\n\n" ++
                 "May also return a custom keyword specified at build time. If name is truthy, it must be a keyword, and the function returns true if the current operating system equals name and false otherwise."),
             corefn.reg("os/arch", &nfunArch, @src(), "(os/arch)", "Gets the ISA that Wattle was compiled for. Returns one of:\n\n" ++
-                "* :x86\n\n* :x64\n\n* :arm\n\n* :aarch64\n\n* :riscv32\n\n* :riscv64\n\n" ++
-                "* :sparc\n\n* :ppc\n\n* :ppc64\n\n* :wasm\n\n* :s390x\n\n* :unknown\n\n" ++
+                "- :x86\n\n- :x64\n\n- :arm\n\n- :aarch64\n\n- :riscv32\n\n- :riscv64\n\n" ++
+                "- :sparc\n\n- :ppc\n\n- :ppc64\n\n- :wasm\n\n- :s390x\n\n- :unknown\n\n" ++
                 "May also return a custom keyword specified at build time."),
             corefn.reg("os/compiler", &nfunCompiler, @src(), "(os/compiler)", "Gets the compiler used to compile the interpreter. Returns :zig."),
         };
@@ -773,7 +773,7 @@ fn tailEntries() []const corefn.Entry {
         if (!no_locales) acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale)\n(os/setlocale locale)\n(os/setlocale locale category)", "Sets the system locale, which affects how dates and numbers are formatted. " ++
                 "Passing nil to locale will return the current locale. Category can be one of:\n\n" ++
-                " * :all (default)\n * :collate\n * :ctype\n * :monetary\n * :numeric\n * :time\n\n" ++
+                " - :all (default)\n - :collate\n - :ctype\n - :monetary\n - :numeric\n - :time\n\n" ++
                 "Returns the new locale if set successfully, otherwise nil. Note that this will affect " ++
                 "other functions such as ^os/strftime and even ^printf."),
         };

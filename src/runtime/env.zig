@@ -1268,23 +1268,23 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("gcinterval", &nfunGcinterval, @src(), "(gcinterval)", "Returns the integer number of bytes to allocate before running an iteration " ++
             "of garbage collection."),
         corefn.reg("type", &nfunType, @src(), "(type x)", "Returns the type of x as a keyword. The keyword is one of:\n\n" ++
-            "* :number\n" ++
-            "* :nil\n" ++
-            "* :boolean\n" ++
-            "* :fiber\n" ++
-            "* :string\n" ++
-            "* :symbol\n" ++
-            "* :keyword\n" ++
-            "* :array\n" ++
-            "* :tuple\n" ++
-            "* :vector\n" ++
-            "* :table\n" ++
-            "* :map\n" ++
-            "* :core/set\n" ++
-            "* :buffer\n" ++
-            "* :function\n" ++
-            "* :nfunction\n" ++
-            "* :pointer\n\n" ++
+            "- :number\n" ++
+            "- :nil\n" ++
+            "- :boolean\n" ++
+            "- :fiber\n" ++
+            "- :string\n" ++
+            "- :symbol\n" ++
+            "- :keyword\n" ++
+            "- :array\n" ++
+            "- :tuple\n" ++
+            "- :vector\n" ++
+            "- :table\n" ++
+            "- :map\n" ++
+            "- :core/set\n" ++
+            "- :buffer\n" ++
+            "- :function\n" ++
+            "- :nfunction\n" ++
+            "- :pointer\n\n" ++
             "or another keyword for an abstract type."),
         corefn.reg("hash", &nfunHash, @src(), "(hash x)", "Gets a hash for any value. The hash is an integer that can be used " ++
             "as a cheap hash function for all values. Two values that are strictly equal " ++
@@ -1301,15 +1301,15 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "This takes in a path (the argument to require) and a template string, " ++
             "to expand the path to a path that can be used for importing files. " ++
             "The replacements are as follows:\n\n" ++
-            "* :all: -- the value of path verbatim.\n\n" ++
-            "* :@all: -- Same as :all:, but if path starts with the @ character, " ++
+            "- :all: -- the value of path verbatim.\n\n" ++
+            "- :@all: -- Same as :all:, but if path starts with the @ character, " ++
             "the first path segment is replaced with a dynamic binding " ++
             "`(dyn <first path segment as keyword>)`.\n\n" ++
-            "* :cur: -- the directory portion, if any, of (dyn :current-file)\n\n" ++
-            "* :dir: -- the directory portion, if any, of the path argument\n\n" ++
-            "* :name: -- the name component of path, with extension if given\n\n" ++
-            "* :native: -- the extension used to load natives, .so or .dll\n\n" ++
-            "* :sys: -- the system path, or (dyn :syspath)"),
+            "- :cur: -- the directory portion, if any, of (dyn :current-file)\n\n" ++
+            "- :dir: -- the directory portion, if any, of the path argument\n\n" ++
+            "- :name: -- the name component of path, with extension if given\n\n" ++
+            "- :native: -- the extension used to load natives, .so or .dll\n\n" ++
+            "- :sys: -- the system path, or (dyn :syspath)"),
         corefn.reg("int?", &nfunCheckInt, @src(), "(int? x)", "Checks whether x can be exactly represented as a 32 bit signed two's complement integer."),
         corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? x)", "Checks whether x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
         corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Checks whether x is a string, symbol, keyword, or buffer."),
@@ -1327,13 +1327,13 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "toward end."),
         corefn.reg("signal", &nfunSignal, @src(), "(signal what val)", "Raises a signal with payload val. what can be an integer\n" ++
             "from 0 through 7 indicating user(0-7), or one of:\n\n" ++
-            "* :ok\n" ++
-            "* :error\n" ++
-            "* :debug\n" ++
-            "* :yield\n" ++
-            "* :user(0-7)\n" ++
-            "* :interrupt\n" ++
-            "* :await"),
+            "- :ok\n" ++
+            "- :error\n" ++
+            "- :debug\n" ++
+            "- :yield\n" ++
+            "- :user(0-7)\n" ++
+            "- :interrupt\n" ++
+            "- :await"),
         corefn.reg("memcmp", &nfunMemcmp, @src(), "(memcmp a b)\n(memcmp a b len)\n(memcmp a b len offset-a)\n(memcmp a b len offset-a offset-b)", "Compares memory. Takes two byte sequences a and b, and " ++
             "returns 0 if they have identical contents, a negative integer if a is less than b, " ++
             "and a positive integer if a is greater than b. Optionally takes a length and offsets " ++
@@ -1341,30 +1341,32 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("getproto", &nfunGetproto, @src(), "(getproto x)", "Gets the prototype of x, a table. Returns nil if x has no prototype."),
         corefn.reg("sandbox", &nfunSandbox, @src(), "(sandbox & forbidden-capabilities)", "Disables feature sets to prevent the interpreter from using certain system resources. " ++
             "Once a feature is disabled, there is no way to re-enable it. Capabilities can be:\n\n" ++
-            "* :all - disallow all (except IO to stdout, stderr, and stdin)\n" ++
-            "* :asm - disallow calling ^asm and ^disasm functions.\n" ++
-            "* :chroot - disallow calling ^os/posix-chroot\n" ++
-            "* :compile - disallow calling ^compile. This will disable a lot of functionality, such as ^eval.\n" ++
-            "* :env - disallow reading and write env variables\n" ++
-            "* :exit - disallow calling ^os/exit or otherwise early exiting the process in trivial ways.\n" ++
-            "* :ffi - disallow FFI (recommended if disabling anything else)\n" ++
-            "* :ffi-define - disallow loading new FFI modules and binding new functions\n" ++
-            "* :ffi-jit - disallow calling ^ffi/jitfn\n" ++
-            "* :ffi-use - disallow using any previously bound FFI functions and memory-unsafe functions.\n" ++
-            "* :fs - disallow access to the file system\n" ++
-            "* :fs-read - disallow read access to the file system\n" ++
-            "* :fs-temp - disallow creating temporary files\n" ++
-            "* :fs-write - disallow write access to the file system\n" ++
-            "* :hrtime - disallow high-resolution timers\n" ++
-            "* :modules - disallow load dynamic modules (natives)\n" ++
-            "* :net - disallow network access\n" ++
-            "* :net-connect - disallow making outbound network connections\n" ++
-            "* :net-listen - disallow accepting inbound network connections\n" ++
-            "* :sandbox - disallow calling this function\n" ++
-            "* :signal - disallow adding or removing signal handlers\n" ++
-            "* :subprocess - disallow running subprocesses\n" ++
-            "* :threads - disallow spawning threads with ^ev/thread. Certain helper threads may still be spawned.\n" ++
-            "* :unmarshal - disallow calling the ^unmarshal function.\n"),
+            "| Capability   | Description                                                                             |\n" ++
+            "| ------------ | --------------------------------------------------------------------------------------- |\n" ++
+            "| :all         | disallow all (except IO to stdout, stderr, and stdin)                                   |\n" ++
+            "| :asm         | disallow calling ^asm and ^disasm functions.                                            |\n" ++
+            "| :chroot      | disallow calling ^os/posix-chroot                                                       |\n" ++
+            "| :compile     | disallow calling ^compile. This will disable a lot of functionality, such as ^eval.     |\n" ++
+            "| :env         | disallow reading and write env variables                                                |\n" ++
+            "| :exit        | disallow calling ^os/exit or otherwise early exiting the process in trivial ways.       |\n" ++
+            "| :ffi         | disallow FFI (recommended if disabling anything else)                                   |\n" ++
+            "| :ffi-define  | disallow loading new FFI modules and binding new functions                              |\n" ++
+            "| :ffi-jit     | disallow calling ^ffi/jitfn                                                             |\n" ++
+            "| :ffi-use     | disallow using any previously bound FFI functions and memory-unsafe functions.          |\n" ++
+            "| :fs          | disallow access to the file system                                                      |\n" ++
+            "| :fs-read     | disallow read access to the file system                                                 |\n" ++
+            "| :fs-temp     | disallow creating temporary files                                                       |\n" ++
+            "| :fs-write    | disallow write access to the file system                                                |\n" ++
+            "| :hrtime      | disallow high-resolution timers                                                         |\n" ++
+            "| :modules     | disallow load dynamic modules (natives)                                                 |\n" ++
+            "| :net         | disallow network access                                                                 |\n" ++
+            "| :net-connect | disallow making outbound network connections                                            |\n" ++
+            "| :net-listen  | disallow accepting inbound network connections                                          |\n" ++
+            "| :sandbox     | disallow calling this function                                                          |\n" ++
+            "| :signal      | disallow adding or removing signal handlers                                             |\n" ++
+            "| :subprocess  | disallow running subprocesses                                                           |\n" ++
+            "| :threads     | disallow spawning threads with ^ev/thread. Certain helper threads may still be spawned. |\n" ++
+            "| :unmarshal   | disallow calling the ^unmarshal function.                                               |\n"),
     };
     corefn.install(env, entries);
     try io_core.libIo(env);

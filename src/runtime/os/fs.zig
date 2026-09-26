@@ -178,21 +178,23 @@ pub fn entries() []const corefn.Entry {
                 "the fields are put into tbl, which is returned. Raises an error for an unknown keyword. " ++
                 "If the file or directory does not exist, returns nil. " ++
                 "The keys are:\n\n" ++
-                "* :dev - the device that the file is on\n\n" ++
-                "* :inode - the inode number of the file\n\n" ++
-                "* :mode - the type of file, one of :file, :directory, :block, :character, :fifo, :socket, :link, or :other\n\n" ++
-                "* :int-permissions - A Unix permission integer like 8r744\n\n" ++
-                "* :permissions - A Unix permission string like \"rwxr--r--\"\n\n" ++
-                "* :uid - File uid\n\n" ++
-                "* :gid - File gid\n\n" ++
-                "* :nlink - number of links to file\n\n" ++
-                "* :rdev - Real device of file. 0 on Windows\n\n" ++
-                "* :size - size of file in bytes\n\n" ++
-                "* :blocks - number of blocks in file. 0 on Windows\n\n" ++
-                "* :blocksize - size of blocks in file. 0 on Windows\n\n" ++
-                "* :accessed - timestamp when file last accessed\n\n" ++
-                "* :changed - timestamp when file last changed (permissions changed)\n\n" ++
-                "* :modified - timestamp when file last modified (content changed)\n"),
+                "| Key              | Description                                                                                      |\n" ++
+                "| ---------------- | ------------------------------------------------------------------------------------------------ |\n" ++
+                "| :dev             | the device that the file is on                                                                   |\n" ++
+                "| :inode           | the inode number of the file                                                                     |\n" ++
+                "| :mode            | the type of file, one of :file, :directory, :block, :character, :fifo, :socket, :link, or :other |\n" ++
+                "| :int-permissions | A Unix permission integer like 8r744                                                             |\n" ++
+                "| :permissions     | A Unix permission string like \"rwxr--r--\"                                                        |\n" ++
+                "| :uid             | File uid                                                                                         |\n" ++
+                "| :gid             | File gid                                                                                         |\n" ++
+                "| :nlink           | number of links to file                                                                          |\n" ++
+                "| :rdev            | Real device of file. 0 on Windows                                                                |\n" ++
+                "| :size            | size of file in bytes                                                                            |\n" ++
+                "| :blocks          | number of blocks in file. 0 on Windows                                                           |\n" ++
+                "| :blocksize       | size of blocks in file. 0 on Windows                                                             |\n" ++
+                "| :accessed        | timestamp when file last accessed                                                                |\n" ++
+                "| :changed         | timestamp when file last changed (permissions changed)                                           |\n" ++
+                "| :modified        | timestamp when file last modified (content changed)                                              |\n"),
             corefn.reg("os/lstat", &stat.nfunLstat, @src(), "(os/lstat path)\n(os/lstat path tbl)\n(os/lstat path key)", "Like ^os/stat, but does not follow symlinks.\n"),
             corefn.reg("os/chmod", &nfunChmod, @src(), "(os/chmod path mode)", "Changes file permissions, where mode is a permission string as returned by " ++
                 "^os/perm-string, or an integer as returned by ^os/perm-int. " ++
@@ -244,28 +246,28 @@ pub fn evEntries() []const corefn.Entry {
             "mode should be a file mode as passed to ^os/chmod, and is used only if the create flag is given. " ++
             "The default mode is 8r666. " ++
             "Allowed flags are as follows:\n\n" ++
-            "  * :r - opens this file for reading\n" ++
-            "  * :w - opens this file for writing\n" ++
-            "  * :c - creates a new file (O\\_CREATE)\n" ++
-            "  * :e - fails if the file exists (O\\_EXCL)\n" ++
-            "  * :t - shortens an existing file to length 0 (O\\_TRUNC)\n" ++
-            "  * :a - appends to a file (O\\_APPEND on posix, FILE_APPEND_DATA on windows)\n" ++
+            "  - :r - opens this file for reading\n" ++
+            "  - :w - opens this file for writing\n" ++
+            "  - :c - creates a new file (O\\_CREATE)\n" ++
+            "  - :e - fails if the file exists (O\\_EXCL)\n" ++
+            "  - :t - shortens an existing file to length 0 (O\\_TRUNC)\n" ++
+            "  - :a - appends to a file (O\\_APPEND on posix, FILE_APPEND_DATA on windows)\n" ++
             "Posix-only flags:\n\n" ++
-            "  * :x - O\\_SYNC\n" ++
-            "  * :C - O\\_NOCTTY\n\n" ++
-            "  * :N - Turns off O\\_NONBLOCK and disables event loop reading/writing\n\n" ++
+            "  - :x - O\\_SYNC\n" ++
+            "  - :C - O\\_NOCTTY\n\n" ++
+            "  - :N - Turns off O\\_NONBLOCK and disables event loop reading/writing\n\n" ++
             "Windows-only flags:\n\n" ++
-            "  * :R - shares reads (FILE\\_SHARE\\_READ)\n" ++
-            "  * :W - shares writes (FILE\\_SHARE\\_WRITE)\n" ++
-            "  * :D - shares deletes (FILE\\_SHARE\\_DELETE)\n" ++
-            "  * :H - FILE\\_ATTRIBUTE\\_HIDDEN\n" ++
-            "  * :O - FILE\\_ATTRIBUTE\\_READONLY\n" ++
-            "  * :F - FILE\\_ATTRIBUTE\\_OFFLINE\n" ++
-            "  * :T - FILE\\_ATTRIBUTE\\_TEMPORARY\n" ++
-            "  * :d - FILE\\_FLAG\\_DELETE\\_ON\\_CLOSE\n" ++
-            "  * :V - Turns off FILE\\_FLAG\\_OVERLAPPED and disables event loop reading/writing\n" ++
-            "  * :I - sets bInheritHandle on the created file so it can be passed to other processes.\n" ++
-            "  * :b - FILE\\_FLAG\\_NO\\_BUFFERING\n"),
+            "  - :R - shares reads (FILE\\_SHARE\\_READ)\n" ++
+            "  - :W - shares writes (FILE\\_SHARE\\_WRITE)\n" ++
+            "  - :D - shares deletes (FILE\\_SHARE\\_DELETE)\n" ++
+            "  - :H - FILE\\_ATTRIBUTE\\_HIDDEN\n" ++
+            "  - :O - FILE\\_ATTRIBUTE\\_READONLY\n" ++
+            "  - :F - FILE\\_ATTRIBUTE\\_OFFLINE\n" ++
+            "  - :T - FILE\\_ATTRIBUTE\\_TEMPORARY\n" ++
+            "  - :d - FILE\\_FLAG\\_DELETE\\_ON\\_CLOSE\n" ++
+            "  - :V - Turns off FILE\\_FLAG\\_OVERLAPPED and disables event loop reading/writing\n" ++
+            "  - :I - sets bInheritHandle on the created file so it can be passed to other processes.\n" ++
+            "  - :b - FILE\\_FLAG\\_NO\\_BUFFERING\n"),
     };
     return &list;
 }

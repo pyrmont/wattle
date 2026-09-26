@@ -993,6 +993,27 @@
 (assert (= "\n    Sees \e[38;5;245mx\e[39m.\n"
            (string (doc-format "Sees `x`." 80 4 true ["x"])))
         "doc-format leaves a word in backticks as raw code")
+; A table is a header row, a delimiter row and the rows that follow. The
+; renderer draws a rule under the header and between rows, and wraps a cell
+; that does not fit
+(assert (= "\n     a  | bb\n    ====+===\n    ccc | d\n    ----+---\n    e   |\n\n    After.\n"
+           (string (doc-format "| a | bb |\n| - | :-: |\n| ccc | d |\n| e |\n\nAfter." 80 4 false)))
+        "doc-format draws a table with a centred header, rules and a padded short row")
+(assert (= "\n      a   |  b\n    ======+=====\n    one   | five\n    two   | six\n    three |\n    four  |\n"
+           (string (doc-format "| a | b |\n| - | - |\n| one two three four | five six |" 24 4 false)))
+        "doc-format wraps a table cell to its column")
+(assert (= "\n      a   | b\n    ======+==\n    x | y | z\n"
+           (string (doc-format "| a | b |\n| - | - |\n| x \\| y | z |" 80 4 false)))
+        "doc-format reads an escaped pipe as cell text")
+(assert (= "\n    | a | b | not a delimiter\n"
+           (string (doc-format "| a | b |\nnot a delimiter" 80 4 false)))
+        "doc-format reads a line of pipes without a delimiter row as prose")
+(assert (= "\n    a \e[90m|\e[39m b\n    \e[90m==+====\e[39m\n    c \e[90m|\e[39m d \e[38;5;245mx\e[39m\n    \e[90m--+----\e[39m\n    e \e[90m|\e[39m\n"
+           (string (doc-format "| a | b |\n| - | - |\n| c | d `x` |\n| e |" 80 4 true)))
+        "doc-format colors the rules and dividers of a table and not its cells")
+(assert (= "\n    a |  b\n    ==+======\n    c | defgh\n"
+           (string (doc-format "| a | b |\n| - | - |\n| c | defgh |" 80 4 false)))
+        "doc-format centres the last header cell over its rule and rounds left")
 (defn underlined "Adds x to y." [x y] (+ x y))
 (assert (let [out !""]
           (with-dyns [:out out :doc-color true] (doc* 'underlined))

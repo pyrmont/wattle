@@ -231,19 +231,25 @@ pub fn libParse(env: *tables.Table) void {
             "^parser/error."),
         corefn.reg("parser/status", &nfunParserStatus, @src(), "(parser/status parser)", "Gets the current status of the parser state machine. The status is " ++
             "one of:\n\n" ++
-            "* :pending - a value is being parsed.\n\n" ++
-            "* :error - a parsing error was encountered.\n\n" ++
-            "* :root - the parser can either read more values or safely terminate.\n\n" ++
-            "* :dead - the parser has been ended with ^parser/eof."),
+            "| Status   | Description                                                 |\n" ++
+            "| -------- | ----------------------------------------------------------- |\n" ++
+            "| :pending | a value is being parsed.                                    |\n" ++
+            "| :error   | a parsing error was encountered.                            |\n" ++
+            "| :root    | the parser can either read more values or safely terminate. |\n" ++
+            "| :dead    | the parser has been ended with ^parser/eof.                 |"),
         corefn.reg("parser/flush", &nfunParserFlush, @src(), "(parser/flush parser)", "Clears the parser state and parse queue. Can be used to reset the parser " ++
             "if an error was encountered. Does not reset the line and column counter, so " ++
             "to begin parsing in a new context, create a new parser."),
         corefn.reg("parser/state", &nfunParserState, @src(), "(parser/state parser)\n(parser/state parser key)", "Returns a representation of the internal state of the parser. If a key is passed, " ++
             "only that information about the state is returned. Allowed keys are:\n\n" ++
-            "* :delimiters - Each byte in the string represents a nested data structure. For example, " ++
+            "| Key         | Description                                          |\n" ++
+            "| ----------- | ---------------------------------------------------- |\n" ++
+            "| :delimiters | a string with a byte for each nested data structure  |\n" ++
+            "| :frames     | an array with a table for each frame of parser state |\n\n" ++
+            "In :delimiters, each byte represents a nested data structure. For example, " ++
             "if the parser state is '([\"', then the parser is in the middle of parsing a " ++
             "string inside of square brackets inside parentheses. Can be used to augment a REPL prompt.\n\n" ++
-            "* :frames - Each table in the array represents a 'frame' in the parser state. Frames " ++
+            "Each table in :frames represents a 'frame' in the parser state. Frames " ++
             "contain information about the start of the expression being parsed as well as the " ++
             "type of that expression and some type-specific information."),
         corefn.reg("parser/where", &nfunParserWhere, @src(), "(parser/where parser)\n(parser/where parser line)\n(parser/where parser line col)", "Returns the current line number and column of the parser's internal state. If line is " ++

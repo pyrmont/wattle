@@ -15,24 +15,24 @@ machine, compiler and core library from the [Janet][] programming language in
 
 ## Language features
 
-* 700+ functions and macros in the core library
-* Built-in socket networking, threading, subprocesses and file system functions
-* Parsing Expression Grammars (PEG) engine
-* Macros and compile-time computation
-* Per-thread event loop for efficient IO (epoll/IOCP/kqueue)
-* First-class green threads (continuations) as well as OS threads
-* Erlang-style supervision trees that integrate with the event loop
-* First-class closures
-* Mutable and immutable indexed sequences (array/vector)
-* Mutable and immutable key-value sequences (table/map)
-* Mutable and immutable byte sequences (buffer/string)
-* Persistent immutable data structures (vector, map, set)
-* Garbage collection
-* Python-style generators (implemented as a plain macro)
-* Tail recursion
-* Native modules written in Zig and loaded dynamically
-* Built-in C FFI for calling C ABI-compatible shared libraries
-* REPL development with debugger and inspectable runtime
+- 700+ functions and macros in the core library
+- Built-in socket networking, threading, subprocesses and file system functions
+- Parsing Expression Grammars (PEG) engine
+- Macros and compile-time computation
+- Per-thread event loop for efficient IO (epoll/IOCP/kqueue)
+- First-class green threads (continuations) as well as OS threads
+- Erlang-style supervision trees that integrate with the event loop
+- First-class closures
+- Mutable and immutable indexed sequences (array/vector)
+- Mutable and immutable key-value sequences (table/map)
+- Mutable and immutable byte sequences (buffer/string)
+- Persistent immutable data structures (vector, map, set)
+- Garbage collection
+- Python-style generators (implemented as a plain macro)
+- Tail recursion
+- Native modules written in Zig and loaded dynamically
+- Built-in C FFI for calling C ABI-compatible shared libraries
+- REPL development with debugger and inspectable runtime
 
 ## Syntax
 

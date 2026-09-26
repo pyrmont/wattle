@@ -97,15 +97,18 @@ pub fn entries() []const corefn.Entry {
             "time is an integer number of seconds since the Unix epoch. " ++
             "The date is in UTC unless local is truthy, in which case it is for " ++
             "the local timezone. Returns a map with the following key values. Note that all numbers except :year are 0-indexed.\n\n" ++
-            "* :seconds - number of seconds [0-61]\n\n" ++
-            "* :minutes - number of minutes [0-59]\n\n" ++
-            "* :hours - number of hours [0-23]\n\n" ++
-            "* :month-day - day of month [0-30]\n\n" ++
-            "* :month - month of year [0, 11]\n\n" ++
-            "* :year - years since year 0 (e.g. 2019)\n\n" ++
-            "* :week-day - day of the week [0-6]\n\n" ++
-            "* :year-day - day of the year [0-365]\n\n" ++
-            "* :dst - true if daylight saving time is in effect, otherwise false\n\n" ++
+            "| Key        | Description                                                |\n" ++
+            "| ---------- | ---------------------------------------------------------- |\n" ++
+            "| :seconds   | number of seconds [0-61]                                   |\n" ++
+            "| :minutes   | number of minutes [0-59]                                   |\n" ++
+            "| :hours     | number of hours [0-23]                                     |\n" ++
+            "| :month-day | day of month [0-30]                                        |\n" ++
+            "| :month     | month of year [0, 11]                                      |\n" ++
+            "| :year      | years since year 0 (e.g. 2019)                             |\n" ++
+            "| :week-day  | day of the week [0-6]                                      |\n" ++
+            "| :year-day  | day of the year [0-365]                                    |\n" ++
+            "| :dst       | true if daylight saving time is in effect, otherwise false |\n" ++
+            "\n" ++
             "The local timezone is set with the TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
         corefn.reg("os/strftime", &nfunStrftime, @src(), "(os/strftime fmt)\n(os/strftime fmt time)\n(os/strftime fmt time local)", "Formats the given time as a string, or the current time if time is not given. " ++

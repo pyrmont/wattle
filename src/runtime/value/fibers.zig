@@ -342,33 +342,39 @@ pub fn lib(env: *tables.Table) raise.Error!void {
             \\
             \\blocks error signals and user signals 1, 2 and 3. The signals are as follows:
             \\
-            \\* :a - blocks all signals
-            \\* :d - blocks debug signals
-            \\* :e - blocks error signals
-            \\* :t - blocks termination signals: error + user[0-4]
-            \\* :u - blocks user signals
-            \\* :y - blocks yield signals
-            \\* :w - blocks await signals (user9)
-            \\* :r - blocks interrupt signals (user8)
-            \\* :0-9 - blocks a specific user signal
+            \\| Key  | Description                                   |
+            \\| ---- | --------------------------------------------- |
+            \\| :a   | blocks all signals                            |
+            \\| :d   | blocks debug signals                          |
+            \\| :e   | blocks error signals                          |
+            \\| :t   | blocks termination signals: error + user[0-4] |
+            \\| :u   | blocks user signals                           |
+            \\| :y   | blocks yield signals                          |
+            \\| :w   | blocks await signals (user9)                  |
+            \\| :r   | blocks interrupt signals (user8)              |
+            \\| :0-9 | blocks a specific user signal                 |
             \\
             \\The sigmask argument also can take environment flags. If any mutually exclusive flags are present, the last flag takes precedence.
             \\
-            \\* :i - inherits the environment from the current fiber
-            \\* :p - the environment table's prototype is the current environment table
+            \\| Flag | Description                                                        |
+            \\| ---- | ------------------------------------------------------------------ |
+            \\| :i   | inherits the environment from the current fiber                    |
+            \\| :p   | the environment table's prototype is the current environment table |
         ),
         corefn.reg("fiber/status", &nfunFiberStatus, @src(), "(fiber/status fib)",
             \\Gets the status of fib. The status is one of:
             \\
-            \\* :dead - the fiber has finished
-            \\* :error - the fiber has errored out
-            \\* :debug - the fiber is suspended in debug mode
-            \\* :pending - the fiber has been yielded
-            \\* :user(0-7) - the fiber is suspended by a user signal
-            \\* :interrupted - the fiber was interrupted
-            \\* :suspended - the fiber is waiting to be resumed by the scheduler
-            \\* :new - the fiber has just been created and not yet run
-            \\* :alive - the fiber is currently running and cannot be resumed
+            \\| Status       | Description                                          |
+            \\| ------------ | ---------------------------------------------------- |
+            \\| :dead        | the fiber has finished                               |
+            \\| :error       | the fiber has errored out                            |
+            \\| :debug       | the fiber is suspended in debug mode                 |
+            \\| :pending     | the fiber has been yielded                           |
+            \\| :user(0-7)   | the fiber is suspended by a user signal              |
+            \\| :interrupted | the fiber was interrupted                            |
+            \\| :suspended   | the fiber is waiting to be resumed by the scheduler  |
+            \\| :new         | the fiber has just been created and not yet run      |
+            \\| :alive       | the fiber is currently running and cannot be resumed |
         ),
         corefn.reg("fiber/root", &nfunFiberRoot, @src(), "(fiber/root)", "Returns the current root fiber. The root fiber is the oldest " ++
             "ancestor that does not have a parent. Note that a root fiber " ++

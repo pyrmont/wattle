@@ -325,13 +325,19 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "Returns the new file, or nil if the file cannot be opened. " ++
             "Raises an error if path is a directory. " ++
             "Mode flags:\n\n" ++
-            "* r - allow reading from the file\n\n" ++
-            "* w - allow writing to the file\n\n" ++
-            "* a - append to the file\n\n" ++
+            "| Flag | Description                 |\n" ++
+            "| ---- | --------------------------- |\n" ++
+            "| r    | allow reading from the file |\n" ++
+            "| w    | allow writing to the file   |\n" ++
+            "| a    | append to the file          |\n" ++
+            "\n" ++
             "Following one of the initial flags, 0 or more of the following flags can be appended:\n\n" ++
-            "* b - accepted and has no effect: a file is always opened in binary mode\n\n" ++
-            "* + - open for update: allow both reading and writing, without appending\n\n" ++
-            "* n - error if the file cannot be opened instead of returning nil\n\n" ++
+            "| Flag | Description                                                        |\n" ++
+            "| ---- | ------------------------------------------------------------------ |\n" ++
+            "| b    | accepted and has no effect: a file is always opened in binary mode |\n" ++
+            "| +    | open for update: allow both reading and writing, without appending |\n" ++
+            "| n    | error if the file cannot be opened instead of returning nil        |\n" ++
+            "\n" ++
             "See fopen (<stdio.h>, C99) for further details."),
         corefn.reg("file/close", &nfunFclose, @src(), "(file/close file)", "Closes file and releases all related resources. Closing a file " ++
             "after reading prevents a resource leak and lets " ++
@@ -339,12 +345,14 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "Raises an error for stdin, stdout and stderr."),
         corefn.reg("file/read", &nfunFread, @src(), "(file/read file what)\n(file/read file what buf)", "Reads bytes from file into a buffer. If buf, a buffer, is given, the bytes " ++
             "are appended to it, otherwise a new buffer is created. what is an integer or a keyword. " ++
-            "Returns the buffer, or nil if no bytes were read (never nil for `:all`). " ++
+            "Returns the buffer, or nil if no bytes were read (never nil for :all). " ++
             "Raises an error if file is closed or not open for reading. " ++
             "Values for what:\n\n" ++
-            "* :all - read the whole file\n\n" ++
-            "* :line - read up to and including the next newline character\n\n" ++
-            "* n (integer) - read up to n bytes from the file"),
+            "| Value       | Description                                         |\n" ++
+            "| ----------- | --------------------------------------------------- |\n" ++
+            "| :all        | read the whole file                                 |\n" ++
+            "| :line       | read up to and including the next newline character |\n" ++
+            "| n (integer) | read up to n bytes from the file                    |"),
         corefn.reg("file/write", &nfunFwrite, @src(), "(file/write file & vals)", "Writes to file. Each value of vals must be a " ++
             "string, buffer, symbol, or keyword. Raises an error if file is closed or not open for writing. " ++
             "Returns file."),
@@ -352,9 +360,12 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "buffered for efficiency reasons. Raises an error if file is not open for writing. Returns file."),
         corefn.reg("file/seek", &nfunFseek, @src(), "(file/seek file whence)\n(file/seek file whence n)", "Moves the position in file to a location relative to whence, " ++
             "which must be one of:\n\n" ++
-            "* :cur - relative to the current file location\n\n" ++
-            "* :set - relative to the beginning of the file\n\n" ++
-            "* :end - relative to the end of the file\n\n" ++
+            "| Value | Description                           |\n" ++
+            "| ----- | ------------------------------------- |\n" ++
+            "| :cur  | relative to the current file location |\n" ++
+            "| :set  | relative to the beginning of the file |\n" ++
+            "| :end  | relative to the end of the file       |\n" ++
+            "\n" ++
             "n is the number of bytes to move, 0 if omitted. It must be an integer and may exceed " ++
             "4GB. Returns file."),
         corefn.reg("file/tell", &nfunFtell, @src(), "(file/tell file)", "Gets the current position in file, in bytes, as a number. Raises an error if file is closed."),

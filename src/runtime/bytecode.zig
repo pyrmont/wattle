@@ -658,20 +658,22 @@ pub fn libAsm(env: *tables.Table) raise.Error!void {
             "f must be a function, not an nfunction. Raises an error on a badly " ++
             "typed argument. If given a field name, returns only that part of the function assembly, and an unknown field raises an error. " ++
             "Possible fields are:\n\n" ++
-            "* :arity - number of required and optional arguments.\n" ++
-            "* :min-arity - minimum number of arguments function can be called with.\n" ++
-            "* :max-arity - maximum number of arguments function can be called with.\n" ++
-            "* :vararg - true if function can take a variable number of arguments.\n" ++
-            "* :maparg - true if a map pattern after & receives the variable arguments.\n" ++
-            "* :bytecode - array of parsed bytecode instructions. Each instruction is a vector.\n" ++
-            "* :source - name of source file that this function was compiled from.\n" ++
-            "* :name - name of function.\n" ++
-            "* :slotcount - how many virtual registers, or slots, this function uses. Corresponds to stack space used by function.\n" ++
-            "* :symbolmap - all symbols and their slots.\n" ++
-            "* :constants - an array of constants referenced by this function.\n" ++
-            "* :sourcemap - a mapping of each bytecode instruction to a line and column in the source file.\n" ++
-            "* :environments - an internal mapping of which enclosing functions are referenced for bindings.\n" ++
-            "* :defs - other function definitions that this function may instantiate.\n"),
+            "| Key           | Description                                                                                            |\n" ++
+            "| ------------- | ------------------------------------------------------------------------------------------------------ |\n" ++
+            "| :arity        | number of required and optional arguments.                                                             |\n" ++
+            "| :min-arity    | minimum number of arguments function can be called with.                                               |\n" ++
+            "| :max-arity    | maximum number of arguments function can be called with.                                               |\n" ++
+            "| :vararg       | true if function can take a variable number of arguments.                                              |\n" ++
+            "| :maparg       | true if a map pattern after & receives the variable arguments.                                         |\n" ++
+            "| :bytecode     | array of parsed bytecode instructions. Each instruction is a vector.                                   |\n" ++
+            "| :source       | name of source file that this function was compiled from.                                              |\n" ++
+            "| :name         | name of function.                                                                                      |\n" ++
+            "| :slotcount    | how many virtual registers, or slots, this function uses. Corresponds to stack space used by function. |\n" ++
+            "| :symbolmap    | all symbols and their slots.                                                                           |\n" ++
+            "| :constants    | an array of constants referenced by this function.                                                     |\n" ++
+            "| :sourcemap    | a mapping of each bytecode instruction to a line and column in the source file.                        |\n" ++
+            "| :environments | an internal mapping of which enclosing functions are referenced for bindings.                          |\n" ++
+            "| :defs         | other function definitions that this function may instantiate.                                         |\n"),
     };
     corefn.install(env, entries);
 }

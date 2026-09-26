@@ -10,9 +10,9 @@
 # So this compares the unmarshalled environments instead, and reports the two
 # populations separately:
 #
-#   * bindings whose value, docstring, or any other attribute differs -- a real
+#   - bindings whose value, docstring, or any other attribute differs -- a real
 #     divergence, and the thing the image is the oracle for;
-#   * bindings whose only difference is the line a cfunction sits on.
+#   - bindings whose only difference is the line a cfunction sits on.
 #
 #     image-oracle.janet OLD.bin NEW.bin
 

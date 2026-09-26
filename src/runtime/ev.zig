@@ -1922,10 +1922,10 @@ fn selfEntries() []const corefn.Entry {
                 "Unlike ^ev/go, this function will suspend the current fiber until the thread is complete. " ++
                 "If you want to run the thread without waiting for a result, pass the `:i` flag to return nil immediately. " ++
                 "Returns nil in every case, so a result of main reaches the caller only through a supervisor. Available flags:\n\n" ++
-                "* `:i` - return immediately\n" ++
-                "* `:t` - set the task-id of the new thread to val. The task-id is passed in messages to the supervisor channel.\n" ++
-                "* `:a` - don't copy abstract registry to new thread (performance optimization)\n" ++
-                "* `:n` - don't copy nfunction registry to new thread (performance optimization)"),
+                "- `:i` - return immediately\n" ++
+                "- `:t` - set the task-id of the new thread to val. The task-id is passed in messages to the supervisor channel.\n" ++
+                "- `:a` - don't copy abstract registry to new thread (performance optimization)\n" ++
+                "- `:n` - don't copy nfunction registry to new thread (performance optimization)"),
             corefn.reg("ev/give-supervisor", &nfunGiveSupervisor, @src(), "(ev/give-supervisor tag & payload)", "Sends a message to the current supervisor channel if there is one. The message will be a " ++
                 "vector of all of the arguments combined into a single message, where the first element is tag. " ++
                 "By convention, tag should be a keyword indicating the type of message. Returns nil, also if there is no supervisor."),

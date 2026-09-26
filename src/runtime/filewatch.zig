@@ -1045,69 +1045,84 @@ pub fn libFilewatch(env: *tables.Table) void {
         corefn.reg("filewatch/new", &nfunMake, @src(), "(filewatch/new channel & flags)", "Creates a new filewatcher that will give events to channel. The flags apply to every path later added to the watcher, in addition to the flags given to ^filewatch/add. See ^filewatch/add for available flags.\n\n" ++
             "When an event is triggered by the filewatcher, a map containing information will be given to channel as with ^ev/give. " ++
             "The contents of the channel depend on the OS, but will contain some common keys:\n\n" ++
-            "* `:type` -- the type of the event that was raised.\n\n" ++
-            "* `:file-name` -- the base file name of the file that triggered the event.\n\n" ++
-            "* `:dir-name` -- the directory name of the file that triggered the event.\n\n" ++
+            "| Key        | Description                                              |\n" ++
+            "| ---------- | -------------------------------------------------------- |\n" ++
+            "| :type      | the type of the event that was raised.                   |\n" ++
+            "| :file-name | the base file name of the file that triggered the event. |\n" ++
+            "| :dir-name  | the directory name of the file that triggered the event. |\n" ++
+            "\n" ++
             "Events also will contain keys specific to the host OS.\n\n" ++
             "Windows has no extra properties on events.\n\n" ++
             "Linux and the BSDs have the following extra properties on events:\n\n" ++
-            "* `:wd` -- the integer key returned by ^filewatch/add for the path that triggered this. This is a file descriptor integer on BSD and macos.\n\n" ++
-            "* `:wd-path` -- the string path for watched directory of file. For files, will be the same as `:file-name`, and for directories, will be the same as `:dir-name`.\n\n" ++
-            "* `:cookie` -- a semi-randomized integer used to associate related events, such as :moved-from and :moved-to events.\n\n" ++
+            "| Key      | Description                                                                                                                                   |\n" ++
+            "| -------- | --------------------------------------------------------------------------------------------------------------------------------------------- |\n" ++
+            "| :wd      | the integer key returned by ^filewatch/add for the path that triggered this. This is a file descriptor integer on BSD and macos.              |\n" ++
+            "| :wd-path | the string path for watched directory of file. For files, will be the same as :file-name, and for directories, will be the same as :dir-name. |\n" ++
+            "| :cookie  | a semi-randomized integer used to associate related events, such as :moved-from and :moved-to events.                                         |\n" ++
+            "\n" ++
             ""),
         corefn.reg("filewatch/add", &nfunAdd, @src(), "(filewatch/add watcher path & flags)", "Adds a path to the watcher and returns the watcher. Raises an error if the watcher is closed. Available flags depend on the current OS, and are as follows:\n\n" ++
-            "Windows/MINGW (flags correspond to `FILE_NOTIFY_CHANGE_*` flags in win32 documentation):\n\n" ++
+            "Windows/MINGW (flags correspond to FILE_NOTIFY_CHANGE_\\* flags in win32 documentation):\n\n" ++
             "FLAGS\n\n" ++
-            "* `:all` - trigger an event for all of the below triggers.\n\n" ++
-            "* `:attributes` - `FILE_NOTIFY_CHANGE_ATTRIBUTES`\n\n" ++
-            "* `:creation` - `FILE_NOTIFY_CHANGE_CREATION`\n\n" ++
-            "* `:dir-name` - `FILE_NOTIFY_CHANGE_DIR_NAME`\n\n" ++
-            "* `:last-access` - `FILE_NOTIFY_CHANGE_LAST_ACCESS`\n\n" ++
-            "* `:last-write` - `FILE_NOTIFY_CHANGE_LAST_WRITE`\n\n" ++
-            "* `:security` - `FILE_NOTIFY_CHANGE_SECURITY`\n\n" ++
-            "* `:size` - `FILE_NOTIFY_CHANGE_SIZE`\n\n" ++
-            "* `:recursive` - watch subdirectories recursively\n\n" ++
-            "Linux (flags correspond to `IN_*` flags from <sys/inotify.h>):\n\n" ++
-            "* `:access` - `IN_ACCESS`\n\n" ++
-            "* `:all` - `IN_ALL_EVENTS`\n\n" ++
-            "* `:attrib` - `IN_ATTRIB`\n\n" ++
-            "* `:close-nowrite` - `IN_CLOSE_NOWRITE`\n\n" ++
-            "* `:close-write` - `IN_CLOSE_WRITE`\n\n" ++
-            "* `:create` - `IN_CREATE`\n\n" ++
-            "* `:delete` - `IN_DELETE`\n\n" ++
-            "* `:delete-self` - `IN_DELETE_SELF`\n\n" ++
-            "* `:ignored` - `IN_IGNORED`\n\n" ++
-            "* `:modify` - `IN_MODIFY`\n\n" ++
-            "* `:move-self` - `IN_MOVE_SELF`\n\n" ++
-            "* `:moved-from` - `IN_MOVED_FROM`\n\n" ++
-            "* `:moved-to` - `IN_MOVED_TO`\n\n" ++
-            "* `:open` - `IN_OPEN`\n\n" ++
-            "* `:q-overflow` - `IN_Q_OVERFLOW`\n\n" ++
-            "* `:unmount` - `IN_UNMOUNT`\n\n\n" ++
-            "BSDs and macos (flags correspond to `NOTE_*` flags from <sys/event.h>). Not all flags are available on all systems:\n\n" ++
-            "* `:all` - `All available NOTE_* flags on the current platform`\n\n" ++
-            "* `:attrib` - `NOTE_ATTRIB`\n\n" ++
-            "* `:close-write` - `NOTE_CLOSE_WRITE`\n\n" ++
-            "* `:close` - `NOTE_CLOSE`\n\n" ++
-            "* `:delete` - `NOTE_DELETE`\n\n" ++
-            "* `:extend` - `NOTE_EXTEND`\n\n" ++
-            "* `:funlock` - `NOTE_FUNLOCK`\n\n" ++
-            "* `:link` - `NOTE_LINK`\n\n" ++
-            "* `:open` - `NOTE_OPEN`\n\n" ++
-            "* `:read` - `NOTE_READ`\n\n" ++
-            "* `:rename` - `NOTE_RENAME`\n\n" ++
-            "* `:revoke` - `NOTE_REVOKE`\n\n" ++
-            "* `:truncate` - `NOTE_TRUNCATE`\n\n" ++
-            "* `:write` - `NOTE_WRITE`\n\n\n" ++
+            "| Flag         | Description                                     |\n" ++
+            "| ------------ | ----------------------------------------------- |\n" ++
+            "| :all         | trigger an event for all of the below triggers. |\n" ++
+            "| :attributes  | FILE_NOTIFY_CHANGE_ATTRIBUTES                   |\n" ++
+            "| :creation    | FILE_NOTIFY_CHANGE_CREATION                     |\n" ++
+            "| :dir-name    | FILE_NOTIFY_CHANGE_DIR_NAME                     |\n" ++
+            "| :last-access | FILE_NOTIFY_CHANGE_LAST_ACCESS                  |\n" ++
+            "| :last-write  | FILE_NOTIFY_CHANGE_LAST_WRITE                   |\n" ++
+            "| :security    | FILE_NOTIFY_CHANGE_SECURITY                     |\n" ++
+            "| :size        | FILE_NOTIFY_CHANGE_SIZE                         |\n" ++
+            "| :recursive   | watch subdirectories recursively                |\n" ++
+            "\n" ++
+            "Linux (flags correspond to IN_\\* flags from <sys/inotify.h>):\n\n" ++
+            "| Flag           | Description      |\n" ++
+            "| -------------- | ---------------- |\n" ++
+            "| :access        | IN_ACCESS        |\n" ++
+            "| :all           | IN_ALL_EVENTS    |\n" ++
+            "| :attrib        | IN_ATTRIB        |\n" ++
+            "| :close-nowrite | IN_CLOSE_NOWRITE |\n" ++
+            "| :close-write   | IN_CLOSE_WRITE   |\n" ++
+            "| :create        | IN_CREATE        |\n" ++
+            "| :delete        | IN_DELETE        |\n" ++
+            "| :delete-self   | IN_DELETE_SELF   |\n" ++
+            "| :ignored       | IN_IGNORED       |\n" ++
+            "| :modify        | IN_MODIFY        |\n" ++
+            "| :move-self     | IN_MOVE_SELF     |\n" ++
+            "| :moved-from    | IN_MOVED_FROM    |\n" ++
+            "| :moved-to      | IN_MOVED_TO      |\n" ++
+            "| :open          | IN_OPEN          |\n" ++
+            "| :q-overflow    | IN_Q_OVERFLOW    |\n" ++
+            "| :unmount       | IN_UNMOUNT       |\n" ++
+            "\n\n" ++
+            "BSDs and macos (flags correspond to NOTE_\\* flags from <sys/event.h>). Not all flags are available on all systems:\n\n" ++
+            "| Flag         | Description                                         |\n" ++
+            "| ------------ | --------------------------------------------------- |\n" ++
+            "| :all         | All available NOTE_\\* flags on the current platform |\n" ++
+            "| :attrib      | NOTE_ATTRIB                                         |\n" ++
+            "| :close-write | NOTE_CLOSE_WRITE                                    |\n" ++
+            "| :close       | NOTE_CLOSE                                          |\n" ++
+            "| :delete      | NOTE_DELETE                                         |\n" ++
+            "| :extend      | NOTE_EXTEND                                         |\n" ++
+            "| :funlock     | NOTE_FUNLOCK                                        |\n" ++
+            "| :link        | NOTE_LINK                                           |\n" ++
+            "| :open        | NOTE_OPEN                                           |\n" ++
+            "| :read        | NOTE_READ                                           |\n" ++
+            "| :rename      | NOTE_RENAME                                         |\n" ++
+            "| :revoke      | NOTE_REVOKE                                         |\n" ++
+            "| :truncate    | NOTE_TRUNCATE                                       |\n" ++
+            "| :write       | NOTE_WRITE                                          |\n" ++
+            "\n\n" ++
             "EVENT TYPES\n\n" ++
             "On Windows, events will have the following possible types:\n\n" ++
-            "* `:unknown`\n\n" ++
-            "* `:added`\n\n" ++
-            "* `:removed`\n\n" ++
-            "* `:modified`\n\n" ++
-            "* `:renamed-old`\n\n" ++
-            "* `:renamed-new`\n\n" ++
-            "On Linux and BSDs, events will have a `:type` corresponding to the possible flags, excluding `:all`.\n" ++
+            "- :unknown\n\n" ++
+            "- :added\n\n" ++
+            "- :removed\n\n" ++
+            "- :modified\n\n" ++
+            "- :renamed-old\n\n" ++
+            "- :renamed-new\n\n" ++
+            "On Linux and BSDs, events will have a :type corresponding to the possible flags, excluding :all.\n" ++
             ""),
         corefn.reg("filewatch/remove", &nfunRemove, @src(), "(filewatch/remove watcher path)", "Removes a path from the watcher and returns the watcher. Raises an error if the path is not being watched or the watcher is closed."),
         corefn.reg("filewatch/listen", &nfunListen, @src(), "(filewatch/listen watcher)", "Starts delivering the watcher's events to its channel and returns nil. Raises an error if the watcher has been closed by ^filewatch/unlisten."),

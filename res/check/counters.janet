@@ -19,17 +19,17 @@
 # **Zig will not catch a signedness mistake here, in three separate ways, and
 # all three were hit while writing this.**
 #
-#   * *Mixed-signedness comparison compiles.* `while (i32 < usize)` is not an
+#   - *Mixed-signedness comparison compiles.* `while (i32 < usize)` is not an
 #     error, so converting a container's count field leaves every loop over it
 #     silently mixed and there is no error list to work down. Every other
 #     increment in Part 2 was driven by the compiler naming its own sites; this
 #     population cannot be.
 #
-#   * *`for (0..x)` accepts an `i32` bound.* Converting a loop over
+#   - *`for (0..x)` accepts an `i32` bound.* Converting a loop over
 #     `fiber.capacity` -- one of the two populations Part 2 measured and
 #     deliberately kept signed -- compiled clean, and only a reading caught it.
 #
-#   * *`@intCast` on a same-width value is a legal no-op.* A cast left behind
+#   - *`@intCast` on a same-width value is a legal no-op.* A cast left behind
 #     after its reason is gone never complains.
 #
 # So the classification cannot live in a script that is "right by

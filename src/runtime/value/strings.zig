@@ -339,34 +339,42 @@ pub fn lib(env: *tables.Table) void {
             "not appear in chars."),
         corefn.reg("string/join", &nfunStringJoin, @src(), "(string/join ind)\n(string/join ind sep)", "Joins the byte sequences (strings, keywords, symbols or buffers) in ind, an indexed type, " ++
             "into one string, optionally separated by the byte sequence sep."),
-        corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format fmt & vals)", "Similar to C's `snprintf`, but specialized for operating with Wattle values. Returns " ++
-            "a new string.\n\n" ++
-            "The following conversion specifiers are supported, where the upper case specifiers generate " ++
-            "upper case output:\n" ++
-            "- `c`: ASCII character.\n" ++
-            "- `d`, `i`: integer, formatted as a decimal number.\n" ++
-            "- `x`, `X`: integer, formatted as a hexadecimal number.\n" ++
-            "- `o`: integer, formatted as an octal number.\n" ++
-            "- `f`, `F`: floating point number, formatted as a decimal number.\n" ++
-            "- `e`, `E`: floating point number, formatted in scientific notation.\n" ++
-            "- `g`, `G`: floating point number, formatted in its shortest form.\n" ++
-            "- `a`, `A`: floating point number, formatted as a hexadecimal number.\n" ++
-            "- `s`: formatted as a string, precision indicates padding and maximum length.\n" ++
-            "- `t`: emits the type of the given value.\n" ++
-            "- `v`: format with (describe x)\n" ++
-            "- `V`: format with (string x)\n" ++
-            "- `w`: format to Wattle source, which reads back through parse.\n" ++
-            "- `y`: format to edn, for a reader that is not Wattle's.\n" ++
+        corefn.reg("string/format", &nfunStringFormat, @src(), "(string/format fmt & vals)", "Formats vals into a formatted string using fmt.\n\n" ++
+            "The formatting syntax borrows from C's `snprintf`, but is specialized for operating with Wattle values. " ++
+            "Each % in fmt begins a conversion specifier that is replaced by the next of vals. " ++
+            "For example,\n\n" ++
+            "    (string/format \"%s is %d years old\" \"Ann\" 30)\n\n" ++
+            "returns \"Ann is 30 years old\".\n\n" ++
+            "The following conversion codes are supported, where the upper case codes generate " ++
+            "upper case output:\n\n" ++
+            "| Code | Description                                                            |\n" ++
+            "| ---- | ---------------------------------------------------------------------- |\n" ++
+            "| c    | ASCII character.                                                       |\n" ++
+            "| d, i | integer, formatted as a decimal number.                                |\n" ++
+            "| x, X | integer, formatted as a hexadecimal number.                            |\n" ++
+            "| o    | integer, formatted as an octal number.                                 |\n" ++
+            "| f, F | floating point number, formatted as a decimal number.                  |\n" ++
+            "| e, E | floating point number, formatted in scientific notation.               |\n" ++
+            "| g, G | floating point number, formatted in its shortest form.                 |\n" ++
+            "| a, A | floating point number, formatted as a hexadecimal number.              |\n" ++
+            "| s    | formatted as a string, precision indicates padding and maximum length. |\n" ++
+            "| t    | emits the type of the given value.                                     |\n" ++
+            "| v    | format with `(describe x)`.                                            |\n" ++
+            "| V    | format with `(string x)`.                                              |\n" ++
+            "| w    | format to Wattle source, which reads back through parse.               |\n" ++
+            "| y    | format to edn, for a reader that is not Wattle's.                      |\n" ++
             "\n" ++
-            "The following conversion specifiers are used for \"pretty-printing\", where the upper-case " ++
-            "variants generate colored output. These specifiers can take a precision " ++
+            "The following conversion codes are used for \"pretty-printing\", where the upper-case " ++
+            "variants generate colored output. These codes can take a precision " ++
             "argument to specify the maximum nesting depth to print. " ++
-            "The multiline specifiers can also take a width argument, " ++
-            "which defaults to 80 columns.\n" ++
-            "- `p`, `P`: pretty format, truncating if necessary\n" ++
-            "- `m`, `M`: pretty format without truncating.\n" ++
-            "- `q`, `Q`: pretty format on one line, truncating if necessary.\n" ++
-            "- `n`, `N`: pretty format on one line without truncation.\n"),
+            "The multiline codes can also take a width argument, " ++
+            "which defaults to 80 columns.\n\n" ++
+            "| Code | Description                                         |\n" ++
+            "| ---- | --------------------------------------------------- |\n" ++
+            "| p, P | pretty format, truncating if necessary.             |\n" ++
+            "| m, M | pretty format without truncating.                   |\n" ++
+            "| q, Q | pretty format on one line, truncating if necessary. |\n" ++
+            "| n, N | pretty format on one line without truncation.       |\n"),
         corefn.reg("string/trim", &nfunStringTrim, @src(), "(string/trim bytes)\n(string/trim bytes chars)", "Trims leading and trailing " ++ trim_doc_tail),
         corefn.reg("string/triml", &nfunStringTriml, @src(), "(string/triml bytes)\n(string/triml bytes chars)", "Trims leading " ++ trim_doc_tail),
         corefn.reg("string/trimr", &nfunStringTrimr, @src(), "(string/trimr bytes)\n(string/trimr bytes chars)", "Trims trailing " ++ trim_doc_tail),

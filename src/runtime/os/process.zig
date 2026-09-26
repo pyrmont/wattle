@@ -383,12 +383,12 @@ pub fn entries() []const corefn.Entry {
                 "of strings. The first string is the name of the program and the remainder are " ++
                 "arguments passed to the program. flags is a keyword made from the following " ++
                 "characters that modifies how the program executes:\n" ++
-                "* :e - enables passing an environment to the program. Without 'e', the " ++
+                "- :e - enables passing an environment to the program. Without 'e', the " ++
                 "current environment is inherited.\n" ++
-                "* :p - allows searching the current PATH for the program to execute. " ++
+                "- :p - allows searching the current PATH for the program to execute. " ++
                 "Without this flag, the first element of ind must be an absolute path.\n" ++
-                "* :x - raises error if exit code is non-zero.\n" ++
-                "* :d - prevents the garbage collector terminating the program (if still running) " ++
+                "- :x - raises error if exit code is non-zero.\n" ++
+                "- :d - prevents the garbage collector terminating the program (if still running) " ++
                 "and calling the equivalent of ^os/proc-wait (allows zombie processes).\n" ++
                 "env is a table or map mapping environment variable names to values. It can also " ++
                 "contain the key :cd, a string naming the working directory of the subprocess, and the keys :in, :out, and :err, which allow redirecting stdio in the " ++
@@ -550,8 +550,8 @@ pub fn evEntries() []const corefn.Entry {
             "vector where the first element is a readable stream and the second element is the writable " ++
             "stream. flags is a keyword set of flags to disable non-blocking settings on the ends of the pipe. " ++
             "This may be desired if passing the pipe to a subprocess with ^os/spawn.\n\n" ++
-            "* :W - sets the writable end of the pipe to a blocking stream.\n" ++
-            "* :R - sets the readable end of the pipe to a blocking stream.\n\n" ++
+            "- :W - sets the writable end of the pipe to a blocking stream.\n" ++
+            "- :R - sets the readable end of the pipe to a blocking stream.\n\n" ++
             "By default, both ends of the pipe are non-blocking for use with the event loop."),
     };
     return &list;

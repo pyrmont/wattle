@@ -3675,8 +3675,10 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   Reformats a docstring to wrap a certain width. Docstrings can either be plaintext
   or a subset of markdown. This allows a long single line of prose or formatted text to be
   a well-formed docstring. Backticks enclose raw code, and a word written `^name` refers to a
-  binding. With color on, each word in str equal to an element of args, a sequence of
-  argument names, is underlined. Returns a buffer containing the formatted text.
+  binding. A table is a header row, a delimiter row and body rows, each beginning with `|`; it is
+  drawn with a centred header row and rules under the header and between rows. With color on,
+  each word in str equal to an element of args, a sequence of argument names, is underlined.
+  Returns a buffer containing the formatted text.
   """
   ([str] (doc-format str nil 4 nil nil))
   ([str width] (doc-format str width 4 nil nil))
@@ -3702,6 +3704,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
        :bold ["**" "**"]
        :ref ["" ""]
        :arg ["" ""]}))
+  ; The rules and dividers of a table
+  (def chrome (if has-color ["\e[90m" "\e[39m"] ["" ""]))
+  (defn paint [text] (string (get chrome 0) text (get chrome 1)))
   (def argset
     (when args
       (def set !{})
@@ -3782,6 +3787,56 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (set stack old-stack)
     (push temp-stack)
     current-indent)
+
+  ; Table helpers. A table is a row of `|`-separated cells, a delimiter row
+  ; of `-` runs and any rows that follow, each beginning with `|`.
+  (defn line-end [from]
+    (var i from)
+    (while (let [b (get str i)] (and b (not= b (chr "\n")))) (++ i))
+    i)
+  ; Splits a row into cell texts. A `\|` is kept in the text for the
+  ; tokenizer to unescape.
+  (defn split-cells [line]
+    (def cells ![])
+    (def cell !"")
+    (var i 0)
+    (var n (length line))
+    (while (= (get line i) (chr " ")) (++ i))
+    (if (= (get line i) (chr "|")) (++ i))
+    (while (and (> n i) (= (get line (- n 1)) (chr " "))) (-- n))
+    (when (and (> n i)
+               (= (get line (- n 1)) (chr "|"))
+               (not= (get line (- n 2)) (chr """\""")))
+      (-- n))
+    (while (< i n)
+      (def b (get line i))
+      (cond
+        (and (= b (chr """\""")) (= (get line (+ i 1)) (chr "|")))
+        (do (buffer/push cell b (get line (+ i 1))) (+= i 2))
+        (= b (chr "|"))
+        (do (array/push cells (string/trim (string cell))) (buffer/clear cell) (++ i))
+        (do (buffer/push cell b) (++ i))))
+    (array/push cells (string/trim (string cell)))
+    cells)
+  (defn delim-cell? [cell]
+    (var i 0)
+    (var n (length cell))
+    (if (= (get cell 0) (chr ":")) (++ i))
+    (if (and (> n i) (= (get cell (- n 1)) (chr ":"))) (-- n))
+    (var ok (> n i))
+    (for k i n (if (not= (get cell k) (chr "-")) (set ok false)))
+    ok)
+  (defn tbl? []
+    (when (= (c) (chr "|"))
+      (def e (line-end cursor))
+      (when (get str e)
+        (def next-start (+ e 1))
+        (def next-line (getslice next-start (line-end next-start)))
+        (when (string/find "|" next-line)
+          (def dcells (split-cells next-line))
+          (var ok (= (length dcells) (length (split-cells (getslice cursor e)))))
+          (each d dcells (if (not (delim-cell? d)) (set ok false)))
+          ok))))
 
   (defn add-codeblock [indent start end]
     (def replace-chunk (string "\n" (string/repeat " " indent)))
@@ -3894,6 +3949,30 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (endtoken)
     (tuple/slice tokens))
 
+  ; The header and delimiter rows, then each row that begins with `|`. A row
+  ; has one cell per header cell: a missing cell is empty and an extra is
+  ; dropped. Alignment in the delimiter row is not read.
+  (defn parse-table [indent]
+    (defn take-cells []
+      (def text (getslice cursor (line-end cursor)))
+      (skipline)
+      (split-cells text))
+    (def head (take-cells))
+    (def ncols (length head))
+    (take-cells)
+    (defn as-row [cells]
+      (def row ![])
+      (for j 0 ncols (array/push row (tokenize-line (or (get cells j) ""))))
+      (tuple/slice row))
+    (def header (as-row head))
+    (def rows ![])
+    (var current-indent (skipwhite))
+    (while (and (c) (>= current-indent indent) (= (c) (chr "|")))
+      (array/push rows (as-row (take-cells)))
+      (set current-indent (skipwhite)))
+    (push ![:tbl header (tuple/slice rows)])
+    current-indent)
+
   (set
     parse-blocks
     (fn parse-blocks [indent]
@@ -3913,6 +3992,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (while (and (c) (>= new-indent indent))
         (cond
           (nl?) (do (finish-p) (c++) (set new-indent (skipwhite)))
+          (tbl?) (do (finish-p) (set new-indent (parse-table new-indent)))
           (ul?) (do (finish-p) (set new-indent (parse-list ul? :ul new-indent)))
           (ol?) (do (finish-p) (set new-indent (parse-list ol? :ol new-indent)))
           (fcb?) (do (finish-p) (set new-indent (parse-fcb new-indent)))
@@ -3963,6 +4043,86 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (set current-column 0)
       (emit-nl)))
 
+  ; Column widths start at the widest cell. While the table is wider than
+  ; the space left, the widest column that can still shrink loses one
+  ; column, down to its longest word. A cell wraps to its column's width.
+  (defn emit-table [header rows indent]
+    (def ncols (length header))
+    (def widths ![])
+    (def minws ![])
+    (for j 0 ncols (array/push widths 0) (array/push minws 1))
+    (each row [header |rows]
+      (for j 0 ncols
+        (var w 0)
+        (var m 0)
+        (each [_ len] (get row j) (+= w len) (set m (max m len)))
+        (put widths j (max (get widths j) (+ w (max 0 (- (length (get row j)) 1)))))
+        (put minws j (max (get minws j) m))))
+    (var total (* 3 (- ncols 1)))
+    (each w widths (+= total w))
+    (while (> total (- max-width indent))
+      (var pick nil)
+      (for j 0 ncols
+        (when (and (> (get widths j) (get minws j))
+                   (or (= pick nil) (> (get widths j) (get widths pick))))
+          (set pick j)))
+      (if (= pick nil) (break))
+      (put widths pick (- (get widths pick) 1))
+      (-- total))
+    (defn wrap-cell [toks w]
+      (def lines ![])
+      (var cur ![])
+      (var cur-len 0)
+      (each [word len] toks
+        (when (and (> (length cur) 0) (> (+ cur-len 1 len) w))
+          (array/push lines [cur cur-len])
+          (set cur ![])
+          (set cur-len 0))
+        (set cur-len (if (> (length cur) 0) (+ cur-len 1 len) len))
+        (array/push cur word))
+      (array/push lines [cur cur-len])
+      lines)
+    (defn emit-line [text]
+      (emit-indent indent)
+      (buffer/push buf text)
+      (emit-nl))
+    (defn emit-row [row centered]
+      (def wrapped ![])
+      (var height 1)
+      (for j 0 ncols
+        (def lines (wrap-cell (get row j) (get widths j)))
+        (array/push wrapped lines)
+        (set height (max height (length lines))))
+      (for k 0 height
+        (def line !"")
+        (for j 0 ncols
+          (def piece (get (get wrapped j) k))
+          (def gap (- (get widths j) (if piece (get piece 1) 0)))
+          ; The rule under the last column begins one column before its text,
+          ; so its header gives up one column of padding and sits left of centre.
+          (def left (if centered
+                      (brshift (if (and (> j 0) (= j (- ncols 1))) (max 0 (- gap 1)) gap) 1)
+                      0))
+          (buffer/push line (string/repeat " " left))
+          (buffer/push line (if piece (string/join (get piece 0) " ") ""))
+          (when (< j (- ncols 1))
+            (buffer/push line (string/repeat " " (- gap left)))
+            (buffer/push line " " (paint "|") " ")))
+        (emit-line (string/trimr (string line)))))
+    (defn emit-rule [ch]
+      (def line !"")
+      (for j 0 ncols
+        (buffer/push line (string/repeat ch (+ (get widths j)
+                                               (if (> j 0) 1 0)
+                                               (if (< j (- ncols 1)) 1 0))))
+        (when (< j (- ncols 1)) (buffer/push line "+")))
+      (emit-line (paint (string line))))
+    (emit-row header true)
+    (when (> (length rows) 0) (emit-rule "="))
+    (for i 0 (length rows)
+      (emit-row (get rows i) false)
+      (if (< i (- (length rows) 1)) (emit-rule "-"))))
+
   (defn emit-node
     [el indent]
     (emit-indent indent)
@@ -3977,13 +4137,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (case (first el)
         :ul (for i 1 (length el)
               (if (> i 1) (emit-indent indent))
-              (emit-word "* " nil)
+              (emit-word "- " nil)
               (each subel (get el i) (emit-node subel (+ 2 indent))))
         :ol (for i 1 (length el)
               (if (> i 1) (emit-indent indent))
               (def lab (string/format "%d. " i))
               (emit-word lab nil)
               (each subel (get el i) (emit-node subel (+ (length lab) indent))))
+        :tbl (emit-table (get el 1) (get el 2) indent)
         :cb (emit-code (get el 1) indent))))
 
   (each el stack

@@ -233,15 +233,17 @@ pub fn libDebug(env: *tables.Table) void {
             "in the array contains information about a stack frame. The top-most, current " ++
             "stack frame is the first table in the array, and the bottom-most stack frame " ++
             "is the last value. Each stack frame contains some of the following attributes:\n\n" ++
-            "* :native - true if the stack frame is an nfunction invocation\n\n" ++
-            "* :source-column - the current source column of the stack frame\n\n" ++
-            "* :function - the function that the stack frame represents\n\n" ++
-            "* :source-line - the current source line of the stack frame\n\n" ++
-            "* :name - the human-friendly name of the function\n\n" ++
-            "* :pc - integer indicating the location of the program counter\n\n" ++
-            "* :source - string with the file path or other identifier for the source code\n\n" ++
-            "* :slots - array of all values in each slot\n\n" ++
-            "* :tail - boolean indicating a tail call"),
+            "| Key            | Description                                                       |\n" ++
+            "| -------------- | ----------------------------------------------------------------- |\n" ++
+            "| :native        | true if the stack frame is an nfunction invocation                |\n" ++
+            "| :source-column | the current source column of the stack frame                      |\n" ++
+            "| :function      | the function that the stack frame represents                      |\n" ++
+            "| :source-line   | the current source line of the stack frame                        |\n" ++
+            "| :name          | the human-friendly name of the function                           |\n" ++
+            "| :pc            | integer indicating the location of the program counter            |\n" ++
+            "| :source        | string with the file path or other identifier for the source code |\n" ++
+            "| :slots         | array of all values in each slot                                  |\n" ++
+            "| :tail          | boolean indicating a tail call                                    |"),
         corefn.reg("debug/stacktrace", &nfunDebugStacktrace, @src(), "(debug/stacktrace fib)\n(debug/stacktrace fib err)\n(debug/stacktrace fib err prefix)", "Prints a stack trace for fib to `(dyn :err)`. An error value err can optionally be " ++
             "given. Its error line is written after prefix, a string. If prefix is nil or not " ++
             "provided, the error line is skipped. Returns the fiber."),
