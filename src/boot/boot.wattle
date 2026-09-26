@@ -900,15 +900,22 @@
 ; True when (length coll) is the number of elements iterating coll yields. An
 ; abstract type's length callback need not agree with its iteration, so only a
 ; core type qualifies.
-(defn- counted?
+(defmacro- counted?
   [coll]
-  (and (lengthable? coll) (not (abstract? coll))))
+  (if (idempotent? coll)
+    `(if (~lengthable? ~coll) (if (~abstract? ~coll) false true) false)
+    (with-syms [c]
+      `(as-macro ~let [~c ~coll]
+         (if (~lengthable? ~c) (if (~abstract? ~c) false true) false)))))
 
 (defn mean
   "Returns the mean of the elements in coll, an iterable. If coll is empty, returns NaN."
   [coll]
   (if (counted? coll)
-    (/ (sum coll) (length coll))
+    (do
+      (var accum 0)
+      (each x coll (+= accum x))
+      (/ accum (length coll)))
     (do
       (var [accum total] [0 0])
       (each x coll (+= accum x) (++ total))
