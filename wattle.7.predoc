@@ -1,0 +1,423 @@
+---
+Title: WATTLE(7)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-09-27
+Project: Wattle
+Version: 0.1.0-dev
+---
+
+NAME
+====
+
+**wattle** - the Wattle programming language
+
+DESCRIPTION
+===========
+
+Wattle is a dynamic language with Clojure-like syntax. A program is parsed and
+compiled into bytecode that is run on the Wattle virtual machine.
+
+Wattle's virtual machine and core library derive from Janet. The parser accepts
+Wattle source, not Janet source. Source files have the extension ``.wattle``.
+This page describes the language; `wattle(1)` describes the command-line
+program.
+
+A small program illustrates definitions, functions, collections and calls:
+
+````
+(defn greeting [name]
+  (string "Hello, " name "!"))
+
+(defn main [script & args]
+  (each name (if (empty? args) ["world"] args)
+    (print (greeting name))))
+````
+
+Running this file with `wattle(1)` from the command line prints ``Hello,
+<argument>!`` for each command line argument, or ``Hello, world!`` if there are
+no arguments.
+
+SOURCE FORMS
+============
+
+Wattle source consists of forms, whitespace and comments. The forms below
+include tokens, byte sequences, collections and tuples. Prefixes modify the
+form that follows them.
+
+Comments
+--------
+
+A semicolon begins a comment that ends at the end of the line. A ``#!`` at the
+first byte of a file also begins a shebang comment, for a script's interpreter
+line.
+
+Whitespace
+----------
+
+Whitespace includes spaces, tabs, line breaks and commas. Commas may separate
+forms, as in ``{:a 1, :b 2}``; they are never part of a symbol.
+
+Tokens
+------
+
+Tokens comprise literal tokens, numbers, symbols and keywords.
+
+There are three literal tokens: ``true``, ``false`` and ``nil``. In a
+conditional test, only ``false`` and ``nil`` are false. Zero, an empty string
+and empty collections are all treated as true.
+
+Numbers are double-precision floating-point values. Decimal, exponent,
+hexadecimal and radix forms include ``42``, ``-1.5``, ``1e3``, ``0x1F`` and
+``2r101``. Underscores may separate digits, as in ``1_000``. There is no
+separate integer literal type. ``int/s64`` and ``int/u64`` construct exact
+64-bit integer values when needed.
+
+A symbol is a name formed from ASCII letters, digits, valid non-ASCII UTF-8 and
+the characters ``!$%&*+-./:<=>?@^_``. Examples include ``total``,
+``string/split`` and ``empty?``. A symbol cannot begin with a digit or colon.
+At the start of a form, ``@`` and ``^`` are parse errors; reserve ``!`` for
+mutable literals. A token that reads as a number is a number. Symbols are
+resolved as bindings unless quoted.
+
+A keyword begins with a colon, as in ``:name``. Keywords are values, commonly
+used as map keys.
+
+Byte sequences
+--------------
+
+A string is a sequence of bytes delimited by double quotes. Strings are
+immutable. Strings can include escapes like ``\n``, ``\t``, ``\"`` and ``\\``;
+``\xHH`` inserts a byte, and ``\uXXXX`` inserts a Unicode code point encoded as
+UTF-8.
+
+A buffer uses ``!`` immediately before its opening double quotes. Buffers are
+mutable byte sequences and accept the same escapes as strings.
+
+Three or more double quotes delimit a *raw* string or buffer. Raw byte
+sequences may span lines and do not process escapes. A line break immediately
+after the opening quotes and one before the closing quotes are removed. If
+every content line has the opening quotes' indentation, that indentation is
+removed from each line.
+
+````
+(type "a\nb")                ; :string
+(type """raw\n""")           ; :string
+(type !"a\nb")               ; :buffer
+(type !"""raw\n""")          ; :buffer
+
+(length "e")                 ; 1 byte
+(length "é")                 ; 2 bytes
+
+(def text
+  """
+  first
+  second
+  """)
+(= text "first\nsecond")     ; true
+(= "\\n" """\n""")           ; true: raw \n is two bytes
+````
+
+Collections
+-----------
+
+Wattle includes five built-in collections:
+
+````
+[a b]         ; immutable vector
+{:a :b}       ; immutable map
+#{:a :b}      ; immutable set
+
+![a b]        ; mutable array
+!{:a :b}      ; mutable table
+````
+
+Vectors, arrays and sets store elements. Maps and tables store key-value pairs.
+Each element, key and value is an expression evaluated when the collection is
+constructed. Quoting a form gives its syntax as data.
+
+Function calls
+--------------
+
+Parentheses delimit a tuple. A tuple is an immutable sequence of values. In
+executable source, the compiler treats a tuple as a function call, a special
+form or a macro invocation. In ``(+ 1 2)``, ``+`` is called with two arguments
+and returns 3. The function position may itself contain a form: ``((fn [x] (* x
+x)) 4)`` returns 16.
+
+Tuples are primarily used to represent Wattle code rather than general-purpose
+sequential data; use a vector for ordinary sequential data. Quoting a tuple
+produces its value without compiling it as a call: ``'(+ 1 2)`` contains the
+symbol ``+`` and the numbers 1 and 2.
+
+Prefixes
+--------
+
+Four prefixes modify the form that follows:
+
+````
+'x     ; shorthand for (quote x)
+`x     ; shorthand for (quasiquote x)
+~x     ; shorthand for (unquote x)
+|x     ; shorthand for (splice x)
+````
+
+The form after a prefix must start on the same line.
+
+COLLECTIONS
+===========
+
+Wattle includes immutable and mutable collections.
+
+Mutability
+----------
+
+Vectors, maps and sets are persistent, immutable collections. Operations that
+add, remove or replace values return an updated collection and leave the
+original available. The result may share unchanged structure with the
+original, so an update need not copy the entire collection.
+
+````
+(def xs [1 2])
+(def ys (conj xs 3))
+xs                    ; [1 2]
+ys                    ; [1 2 3]
+(assoc {:a 1} :b 2)   ; {:a 1 :b 2}
+````
+
+Arrays and tables are mutable. Operations such as ``put!`` and ``array/push!``
+change them in place:
+
+````
+(def items ![1 2])
+(array/push! items 3)
+items                 ; ![1 2 3]
+````
+
+Arrays and tables compare by identity. Vectors, maps and sets compare by their
+contents.
+
+Accessing
+---------
+
+Vectors and arrays are indexed from zero. ``get`` reads a position or key and
+accepts an optional default:
+
+````
+(get [10 20] 1)        ; 20
+(get [10 20] 2 :oops)  ; :oops
+````
+
+Map and table literals alternate key and value expressions. Neither type can
+store ``nil`` or NaN as a key. Storing ``nil`` as a value removes the entry.
+Set elements also cannot be ``nil`` or NaN, and duplicate elements count once.
+Map and set iteration order is unspecified; do not rely on the order of
+expression evaluation inside their literals. ``has-value?`` checks set
+membership:
+
+````
+(get {:name "Ada"} :name)        ; "Ada"
+(get {:name "Ada"} :age :oops)   ; :oops
+(has-value? #{1 2} 2)            ; true
+````
+
+A collection can also be called with an index or key to look up a value:
+
+````
+([10 20] 1)             ; 20
+({:name "Ada"} :name)   ; "Ada"
+(#{1 2 3} 2)            ; 2
+````
+
+BINDINGS AND CONTROL FLOW
+=========================
+
+``def`` binds a value to a name that cannot be reassigned. ``var`` binds a
+value to a name that ``set`` can reassign. Both accept destructuring patterns.
+``do`` evaluates its forms in order and returns the last result. The core
+library offers the ``let`` macro that uses these to create bindings within a
+specified scope:
+
+````
+(def raise 7)
+(var total raise)
+(set total (+ total 3))
+(let [x 4, y 5]
+  (+ x y total))          ; 19
+````
+
+Patterns
+--------
+
+``def``, ``var``, ``let`` and function parameters can destructure values.
+Vector and tuple patterns bind by position. A map pattern writes the binding
+first and the key second:
+
+````
+(def [first second & rest] [1 2 3 4])
+(def {name :name} {:name "Ada"})
+(def {:keys [x y]} {:x 1 :y 2})
+````
+
+In a map pattern, ``:keys [x y]`` selects keyword keys. ``:strs`` and ``:syms``
+select string and symbol keys; ``:as`` binds the whole value; and ``:or {x
+default}`` supplies a default when ``x`` is ``nil``. Defaults are evaluated
+only when used.
+
+Conditionals
+------------
+
+``if`` evaluates its test and one branch: ``(if test then else)``. The core
+library defines ``when`` for a conditional body, ``cond`` for successive tests
+and ``case`` for comparing one value with several candidates:
+
+````
+(if (> total 0) :positive :nonpositive)  ; :positive
+(when (> total 0) :positive)             ; :positive
+(cond (< total 0) :negative
+      (= total 0) :zero
+      :positive)                         ; :positive
+(case total 0 :zero 10 :ten :other)      ; :ten
+````
+
+Loops
+-----
+
+``while`` tests its condition before each repetition and evaluates its body
+while the condition is truthy. ``break`` exits the loop. The core library
+defines ``loop``, ``for`` and ``each`` for iteration:
+
+````
+(each item [1 2 3]
+  (print item))
+````
+
+FUNCTIONS
+=========
+
+``fn`` creates a function. The core library defines ``defn`` to bind a named
+function with optional metadata and a docstring. Parameter lists are vectors. A
+symbol after ``&`` receives the remaining arguments as a vector. Functions are
+values: they may be passed, stored and returned, and they can refer to bindings
+in their enclosing scope.
+
+````
+(def double (fn [x] (* x 2)))
+(double 3)                ; 6
+
+(defn sum [xs]
+  (reduce + 0 xs))
+
+(defn add-all [& numbers]
+  (sum numbers))
+
+(add-all 1 2 3)           ; 6
+````
+
+A function can have several arities. Each clause begins with a parameter
+vector. A call selects the clause for its argument count. Clauses cannot
+duplicate or skip counts, and at most one may use ``&``:
+
+````
+(defn greet
+  "Returns a greeting."
+  ([] (greet "world"))
+  ([name] (string "Hello, " name "!")))
+````
+
+For named options, a map pattern after ``&`` receives keyword and value pairs.
+A final map may supply or override those pairs:
+
+````
+(defn greet-with [name & {:keys [prefix] :or {prefix "Hello"}}]
+  (string prefix ", " name "!"))
+
+(greet-with "Ada" :prefix "Hi")    ; "Hi, Ada!"
+(greet-with "Ada" {:prefix "Hi"})  ; "Hi, Ada!"
+````
+
+A short function has the form ``#(...)``. Within it, ``$`` or ``$0`` is the
+first argument, ``$1`` the second, and ``$&`` the remaining arguments after the
+highest numbered argument used:
+
+````
+(map #(* $ 2) [1 2 3])  ; ![2 4 6]
+````
+
+MACROS
+======
+
+A macro receives its arguments as unevaluated forms and returns a form for the
+compiler. The core library provides ``defmacro`` for defining macros.
+Quasiquote (`` ` ``) constructs a form. Within it, ``~x`` inserts one form,
+while ``~|args`` inserts each form from a sequence:
+
+````
+(defmacro twice [x]
+  `(do ~x ~x))
+
+(defmacro call-with [f & args]
+  `(~f ~|args))
+
+(var calls 0)
+(twice (set calls (+ calls 1)))
+calls                            ; 2
+(call-with + 1 2)                ; 3
+````
+
+``twice`` inserts its argument twice, so the argument is evaluated twice when
+the expanded form runs.
+
+Parentheses in generated code are tuples. Vectors, maps and sets remain
+collections in the syntax tree, so a macro can inspect the form written in
+source. ``tuple`` can be used to construct a call without quasiquote.
+
+MODULES
+=======
+
+A module can be a Wattle source file, an image or a native library. ``import``
+loads a module and adds its public bindings to the current environment with a
+prefix derived from the module name. ``use`` adds the bindings without a
+prefix.
+
+If ``greetings.wattle`` defines ``hello``, either of these forms makes it
+available:
+
+````
+(import ./greetings)
+(greetings/hello "Ada")
+
+(use ./greetings)
+(hello "Ada")
+````
+
+``import`` also accepts ``:as`` or ``:prefix`` to choose the prefix.
+`WATTLE_PATH` selects directories for system modules; see `wattle(1)`.
+
+ERRORS
+======
+
+``(error value)`` raises ``value`` as an error. ``try`` evaluates one body
+expression and returns its result if it succeeds. If the body raises, the
+handler's ``[e]`` binds the raised value, and ``try`` returns the handler's
+result:
+
+````
+(try 42
+  ([e] 0))                 ; 42
+
+(try (error "failed")
+  ([e] e))                 ; "failed"
+````
+
+SEE ALSO
+========
+
+`wattle(1)`
+
+The REPL's ``(doc)`` lists available bindings, and ``(doc symbol)`` describes
+one. Example programs are distributed with the Wattle source tree.
+
+HISTORY
+=======
+
+Wattle began as a fork of Janet, the language created by Calvin Rose.
