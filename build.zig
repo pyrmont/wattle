@@ -576,6 +576,7 @@ pub fn build(b: *std.Build) void {
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
+    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
 
     const built: Built = .{
         .b = b,
@@ -1846,7 +1847,7 @@ fn checkContractsListed(b: *std.Build) void {
 /// `zig build test` runs what it builds, which is impossible when the target is
 /// not the host. Installing the artifacts lets a cross-compiled build be
 /// carried to the target machine and run there. Without the option an install
-/// carries `wattle`, the libraries and the man page, and nothing else.
+/// carries `wattle`, the libraries and the two man pages, and nothing else.
 fn installTest(b: *std.Build, options: BuildOptions, exe: *std.Build.Step.Compile) void {
     if (!options.install_tests) return;
     const install = b.addInstallArtifact(exe, .{

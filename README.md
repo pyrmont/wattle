@@ -261,8 +261,10 @@ repl:3:> (os/exit)
 $
 ```
 
-The man page `wattle.1` is in the repository root. It is generated from
-`wattle.1.predoc` by [Predoc][]. Read it in place with `man ./wattle.1`.
+Two man pages are in the repository root: `wattle.1`, for the command-line
+tool, and `wattle.7`, for the language itself. Each is generated from its
+`.predoc` source by [Predoc][]. Read one in place with `man ./wattle.1` or
+`man ./wattle.7`.
 
 ## Extending
 
