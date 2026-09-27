@@ -6,6 +6,6 @@
   (let [x (math/random)
         intrange (math/floor (* 100 x))
         oldcount (counts intrange)]
-    (put counts intrange (if oldcount (+ 1 oldcount) 1))))
+    (put! counts intrange (if oldcount (+ 1 oldcount) 1))))
 
 (pp counts)

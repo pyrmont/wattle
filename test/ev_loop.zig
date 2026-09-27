@@ -1139,7 +1139,7 @@ fn theThreadedReplyTags() void {
 fn theOrderedTimeouts() void {
     const out = doString(
         \\(def log ![])
-        \\(defn t [n d] (ev/go (fn [] (ev/sleep d) (array/push log n))))
+        \\(defn t [n d] (ev/go (fn [] (ev/sleep d) (array/push! log n))))
         \\(t :c 0.03) (t :a 0.01) (t :b 0.02)
         \\(ev/sleep 0.06)
         \\log
@@ -1187,10 +1187,10 @@ fn theTwoTimeoutConstructors() void {
         \\(def results ![])
         \\(ev/go (fn []
         \\  (test/add-timeout 0.01 false)
-        \\  (array/push results [:nil (ev/take (ev/chan 0))])))
+        \\  (array/push! results [:nil (ev/take (ev/chan 0))])))
         \\(ev/go (fn []
         \\  (test/add-timeout 0.01 true)
-        \\  (array/push results [:err (protect (ev/take (ev/chan 0)))])))
+        \\  (array/push! results [:err (protect (ev/take (ev/chan 0)))])))
         \\(ev/sleep 0.08)
         \\results
     );
@@ -1347,8 +1347,8 @@ fn theWakeAnswers() void {
 fn theScheduleSoonOrder() void {
     const out = doString(
         \\(def log ![])
-        \\(def a (fiber/new (fn [] (array/push log :a))))
-        \\(def b (fiber/new (fn [] (array/push log :b))))
+        \\(def a (fiber/new (fn [] (array/push! log :a))))
+        \\(def b (fiber/new (fn [] (array/push! log :b))))
         \\[log a b]
     );
     gc_alloc.gcroot(out);
@@ -1368,8 +1368,8 @@ fn theScheduleSoonOrder() void {
 fn theScheduleSignalOrder() void {
     const out = doString(
         \\(def log ![])
-        \\(def a (fiber/new (fn [] (array/push log :a)) :e))
-        \\(def b (fiber/new (fn [] (array/push log :b)) :e))
+        \\(def a (fiber/new (fn [] (array/push! log :a)) :e))
+        \\(def b (fiber/new (fn [] (array/push! log :b)) :e))
         \\[log a b]
     );
     gc_alloc.gcroot(out);
@@ -1394,9 +1394,9 @@ fn theScheduleSignalOrder() void {
 fn theScheduleSignalIsFifo() void {
     const out = doString(
         \\(def log ![])
-        \\(def a (fiber/new (fn [] (array/push log :a)) :e))
-        \\(def b (fiber/new (fn [] (array/push log :b)) :e))
-        \\(def c (fiber/new (fn [] (array/push log :c)) :e))
+        \\(def a (fiber/new (fn [] (array/push! log :a)) :e))
+        \\(def b (fiber/new (fn [] (array/push! log :b)) :e))
+        \\(def c (fiber/new (fn [] (array/push! log :c)) :e))
         \\[log a b c]
     );
     gc_alloc.gcroot(out);

@@ -831,8 +831,8 @@ fn theRemainingOpcodes() void {
     expectEqual("(do (defn fact [n] (if (< n 2) 1 (* n (fact (- n 1))))) (fact 5))", "120");
     // Keyed and indexed access, and their in-place writers.
     expectEqual("(do (def t !{:a 1}) [(get t :a) (get t :b) (in [10 20] 1)])", "[1 nil 20]");
-    expectEqual("(do (def a ![1 2]) (put a 0 :x) a)", "![:x 2]");
-    expectEqual("(do (def t !{}) (put t :k :v) t)", "!{:k :v}");
+    expectEqual("(do (def a ![1 2]) (put! a 0 :x) a)", "![:x 2]");
+    expectEqual("(do (def t !{}) (put! t :k :v) t)", "!{:k :v}");
     expectEqual("(length \"abcd\")", "4");
     // `next`, which restores all three registers rather than just the stack.
     expectEqual("(do (def t !{:a 1}) (next t nil))", ":a");
@@ -961,8 +961,8 @@ fn aSuspendedPutKeepsItsContainer() void {
     const container = wrap.fromAbstract(abstracts.newBytes(&at_yielding_put, 1));
     gc_alloc.gcroot(container);
     const sources = [_][*:0]const u8{
-        "(fiber/new (fn [o] (put o :k :v) o) :y)",
-        "(fiber/new (fn [o] (put o 0 :v) o) :y)",
+        "(fiber/new (fn [o] (put! o :k :v) o) :y)",
+        "(fiber/new (fn [o] (put! o 0 :v) o) :y)",
     };
     for (sources) |source| {
         const fiberv = eval(source);

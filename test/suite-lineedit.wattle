@@ -64,7 +64,7 @@
   "Queues `body` to run as a task when the event loop is compiled, and runs it at once otherwise."
   [& body]
   (if (dyn 'ev/go-gather)
-    `(array/push cases (fn [] ~|body))
+    `(array/push! cases (fn [] ~|body))
     `(do ~|body)))
 
 ; `compwhen` rather than `when`: `harness` is known when the form is

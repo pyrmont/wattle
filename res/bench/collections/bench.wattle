@@ -1,7 +1,7 @@
 ; The indexed protocol's benchmark corpus: reading a collection's elements.
 ;
 ; The Phase 9 corpus measures the interpreter and the Phase 10 one measures
-; nfunction entry. Neither contains a splice, an `apply` or an `array/concat`,
+; nfunction entry. Neither contains a splice, an `apply` or an `array/concat!`,
 ; so neither can see the sites the indexed protocol converts: both corpora sat
 ; flat through a change that made one of these workloads 4.6 times faster and
 ; another 13% slower.
@@ -15,7 +15,7 @@
 ;
 ; `control` is the control: a table put and get, which reads no elements and
 ; reaches nothing the protocol touches. `concat-single` is the second check,
-; the arm of `array/concat` that appends a part which is not indexed, and it
+; the arm of `array/concat!` that appends a part which is not indexed, and it
 ; is expected to stay where it is while its neighbours move.
 ;
 ; The counts are sized for `ReleaseFast` against the tree that added them,
@@ -63,17 +63,17 @@
 ; Three elements onto a fresh array, where the allocation is most of the cost.
 (defn- concat-small []
   (var acc 0)
-  (for i 0 2500000 (set acc (+ acc (length (array/concat ![] small)))))
+  (for i 0 2500000 (set acc (+ acc (length (array/concat! ![] small)))))
   acc)
 
 (defn- concat-medium []
   (var acc 0)
-  (for i 0 1500000 (set acc (+ acc (length (array/concat ![] medium)))))
+  (for i 0 1500000 (set acc (+ acc (length (array/concat! ![] medium)))))
   acc)
 
 (defn- concat-large []
   (var acc 0)
-  (for i 0 250000 (set acc (+ acc (length (array/concat ![] large)))))
+  (for i 0 250000 (set acc (+ acc (length (array/concat! ![] large)))))
   acc)
 
 ; Appending onto an array that already has room, which is the case with no
@@ -82,19 +82,19 @@
   (var total 0)
   (for j 0 9000
     (def a ![])
-    (for i 0 1000 (array/concat a small))
+    (for i 0 1000 (array/concat! a small))
     (set total (+ total (length a))))
   total)
 
 ; The arm for a part that is not indexed, which no conversion touches.
 (defn- concat-single []
   (var acc 0)
-  (for i 0 2000000 (set acc (+ acc (length (array/concat ![] :a :b :c)))))
+  (for i 0 2000000 (set acc (+ acc (length (array/concat! ![] :a :b :c)))))
   acc)
 
 (defn- join-small []
   (var acc 0)
-  (for i 0 2500000 (set acc (+ acc (length (array/join ![] small)))))
+  (for i 0 2500000 (set acc (+ acc (length (array/join! ![] small)))))
   acc)
 
 ; tuple/join counts every argument, allocates, fills the slots with nil and
@@ -144,12 +144,12 @@
   (for i 0 200000 (set n (+ n (length (peg/match splice-peg "aaaaaaaa")))))
   n)
 
-; The control: a put and a get on a table, reading no elements.
+; The control: a put! and a get on a table, reading no elements.
 (defn- control []
   (def t !{})
   (var acc 0)
   (for i 0 7000000
-    (put t :k i)
+    (put! t :k i)
     (set acc (+ acc (get t :k))))
   acc)
 

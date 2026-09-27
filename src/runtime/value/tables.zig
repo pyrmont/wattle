@@ -270,13 +270,13 @@ pub fn lib(env: *Table) void {
         corefn.reg("table/to-map", &nfunTableTomap, @src(), "(table/to-map tab)", "Converts a table to a map. The prototype is not followed. Returns a new map."),
         corefn.reg("table/getproto", &nfunTableGetproto, @src(), "(table/getproto tab)", "Gets the prototype table of a table. Returns nil if the table " ++
             "has no prototype, otherwise returns the prototype."),
-        corefn.reg("table/setproto", &nfunTableSetproto, @src(), "(table/setproto tbl proto)", "Sets the prototype of tbl, a table, to proto, a table or nil. A nil proto removes the prototype. Returns tbl."),
+        corefn.reg("table/setproto!", &nfunTableSetproto, @src(), "(table/setproto! tbl proto)", "Sets the prototype of tbl, a table, to proto, a table or nil. A nil proto removes the prototype. Returns tbl."),
         corefn.reg("table/rawget", &nfunTableRawget, @src(), "(table/rawget tab key)", "Gets a value from a table tab without looking at the prototype table. " ++
             "If tab does not contain the key directly, the function returns " ++
             "nil without checking the prototype. Returns the value in the table."),
         corefn.reg("table/clone", &nfunTableClone, @src(), "(table/clone tab)", "Creates a shallow copy of tab, a table, with the same prototype. Updates to the new table do not change the old table, " ++
             "and vice versa."),
-        corefn.reg("table/clear", &nfunTableClear, @src(), "(table/clear tbl)", "Removes all key-value pairs in tbl, a table, and returns tbl."),
+        corefn.reg("table/clear!", &nfunTableClear, @src(), "(table/clear! tbl)", "Removes all key-value pairs in tbl, a table, and returns tbl."),
         corefn.reg("table/proto-flatten", &nfunTableProtoFlatten, @src(), "(table/proto-flatten tab)", "Creates a new table with the entries of tab and of the tables in its prototype chain. The new table has no prototype."),
     };
     corefn.install(env, entries);
@@ -328,7 +328,7 @@ pub fn newFrom(kvs: []const Keyval) *Table {
 /// wins, which is the precedence a lookup through the chain would have given.
 ///
 /// Bounded by `config.max_proto_depth`, like every other prototype walk here.
-/// `table/setproto` accepts a cycle, so an unbounded walk would not terminate.
+/// `table/setproto!` accepts a cycle, so an unbounded walk would not terminate.
 /// The bound also makes the result exactly the set a lookup through the chain
 /// can reach, which is the set the flattening is for.
 pub fn protoFlatten(t_in: *Table) *Table {
@@ -443,7 +443,7 @@ pub fn weakv(capacity: usize) *Table {
 // Private functions
 // ==========================================================================
 
-/// `table/clear`: every pair removed, the capacity and the prototype kept.
+/// `table/clear!`: every pair removed, the capacity and the prototype kept.
 fn nfunTableClear(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const table = try args_core.getTable(argv, 0);
@@ -482,7 +482,7 @@ fn nfunTableRawget(argv: []repr.Value) raise.Error!repr.Value {
     return rawget(try args_core.getTable(argv, 0), argv[1]);
 }
 
-/// `table/setproto`: the prototype replaced, or cleared by an explicit nil.
+/// `table/setproto!`: the prototype replaced, or cleared by an explicit nil.
 ///
 /// The second argument is tested before it is fetched rather than going
 /// through `args.optTable`, because that would build an empty table for the

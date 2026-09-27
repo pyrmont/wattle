@@ -207,7 +207,7 @@ const Specifier = struct {
 // Public functions
 // ==========================================================================
 
-/// What `string/format` and `buffer/format` run: the arguments arrive as a
+/// What `string/format` and `buffer/format!` run: the arguments arrive as a
 /// Janet array.
 ///
 /// `b` is the destination, `strfrmt` the format string, `argv` the arguments,

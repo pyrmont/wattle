@@ -48,7 +48,7 @@
 (def syspath (randdir))
 (rmrf syspath)
 (assert (os/mkdir syspath))
-(put root-env *syspath* (bundle-rpath syspath))
+(put! root-env *syspath* (bundle-rpath syspath))
 (unless (os/getenv "VERBOSE")
   (setdyn *out* !""))
 (assert (empty? (bundle/list)) "initial bundle/list")

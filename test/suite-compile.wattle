@@ -187,9 +187,9 @@
 
 ; Deprecation lints, one per level, in the order the bindings are referenced.
 (def depenv (make-env))
-(put depenv 'dep-r !{:value 1 :deprecated :relaxed})
-(put depenv 'dep-n !{:value 1 :deprecated :normal})
-(put depenv 'dep-s !{:value 1 :deprecated :strict})
+(put! depenv 'dep-r !{:value 1 :deprecated :relaxed})
+(put! depenv 'dep-n !{:value 1 :deprecated :normal})
+(put! depenv 'dep-s !{:value 1 :deprecated :strict})
 (def dep-lints ![])
 (compile '(do dep-r dep-n dep-s) depenv "lint-src" dep-lints)
 (assert (deep= ![:relaxed :normal :strict] (map first dep-lints)) "deprecation levels")
@@ -229,19 +229,19 @@
 
 ; The two escapes into user code.
 (def missing (make-env))
-(put missing :missing-symbol (fn [_s] !{:value 42}))
+(put! missing :missing-symbol (fn [_s] !{:value 42}))
 (assert (= 42 ((compile 'nope missing "lint-src"))) "missing-symbol handler")
 (def missing-bad (make-env))
 (defn missing-bad-fn [a _b] a)
-(put missing-bad :missing-symbol missing-bad-fn)
+(put! missing-bad :missing-symbol missing-bad-fn)
 (assert (= "missing symbol lookup handler <function missing-bad-fn> called with 1 argument, expected 2"
            (errof2 '(nope) missing-bad))
         "missing-symbol arity")
 (def missing-err (make-env))
-(put missing-err :missing-symbol (fn [_s] (error "handler boom")))
+(put! missing-err :missing-symbol (fn [_s] (error "handler boom")))
 (assert (= "(lookup) handler boom" (errof2 '(nope) missing-err)) "missing-symbol error")
 (def missing-junk (make-env))
-(put missing-junk :missing-symbol 17)
+(put! missing-junk :missing-symbol 17)
 (assert (= "invalid lookup handler 17" (errof2 '(nope) missing-junk)) "missing-symbol not callable")
 (assert (= "unknown symbol definitely-not-bound" (errof '(definitely-not-bound)))
         "unknown symbol")
@@ -281,7 +281,7 @@
 ; A missing-symbol handler may take its argument optionally: the check is that
 ; the handler *can* be called with one argument, not that it must be.
 (def opt-handler-env (make-env))
-(put opt-handler-env :missing-symbol (fn ([] !{:value 7}) ([_s] !{:value 7})))
+(put! opt-handler-env :missing-symbol (fn ([] !{:value 7}) ([_s] !{:value 7})))
 (assert (= 7 ((compile 'nope opt-handler-env "lint-src"))) "a two-clause handler is accepted")
 
 ; A macro that fails leaves its fiber on the result for the caller to inspect,
@@ -517,7 +517,7 @@
 ; A binding redefined in an environment that allows it keeps the reference
 ; cell the first one made, so a closure over the old name reads the new value.
 (def redef-env (make-env))
-(put redef-env :redef true)
+(put! redef-env :redef true)
 (eval '(var redef-counter 1) redef-env)
 (def redef-reader (eval '(fn [] redef-counter) redef-env))
 (eval '(var redef-counter 2) redef-env)
@@ -569,7 +569,7 @@
                           (while (< outer 2)
                             (var inner 0)
                             (while (< inner 2)
-                              (array/push made (fn [] inner))
+                              (array/push! made (fn [] inner))
                               (++ inner))
                             (++ outer))
                           (map #($) made))))

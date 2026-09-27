@@ -3,7 +3,7 @@
 //! ## Why this exists rather than leaning on the Janet suites
 //!
 //! From Janet these are reached only through `string/format` and
-//! `buffer/format`, which always supply a buffer and always take the page
+//! `buffer/format!`, which always supply a buffer and always take the page
 //! width from the format string. Three of the printer's parameters are
 //! therefore never varied from Janet at all, the null buffer, the start length
 //! and the lookback barrier, and the last two exist precisely so that printing
@@ -212,8 +212,8 @@ fn colourCostsNoColumns() !void {
 fn aTwoDigitCycleId() !void {
     const outer = eval(
         \\(def as (seq [i :range [0 13]] ![]))
-        \\(loop [i :range [0 12]] (array/push (as i) (as (+ i 1))))
-        \\(array/push (last as) (last as))
+        \\(loop [i :range [0 12]] (array/push! (as i) (as (+ i 1))))
+        \\(array/push! (last as) (last as))
         \\(as 0)
     );
     const b = buffer(64);
@@ -284,7 +284,7 @@ fn keysAreSortedBelowTheLimit() !void {
 
     try prettyWidth(forward, 99, flags, eval("(tabseq [i :range [0 40]] i i)"));
     try prettyWidth(backward, 99, flags, eval(
-        "(let [t !{}] (var i 39) (while (>= i 0) (put t i i) (-- i)) t)",
+        "(let [t !{}] (var i 39) (while (>= i 0) (put! t i i) (-- i)) t)",
     ));
 
     expect(forward.count == backward.count);

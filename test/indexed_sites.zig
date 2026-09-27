@@ -3,7 +3,7 @@
 //! would not hand out.
 //!
 //! The sites themselves are pinned where their subjects are: the splice
-//! opcode in `test/vm_run.zig`, `array/concat` and `array/join` in
+//! opcode in `test/vm_run.zig`, `array/concat!` and `array/join!` in
 //! `test/buffer_array.zig`. What is here is `tuple/join`, which has no
 //! contract of its own because every other thing it does has a Wattle
 //! spelling and `test/suite-corelib.wattle` covers it.
@@ -160,7 +160,7 @@ fn tupleJoinReadsAnIndexedAbstract() void {
     registry.nfuns(env, null, &nfuns);
     const source =
         \\(def failures ![])
-        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\(defn- refusal [f & a] (let [[ok r] (protect (f |a))] (unless ok r)))
         \\(def v (sites/join 9))
         \\(def oracle [0 10 20 30 40 50 60 70 80])
@@ -205,7 +205,7 @@ fn sliceReadsAWindowOfAnIndexedAbstract() void {
     const env = harness.coreEnv();
     const source =
         \\(def failures ![])
-        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\(defn- refusal [f & a] (let [r (protect (f |a))] (get r 1)))
         \\(def v (sites/join 9))
         \\(def oracle [0 10 20 30 40 50 60 70 80])
@@ -271,7 +271,7 @@ fn joinAndSelectReadAnIndexedAbstract() void {
     var buffer: [2048]u8 = undefined;
     const source = std.fmt.bufPrintZ(&buffer,
         \\(def failures ![])
-        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\(defn- refusal [f & a] (let [r (protect (f |a))] (get r 1)))
         \\(def oracle ["ab" "cd" "ef"])
         \\(check "string/join over runs of two"
@@ -356,7 +356,7 @@ fn theGatheringSitesReadAnIndexedAbstract() void {
     var buffer: [2048]u8 = undefined;
     const source = std.fmt.bufPrintZ(&buffer,
         \\(def failures ![])
-        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\{[ffi]s}
         \\{[exec]s}
         \\failures
@@ -385,7 +385,7 @@ fn aPegSpliceReadsAnIndexedAbstract() void {
     if (harness.coreOptional("peg/match") == null) return;
     const source =
         \\(def failures ![])
-        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\; The expected captures are written out rather than taken from a
         \\; tuple beside them: a tuple reaches the same converted code, so an
         \\; oracle built that way moves whenever the subject does.

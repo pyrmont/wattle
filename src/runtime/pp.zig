@@ -236,7 +236,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
 /// The length is read before the `@` marker is pushed, and that is what makes
 /// a buffer describing itself describe what it had. Pushing first and then
 /// escaping `source.slice()` escapes the `@` as well, because the push has
-/// already moved `count` past it: `(buffer/format b "%v" b)` on a buffer of
+/// already moved `count` past it: `(buffer/format! b "%v" b)` on a buffer of
 /// `a` would give `a@"a@"`. The pretty printer keeps the same record under the
 /// name `bufstartlen`.
 fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Error!void {

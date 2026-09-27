@@ -775,8 +775,8 @@ fn fromWattle() void {
 /// only stack traces would go blank.
 fn theRegistryRecordsALocation() void {
     const names = [_][*:0]const u8{
-        "tuple/join",  "string/split",  "buffer/blit", "array/concat",
-        "table/clone", "struct/rawget", "math/log2",   "int/to-number",
+        "tuple/join",  "string/split",  "buffer/blit!", "array/concat!",
+        "table/clone", "struct/rawget", "math/log2",    "int/to-number",
     };
     for (names) |name| {
         const binding = registry.resolveCore(name);

@@ -57,13 +57,13 @@
 ; JOP_PUT over a table, which is the mutation path.
 (defn- put-table []
   (def t !{})
-  (for i 0 20000000 (put t :k i))
+  (for i 0 20000000 (put! t :k i))
   (get t :k))
 
 ; JOP_PUT_INDEX over an array.
 (defn- put-index []
   (def a ![0 0 0 0])
-  (for i 0 20000000 (put a 2 i))
+  (for i 0 20000000 (put! a 2 i))
   (in a 2))
 
 ; JOP_LENGTH.

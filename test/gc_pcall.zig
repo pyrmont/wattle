@@ -246,7 +246,7 @@ fn deepNesting() void {
         \\      (def inner-result (gcpcall/call inner-cb))
         \\      ; If F2 was collected during F3's execution, `state` is read
         \\      ; through freed memory here.
-        \\      (put state :count (+ (state :count) 1))
+        \\      (put! state :count (+ (state :count) 1))
         \\      (string inner-result "-" (state :count)))))
         \\
         \\(for round 0 200

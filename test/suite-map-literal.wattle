@@ -57,7 +57,7 @@
 
 ; The two conversions between the dictionaries. Neither follows a prototype.
 (def t !{:a 1 :b 2})
-(table/setproto t !{:c 3})
+(table/setproto! t !{:c 3})
 (assert (= {:a 1 :b 2} (table/to-map t)) "table/to-map drops the prototype")
 (assert (deep= !{:a 1 :b 2} (map/to-table {:a 1 :b 2})) "map/to-table")
 (assert (= :table (type (map/to-table {:a 1}))) "map/to-table gives a table")

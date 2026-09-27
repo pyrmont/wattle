@@ -30,7 +30,7 @@
    (def syms (table))
    (var counter 0)
    (while (< counter 128)
-     (put syms (gensym) true)
+     (put! syms (gensym) true)
      (set counter (+ 1 counter)))
    (assert (= (length syms) 128) "many symbols")))
 

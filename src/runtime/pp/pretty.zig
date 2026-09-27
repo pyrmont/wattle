@@ -527,7 +527,7 @@ fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
                 // an ordinary edn string.
                 const tag = "#wattle/buffer ";
                 const source_buffer = wrap.toBuffer(x);
-                // `(buffer/format b "%y" b)` prints a buffer into itself, so
+                // `(buffer/format! b "%y" b)` prints a buffer into itself, so
                 // the length is taken before anything is written and the worst
                 // case is reserved before the read, as `pp.escapeBufferB` does
                 // for the same reason. Reading the count after pushing the tag

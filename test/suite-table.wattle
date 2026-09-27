@@ -45,7 +45,7 @@
  :childprop 456
 })
 
-(table/setproto childtab roottab)
+(table/setproto! childtab roottab)
 
 (assert (= 123 (get roottab :parentprop)) "table get 1")
 (assert (= 123 (get childtab :parentprop)) "table get proto")
@@ -65,12 +65,12 @@
 (check-table-clone !{} "table/clone 2")
 
 ; An explicit nil clears the prototype rather than being an error, which is the
-; one thing about table/setproto that the arity check does not cover.
-(let [t (table/setproto !{:a 1} !{:b 2})]
-  (assert (= 2 (get t :b)) "table/setproto inherits")
-  (table/setproto t nil)
-  (assert (nil? (table/getproto t)) "table/setproto nil clears")
-  (assert (nil? (get t :b)) "table/setproto nil stops inheriting"))
+; one thing about table/setproto! that the arity check does not cover.
+(let [t (table/setproto! !{:a 1} !{:b 2})]
+  (assert (= 2 (get t :b)) "table/setproto! inherits")
+  (table/setproto! t nil)
+  (assert (nil? (table/getproto t)) "table/setproto! nil clears")
+  (assert (nil? (get t :b)) "table/setproto! nil stops inheriting"))
 
 (end-suite)
 

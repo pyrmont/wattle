@@ -361,7 +361,7 @@
         "int/to-number of an int/u64 at the bound")
 
 ; With no byte order given the bytes are the host's.
-(assert (deep= (int/to-bytes (u64 1)) (buffer/push-uint64 !"" :native 1))
+(assert (deep= (int/to-bytes (u64 1)) (buffer/push-uint64! !"" :native 1))
         "int/to-bytes defaults to the native order")
 
 ; The `compare` methods, called directly. Through `compare` a method that

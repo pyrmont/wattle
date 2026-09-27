@@ -202,7 +202,7 @@
         (def b !"")
         (net/read stream 1024 b)
         (net/write stream b)
-        (buffer/clear b)))
+        (buffer/clear! b)))
 
     (def s (net/server test-host test-port handler))
     (assert s "made server 1")
@@ -286,7 +286,7 @@
 (def arr ![])
 (ev/spawn
   (while (def x (ev/take c1))
-    (array/push arr x))
+    (array/push! arr x))
   (ev/chan-close c2))
 (for i 0 1000
   (ev/give c1 i))
@@ -299,7 +299,7 @@
 (def arr ![])
 (ev/spawn
   (while (def x (ev/take c1))
-    (array/push arr x))
+    (array/push! arr x))
   (ev/sleep 0.1)
   (ev/chan-close c2))
 (for i 0 100
@@ -313,7 +313,7 @@
 (def arr ![])
 (ev/spawn
   (while (def x (ev/take c1))
-    (array/push arr x))
+    (array/push! arr x))
   (ev/chan-close c2))
 (for i 0 100
   (ev/give c1 i))
@@ -368,7 +368,7 @@
     "Read stdout of subprocess and return it trimmed in a string."
     [& args]
     (def env (os/environ))
-    (put env :out :pipe)
+    (put! env :out :pipe)
     (def proc (os/spawn args :epx env))
     (def out (get proc :out))
     (def buf !"")
@@ -418,10 +418,10 @@
         (net/write connection "Name already taken!")
         (:close connection))
       (do
-        (put conmap name connection)
+        (put! conmap name connection)
         (net/write connection (string/format "Welcome %s\n" name))
         (defer (do
-                 (put conmap name nil)
+                 (put! conmap name nil)
                  (:close connection))
           (while (def msg (ev/read connection 100))
             (broadcast name (string msg)))))))
@@ -536,7 +536,7 @@
       (++ connect-count)))
   (def s (assert (net/server test-host test-port level-trigger-handling)))
   (def cons ![])
-  (repeat maxconn (array/push cons (assert (net/connect test-host test-port))))
+  (repeat maxconn (array/push! cons (assert (net/connect test-host test-port))))
   (assert (= maxconn (length cons)))
   (defn do-connect [i]
     (with [c (get cons i)]
@@ -724,7 +724,7 @@
   (assert (= 16 (ev/count done)) "every marked task ran")
   (assert (= 16 (ev/count items)) "channel contents survived the collection")
   (def seen !{})
-  (loop [i :range [0 16]] (put seen (ev/take done) true))
+  (loop [i :range [0 16]] (put! seen (ev/take done) true))
   (assert (= 16 (length seen)) "each task reported once")
   (loop [i :range [0 16]]
     (assert (string/has-prefix? "item-" (ev/take items)) "item survived")))
@@ -768,7 +768,7 @@
   (loop [i :range [0 8]]
     (def [tag c] (ev/rselect |chans))
     (assert (= :take tag) "rselect took")
-    (put picked (find-index #(= $ c) chans) true))
+    (put! picked (find-index #(= $ c) chans) true))
   (assert (> (length picked) 1) "rselect reached more than one clause"))
 
 ; `ev/select` walks its clauses in order and distinguishes a two-element
@@ -836,7 +836,7 @@
   (ev/go (fn [x] (ev/give out [:unary x])) :seed)
   (ev/sleep 0.02)
   (def got !{})
-  (repeat 2 (let [m (ev/take out)] (put got (if (indexed? m) (first m) m) m)))
+  (repeat 2 (let [m (ev/take out)] (put! got (if (indexed? m) (first m) m) m)))
   (assert (got :nullary) "a nullary task ran")
   (assert (= [:unary :seed] (got :unary)) "a unary task was passed the value")
   (assert-error-value "a binary task function is refused"
@@ -1425,7 +1425,7 @@
   (def [r w] (os/pipe))
   (def payload (string/repeat "m" 2000000))
   (def marks ![])
-  (ev/go (fn [] (protect (ev/write w payload)) (array/push marks :wrote)))
+  (ev/go (fn [] (protect (ev/write w payload)) (array/push! marks :wrote)))
   (ev/sleep 0.1)
   (assert (empty? marks) "the write is parked on a full pipe")
   (gccollect)
@@ -1456,8 +1456,8 @@
       (def conn (assert (net/connect test-host both-port)))
       (def peer (assert (net/accept both-server)))
       (def payload (string/repeat "z" 8000000))
-      (ev/go (fn [] (protect (ev/write conn payload)) (array/push marks :wrote)))
-      (ev/go (fn [] (protect (ev/read conn 1)) (array/push marks :read)))
+      (ev/go (fn [] (protect (ev/write conn payload)) (array/push! marks :wrote)))
+      (ev/go (fn [] (protect (ev/read conn 1)) (array/push! marks :read)))
       (ev/sleep 0.1)
       (assert (empty? marks) "both directions of the socket are parked")
       (ev/write peer "!")
@@ -1490,8 +1490,8 @@
       ; Larger than any socket buffer the two ends can hold, so the write is
       ; still in flight when the peer goes away.
       (def payload (string/repeat "x" 8000000))
-      (ev/go (fn [] (put woken :writer (first (protect (ev/write conn payload))))))
-      (ev/go (fn [] (put woken :reader (first (protect (ev/read conn 16))))))
+      (ev/go (fn [] (put! woken :writer (first (protect (ev/write conn payload))))))
+      (ev/go (fn [] (put! woken :reader (first (protect (ev/read conn 16))))))
       (ev/sleep 0.2)
       (assert (empty? woken) "the write and the read are both still blocked")
       (:close peer)
@@ -1508,7 +1508,7 @@
   (def done (ev/chan 1))
   (ev/go (fn []
            (def seen ![])
-           (each x (fiber/new body mask) (array/push seen x))
+           (each x (fiber/new body mask) (array/push! seen x))
            (ev/give done seen)))
   (ev/take done))
 

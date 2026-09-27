@@ -570,7 +570,7 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
         "\n" ++
         "x can be a bytes, indexed, dictionary, fiber, or " ++
         "abstract type with a suitable ^get method.");
-    quickAsmDef(env, .{ .tag = constants.fun_put }, "put", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put x key val)", "Associates key with val for mutable x. Arrays " ++
+    quickAsmDef(env, .{ .tag = constants.fun_put }, "put!", 3, 3, 3, 3, &opOnly(constants.Opcode.put.number() | @as(u32, 1 << 16) | (2 << 24)) ++ opOnly(constants.Opcode.@"return"), "(put! x key val)", "Associates key with val for mutable x. Arrays " ++
         "and buffers only accept non-negative integer keys, " ++
         "and will expand if an out of bounds value is " ++
         "provided. For an array, extra space will be filled " ++

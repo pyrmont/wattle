@@ -150,9 +150,9 @@
                 "get of three arguments folds")
 
 ; Exactly three, exactly one, and two or more.
-(check-bytecode (fn [t k v] (put t k v))
+(check-bytecode (fn [t k v] (put! t k v))
                 !['[movn 3 0] '[put 3 1 2] '[ret 3]]
-                "put of three arguments folds")
+                "put! of three arguments folds")
 (check-bytecode (fn [x] (yield x))
                 !['[sig 1 0 3] '[ret 1]]
                 "yield of one argument folds")

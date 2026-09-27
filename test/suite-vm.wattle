@@ -112,7 +112,7 @@
                    (string (self :name) " says " what "!"))})
 (defn make-dog
   [name]
-  (table/setproto !{:name name} Dog))
+  (table/setproto! !{:name name} Dog))
 
 (assert (= "fido" ((make-dog "fido") :name)) "oo 1")
 (def spot (make-dog "spot"))
@@ -238,7 +238,7 @@
 (assert-error "expected iterable, got 7" (next 7 nil) "next raises")
 (assert-error "expected abstract|array|buffer|dictionary|string|symbol|keyword|tuple, got 7"
               (length 7) "length raises")
-(assert-error "cannot put value in immutable type" (put [1 2 3] 0 :v) "put raises")
+(assert-error "cannot put! value in immutable type" (put! [1 2 3] 0 :v) "put! raises")
 
 ; The collector's frame walk, against a collection that really happens.
 ;

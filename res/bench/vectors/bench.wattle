@@ -29,7 +29,7 @@
   (printf "%s %.6f" name (- stop start)))
 
 (def- kinds
-  (array/concat
+  (array/concat!
     ![["tuple" 'tuple] ["array" 'array]]
     (if (dyn 'vector) ![["vector" 'vector]] ![])))
 

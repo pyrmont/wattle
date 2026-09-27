@@ -62,7 +62,7 @@ const eval_line_source =
     \\     :chunks (fn [buf p]
     \\               (unless sent
     \\                 (set sent true)
-    \\                 (buffer/push buf src)))
+    \\                 (buffer/push! buf src)))
     \\     :on-status (fn [f x]
     \\                  (unless (= :dead (fiber/status f)) (set failed true))
     \\                  (on-status f x))

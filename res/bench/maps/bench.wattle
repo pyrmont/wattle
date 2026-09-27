@@ -33,7 +33,7 @@
   (def l (eval `(fn [i] (build-lit ~n i))))
   (def m1 (m 7)) (def m2 (m 7))
   (def tab !{})
-  (put tab m1 true)
+  (put! tab m1 true)
   (def last-k (last ks))
 
   (bench (string "build-call-" n) (fn [] (for i 0 reps (m i))))

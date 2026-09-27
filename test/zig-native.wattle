@@ -39,7 +39,7 @@
 (assert (deep= ![1 2 3] (:kept k)) "the get slot's keyword arm reaches a method")
 (assert (= 7 (:rank k)) "and the other method")
 (assert (deep= ![:kept :rank] (keys k)) "the next slot walks the method table")
-(put k :rank 9)
+(put! k :rank 9)
 (assert (= 9 (:rank k)) "the put slot")
 
 ; `chunk`: the splice operator reads the keeper one run at a time, and the

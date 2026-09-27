@@ -30,7 +30,7 @@
     :read (fn [self] (self :count))})
 
 (defn- methods []
-  (def obj (table/setproto !{:count 0} counter-proto))
+  (def obj (table/setproto! !{:count 0} counter-proto))
   (for i 0 400000
     (:bump obj 1))
   (:read obj))
@@ -51,7 +51,7 @@
 (defn- strings []
   (def b !"")
   (for i 0 200000
-    (buffer/push-string b (string "item-" i ";")))
+    (buffer/push-string! b (string "item-" i ";")))
   (length (string/split ";" (string b))))
 
 ; The compiler front end: parse and compile, with the interpreter mostly idle.
@@ -94,7 +94,7 @@
 (def- adder-proto !{:+ (fn [self other] (+ (self :v) other))})
 
 (defn- opfallback []
-  (def o (table/setproto !{:v 1} adder-proto))
+  (def o (table/setproto! !{:v 1} adder-proto))
   (var acc 0)
   (for i 0 300000
     (set acc (+ acc (+ o i))))

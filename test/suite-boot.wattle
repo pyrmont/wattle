@@ -86,7 +86,7 @@
            (fn [x] (+ x x))
            print) "compare type ordering")
 
-; test polymorphic compare with 'objects' (table/setproto)
+; test polymorphic compare with 'objects' (table/setproto!)
 (def mynum
   !{:type :mynum :v 0 :compare
     (fn [self other]
@@ -95,15 +95,15 @@
       :table (when (= (get other :type) :mynum)
                (cmp (self :v) (other :v)))))})
 
-(let [n3 (table/setproto !{:v 3} mynum)]
+(let [n3 (table/setproto! !{:v 3} mynum)]
   (assert (= 0 (compare 3 n3)) "compare num to object (1)")
   (assert (= -1 (compare n3 4)) "compare object to num (2)")
-  (assert (= 1 (compare (table/setproto !{:v 4} mynum) n3))
+  (assert (= 1 (compare (table/setproto! !{:v 4} mynum) n3))
           "compare object to object")
   (assert (compare< 2 n3 4) "compare< poly")
   (assert (compare> 4 n3 2) "compare> poly")
   (assert (compare<= 2 3 n3 4) "compare<= poly")
-  (assert (compare= 3 n3 (table/setproto !{:v 3} mynum)) "compare= poly")
+  (assert (compare= 3 n3 (table/setproto! !{:v 3} mynum)) "compare= poly")
   (assert (deep= (sort compare< ![4 5 n3 2]) ![2 n3 4 5])
           "polymorphic sort"))
 
@@ -205,7 +205,7 @@
 
 (def res !{})
 (loop [[k v] :pairs !{1 2 3 4 5 6}]
-  (put res k v))
+  (put! res k v))
 (assert (and
           (= (get res 1) 2)
           (= (get res 3) 4)
@@ -306,17 +306,17 @@
     (def xi (get xs i))
     (def yj (get ys j))
     (if (< xi yj)
-      (do (array/push ret xi) (set i (+ i 1)))
-      (do (array/push ret yj) (set j (+ j 1)))))
+      (do (array/push! ret xi) (set i (+ i 1)))
+      (do (array/push! ret yj) (set j (+ j 1)))))
   ; Push rest of xs
   (while (< i xlen)
     (def xi (get xs i))
-    (array/push ret xi)
+    (array/push! ret xi)
     (set i (+ i 1)))
   ; Push rest of ys
   (while (< j ylen)
     (def yj (get ys j))
-    (array/push ret yj)
+    (array/push! ret yj)
     (set j (+ j 1)))
   ret)
 
@@ -467,7 +467,7 @@
 (defn- drain [f]
   (assert (fiber? f) "result is a fiber")
   (def res ![])
-  (each x f (array/push res x))
+  (each x f (array/push! res x))
   res)
 
 (assert (deep= (drain (take 0 [])) ![]) "take 1")
@@ -543,7 +543,7 @@
 (each items items-list
   (def len (length items))
   (for i 0 (+ len 1)
-    (assert (deep= (array/concat (drain (take i items)) (drain (drop i items)))
+    (assert (deep= (array/concat! (drain (take i items)) (drain (drop i items)))
                    (seq [x :in items] x))
             (string/format "take-drop partition %q %d" items i))))
 
@@ -624,7 +624,7 @@
 
 (def a ![])
 (eachk x [:a :b :c :d]
-  (array/push a x))
+  (array/push! a x))
 (assert (deep= (range 4) a) "eachk 1")
 
 (with-dyns [:err !""]
@@ -882,7 +882,7 @@
 ; A map has no prototype, so freezing a table drops the prototype's bindings.
 (def table-to-freeze !{:c 22 :b [1 2 3 4] :d !"test" :e "test2"})
 (def frozen-map {:c 22 :b [1 2 3 4] :d "test" :e "test2"})
-(table/setproto table-to-freeze !{:a ![1 2 3]})
+(table/setproto! table-to-freeze !{:a ![1 2 3]})
 
 (assert (deep= frozen-map (freeze table-to-freeze)))
 
@@ -890,7 +890,7 @@
 (def hashes !{})
 (repeat 200
   (def x (freeze {!"" 1 !"" 2 !"" 3 !"" 4 !"" 5}))
-  (put hashes (hash x) true))
+  (put! hashes (hash x) true))
 (assert (= 1 (length hashes)) "freeze mutable keys is deterministic")
 
 ; Make sure Carriage Returns don't end up in doc strings
@@ -975,7 +975,7 @@
                 (absent-by-configuration? name)
                 (and (string/has-prefix? "*" name)
                      (index-of (keyword (string/slice name 1 -2)) (all-dynamics))))
-      (array/push dangling (string sym " -> " name)))))
+      (array/push! dangling (string sym " -> " name)))))
 (assert (empty? dangling)
         (string "docstring references that name no binding: " (string/join ", " dangling)))
 

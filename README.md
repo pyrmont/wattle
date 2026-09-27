@@ -92,7 +92,7 @@ See the `examples/` directory for all provided example programs.
   """
   [state x1 y1 x2 y2]
   (def cellset !{})
-  (each cell state (put cellset cell true))
+  (each cell state (put! cellset cell true))
   (loop [x :range [x1 (+ 1 x2)]
          :after (print)
          y :range [y1 (+ 1 y2)]]
@@ -126,7 +126,7 @@ See the `examples/` directory for all provided example programs.
     (while (:read stream 1024 b)
       (printf " %v -> %v" id b)
       (:write stream b)
-      (buffer/clear b))
+      (buffer/clear! b))
     (printf "Done %v!" id)
     (ev/sleep 0.5)))
 

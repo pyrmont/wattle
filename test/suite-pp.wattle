@@ -30,10 +30,10 @@
 
 ; Buffer self blitting, check for use after free
 (def buf1 !"1234567890")
-(buffer/blit buf1 buf1 -1)
-(buffer/blit buf1 buf1 -1)
-(buffer/blit buf1 buf1 -1)
-(buffer/blit buf1 buf1 -1)
+(buffer/blit! buf1 buf1 -1)
+(buffer/blit! buf1 buf1 -1)
+(buffer/blit! buf1 buf1 -1)
+(buffer/blit! buf1 buf1 -1)
 (assert (= (string buf1) (string/repeat "1234567890" 16))
         "buffer blit against self")
 
@@ -43,16 +43,16 @@
 ; 2026-09-19 rather than specified; see notes/INCREMENTS.md.
 (def buftemp !"abcd")
 (assert-error "cannot format a buffer into itself"
-              (buffer/format buftemp "---%p---" buftemp))
+              (buffer/format! buftemp "---%p---" buftemp))
 (assert-error "cannot format a buffer into itself"
-              (buffer/format buftemp "---%p %p---" buftemp buftemp))
+              (buffer/format! buftemp "---%p %p---" buftemp buftemp))
 (assert-error "cannot format a buffer into itself"
-              (buffer/format buftemp "---%s---" buftemp))
+              (buffer/format! buftemp "---%s---" buftemp))
 (assert-error "cannot format a buffer into itself"
-              (buffer/format-at buftemp 0 "%w" buftemp))
+              (buffer/format-at! buftemp 0 "%w" buftemp))
 (assert (= "abcd" (string buftemp)) "and the buffer is untouched by the refusal")
 ; Another buffer is not the destination, so it formats as any value does.
-(assert (= "abcd--!\"xy\"--" (string (buffer/format buftemp "--%w--" !"xy")))
+(assert (= "abcd--!\"xy\"--" (string (buffer/format! buftemp "--%w--" !"xy")))
         "a different buffer is unaffected")
 
 (defn check-source [x]
@@ -83,7 +83,7 @@
 
 ; Test multiline pretty specifiers
 (let [tup [:keyword "string" !"buffer"]
-      tab !{true (table/setproto !{:bar tup
+      tab !{true (table/setproto! !{:bar tup
                                    :baz 42}
                                  !{:_name "Foo"})}]
   (set (tab tup) tab)
@@ -316,7 +316,7 @@
 ; the two readings to differ over. The operation is refused now.
 (do
   (def b !"a")
-  (assert-error "cannot format a buffer into itself" (buffer/format b "%v" b))
+  (assert-error "cannot format a buffer into itself" (buffer/format! b "%v" b))
   (assert (= "a" (string b)) "and the buffer is untouched"))
 
 (end-suite)

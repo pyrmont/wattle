@@ -28,7 +28,7 @@
   """
   [state x1 y1 x2 y2]
   (def cellset !{})
-  (each cell state (put cellset cell true))
+  (each cell state (put! cellset cell true))
   (loop [x :range [x1 (+ 1 x2)]
          :after (print)
          y :range [y1 (+ 1 y2)]]

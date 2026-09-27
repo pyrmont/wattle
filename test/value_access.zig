@@ -623,7 +623,7 @@ fn theResumedFiberJoinsTheLineage() void {
         " (def log ![])" ++
         " (var outer nil)" ++
         " (def child (fiber/new (fn []" ++
-        "   (array/push log (length (debug/lineage outer)))" ++
+        "   (array/push! log (length (debug/lineage outer)))" ++
         "   (yield 1))))" ++
         " (set outer (fiber/new (fn [] (next child nil))))" ++
         " (resume outer)" ++
@@ -1160,11 +1160,11 @@ fn fromWattle() void {
             " (get [10 20 30] 9) " ++
             " (get \"abc\" :x) " ++
             " (protect (in [10 20 30] 9)) " ++
-            " (do (def a ![1]) (put a 3 :x) a) " ++
-            " (do (def b !\"A\") (put b 3 66) b) " ++
+            " (do (def a ![1]) (put! a 3 :x) a) " ++
+            " (do (def b !\"A\") (put! b 3 66) b) " ++
             " (keys !{:a 1 :b 2}) " ++
             " (values {:a 1}) " ++
-            " (do (def s (table/setproto !{:own 1} !{:up 2})) [(in s :up) (keys s)])]",
+            " (do (def s (table/setproto! !{:own 1} !{:up 2})) [(in s :up) (keys s)])]",
     );
     const v = harness.elems(out);
     expect(wrap.toInteger(v[0]) == 6);

@@ -93,8 +93,8 @@
 (assert (= (get !{:boop :bap} :boop) :bap) "get non nil from table")
 (assert (= (get !"\0" 0) 0) "get non nil from buffer")
 (assert (= (get !"\0" 1) nil) "get nil from buffer oob")
-(assert (put !{} :boop :bap) "can add to empty table")
-(assert (put !{1 3} :boop :bap) "can add to non-empty table")
+(assert (put! !{} :boop :bap) "can add to empty table")
+(assert (put! !{1 3} :boop :bap) "can add to non-empty table")
 (assert (= 7 (bor 3 4)) "bit or")
 (assert (= 0 (band 3 4)) "bit and")
 (assert (= 0xFF (bxor 0x0F 0xF0)) "bit xor")
@@ -290,7 +290,7 @@
 (assert-error-value "hash-map odd arity" "expected an even number of keys and values, got 1" (hash-map :a))
 (assert-error-value "getproto type" "expected table, got 1" (getproto 1))
 (assert (= nil (getproto !{})) "getproto with no prototype")
-(assert (deep= !{:a 1} (getproto (table/setproto !{} !{:a 1}))) "getproto with a prototype")
+(assert (deep= !{:a 1} (getproto (table/setproto! !{} !{:a 1}))) "getproto with a prototype")
 ; A map has no prototype, so getproto takes a table and nothing else.
 (assert-error-value "getproto of a map" "expected table, got <map >" (getproto {}))
 
@@ -384,7 +384,7 @@
   ![[1 2] ![1 2] "ab" !"ab" :key 'sym {:a 1} !{:a 1} (hash-set 1 2)
     (fiber/new (fn [] 1)) (file/temp) 5 nil true])
 (compwhen (dyn 'ev/chan)
-  (array/push lengthable-samples (ev/chan)))
+  (array/push! lengthable-samples (ev/chan)))
 (each x lengthable-samples
   (assert (= (lengthable? x) (get (protect (length x)) 0))
           (string/format "lengthable? agrees with length for %q" (type x))))
@@ -532,7 +532,7 @@
 (assert (= 2 (thru get [1 2 3] 1)) "get indexed")
 (assert (= nil (thru get [1 2 3] 10)) "get out of bounds is nil, not an error")
 (assert (= :d (thru get {:a 1} :b :d)) "get default")
-(assert (deep= ![9] (thru put ![1] 0 9)) "put returns the mutated value")
+(assert (deep= ![9] (thru put! ![1] 0 9)) "put! returns the mutated value")
 (assert (= 3 (thru length [1 2 3])) "length")
 (assert (= -1 (thru bnot 0)) "bnot")
 (assert (= 6 (thru apply + [1 2 3])) "apply as a value")
@@ -585,21 +585,21 @@
 (assert (deep= {} (hash-map)) "hash-map with no pairs")
 (assert (deep= !{:a 1} (table :a 1)) "table with one pair")
 
-; `array/ensure` validates both its arguments.
+; `array/ensure!` validates both its arguments.
 ;
 ; Without the second check a growth of zero frees the array's backing store
 ; and leaves `count` claiming the elements, and a negative one asks for most of
 ; the address space and ends the process. The boundary rejects a growth below
 ; one, the way it already rejected a count below one.
-(assert-error "expected positive integer" (array/ensure ![1 2 3] 100 0))
-(assert-error "expected positive integer" (array/ensure ![1 2 3] 100 -1))
-(assert-error "expected positive integer" (array/ensure ![1 2 3] 0 2))
+(assert-error "expected positive integer" (array/ensure! ![1 2 3] 100 0))
+(assert-error "expected positive integer" (array/ensure! ![1 2 3] 100 -1))
+(assert-error "expected positive integer" (array/ensure! ![1 2 3] 0 2))
 
 ; And a valid growth still grows, leaving the elements alone.
 (def ensured ![1 2 3])
-(array/ensure ensured 100 2)
-(assert (= 3 (length ensured)) "array/ensure keeps the count")
-(assert (deep= ![1 2 3] ensured) "array/ensure keeps the elements")
+(array/ensure! ensured 100 2)
+(assert (= 3 (length ensured)) "array/ensure! keeps the count")
+(assert (deep= ![1 2 3] ensured) "array/ensure! keeps the elements")
 
 ; `module/paths` registers a native file extension per platform spelling, and
 ; `.dylib` was missing where `.dll` was present -- so macOS was the one

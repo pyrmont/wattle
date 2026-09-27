@@ -967,19 +967,19 @@
 
 ; A peg program with no instructions has no first instruction to run.
 (assert-error "invalid peg bytecode"
-              (unmarshal (buffer/push-string !"" "\xd9\xcf\x08core/peg\x00\x00")))
+              (unmarshal (buffer/push-string! !"" "\xd9\xcf\x08core/peg\x00\x00")))
 
 ; An instruction count the stream cannot be carrying is refused before the peg
 ; is allocated: one word is at least one byte on the wire.
 (assert-error "invalid peg bytecode"
-              (unmarshal (buffer/push-string !""
+              (unmarshal (buffer/push-string! !""
                                              "\xd9\xcf\x08core/peg\xf8\x00\x00\x00\x00\x00\x00\x00\x40\x00")))
 
 ; `(argument n)` takes a non-negative index from the compiler; crafted
 ; bytecode need not, and an index outside the arguments captures nil rather
 ; than reading outside them.
 (assert (deep= ![nil]
-               (peg/match (unmarshal (buffer/push-string !""
+               (peg/match (unmarshal (buffer/push-string! !""
                                                          "\xd9\xcf\x08core/peg\x03\x00\x0f\xcd\xff\xff\xff\xff\x00"))
                           "x"))
         "a negative argument index captures nil")

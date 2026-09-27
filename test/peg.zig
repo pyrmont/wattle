@@ -434,9 +434,9 @@ fn theCompilerBoundsBothOfItsRecursions() void {
     // `pegCompile1` walks this in a loop rather than by recursing.
     const chained = protectedResult(evaluate(
         \\(do (def g !{})
-        \\    (loop [i :range [0 1100]] (put g (keyword "r" i) (keyword "r" (+ i 1))))
-        \\    (put g :main :r0)
-        \\    (put g (keyword "r" 1100) 1)
+        \\    (loop [i :range [0 1100]] (put! g (keyword "r" i) (keyword "r" (+ i 1))))
+        \\    (put! g :main :r0)
+        \\    (put! g (keyword "r" 1100) 1)
         \\    (protect (peg/compile g)))
     ));
     expect(!chained.ok);

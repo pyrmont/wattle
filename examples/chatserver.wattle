@@ -17,10 +17,10 @@
       (net/write connection "Name already taken!")
       (:close connection))
     (do
-      (put conmap name connection)
+      (put! conmap name connection)
       (net/write connection (string/format "Welcome %s\n" name))
       (defer (do
-               (put conmap name nil)
+               (put! conmap name nil)
                (:close connection))
         (while (def msg (ev/read connection 100))
           (broadcast name (string msg)))

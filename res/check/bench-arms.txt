@@ -9,17 +9,89 @@
 # difference in a comment does not, and the two known ones are path
 # references each arm is right about in its own world.
 #
-# 8 corpora, 7 with identical arms
+# 8 corpora, 0 with identical arms
 #
 # columns: corpus  state, then one indented line per differing line
 
-collections/bench    same
-hashbench/ints1      same
-interpreter/bench    same
-maps/bench           1 differing
+collections/bench    11 differing
+       4 janet-> ; cfunction entry. Neither contains a splice, an `apply` or an `array/concat`,
+       4 wattle> ; nfunction entry. Neither contains a splice, an `apply` or an `array/concat!`,
+      18 janet-> ; the arm of `array/concat` that appends a part which is not indexed, and it
+      18 wattle> ; the arm of `array/concat!` that appends a part which is not indexed, and it
+      66 janet->   (for i 0 2500000 (set acc (+ acc (length (array/concat ![] small)))))
+      66 wattle>   (for i 0 2500000 (set acc (+ acc (length (array/concat! ![] small)))))
+      71 janet->   (for i 0 1500000 (set acc (+ acc (length (array/concat ![] medium)))))
+      71 wattle>   (for i 0 1500000 (set acc (+ acc (length (array/concat! ![] medium)))))
+      76 janet->   (for i 0 250000 (set acc (+ acc (length (array/concat ![] large)))))
+      76 wattle>   (for i 0 250000 (set acc (+ acc (length (array/concat! ![] large)))))
+      85 janet->     (for i 0 1000 (array/concat a small))
+      85 wattle>     (for i 0 1000 (array/concat! a small))
+      92 janet->   (for i 0 2000000 (set acc (+ acc (length (array/concat ![] :a :b :c)))))
+      92 wattle>   (for i 0 2000000 (set acc (+ acc (length (array/concat! ![] :a :b :c)))))
+      97 janet->   (for i 0 2500000 (set acc (+ acc (length (array/join ![] small)))))
+      97 wattle>   (for i 0 2500000 (set acc (+ acc (length (array/join! ![] small)))))
+     135 janet->   (for i 0 1900000 (set acc (+ acc (length (string/join parts "-")))))
+     135 wattle>   (for i 0 1900000 (set acc (+ acc (length (string/join "-" parts)))))
+     147 janet-> ; The control: a put and a get on a table, reading no elements.
+     147 wattle> ; The control: a put! and a get on a table, reading no elements.
+     152 janet->     (put t :k i)
+     152 wattle>     (put! t :k i)
+hashbench/ints1      3 differing
+       7 janet->   (put f key true))
+       7 wattle>   (put! f key true))
+      15 janet->   (put f key true))
+      15 wattle>   (put! f key true))
+      23 janet->   (put f key true))
+      23 wattle>   (put! f key true))
+interpreter/bench    4 differing
+      33 janet->   (def obj (table/setproto !{:count 0} counter-proto))
+      33 wattle>   (def obj (table/setproto! !{:count 0} counter-proto))
+      50 janet-> ; Strings and buffers: JOP_MAKE_STRING plus the string cfunctions.
+      50 wattle> ; Strings and buffers: JOP_MAKE_STRING plus the string nfunctions.
+      54 janet->     (buffer/push-string b (string "item-" i ";")))
+      54 wattle>     (buffer/push-string! b (string "item-" i ";")))
+      97 janet->   (def o (table/setproto !{:v 1} adder-proto))
+      97 wattle>   (def o (table/setproto! !{:v 1} adder-proto))
+maps/bench           6 differing
        6 janet-> ; and what is left measures one binary against another. `sizes.janet`
        6 wattle> ; and what is left measures one binary against another. `sizes.wattle`
-maps/sizes           same
-value/access         same
-value/bench          same
-vectors/bench        same
+      25 janet->   `(~ctor ~|(mapcat (short-fn [$ v]) (take n keys-24))))
+      25 wattle>   `(~ctor ~|(mapcat (short-fn [$ v]) (slice keys-24 0 n))))
+      28 janet->   (hash-map |(mapcat (short-fn [$ v]) (take n keys-24))))
+      28 wattle>   (hash-map |(mapcat (short-fn [$ v]) (slice keys-24 0 n))))
+      31 janet->   (def ks (take n keys-24))
+      31 wattle>   (def ks (slice keys-24 0 n))
+      36 janet->   (put tab m1 true)
+      36 wattle>   (put! tab m1 true)
+      47 janet->   (bench (string "each-map-" n) (fn [] (var a 0) (for i 0 iter (eachp [k v] m1 (+= a v))) a))
+      47 wattle>   (bench (string "each-map-" n) (fn [] (var a 0) (for i 0 iter (each [k v] m1 (+= a v))) a))
+maps/sizes           2 differing
+      23 janet->   (def ks (take n all-keys))
+      23 wattle>   (def ks (slice all-keys 0 n))
+      33 janet->     (bench (string "each-" name "-" n) (fn [] (var a 0) (for i 0 iter (eachp [k v] m (+= a v))) a))
+      33 wattle>     (bench (string "each-" name "-" n) (fn [] (var a 0) (for i 0 iter (each [k v] m (+= a v))) a))
+value/access         2 differing
+      60 janet->   (for i 0 20000000 (put t :k i))
+      60 wattle>   (for i 0 20000000 (put! t :k i))
+      66 janet->   (for i 0 20000000 (put a 2 i))
+      66 wattle>   (for i 0 20000000 (put! a 2 i))
+value/bench          8 differing
+       1 janet-> ; Phase 10 Part 17b's benchmark corpus: cfunction entry.
+       1 wattle> ; Phase 10 Part 17b's benchmark corpus: nfunction entry.
+       4 janet-> ; happens in the first two or three instructions of a *cfunction*: an arity
+       4 wattle> ; happens in the first two or three instructions of an *nfunction*: an arity
+      11 janet-> ; calls a cfunction whose body is a few instructions, several million times.
+      11 wattle> ; calls an nfunction whose body is a few instructions, several million times.
+      56 janet->     (buffer/clear b)
+      56 wattle>     (buffer/clear! b)
+      57 janet->     (buffer/push-byte b 65))
+      57 wattle>     (buffer/push-byte! b 65))
+      85 janet-> ; The control: a PEG match, which enters one cfunction and then spends all its
+      85 wattle> ; The control: a PEG match, which enters one nfunction and then spends all its
+      96 janet-> ; `net/` and `ffi/` cfunction opens with, and there is deliberately no workload
+      96 wattle> ; `net/` and `ffi/` nfunction opens with, and there is deliberately no workload
+      97 janet-> ; for it here. Every cfunction that pays the check also makes a system call:
+      97 wattle> ; for it here. Every nfunction that pays the check also makes a system call:
+vectors/bench        1 differing
+      32 janet->   (array/concat
+      32 wattle>   (array/concat!

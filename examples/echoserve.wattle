@@ -10,7 +10,7 @@
     (while (:read stream 1024 b)
       (printf " %v -> %v" id b)
       (:write stream b)
-      (buffer/clear b))
+      (buffer/clear! b))
     (printf "Done %v!" id)
     (ev/sleep 0.5)))
 

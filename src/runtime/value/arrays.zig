@@ -19,7 +19,7 @@
 //! overflow, but no raw block sits between being acquired and being stored
 //! where the collector can see it.
 //!
-//! ## Why `array/ensure` validates both of its arguments
+//! ## Why `array/ensure!` validates both of its arguments
 //!
 //! The reachable instance that makes that necessary is here rather than in
 //! `buffers.zig`. A growth of zero frees the backing store while leaving
@@ -160,13 +160,13 @@ pub fn lib(env: *tables.Table) void {
             "`(array)` but can be more efficient if the maximum size of an array is known."),
         corefn.reg("array/weak", &nfunArrayWeak, @src(), "(array/weak capacity)", "Creates a new empty array with a pre-allocated capacity and support for weak references. Similar to ^array/new."),
         corefn.reg("array/new-filled", &nfunArrayNewFilled, @src(), "(array/new-filled n)\n(array/new-filled n val)", "Creates a new array of n elements, all set to val, which defaults to nil. n must be non-negative. Returns the new array."),
-        corefn.reg("array/fill", &nfunArrayFill, @src(), "(array/fill arr)\n(array/fill arr val)", "Replaces all elements of arr, an array, with val (defaulting to nil) without changing the length of arr. " ++
+        corefn.reg("array/fill!", &nfunArrayFill, @src(), "(array/fill! arr)\n(array/fill! arr val)", "Replaces all elements of arr, an array, with val (defaulting to nil) without changing the length of arr. " ++
             "Returns arr mutated."),
-        corefn.reg("array/pop", &nfunArrayPop, @src(), "(array/pop arr)", "Removes the last element of arr, an array, and returns it. If arr is empty, returns nil. Modifies " ++
+        corefn.reg("array/pop!", &nfunArrayPop, @src(), "(array/pop! arr)", "Removes the last element of arr, an array, and returns it. If arr is empty, returns nil. Modifies " ++
             "arr."),
         corefn.reg("array/peek", &nfunArrayPeek, @src(), "(array/peek arr)", "Returns the last element of arr, an array, or nil if arr is empty. Does not modify arr."),
-        corefn.reg("array/push", &nfunArrayPush, @src(), "(array/push arr & vals)", "Pushes all of vals to the end of arr, an array. Modifies arr and returns it."),
-        corefn.reg("array/ensure", &nfunArrayEnsure, @src(), "(array/ensure arr capacity growth)", "Ensures that the memory backing arr, an array, is large enough for capacity " ++
+        corefn.reg("array/push!", &nfunArrayPush, @src(), "(array/push! arr & vals)", "Pushes all of vals to the end of arr, an array. Modifies arr and returns it."),
+        corefn.reg("array/ensure!", &nfunArrayEnsure, @src(), "(array/ensure! arr capacity growth)", "Ensures that the memory backing arr, an array, is large enough for capacity " ++
             "items at the given rate of growth. capacity and growth must be integers. " ++
             "If the backing capacity is already enough, then this function does nothing. " ++
             "Otherwise, the backing memory is reallocated so that there is enough space."),
@@ -175,23 +175,23 @@ pub fn lib(env: *tables.Table) void {
             "end of ind. A negative start is exclusive and a negative end is inclusive. " ++
             "By default, start is 0 and end is the length of ind. " ++
             "Raises if start is outside the length of ind. Returns a new array."),
-        corefn.reg("array/concat", &nfunArrayConcat, @src(), "(array/concat arr & parts)", "Appends the elements of each of parts to arr, an array, in order. " ++
+        corefn.reg("array/concat!", &nfunArrayConcat, @src(), "(array/concat! arr & parts)", "Appends the elements of each of parts to arr, an array, in order. " ++
             "If a part is an array or vector, its elements are appended. " ++
             "Otherwise, the part itself is appended as one element. " ++
             "Returns arr mutated."),
-        corefn.reg("array/insert", &nfunArrayInsert, @src(), "(array/insert arr at & vals)", "Inserts all of vals into arr, an array, at index at. at should be an integer between " ++
+        corefn.reg("array/insert!", &nfunArrayInsert, @src(), "(array/insert! arr at & vals)", "Inserts all of vals into arr, an array, at index at. at should be an integer between " ++
             "0 and the length of the array. A negative value for at indexes backwards from " ++
             "the end of the array, inserting after the index such that inserting at -1 appends to " ++
             "the array. Returns arr mutated."),
-        corefn.reg("array/remove", &nfunArrayRemove, @src(), "(array/remove arr at)\n(array/remove arr at n)", "Removes up to n elements starting at index at in arr, an array. at must be within " ++
+        corefn.reg("array/remove!", &nfunArrayRemove, @src(), "(array/remove! arr at)\n(array/remove! arr at n)", "Removes up to n elements starting at index at in arr, an array. at must be within " ++
             "the length of arr and can index from " ++
             "the end with a negative index, and n must be a non-negative integer. " ++
             "By default, n is 1. " ++
             "Returns arr mutated."),
-        corefn.reg("array/trim", &nfunArrayTrim, @src(), "(array/trim arr)", "Sets the backing capacity of arr, an array, to its current length. Returns arr mutated."),
-        corefn.reg("array/clear", &nfunArrayClear, @src(), "(array/clear arr)", "Empties arr, an array, setting its count to 0 but does not free the backing capacity. " ++
+        corefn.reg("array/trim!", &nfunArrayTrim, @src(), "(array/trim! arr)", "Sets the backing capacity of arr, an array, to its current length. Returns arr mutated."),
+        corefn.reg("array/clear!", &nfunArrayClear, @src(), "(array/clear! arr)", "Empties arr, an array, setting its count to 0 but does not free the backing capacity. " ++
             "Returns arr mutated."),
-        corefn.reg("array/join", &nfunArrayJoin, @src(), "(array/join arr & inds)", "Appends the elements of each of inds, an indexed type, to arr, an array. " ++
+        corefn.reg("array/join!", &nfunArrayJoin, @src(), "(array/join! arr & inds)", "Appends the elements of each of inds, an indexed type, to arr, an array. " ++
             "Raises if any of inds is not indexed. " ++
             "Returns arr mutated."),
     };
@@ -324,14 +324,14 @@ fn appendIndexed(array: *Array, x: repr.Value, it: *args_core.Chunks) raise.Erro
     }
 }
 
-/// `array/clear`: the count set to zero, the backing capacity kept.
+/// `array/clear!`: the count set to zero, the backing capacity kept.
 fn nfunArrayClear(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     (try args_core.getArray(argv, 0)).count = 0;
     return argv[0];
 }
 
-/// `array/concat`: the remaining arguments appended, an indexed part element
+/// `array/concat!`: the remaining arguments appended, an indexed part element
 /// by element and anything else as a single element.
 fn nfunArrayConcat(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
@@ -347,7 +347,7 @@ fn nfunArrayConcat(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromArray(array);
 }
 
-/// `array/ensure`: the backing store grown to a capacity at a rate of growth.
+/// `array/ensure!`: the backing store grown to a capacity at a rate of growth.
 ///
 /// Both arguments are checked and not only the count. The header says what the
 /// second check prevents.
@@ -365,7 +365,7 @@ fn nfunArrayEnsure(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `array/fill`: every live element replaced, the length unchanged.
+/// `array/fill!`: every live element replaced, the length unchanged.
 fn nfunArrayFill(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const array = try args_core.getArray(argv, 0);
@@ -374,7 +374,7 @@ fn nfunArrayFill(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `array/insert`: values inserted at an index, which may count back from the
+/// `array/insert!`: values inserted at an index, which may count back from the
 /// end.
 fn nfunArrayInsert(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, -1);
@@ -394,7 +394,7 @@ fn nfunArrayInsert(argv: []repr.Value) raise.Error!repr.Value {
         const slots = array.reserved();
         std.mem.copyBackwards(repr.Value, slots[from + inserted ..][0..rest], slots[from..][0..rest]);
     }
-    // Guarded, because `(array/insert a n)` inserts nothing. With no values to
+    // Guarded, because `(array/insert! a n)` inserts nothing. With no values to
     // copy, `ensure` may not have allocated at all, so `data` is still null and
     // unwrapping it panics. `test/suite-array.wattle` pins the case.
     if (inserted != 0) {
@@ -404,7 +404,7 @@ fn nfunArrayInsert(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `array/join`: the same as `array/concat` but for one thing, that a part
+/// `array/join!`: the same as `array/concat!` but for one thing, that a part
 /// which is not indexed is an error here and is appended as a single element
 /// there.
 fn nfunArrayJoin(argv: []repr.Value) raise.Error!repr.Value {
@@ -450,13 +450,13 @@ fn nfunArrayPeek(argv: []repr.Value) raise.Error!repr.Value {
     return peek(try args_core.getArray(argv, 0));
 }
 
-/// `array/pop`: the last element, removed.
+/// `array/pop!`: the last element, removed.
 fn nfunArrayPop(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     return pop(try args_core.getArray(argv, 0));
 }
 
-/// `array/push`: every remaining argument appended.
+/// `array/push!`: every remaining argument appended.
 fn nfunArrayPush(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, -1);
     const array = try args_core.getArray(argv, 0);
@@ -473,7 +473,7 @@ fn nfunArrayPush(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `array/remove`: up to `n` elements dropped from an index.
+/// `array/remove!`: up to `n` elements dropped from an index.
 fn nfunArrayRemove(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const array = try args_core.getArray(argv, 0);
@@ -524,7 +524,7 @@ fn nfunArraySlice(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromArray(array);
 }
 
-/// `array/trim`: the backing capacity set to the current length.
+/// `array/trim!`: the backing capacity set to the current length.
 fn nfunArrayTrim(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const array = try args_core.getArray(argv, 0);

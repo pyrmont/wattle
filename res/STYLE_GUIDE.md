@@ -140,8 +140,8 @@ appears:
 
 `x` is the first argument, and `xs` is the rest argument of that role when it
 is in first position. `vals` is the rest argument of the `val` role, and also
-the rest argument that follows `fmt`. `at` is the position in `array/insert`,
-`array/remove` and `buffer/format-at`.
+the rest argument that follows `fmt`. `at` is the position in `array/insert!`,
+`array/remove!` and `buffer/format-at!`.
 
 Two rules decide between `x` and `val`. A name is `x` only when the argument is
 first, so a value in any later position is `val`. A conversion that writes into
@@ -153,6 +153,11 @@ The exceptions are `math/atan2`, which is `(math/atan2 y x)`, `math/pow`, which
 is `(math/pow x exp)`, and `os/clock`, whose `format` is the type of the output
 and not a format string. A docstring that names a container writes its type
 after the name: "Appends the bytes to buf, a buffer."
+
+**A function that mutates one of its arguments is named with a trailing `!`.**
+The mutated argument is `arr`, `buf` or `tbl`, or a library function's `mut`
+or `tab`. The name without the `!`, where a program can call it, returns a
+new value instead and leaves every argument unchanged.
 
 ## The `//!` header
 

@@ -21,9 +21,9 @@
 (assert (= 0 (a 20)) "a new numarray reads as zero")
 (assert (= 30 (:length a)) "length answers the size it was made with")
 
-; `put` and `get` round-trip a number.
-(put a 5 3.14)
-(assert (= 3.14 (a 5)) "put then get")
+; `put!` and `get` round-trip a number.
+(put! a 5 3.14)
+(assert (= 3.14 (a 5)) "put! then get")
 (set (a 5) 100)
 (assert (= 100 (a 5)) "set then get")
 
@@ -39,8 +39,8 @@
   (assert (not ok) (string "expected a refusal: " message))
   (assert (= message err) (string "expected " message ", got " err)))
 
-(refuses (fn [] (put a :nope 1)) "expected integer key")
-(refuses (fn [] (put a 1 "x")) "expected number value")
+(refuses (fn [] (put! a :nope 1)) "expected integer key")
+(refuses (fn [] (put! a 1 "x")) "expected number value")
 ; A keyword that is not a method is not the callback's refusal: `get` answers
 ; 0 and the *runtime* raises, exactly as the C original did.
 (def [ok err] (protect (a :not-a-method)))
@@ -62,8 +62,8 @@
         (string "expected a lookup failure, got " neg-err))
 
 (def before (a 0))
-(put a -1 999)
-(assert (= before (a 0)) "a negative put writes nothing, and not element zero")
+(put! a -1 999)
+(assert (= before (a 0)) "a negative put! writes nothing, and not element zero")
 
 ; A negative size is refused. The C original asked for about 147 exabytes and
 ; died in the out-of-memory exit; the module says what happened instead.
@@ -73,8 +73,8 @@
 ; callback. `(string x)` is the callback's bytes exactly; `(describe x)` is the
 ; same bytes with the `<numarray ...>` the runtime writes around them.
 (def small (new 3))
-(put small 0 1)
-(put small 1 2.5)
+(put! small 0 1)
+(put! small 1 2.5)
 (assert (= "[1 2.5 0]" (string small)) "tostring renders the elements")
 (assert (= "<numarray [1 2.5 0]>" (describe small))
         (string "expected the described form, got " (describe small)))

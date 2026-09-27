@@ -46,9 +46,9 @@
 (let [[a b] v] (assert (= [1 2] [a b]) "destructuring"))
 (assert (= 3 (match v [_ _ c] c)) "match")
 (def seen ![])
-(each x big (array/push seen x))
+(each x big (array/push! seen x))
 (assert (deep= (range 1000) seen) "each")
-(assert (deep= ![0 1 2] (array/concat ![] (vector 0 1 2))) "array/concat")
+(assert (deep= ![0 1 2] (array/concat! ![] (vector 0 1 2))) "array/concat!")
 
 ; Updating
 
@@ -159,7 +159,7 @@
 (assert (= (in pair 0) (in pair 1)) "a vector marshalled twice")
 (def cyc !{})
 (def holder (vector cyc))
-(put cyc holder :found)
+(put! cyc holder :found)
 (def holder-back (round-trip holder))
 (assert (= :found (get (in holder-back 0) holder-back))
   "a vector used as a key in its own element")

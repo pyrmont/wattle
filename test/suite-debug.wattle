@@ -270,7 +270,7 @@
 ; is standing on a pointer into it. The call is traced once and completes.
 (defn deep-args [& xs] (length xs))
 (def traced-chunks ![])
-(defn growing-err [b] (def _ (deep-args |(range 200))) (array/push traced-chunks (string b)) nil)
+(defn growing-err [b] (def _ (deep-args |(range 200))) (array/push! traced-chunks (string b)) nil)
 (defn traced-meth [self a b c d] (+ 0 5 (length [self a b c d])))
 (trace traced-meth)
 (def trace-result

@@ -368,7 +368,7 @@
       (repeat 3
         (def p (os/spawn [|run wattle "-e" """(print (length (os/dir "/dev/fd")))"""]
                          :p {:out :pipe :err null}))
-        (array/push kept-procs p)
+        (array/push! kept-procs p)
         (defn read-count []
           (def n (scan-number (string/trim (string (:read (p :out) :all)))))
           (os/proc-wait p)
@@ -378,7 +378,7 @@
                      (ev/with-deadline 5 (read-count))
                      (read-count))))
         (unless (first counted) (os/proc-kill p false :kill))
-        (array/push counts (counted 1)))
+        (array/push! counts (counted 1)))
       (each p kept-procs
         (:close (p :out))
         (:close (p :err)))

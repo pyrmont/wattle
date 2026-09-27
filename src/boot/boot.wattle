@@ -25,7 +25,7 @@
             (do
               (if (= t :string)
                 (set docstr ith)
-                (array/push modifiers ith))
+                (array/push! modifiers ith))
               (if (< i len) (recur (+ i 1))))))))
     (def start (fstart 0))
     (def args (in more start))
@@ -48,16 +48,16 @@
           args))
       (var index 0)
       (def arglen (length params))
-      (buffer/format buf "(%w" name)
+      (buffer/format! buf "(%w" name)
       (while (< index arglen)
-        (buffer/push-string buf " ")
-        (buffer/format buf "%w" (in params index))
+        (buffer/push-string! buf " ")
+        (buffer/format! buf "%w" (in params index))
         (set index (+ index 1)))
-      (buffer/push-string buf ")\n")
+      (buffer/push-string! buf ")\n")
       (set clause-index (if clauses? (+ clause-index 1) len)))
-    (array/push modifiers docstr)
-    (array/push modifiers {:sigs (string/slice buf 0 (- (length buf) 1))})
-    (if (dyn :debug) (array/push modifiers {:source-form (dyn :macro-form)}))
+    (array/push! modifiers docstr)
+    (array/push! modifiers {:sigs (string/slice buf 0 (- (length buf) 1))})
+    (if (dyn :debug) (array/push! modifiers {:source-form (dyn :macro-form)}))
     ; Build return value
     `(def ~name ~|modifiers (fn ~name ~|(tuple/slice more start)))))
 
@@ -241,7 +241,7 @@
       (def l (if (not= -1 l) l))
       (def c (if (not= -1 c) c))
       (def msg (string/format fmt |vals))
-      (array/push lints [level l c msg])))
+      (array/push! lints [level l c msg])))
   nil)
 
 (defn errorf
@@ -346,9 +346,9 @@
   (var accum !['do])
   (while (< i len)
     (def {k i v (+ i 1)} bindings)
-    (array/push accum (tuple 'def k v))
+    (array/push! accum (tuple 'def k v))
     (+= i 2))
-  (array/concat accum body)
+  (array/concat! accum body)
   (tuple/slice accum 0))
 
 (defmacro protect
@@ -431,7 +431,7 @@
   (def len (length syms))
   (def accum ![])
   (while (< i len)
-    (array/push accum (in syms i) (tuple gensym))
+    (array/push! accum (in syms i) (tuple gensym))
     (++ i))
   `(let (~|accum) ~|body))
 
@@ -844,7 +844,7 @@
   [head & body]
   (def $accum (gensym))
   (check-empty-body body)
-  `(do (def ~$accum ![]) (as-macro ~loop ~head (~array/push ~$accum (do ~|body))) ~$accum))
+  `(do (def ~$accum ![]) (as-macro ~loop ~head (~array/push! ~$accum (do ~|body))) ~$accum))
 
 (defmacro catseq
   """
@@ -854,7 +854,7 @@
   [head & body]
   (def $accum (gensym))
   (check-empty-body body)
-  `(do (def ~$accum ![]) (as-macro ~loop ~head (~array/concat ~$accum (do ~|body))) ~$accum))
+  `(do (def ~$accum ![]) (as-macro ~loop ~head (~array/concat! ~$accum (do ~|body))) ~$accum))
 
 (defmacro tabseq
   """
@@ -863,7 +863,7 @@
   """
   [head key-body & value-body]
   (def $accum (gensym))
-  `(do (def ~$accum !{}) (as-macro ~loop ~head (~put ~$accum ~key-body (do ~|value-body))) ~$accum))
+  `(do (def ~$accum !{}) (as-macro ~loop ~head (~put! ~$accum ~key-body (do ~|value-body))) ~$accum))
 
 (defmacro generate
   """
@@ -908,7 +908,10 @@
          (if (~lengthable? ~c) (if (~abstract? ~c) false true) false)))))
 
 (defn mean
-  "Returns the mean of the elements in coll, an iterable. If coll is empty, returns NaN."
+  """
+  Returns the mean of the elements in coll, an iterable. If coll is empty,
+  returns NaN.
+  """
   [coll]
   (if (counted? coll)
     (do
@@ -921,7 +924,10 @@
       (/ accum total))))
 
 (defn geomean
-  "Returns the geometric mean of the elements in coll, an iterable. If coll is empty, returns NaN."
+  """
+  Returns the geometric mean of the elements in coll, an iterable. If coll is
+  empty, returns NaN.
+  """
   [coll]
   (if (counted? coll)
     (do
@@ -934,7 +940,10 @@
       (math/exp (/ accum total)))))
 
 (defn product
-  "Returns the product of the elements in coll, an iterable. If coll is empty, returns 1."
+  """
+  Returns the product of the elements in coll, an iterable. If coll is empty,
+  returns 1.
+  """
   [coll]
   (var accum 1)
   (each x coll (*= accum x))
@@ -1017,7 +1026,10 @@
   [args] (do-extreme < args))
 
 (defn first
-  "Gets the first value in ind, an indexed type. Same as `(get ind 0)`. Returns nil if ind is empty."
+  """
+  Gets the first value in ind, an indexed type. Same as `(get ind 0)`. Returns
+  nil if ind is empty.
+  """
   [ind]
   (get ind 0))
 
@@ -1241,26 +1253,26 @@
     (def ret ![])
     (if (= nil k) (break ret))
     (var res (element coll dict k))
-    (array/push ret res)
+    (array/push! ret res)
     (set k (next coll k))
     (while (not= nil k)
       (set res (f res (element coll dict k)))
-      (array/push ret res)
+      (array/push! ret res)
       (set k (next coll k)))
     ret)
   ([f init coll]
     (var res init)
     (def ret ![])
-    (each x coll (array/push ret (set res (f res x))))
+    (each x coll (array/push! ret (set res (f res x))))
     ret))
 
 (defmacro- map-aggregator
   "Performs operations for various mapping functions."
   [maptype res val]
   (case maptype
-    :map `(array/push ~res ~val)
-    :mapcat `(array/concat ~res ~val)
-    :keep `(if (def y ~val) (array/push ~res y))
+    :map `(array/push! ~res ~val)
+    :mapcat `(array/concat! ~res ~val)
+    :keep `(if (def y ~val) (array/push! ~res y))
     :count `(if ~val (++ ~res))))
 
 (defmacro- map-n
@@ -1290,7 +1302,7 @@
        (do
          (def iter-keys (array/new-filled ncolls))
          (def dicts (array/new-filled ncolls))
-         (forv i 0 ncolls (put dicts i (dictionary? (in ~colls i))))
+         (forv i 0 ncolls (put! dicts i (dictionary? (in ~colls i))))
          (def call-buffer (array/new-filled ncolls))
          (var done false)
          (each x ~coll
@@ -1346,7 +1358,7 @@
   (def res ![])
   (each item coll
     (if (pred item)
-      (array/push res item)))
+      (array/push! res item)))
   res)
 
 (defn count
@@ -1492,9 +1504,9 @@
 
 (defn drop
   """
-  Drops the first n elements of coll, an iterable.
-  Returns a fiber that yields the rest. Nothing is read from coll until the
-  fiber is resumed. n must not be negative.
+  Drops the first n elements of coll, an iterable. Returns a fiber that yields
+  the rest. Nothing is read from coll until the fiber is resumed. n must not be
+  negative.
   """
   [n coll]
   (check-count :drop n)
@@ -1506,9 +1518,8 @@
 (defn drop-until
   """
   Drops the elements of coll, an iterable, that precede the first for which
-  `(pred element)` is truthy. Returns a fiber that
-  yields that element and the rest. Nothing is read from coll until the fiber
-  is resumed.
+  `(pred element)` is truthy. Returns a fiber that yields that element and the
+  rest. Nothing is read from coll until the fiber is resumed.
   """
   [pred coll]
   (coro
@@ -1520,39 +1531,42 @@
 (defn drop-while
   """
   Drops the leading elements of coll, an iterable, for which `(pred element)`
-  is truthy. Returns a fiber that yields the rest. Same
-  as `(drop-until (complement pred) coll)`.
+  is truthy. Returns a fiber that yields the rest. Same as `(drop-until
+  (complement pred) coll)`.
   """
   [pred coll]
   (drop-until (complement pred) coll))
 
 (defn juxt*
   """
-  Returns the juxtaposition of functions. In other words,
-  `((juxt* a b c) x)` evaluates to `[(a x) (b x) (c x)]`.
+  Returns the juxtaposition of functions. In other words, `((juxt* a b c) x)`
+  evaluates to `[(a x) (b x) (c x)]`.
   """
   [& funs]
   (fn :juxt* [& args]
     (def ret ![])
     (each f funs
-      (array/push ret (f |args)))
+      (array/push! ret (f |args)))
     (vec ret)))
 
 (defmacro juxt
-  "Macro form of ^juxt*. Same behavior but more efficient."
+  """
+  Returns the juxtaposition of functions using a macro. This is equivalent to
+  ^juxt* but more efficient.
+  """
   [& funs]
   (def parts !['vector])
   (def $args (gensym))
   (each f funs
-    (array/push parts (tuple apply f $args)))
+    (array/push! parts (tuple apply f $args)))
   (tuple 'fn :juxt (vector '& $args) (tuple/slice parts 0)))
 
 (defn has-key?
   """
   Checks whether x maps key to a non-nil value.
 
-  x can be a bytes, indexed, dictionary, fiber, or abstract type
-  with a suitable ^get method.
+  x can be a bytes, indexed, dictionary, fiber, or abstract type with a
+  suitable ^get method.
   """
   [x key]
   (not= nil (get x key)))
@@ -1570,11 +1584,7 @@
       (break)))
   found)
 
-(defdyn *defdyn-prefix*
-"""
-Optional namespace prefix to add to keywords declared with ^defdyn.
-  Use this to prevent keyword collisions between dynamic bindings.
-""")
+(defdyn *defdyn-prefix* "Optional namespace prefix to add to keywords declared with ^defdyn. Use this to prevent keyword collisions between dynamic bindings.")
 (defdyn *out* "Where normal print functions print output to.")
 (defdyn *err* "Where error printing prints output to.")
 (defdyn *redef* "When set, allows dynamically rebinding top level defs. Will slow generated code and is intended to be used for development.")
@@ -1582,14 +1592,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 (defdyn *exit* "When set, will cause the current context to complete. Can be set to exit from repl (or file), for example.")
 (defdyn *exit-value* "Sets the return value from ^run-context upon an exit.")
 (defdyn *task-id* "When spawning a thread or fiber, the task-id can be assigned for concurrency control.")
-
-(defdyn *current-file*
-  "Bound to the name of the currently compiling file.")
+(defdyn *current-file* "Bound to the name of the currently compiling file.")
 
 (defmacro tracev
   """
-  Prints to stderr a value and a description of the form that produced that value.
-  Evaluates to x.
+  Prints to stderr a value and a description of the form that produced that
+  value. Evaluates to x.
   """
   [x]
   (def [l c] (tuple/sourcemap (dyn *macro-form* ())))
@@ -1606,41 +1614,40 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 (defmacro ->
   """
-  Threading macro. Inserts x as the second value in the first form
-  in forms, and inserts the modified first form into the second form
-  in the same manner, and so on. Useful for expressing pipelines of data.
+  Threads a value through a series of forms as a macro. Inserts x as the first
+  argument to the initial value of forms and then passes each result as the
+  first argument to the next value of forms. Useful for expressing pipelines of
+  data.
   """
   [x & forms]
   (defn fop [last n]
     (def [h t] (if (= :tuple (type n))
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
-    (def parts (tuple/slice (array/concat ![h last] t)))
+    (def parts (tuple/slice (array/concat! ![h last] t)))
     (if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
   (reduce fop x forms))
 
 (defmacro ->>
   """
-  Threading macro. Inserts x as the last value in the first form
-  in forms, and inserts the modified first form into the second form
-  in the same manner, and so on. Useful for expressing pipelines of data.
+  Threads a value through a series of forms as a macro. Inserts x as the last
+  argument to the initial value of forms and then passes each result as the
+  last argument to the next value of forms. Useful for expressing pipelines of
+  data.
   """
   [x & forms]
   (defn fop [last n]
     (def [h t] (if (= :tuple (type n))
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
-    (def parts (tuple/slice (array/concat ![h] t ![last])))
+    (def parts (tuple/slice (array/concat! ![h] t ![last])))
     (if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
   (reduce fop x forms))
 
 (defmacro -?>
   """
-  Short circuit threading macro. Inserts x as the second value in the first form
-  in forms, and inserts the modified first form into the second form
-  in the same manner, and so on. The pipeline will return nil
-  if an intermediate value is nil.
-  Useful for expressing pipelines of data.
+  Threads a value through a series of forms as a macro. The difference with ^-> is
+  that this short-circuits if any value is nil.
   """
   [x & forms]
   (defn fop [last n]
@@ -1648,18 +1655,15 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
     (def sym (gensym))
-    (def parts (tuple/slice (array/concat ![h sym] t)))
+    (def parts (tuple/slice (array/concat! ![h sym] t)))
     `(as-macro ~let [~sym ~last]
        (if ~sym ~(if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))))
   (reduce fop x forms))
 
 (defmacro -?>>
   """
-  Short circuit threading macro. Inserts x as the last value in the first form
-  in forms, and inserts the modified first form into the second form
-  in the same manner, and so on. The pipeline will return nil
-  if an intermediate value is nil.
-  Useful for expressing pipelines of data.
+  Threads a value through a series of forms as a macro. The difference with ^->> is
+  that this short-circuits if any value is nil.
   """
   [x & forms]
   (defn fop [last n]
@@ -1667,28 +1671,25 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
                  (tuple (in n 0) (array/slice n 1))
                  (tuple n ![])))
     (def sym (gensym))
-    (def parts (tuple/slice (array/concat ![h] t ![sym])))
+    (def parts (tuple/slice (array/concat! ![h] t ![sym])))
     `(as-macro ~let [~sym ~last]
        (if ~sym ~(if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))))
   (reduce fop x forms))
 
 (defn- walk-ind [f form]
   (def ret ![])
-  (each x form (array/push ret (f x)))
+  (each x form (array/push! ret (f x)))
   ret)
 
 (defn- walk-dict [f form]
   (def ret !{})
   (loop [k :keys form]
-    (put ret (f k) (f (in form k))))
+    (put! ret (f k) (f (in form k))))
   ret)
 
 (defn walk
   """
-  Iterates over the values in ast and applies f
-  to them. Collects the results in a data structure. If ast is not a
-  table, map, array, or tuple,
-  returns form.
+  Applies f to each element of f. Returns the results.
   """
   [f form]
   (case (type form)
@@ -1817,8 +1818,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (var j (length mut))
   (while (< i (-- j))
     (def di (in mut i))
-    (put mut i (in mut j))
-    (put mut j di)
+    (put! mut i (in mut j))
+    (put! mut j di)
     (++ i))
   mut)
 
@@ -1835,7 +1836,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
                  (buffer/new-filled n)
                  (array/new-filled n)))
       (each v coll
-        (put ret (-- n) v))
+        (put! ret (-- n) v))
       ret)
     (reverse! (seq [v :in coll] v))))
 
@@ -1853,7 +1854,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (check-keyed :invert coll)
   (def ret !{})
   (loop [k :keys coll]
-    (put ret (in coll k) k))
+    (put! ret (in coll k) k))
   ret)
 
 (defn zipcoll
@@ -1870,7 +1871,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (if (= nil kk) (break))
     (set vk (next vs vk))
     (if (= nil vk) (break))
-    (put res (in ks kk) (in vs vk)))
+    (put! res (in ks kk) (in vs vk)))
   res)
 
 (defn get-in
@@ -1901,12 +1902,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def v (get d k))
     (if (= nil v)
       (let [newv (table)]
-        (put d k newv)
+        (put! d k newv)
         (set d newv))
       (set d v)))
   (def last-key (get ks len-1))
   (def last-val (get d last-key))
-  (put d last-key (f last-val |args))
+  (put! d last-key (f last-val |args))
   mut)
 
 (defn put-in!
@@ -1924,12 +1925,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def v (get d k))
     (if (= nil v)
       (let [newv (table)]
-        (put d k newv)
+        (put! d k newv)
         (set d newv))
       (set d v)))
   (def last-key (get ks len-1))
   (def last-val (get d last-key))
-  (put d last-key val)
+  (put! d last-key val)
   mut)
 
 (defn update!
@@ -1940,7 +1941,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [mut key f & args]
   (def old (get mut key))
-  (put mut key (f old |args)))
+  (put! mut key (f old |args)))
 
 (defn merge!
   """
@@ -1951,7 +1952,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   [tab & dicts]
   (loop [c :in dicts
          key :keys c]
-    (put tab key (in c key)))
+    (put! tab key (in c key)))
   tab)
 
 (defn merge
@@ -1964,7 +1965,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def container !{})
   (loop [c :in dicts
          key :keys c]
-    (put container key (in c key)))
+    (put! container key (in c key)))
   container)
 
 (defn keys
@@ -1982,7 +1983,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def arr (array/new-filled (length coll)))
       (var i 0)
       (eachk k coll
-        (put arr i k)
+        (put! arr i k)
         (++ i))
       arr)
     (seq [k :keys coll] k)))
@@ -1998,12 +1999,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def arr (array/new-filled (length coll)))
       (var i 0)
       (eachv v coll
-        (put arr i v)
+        (put! arr i v)
         (++ i))
       arr)
     (do
       (def arr ![])
-      (eachv v coll (array/push arr v))
+      (eachv v coll (array/push! arr v))
       arr)))
 
 (defn pairs
@@ -2022,7 +2023,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def arr (array/new-filled (length coll)))
       (var i 0)
       (loop [p :pairs coll]
-        (put arr i p)
+        (put! arr i p)
         (++ i))
       arr)
     (seq [p :pairs coll] p)))
@@ -2032,7 +2033,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   [coll]
   (def freqs !{})
   (each x coll
-    (put freqs x (inc (in freqs x 0))))
+    (put! freqs x (inc (in freqs x 0))))
   freqs)
 
 (defn group-by
@@ -2047,8 +2048,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (each x coll
     (def y (f x))
     (if-let [arr (get ret y)]
-      (array/push arr x)
-      (put ret y ![x])))
+      (array/push! arr x)
+      (put! ret y ![x])))
   ret)
 
 (defn partition-by
@@ -2065,9 +2066,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (each x coll
     (def y (f x))
     (cond
-      is-new (do (set is-new false) (set category y) (set span ![x]) (array/push ret span))
-      (= y category) (array/push span x)
-      (do (set category y) (set span ![x]) (array/push ret span))))
+      is-new (do (set is-new false) (set category y) (set span ![x]) (array/push! ret span))
+      (= y category) (array/push! span x)
+      (do (set category y) (set span ![x]) (array/push! ret span))))
   ret)
 
 (defn interleave
@@ -2080,7 +2081,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   [coll]
   (def ret ![])
   (def seen !{})
-  (each x coll (if (in seen x) nil (do (put seen x true) (array/push ret x))))
+  (each x coll (if (in seen x) nil (do (put! seen x true) (array/push! ret x))))
   ret)
 
 (defn flatten!
@@ -2093,7 +2094,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (each elt coll
     (if (indexed? elt)
       (flatten! into elt)
-      (array/push into elt)))
+      (array/push! into elt)))
   into)
 
 (defn flatten
@@ -2112,7 +2113,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [dict]
   (def ret ![])
-  (loop [k :keys dict] (array/push ret k (in dict k)))
+  (loop [k :keys dict] (array/push! ret k (in dict k)))
   ret)
 
 (defn from-pairs
@@ -2123,7 +2124,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   [ps]
   (def ret !{})
   (each [k v] ps
-    (put ret k v))
+    (put! ret k v))
   ret)
 
 (defn interpose
@@ -2139,14 +2140,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def ret (array/new-filled (- (* 2 (length coll)) 1) sep))
         (var i 0)
         (while (not= nil k)
-          (put ret i (element coll dict k))
+          (put! ret i (element coll dict k))
           (set k (next coll k))
           (+= i 2))
         ret)
       (do
         (def ret ![(element coll dict k)])
         (while (not= nil (set k (next coll k)))
-          (array/push ret sep (element coll dict k)))
+          (array/push! ret sep (element coll dict k)))
         ret))
     ![]))
 
@@ -2170,11 +2171,11 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def parts (div len n))
   (def ret (array/new-filled parts))
   (forv k 0 parts
-    (put ret k (f ind start end))
+    (put! ret k (f ind start end))
     (set start end)
     (+= end n))
   (if (< start len)
-    (array/push ret (f ind start)))
+    (array/push! ret (f ind start)))
   ret)
 
 (defn partition
@@ -2280,21 +2281,21 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   ; Keep an array for accumulating the compilation output
   (def x-sym (if (idempotent? x) x (gensym)))
   (def accum ![])
-  (if (not= x x-sym) (array/push accum (tuple 'def x-sym x)))
+  (if (not= x x-sym) (array/push! accum (tuple 'def x-sym x)))
 
   ; Table of gensyms
   (def symbols !{[nil nil] x-sym})
   (def length-symbols !{})
 
-  (defn emit [x] (array/push accum x))
-  (defn emit-branch [condition result] (array/push accum :branch condition result))
+  (defn emit [x] (array/push! accum x))
+  (defn emit-branch [condition result] (array/push! accum :branch condition result))
 
   (defn get-sym
     [parent-sym key]
     (def symbol-key [parent-sym key])
     (or (get symbols symbol-key)
         (let [s (gensym)]
-          (put symbols symbol-key s)
+          (put! symbols symbol-key s)
           (emit (tuple 'def s (tuple get parent-sym key)))
           s)))
 
@@ -2302,7 +2303,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     [parent-sym]
     (or (get length-symbols parent-sym)
         (let [s (gensym)]
-          (put length-symbols parent-sym s)
+          (put! length-symbols parent-sym s)
           (emit (tuple 'def s (tuple 'if (tuple indexed? parent-sym)
                                   (tuple length parent-sym))))
           s)))
@@ -2318,8 +2319,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       ; match local binding
       (= t :symbol)
       (if-let [x (in b2g pattern)]
-        (array/push x s)
-        (put b2g pattern ![s]))
+        (array/push! x s)
+        (put! b2g pattern ![s]))
 
       ; match quoted literal
       (and (= t :tuple) (= 2 (length pattern)) (= 'quote (pattern 0)))
@@ -2344,7 +2345,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
             (when (not= (type (pattern (inc i))) :symbol)
               (errorf "expected symbol following & in pattern, found %q" (pattern (inc i))))
 
-            (put b2g (pattern (inc i)) ![(tuple slice s i)])
+            (put! b2g (pattern (inc i)) ![(tuple slice s i)])
             (break))
           (when (= sub-pattern '$)
             (when (not= (length pattern) (inc i))
@@ -2369,18 +2370,18 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def t (type pattern))
     (def isarr (or (= t :array) (= t :vector)))
     (when isarr
-      (array/push anda (get-length-sym s))
+      (array/push! anda (get-length-sym s))
       (def amp-index (find-index (fn [x] (= x '&)) pattern))
       (def dollar-index (find-index (fn [x] (= x '$)) pattern))
       (def pattern-len (or dollar-index amp-index (length pattern)))
-      (array/push anda
+      (array/push! anda
                   (tuple (if dollar-index = <=) pattern-len (get-length-sym s))))
     (cond
 
       ; match data structure template
       (or (= t :map) (= t :table))
       (each [i sub-pattern] pattern
-        (array/push anda (tuple not= nil (get-sym s i)))
+        (array/push! anda (tuple not= nil (get-sym s i)))
         (visit-pattern-2 anda gun preds s i sub-pattern))
 
       isarr
@@ -2395,22 +2396,22 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
       ; match quoted literal
       (and (= t :tuple) (= 2 (length pattern)) (= 'quote (pattern 0)))
-      (array/push anda (tuple '= s pattern))
+      (array/push! anda (tuple '= s pattern))
 
       ; match global unification
       (and (= t :tuple) (= 2 (length pattern)) (= 'unquote (pattern 0)))
       (if-let [x (in gun (pattern 1))]
-        (array/push x s)
-        (put gun (pattern 1) ![s]))
+        (array/push! x s)
+        (put! gun (pattern 1) ![s]))
 
       ; match predicated binding
       (and (= t :tuple) (>= (length pattern) 2))
       (do
-        (array/push preds |(slice pattern 1))
+        (array/push! preds |(slice pattern 1))
         (visit-pattern-2 anda gun preds parent-sym key (pattern 0)))
 
       ; match literal
-      (array/push anda (tuple '= s pattern))))
+      (array/push! anda (tuple '= s pattern))))
 
   ; Compile the patterns
   (each [pattern expression] patterns
@@ -2424,12 +2425,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def unify ![])
     (eachv syms b2g
       (when (< 1 (length syms))
-        (array/push unify (tuple = |syms))))
+        (array/push! unify (tuple = |syms))))
     ; Global unification
     (each [binding syms] gun
-      (array/push unify (tuple = binding |syms)))
+      (array/push! unify (tuple = binding |syms)))
     (sort! unify)
-    (array/concat anda unify)
+    (array/concat! anda unify)
     ; Final binding
     (def defs (seq [[k v] :in (sort! (pairs b2g))] (tuple 'def k (first v))))
     (def unused-defs
@@ -2437,7 +2438,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     ; Predicates
     (unless (empty? preds)
       (def pred-join `(do ~|unused-defs (and ~|preds)))
-      (array/push anda pred-join))
+      (array/push! anda pred-join))
     ; Use `unused-defs` instead of `defs` when we have predicates to avoid unused binding lint
     ; e.g. (match x (n (even? n)) :yes :no) should not warn on unused binding `n`.
     ; This is unfortunately not perfect since one programmer written binding is expanded for use in multiple places.
@@ -2448,16 +2449,16 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def stack ![else])
   (each el (reverse accum)
     (if (= :branch el)
-      (let [condition (array/pop stack)
-            truthy (array/pop stack)
+      (let [condition (array/pop! stack)
+            truthy (array/pop! stack)
             if-form `(if ~condition ~truthy
                        ~(case (length stack)
                           0 nil
                           1 (stack 0)
                           `(do ~|(reverse stack))))]
-        (array/remove stack 0 (length stack))
-        (array/push stack if-form))
-      (array/push stack el)))
+        (array/remove! stack 0 (length stack))
+        (array/push! stack if-form))
+      (array/push! stack el)))
 
   `(do ~|(reverse stack)))
 
@@ -2485,7 +2486,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def newt !{})
       (var key (next t nil))
       (while (not= nil key)
-        (put newt (recur key) (on-value (in t key)))
+        (put! newt (recur key) (on-value (in t key)))
         (set key (next t key)))
       newt)
 
@@ -2503,7 +2504,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def bound (in t 1))
       (tuple/sourcemap!
         (tuple/slice
-          (array/concat
+          (array/concat!
             ![(in t 0) (expand-bindings bound)]
             (tuple/slice t 2 -2)
             ![(recur last)]))
@@ -2608,7 +2609,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def vv (freeze v))
         (def old (get temp-tab kk))
         (def new (if (= nil old) vv (max vv old)))
-        (put temp-tab kk new))
+        (put! temp-tab kk new))
       (table/to-map temp-tab))
 
     (= tx :buffer)
@@ -2691,8 +2692,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def metadata !{})
   (each m modifiers
     (cond
-      (keyword? m) (put metadata m true)
-      (string? m) (put metadata :doc m)
+      (keyword? m) (put! metadata m true)
+      (string? m) (put! metadata :doc m)
       (dictionary? m) (merge! metadata m)
       (error (string "invalid metadata " m))))
   (with-syms [entry old-entry f]
@@ -2830,7 +2831,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   ([] (make-env nil))
   ([parent]
     (def parent (if parent parent root-env))
-    (def newenv (table/setproto !{} parent))
+    (def newenv (table/setproto! !{} parent))
     newenv))
 
 (defdyn *err-color*
@@ -2970,7 +2971,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (var where default-where)
 
   (if (string? where)
-    (put env *current-file* where))
+    (put! env *current-file* where))
 
   ; Evaluate 1 source form in a protected manner
   (def lints ![])
@@ -2983,7 +2984,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def f
         (fiber/new
           (fn :compile-and-lint []
-            (array/clear lints)
+            (array/clear! lints)
             (def res (compile source env where lints))
             (when (next lints)
               ; Convert lint levels to numbers.
@@ -3042,19 +3043,19 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (var parser-not-done true)
   (while parser-not-done
     (if (env :exit) (break))
-    (buffer/clear buf)
+    (buffer/clear! buf)
     (match (chunks buf p)
       :cancel
       (do
         ; A :cancel chunk represents a cancelled form in the REPL, so reset.
         (:flush p)
-        (buffer/clear buf))
+        (buffer/clear! buf))
 
       [:source new-where]
       (do
         (set where new-where)
         (if (string? new-where)
-          (put env *current-file* new-where)))
+          (put! env *current-file* new-where)))
 
       (do
         (var pindex 0)
@@ -3079,7 +3080,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (when (= (p-status p) :error)
       (parse-err p where)))
 
-  (put env :exit nil)
+  (put! env :exit nil)
   (in env :exit-value env))
 
 (defn quit
@@ -3136,7 +3137,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (error (parser/error p)))
     (parser/eof p)
     (while (parser/has-more p)
-      (array/push ret (parser/produce p)))
+      (array/push! ret (parser/produce p)))
     (if (= :error (parser/status p))
       (error (parser/error p))
       ret)))
@@ -3245,13 +3246,13 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     [pre]
     (or (find-index #(and (string? ($ 0)) (string/has-prefix? pre ($ 0))) mp) 0))
   (def dyn-index (find-prefix ":@all:"))
-  (array/insert mp dyn-index [(string ":@all:" ext) loader check-dyn-relative])
+  (array/insert! mp dyn-index [(string ":@all:" ext) loader check-dyn-relative])
   (def all-index (find-prefix ".:all:"))
-  (array/insert mp all-index [(string ".:all:" ext) loader check-project-relative])
+  (array/insert! mp all-index [(string ".:all:" ext) loader check-project-relative])
   (def sys-index (find-prefix ":sys:"))
-  (array/insert mp sys-index [(string ":sys:/:all:" ext) loader check-is-dep])
+  (array/insert! mp sys-index [(string ":sys:/:all:" ext) loader check-is-dep])
   (def curall-index (find-prefix ":cur:/:all:"))
-  (array/insert mp curall-index [(string ":cur:/:all:" ext) loader check-relative])
+  (array/insert! mp curall-index [(string ":cur:/:all:" ext) loader check-relative])
   mp)
 
 (defn module/add-file-extension
@@ -3264,7 +3265,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   [ext loader]
   (assert (string/has-prefix? "." ext) "file extension must have . prefix")
   (def mp (dyn *module-paths* module/paths))
-  (array/insert mp 0 [":all:" loader (fn :check-ext [x] (string/has-suffix? ext x))])
+  (array/insert! mp 0 [":all:" loader (fn :check-ext [x] (string/has-suffix? ext x))])
   mp)
 
 (defn module/add-native
@@ -3278,14 +3279,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   Returns env.
   """
   [name env]
-  (put (dyn *module-cache* module/cache) name env)
+  (put! (dyn *module-cache* module/cache) name env)
   (each [sym entry] env
     (when (and (symbol? sym) (table? entry))
       (def v (get entry :value))
       (when (or (nfunction? v) (abstract? v))
         (def key (symbol name "/" sym))
-        (put make-image-dict v key)
-        (put load-image-dict key v))))
+        (put! make-image-dict v key)
+        (put! load-image-dict key v))))
   env)
 
 ; Don't expose this externally yet - could break if custom module/paths is setup.
@@ -3302,8 +3303,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def pattern (first entry))
     (when (and (string? pattern) (string/has-prefix? ":sys:/" pattern))
       (set last-index index)
-      (array/push copies [(string/replace ":sys:" path pattern) |(slice entry 1)])))
-  (array/insert mp (+ 1 last-index) |copies)
+      (array/push! copies [(string/replace ":sys:" path pattern) |(slice entry 1)])))
+  (array/insert! mp (+ 1 last-index) |copies)
   mp)
 
 (module/add-paths ":native:" :native)
@@ -3321,7 +3322,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 (module/add-file-extension ".so" :native)
 (module/add-file-extension ".dll" :native)
 (module/add-file-extension ".dylib" :native)
-(array/insert module/paths 0
+(array/insert! module/paths 0
               [(fn is-cached [path] (if (in (dyn *module-cache* module/cache) path) path))
                :preload
                check-preloadable])
@@ -3362,12 +3363,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (if (function? p)
           (when-let [res (p path)]
             (set ret [res mod-kind])
-            (if find-all (array/push all-matches ret) (break)))
+            (if find-all (array/push! all-matches ret) (break)))
           (do
             (def fullpath (string (module/expand-path path p)))
             (when (fexists fullpath)
               (set ret [fullpath mod-kind])
-              (if find-all (array/push all-matches ret) (break)))))))
+              (if find-all (array/push! all-matches ret) (break)))))))
     (if find-all (break all-matches))
     (if ret ret
       (let [expander (fn :expander [[t _ chk]]
@@ -3414,9 +3415,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   ([fib] (debugger fib 1))
   ([fib level]
     (def nextenv (make-env (fiber/getenv fib)))
-    (put nextenv :fiber fib)
-    (put nextenv :debug-level level)
-    (put nextenv :signal (fiber/last-value fib))
+    (put! nextenv :fiber fib)
+    (put! nextenv :debug-level level)
+    (put! nextenv :signal (fiber/last-value fib))
 
     (merge! nextenv debugger-env)
     (defn debugger-chunks [buf p]
@@ -3443,7 +3444,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def fs (fiber/status f))
       (if (= :dead fs)
         (when is-repl
-          (put env '_ !{:value x})
+          (put! env '_ !{:value x})
           (def pf (get env *pretty-format* "%q"))
           (try
             (printf pf x)
@@ -3473,7 +3474,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (def path-is-file (= f path))
   (default env ((dyn *module-make-env* make-env)))
   (def spath (string path))
-  (put env :source (or source (if-not path-is-file spath path)))
+  (put! env :source (or source (if-not path-is-file spath path)))
   (var exit-error nil)
   (var exit-fiber nil)
   (defn chunks [buf _] (:read f 4096 buf))
@@ -3483,7 +3484,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (when exit
         (bad-parse x y)
         (os/exit 1))
-      (put env :exit true)
+      (put! env :exit true)
       (def buf !"")
       (with-dyns [*err* buf]
         (bad-parse x y))
@@ -3497,7 +3498,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (when exit
         (bad-compile x y z a b)
         (os/exit 1))
-      (put env :exit true)
+      (put! env :exit true)
       (def buf !"")
       (with-dyns [*err* buf]
         (bad-compile x nil z a b))
@@ -3519,7 +3520,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
                                  (if (get env :debug)
                                    ((debugger-on-status env) f x)
                                    (do
-                                     (put env :exit true)
+                                     (put! env :exit true)
                                      (set exit-error x)
                                      (set exit-fiber f)))))
                   :evaluator evaluator
@@ -3543,8 +3544,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   !{:native (fn native-loader [path &] (native path ((dyn *module-make-env* make-env))))
     :source (fn source-loader [path args]
               (def ml (dyn *module-loading* module/loading))
-              (put ml path true)
-              (defer (put ml path nil)
+              (put! ml path true)
+              (defer (put! ml path nil)
                 (dofile path |args)))
     :preload (fn preload-loader [path & args]
                (def mc (dyn *module-cache* module/cache))
@@ -3572,7 +3573,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def loader (if (keyword? mod-kind) (get mls mod-kind) mod-kind))
         (unless loader (error (string "module type " mod-kind " unknown")))
         (def env (loader fullpath args))
-        (put mc fullpath env)
+        (put! mc fullpath env)
         env))))
 
 (defn require
@@ -3597,8 +3598,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   ([target source prefix export only]
     (def only-set (if only (invert only)))
     (loop [[k v] :pairs source :when (symbol? k) :when (not (v :private)) :when (or (not only) (in only-set k))]
-      (def newv (table/setproto !{:private (not export)} v))
-      (put target (symbol prefix k) newv))
+      (def newv (table/setproto! !{:private (not export)} v))
+      (put! target (symbol prefix k) newv))
     target))
 
 (defn import*
@@ -3659,12 +3660,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 (defn- env-walk
   [pred env local]
   (def envs ![])
-  (do (var e env) (while e (array/push envs e) (set e (table/getproto e)) (if local (break))))
+  (do (var e env) (while e (array/push! envs e) (set e (table/getproto e)) (if local (break))))
   (def ret-set !{})
   (loop [envi :in envs
          k :keys envi
          :when (pred k)]
-    (put ret-set k true))
+    (put! ret-set k true))
   (sort! (keys ret-set)))
 
 (defn all-bindings
@@ -3735,13 +3736,13 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def argset
       (when args
         (def set !{})
-        (each a args (put set a true))
+        (each a args (put! set a true))
         set))
     (def modes !{})
     (defn toggle-mode [mode]
       (def active (get modes mode))
       (def delims (get delimiters mode))
-      (put modes mode (not active))
+      (put! modes mode (not active))
       (delims (if active 1 0)))
 
     ; Parse state
@@ -3789,7 +3790,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (defn getslice [from to]
       (def to (min to (length str)))
       (string/slice str from to))
-    (defn push [x] (array/push stack x))
+    (defn push [x] (array/push! stack x))
 
     (defn parse-list [bullet-check initial indent]
       (def temp-stack ![initial])
@@ -3837,11 +3838,11 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def b (get line i))
         (cond
           (and (= b (chr """\""")) (= (get line (+ i 1)) (chr "|")))
-          (do (buffer/push cell b (get line (+ i 1))) (+= i 2))
+          (do (buffer/push! cell b (get line (+ i 1))) (+= i 2))
           (= b (chr "|"))
-          (do (array/push cells (string/trim (string cell))) (buffer/clear cell) (++ i))
-          (do (buffer/push cell b) (++ i))))
-      (array/push cells (string/trim (string cell)))
+          (do (array/push! cells (string/trim (string cell))) (buffer/clear! cell) (++ i))
+          (do (buffer/push! cell b) (++ i))))
+      (array/push! cells (string/trim (string cell)))
       cells)
     (defn delim-cell? [cell]
       (var i 0)
@@ -3894,7 +3895,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (add-codeblock indent start end))
 
     (def word-extra (let [t !{}]
-                      (each b (string/bytes "-_?!<>=/+%$&:") (put t b true))
+                      (each b (string/bytes "-_?!<>=/+%$&:") (put! t b true))
                       t))
     (defn word-byte? [b]
       (and b
@@ -3923,20 +3924,20 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (defn delim [mode]
         (def d (toggle-mode mode))
         (if-not has-color (+= token-length (length d)))
-        (buffer/push token d))
+        (buffer/push! token d))
       (defn endtoken []
-        (if (first token) (array/push tokens [(string token) token-length]))
-        (buffer/clear token)
+        (if (first token) (array/push! tokens [(string token) token-length]))
+        (buffer/clear! token)
         (set token-length 0))
       (defn flush-run []
         (when (first run)
           (def word (string run))
           (def arg? (and argset (get argset word)))
           (when arg? (delim :arg))
-          (buffer/push token word)
+          (buffer/push! token word)
           (+= token-length (length word))
           (when arg? (delim :arg))
-          (buffer/clear run)))
+          (buffer/clear! run)))
       (var i 0)
       (var rend nil)
       (while (< i (length line))
@@ -3944,11 +3945,11 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (cond
           (or (= b (chr "\n")) (= b (chr " "))) (do (flush-run) (endtoken))
           (= b (chr "`")) (do (flush-run) (delim :code))
-          (modes :code) (do (++ token-length) (buffer/push token b))
+          (modes :code) (do (++ token-length) (buffer/push! token b))
           (= b (chr """\""")) (do
                             (flush-run)
                             (++ token-length)
-                            (buffer/push token (get line (++ i))))
+                            (buffer/push! token (get line (++ i))))
           (and (= b (chr "^"))
                (or (= i 0) (not (word-byte? (get line (- i 1)))))
                (do (set rend (ref-end line i)) (> rend (+ i 1))))
@@ -3957,7 +3958,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
             (delim :ref)
             (for k (+ i 1) rend
               (++ token-length)
-              (buffer/push token (get line k)))
+              (buffer/push! token (get line k)))
             (delim :ref)
             (set i (- rend 1)))
           (= b (chr "*"))
@@ -3967,8 +3968,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
               (do (++ i)
                 (delim :bold))
               (delim :italics)))
-          (word-byte? b) (buffer/push run b)
-          (do (flush-run) (++ token-length) (buffer/push token b)))
+          (word-byte? b) (buffer/push! run b)
+          (do (flush-run) (++ token-length) (buffer/push! token b)))
         (++ i))
       (flush-run)
       (endtoken)
@@ -3987,13 +3988,13 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (take-cells)
       (defn as-row [cells]
         (def row ![])
-        (for j 0 ncols (array/push row (tokenize-line (or (get cells j) ""))))
+        (for j 0 ncols (array/push! row (tokenize-line (or (get cells j) ""))))
         (tuple/slice row))
       (def header (as-row head))
       (def rows ![])
       (var current-indent (skipwhite))
       (while (and (c) (>= current-indent indent) (= (c) (chr "|")))
-        (array/push rows (as-row (take-cells)))
+        (array/push! rows (as-row (take-cells)))
         (set current-indent (skipwhite)))
       (push ![:tbl header (tuple/slice rows)])
       current-indent)
@@ -4036,12 +4037,12 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (defn emit-indent [indent]
       (def delta (- indent current-column))
       (when (< 0 delta)
-        (buffer/push buf (string/repeat " " delta))
+        (buffer/push! buf (string/repeat " " delta))
         (set current-column indent)))
 
     (defn emit-nl ([] (emit-nl nil))
       ([indent]
-        (buffer/push buf "\n")
+        (buffer/push! buf "\n")
         (set current-column 0)))
 
     (defn emit-word ([word indent] (emit-word word indent (length word)))
@@ -4051,19 +4052,19 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
                 last-byte
                 (not= last-byte (chr "\n"))
                 (not= last-byte (chr " ")))
-          (buffer/push buf " ")
+          (buffer/push! buf " ")
           (++ current-column))
         (when (and indent (> (+ 1 current-column len) max-width))
           (emit-nl)
           (emit-indent indent))
-        (buffer/push buf word)
+        (buffer/push! buf word)
         (+= current-column len)))
 
     (defn emit-code
       [code indent]
       (def replacement (string "\n" (string/repeat " " (+ 4 indent))))
       (emit-indent (+ 4 indent))
-      (buffer/push buf (string/replace-all "\n" replacement code))
+      (buffer/push! buf (string/replace-all "\n" replacement code))
       (if (= (chr "\n") (last code))
         (set current-column 0)
         (emit-nl)))
@@ -4075,14 +4076,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def ncols (length header))
       (def widths ![])
       (def minws ![])
-      (for j 0 ncols (array/push widths 0) (array/push minws 1))
+      (for j 0 ncols (array/push! widths 0) (array/push! minws 1))
       (each row [header |rows]
         (for j 0 ncols
           (var w 0)
           (var m 0)
           (each [_ len] (get row j) (+= w len) (set m (max m len)))
-          (put widths j (max (get widths j) (+ w (max 0 (- (length (get row j)) 1)))))
-          (put minws j (max (get minws j) m))))
+          (put! widths j (max (get widths j) (+ w (max 0 (- (length (get row j)) 1)))))
+          (put! minws j (max (get minws j) m))))
       (var total (* 3 (- ncols 1)))
       (each w widths (+= total w))
       (while (> total (- max-width indent))
@@ -4092,7 +4093,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
                      (or (= pick nil) (> (get widths j) (get widths pick))))
             (set pick j)))
         (if (= pick nil) (break))
-        (put widths pick (- (get widths pick) 1))
+        (put! widths pick (- (get widths pick) 1))
         (-- total))
       (defn wrap-cell [toks w]
         (def lines ![])
@@ -4100,23 +4101,23 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (var cur-len 0)
         (each [word len] toks
           (when (and (> (length cur) 0) (> (+ cur-len 1 len) w))
-            (array/push lines [cur cur-len])
+            (array/push! lines [cur cur-len])
             (set cur ![])
             (set cur-len 0))
           (set cur-len (if (> (length cur) 0) (+ cur-len 1 len) len))
-          (array/push cur word))
-        (array/push lines [cur cur-len])
+          (array/push! cur word))
+        (array/push! lines [cur cur-len])
         lines)
       (defn emit-line [text]
         (emit-indent indent)
-        (buffer/push buf text)
+        (buffer/push! buf text)
         (emit-nl))
       (defn emit-row [row centered]
         (def wrapped ![])
         (var height 1)
         (for j 0 ncols
           (def lines (wrap-cell (get row j) (get widths j)))
-          (array/push wrapped lines)
+          (array/push! wrapped lines)
           (set height (max height (length lines))))
         (for k 0 height
           (def line !"")
@@ -4128,19 +4129,19 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
             (def left (if centered
                         (brshift (if (and (> j 0) (= j (- ncols 1))) (max 0 (- gap 1)) gap) 1)
                         0))
-            (buffer/push line (string/repeat " " left))
-            (buffer/push line (if piece (string/join " " (get piece 0)) ""))
+            (buffer/push! line (string/repeat " " left))
+            (buffer/push! line (if piece (string/join " " (get piece 0)) ""))
             (when (< j (- ncols 1))
-              (buffer/push line (string/repeat " " (- gap left)))
-              (buffer/push line " " (paint "|") " ")))
+              (buffer/push! line (string/repeat " " (- gap left)))
+              (buffer/push! line " " (paint "|") " ")))
           (emit-line (string/trimr (string line)))))
       (defn emit-rule [ch]
         (def line !"")
         (for j 0 ncols
-          (buffer/push line (string/repeat ch (+ (get widths j)
+          (buffer/push! line (string/repeat ch (+ (get widths j)
                                                  (if (> j 0) 1 0)
                                                  (if (< j (- ncols 1)) 1 0))))
-          (when (< j (- ncols 1)) (buffer/push line "+")))
+          (when (< j (- ncols 1)) (buffer/push! line "+")))
         (emit-line (paint (string line))))
       (emit-row header true)
       (when (> (length rows) 0) (emit-rule "="))
@@ -4193,7 +4194,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           (set head false)
           (unless (let [b (get tok 0)]
                     (or (= b (chr "&")) (= b (chr ":")) (= b (chr """\"""))))
-            (array/push names tok))))))
+            (array/push! names tok))))))
   names)
 
 (defn- print-index
@@ -4400,7 +4401,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
             [src cur]
             (def offset 5)
             (def beg (max 1 (- cur offset)))
-            (def lines (array/concat ![""] (string/split "\n" src)))
+            (def lines (array/concat! ![""] (string/split "\n" src)))
             (def end (min (+ cur offset) (length lines)))
             (def digits (inc (math/floor (math/log10 end))))
             (def fmt-str (string "%" digits "d: %s"))
@@ -4498,7 +4499,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     res))
 
 (def- debugger-keys (filter (partial string/has-prefix? ".") (keys root-env)))
-(each k debugger-keys (put debugger-env k (root-env k)) (put root-env k nil))
+(each k debugger-keys (put! debugger-env k (root-env k)) (put! root-env k nil))
 
 ;;;
 ;;;
@@ -4624,7 +4625,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   (defn- cancel-all [chan fibers reason]
     (eachv f fibers (ev/cancel f reason))
     (let [n (length fibers)]
-      (table/clear fibers)
+      (table/clear! fibers)
       (repeat n (ev/take chan))))
 
   (defn- wait-for-fibers
@@ -4633,7 +4634,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (repeat (length fibers)
         (def [sig fiber] (ev/take chan))
         (if (= sig :ok)
-          (put fibers fiber nil)
+          (put! fibers fiber nil)
           (do
             (cancel-all chan fibers "sibling canceled")
             (propagate (fiber/last-value fiber) fiber))))))
@@ -4650,8 +4651,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def results ![])
     (each thunk thunks
       (def ftemp (ev/go thunk nil chan))
-      (array/push results ftemp)
-      (put fset ftemp ftemp))
+      (array/push! results ftemp)
+      (put! fset ftemp ftemp))
     (wait-for-fibers chan fset)
     (for i 0 (length results) ; avoid extra copy from map
       (set (results i) (fiber/last-value (in results i))))
@@ -4798,10 +4799,10 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
   """
   [path & {:as kwargs}]
   (def new-env (make-env (get kwargs :env)))
-  (put new-env *flychecking* true)
-  (put new-env *module-cache* !{})
-  (put new-env *module-loading* !{})
-  (put new-env *module-make-env* (fn :make-flycheck-env [&] (make-env new-env)))
+  (put! new-env *flychecking* true)
+  (put! new-env *module-cache* !{})
+  (put! new-env *module-loading* !{})
+  (put! new-env *module-make-env* (fn :make-flycheck-env [&] (make-env new-env)))
   (try
     (dofile path :evaluator flycheck-evaluator |(kvs kwargs) :env new-env)
     ([e f]
@@ -4849,13 +4850,13 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
 ; Add metadata to defs and import macros for flychecking
 (each sym ['def 'var]
-  (put flycheck-specials sym is-safe-def))
+  (put! flycheck-specials sym is-safe-def))
 (each sym ['def- 'var- 'defglobal 'varglobal]
-  (put (dyn sym) :flycheck is-safe-def))
+  (put! (dyn sym) :flycheck is-safe-def))
 (each sym ['import 'import* 'dofile 'require]
-  (put (dyn sym) :flycheck flycheck-importer))
+  (put! (dyn sym) :flycheck flycheck-importer))
 (each sym ['use]
-  (put (dyn sym) :flycheck flycheck-use))
+  (put! (dyn sym) :flycheck flycheck-use))
 
 ;;;
 ;;;
@@ -4896,7 +4897,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
 
   (defn- get-files [manifest]
     (def files (get manifest :files ![]))
-    (put manifest :files files)
+    (put! manifest :files files)
     files)
 
   (defn- rmrf
@@ -4921,9 +4922,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           (def b (buffer/new 0x10000))
           (forever
             (file/read ffrom 0x10000 b)
-            (when (empty? b) (buffer/trim b) (os/chmod to perm) (break))
+            (when (empty? b) (buffer/trim! b) (os/chmod to perm) (break))
             (file/write fto b)
-            (buffer/clear b)))
+            (buffer/clear! b)))
         (errorf "destination file %s cannot be opened for writing" to))
       (errorf "source file %s cannot be opened for reading" from)))
 
@@ -4947,9 +4948,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     ; word tag, so what reaches disk is a map of vectors, which `%w` and `%y`
     ; write identically and `parse` reads back unchanged.
     (def frozen (freeze manifest))
-    (buffer/format b "%y" frozen) ; make sure it is valid edn
-    (buffer/clear b)
-    (buffer/format b "%.99m\n" frozen)
+    (buffer/format! b "%y" frozen) ; make sure it is valid edn
+    (buffer/clear! b)
+    (buffer/format! b "%.99m\n" frozen)
     (spit manifest-name b))
 
   (defn bundle/manifest
@@ -4970,14 +4971,14 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       ([_] (print "cannot enter source directory " workdir " for bundle " bundle-name)))
     (defer (os/cd dir)
       (def new-env (make-env))
-      (put new-env *module-cache* !{})
-      (put new-env *module-loading* !{})
-      (put new-env *module-make-env* (fn make-bundle-env [&] (make-env new-env)))
-      (put new-env :workdir workdir)
-      (put new-env :name bundle-name)
-      (put new-env *syspath* fixed-syspath)
+      (put! new-env *module-cache* !{})
+      (put! new-env *module-loading* !{})
+      (put! new-env *module-make-env* (fn make-bundle-env [&] (make-env new-env)))
+      (put! new-env :workdir workdir)
+      (put! new-env :name bundle-name)
+      (put! new-env *syspath* fixed-syspath)
       (with-env new-env
-        (put new-env :bundle-dir (bundle-dir bundle-name)) ; get the syspath right
+        (put! new-env :bundle-dir (bundle-dir bundle-name)) ; get the syspath right
         (try
           (require (string "@syspath/bundle/" bundle-name))
           ([e f]
@@ -5035,7 +5036,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def m (bundle/manifest b))
         (def deps (get m :dependencies []))
         (each d deps
-          (if (= d bundle-name) (put breakage b true)))))
+          (if (= d bundle-name) (put! breakage b true)))))
     (when (next breakage)
       (def breakage-list (sort (keys breakage)))
       (errorf "cannot uninstall %s, breaks dependent bundles %n" bundle-name breakage-list))
@@ -5050,15 +5051,15 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (def stack ![])
     (defn visit
       [b]
-      (array/push stack b)
+      (array/push! stack b)
       (if (get visited b) (break))
       (if (get cycle-detect b) (errorf "cycle detected in bundle dependencies: %s" (string/join " -> " stack)))
-      (put cycle-detect b true)
+      (put! cycle-detect b true)
       (each d (get (bundle/manifest b) :dependencies []) (visit d))
-      (put cycle-detect b nil)
-      (put visited b true)
-      (array/pop stack)
-      (array/push order b))
+      (put! cycle-detect b nil)
+      (put! visited b true)
+      (array/pop! stack)
+      (array/push! order b))
     (each b (bundle/list) (visit b))
     order)
 
@@ -5079,9 +5080,9 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def m (bundle/manifest b))
       (if (or (get exempt b) (not (get m :auto-remove)))
         (do
-          (put exempt b true)
-          (each d (get m :dependencies []) (put exempt d true)))
-        (array/push to-drop b)))
+          (put! exempt b true)
+          (each d (get m :dependencies []) (put! exempt d true)))
+        (array/push! to-drop b)))
     (print "pruning " (length to-drop) " bundles")
     (each b to-drop
       (print "uninstall " b))
@@ -5149,13 +5150,13 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (def missing (filter (complement bundle/installed?) deps))
         (when (next missing)
           (error (string "missing dependencies " (string/join ", " missing))))
-        (put man :dependencies deps)
-        (put man :info info))
+        (put! man :dependencies deps)
+        (put! man :info info))
       (def module (get-bundle-module bundle-name))
       (def clean (get config :clean))
       (def check (get config :check))
       (def all-hooks (seq [[k v] :pairs module :when (symbol? k) :unless (get v :private)] (keyword k)))
-      (put man :hooks all-hooks)
+      (put! man :hooks all-hooks)
       (do-hook module bundle-name :dependencies man) ; deprecated, use :postdeps
       (do-hook module bundle-name :postdeps man)
       (when clean
@@ -5201,15 +5202,15 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           (def {mode :mode perm :permissions} (os/stat file))
           (def relpath (string/triml (slice file (length syspath) -1) s))
           (case mode
-            :directory (array/push install-source `(bundle/add-directory manifest ~relpath ~perm))
+            :directory (array/push! install-source `(bundle/add-directory manifest ~relpath ~perm))
             :file (do
                     (def filename (string/format "file_%06d" (++ i)))
                     (copyfile file (string dest-dir s filename))
-                    (array/push install-source `(bundle/add-file manifest ~filename ~relpath ~perm)))
+                    (array/push! install-source `(bundle/add-file manifest ~filename ~relpath ~perm)))
             (errorf "unexpected file %v" file)))
         (def b !"(defn install [manifest]")
-        (each form install-source (buffer/format b "\n  %w" form))
-        (buffer/push b ")\n")
+        (each form install-source (buffer/format! b "\n  %w" form))
+        (buffer/push! b ")\n")
         (spit install-hook b))
       dest-dir))
 
@@ -5254,7 +5255,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (unless (os/mkdir absdest)
         (errorf "collision at %s, directory already exists" absdest))
       (def absdest (os/realpath absdest))
-      (array/push files absdest)
+      (array/push! files absdest)
       (when chmod-mode
         (os/chmod absdest chmod-mode))
       (print "add " absdest)
@@ -5285,7 +5286,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
         (errorf "collision at %s, file already exists" absdest))
       (copyfile src absdest)
       (def absdest (os/realpath absdest))
-      (array/push files absdest)
+      (array/push! files absdest)
       (when chmod-mode
         (os/chmod absdest chmod-mode))
       (print "add " absdest)
@@ -5321,8 +5322,8 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     ([manifest src filename chmod-mode]
       (def s (sep))
       (os/mkdir (string (dyn *syspath*) s "bin"))
-      (put manifest :has-exe true)
-      (put manifest :has-bin-script true) ; remove eventually
+      (put! manifest :has-exe true)
+      (put! manifest :has-bin-script true) ; remove eventually
       (bundle/add-file manifest src (string "bin" s filename) chmod-mode)))
 
   (defn bundle/add-manpage
@@ -5336,7 +5337,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def filename (last (string/split s src)))
       (os/mkdir (string (dyn *syspath*) s "man"))
       (os/mkdir (string (dyn *syspath*) s "man" s mansec))
-      (put manifest :has-man true)
+      (put! manifest :has-man true)
       (bundle/add-file manifest src (string "man" s mansec s filename))))
 
   (defn bundle/update-all
@@ -5397,7 +5398,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
     (each [name load] (or natives {})
       (module/add-native name (load)))
     (def env (load-image image))
-    (put env *args* args)
+    (put! env *args* args)
     (run-main env args)))
 
 (compwhen (not (dyn 'os/isatty))
@@ -5601,7 +5602,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           (run-image (slurp arg) subargs)
           (do
             (def env (make-env))
-            (put env *args* subargs)
+            (put! env *args* subargs)
             (if compile-only
               (flycheck arg :exit exit-on-error :env env)
               (do
@@ -5626,7 +5627,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
           (getter (getprompt p) buf env))
         (when-let [profile-source (dyn *profilepath*)]
           (dofile profile-source :exit true :env env)
-          (put env *current-file* nil))
+          (put! env *current-file* nil))
         (repl getchunk nil env)))))
 
 ;;;
@@ -5643,29 +5644,29 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
          :when (symbol? k)]
     (def flat (table/proto-flatten v))
     (when (boot/config :no-docstrings)
-      (put flat :doc nil)
-      (put flat :sigs nil))
+      (put! flat :doc nil)
+      (put! flat :sigs nil))
     (when (boot/config :no-sourcemaps)
-      (put flat :source-map nil))
+      (put! flat :source-map nil))
     (unless (boot/config :no-docstrings)
       (unless (v :private)
         (unless (v :doc)
           (errorf "no docs: %v %p" k v)))) ; make sure we have docs
     ; Fix directory separators on windows to make image identical between windows and non-windows
     (when-let [sm (get flat :source-map)]
-      (put flat :source-map [(string/replace-all "\\" "/" (sm 0)) (sm 1) (sm 2)]))
+      (put! flat :source-map [(string/replace-all "\\" "/" (sm 0)) (sm 1) (sm 2)]))
     (if (v :private)
-      (put root-env k nil)
-      (put root-env k flat)))
-  (put root-env 'boot/config nil)
-  (put root-env 'boot/args nil)
+      (put! root-env k nil)
+      (put! root-env k flat)))
+  (put! root-env 'boot/config nil)
+  (put! root-env 'boot/args nil)
 
   ; Build dictionary for loading images
   (def load-dict (env-lookup root-env))
   (each [k v] (pairs load-dict)
     ; Drop simple types, otherwise we get odd issues when loading foreign data from a different Janet version.
     ; It also doesn't usually save any space to encode these anyway.
-    (if (or (string? v) (keyword? v) (number? v)) (put load-dict k nil)))
+    (if (or (string? v) (keyword? v) (number? v)) (put! load-dict k nil)))
   (merge! load-image-dict load-dict)
 
   (def image
@@ -5677,7 +5678,7 @@ Optional namespace prefix to add to keywords declared with ^defdyn.
       (def temp !{})
       (each [k v] lookup
         (if (in temp v) (errorf "duplicate value: %v" v))
-        (put temp v k))
+        (put! temp v k))
       (marshal root-env reverse-lookup)))
 
   ; Write the core image out, as itself.

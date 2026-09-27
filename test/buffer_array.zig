@@ -6,7 +6,7 @@
 //! this file asserts the fields directly rather than through the standard
 //! library: `count`, `capacity`, and what `data` contains after each
 //! operation. The capacity policy is the interesting part, both types
-//! overshooting by a caller-supplied growth factor, and `array/ensure`
+//! overshooting by a caller-supplied growth factor, and `array/ensure!`
 //! exposes the resulting capacity to Janet code, so it is fixed rather than
 //! free to change.
 //!
@@ -30,7 +30,7 @@
 //! depends on the C library: `realloc(p, 0)` gives back a minimal block on
 //! macOS and NULL on glibc, and the second of those ends the process the same
 //! way. So the zero case is asserted only after probing the allocator for
-//! which it does, and the negative case is not asserted at all. `array/ensure`
+//! which it does, and the negative case is not asserted at all. `array/ensure!`
 //! rejects both before they get here, which `suite-corelib.wattle` pins.
 //!
 //! The overflow refusals are asserted on both sides of their boundaries by
@@ -383,7 +383,7 @@ fn nativeOrderIsTheHosts() !void {
         value.fromBytes("native", .keyword),
         harness.wrapInteger(word),
     };
-    _ = try harness.callCore("buffer/push-uint16", &argv);
+    _ = try harness.callCore("buffer/push-uint16!", &argv);
     expect(b.count == 2);
     expect(std.mem.eql(u8, b.slice(), std.mem.asBytes(&word)));
 }
@@ -481,7 +481,7 @@ fn arrayNIsExactlyFull() void {
 }
 
 /// The array's growth factor behaves as the buffer's does. This is the policy
-/// `array/ensure` exposes to Janet, so the exact capacities are a contract.
+/// `array/ensure!` exposes to Janet, so the exact capacities are a contract.
 fn arrayEnsureAppliesTheGrowthFactor() !void {
     const a = arrays.new(10);
     const before = a.data;
@@ -589,7 +589,7 @@ fn reallocZeroReturnsABlock() bool {
 /// A growth factor of zero releases the payload while leaving `count` alone.
 ///
 /// The internal function still does this and the boundary does not let a
-/// Janet program reach it. `array/ensure` rejects a growth below one, as it
+/// Janet program reach it. `array/ensure!` rejects a growth below one, as it
 /// already rejected a count below one, because `Array.count` is `usize` and a
 /// negative capacity has nowhere to go. `arrays.ensure` itself takes the
 /// factor on trust, every in-tree caller passing 1 or 2, so this asserts
@@ -649,8 +649,8 @@ fn theCeilings() !void {
 ///
 /// `buffers.extra` doubles a size of exactly half of `maxInt(i32)` to
 /// `maxInt(i32) - 1`, which reallocates two gigabytes that nothing fills.
-/// `buffer/blit` writes up to exactly `maxInt(i32)`. `array/push` refuses a
-/// push that would reach a count of `maxInt(i32)`, `array/insert` takes one
+/// `buffer/blit!` writes up to exactly `maxInt(i32)`. `array/push!` refuses a
+/// push that would reach a count of `maxInt(i32)`, `array/insert!` takes one
 /// that reaches it and refuses one more, and `arrays.push` refuses at the
 /// count itself. A host that refuses a reservation skips the part that uses
 /// it.
@@ -680,10 +680,10 @@ fn theReservedCeilings() !void {
             wrap.fromString(strings.cstring("xy")),
             harness.wrapInteger(top - 1),
         };
-        expect(harness.coreRaised("buffer/blit", &argv).?.says("buffer blit out of range"));
+        expect(harness.coreRaised("buffer/blit!", &argv).?.says("buffer blit out of range"));
         expect(dest.count == ceiling - 1);
         argv[1] = wrap.fromString(strings.cstring("x"));
-        _ = try harness.callCore("buffer/blit", &argv);
+        _ = try harness.callCore("buffer/blit!", &argv);
         expect(dest.count == ceiling);
         expect(memory[ceiling - 1] == 'x');
     }
@@ -697,10 +697,10 @@ fn theReservedCeilings() !void {
             .data = @ptrCast(@alignCast(memory)),
         };
         var push = [_]repr.Value{ wrap.fromArray(&a), harness.wrapInteger(7) };
-        _ = try harness.callCore("array/push", &push);
+        _ = try harness.callCore("array/push!", &push);
         expect(a.count == ceiling - 1);
         expect(harness.integerIs(a.data.?[ceiling - 2], 7));
-        expect(harness.coreRaised("array/push", &push).?.says("array overflow"));
+        expect(harness.coreRaised("array/push!", &push).?.says("array overflow"));
         expect(a.count == ceiling - 1);
 
         var insert = [_]repr.Value{
@@ -708,11 +708,11 @@ fn theReservedCeilings() !void {
             harness.wrapInteger(top - 1),
             harness.wrapInteger(8),
         };
-        _ = try harness.callCore("array/insert", &insert);
+        _ = try harness.callCore("array/insert!", &insert);
         expect(a.count == ceiling);
         expect(harness.integerIs(a.data.?[ceiling - 1], 8));
         insert[1] = harness.wrapInteger(top);
-        expect(harness.coreRaised("array/insert", &insert).?.says("array overflow"));
+        expect(harness.coreRaised("array/insert!", &insert).?.says("array overflow"));
         expect(harness.raised(arrays.push, .{ &a, harness.wrapInteger(9) }).?.says("array overflow"));
         expect(a.count == ceiling);
     }
@@ -777,11 +777,11 @@ fn fromWattle() void {
     const source =
         \\(let [b (buffer/new 100)
         \\      a (array/new 10)]
-        \\  (buffer/push b "abc")
-        \\  (buffer/trim b)
-        \\  (array/push a 1)
-        \\  (array/push a 2)
-        \\  [(length b) (string b) (length a) (array/pop a) (array/peek a)])
+        \\  (buffer/push! b "abc")
+        \\  (buffer/trim! b)
+        \\  (array/push! a 1)
+        \\  (array/push! a 2)
+        \\  [(length b) (string b) (length a) (array/pop! a) (array/peek a)])
     ;
     expect(core_env.dostring(env, source, "buffer-array-test", &out) == 0);
     expect(harness.isType(out, repr.Tag.vector));
@@ -798,7 +798,7 @@ fn fromWattle() void {
 ///
 /// The buffer is what this fixture is for. A reader holding two runs of one
 /// value at once reads the poison rather than the elements it asked for, so
-/// `(array/concat ![] v v)` fails here and would pass against a type that
+/// `(array/concat! ![] v v)` fails here and would pass against a type that
 /// hands out its own storage. The elements are numbers, so nothing in the
 /// buffer has to be marked.
 const Runs = struct {
@@ -846,14 +846,14 @@ const nfuns = [_]abi.Reg{
     .{ .name = "bufarr/runs", .nfun = raise.stored(&nfunRuns), .documentation = null },
 };
 
-/// `array/concat` and `array/join` read an abstract type with a `chunk`
+/// `array/concat!` and `array/join!` read an abstract type with a `chunk`
 /// callback one run at a time, and an array or a tuple holding the same
 /// elements is the oracle for every case.
 ///
-/// `array/concat` appends an indexed part element by element and anything else
+/// `array/concat!` appends an indexed part element by element and anything else
 /// as a single element, and it read that distinction off the type tag, so an
 /// indexed abstract used to go in whole. It goes in element by element now,
-/// which is what the rule says and what `array/join` already did.
+/// which is what the rule says and what `array/join!` already did.
 ///
 /// The aliasing case is here too. Concatenating an array onto itself makes it
 /// both the source and the destination, and the reservation may move the run
@@ -864,26 +864,26 @@ fn concatReadsAnIndexedAbstract() void {
     registry.nfuns(env, null, &nfuns);
     const source =
         \\(def failures ![])
-        \\(defn- check [label ok] (unless ok (array/push failures label)))
+        \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\(def v (bufarr/runs 10))
         \\(def oracle [0 10 20 30 40 50 60 70 80 90])
         \\(check "concat element by element"
-        \\       (deep= (array/concat ![] v) (array/concat ![] oracle)))
+        \\       (deep= (array/concat! ![] v) (array/concat! ![] oracle)))
         \\(check "concat twice from one value"
-        \\       (deep= (array/concat ![] v v) (array/concat ![] oracle oracle)))
+        \\       (deep= (array/concat! ![] v v) (array/concat! ![] oracle oracle)))
         \\(check "join twice from one value"
-        \\       (deep= (array/join ![] v v) (array/join ![] oracle oracle)))
+        \\       (deep= (array/join! ![] v v) (array/join! ![] oracle oracle)))
         \\(check "a part that is not indexed is one element"
-        \\       (deep= (array/concat ![1] v 2 v) (array/concat ![1] oracle 2 oracle)))
+        \\       (deep= (array/concat! ![1] v 2 v) (array/concat! ![1] oracle 2 oracle)))
         \\(check "an empty abstract appends nothing"
-        \\       (deep= (array/concat ![:a] (bufarr/runs 0)) ![:a]))
+        \\       (deep= (array/concat! ![:a] (bufarr/runs 0)) ![:a]))
         \\(check "a growth mid-copy keeps every element"
-        \\       (= 1000 (length (array/concat ![] (bufarr/runs 1000)))))
+        \\       (= 1000 (length (array/concat! ![] (bufarr/runs 1000)))))
         \\(check "an array concatenated onto itself"
-        \\       (let [a ![1 2 3]] (array/concat a a) (deep= a ![1 2 3 1 2 3])))
+        \\       (let [a ![1 2 3]] (array/concat! a a) (deep= a ![1 2 3 1 2 3])))
         \\(check "join still refuses what is not indexed"
         \\       (= "expected indexed type for argument 1, got 5"
-        \\          (let [[ok r] (protect (array/join ![] 5))] r)))
+        \\          (let [[ok r] (protect (array/join! ![] 5))] r)))
         \\failures
     ;
     expect(core_env.dostring(env, source, "buffer-array-test", &out) == 0);

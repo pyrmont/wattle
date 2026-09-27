@@ -24,9 +24,9 @@
 ; Inline 3 argument get
 (assert (= 10 (do (var a 10) (set a (get '{} :a a)))) "inline get 1")
 
-; put on an empty map literal
-(def t (put !{} :hi 1))
-(assert (deep= t !{:hi 1}) "put on empty map literal")
+; put! on an empty map literal
+(def t (put! !{} :hi 1))
+(assert (deep= t !{:hi 1}) "put! on empty map literal")
 
 (end-suite)
 
