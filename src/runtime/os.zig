@@ -161,6 +161,13 @@ const source_realtime: i32 = 0;
 /// and the sleep.
 const windows = builtin.os.tag == .windows;
 
+/// Whether the target has `TIOCGWINSZ`, which `os/term-size` asks a terminal
+/// with. A target without it reports no size.
+const has_winsize = switch (builtin.os.tag) {
+    .linux, .macos, .ios, .freebsd, .netbsd, .openbsd, .dragonfly, .illumos => true,
+    else => false,
+};
+
 /// Windows file times count 100-nanosecond intervals from January 1, 1601.
 const windows_epoch_offset: i64 = 116444736000000000;
 
@@ -587,6 +594,52 @@ fn nfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(c.isatty(fd) != 0);
 }
 
+/// `(os/term-size [file])`.
+fn nfunTermSize(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.arity(argv, 0, 1);
+    const f: ?*io_core.FILE = if (argv.len == 1)
+        try io_core.getfile(argv, 0, null)
+    else
+        stdio.out();
+    const fd = if (windows) c._fileno(f) else c.fileno(f);
+    if (fd == -1) {
+        if (windows) {
+            return raise.panic("not a valid stream");
+        } else {
+            return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
+        }
+    }
+    const size = terminalSize(fd) orelse return wrap.fromNil();
+    var pair = [2]repr.Value{ wrap.fromInteger(size[0]), wrap.fromInteger(size[1]) };
+    return wrap.fromVector(vectors.fromSlice(&pair));
+}
+
+/// The columns and rows of the terminal `fd` is open on, or null when `fd` is
+/// not a terminal, the host cannot report a size or the size is zero.
+///
+/// Some terminals report a size of zero before they have been resized, and a
+/// caller would divide by it, so it is treated as no size.
+fn terminalSize(fd: c_int) ?[2]i32 {
+    var columns: i32 = 0;
+    var rows: i32 = 0;
+    if (windows) {
+        var info: c.ConsoleScreenBufferInfo = undefined;
+        const handle: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c._get_osfhandle(fd))));
+        if (c.GetConsoleScreenBufferInfo(handle, &info) == 0) return null;
+        columns = @as(i32, info.srWindow[2]) - @as(i32, info.srWindow[0]) + 1;
+        rows = @as(i32, info.srWindow[3]) - @as(i32, info.srWindow[1]) + 1;
+    } else if (comptime has_winsize) {
+        var size: std.c.winsize = undefined;
+        if (std.c.ioctl(fd, std.c.T.IOCGWINSZ, &size) == -1) return null;
+        columns = size.col;
+        rows = size.row;
+    } else {
+        return null;
+    }
+    if (columns <= 0 or rows <= 0) return null;
+    return .{ columns, rows };
+}
+
 /// `(os/setenv variable value)`.
 ///
 /// It declares an arity of one to two and reads two arguments, so
@@ -769,6 +822,9 @@ fn tailEntries() []const corefn.Entry {
                 "nil."),
             corefn.reg("os/isatty", &nfunIsatty, @src(), "(os/isatty)\n(os/isatty file)", "Returns true if file, a core/file, is a terminal. If file is not specified, " ++
                 "it defaults to standard output. Raises an error if file is not a core/file or is closed."),
+            corefn.reg("os/term-size", &nfunTermSize, @src(), "(os/term-size)\n(os/term-size file)", "Returns the size of the terminal file, a core/file, is open on as the vector [columns rows]. If file is not specified, " ++
+                "it defaults to standard output. Returns nil if file is not a terminal or its size cannot be read, " ++
+                "as on a target with no way to ask. Raises an error if file is not a core/file or is closed."),
         };
         if (!no_locales) acc = acc ++ [_]corefn.Entry{
             corefn.reg("os/setlocale", &nfunSetlocale, @src(), "(os/setlocale)\n(os/setlocale locale)\n(os/setlocale locale category)", "Sets the system locale, which affects how dates and numbers are formatted. " ++

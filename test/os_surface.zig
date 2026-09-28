@@ -92,6 +92,7 @@ const expected_bindings: []const [*:0]const u8 = blk: {
         "os/strftime",
         "os/sleep",
         "os/isatty",
+        "os/term-size",
     };
     if (!no_locales) list = list ++ [_][*:0]const u8{"os/setlocale"};
     list = list ++ [_][*:0]const u8{
@@ -778,6 +779,17 @@ fn theOptionalArguments() void {
         \\(def f (file/temp))
         \\(assert (= false (os/isatty f)))
         \\(file/close f)
+    );
+
+    // `os/term-size` asks the same question about the same file, and a file
+    // that is not a terminal has no size. A closed file raises, as it does for
+    // `os/isatty`.
+    harness.inFiber(env,
+        \\(def f (file/temp))
+        \\(assert (= nil (os/term-size f)))
+        \\(file/close f)
+        \\(assert (= "file is closed" (last (protect (os/term-size f)))))
+        \\(assert (first (protect (os/term-size))) "the default file does not raise")
     );
 }
 

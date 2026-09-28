@@ -101,6 +101,14 @@
           (queued)))
       (ev/go-gather (seq [_ :range [0 case-limit]] worker))))
 
+  ; `os/term-size` reads the size the harness gave the terminal, for standard
+  ; output, standard error and standard input alike. The exit is awaited so
+  ; that the program has printed before the harness reports.
+  (task (assert (= "[91 27]\n[91 27]\n[91 27]\n@exit 0\n@modes echo icanon\n"
+                   (drive "" :marker "[91 27]" :screen true :exit true :cols 91 :rows 27
+                          :args ["-e" "(pp (os/term-size stdout)) (pp (os/term-size stderr)) (pp (os/term-size stdin))"]))
+                "os/term-size reports the size of the terminal"))
+
   ; A line typed with Left, an insertion, Home, End and a Backspace, then
   ; submitted. A frame clears from its first row and then draws, the last
   ; frame has the cursor at the line's end, the row break is `\r\n`, and the
