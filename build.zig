@@ -579,10 +579,16 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(client);
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
-    const gum_dir: std.Build.InstallDir = .{ .custom = "share/wattle/gum" };
-    b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("src/gum/args.wattle"), gum_dir, "args.wattle").step);
-    b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("src/gum/LICENSE.argy-bargy"), gum_dir, "LICENSE.argy-bargy").step);
-    b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("src/gum/README.md"), gum_dir, "README.md").step);
+    // The package's own files, as `build.zig.zon` lists them, so that a
+    // `quickbin` build can name `<prefix>/share/wattle` as its `wattle`
+    // dependency by path where no URL and hash are wanted. `src/gum/` is
+    // installed as `share/wattle/gum` rather than under `share/wattle/src`.
+    const source_dir: std.Build.InstallDir = .{ .custom = "share/wattle" };
+    for ([_][]const u8{ "build.zig", "build.zig.zon", "LICENSE", "README.md" }) |name| {
+        b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path(name), source_dir, name).step);
+    }
+    installSource(b, source_dir);
+    b.installDirectory(.{ .source_dir = b.path("src/gum"), .install_dir = source_dir, .install_subdir = "gum" });
 
     const built: Built = .{
         .b = b,
@@ -779,6 +785,12 @@ pub fn build(b: *std.Build) void {
     // An alias of `test/contracts`, kept because documents cite the name.
     const subsystem_step = b.step("test/subsystems", "Run the contracts (alias of test/contracts)");
 
+    // Both read `test/`, which the package and an installed copy do not carry.
+    if (hasTests(b)) {
+        checkContractsListed(b);
+        checkAliasesUsed(b);
+    }
+
     // The Zig contracts, in the runtime's own compilation.
     //
     // A contract that linked `libwattle.a` would cross the C ABI on every call,
@@ -793,8 +805,6 @@ pub fn build(b: *std.Build) void {
     // is that a contract calls its subject the way a subsystem calls its
     // neighbour -- by import, with `try` -- so no face, no adapter pool, and no
     // flag stand between the two.
-    checkContractsListed(b);
-    checkAliasesUsed(b);
     const zig_contracts_step = b.step(
         "test/contracts",
         "Run the contracts that live in the runtime's compilation",
@@ -1648,6 +1658,34 @@ fn quickbinExecutable(
     const exe = selectBackend(b.addExecutable(.{ .name = opts.name, .root_module = module }));
     applyLinkage(exe, target_side.options, target_side.target);
     return exe;
+}
+
+/// Installs every entry of `src/` except `gum` under `<dir>/src`.
+fn installSource(b: *std.Build, dir: std.Build.InstallDir) void {
+    const io = b.graph.io;
+    var src = b.build_root.handle.openDir(io, "src", .{ .iterate = true }) catch |err| {
+        std.debug.panic("build.zig: cannot open src/: {t}", .{err});
+    };
+    defer src.close(io);
+
+    var it = src.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (std.mem.eql(u8, entry.name, "gum")) continue;
+        const path = b.pathJoin(&.{ "src", entry.name });
+        switch (entry.kind) {
+            .directory => b.installDirectory(.{ .source_dir = b.path(path), .install_dir = dir, .install_subdir = path }),
+            .file => b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path(path), dir, path).step),
+            else => {},
+        }
+    }
+}
+
+/// Whether the build root is the repository, which has `test/`, rather than the
+/// package a consumer fetches or the copy installed under `share/wattle`, which
+/// do not.
+fn hasTests(b: *std.Build) bool {
+    b.build_root.handle.access(b.graph.io, "test", .{}) catch return false;
+    return true;
 }
 
 /// Every file-scope alias is used by the file that declares it.

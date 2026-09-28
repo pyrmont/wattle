@@ -287,6 +287,14 @@ nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`,
 which links `examples/digest/` in, and `build.zig`'s `quickbin` function builds
 one from outside the tree (`examples/standalone/`).
 
+`zig build` also copies the package's files, `build.zig`, `build.zig.zon`,
+`LICENSE`, `README.md` and `src/`, to `<prefix>/share/wattle/`, except that
+`src/gum/` goes to `<prefix>/share/wattle/gum/`. A project builds
+a single-binary executable from that copy by naming it as the `wattle`
+dependency with a `.path` relative to the project. Zig does not accept an
+absolute `.path`. The copy has no `test/`, and `build.zig` skips the checks that
+read it.
+
 ## Gum
 
 Gum contains optional Wattle source modules. The modules are in `src/gum/` and
