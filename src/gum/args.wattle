@@ -6,6 +6,15 @@
 (def- default-pad-right 0)
 (def- default-hr "---")
 
+; Returns the columns of the terminal standard output is open on, capped at
+; max-width, or max-width when standard output is not a terminal. os/term-size
+; is looked up in root-env because a build with -Dreduced-os=true does not
+; register it, and naming it directly would stop this module compiling there.
+(defn- get-cols [max-width]
+  (def entry (get root-env 'os/term-size))
+  (def size (when entry ((get entry :value))))
+  (if size (min (get size 0) max-width) max-width))
+
 (defn- rule-pairs [entries hr]
   (def out ![])
   (var i 0)
@@ -219,6 +228,7 @@
   (def max-width (get info :max-width default-max-width))
   (def rules (rule-pairs (get config :rules []) hr))
   (def subs (rule-pairs (get config :subs []) hr))
+  (def cols (get-cols max-width))
   (def lines ![])
   (def examples (get info :usages))
   (if examples
@@ -244,12 +254,12 @@
       (when (> (length subs) 0)
         (set example (string example " <subcommand> [<args>]")))
       (array/push! lines
-        (wrap-line example (- max-width pad-right)
+        (wrap-line example (- cols pad-right)
                    (+ 8 (length command))))))
   (when (get info :about)
     (array/push! lines "")
     (array/push! lines
-      (wrap-line (get info :about) (- max-width pad-right) 0)))
+      (wrap-line (get info :about) (- cols pad-right) 0)))
   (def parameter-rows ![])
   (def option-rows ![])
   (def sub-rows ![])
@@ -277,9 +287,9 @@
     (array/push! option-rows
       [" -h, --help" "Show this help message."]))
   (emit-rows lines (get info :params-header "Parameters:") parameter-rows
-             max-width pad-inset pad-right)
+             cols pad-inset pad-right)
   (emit-rows lines (get info :opts-header "Options:") option-rows
-             max-width pad-inset pad-right)
+             cols pad-inset pad-right)
   (when (> (length subs) 0)
     (each [name sub] subs
       (if sub
@@ -291,7 +301,7 @@
            (get sub :help "")])
         (array/push! sub-rows [nil nil])))
     (emit-rows lines (get info :subs-header "Subcommands:") sub-rows
-               max-width pad-inset pad-right)
+               cols pad-inset pad-right)
     (array/push! lines "")
     (array/push! lines
       (string "For more information on each subcommand, type '"
@@ -299,7 +309,7 @@
   (when (get info :rider)
     (array/push! lines "")
     (array/push! lines
-      (wrap-line (get info :rider) (- max-width pad-right) 0)))
+      (wrap-line (get info :rider) (- cols pad-right) 0)))
   (string (string/join "\n" lines) "\n"))
 
 (defn- apply-option [result rules name short? value]

@@ -17,6 +17,8 @@ project's `gum/` directory, then import it from the caller:
 The import path is relative to the importing file. A project can edit its
 vendored copy without changing Wattle's source package.
 
-`args.wattle` uses no OS or process function. Usage text wraps at the `:max-width`
-of the config's `:info` map, 120 columns by default, and does not read the
-terminal's width.
+Usage text wraps at the width of the terminal standard output is open on, up to
+the `:max-width` of the config's `:info` map, 120 columns by default. When
+standard output is not a terminal, or the build registers no `os/term-size`, as
+with `-Dreduced-os=true`, it wraps at `:max-width`. `args.wattle` loads in either
+build.
