@@ -39,6 +39,7 @@ const buffers = @import("value/buffers.zig");
 const c = @import("cabi");
 const config = @import("config");
 const constants = @import("constants");
+const json = @import("json.zig");
 const maps = @import("value/maps.zig");
 const raise = @import("../api/raise.zig");
 const registry = @import("registry.zig");
@@ -99,6 +100,8 @@ pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
         repr.Tag.abstract => {
             const p = wrap.toAbstract(x);
             const t = abstract_type.ofAbstract(p);
+            // `json/null` is described by the name it is bound to.
+            if (t == &json.null_type) return try buffers.pushCString(buffer, "json/null");
             if (t.tostring) |tostring| {
                 try buffers.pushCString(buffer, "<");
                 try buffers.pushBytes(buffer, t.name);

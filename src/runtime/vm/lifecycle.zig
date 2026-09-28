@@ -137,6 +137,7 @@ pub fn deinit() void {
     gc_alloc.rootsDeinit(&vm_state.current().roots);
     vm_state.current().abstract_registry = null;
     vm_state.current().core_env = null;
+    vm_state.current().json_null = null;
     vm_state.current().top_dyns = null;
     vm_state.current().user = null;
     order.traversalDeinit(&vm_state.current().traversal);
@@ -192,6 +193,7 @@ pub fn init() raise.Error!c_int {
 
     // Core env.
     vm_state.current().core_env = null;
+    vm_state.current().json_null = null;
 
     // Auto suspension.
     vm_state.current().auto_suspend = 0;

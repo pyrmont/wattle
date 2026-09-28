@@ -133,6 +133,7 @@ pub const Vm = struct {
     user: ?*anyopaque = null,
     top_dyns: ?*tables.Table = null,
     core_env: ?*tables.Table = null,
+    json_null: ?*anyopaque = null,
     stackn: u32 = 0,
     auto_suspend: abi.AtomicInt = 0,
     fiber: ?*fibers.Fiber = null,

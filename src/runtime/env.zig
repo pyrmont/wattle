@@ -59,6 +59,7 @@ const gc_mark = @import("gc/mark.zig");
 const interface = @import("../api/interface.zig");
 const inttypes = @import("value/ints.zig");
 const io_core = @import("io.zig");
+const json = @import("json.zig");
 const marsh = @import("marsh.zig");
 const maps = @import("value/maps.zig");
 const math = @import("math.zig");
@@ -1389,6 +1390,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     corefn.install(env, entries);
     try io_core.libIo(env);
     try math.libMath(env);
+    try json.libJson(env);
     arrays.lib(env);
     tuples.lib(env);
     vectors.lib(env);

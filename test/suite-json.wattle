@@ -1,0 +1,139 @@
+(import ./helper :prefix "")
+
+(start-suite)
+
+; Decoding: the types
+
+(assert (deep= [1 2.5 true false] (json/decode "[1, 2.5, true, false]")) "an array is a vector")
+(assert (vector? (json/decode "[]")) "an empty array is a vector")
+(assert (deep= {"a" 1 "b" {"c" []}} (json/decode """{"a": 1, "b": {"c": []}}""")) "an object is a map")
+(assert (map? (json/decode "{}")) "an empty object is a map")
+(assert (= "a" (first (keys (json/decode """{"a": 1}""")))) "a key is a string")
+(assert (= 2 (get (json/decode """{"a": 1, "a": 2}""") "a")) "a repeated key keeps the last value")
+(assert (= 3 (json/decode " \n 3 \t ")) "whitespace around a value")
+(assert (= "x" (json/decode !"\"x\"")) "a buffer is decoded")
+
+; Decoding: null
+
+(assert (= json/null (json/decode "null")) "null is json/null")
+(assert (deep= [1 json/null] (json/decode "[1, null]")) "null in an array is json/null")
+(assert (= json/null (get (json/decode """{"a": null}""") "a")) "null in an object is json/null")
+(assert (nil? (json/decode "null" :n)) "null is nil under :n")
+(assert (deep= [1 nil] (json/decode "[1, null]" :n)) "null in an array is nil under :n")
+(assert (deep= {} (json/decode """{"a": null}""" :n)) "a null member is absent under :n")
+(assert (deep= {} (json/decode """{"a": 1, "a": null}""" :n)) "a last null removes a repeated key under :n")
+(assert-error-value "an unknown decode flag" "unexpected flag s, expected one of \"n\""
+  (json/decode "1" :s))
+
+; Decoding: numbers
+
+(assert (= 9007199254740992 (json/decode "9007199254740992")) "2^53 is exact")
+(assert (= -9007199254740992 (json/decode "-9007199254740992")) "-2^53 is exact")
+(assert (= 18014398509481984 (json/decode "18014398509481984")) "2^54 is exact")
+(assert-error-value "2^53 + 1 is not exact" "JSON integer 9007199254740993 is not exactly a number"
+  (json/decode "9007199254740993"))
+(assert-error "a 400-digit integer is out of range"
+  (json/decode (string "1" (string/repeat "0" 400))))
+(assert (= 1e20 (json/decode "1e20")) "an exponent rounds")
+(assert (= 0.1 (json/decode "0.1")) "a fraction rounds")
+(assert (= 9007199254740992 (json/decode "9007199254740993.0")) "a fraction past 2^53 rounds")
+(assert (= 0 (json/decode "1e-400")) "an underflow is zero")
+(assert-error-value "an overflow" "JSON number 1e400 is out of range"
+  (json/decode "1e400"))
+
+; Decoding: strings
+
+(assert (= "é😀" (json/decode "\"\\u00e9\\ud83d\\ude00\"")) "escapes decode to UTF-8")
+(assert (= "\0" (json/decode "\"\\u0000\"")) "\\u0000 is a zero byte")
+(assert (= "a\"\\/\b\f\n\r\tb" (json/decode "\"a\\\"\\\\\\/\\b\\f\\n\\r\\tb\"")) "the short escapes")
+(assert-error "an unpaired surrogate" (json/decode "\"\\ud800\""))
+(assert-error "invalid UTF-8" (json/decode "\"\xff\""))
+
+; Decoding: refusals
+
+(assert-error-value "an unclosed array" "unexpected end of JSON text" (json/decode "[1,"))
+(assert-error-value "a trailing comma" "invalid JSON at line 1, column 4" (json/decode "[1,]"))
+(assert-error-value "the line and column" "invalid JSON at line 2, column 9" (json/decode "{\n\"a\": tru}"))
+(assert-error "a second value" (json/decode "[1] 2"))
+(assert-error "an empty text" (json/decode ""))
+(assert-error "nesting past the limit" (json/decode (string/repeat "[" 2000)))
+
+; Encoding: the types
+
+(assert (= "[1,true,false]" (json/encode [1 true false])) "a vector is an array")
+(assert (= "[1,[2]]" (json/encode ![1 (tuple 2)])) "an array and a tuple are arrays")
+(assert (= """{"a":[]}""" (json/encode {"a" []})) "a map is an object")
+(assert (= """{"a":{}}""" (json/encode !{"a" !{}})) "a table is an object")
+(assert (= "null" (json/encode json/null)) "json/null is null")
+(assert (= "\"é\"" (json/encode "é")) "UTF-8 is written as it is")
+(assert (= "\"\\\"\\\\\\n\\r\\t\\b\\f\\u0000\\u001f\"" (json/encode "\"\\\n\r\t\b\f\0\x1f"))
+  "the escapes")
+
+; Encoding: numbers
+
+(assert (= "3" (json/encode 3)) "an integer has no fraction")
+(assert (= "-3" (json/encode -3)) "a negative integer")
+(assert (= "9007199254740992" (json/encode 9007199254740992)) "2^53 has no fraction")
+(assert (= "0.1" (json/encode 0.1)) "a fraction")
+(assert (= "1e300" (json/encode 1e300)) "a large number has an exponent")
+(assert (= "1.5e-7" (json/encode 1.5e-7)) "a small number has an exponent")
+(each x [0.1 (/ 1 3) 1e300 5e-324 9007199254740992 9007199254740994 1.2345678901234568e17 -2.5]
+  (assert (= x (json/decode (json/encode x))) (string/format "%q round-trips" x)))
+; Random doubles, built from their marshalled bytes, read back as themselves.
+(def rng (math/rng 1))
+(def real-lead (string/slice (marshal 1.5) 0 1))
+(var mismatches 0)
+(for i 0 20000
+  (def x (unmarshal (buffer real-lead (math/rng-buffer rng 8))))
+  (when (and (= x x) (not= x math/inf) (not= x math/-inf))
+    (unless (= x (json/decode (json/encode x))) (++ mismatches))))
+(assert (= 0 mismatches) "20000 random doubles round-trip")
+(assert-error-value "NaN" "cannot encode nan as JSON" (json/encode math/nan))
+(assert-error-value "infinity" "cannot encode inf as JSON" (json/encode math/inf))
+
+; Encoding: the flags
+
+(assert-error-value "nil" "cannot encode nil as JSON without the :n flag" (json/encode [nil]))
+(assert (= "[null]" (json/encode [nil] :n)) "nil is null under :n")
+(assert-error-value "a keyword value" "cannot encode :a as JSON without the :s flag" (json/encode [:a]))
+(assert-error "a symbol value" (json/encode ['a]))
+(assert-error "a buffer value" (json/encode [!"a"]))
+(assert (= """["a","b","c"]""" (json/encode [:a 'b !"c"] :s)) "strings under :s")
+(assert-error-value "a keyword key" "cannot use :a as a JSON object key without the :s flag"
+  (json/encode {:a 1}))
+(assert (= """{"a":1}""" (json/encode {:a 1} :s)) "a keyword key under :s")
+(assert (= """{"a":1}""" (json/encode {'a 1} :s)) "a symbol key under :s")
+(assert (= """{"a":1}""" (json/encode !{!"a" 1} :s)) "a buffer key under :s")
+(assert-error-value "a number key" "cannot use 1 as a JSON object key" (json/encode {1 2} :s))
+(assert-error-value "an unknown encode flag" "unexpected flag x, expected one of \"ns\""
+  (json/encode 1 :x))
+
+; Encoding: refusals
+
+(assert-error "a set" (json/encode #{1}))
+(assert-error "a function" (json/encode print))
+(compwhen (dyn 'int/s64)
+  (assert-error "an s64" (json/encode (int/s64 1)))
+  (assert-error "a u64" (json/encode (int/u64 1))))
+(assert-error "invalid UTF-8" (json/encode "\xff"))
+(assert-error "invalid UTF-8 under :s" (json/encode !"\xff" :s))
+(def cycle !{})
+(put! cycle "self" cycle)
+(assert-error "a table that contains itself" (json/encode cycle))
+
+; json/null
+
+(assert (= :json/null (type json/null)) "the type of json/null")
+(assert (= "json/null" (string json/null)) "string of json/null")
+(assert (= "json/null" (describe json/null)) "describe of json/null")
+(assert (= json/null (unmarshal (marshal json/null))) "json/null survives marshal")
+(assert (= json/null (first (unmarshal (marshal [json/null])))) "json/null inside a value survives marshal")
+(assert (= 1 (length (distinct [json/null json/null (json/decode "null")]))) "one json/null")
+
+; Round trips
+
+(def text """{"a":[1,2.5,null,true,false,"x"],"b":{"c":null}}""")
+(assert (deep= (json/decode text) (json/decode (json/encode (json/decode text)))) "decode, encode, decode")
+(assert (= "[1,null,[]]" (json/encode (json/decode "[1,null,[]]"))) "encode after decode")
+
+(end-suite)

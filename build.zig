@@ -57,6 +57,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-gum.wattle", .needs_os = true, .needs_processes = true },
     .{ .path = "test/suite-inttypes.wattle" },
     .{ .path = "test/suite-io.wattle", .needs_os = true },
+    .{ .path = "test/suite-json.wattle" },
     .{ .path = "test/suite-lineedit.wattle", .needs_os = true, .pty = true },
     .{ .path = "test/suite-map.wattle" },
     .{ .path = "test/suite-map-literal.wattle" },
