@@ -954,30 +954,36 @@
                (not (string/find "\e[33munderlined" out))))
         "doc colors the arguments named in the signatures")
 
-; Every ^name in a core docstring names a binding or a dynamic binding
-(def reference-scan
-  (let [word '(+ (range "az" "AZ" "09") (set "-_?!<>=/+%$&*"))]
-    `(any (+ (* "`" (any (if-not "`" 1)) "`")
-             (* (some ~word) (any (* "^" (some ~word))))
-             (* "^" (<- (* (opt ".") (some ~word) (any (* "." (some ~word))))))
-             1))))
-(def dangling ![])
+; Every ^name in a core docstring names a binding or a dynamic binding. The
+; scan is a PEG, so a build without peg leaves it out.
+(compwhen (dyn 'peg/match)
+  (def reference-scan
+    (let [word '(+ (range "az" "AZ" "09") (set "-_?!<>=/+%$&*"))]
+      `(any (+ (* "`" (any (if-not "`" 1)) "`")
+               (* (some ~word) (any (* "^" (some ~word))))
+               (* "^" (<- (* (opt ".") (some ~word) (any (* "." (some ~word))))))
+               1))))
+  (def dangling ![])
 
-; A docstring may name a binding that a reduced configuration leaves out: the
-; ev module, the ffi module, or os/posix-chroot on a target without chroot
-(defn absent-by-configuration? [name]
-  (or (and (string/has-prefix? "ev/" name) (not (dyn 'ev/chan)))
-      (and (string/has-prefix? "ffi/" name) (not (dyn 'ffi/native)))
-      (= name "os/posix-chroot")))
-(each sym (all-bindings)
-  (each name (peg/match reference-scan (get (dyn sym) :doc ""))
-    (unless (or (dyn (symbol name))
-                (absent-by-configuration? name)
-                (and (string/has-prefix? "*" name)
-                     (index-of (keyword (string/slice name 1 -2)) (all-dynamics))))
-      (array/push! dangling (string sym " -> " name)))))
-(assert (empty? dangling)
-        (string "docstring references that name no binding: " (string/join ", " dangling)))
+  ; A docstring may name a binding that a reduced configuration leaves out: the
+  ; ev module, the ffi module, the assembler, the process functions, or
+  ; os/posix-chroot on a target without chroot
+  (defn absent-by-configuration? [name]
+    (or (and (string/has-prefix? "ev/" name) (not (dyn 'ev/chan)))
+        (and (string/has-prefix? "ffi/" name) (not (dyn 'ffi/native)))
+        (and (= name "asm") (not (dyn 'disasm)))
+        (and (= name "disasm") (not (dyn 'asm)))
+        (and (= name "os/spawn") (not (dyn 'os/execute)))
+        (= name "os/posix-chroot")))
+  (each sym (all-bindings)
+    (each name (peg/match reference-scan (get (dyn sym) :doc ""))
+      (unless (or (dyn (symbol name))
+                  (absent-by-configuration? name)
+                  (and (string/has-prefix? "*" name)
+                       (index-of (keyword (string/slice name 1 -2)) (all-dynamics))))
+        (array/push! dangling (string sym " -> " name)))))
+  (assert (empty? dangling)
+          (string "docstring references that name no binding: " (string/join ", " dangling))))
 
 (def expanded-clauses
   (macex '(fn ([x] (when true (+ x 1)))

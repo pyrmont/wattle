@@ -1,0 +1,541 @@
+; Command-line argument parser ported from Argy-Bargy for Janet.
+; The original is MIT licensed; see LICENSE.argy-bargy.
+
+(def- default-max-width 120)
+(def- default-pad-inset 4)
+(def- default-pad-right 0)
+(def- default-hr "---")
+
+(defn- get-cols [max-width]
+  (if (not (os/isatty))
+    max-width
+    (with [output (file/temp)]
+      (with [errors (file/temp)]
+        (def windows? (= :windows (os/which)))
+        (def command
+          (if windows?
+            ["powershell" "-command" "&{(get-host).ui.rawui.WindowSize.Width;}"]
+            ["stty" "size"]))
+        (def [ok? status]
+          (protect (os/execute command :p {:out output :err errors})))
+        (if (and ok? (= status 0))
+          (do
+            (file/seek output :set)
+            (def response (string/trim (file/read output :all)))
+            (def width
+              (scan-number
+                (if windows?
+                  response
+                  (get (string/split " " response) 1))))
+            (if width (min width max-width) max-width))
+          max-width)))))
+
+(defn- rule-pairs [entries hr]
+  (def out ![])
+  (var i 0)
+  (while (< i (length entries))
+    (def name (get entries i))
+    (if (or (and (string? name) (string/has-prefix? hr name))
+            (and (keyword? name)
+                 (string/has-prefix? hr (string name))))
+      (array/push! out [name nil])
+      (do
+        (assertf (< (+ i 1) (length entries)) "missing rule for %p" name)
+        (array/push! out [name (get entries (+ i 1))])
+        (++ i)))
+    (++ i))
+  out)
+
+(defn- long-name [name]
+  (if (string/has-prefix? "--" name) (string/slice name 2) name))
+
+(defn- conform-args [argv]
+  (def out ![])
+  (var literal? false)
+  (each arg argv
+    (cond
+      literal?
+        (array/push! out arg)
+      (= arg "--")
+        (do
+          (array/push! out arg)
+          (set literal? true))
+      (and (string/has-prefix? "--" arg) (string/find "=" arg))
+        (do
+          (def equal (string/find "=" arg))
+          (array/push! out (string/slice arg 0 equal))
+          (array/push! out (string/slice arg (+ equal 1))))
+      (array/push! out arg)))
+  out)
+
+(defn- alnum-byte? [b]
+  (and b
+       (or (and (>= b (chr "a")) (<= b (chr "z")))
+           (and (>= b (chr "A")) (<= b (chr "Z")))
+           (and (>= b (chr "0")) (<= b (chr "9"))))))
+
+(defn- option-name? [name]
+  (and (>= (length name) 2)
+       (alnum-byte? (get name 0))
+       (do
+         (var ok? true)
+         (var i 1)
+         (while (< i (length name))
+           (def b (get name i))
+           (unless (or (alnum-byte? b) (= b (chr "-")) (= b (chr "_")))
+             (set ok? false))
+           (++ i))
+         ok?)))
+
+(defn- validate-config [rules subs]
+  (var splat? false)
+  (def shorts !{})
+  (each [name rule] rules
+    (when rule
+      (assertf (or (string? name) (keyword? name))
+               "names of rules must be strings or keywords: %p" name)
+      (assertf (dictionary? rule)
+               "each rule must be map or table: %p" rule)
+      (when (string? name)
+        (assertf (has-value? #{:flag :count :single :multi :help}
+                             (get rule :kind))
+                 "each option rule must be of kind :flag, :count, :single, :multi or :help: %p"
+                 rule)
+        (def option (long-name name))
+        (assertf (option-name? option)
+                 "option name must be two or more alphanumeric characters: %p"
+                 option)
+        (def value (get rule :value))
+        (assertf (or (not value) (= value :string) (= value :integer)
+                     (function? value))
+                 "option :value must be :string, :integer or a function: %p"
+                 rule)
+        (def short (get rule :short))
+        (when short
+          (assertf (= 1 (length short))
+                   "option :short must be exactly one character: %p" rule)
+          (assertf (not (get shorts short))
+                   "multiple options cannot share :short '%s': %p" short rule)
+          (put! shorts short true)))
+      (when (keyword? name)
+        (assertf (= 0 (length subs))
+                 "parameter rules cannot be combined with subcommands: %p"
+                 rule)
+        (when (get rule :splat?)
+          (assertf (not splat?)
+                   "multiple parameter rules cannot capture :splat?: %p" rule)
+          (set splat? true)))))
+  (each [name sub] subs
+    (when sub
+      (assertf (string? name) "name of subcommands must be strings: %p" name)
+      (assertf (dictionary? sub)
+               "each subcommand must be map or table: %p" sub))))
+
+(defn- lookup-option [rules name short?]
+  (var found nil)
+  (var found-name nil)
+  (each [key rule] rules
+    (when (and rule (string? key)
+               (if short?
+                 (= name (get rule :short))
+                 (= name (long-name key))))
+      (set found rule)
+      (set found-name (long-name key))))
+  (when (and (not found) (= name (if short? "h" "help")))
+    (set found {:kind :help :short "h" :help "Show this help message."})
+    (set found-name "help"))
+  (when found [found-name found]))
+
+; Returns [value new-i]: the token after i, unless it is missing or is the
+; literal `--` end-of-options marker, in which case value is nil and new-i
+; is i, so a value-taking option never swallows the end-of-options marker.
+(defn- resolve-value! [args i]
+  (def next-i (+ i 1))
+  (def candidate (get args next-i))
+  (if (and candidate (not (= candidate "--")))
+    [candidate next-i]
+    [nil i]))
+
+; Returns [ok? value]. A converter function may legitimately convert to
+; false, so failure is signalled with ok? rather than with value's truthiness.
+(defn- convert [input converter]
+  (cond
+    (or (not converter) (= converter :string)) [true input]
+    (= converter :integer)
+      (do
+        (def number (scan-number input))
+        (if (and number (int? number)) [true number] [false nil]))
+    (function? converter)
+      (do
+        (def result (converter input))
+        (if (= result nil) [false nil] [true result]))
+    [false nil]))
+
+(defn- default-value [rule]
+  (def value (get rule :default))
+  (if (function? value) (value) value))
+
+; has-key? rather than (get rule :default), so a false default still shows.
+(defn- default-suffix [rule]
+  (when (has-key? rule :default)
+    (string " (Default: " (default-value rule) ")")))
+
+(defn- explicit-help? [rules]
+  (var found? false)
+  (each [name rule] rules
+    (when (and rule (string? name)
+               (or (= "help" (long-name name)) (= :help (get rule :kind))))
+      (set found? true)))
+  found?)
+
+; Wraps text into lines of at most limit columns. start is the column and
+; line-start the text a line begins at before any word is placed; hang is
+; the column continuation lines indent to.
+(defn- wrap-words [text limit start line-start hang]
+  (def lines ![])
+  (var line line-start)
+  (var column start)
+  (each word (string/split " " text)
+    (when (> (length word) 0)
+      (cond
+        (= column start)
+          (do
+            (set line (string line word))
+            (set column (+ start (length word))))
+        (< (+ column 1 (length word)) limit)
+          (do
+            (set line (string line " " word))
+            (+= column (+ 1 (length word))))
+        (do
+          (array/push! lines line)
+          (set line (string (string/repeat " " hang) word))
+          (set column (+ hang (length word)))))))
+  (array/push! lines line)
+  lines)
+
+(defn- wrap-line [input limit hang]
+  (string/join "\n" (wrap-words input limit 0 "" hang)))
+
+(defn- emit-rows [lines heading rows cols pad-inset pad-right]
+  (when (> (length rows) 0)
+    (var width 0)
+    (each [prefix _] rows
+      (when prefix
+        (set width (max width (+ pad-inset (length prefix))))))
+    (array/push! lines "")
+    (array/push! lines heading)
+    (array/push! lines "")
+    (each [prefix description] rows
+      (if prefix
+        (do
+          (def line-start (string prefix
+                            (string/repeat " " (- width (length prefix)))))
+          (def limit (- cols pad-right))
+          (each line (wrap-words description limit width line-start width)
+            (array/push! lines line)))
+        (array/push! lines "")))))
+
+(defn- usage [command config]
+  (def info (get config :info {}))
+  (def hr (get info :hr default-hr))
+  (def pad-inset (get info :pad-inset default-pad-inset))
+  (def pad-right (get info :pad-right default-pad-right))
+  (def max-width (get info :max-width default-max-width))
+  (def rules (rule-pairs (get config :rules []) hr))
+  (def subs (rule-pairs (get config :subs []) hr))
+  (def cols (get-cols max-width))
+  (def lines ![])
+  (def examples (get info :usages))
+  (if examples
+    (each example examples (array/push! lines example))
+    (do
+      (var example (string "Usage: " command))
+      (each [name rule] rules
+        (when (and rule (string? name) (not (get rule :hide?))
+                   (not (get rule :noex?)))
+          (set example
+            (string example " [--" (long-name name)
+                    (when (or (= :single (get rule :kind))
+                              (= :multi (get rule :kind)))
+                      (string " <" (get rule :proxy (long-name name)) ">"))
+                    "]"))))
+      (each [name rule] rules
+        (when (and rule (keyword? name) (not (get rule :hide?)))
+          (set example
+            (string example " " (unless (get rule :req?) "[")
+                    "<" (get rule :proxy (string name))
+                    (when (get rule :splat?) "...") ">"
+                    (unless (get rule :req?) "]")))))
+      (when (> (length subs) 0)
+        (set example (string example " <subcommand> [<args>]")))
+      (array/push! lines
+        (wrap-line example (- cols pad-right)
+                   (+ 8 (length command))))))
+  (when (get info :about)
+    (array/push! lines "")
+    (array/push! lines
+      (wrap-line (get info :about) (- cols pad-right) 0)))
+  (def parameter-rows ![])
+  (def option-rows ![])
+  (def sub-rows ![])
+  (each [name rule] rules
+    (when (and (not rule) (keyword? name))
+      (array/push! parameter-rows [nil nil]))
+    (when (and rule (not (get rule :hide?)) (keyword? name))
+      (array/push! parameter-rows
+        [(string " " (get rule :proxy (string name)))
+         (string (get rule :help "") (default-suffix rule))])))
+  (each [name rule] rules
+    (when (and (not rule) (string? name))
+      (array/push! option-rows [nil nil]))
+    (when (and rule (string? name) (not (get rule :hide?)))
+      (array/push! option-rows
+        [(string (if (get rule :short)
+                   (string " -" (get rule :short) ",")
+                   "    ")
+                 " --" (long-name name)
+                 (when (or (= :single (get rule :kind))
+                           (= :multi (get rule :kind)))
+                   (string " <" (get rule :proxy (long-name name)) ">")))
+         (string (get rule :help "") (default-suffix rule))])))
+  (unless (explicit-help? rules)
+    (array/push! option-rows
+      [" -h, --help" "Show this help message."]))
+  (emit-rows lines (get info :params-header "Parameters:") parameter-rows
+             cols pad-inset pad-right)
+  (emit-rows lines (get info :opts-header "Options:") option-rows
+             cols pad-inset pad-right)
+  (when (> (length subs) 0)
+    (each [name sub] subs
+      (if sub
+        (array/push! sub-rows
+          [(string " "
+                   (when (get sub :short)
+                     (string (get sub :short) ", "))
+                   name)
+           (get sub :help "")])
+        (array/push! sub-rows [nil nil])))
+    (emit-rows lines (get info :subs-header "Subcommands:") sub-rows
+               cols pad-inset pad-right)
+    (array/push! lines "")
+    (array/push! lines
+      (string "For more information on each subcommand, type '"
+              command " help <subcommand>'.")))
+  (when (get info :rider)
+    (array/push! lines "")
+    (array/push! lines
+      (wrap-line (get info :rider) (- cols pad-right) 0)))
+  (string (string/join "\n" lines) "\n"))
+
+(defn- apply-option [result rules name short? value]
+  (def found (lookup-option rules name short?))
+  (def shown (string (if short? "-" "--") name))
+  (if (not found)
+    (put! result :err (string "unrecognized option '" shown "'"))
+    (do
+      (def [key rule] found)
+      (def opts (get result :opts))
+      (case (get rule :kind)
+        :help (put! opts key true)
+        :flag (put! opts key true)
+        :count (put! opts key (+ 1 (get opts key 0)))
+        (if (or (= :single (get rule :kind))
+                (= :multi (get rule :kind)))
+          (if value
+            (do
+              (def [ok? converted] (convert value (get rule :value)))
+              (if ok?
+                (if (= :multi (get rule :kind))
+                  (do
+                    (unless (get opts key) (put! opts key ![]))
+                    (array/push! (get opts key) converted))
+                  (put! opts key converted))
+                (put! result :err
+                  (string "'" value "' is invalid value for " shown))))
+            (put! result :err
+              (string "no value after option of type " (get rule :kind))))
+          (put! result :err (string "unknown option kind: " (get rule :kind))))))))
+
+(defn- apply-params [result rules inputs]
+  (def params (get result :params))
+  (def specs ![])
+  (each [name rule] rules
+    (when (and rule (keyword? name)) (array/push! specs [name rule])))
+  (var i 0)
+  (var j 0)
+  (while (and (< j (length specs)) (empty? (get result :err)))
+    (def [name rule] (get specs j))
+    (if (get rule :splat?)
+      (do
+        (def take-count (max 0 (- (length inputs) i (- (length specs) j 1))))
+        (def collected ![])
+        (var k 0)
+        (while (and (< k take-count) (empty? (get result :err)))
+          (def raw (get inputs i))
+          (def [ok? value] (convert raw (get rule :value)))
+          (if ok?
+            (array/push! collected value)
+            (put! result :err
+              (string "'" raw "' is invalid value for "
+                      (get rule :proxy (string name)))))
+          (++ i)
+          (++ k))
+        (when (empty? (get result :err))
+          (cond
+            (> take-count 0) (put! params name collected)
+            (get rule :req?)
+              (put! result :err
+                (string (get rule :proxy (string name)) " is required"))
+            (has-key? rule :default)
+              (put! params name (default-value rule)))))
+      (if (< i (length inputs))
+        (do
+          (def raw (get inputs i))
+          (def [ok? value] (convert raw (get rule :value)))
+          (if ok?
+            (put! params name value)
+            (put! result :err
+              (string "'" raw "' is invalid value for "
+                      (get rule :proxy (string name)))))
+          (++ i))
+        (if (get rule :req?)
+          (put! result :err
+            (string (get rule :proxy (string name)) " is required"))
+          (when (has-key? rule :default)
+            (put! params name (default-value rule))))))
+    (++ j))
+  (when (and (empty? (get result :err)) (< i (length inputs)))
+    (put! result :err "too many parameters passed")))
+
+(defn- find-sub [subs wanted]
+  (var found nil)
+  (each [name sub] subs
+    (when (and sub (or (= name wanted) (= wanted (get sub :short))))
+      (set found [name sub])))
+  found)
+
+(defn parse-args [command config argv]
+  """
+  Parses argv with Argy-Bargy rules. The argv vector excludes the script name.
+  The config map accepts alternating name/rule entries in :rules and optional
+  subcommand entries in :subs. Option rules use :flag, :count, :single,
+  :multi, or :help as :kind; parameters use keyword names. Rules may set
+  :short, :value, :default, :help, :hide?, :proxy, :req?, or :splat?.
+  Returns :cmd, :opts, :params or :sub, :err, and :help.
+  """
+  (def info (get config :info {}))
+  (def hr (get info :hr default-hr))
+  (def rules (rule-pairs (get config :rules []) hr))
+  (def subs (rule-pairs (get config :subs []) hr))
+  (validate-config rules subs)
+  (def args (conform-args argv))
+  (def result !{:cmd command :opts !{} :params !{} :err "" :help ""})
+  (when (> (length subs) 0)
+    (put! result :params nil))
+  (def positionals ![])
+  (var i 0)
+  (var done? false)
+  (while (and (< i (length args)) (not done?)
+              (empty? (get result :err)) (empty? (get result :help)))
+    (def arg (get args i))
+    (cond
+      (= arg "--")
+        (do
+          (++ i)
+          (while (< i (length args))
+            (array/push! positionals (get args i))
+            (++ i))
+          (set done? true))
+      (string/has-prefix? "--" arg)
+        (do
+          (def name (string/slice arg 2))
+          (def found (lookup-option rules name false))
+          (def rule (when found (get found 1)))
+          (def takes? (and rule (or (= :single (get rule :kind))
+                                     (= :multi (get rule :kind)))))
+          (var value nil)
+          (when takes?
+            (def [next-value next-i] (resolve-value! args i))
+            (set value next-value)
+            (set i next-i))
+          (apply-option result rules name false value)
+          (when (and found (= :help (get rule :kind)))
+            (put! result :help (usage command config))
+            (set done? true)))
+      (and (string/has-prefix? "-" arg) (not (= arg "-")))
+        (do
+          ; A short cluster like -xyz may be bundled flags, a bundled flag
+          ; followed by an attached value (-n3), or a lone short option whose
+          ; value is the next argv token (-n 3); which applies depends on
+          ; each character's own rule, so each is resolved in turn.
+          (def token (string/slice arg 1))
+          (var p 0)
+          (while (and (< p (length token)) (empty? (get result :err))
+                      (not done?))
+            (def char (string/slice token p (+ p 1)))
+            (def found (lookup-option rules char true))
+            (def rule (when found (get found 1)))
+            (def takes? (and rule (or (= :single (get rule :kind))
+                                       (= :multi (get rule :kind)))))
+            (if takes?
+              (do
+                (def rest (string/slice token (+ p 1)))
+                (if (> (length rest) 0)
+                  (apply-option result rules char true rest)
+                  (do
+                    (def [next-value next-i] (resolve-value! args i))
+                    (apply-option result rules char true next-value)
+                    (set i next-i)))
+                (set p (length token)))
+              (do
+                (apply-option result rules char true nil)
+                (when (and found (= :help (get rule :kind)))
+                  (put! result :help (usage command config))
+                  (set done? true))
+                (++ p)))))
+      (> (length subs) 0)
+        (do
+          (def literal-help? (and (= arg "help") (not (find-sub subs "help"))))
+          (def wanted (if literal-help? (get args (+ i 1)) arg))
+          (def found (when wanted (find-sub subs wanted)))
+          (if found
+            (do
+              (def [name sub] found)
+              (if literal-help?
+                (do
+                  (put! (get result :opts) "help" true)
+                  (put! result :sub {:cmd name})
+                  (put! result :help (usage (string command " " name) sub)))
+                (if (get sub :rules)
+                  (do
+                    (def child (parse-args (string command " " name) sub
+                                 (array/slice args (+ i 1))))
+                    (put! child :cmd name)
+                    (put! result :sub child)
+                    (put! result :err (get child :err))
+                    (put! result :help (get child :help)))
+                  (put! result :sub
+                    {:cmd name :args (array/slice args (+ i 1))})))
+              (set done? true))
+            (put! result :err
+              (if wanted
+                (string "unrecognized subcommand '" wanted "'")
+                "no subcommand specified after 'help'"))))
+      (array/push! positionals arg))
+    (++ i))
+  (when (and (empty? (get result :err)) (empty? (get result :help)))
+    (each [name rule] rules
+      (when (and rule (string? name) (has-key? rule :default)
+                 (not (has-key? (get result :opts) (long-name name))))
+        (def value (default-value rule))
+        (put! (get result :opts) (long-name name)
+              (if (= :multi (get rule :kind)) (array/slice value) value))))
+    (when (not (get result :sub))
+      (if (> (length subs) 0)
+        (put! result :err "no subcommand provided")
+        (apply-params result rules positionals))))
+  (when (and (not (get result :sub)) (not (empty? (get result :err))))
+    (put! result :err
+      (string command ": " (get result :err) "\n"
+              "Try '" command " --help' for more information.\n")))
+  result)

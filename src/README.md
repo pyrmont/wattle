@@ -53,6 +53,10 @@ must never reach `src/host/` or `src/runtime/`.
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
 
+`src/gum/` contains optional Wattle source modules distributed with Wattle.
+They are not compiled into the runtime or loaded by default. A project copies
+the modules it uses into its own source tree. See [`gum/README.md`](gum/README.md).
+
 Thirteen of the sixteen files in `src/client/` are the REPL's line editor.
 `src/client/lineedit.zig` and the ten files under `src/client/lineedit/` are a
 module named `lineedit`, which imports nothing from the runtime and never reads

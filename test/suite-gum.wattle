@@ -1,0 +1,164 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+(import ../src/gum/args :as args)
+
+(defmacro is [expression] `(assert ~expression))
+(defmacro deftest [_ & body] `(do ~|body))
+
+(def config
+  {:rules ["--verbose" {:kind :count :short "v"}
+           "--quiet" {:kind :flag :short "q"}
+           "--number" {:kind :single :short "n" :value :integer :default 2}
+           "--include" {:kind :multi :short "i"}
+           :source {:req? true}
+           :extra {:splat? true}]
+   :info {:about "A test command."}})
+
+(deftest options-and-parameters
+  (def result
+    (args/parse-args "sample" config
+      ["-vvq" "--number=3" "-i" "one" "--include" "two"
+       "file" "other"]))
+  (is (= "" (get result :err)))
+  (is (= 2 (get-in result [:opts "verbose"])))
+  (is (= true (get-in result [:opts "quiet"])))
+  (is (= 3 (get-in result [:opts "number"])))
+  (is (= "one" (get (get-in result [:opts "include"]) 0)))
+  (is (= "two" (get (get-in result [:opts "include"]) 1)))
+  (is (= "file" (get-in result [:params :source])))
+  (is (= "other" (get (get-in result [:params :extra]) 0))))
+
+(deftest defaults-and-stop-marker
+  (def result (args/parse-args "sample" config ["--" "-q"]))
+  (is (= 2 (get-in result [:opts "number"])))
+  (is (= "-q" (get-in result [:params :source])))
+  (def literal (args/parse-args "sample" config ["--" "-q" "tail"]))
+  (is (= "-q" (get-in literal [:params :source])))
+  (is (= "tail" (get (get-in literal [:params :extra]) 0))))
+
+(deftest help-and-errors
+  (def help (args/parse-args "sample" config ["-h"]))
+  (is (= true (get-in help [:opts "help"])))
+  (is (string/find "Usage: sample" (get help :help)))
+  (is (string/find "--help" (get help :help)))
+  (is (= "" (get help :err)))
+  (def bad (args/parse-args "sample" config ["--number" "x" "file"]))
+  (is (string/find "invalid value" (get bad :err)))
+  (def missing (args/parse-args "sample" config []))
+  (is (string/find "required" (get missing :err)))
+  (def no-value (args/parse-args "sample" config ["-n"]))
+  (is (string/find "no value" (get no-value :err))))
+
+(deftest subcommands
+  (def nested
+    {:subs ["run" {:short "r"
+                    :rules ["--force" {:kind :flag :short "f"}]
+                    :help "Run it."}
+            "raw" {:help "Pass through."}]})
+  (def parsed (args/parse-args "sample" nested ["r" "-f"]))
+  (is (= "run" (get-in parsed [:sub :cmd])))
+  (is (= true (get-in parsed [:sub :opts "force"])))
+  (def raw (args/parse-args "sample" nested ["raw" "-x"]))
+  (is (= "-x" (get (get-in raw [:sub :args]) 0)))
+  (def help (args/parse-args "sample" nested ["help" "run"]))
+  (is (string/find "Usage: sample run" (get help :help)))
+  (def bad (args/parse-args "sample" nested ["run" "--wrong"]))
+  (is (string/find "sample run: unrecognized" (get bad :err)))
+  (is (not (string/find "sample: sample" (get bad :err)))))
+
+(deftest function-defaults-and-hidden-options
+  (def settings
+    {:rules ["--choice" {:kind :single :default (fn [] "chosen")}
+             "--secret" {:kind :flag :hide? true}]})
+  (def parsed (args/parse-args "sample" settings []))
+  (is (= "chosen" (get-in parsed [:opts "choice"])))
+  (def help (args/parse-args "sample" settings ["--help"]))
+  (is (not (string/find "--secret" (get help :help)))))
+
+(deftest required-splat
+  (def settings {:rules [:files {:req? true :splat? true}]})
+  (def missing (args/parse-args "sample" settings []))
+  (is (string/find "required" (get missing :err)))
+  (def present (args/parse-args "sample" settings ["one" "two"]))
+  (is (= "one" (get (get-in present [:params :files]) 0)))
+  (is (= "two" (get (get-in present [:params :files]) 1))))
+
+(deftest option-normalisation
+  (def settings
+    {:rules ["--quiet" {:kind :flag}
+             "--number" {:kind :single :short "n" :value :integer}
+             :word {}]})
+  (def equals (args/parse-args "sample" settings ["--quiet=extra"]))
+  (is (= true (get-in equals [:opts "quiet"])))
+  (is (= "extra" (get-in equals [:params :word])))
+  (def unexpected
+    (args/parse-args "sample" {:rules ["--quiet" {:kind :flag}]}
+      ["--quiet=extra"]))
+  (is (string/find "too many parameters" (get unexpected :err)))
+  (def compact (args/parse-args "sample" settings ["-n3"]))
+  (is (= 3 (get-in compact [:opts "number"])))
+  (def empty-value (args/parse-args "sample" settings ["--number="]))
+  (is (string/find "invalid value" (get empty-value :err)))
+  (def stop-marker (args/parse-args "sample" settings ["-n" "--"]))
+  (is (string/find "no value" (get stop-marker :err))))
+
+(deftest short-value-does-not-shadow-reservation
+  (def settings {:rules ["--host" {:kind :single :short "h"}]})
+  (def result (args/parse-args "sample" settings ["-h" "example.com"]))
+  (is (= "example.com" (get-in result [:opts "host"])))
+  (is (= "" (get result :err))))
+
+(deftest parent-defaults-survive-subcommand
+  (def nested
+    {:rules ["--level" {:kind :single :default "1"}]
+     :subs ["run" {:rules []}]})
+  (def result (args/parse-args "sample" nested ["run"]))
+  (is (= "1" (get-in result [:opts "level"]))))
+
+(deftest subcommand-named-help
+  (def nested {:subs ["help" {:rules []}]})
+  (def result (args/parse-args "sample" nested ["help"]))
+  (is (= "help" (get-in result [:sub :cmd]))))
+
+(deftest params-and-subs-rejected
+  (def [ok?]
+    (protect (args/parse-args "sample"
+               {:rules [:target {}] :subs ["run" {:rules []}]} [])))
+  (is (not ok?)))
+
+(deftest false-converts-and-defaults
+  (def settings
+    {:rules ["--enabled" {:kind :single :value (fn [v] (= v "yes"))
+                           :default false}]})
+  (def defaulted (args/parse-args "sample" settings []))
+  (is (= false (get-in defaulted [:opts "enabled"])))
+  (def explicit (args/parse-args "sample" settings ["--enabled" "no"]))
+  (is (= false (get-in explicit [:opts "enabled"]))))
+
+(deftest invalid-short-and-value
+  (def [dup-short?]
+    (protect (args/parse-args "sample"
+               {:rules ["--a" {:kind :flag :short "x"}
+                        "--b" {:kind :flag :short "x"}]} [])))
+  (def [long-short?]
+    (protect (args/parse-args "sample"
+               {:rules ["--a" {:kind :flag :short "xy"}]} [])))
+  (def [bad-value?]
+    (protect (args/parse-args "sample"
+               {:rules ["--a" {:kind :single :value :float}]} [])))
+  (is (not dup-short?))
+  (is (not long-short?))
+  (is (not bad-value?)))
+
+(deftest invalid-config
+  (def [valid-kind?]
+    (protect (args/parse-args "sample"
+               {:rules ["--bad" {:kind :unknown}]} [])))
+  (def [valid-splat?]
+    (protect (args/parse-args "sample"
+               {:rules [:first {:splat? true}
+                        :second {:splat? true}]} [])))
+  (is (not valid-kind?))
+  (is (not valid-splat?)))
+
+(end-suite)

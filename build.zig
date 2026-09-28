@@ -22,12 +22,11 @@ const build_name = "zig";
 /// register does not skip a case -- it refuses to load, and the whole suite is
 /// lost with it.
 ///
-/// `needs_os` is the only condition so far. `-Dreduced-os=true` registers four
-/// `os` bindings and no more, and these eight suites reach past them:
-/// `suite-os` is *about* the OS library, and the other seven use the
-/// filesystem, the environment or a subprocess to build their fixtures.
-/// Everything else runs unchanged, which is 29 of the 37, the population this
-/// gate is worth having for.
+/// `-Dreduced-os=true` registers four `os` bindings and no more. Nine suites
+/// reach past them: `suite-os` tests the OS library, and the other eight use
+/// the filesystem, the environment or a subprocess. The other 30 suites run
+/// under this configuration. `suite-gum` also needs the process subsystem,
+/// which its module uses for terminal width.
 ///
 /// `pty` is not a condition. It passes the suite the path of `wattle-pty`,
 /// the pseudo-terminal harness, as its argument, where the target has the
@@ -36,6 +35,7 @@ const build_name = "zig";
 const Suite = struct {
     path: []const u8,
     needs_os: bool = false,
+    needs_processes: bool = false,
     pty: bool = false,
 };
 
@@ -54,6 +54,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-ev2.wattle", .needs_os = true },
     .{ .path = "test/suite-ffi.wattle" },
     .{ .path = "test/suite-filewatch.wattle", .needs_os = true },
+    .{ .path = "test/suite-gum.wattle", .needs_os = true, .needs_processes = true },
     .{ .path = "test/suite-inttypes.wattle" },
     .{ .path = "test/suite-io.wattle", .needs_os = true },
     .{ .path = "test/suite-lineedit.wattle", .needs_os = true, .pty = true },
@@ -577,6 +578,10 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(client);
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
+    const gum_dir: std.Build.InstallDir = .{ .custom = "share/wattle/gum" };
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("src/gum/args.wattle"), gum_dir, "args.wattle").step);
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("src/gum/LICENSE.argy-bargy"), gum_dir, "LICENSE.argy-bargy").step);
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("src/gum/README.md"), gum_dir, "README.md").step);
 
     const built: Built = .{
         .b = b,
@@ -1325,7 +1330,9 @@ pub fn build(b: *std.Build) void {
     }
 
     inline for (test_suites) |suite| {
-        if (!suite.needs_os or !config.reduced_os) {
+        if ((!suite.needs_os or !config.reduced_os) and
+            (!suite.needs_processes or config.processes))
+        {
             const run_suite = b.addRunArtifact(client);
             run_suite.setCwd(b.path("."));
             run_suite.addArg(suite.path);

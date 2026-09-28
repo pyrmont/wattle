@@ -287,6 +287,21 @@ nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`,
 which links `examples/digest/` in, and `build.zig`'s `quickbin` function builds
 one from outside the tree (`examples/standalone/`).
 
+## Gum
+
+Gum contains optional Wattle source modules. The modules are in `src/gum/` and
+are included in the Wattle source package. `zig build` also copies them to
+`<prefix>/share/wattle/gum/`. A project copies the modules it uses into its own
+source tree and imports them by relative path. For example, with
+`args.wattle` copied into `wattle/gum/args.wattle`, a file in `wattle/` uses:
+
+```clojure
+(import ./gum/args :as args)
+```
+
+Copy `LICENSE.argy-bargy` with `args.wattle`. See
+[`src/gum/README.md`](src/gum/README.md) for the module's origin and use.
+
 ## Contributing
 
 Wattle can be hacked on with pretty much any environment you like. No editor
