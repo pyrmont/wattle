@@ -83,7 +83,7 @@
 (def rng (math/rng 1))
 (def real-lead (string/slice (marshal 1.5) 0 1))
 (var mismatches 0)
-(for i 0 20000
+(repeat 20000
   (def x (unmarshal (buffer real-lead (math/rng-buffer rng 8))))
   (when (and (= x x) (not= x math/inf) (not= x math/-inf))
     (unless (= x (json/decode (json/encode x))) (++ mismatches))))
