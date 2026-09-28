@@ -7,12 +7,11 @@
 (def- default-hr "---")
 
 ; Returns the columns of the terminal standard output is open on, capped at
-; max-width, or max-width when standard output is not a terminal. os/term-size
-; is looked up in root-env because a build with -Dreduced-os=true does not
-; register it, and naming it directly would stop this module compiling there.
+; max-width, or max-width when standard output is not a terminal. A build with
+; -Dreduced-os=true does not register os/term-size, so the call is compiled
+; only where the binding exists.
 (defn- get-cols [max-width]
-  (def entry (get root-env 'os/term-size))
-  (def size (when entry ((get entry :value))))
+  (def size (compif (dyn 'os/term-size) (os/term-size) nil))
   (if size (min (get size 0) max-width) max-width))
 
 (defn- rule-pairs [entries hr]
@@ -34,24 +33,9 @@
 (defn- long-name [name]
   (if (string/has-prefix? "--" name) (string/slice name 2) name))
 
-(defn- conform-args [argv]
-  (def out ![])
-  (var literal? false)
-  (each arg argv
-    (cond
-      literal?
-        (array/push! out arg)
-      (= arg "--")
-        (do
-          (array/push! out arg)
-          (set literal? true))
-      (and (string/has-prefix? "--" arg) (string/find "=" arg))
-        (do
-          (def equal (string/find "=" arg))
-          (array/push! out (string/slice arg 0 equal))
-          (array/push! out (string/slice arg (+ equal 1))))
-      (array/push! out arg)))
-  out)
+; A rest parameter captures every remaining token, so it is also a splat.
+(defn- splat? [rule]
+  (or (get rule :splat?) (get rule :rest?)))
 
 (defn- alnum-byte? [b]
   (and b
@@ -73,7 +57,8 @@
          ok?)))
 
 (defn- validate-config [rules subs]
-  (var splat? false)
+  (var splat-seen? false)
+  (var rest? false)
   (def shorts !{})
   (each [name rule] rules
     (when rule
@@ -106,10 +91,14 @@
         (assertf (= 0 (length subs))
                  "parameter rules cannot be combined with subcommands: %p"
                  rule)
-        (when (get rule :splat?)
-          (assertf (not splat?)
+        (assertf (not rest?)
+                 "no parameter rule can follow one with :rest?: %p" rule)
+        (when (splat? rule)
+          (assertf (not splat-seen?)
                    "multiple parameter rules cannot capture :splat?: %p" rule)
-          (set splat? true)))))
+          (set splat-seen? true))
+        (when (get rule :rest?)
+          (set rest? true)))))
   (each [name sub] subs
     (when sub
       (assertf (string? name) "name of subcommands must be strings: %p" name)
@@ -249,7 +238,7 @@
           (set example
             (string example " " (unless (get rule :req?) "[")
                     "<" (get rule :proxy (string name))
-                    (when (get rule :splat?) "...") ">"
+                    (when (splat? rule) "...") ">"
                     (unless (get rule :req?) "]")))))
       (when (> (length subs) 0)
         (set example (string example " <subcommand> [<args>]")))
@@ -350,7 +339,7 @@
   (var j 0)
   (while (and (< j (length specs)) (empty? (get result :err)))
     (def [name rule] (get specs j))
-    (if (get rule :splat?)
+    (if (splat? rule)
       (do
         (def take-count (max 0 (- (length inputs) i (- (length specs) j 1))))
         (def collected ![])
@@ -405,15 +394,29 @@
   The config map accepts alternating name/rule entries in :rules and optional
   subcommand entries in :subs. Option rules use :flag, :count, :single,
   :multi, or :help as :kind; parameters use keyword names. Rules may set
-  :short, :value, :default, :help, :hide?, :proxy, :req?, or :splat?.
+  :short, :value, :default, :help, :hide?, :proxy, :req?, :splat?, or :rest?.
+  Setting :validate? to false in the config skips the check of the rules
+  and subcommands, which a caller with a fixed config can do once itself.
+  A parameter with :rest? is a splat that must come last. It captures its
+  first token and every token after it as given, options included, and
+  parsing of options stops there.
   Returns :cmd, :opts, :params or :sub, :err, and :help.
   """
   (def info (get config :info {}))
   (def hr (get info :hr default-hr))
   (def rules (rule-pairs (get config :rules []) hr))
   (def subs (rule-pairs (get config :subs []) hr))
-  (validate-config rules subs)
-  (def args (conform-args argv))
+  (when (get config :validate? true) (validate-config rules subs))
+  (def args (array/slice argv))
+  (def rest-at
+    (do
+      (var found nil)
+      (var before 0)
+      (each [name rule] rules
+        (when (and rule (keyword? name))
+          (when (get rule :rest?) (set found before))
+          (++ before)))
+      found))
   (def result !{:cmd command :opts !{} :params !{} :err "" :help ""})
   (when (> (length subs) 0)
     (put! result :params nil))
@@ -433,7 +436,13 @@
           (set done? true))
       (string/has-prefix? "--" arg)
         (do
-          (def name (string/slice arg 2))
+          ; A --name=value token is split in place when it is reached, so
+          ; the tokens a rest parameter captures are left as they were given.
+          (def equal (string/find "=" arg))
+          (when equal
+            (put! args i (string/slice arg 0 equal))
+            (array/insert! args (+ i 1) (string/slice arg (+ equal 1))))
+          (def name (string/slice (get args i) 2))
           (def found (lookup-option rules name false))
           (def rule (when found (get found 1)))
           (def takes? (and rule (or (= :single (get rule :kind))
@@ -506,6 +515,12 @@
               (if wanted
                 (string "unrecognized subcommand '" wanted "'")
                 "no subcommand specified after 'help'"))))
+      (and rest-at (= (length positionals) rest-at))
+        (do
+          (while (< i (length args))
+            (array/push! positionals (get args i))
+            (++ i))
+          (set done? true))
       (array/push! positionals arg))
     (++ i))
   (when (and (empty? (get result :err)) (empty? (get result :help)))

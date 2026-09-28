@@ -54,8 +54,10 @@ The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
 
 `src/gum/` contains optional Wattle source modules distributed with Wattle.
-They are not compiled into the runtime or loaded by default. A project copies
-the modules it uses into its own source tree. See [`gum/README.md`](gum/README.md).
+They are not loaded by default, and a project copies the modules it uses into
+its own source tree. The one exception is `gum/args.wattle`, which the image
+generator evaluates so that `cli-main` in `boot/boot.wattle` can parse the
+`wattle` command line. See [`gum/README.md`](gum/README.md).
 
 Thirteen of the sixteen files in `src/client/` are the REPL's line editor.
 `src/client/lineedit.zig` and the ten files under `src/client/lineedit/` are a

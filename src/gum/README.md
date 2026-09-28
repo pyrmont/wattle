@@ -1,8 +1,10 @@
 # Gum
 
 Gum contains optional Wattle source modules distributed with Wattle. The
-runtime does not compile or load these modules automatically. A project copies
-the modules it uses into its own source tree and imports them by relative path.
+runtime does not load these modules automatically. A project copies the
+modules it uses into its own source tree and imports them by relative path.
+The image generator evaluates `args.wattle` for the `wattle` command line, so
+that module is also part of the core image.
 
 ## Arguments
 
@@ -22,3 +24,13 @@ the `:max-width` of the config's `:info` map, 120 columns by default. When
 standard output is not a terminal, or the build registers no `os/term-size`, as
 with `-Dreduced-os=true`, it wraps at `:max-width`. `args.wattle` loads in either
 build.
+
+A parameter rule with `:rest?` is a splat that must be the last parameter. It
+captures its first token and every token after it as given, options included,
+and the parser reads no more options once it has started. A rule with `:splat?`
+alone collects only the tokens that are not options, and the parser reads
+options between them.
+
+`parse-args` checks the config's rules and subcommands on every call. A caller
+whose config never changes can set `:validate?` to `false` in the config to
+skip the check, after running it once with the default.

@@ -5404,33 +5404,74 @@
 (compwhen (not (dyn 'os/isatty))
   (defmacro os/isatty [&] true))
 
-(def- long-to-short
-  "map long options to short options"
-  {"-help" "h"
-   "-version" "v"
-   "-stdin" "s"
-   "-eval" "e"
-   "-expression" "E"
-   "-debug" "d"
-   "-repl" "r"
-   "-noprofile" "R"
-   "-persistent" "p"
-   "-quiet" "q"
-   "-flycheck" "k"
-   "-syspath" "m"
-   "-compile" "c"
-   "-image" "i"
-   "-nocolor" "n"
-   "-color" "N"
-   "-library" "l"
-   "-install" "b"
-   "-reinstall" "B"
-   "-uninstall" "u"
-   "-update-all" "U"
-   "-list" "L"
-   "-prune" "P"
-   "-lint-warn" "w"
-   "-lint-error" "x"})
+; The argument parser is gum's, evaluated here rather than imported so that
+; the core image holds one private copy and no module lookup happens at start.
+(def- cli-parse-args
+  (get (get (dofile "src/gum/args.wattle") 'parse-args) :value))
+
+(defn- lint-level [text]
+  (or (scan-number text) (keyword text)))
+
+(defn- cli-config [executable validate?]
+  {:validate? validate?
+   :info {:usages [(string "Usage: " executable " [options] [script [args...]]")]}
+   :rules
+   ["--help" {:kind :help :short "h"
+              :help "Print this usage summary and exit."}
+    "--version" {:kind :flag :short "v"
+                 :help "Print the version string and exit."}
+    "--stdin" {:kind :flag :short "s"
+               :help "Read REPL input as raw lines from stdin. Implies --repl."}
+    "--eval" {:kind :multi :short "e" :proxy "code"
+              :help "Evaluate a string of Wattle."}
+    "--expression" {:kind :single :short "E" :proxy "code"
+                    :help "Evaluate an expression as a short-fn with the arguments that follow."}
+    "--debug" {:kind :flag :short "d"
+               :help "Set the debug flag in the REPL."}
+    "--repl" {:kind :flag :short "r"
+              :help "Enter the REPL after running all scripts."}
+    "--noprofile" {:kind :flag :short "R"
+                   :help "Do not load the profile named by WATTLE_PROFILE."}
+    "--persistent" {:kind :flag :short "p"
+                    :help "Keep going if there is a top-level error."}
+    "--quiet" {:kind :flag :short "q"
+               :help "Hide the logo."}
+    "--flycheck" {:kind :flag :short "k"
+                  :help "Compile scripts but do not execute them."}
+    "--syspath" {:kind :single :short "m" :proxy "path"
+                 :help "Set the system path for loading global modules."}
+    "--compile" {:kind :single :short "c" :proxy "source"
+                 :help "Compile source into an image. The output path is the first argument that is not an option."}
+    "--image" {:kind :flag :short "i"
+               :help "Load the script argument as an image file instead of source code."}
+    "--nocolor" {:kind :flag :short "n"
+                 :help "Disable ANSI color output in the REPL."}
+    "--color" {:kind :flag :short "N"
+               :help "Enable ANSI color output in the REPL."}
+    "--library" {:kind :multi :short "l" :proxy "module"
+                 :help "Use a module before the script and the other options."}
+    "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
+                   :help "Set the lint warning level. The default is normal."}
+    "--lint-error" {:kind :single :short "x" :proxy "level" :value lint-level
+                    :help "Set the lint error level. The default is none."}
+    "--install" {:kind :single :short "b" :proxy "directory"
+                 :help "Install a bundle from a directory."}
+    "--reinstall" {:kind :single :short "B" :proxy "name"
+                   :help "Reinstall a bundle by name."}
+    "--uninstall" {:kind :single :short "u" :proxy "name"
+                   :help "Uninstall a bundle by name."}
+    "--update-all" {:kind :flag :short "U"
+                    :help "Reinstall all installed bundles."}
+    "--prune" {:kind :flag :short "P"
+               :help "Uninstall all bundles that are orphaned."}
+    "--list" {:kind :flag :short "L"
+              :help "List all installed bundles."}
+    :script {:rest? true :proxy "script"
+             :help "The script to run. Every argument after it is passed to the script."}]})
+
+; The rules are fixed, so they are checked here, while the image is generated,
+; and not on every start.
+(cli-parse-args "wattle" (cli-config "wattle" true) [])
 
 (defn- apply-color
   [colorize]
@@ -5456,7 +5497,6 @@
   (var no-file true)
   (var quiet false)
   (var raw-stdin false)
-  (var handleopts true)
   (var exit-on-error true)
   (var compile-only false)
   (var expect-image false)
@@ -5474,141 +5514,103 @@
       (os/isatty stdout)
       (os/isatty stderr)))
 
-  (defn- get-lint-level
-    [i]
-    (def x (in args (+ i 1)))
-    (or (scan-number x) (keyword x)))
+  (def executable (dyn *executable* "wattle"))
+  (def result (cli-parse-args executable (cli-config executable false) args))
+  (unless (empty? (get result :err))
+    (eprin (get result :err))
+    (os/exit 1))
+  (unless (empty? (get result :help))
+    (prin (get result :help))
+    (os/exit 0))
 
-  ; Flag handlers
-  (def handlers
-    {"h" (fn [&]
-           (print "usage: " (dyn *executable* "wattle") " [options] script args...")
-           (print
-             """
-             Options are:
-               --help (-h)             : Show this help
-               --version (-v)          : Print the version string
-               --stdin (-s)            : Use raw stdin instead of getline like functionality
-               --eval (-e) code        : Execute a string of wattle
-               --expression (-E) code arguments... : Evaluate an expression as a short-fn with arguments
-               --debug (-d)            : Set the debug flag in the REPL
-               --repl (-r)             : Enter the REPL after running all scripts
-               --noprofile (-R)        : Disables loading profile.wattle when WATTLE_PROFILE is present
-               --persistent (-p)       : Keep on executing if there is a top-level error (persistent)
-               --quiet (-q)            : Hide logo (quiet)
-               --flycheck (-k)         : Compile scripts but do not execute (flycheck)
-               --syspath (-m) syspath  : Set system path for loading global modules
-               --compile (-c) source output : Compile wattle source code into an image
-               --image (-i)            : Load the script argument as an image file instead of source code
-               --nocolor (-n)          : Disable ANSI color output in the REPL
-               --color (-N)            : Enable ANSI color output in the REPL
-               --library (-l) lib      : Use a module before processing more arguments
-               --lint-warn (-w) level  : Set the lint warning level - default is "normal"
-               --lint-error (-x) level : Set the lint error level - default is "none"
-               --install (-b) dirpath  : Install a bundle from a directory
-               --reinstall (-B) name   : Reinstall a bundle by bundle name
-               --uninstall (-u) name   : Uninstall a bundle by bundle name
-               --update-all (-U)       : Reinstall all installed bundles
-               --prune (-P)            : Uninstall all bundles that are orphaned
-               --list (-L)             : List all installed bundles
-               --                      : Stop handling options
-             """)
-           (os/exit 0)
-           1)
-     "v" (fn [&] (print wattle/version) (os/exit 0) 1)
-     "s" (fn [&] (set raw-stdin true) (set should-repl true) 1)
-     "r" (fn [&] (set should-repl true) 1)
-     "p" (fn [&] (set exit-on-error false) 1)
-     "q" (fn [&] (set quiet true) 1)
-     "i" (fn [&] (set expect-image true) 1)
-     "k" (fn [&] (set compile-only true) (set exit-on-error false) 1)
-     "n" (fn [&] (apply-color false) 1)
-     "N" (fn [&] (apply-color true) 1)
-     "m" (fn [i &] (setdyn *syspath* (in args (+ i 1))) 2)
-     "c" (fn c-switch [i &]
-           (def path (in args (+ i 1)))
-           (def e (dofile path))
-           (def output-path
-             (if (< (+ i 2) (length args))
-               (in args (+ i 2))
-               (string
-                 (if (string/has-suffix? ".wattle" path) (string/slice path 0 -8) path)
-                 ".jimage")))
-           (spit output-path (make-image e))
-           (set no-file false)
-           3)
-     "-" (fn [&] (set handleopts false) 1)
-     "l" (fn l-switch [i &]
-           (import* (in args (+ i 1))
-                    :prefix "" :exit exit-on-error)
-           2)
-     "e" (fn e-switch [i &]
-           (set no-file false)
-           (eval-string (in args (+ i 1)))
-           2)
-     "E" (fn E-switch [i &]
-           (set no-file false)
-           (def subargs (array/slice args (+ i 2)))
-           (def src `(short-fn ~(parse (in args (+ i 1))) E-expression))
-           (def thunk (compile src))
-           (if (function? thunk)
-             ((thunk) |subargs)
-             (error (get thunk :error)))
-           math/inf)
-     "b"
-     (compif (dyn 'bundle/install)
-       (fn [i &] (bundle/install (in args (+ i 1))) (set no-file false) (if (= nil should-repl) (set should-repl false)) 2)
-       (fn [i &] (eprint "--install not supported with reduced os") 2))
-     "B"
-     (compif (dyn 'bundle/reinstall)
-       (fn [i &] (bundle/reinstall (in args (+ i 1))) (set no-file false) (if (= nil should-repl) (set should-repl false)) 2)
-       (fn [i &] (eprint "--reinstall not supported with reduced os") 2))
-     "u"
-     (compif (dyn 'bundle/uninstall)
-       (fn [i &] (bundle/uninstall (in args (+ i 1))) (set no-file false) (if (= nil should-repl) (set should-repl false)) 2)
-       (fn [i &] (eprint "--uninstall not supported with reduced os") 2))
-     "P"
-     (compif (dyn 'bundle/prune)
-       (fn [i &] (bundle/prune) (set no-file false) (if (= nil should-repl) (set should-repl false)) 1)
-       (fn [i &] (eprint "--prune not supported with reduced os") 1))
-     "U"
-     (compif (dyn 'bundle/update-all)
-       (fn [i &] (bundle/update-all) (set no-file false) (if (= nil should-repl) (set should-repl false)) 1)
-       (fn [i &] (eprint "--update-all not supported with reduced os") 1))
-     "L"
-     (compif (dyn 'bundle/list)
-       (fn [i &] (each l (bundle/list) (print l)) (set no-file false) (if (= nil should-repl) (set should-repl false)) 1)
-       (fn [i &] (eprint "--list not supported with reduced os") 1))
-     "d" (fn [&] (setdyn *debug* true) (setdyn *redef* true) 1)
-     "w" (fn [i &] (setdyn *lint-warn* (get-lint-level i)) 2)
-     "x" (fn [i &] (setdyn *lint-error* (get-lint-level i)) 2)
-     "R" (fn [&] (setdyn *profilepath* nil) 1)})
+  (def opts (get result :opts))
+  (def script (or (get (get result :params) :script) []))
 
-  (defn- dohandler [n i &]
-    (def h (in handlers (get long-to-short n n)))
-    (if h (h i handlers) (do (print "unknown flag -" n) ((in handlers "h")))))
+  ; Options are applied in a fixed order, not the order they were written in.
+  (when (get opts "version") (print wattle/version) (os/exit 0))
+  (when (get opts "debug") (setdyn *debug* true) (setdyn *redef* true))
+  (when (has-key? opts "syspath") (setdyn *syspath* (get opts "syspath")))
+  (when (get opts "noprofile") (setdyn *profilepath* nil))
+  (when (has-key? opts "lint-warn") (setdyn *lint-warn* (get opts "lint-warn")))
+  (when (has-key? opts "lint-error") (setdyn *lint-error* (get opts "lint-error")))
+  (when (get opts "color") (apply-color true))
+  (when (get opts "nocolor") (apply-color false))
+  (when (get opts "stdin") (set raw-stdin true) (set should-repl true))
+  (when (get opts "repl") (set should-repl true))
+  (when (get opts "persistent") (set exit-on-error false))
+  (when (get opts "quiet") (set quiet true))
+  (when (get opts "image") (set expect-image true))
+  (when (get opts "flycheck") (set compile-only true) (set exit-on-error false))
 
-  ; Process arguments
-  (var i 0)
-  (def lenargs (length args))
-  (while (< i lenargs)
-    (def arg (in args i))
-    (if (and handleopts (= "-" (string/slice arg 0 1)))
-      (+= i (dohandler (string/slice arg 1) i))
+  (each library (get opts "library" [])
+    (import* library :prefix "" :exit exit-on-error))
+
+  (when-let [path (get opts "compile")]
+    (when (> (length script) 1)
+      (eprint executable ": too many arguments to --compile")
+      (os/exit 1))
+    (def e (dofile path))
+    (def output-path
+      (or (get script 0)
+          (string
+            (if (string/has-suffix? ".wattle" path) (string/slice path 0 -8) path)
+            ".jimage")))
+    (spit output-path (make-image e))
+    (set no-file false))
+
+  (when-let [directory (get opts "install")]
+    (compif (dyn 'bundle/install)
+      (do (bundle/install directory) (set no-file false) (if (= nil should-repl) (set should-repl false)))
+      (eprint "--install not supported with reduced os")))
+  (when-let [name (get opts "reinstall")]
+    (compif (dyn 'bundle/reinstall)
+      (do (bundle/reinstall name) (set no-file false) (if (= nil should-repl) (set should-repl false)))
+      (eprint "--reinstall not supported with reduced os")))
+  (when-let [name (get opts "uninstall")]
+    (compif (dyn 'bundle/uninstall)
+      (do (bundle/uninstall name) (set no-file false) (if (= nil should-repl) (set should-repl false)))
+      (eprint "--uninstall not supported with reduced os")))
+  (when (get opts "update-all")
+    (compif (dyn 'bundle/update-all)
+      (do (bundle/update-all) (set no-file false) (if (= nil should-repl) (set should-repl false)))
+      (eprint "--update-all not supported with reduced os")))
+  (when (get opts "prune")
+    (compif (dyn 'bundle/prune)
+      (do (bundle/prune) (set no-file false) (if (= nil should-repl) (set should-repl false)))
+      (eprint "--prune not supported with reduced os")))
+  (when (get opts "list")
+    (compif (dyn 'bundle/list)
+      (do (each l (bundle/list) (print l)) (set no-file false) (if (= nil should-repl) (set should-repl false)))
+      (eprint "--list not supported with reduced os")))
+
+  (each code (get opts "eval" [])
+    (set no-file false)
+    (eval-string code))
+
+  (when-let [code (get opts "expression")]
+    (set no-file false)
+    (def src `(short-fn ~(parse code) E-expression))
+    (def thunk (compile src))
+    (if (function? thunk)
+      ((thunk) |script)
+      (error (get thunk :error))))
+
+  (when (and (> (length script) 0)
+             (not (has-key? opts "compile"))
+             (not (has-key? opts "expression")))
+    (def path (get script 0))
+    (def subargs (array/slice script))
+    (set no-file false)
+    (if expect-image
+      (run-image (slurp path) subargs)
       (do
-        (def subargs (array/slice args i))
-        (set no-file false)
-        (if expect-image
-          (run-image (slurp arg) subargs)
+        (def env (make-env))
+        (put! env *args* subargs)
+        (if compile-only
+          (flycheck path :exit exit-on-error :env env)
           (do
-            (def env (make-env))
-            (put! env *args* subargs)
-            (if compile-only
-              (flycheck arg :exit exit-on-error :env env)
-              (do
-                (dofile arg :exit exit-on-error :env env)
-                (run-main env subargs)))))
-        (set i lenargs))))
+            (dofile path :exit exit-on-error :env env)
+            (run-main env subargs))))))
 
   (if (or should-repl no-file)
     (if

@@ -1495,6 +1495,7 @@ fn coreImage(
     generate_image.addArg("image-out");
     const image = generate_image.addOutputFileArg("wattle-image.bin");
     generate_image.addFileInput(b.path("src/boot/boot.wattle"));
+    generate_image.addFileInput(b.path("src/gum/args.wattle"));
     return image;
 }
 
@@ -1930,9 +1931,31 @@ fn addCliChecks(
         file.expectStdOutEqual("file-ok");
         test_step.dependOn(&file.step);
 
+        const script_args = b.addRunArtifact(client);
+        script_args.setCwd(b.path("."));
+        script_args.addArgs(&.{ "test/zig-cli-args.wattle", "-q", "--name=x", "--", "y" });
+        script_args.expectStdOutEqual("test/zig-cli-args.wattle -q --name=x -- y");
+        test_step.dependOn(&script_args.step);
+
+        const evals = b.addRunArtifact(client);
+        evals.addArgs(&.{ "-e", "(prin 1)", "--eval=(prin 2)" });
+        evals.expectStdOutEqual("12");
+        test_step.dependOn(&evals.step);
+
+        const expression = b.addRunArtifact(client);
+        expression.addArgs(&.{ "-E", "(prin $0 $1)", "a", "b" });
+        expression.expectStdOutEqual("ab");
+        test_step.dependOn(&expression.step);
+
+        const unknown = b.addRunArtifact(client);
+        unknown.addArg("--nope");
+        unknown.expectExitCode(1);
+        unknown.expectStdErrMatch("unrecognized option '--nope'");
+        test_step.dependOn(&unknown.step);
+
         const help = b.addRunArtifact(client);
         help.addArg("--help");
-        help.expectStdOutMatch("Options are:");
+        help.expectStdOutMatch("Options:");
         test_step.dependOn(&help.step);
 
         const failure = b.addRunArtifact(client);

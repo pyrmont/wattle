@@ -83,6 +83,49 @@
   (is (= "one" (get (get-in present [:params :files]) 0)))
   (is (= "two" (get (get-in present [:params :files]) 1))))
 
+(deftest rest-parameter
+  (def settings
+    {:rules ["--quiet" {:kind :flag :short "q"}
+             "--name" {:kind :single}
+             :script {:rest? true}]})
+  (def result
+    (args/parse-args "sample" settings
+      ["-q" "--name=mine" "run.wattle" "-q" "--name=other" "--" "tail"]))
+  (is (= "" (get result :err)))
+  (is (= true (get-in result [:opts "quiet"])))
+  (is (= "mine" (get-in result [:opts "name"])))
+  (def captured (get-in result [:params :script]))
+  (is (= ["run.wattle" "-q" "--name=other" "--" "tail"] (freeze captured)))
+  (def marked (args/parse-args "sample" settings ["--" "-q" "tail"]))
+  (is (= ["-q" "tail"] (freeze (get-in marked [:params :script]))))
+  (def none (args/parse-args "sample" settings ["-q"]))
+  (is (= "" (get none :err)))
+  (is (= nil (get-in none [:params :script])))
+  (def leading
+    {:rules [:mode {} :script {:rest? true :req? true}]})
+  (def after (args/parse-args "sample" leading ["fast" "y" "-x"]))
+  (is (= "fast" (get-in after [:params :mode])))
+  (is (= ["y" "-x"] (freeze (get-in after [:params :script]))))
+  (def missing (args/parse-args "sample" leading ["fast"]))
+  (is (string/find "script is required" (get missing :err)))
+  (def [ordered?]
+    (protect (args/parse-args "sample"
+               {:rules [:script {:rest? true} :more {}]} [])))
+  (is (not ordered?))
+  (def [doubled?]
+    (protect (args/parse-args "sample"
+               {:rules [:a {:splat? true} :b {:rest? true}]} [])))
+  (is (not doubled?))
+  (def help (args/parse-args "sample" settings ["-h"]))
+  (is (string/find "[<script...>]" (get help :help))))
+
+(deftest validation-can-be-skipped
+  (def bad {:rules ["--x" {:kind :bogus}]})
+  (def [checked?] (protect (args/parse-args "sample" bad [])))
+  (is (not checked?))
+  (def [skipped?] (protect (args/parse-args "sample" (merge bad {:validate? false}) [])))
+  (is skipped?))
+
 (deftest option-normalisation
   (def settings
     {:rules ["--quiet" {:kind :flag}
