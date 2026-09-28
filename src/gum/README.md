@@ -17,4 +17,6 @@ project's `gum/` directory, then import it from the caller:
 The import path is relative to the importing file. A project can edit its
 vendored copy without changing Wattle's source package.
 
-`args.wattle` requires the full OS and process libraries.
+`args.wattle` uses no OS or process function. Usage text wraps at the `:max-width`
+of the config's `:info` map, 120 columns by default, and does not read the
+terminal's width.

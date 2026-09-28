@@ -6,30 +6,6 @@
 (def- default-pad-right 0)
 (def- default-hr "---")
 
-(defn- get-cols [max-width]
-  (if (not (os/isatty))
-    max-width
-    (with [output (file/temp)]
-      (with [errors (file/temp)]
-        (def windows? (= :windows (os/which)))
-        (def command
-          (if windows?
-            ["powershell" "-command" "&{(get-host).ui.rawui.WindowSize.Width;}"]
-            ["stty" "size"]))
-        (def [ok? status]
-          (protect (os/execute command :p {:out output :err errors})))
-        (if (and ok? (= status 0))
-          (do
-            (file/seek output :set)
-            (def response (string/trim (file/read output :all)))
-            (def width
-              (scan-number
-                (if windows?
-                  response
-                  (get (string/split " " response) 1))))
-            (if width (min width max-width) max-width))
-          max-width)))))
-
 (defn- rule-pairs [entries hr]
   (def out ![])
   (var i 0)
@@ -243,7 +219,6 @@
   (def max-width (get info :max-width default-max-width))
   (def rules (rule-pairs (get config :rules []) hr))
   (def subs (rule-pairs (get config :subs []) hr))
-  (def cols (get-cols max-width))
   (def lines ![])
   (def examples (get info :usages))
   (if examples
@@ -269,12 +244,12 @@
       (when (> (length subs) 0)
         (set example (string example " <subcommand> [<args>]")))
       (array/push! lines
-        (wrap-line example (- cols pad-right)
+        (wrap-line example (- max-width pad-right)
                    (+ 8 (length command))))))
   (when (get info :about)
     (array/push! lines "")
     (array/push! lines
-      (wrap-line (get info :about) (- cols pad-right) 0)))
+      (wrap-line (get info :about) (- max-width pad-right) 0)))
   (def parameter-rows ![])
   (def option-rows ![])
   (def sub-rows ![])
@@ -302,9 +277,9 @@
     (array/push! option-rows
       [" -h, --help" "Show this help message."]))
   (emit-rows lines (get info :params-header "Parameters:") parameter-rows
-             cols pad-inset pad-right)
+             max-width pad-inset pad-right)
   (emit-rows lines (get info :opts-header "Options:") option-rows
-             cols pad-inset pad-right)
+             max-width pad-inset pad-right)
   (when (> (length subs) 0)
     (each [name sub] subs
       (if sub
@@ -316,7 +291,7 @@
            (get sub :help "")])
         (array/push! sub-rows [nil nil])))
     (emit-rows lines (get info :subs-header "Subcommands:") sub-rows
-               cols pad-inset pad-right)
+               max-width pad-inset pad-right)
     (array/push! lines "")
     (array/push! lines
       (string "For more information on each subcommand, type '"
@@ -324,7 +299,7 @@
   (when (get info :rider)
     (array/push! lines "")
     (array/push! lines
-      (wrap-line (get info :rider) (- cols pad-right) 0)))
+      (wrap-line (get info :rider) (- max-width pad-right) 0)))
   (string (string/join "\n" lines) "\n"))
 
 (defn- apply-option [result rules name short? value]

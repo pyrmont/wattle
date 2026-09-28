@@ -22,11 +22,11 @@ const build_name = "zig";
 /// register does not skip a case -- it refuses to load, and the whole suite is
 /// lost with it.
 ///
-/// `-Dreduced-os=true` registers four `os` bindings and no more. Nine suites
-/// reach past them: `suite-os` tests the OS library, and the other eight use
-/// the filesystem, the environment or a subprocess. The other 30 suites run
-/// under this configuration. `suite-gum` also needs the process subsystem,
-/// which its module uses for terminal width.
+/// `-Dreduced-os=true` registers four `os` bindings and no more. Eight suites
+/// reach past them: `suite-os` tests the OS library, and the other seven use
+/// the filesystem, the environment or a subprocess. The other 31 suites run
+/// under this configuration. `needs_processes` marks a suite that also needs
+/// the process subsystem; no suite sets it now.
 ///
 /// `pty` is not a condition. It passes the suite the path of `wattle-pty`,
 /// the pseudo-terminal harness, as its argument, where the target has the
@@ -54,7 +54,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-ev2.wattle", .needs_os = true },
     .{ .path = "test/suite-ffi.wattle" },
     .{ .path = "test/suite-filewatch.wattle", .needs_os = true },
-    .{ .path = "test/suite-gum.wattle", .needs_os = true, .needs_processes = true },
+    .{ .path = "test/suite-gum.wattle" },
     .{ .path = "test/suite-inttypes.wattle" },
     .{ .path = "test/suite-io.wattle", .needs_os = true },
     .{ .path = "test/suite-json.wattle" },
