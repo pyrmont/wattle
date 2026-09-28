@@ -326,6 +326,10 @@ const Kqueue = struct {
     const EVFILT_READ: i16 = std.c.EVFILT.READ;
     const EVFILT_WRITE: i16 = std.c.EVFILT.WRITE;
 
+    /// `EV_EOF`. `std.c.EV` declares it on every kqueue target but FreeBSD,
+    /// whose `<sys/event.h>` gives it as 0x8000.
+    const EV_EOF: u16 = if (@hasDecl(std.c.EV, "EOF")) std.c.EV.EOF else 0x8000;
+
     const max_events = 512;
 
     /// Fill one `Kevent`. NetBSD spells `.udata` as an `intptr_t` and every
@@ -454,7 +458,7 @@ const Kqueue = struct {
             const s: *stream_mod.Stream = @ptrFromInt(p);
             const filt = event.filter;
             const has_err = event.flags & @as(u16, @intCast(std.c.EV.ERROR)) != 0;
-            const has_hup = event.flags & @as(u16, @intCast(std.c.EV.EOF)) != 0;
+            const has_hup = event.flags & EV_EOF != 0;
             // The walk takes the writing operations first, and both
             // directions see an ERR and a HUP. A program can observe the
             // order, and it is this backend's: `stepMasked`, which poll and

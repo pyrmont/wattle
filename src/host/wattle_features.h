@@ -58,6 +58,12 @@
 #define _WIN32_WINNT _WIN32_WINNT_VISTA
 #endif
 
+/* FreeBSD reads _XOPEN_SOURCE 600 as _POSIX_C_SOURCE 200112 and so hides what
+ * 200809 adds, `O_CLOEXEC` among it. 700 is the level that maps to 200809. */
+#if defined(__FreeBSD__)
+#define _XOPEN_SOURCE 700
+#endif
+
 /* Needed for realpath on linux, as well as pthread rwlocks. */
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 600

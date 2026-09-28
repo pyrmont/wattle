@@ -47,7 +47,6 @@
 #else
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/stat.h>
 #endif
 
 #ifdef __linux__

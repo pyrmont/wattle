@@ -16,6 +16,12 @@
 //! | --- | --- |
 //! | macOS, mingw | `@cImport`'s `struct stat`, which translates completely |
 //! | Linux | `statx`, whose structure Zig defines itself |
+//! | FreeBSD | `std.c.Stat`, which has every field `os/stat` reads |
+//!
+//! FreeBSD does not translate `<sys/stat.h>`. That header includes
+//! `<sys/time.h>` when `__BSD_VISIBLE` is set, as `wattle_features.h` sets it,
+//! and `translate-c` cannot translate the inline function `bintime_shift` in
+//! `<sys/time.h>`.
 //!
 //! Zig's standard library supplies no substitute: `std.posix.Stat` is `void`
 //! on Linux and Windows, 0.16 has no `std.posix.fstat`, `fstatat` or
@@ -46,9 +52,9 @@ const c = @import("cabi");
 /// subsystem boundary, and nothing does: `struct stat` never leaves this file,
 /// and what does leave is a mode word and an array of doubles.
 ///
-/// It is translated on every target, including the musl ones where the result
-/// is `opaque {}`. That is harmless because the Linux arm never names it, and
-/// a comptime-false branch is not analysed.
+/// It is translated on every target but FreeBSD, including the musl ones where
+/// the result is `opaque {}`. That is harmless because the Linux arm never
+/// names it, and a comptime-false branch is not analysed.
 const sys = @cImport({
     @cInclude("wattle_features.h");
     @cInclude("sys/stat.h");
@@ -100,6 +106,7 @@ const stat_name = if (darwin_inode64) "stat$INODE64" else "stat";
 /// with no `lstat` at all.
 const linux = builtin.os.tag == .linux;
 const windows = builtin.os.tag == .windows;
+const freebsd = builtin.os.tag == .freebsd;
 
 // ==========================================================================
 // Aliased types
@@ -118,7 +125,14 @@ const windows = builtin.os.tag == .windows;
 /// offset in both and survives; `st_size` does not, and reads the access time.
 /// Naming `_stat64` and `struct _stat64` pairs a symbol with the layout it
 /// actually fills, neither of them renamed.
-const Stat = if (windows) sys.struct__stat64 else sys.struct_stat;
+///
+/// FreeBSD names `std.c.Stat`, so `sys` is not referenced there.
+const Stat = if (windows)
+    sys.struct__stat64
+else if (freebsd)
+    std.c.Stat
+else
+    sys.struct_stat;
 
 // ==========================================================================
 // Types
@@ -179,7 +193,7 @@ pub fn descriptorIsDirectory(fd: c_int) ?bool {
     }
     var st: Stat = std.mem.zeroes(Stat);
     if (c_fstat(fd, &st) < 0) return null;
-    return (@as(u32, @intCast(st.st_mode)) & S_IFMT) == S_IFDIR;
+    return (@as(u32, @intCast(if (freebsd) st.mode else st.st_mode)) & S_IFMT) == S_IFDIR;
 }
 
 /// Stats a path and copies out the mode word and one double per numeric field.
@@ -187,6 +201,8 @@ pub fn descriptorIsDirectory(fd: c_int) ?bool {
 pub fn statRead(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     return if (linux)
         readStatx(path, do_lstat, mode, numbers)
+    else if (freebsd)
+        readStdStat(path, do_lstat, mode, numbers)
     else
         readCStat(path, do_lstat, mode, numbers);
 }
@@ -273,6 +289,30 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
     return 0;
 }
 
+/// The FreeBSD arm, over `std.c.Stat`. The fields are those `readCStat` copies
+/// on a POSIX target, under the names `std` gives them.
+fn readStdStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
+    var st: Stat = undefined;
+    const res = if (do_lstat) c_lstat(path, &st) else c_stat(path, &st);
+    if (res == -1) return -1;
+
+    zeroAll(numbers);
+    mode.* = @intCast(st.mode);
+    put(numbers, .dev, @floatFromInt(st.dev));
+    put(numbers, .inode, @floatFromInt(st.ino));
+    put(numbers, .uid, @floatFromInt(st.uid));
+    put(numbers, .gid, @floatFromInt(st.gid));
+    put(numbers, .nlink, @floatFromInt(st.nlink));
+    put(numbers, .rdev, @floatFromInt(st.rdev));
+    put(numbers, .size, @floatFromInt(st.size));
+    put(numbers, .accessed, @floatFromInt(st.atim.sec));
+    put(numbers, .modified, @floatFromInt(st.mtim.sec));
+    put(numbers, .changed, @floatFromInt(st.ctim.sec));
+    put(numbers, .blocks, @floatFromInt(st.blocks));
+    put(numbers, .blocksize, @floatFromInt(st.blksize));
+    return 0;
+}
+
 /// The Linux arm, over `statx`.
 fn readStatx(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     const l = std.os.linux;
@@ -309,4 +349,13 @@ fn readStatx(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
 /// so.
 inline fn zeroAll(numbers: [*]f64) void {
     for (0..Field.count) |i| numbers[i] = 0;
+}
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+// `std.c.Stat` is the size of FreeBSD 12's `struct stat`, 224 bytes.
+comptime {
+    if (freebsd) std.debug.assert(@sizeOf(Stat) == 224);
 }
