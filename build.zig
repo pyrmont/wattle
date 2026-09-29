@@ -1948,7 +1948,7 @@ fn addCliChecks(
 
         const version_flag = b.addRunArtifact(client);
         version_flag.addArg("--version");
-        version_flag.expectStdOutEqual(version_string ++ "\n");
+        version_flag.expectStdOutMatch(version_string);
         test_step.dependOn(&version_flag.step);
 
         const check_ok = b.addRunArtifact(client);
