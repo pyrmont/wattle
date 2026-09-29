@@ -85,11 +85,23 @@ _wattle() {
             ;;
         build)
             if [[ $((cword - sub_at)) -eq 1 ]]; then
-                COMPREPLY=($(compgen -W "img" -- "$cur"))
-            elif [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-l --lib -h --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "exe img lib" -- "$cur"))
+            elif [[ "${words[sub_at + 1]}" == img ]]; then
+                if [[ "$cur" == -* ]]; then
+                    COMPREPLY=($(compgen -W "-l --lib -h --help" -- "$cur"))
+                else
+                    _filedir wattle
+                fi
             else
-                _filedir wattle
+                case "$prev" in
+                    -r|--release) COMPREPLY=($(compgen -W "safe fast small" -- "$cur")) ;;
+                    -t|--target) ;;
+                    *)
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=($(compgen -W "-r --release -t --target -h --help" -- "$cur"))
+                        fi
+                        ;;
+                esac
             fi
             ;;
         twig)
@@ -107,7 +119,7 @@ _wattle() {
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
                 1:*) COMPREPLY=($(compgen -W "build check run twig" -- "$cur")) ;;
-                2:build) COMPREPLY=($(compgen -W "img" -- "$cur")) ;;
+                2:build) COMPREPLY=($(compgen -W "exe img lib" -- "$cur")) ;;
                 2:twig) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
             esac
             ;;

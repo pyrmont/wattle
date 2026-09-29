@@ -72,15 +72,30 @@ _wattle() {
                     ;;
                 build)
                     if (( CURRENT == 2 )); then
-                        _values 'target' 'img[Compile a source file into an image]' && ret=0
+                        _values 'target' \
+                            'exe[Build the executables that info.edn declares]' \
+                            'img[Compile a source file into an image]' \
+                            'lib[Build the native modules that info.edn declares]' && ret=0
                     else
+                        local target=$words[2]
                         shift 2 words
                         (( CURRENT -= 2 ))
-                        _arguments -s \
-                            '(- *)'{-h,--help}'[Show usage and exit]' \
-                            '*'{-l+,--lib=}'[Use a module before the source]:module:_files -g "*.wattle"' \
-                            '1:source:_files -g "*.wattle"' \
-                            '2:output:_files' && ret=0
+                        case $target in
+                            img)
+                                _arguments -s \
+                                    '(- *)'{-h,--help}'[Show usage and exit]' \
+                                    '*'{-l+,--lib=}'[Use a module before the source]:module:_files -g "*.wattle"' \
+                                    '1:source:_files -g "*.wattle"' \
+                                    '2:output:_files' && ret=0
+                                ;;
+                            exe|lib)
+                                _arguments -s \
+                                    '(- *)'{-h,--help}'[Show usage and exit]' \
+                                    '(-r --release)'{-r+,--release=}'[Optimise for safe, fast or small]:mode:(safe fast small)' \
+                                    '(-t --target)'{-t+,--target=}'[Build for a Zig target triple]:triple:' \
+                                    '1:name:' && ret=0
+                                ;;
+                        esac
                     fi
                     ;;
                 twig)
@@ -106,7 +121,7 @@ _wattle() {
                 help)
                     case "$CURRENT:$line[2]" in
                         2:*) _describe -t subcommands 'subcommand' subcommands && ret=0 ;;
-                        3:build) _values 'target' img && ret=0 ;;
+                        3:build) _values 'target' exe img lib && ret=0 ;;
                         3:twig) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
                     esac
                     ;;

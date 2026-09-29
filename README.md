@@ -287,6 +287,27 @@ nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`,
 which links `examples/digest/` in, and `build.zig`'s `quickbin` function builds
 one from outside the tree (`examples/standalone/`).
 
+A project that needs nothing beyond that can skip `build.zig`. `wattle build
+exe` reads the project's `info.edn`, which lists the executables to build and
+the native modules each links in, and makes the executable with Zig.
+`wattle build lib` makes each native module as a shared library. Both need Zig
+on the `PATH`, and the system path, `WATTLE_PATH` or `--syspath`, must be a root
+whose `share/wattle` holds the package, as `zig build` installs it:
+
+```clojure
+{:name "hello"
+ :artifacts [{:type :lib :name "greet" :root "greet.zig"}
+             {:type :exe :name "hello" :entry "main.wattle" :libs ["greet"]}]}
+```
+
+```sh
+wattle -s /usr/local build exe --release small
+```
+
+`examples/standalone/info.edn` is a worked instance, and `zig build
+examples/build-exe` builds it this way. `man ./wattle.1` describes the file and
+the options.
+
 `zig build` also copies the package's files, `build.zig`, `build.zig.zon`,
 `LICENSE`, `README.md` and `src/`, to `<prefix>/share/wattle/`. A project builds
 a single-binary executable from that copy by naming it as the `wattle`

@@ -43,7 +43,12 @@ complete -c wattle -n '__fish_seen_subcommand_from check' -s h -l help -d 'Show 
 complete -c wattle -n '__fish_seen_subcommand_from check' -F
 
 # build
-complete -c wattle -n '__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from img' -a img -d 'Compile a source file into an image'
+complete -c wattle -n '__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from exe img lib' -a exe -d 'Build the executables that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from exe img lib' -a img -d 'Compile a source file into an image'
+complete -c wattle -n '__fish_seen_subcommand_from build; and not __fish_seen_subcommand_from exe img lib' -a lib -d 'Build the native modules that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s r -l release -x -a 'safe fast small' -d 'Optimise for safe, fast or small'
+complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s t -l target -x -d 'Build for a Zig target triple'
+complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s h -l help -d 'Show usage and exit'
 complete -c wattle -n '__fish_seen_subcommand_from img' -s l -l lib -r -d 'Use a module before the source'
 complete -c wattle -n '__fish_seen_subcommand_from img' -s h -l help -d 'Show usage and exit'
 complete -c wattle -n '__fish_seen_subcommand_from img' -F
@@ -60,5 +65,5 @@ complete -c wattle -n '__fish_seen_subcommand_from reinstall uninstall' -a '(wat
 
 # help
 complete -c wattle -n '__fish_seen_subcommand_from help; and not __fish_seen_subcommand_from build check run twig' -a 'build check run twig'
-complete -c wattle -n '__fish_seen_subcommand_from help; and __fish_seen_subcommand_from build' -a img
+complete -c wattle -n '__fish_seen_subcommand_from help; and __fish_seen_subcommand_from build' -a 'exe img lib'
 complete -c wattle -n '__fish_seen_subcommand_from help; and __fish_seen_subcommand_from twig' -a "$twig_verbs"
