@@ -6,37 +6,112 @@ _wattle() {
     local cur prev words cword
     _init_completion || return
 
-    local flags="-h -v -s -e -E -d -n -N -r -R -p -q -k -m -c -i -l -w -x --"
+    local root_flags="-h --help -v --version -m --syspath"
+    local run_flags="-e --eval -l --lib -i --img -r --repl -s --stdin -d --debug -q --quiet -c --color -C --no-color"
+    local check_flags="-e --lint-error -w --lint-warn -b --bail -h --help"
+    local levels="none relaxed normal strict all"
+
+    # The subcommand is the first word after the root options. A word that
+    # names no subcommand is the start of an implicit run.
+    local i=1 sub="" sub_at=0
+    while [[ $i -lt $cword ]]; do
+        case "${words[i]}" in
+            -m|--syspath) ((i += 2)) ;;
+            -h|--help|-v|--version|--syspath=*) ((i++)) ;;
+            *) break ;;
+        esac
+    done
+    if [[ $i -lt $cword ]]; then
+        case "${words[i]}" in
+            run|check|build|twig|help) sub="${words[i]}"; sub_at=$i ;;
+            *) sub="run"; sub_at=$((i - 1)) ;;
+        esac
+    fi
 
     case "$prev" in
-        -e|-E)
-            # Argument is Janet source code — no file completion
-            return
-            ;;
-        -m)
-            # syspath: complete directories
+        -m|--syspath)
             _filedir -d
             return
             ;;
-        -c|-l)
-            # source file: complete .janet files
-            _filedir janet
+        -e|--eval)
+            if [[ "$sub" == check ]]; then
+                COMPREPLY=($(compgen -W "$levels" -- "$cur"))
+            fi
             return
             ;;
-        -w|-x)
-            # linting level
-            COMPREPLY=($(compgen -W ":none :relaxed :normal :strict" -- "$cur"))
+        -w|--lint-warn|--lint-error)
+            COMPREPLY=($(compgen -W "$levels" -- "$cur"))
+            return
+            ;;
+        -l|--lib)
+            _filedir wattle
             return
             ;;
     esac
 
-    if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
-        return
-    fi
-
-    # Default: complete .janet files and directories
-    _filedir janet
+    case "$sub" in
+        "")
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$root_flags $run_flags" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "run check build twig help" -- "$cur"))
+                _filedir wattle
+            fi
+            ;;
+        run)
+            # Once the script is given, every word after it is its argument.
+            local j script=""
+            for ((j = sub_at + 1; j < cword; j++)); do
+                case "${words[j]}" in
+                    -e|--eval|-l|--lib) ((j++)) ;;
+                    -*) ;;
+                    *) script="${words[j]}"; break ;;
+                esac
+            done
+            if [[ -n "$script" ]]; then
+                _filedir
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$run_flags -h --help" -- "$cur"))
+            else
+                _filedir wattle
+            fi
+            ;;
+        check)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$check_flags" -- "$cur"))
+            else
+                _filedir wattle
+            fi
+            ;;
+        build)
+            if [[ $((cword - sub_at)) -eq 1 ]]; then
+                COMPREPLY=($(compgen -W "img" -- "$cur"))
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "-l --lib -h --help" -- "$cur"))
+            else
+                _filedir wattle
+            fi
+            ;;
+        twig)
+            if [[ $((cword - sub_at)) -eq 1 ]]; then
+                COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur"))
+            else
+                case "${words[sub_at + 1]}" in
+                    install) _filedir -d ;;
+                    reinstall|uninstall)
+                        COMPREPLY=($(compgen -W "$("${words[0]}" twig list 2>/dev/null)" -- "$cur"))
+                        ;;
+                esac
+            fi
+            ;;
+        help)
+            case "$((cword - sub_at)):${words[sub_at + 1]}" in
+                1:*) COMPREPLY=($(compgen -W "run check build twig" -- "$cur")) ;;
+                2:build) COMPREPLY=($(compgen -W "img" -- "$cur")) ;;
+                2:twig) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
+            esac
+            ;;
+    esac
 }
 
 complete -F _wattle wattle

@@ -2,34 +2,125 @@
 
 # Zsh completion for wattle
 
-_wattle() {
-    local -a opts
+_wattle_run_options() {
+    _arguments -s \
+        '(- *)'{-h,--help}'[Show usage and exit]' \
+        '*'{-e+,--eval=}'[Evaluate a string of Wattle]:code:' \
+        '*'{-l+,--lib=}'[Use a module before the script]:module:_files -g "*.wattle"' \
+        '(-i --img)'{-i,--img}'[Treat script as an image]' \
+        '(-r --repl)'{-r,--repl}'[Open the REPL after running]' \
+        '(-s --stdin)'{-s,--stdin}'[Read REPL input as raw lines from stdin]' \
+        '(-d --debug)'{-d,--debug}'[Enable debug mode]' \
+        '(-q --quiet)'{-q,--quiet}'[Hide the logo in the REPL]' \
+        '(-c --color -C --no-color)'{-c,--color}'[Enable ANSI colour]' \
+        '(-c --color -C --no-color)'{-C,--no-color}'[Disable ANSI colour]' \
+        '1:script:_files' \
+        '*:script argument:_files'
+}
 
-    opts=(
-        '-h[Show usage and exit]'
-        '-v[Show version and exit]'
-        '-s[Read raw stdin (no readline features)]'
-        '-e[Execute Janet source string]:source code:'
-        '-E[Execute Janet expression as short-fn with remaining args]:expression:'
-        '-d[Enable debug mode]'
-        '-n[Disable ANSI colors in REPL]'
-        '-N[Enable ANSI colors in REPL]'
-        '-r[Open REPL after executing sources]'
-        '-R[Disable loading user profile in REPL]'
-        '-p[Persistent mode (continue after errors)]'
-        '-q[Hide logo in REPL]'
-        '-k[Compile only (lint), do not execute]'
-        '-i[Treat script as a .jimage file]'
-        '-m[Set syspath for module loading]:syspath:_directories'
-        '-c[Precompile source to .jimage]:source:_files -g "*.janet" :output:_files'
-        '-l[Import module before script/REPL]:module:_files -g "*.janet"'
-        '-w[Set warning linting level]:level:(none relaxed normal strict)'
-        '-x[Set error linting level]:level:(none relaxed normal strict)'
-        '--[End of options]'
-        '*:script:_files -g "*.janet"'
+_wattle_check_options() {
+    _arguments -s \
+        '(- *)'{-h,--help}'[Show usage and exit]' \
+        '(-e --lint-error)'{-e+,--lint-error=}'[Set the lint error level]:level:(none relaxed normal strict all)' \
+        '(-w --lint-warn)'{-w+,--lint-warn=}'[Set the lint warning level]:level:(none relaxed normal strict all)' \
+        '(-b --bail)'{-b,--bail}'[Stop at the first error]' \
+        '1:script:_files -g "*.wattle"'
+}
+
+_wattle() {
+    local curcontext="$curcontext" state state_descr line ret=1
+    typeset -A opt_args
+    local -a subcommands
+    subcommands=(
+        'run:Run a script, evaluate code or start the REPL'
+        'check:Compile a script without running it'
+        'build:Build an artifact from source'
+        'twig:Manage installed bundles'
+        'help:Describe a subcommand'
     )
 
-    _arguments -s $opts
+    _arguments -C -s \
+        '(- *)'{-h,--help}'[Show usage and exit]' \
+        '(- *)'{-v,--version}'[Show version and exit]' \
+        '(-m --syspath)'{-m+,--syspath=}'[Set the system path for modules]:path:_directories' \
+        '*'{-e+,--eval=}'[Evaluate a string of Wattle]:code:' \
+        '*'{-l+,--lib=}'[Use a module before the script]:module:_files -g "*.wattle"' \
+        '(-i --img)'{-i,--img}'[Treat script as an image]' \
+        '(-r --repl)'{-r,--repl}'[Open the REPL after running]' \
+        '(-s --stdin)'{-s,--stdin}'[Read REPL input as raw lines from stdin]' \
+        '(-d --debug)'{-d,--debug}'[Enable debug mode]' \
+        '(-q --quiet)'{-q,--quiet}'[Hide the logo in the REPL]' \
+        '(-c --color -C --no-color)'{-c,--color}'[Enable ANSI colour]' \
+        '(-c --color -C --no-color)'{-C,--no-color}'[Disable ANSI colour]' \
+        '1: :->subcommand' \
+        '*:: :->args' && ret=0
+
+    case $state in
+        subcommand)
+            _describe -t subcommands 'subcommand' subcommands && ret=0
+            _files -g "*.wattle" && ret=0
+            ;;
+        args)
+            case $line[1] in
+                run)
+                    shift words
+                    (( CURRENT-- ))
+                    _wattle_run_options && ret=0
+                    ;;
+                check)
+                    shift words
+                    (( CURRENT-- ))
+                    _wattle_check_options && ret=0
+                    ;;
+                build)
+                    if (( CURRENT == 2 )); then
+                        _values 'target' 'img[Compile a source file into an image]' && ret=0
+                    else
+                        shift 2 words
+                        (( CURRENT -= 2 ))
+                        _arguments -s \
+                            '(- *)'{-h,--help}'[Show usage and exit]' \
+                            '*'{-l+,--lib=}'[Use a module before the source]:module:_files -g "*.wattle"' \
+                            '1:source:_files -g "*.wattle"' \
+                            '2:output:_files' && ret=0
+                    fi
+                    ;;
+                twig)
+                    if (( CURRENT == 2 )); then
+                        _values 'verb' \
+                            'install[Install a bundle from a directory]' \
+                            'reinstall[Reinstall a bundle by name]' \
+                            'uninstall[Uninstall a bundle by name]' \
+                            'update[Reinstall all installed bundles]' \
+                            'clean[Uninstall all orphaned bundles]' \
+                            'list[List all installed bundles]' && ret=0
+                    else
+                        case $line[2] in
+                            install) _directories && ret=0 ;;
+                            reinstall|uninstall)
+                                local -a bundles
+                                bundles=(${(f)"$(${words[1]} twig list 2>/dev/null)"})
+                                _describe -t bundles 'bundle' bundles && ret=0
+                                ;;
+                        esac
+                    fi
+                    ;;
+                help)
+                    case "$CURRENT:$line[2]" in
+                        2:*) _describe -t subcommands 'subcommand' subcommands && ret=0 ;;
+                        3:build) _values 'target' img && ret=0 ;;
+                        3:twig) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
+                    esac
+                    ;;
+                *)
+                    # An implicit run: the first word is the script.
+                    _files && ret=0
+                    ;;
+            esac
+            ;;
+    esac
+
+    return ret
 }
 
 _wattle "$@"
