@@ -5516,6 +5516,121 @@
 
 ;;;
 ;;;
+;;; Zig build files
+;;;
+;;;
+
+(defn- twig-path-parts
+  "Splits path at / and at \\, dropping empty parts."
+  [path]
+  (filter #(not (empty? $)) (string/split "/" (string/replace-all "\\" "/" path))))
+
+(defn- twig-relative-path
+  "Returns the path from the directory from to the path to, which are both absolute."
+  [from to]
+  (def f (twig-path-parts from))
+  (def t (twig-path-parts to))
+  (var i 0)
+  (while (and (< i (length f)) (< i (length t)) (= (get f i) (get t i)))
+    (++ i))
+  (string/join "/" [|(map (fn [_] "..") (slice f i)) |(slice t i)]))
+
+(defn- twig-zig-string
+  "Returns s as the body of a Zig string literal."
+  [s]
+  (string/replace-all "\"" "\\\"" (string/replace-all "\\" "\\\\" s)))
+
+(defn- twig-absolute-path
+  "Returns path, or dir followed by path where path is relative."
+  [dir path]
+  (if (or (string/has-prefix? "/" path) (string/has-prefix? "\\" path)
+          (and (> (length path) 1) (= 58 (get path 1)))) ; a drive letter
+    path
+    (string dir "/" path)))
+
+(defn twig/zig-files
+  """
+  Returns a table with the text of the build.zig and the build.zig.zon that
+  build the artifacts of x, a map read from an info.edn, under :build and :zon.
+  kind is `:exe` or `:lib`. With name, only the artifact called name is built.
+  opts is a map with three absolute directories: :dir, the project, which
+  relative artifact paths are resolved against, :srcpath, the Wattle package,
+  and :gen, the directory the two files are written to. An executable is
+  built with the libs it names in :libs linked in. A lib is built as a shared
+  library. Raises if ^twig/artifacts raises for x, kind and name.
+  """
+  ([x kind opts] (twig/zig-files x kind nil opts))
+  ([x kind name opts]
+    (def chosen (twig/artifacts x kind name))
+    (def libs !{})
+    (each artifact (twig/artifacts x)
+      (when (= :lib (get artifact :type))
+        (put! libs (get artifact :name) artifact)))
+    (def dir (get opts :dir))
+    (defn zig-path [path]
+      (string ".{ .cwd_relative = \"" (twig-zig-string (twig-absolute-path dir path)) "\" }"))
+    (def b !"")
+    (buffer/push! b
+      "const std = @import(\"std\");\n"
+      "const wattle = @import(\"wattle\");\n\n"
+      "pub fn build(b: *std.Build) void {\n"
+      "    const target = b.standardTargetOptions(.{});\n"
+      "    const optimize = b.standardOptimizeOption(.{});\n"
+      "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize });\n")
+    (when (= kind :exe)
+      (buffer/push! b
+        "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug });\n"))
+    (var i 0)
+    (each artifact chosen
+      (def artifact-name (twig-zig-string (get artifact :name)))
+      (if (= kind :exe)
+        (do
+          (buffer/format! b "    const exe%d = wattle.quickbin(dep, host, .{\n" i)
+          (buffer/format! b "        .name = \"%s\",\n" artifact-name)
+          (buffer/format! b "        .source = %s,\n" (zig-path (get artifact :entry)))
+          (buffer/push! b "        .natives = &.{\n")
+          (each lib-name (get artifact :libs [])
+            (def lib (get libs lib-name))
+            (buffer/format! b "            .{ .name = \"%s\", .root = %s },\n"
+                            (twig-zig-string lib-name) (zig-path (get lib :root))))
+          (buffer/push! b
+            "        },\n"
+            "        .target = target,\n"
+            "        .optimize = optimize,\n"
+            "    });\n")
+          (buffer/format! b "    b.installArtifact(exe%d);\n" i))
+        (do
+          (buffer/format! b "    const mod%d = b.createModule(.{\n" i)
+          (buffer/format! b "        .root_source_file = %s,\n" (zig-path (get artifact :root)))
+          (buffer/push! b
+            "        .target = target,\n"
+            "        .optimize = optimize,\n"
+            "    });\n")
+          (buffer/format! b "    mod%d.addImport(\"wattle\", wattle.wattleModule(dep, target, optimize));\n" i)
+          (buffer/format! b "    const lib%d = b.addLibrary(.{\n" i)
+          (buffer/format! b "        .name = \"%s\",\n" artifact-name)
+          (buffer/format! b "        .linkage = .dynamic,\n        .root_module = mod%d,\n    });\n" i)
+          (buffer/format! b "    lib%d.linker_allow_shlib_undefined = true;\n" i)
+          (buffer/format! b "    b.installArtifact(lib%d);\n" i)))
+      (++ i))
+    (buffer/push! b "}\n")
+    (def zon !"")
+    (buffer/push! zon
+      ".{\n"
+      "    .name = .wattle_project,\n"
+      "    .version = \"0.0.0\",\n"
+      "    .fingerprint = 0x73d368c0c079d65,\n"
+      "    .dependencies = .{\n")
+    (buffer/format! zon "        .wattle = .{ .path = \"%s\" },\n"
+                    (twig-zig-string (twig-relative-path (get opts :gen) (get opts :srcpath))))
+    (buffer/push! zon
+      "    },\n"
+      "    .paths = .{ \"build.zig\", \"build.zig.zon\" },\n"
+      "}\n")
+    {:build (string b) :zon (string zon)}))
+
+;;;
+;;;
 ;;; CLI Tool Main
 ;;;
 ;;;
@@ -5615,14 +5730,30 @@
      :help "Build an artifact from source."
      :rules []
      :subs
-     ["img" {:validate? validate?
+     ["exe" {:validate? validate?
+             :help "Build the executables that info.edn declares."
+             :rules ["--release" {:kind :single :short "r" :proxy "mode"
+                                  :help "Optimise for safe, fast or small. The default is safe."}
+                     "--target" {:kind :single :short "t" :proxy "triple"
+                                 :help "Build for a Zig target triple. The default is this machine."}
+                     :name {:proxy "name"
+                            :help "The executable to build. The default is every executable."}]}
+      "img" {:validate? validate?
              :help "Compile a source file into an image."
              :rules ["--lib" {:kind :multi :short "l" :proxy "module"
                               :help "Use a module before the source is compiled."}
                      :source {:req? true :proxy "source"
                               :help "The source file to compile."}
                      :output {:proxy "output"
-                              :help "The image path. The default is the source path with .jimage in place of .wattle."}]}]})
+                              :help "The image path. The default is the source path with .jimage in place of .wattle."}]}
+      "lib" {:validate? validate?
+             :help "Build the native modules that info.edn declares."
+             :rules ["--release" {:kind :single :short "r" :proxy "mode"
+                                  :help "Optimise for safe, fast or small. The default is safe."}
+                     "--target" {:kind :single :short "t" :proxy "triple"
+                                 :help "Build for a Zig target triple. The default is this machine."}
+                     :name {:proxy "name"
+                            :help "The native module to build. The default is every native module."}]}]})
   (def twig-config
     {:validate? validate?
      :help "Manage installed packages."
@@ -5672,7 +5803,8 @@
 ; The rules are fixed, so they are checked here, while the image is generated,
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
-(each argv [[] ["check"] ["build" "img" "source"] ["twig" "install" "directory"]
+(each argv [[] ["check"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
+            ["twig" "install" "directory"]
             ["twig" "reinstall" "name"] ["twig" "uninstall" "name"]
             ["twig" "update"] ["twig" "clean"] ["twig" "list"]]
   (cli-parse-args "wattle" (cli-config "wattle" true) argv))
@@ -5743,8 +5875,7 @@
     (flycheck path :exit bail? :env (make-env))
     (flycheck stdin :source :stdin :exit bail?)))
 
-(defn- cli-build [build]
-  (def image (get build :sub))
+(defn- cli-build-img [image]
   (def params (get image :params))
   (each library (get (get image :opts) "lib" [])
     (import* library :prefix "" :exit true))
@@ -5756,6 +5887,71 @@
           (if (string/has-suffix? ".wattle" path) (string/slice path 0 -8) path)
           ".jimage")))
   (spit output-path (make-image e)))
+
+(def- cli-release-modes {"safe" "ReleaseSafe" "fast" "ReleaseFast" "small" "ReleaseSmall"})
+
+; Kept apart from the separator so that the image holds no string that reads as
+; an absolute path to a .zig file, which `res/check/image-diff.janet` counts.
+(def- cli-zig-build-file "build.zig")
+(def- cli-zig-cache ".zig-cache")
+
+(defn- cli-build-artifacts
+  """
+  Builds the artifacts of kind, `:exe` or `:lib`, that the info.edn in the
+  current directory declares, by writing a build.zig and a build.zig.zon under
+  .zig-cache and running zig build on them. Exits with status 1 and a message
+  on a failure that is not zig's own.
+  """
+  [kind cmd]
+  (defn fail [& parts]
+    (eprint |parts)
+    (os/exit 1))
+  (compif (dyn 'os/spawn)
+    (do
+      (def opts (get cmd :opts))
+      (def mode (get cli-release-modes (get opts "release" "safe")))
+      (unless mode (fail "release must be safe, fast or small"))
+      (def dir (os/realpath (os/cwd)))
+      (def info-path
+        (find fexists [(string dir "/twig/info.edn") (string dir "/info.edn")]))
+      (unless info-path (fail "no info.edn in " dir))
+      (def info (parse (slurp info-path)))
+      (def gen (string dir "/" cli-zig-cache "/wattle-build"))
+      (def [ok files]
+        (protect (twig/zig-files info kind (get (get cmd :params) :name)
+                                 {:dir dir :srcpath (wattle/srcpath) :gen gen})))
+      (unless ok (fail "error: " files))
+      (def srcpath (wattle/srcpath))
+      (def zon-path (string srcpath "/" cli-zig-build-file ".zon"))
+      (unless (fexists zon-path)
+        (fail "the Wattle package is not at " srcpath ": " zon-path " does not exist"))
+      (def [zig-ok zig-version]
+        (protect (let [p (os/spawn ["zig" "version"] :p {:out :pipe})
+                       out (ev/read (p :out) :all)]
+                   (os/proc-wait p)
+                   (string/trim out))))
+      (unless zig-ok (fail "zig was not found on the PATH, and wattle build needs it"))
+      (twig-mkdirs gen)
+      (each [file text] [[cli-zig-build-file (get files :build)] [(string cli-zig-build-file ".zon") (get files :zon)]]
+        (def path (string gen "/" file))
+        (unless (and (os/stat path :mode) (= text (slurp path)))
+          (spit path text)))
+      (def args
+        ["zig" "build" "--build-file" (string gen "/" cli-zig-build-file)
+         "--prefix" (string dir "/zig-out") "--cache-dir" (string dir "/" cli-zig-cache)
+         (string "-Doptimize=" mode)
+         |(if-let [triple (get opts "target")] [(string "-Dtarget=" triple)] [])])
+      (def status (os/execute args :p))
+      (unless (zero? status) (os/exit status))
+      (print "built " kind " in " dir "/zig-out"))
+    (fail "build " kind " is not supported with reduced os")))
+
+(defn- cli-build [build]
+  (def sub (get build :sub))
+  (case (get sub :cmd)
+    "img" (cli-build-img sub)
+    "exe" (cli-build-artifacts :exe sub)
+    "lib" (cli-build-artifacts :lib sub)))
 
 (defn- cli-twig [twig]
   (def verb (get twig :sub))

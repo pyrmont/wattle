@@ -1,0 +1,3 @@
+{:name "greet"
+ :artifacts [{:type :lib :name "greet" :root "greet.zig"}
+             {:type :exe :name "hello-info" :entry "main.wattle" :libs ["greet"]}]}

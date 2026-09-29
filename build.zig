@@ -585,14 +585,14 @@ pub fn build(b: *std.Build) void {
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
     // The package's own files, as `build.zig.zon` lists them, so that a
     // `quickbin` build can name `<prefix>/share/wattle` as its `wattle`
-    // dependency by path where no URL and hash are wanted. `src/gum/` is
-    // installed as `share/wattle/gum` rather than under `share/wattle/src`.
+    // dependency by path where no URL and hash are wanted. The copy has the
+    // layout of the source tree, `src/gum/` included, because the image
+    // generator reads `src/gum/args.wattle`.
     const source_dir: std.Build.InstallDir = .{ .custom = "share/wattle" };
     for ([_][]const u8{ "build.zig", "build.zig.zon", "LICENSE", "README.md" }) |name| {
         b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path(name), source_dir, name).step);
     }
     installSource(b, source_dir);
-    b.installDirectory(.{ .source_dir = b.path("src/gum"), .install_dir = source_dir, .install_subdir = "gum" });
 
     const built: Built = .{
         .b = b,
@@ -1031,6 +1031,38 @@ pub fn build(b: *std.Build) void {
     // caching, so a no-change run is cheap.
     standalone.has_side_effects = true;
     standalone_step.dependOn(&standalone.step);
+
+    // **`wattle build exe`, on the same example with no `build.zig`.**
+    //
+    // `examples/standalone/info.edn` declares the native module and the
+    // executable that links it. This step runs the installed `wattle` with the
+    // install prefix as its system path, so that `build exe` finds the package
+    // under `<prefix>/share/wattle`, and then runs the executable it wrote.
+    // It is a step of its own for the reason the one above is, and it is not
+    // registered for a cross build or for wasm, where the client cannot run.
+    if (!wasm and target.query.isNative()) {
+        const build_exe_step = b.step(
+            "examples/build-exe",
+            "Build examples/standalone with `wattle build exe` from its info.edn and run it",
+        );
+        const build_exe = b.addRunArtifact(client);
+        build_exe.addArgs(&.{ "-s", b.getInstallPath(.prefix, ""), "build", "exe" });
+        build_exe.setCwd(b.path("examples/standalone"));
+        build_exe.setName("wattle build exe (examples/standalone)");
+        build_exe.expectExitCode(0);
+        // Its inputs are the sources of the sub-build, which the graph does not
+        // see, so it must run every time.
+        build_exe.has_side_effects = true;
+        build_exe.step.dependOn(b.getInstallStep());
+
+        const exe_name = if (target.result.os.tag == .windows) "hello-info.exe" else "hello-info";
+        const run_built = b.addSystemCommand(&.{b.pathJoin(&.{ b.build_root.path orelse ".", "examples/standalone/zig-out/bin", exe_name })});
+        run_built.expectStdOutEqual("standalone/greeting\n");
+        run_built.expectExitCode(0);
+        run_built.has_side_effects = true;
+        run_built.step.dependOn(&build_exe.step);
+        build_exe_step.dependOn(&run_built.step);
+    }
 
     // The fuzz targets, in a third compilation of the runtime.
     //
@@ -1663,7 +1695,7 @@ fn quickbinExecutable(
     return exe;
 }
 
-/// Installs every entry of `src/` except `gum` under `<dir>/src`.
+/// Installs every entry of `src/` under `<dir>/src`.
 fn installSource(b: *std.Build, dir: std.Build.InstallDir) void {
     const io = b.graph.io;
     var src = b.build_root.handle.openDir(io, "src", .{ .iterate = true }) catch |err| {
@@ -1673,7 +1705,6 @@ fn installSource(b: *std.Build, dir: std.Build.InstallDir) void {
 
     var it = src.iterate();
     while (it.next(io) catch null) |entry| {
-        if (std.mem.eql(u8, entry.name, "gum")) continue;
         const path = b.pathJoin(&.{ "src", entry.name });
         switch (entry.kind) {
             .directory => b.installDirectory(.{ .source_dir = b.path(path), .install_dir = dir, .install_subdir = path }),

@@ -100,4 +100,99 @@
   (is (string/find "no :lib artifact is declared"
                    (message (declares (exe)) :lib))))
 
+(def gen-opts {:dir "/proj" :srcpath "/opt/w/share/wattle"
+               :gen "/proj/.zig-cache/wattle-build"})
+
+(defn- has [text fragment] (not (nil? (string/find fragment text))))
+
+(deftest zig-files-exe
+  (def files (twig/zig-files blueshift :exe gen-opts))
+  (is (= (string
+           "const std = @import(\"std\");\n"
+           "const wattle = @import(\"wattle\");\n\n"
+           "pub fn build(b: *std.Build) void {\n"
+           "    const target = b.standardTargetOptions(.{});\n"
+           "    const optimize = b.standardOptimizeOption(.{});\n"
+           "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize });\n"
+           "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug });\n"
+           "    const exe0 = wattle.quickbin(dep, host, .{\n"
+           "        .name = \"blues\",\n"
+           "        .source = .{ .cwd_relative = \"/proj/lib/cli.wattle\" },\n"
+           "        .natives = &.{\n"
+           "            .{ .name = \"blues_http\", .root = .{ .cwd_relative = \"/proj/lib/http.zig\" } },\n"
+           "        },\n"
+           "        .target = target,\n"
+           "        .optimize = optimize,\n"
+           "    });\n"
+           "    b.installArtifact(exe0);\n"
+           "}\n")
+         (get files :build)))
+  (is (= (string
+           ".{\n"
+           "    .name = .wattle_project,\n"
+           "    .version = \"0.0.0\",\n"
+           "    .fingerprint = 0x73d368c0c079d65,\n"
+           "    .dependencies = .{\n"
+           "        .wattle = .{ .path = \"../../../opt/w/share/wattle\" },\n"
+           "    },\n"
+           "    .paths = .{ \"build.zig\", \"build.zig.zon\" },\n"
+           "}\n")
+         (get files :zon))))
+
+(deftest zig-files-lib
+  (def text (get (twig/zig-files blueshift :lib gen-opts) :build))
+  (is (has text "const mod0 = b.createModule(.{"))
+  (is (has text ".root_source_file = .{ .cwd_relative = \"/proj/lib/http.zig\" },"))
+  (is (has text "mod0.addImport(\"wattle\", wattle.wattleModule(dep, target, optimize));"))
+  (is (has text ".name = \"blues_http\","))
+  (is (has text ".linkage = .dynamic,"))
+  (is (has text "lib0.linker_allow_shlib_undefined = true;"))
+  (is (not (has text "quickbin")))
+  (is (not (has text "b.graph.host"))))
+
+(deftest zig-files-dependency-path
+  (defn dep-path [opts]
+    (def zon (get (twig/zig-files blueshift :exe opts) :zon))
+    (def start (+ 9 (get (string/find-all ".path = \"" zon) 0)))
+    (slice zon start (string/find "\"" zon start)))
+  (is (= "../../../pkg" (dep-path {:dir "/a/proj" :srcpath "/a/pkg"
+                                  :gen "/a/proj/.zig-cache/wattle-build"})))
+  (is (= "../../vendor/w" (dep-path {:dir "/a/proj" :srcpath "/a/proj/vendor/w"
+                                    :gen "/a/proj/.zig-cache/wattle-build"})))
+  (is (= "../../../../../usr/local/share/wattle"
+         (dep-path {:dir "/home/u/p" :srcpath "/usr/local/share/wattle"
+                    :gen "/home/u/p/.zig-cache/wattle-build"}))))
+
+(deftest zig-files-paths
+  (def info {:artifacts [{:type :exe :name "a" :entry "/abs/main.wattle"}]})
+  (is (has (get (twig/zig-files info :exe gen-opts) :build)
+           ".source = .{ .cwd_relative = \"/abs/main.wattle\" },"))
+  (def quoted {:artifacts [{:type :exe :name "a" :entry "m\"x.wattle"}]})
+  (is (has (get (twig/zig-files quoted :exe {:dir "/pr oj" :srcpath "/p" :gen "/g"}) :build)
+           ".cwd_relative = \"/pr oj/m\\\"x.wattle\""))
+  (def windows {:artifacts [{:type :exe :name "a" :entry "C:\\src\\m.wattle"}]})
+  (is (has (get (twig/zig-files windows :exe gen-opts) :build)
+           ".cwd_relative = \"C:\\\\src\\\\m.wattle\"")))
+
+(deftest zig-files-selection
+  (def many
+    {:artifacts [{:type :lib :name "z" :root "z.zig"}
+                 {:type :exe :name "b" :entry "b.wattle" :libs ["z"]}
+                 {:type :exe :name "a" :entry "a.wattle"}]})
+  (def all (get (twig/zig-files many :exe gen-opts) :build))
+  (is (has all "const exe0 = wattle.quickbin"))
+  (is (has all "const exe1 = wattle.quickbin"))
+  (is (< (string/find ".name = \"b\"," all) (string/find ".name = \"a\"," all)))
+  (is (has all ".{ .name = \"z\", .root = .{ .cwd_relative = \"/proj/z.zig\" } },"))
+  (def one (get (twig/zig-files many :exe "a" gen-opts) :build))
+  (is (not (has one "exe1")))
+  (is (not (has one "\"z\"")))
+  (def [ok message] (protect (twig/zig-files many :exe "nosuch" gen-opts)))
+  (is (not ok))
+  (is (has message "no :exe artifact is called nosuch"))
+  (def [ok2 message2] (protect (twig/zig-files {:artifacts [{:type :lib :name "z" :root "z.zig"}]}
+                                                :exe gen-opts)))
+  (is (not ok2))
+  (is (has message2 "no :exe artifact is declared")))
+
 (end-suite)
