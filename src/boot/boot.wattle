@@ -5352,6 +5352,138 @@
 
 ;;;
 ;;;
+;;; Package artifacts
+;;;
+;;;
+
+; A info.edn holds `:artifacts`, a vector of maps. Each map has a `:type` of
+; `:exe` or `:lib` and a `:name`. An `:exe` has an `:entry`, the Wattle file
+; that defines `main`, and may have `:libs`, a vector of the names of the
+; `:lib` artifacts compiled into it. A `:lib` has a `:root`, the Zig root file
+; of a native module. ^twig/artifacts raises on the first problem and names the
+; artifact and the key. Neither function looks at the file system.
+
+(def- twig-artifact-allowed-keys
+  {:exe [:type :name :entry :libs]
+   :lib [:type :name :root]})
+
+; A `:lib` name is spliced into two symbol names and a string, and an `:exe`
+; name is a file name.
+(def- twig-artifact-name-chars
+  (string "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+          "0123456789_-"))
+
+(defn- twig-artifact-where
+  "Describes the artifact at index i, by name where it has a usable one."
+  [i artifact]
+  (def name (get artifact :name))
+  (if (and (string? name) (not (empty? name)))
+    (string/format "artifact %d (%s)" i name)
+    (string/format "artifact %d" i)))
+
+(defn- twig-artifact-fail
+  [i artifact fmt & vals]
+  (error (string "info.edn: " (twig-artifact-where i artifact) ": "
+                 (string/format fmt |vals))))
+
+(defn- twig-artifact-check-string
+  [i artifact key]
+  (def val (get artifact key))
+  (unless (and (string? val) (not (empty? val)))
+    (twig-artifact-fail i artifact "%v must be a non-empty string" key)))
+
+(defn- twig-artifact-check-name
+  [i artifact]
+  (twig-artifact-check-string i artifact :name)
+  (unless (string/check-set twig-artifact-name-chars (get artifact :name))
+    (twig-artifact-fail i artifact ":name may hold only letters, digits, `_` and `-`")))
+
+(defn- twig-artifact-check-keys
+  [i artifact kind]
+  (def ok (get twig-artifact-allowed-keys kind))
+  (each k (keys artifact)
+    (unless (find #(= k $) ok)
+      (twig-artifact-fail i artifact "%v is not a key of an %v" k kind))))
+
+(defn- twig-artifact-check-libs
+  [i artifact by-name]
+  (def libs (get artifact :libs))
+  (when (nil? libs) (break))
+  (unless (vector? libs)
+    (twig-artifact-fail i artifact ":libs must be a vector of names"))
+  (def seen !{})
+  (each n libs
+    (when (map? n)
+      (twig-artifact-fail i artifact
+                  ":libs holds a map, which is reserved for an external library"))
+    (unless (string? n)
+      (twig-artifact-fail i artifact ":libs must hold strings, not %v" n))
+    (when (get seen n)
+      (twig-artifact-fail i artifact ":libs names %s twice" n))
+    (put! seen n true)
+    (def target (get by-name n))
+    (unless target
+      (twig-artifact-fail i artifact ":libs names %s, which no artifact declares" n))
+    (unless (= :lib (get target :type))
+      (twig-artifact-fail i artifact ":libs names %s, which is not a :lib" n))))
+
+(defn- twig-artifacts-checked
+  [x]
+  (unless (map? x)
+    (error "info.edn: must hold a map"))
+  (def artifacts (get x :artifacts))
+  (when (nil? artifacts)
+    (error "info.edn: no :artifacts are declared"))
+  (unless (vector? artifacts)
+    (error "info.edn: :artifacts must be a vector"))
+  (def by-name !{})
+  (var i 0)
+  (each artifact artifacts
+    (unless (map? artifact)
+      (errorf "info.edn: artifact %d must be a map" i))
+    (def kind (get artifact :type))
+    (unless (or (= kind :exe) (= kind :lib))
+      (twig-artifact-fail i artifact ":type must be :exe or :lib"))
+    (twig-artifact-check-name i artifact)
+    (def name (get artifact :name))
+    (when (get by-name name)
+      (twig-artifact-fail i artifact ":name is already used by artifact %d"
+                          (get (get by-name name) :index)))
+    (put! by-name name {:index i :type kind})
+    (twig-artifact-check-string i artifact (if (= kind :exe) :entry :root))
+    (twig-artifact-check-keys i artifact kind)
+    (++ i))
+  (set i 0)
+  (each artifact artifacts
+    (twig-artifact-check-libs i artifact by-name)
+    (++ i))
+  artifacts)
+
+(defn twig/artifacts
+  """
+  Checks the `:artifacts` of x, a map read from an info.edn, and returns them.
+  With kind, `:exe` or `:lib`, returns only the artifacts of that kind, and
+  with name as well, only the one called name. The artifacts are in the order
+  x declares them. Raises an error naming the artifact and the key for a
+  missing or misplaced key, a name used twice, or a `:libs` entry that does not
+  name a `:lib`. Also raises if x declares no artifact of kind, or none called
+  name.
+  """
+  ([x] (twig-artifacts-checked x))
+  ([x kind] (twig/artifacts x kind nil))
+  ([x kind name]
+    (def chosen (filter #(= kind (get $ :type)) (twig-artifacts-checked x)))
+    (when (empty? chosen)
+      (errorf "info.edn: no %v artifact is declared" kind))
+    (if (nil? name)
+      chosen
+      (let [found (filter #(= name (get $ :name)) chosen)]
+        (when (empty? found)
+          (errorf "info.edn: no %v artifact is called %s" kind name))
+        found))))
+
+;;;
+;;;
 ;;; CLI Tool Main
 ;;;
 ;;;

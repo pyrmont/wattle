@@ -1,0 +1,103 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+(defmacro is [expression] `(assert ~expression))
+(defmacro deftest [_ & body] `(do ~|body))
+
+(defn- refusal
+  "Returns the message of the error `twig/artifacts` raises for info, or nil."
+  [info]
+  (def [ok message] (protect (twig/artifacts info)))
+  (if ok nil message))
+
+(defn- refuses
+  "Checks that `twig/artifacts` raises for info with a message holding text."
+  [info text]
+  (def message (refusal info))
+  (is (string? message))
+  (is (string/find text message)))
+
+(def blueshift
+  {:name "blueshift"
+   :artifacts [{:type :lib :name "blues_http" :root "lib/http.zig"}
+               {:type :exe :name "blues" :entry "lib/cli.wattle"
+                :libs ["blues_http"]}]})
+
+(defn- extend
+  "Returns base with the key and value pairs of fields added."
+  [base fields]
+  (if (empty? fields) base (apply assoc base fields)))
+
+(defn- exe [& fields] (extend {:type :exe :name "a" :entry "m"} fields))
+(defn- lib [& fields] (extend {:type :lib :name "z" :root "r"} fields))
+(defn- declares [& artifacts] {:artifacts (vec artifacts)})
+
+(deftest valid-info
+  (is (nil? (refusal blueshift)))
+  (is (= 2 (length (twig/artifacts blueshift))))
+  (is (nil? (refusal (declares (exe)))))
+  (is (nil? (refusal (declares (lib))))))
+
+(deftest top-level
+  (refuses [] "must hold a map")
+  (refuses {:name "x"} "no :artifacts are declared")
+  (refuses {:artifacts {}} ":artifacts must be a vector")
+  (refuses {:artifacts [1]} "artifact 0 must be a map"))
+
+(deftest type-and-name
+  (refuses (declares {:name "a" :entry "m"})
+           "artifact 0 (a): :type must be :exe or :lib")
+  (refuses (declares (exe :type :dll)) ":type must be :exe or :lib")
+  (refuses (declares {:type :exe :entry "m"})
+           "artifact 0: :name must be a non-empty string")
+  (refuses (declares (exe :name "")) ":name must be a non-empty string")
+  (refuses (declares (exe :name 3)) ":name must be a non-empty string")
+  (refuses (declares (exe :name "a b")) "may hold only letters, digits"))
+
+(deftest entry-and-root
+  (refuses (declares {:type :exe :name "a"})
+           "artifact 0 (a): :entry must be a non-empty string")
+  (refuses (declares (exe :entry "")) ":entry must be a non-empty string")
+  (refuses (declares {:type :lib :name "a"})
+           "artifact 0 (a): :root must be a non-empty string"))
+
+(deftest unknown-keys
+  (refuses (declares (exe :link ["b"])) ":link is not a key of an :exe")
+  (refuses (declares (lib :libs [])) ":libs is not a key of an :lib")
+  (refuses (declares (exe :root "r")) ":root is not a key of an :exe"))
+
+(deftest duplicate-names
+  (refuses (declares (exe) (exe :entry "n"))
+           "artifact 1 (a): :name is already used by artifact 0")
+  (refuses (declares (exe) (lib :name "a"))
+           ":name is already used by artifact 0"))
+
+(deftest libs
+  (defn libs-of [libs] (declares (lib) (exe :libs libs)))
+  (is (nil? (refusal (libs-of ["z"]))))
+  (is (nil? (refusal (libs-of []))))
+  (refuses (libs-of "z") ":libs must be a vector of names")
+  (refuses (libs-of [3]) ":libs must hold strings")
+  (refuses (libs-of ["z" "z"]) ":libs names z twice")
+  (refuses (libs-of ["q"]) ":libs names q, which no artifact declares")
+  (refuses (libs-of ["a"]) ":libs names a, which is not a :lib")
+  (refuses (libs-of [{:system "curl"}]) "reserved for an external library"))
+
+(deftest select
+  (def exes (twig/artifacts blueshift :exe))
+  (is (= 1 (length exes)))
+  (is (= "blues" (get (first exes) :name)))
+  (def libs (twig/artifacts blueshift :lib))
+  (is (= "blues_http" (get (first libs) :name)))
+  (is (= "blues"
+         (get (first (twig/artifacts blueshift :exe "blues")) :name)))
+  (def two (declares (exe :name "b") (lib) (exe :name "a" :entry "n")))
+  (is (= ["b" "a"] (vec (map #(get $ :name) (twig/artifacts two :exe)))))
+  (is (= "a" (get (first (twig/artifacts two :exe "a")) :name)))
+  (defn message [& args] (get (protect (twig/artifacts |args)) 1))
+  (is (string/find "no :exe artifact is called c" (message two :exe "c")))
+  (is (string/find "no :exe artifact is called z" (message two :exe "z")))
+  (is (string/find "no :lib artifact is declared"
+                   (message (declares (exe)) :lib))))
+
+(end-suite)

@@ -24,7 +24,7 @@ const build_name = "zig";
 ///
 /// `-Dreduced-os=true` registers four `os` bindings and no more. Eight suites
 /// reach past them: `suite-os` tests the OS library, and the other seven use
-/// the filesystem, the environment or a subprocess. The other 31 suites run
+/// the filesystem, the environment or a subprocess. The other 33 suites run
 /// under this configuration. `needs_processes` marks a suite that also needs
 /// the process subsystem; no suite sets it now.
 ///
@@ -41,6 +41,7 @@ const Suite = struct {
 
 const test_suites = &[_]Suite{
     .{ .path = "test/suite-array.wattle" },
+    .{ .path = "test/suite-artifacts.wattle" },
     .{ .path = "test/suite-asm.wattle" },
     .{ .path = "test/suite-boot.wattle" },
     .{ .path = "test/suite-buffer.wattle" },
