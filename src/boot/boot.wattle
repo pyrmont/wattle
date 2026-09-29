@@ -5414,36 +5414,32 @@
     {:validate? validate?
      :help "Run a script, evaluate code or start the REPL."
      :rules
-     ["--eval" {:kind :multi :short "e" :proxy "code"
+     ["--debug" {:kind :flag :short "d"
+                 :help "Set the debug flag in the REPL."}
+      "--eval" {:kind :multi :short "e" :proxy "code"
                 :help "Evaluate a string of Wattle."}
-      "--lib" {:kind :multi :short "l" :proxy "module"
-               :help "Use a module before the script and the other options."}
       "--img" {:kind :flag :short "i"
                :help "Load the script argument as an image file instead of source code."}
+      "--lib" {:kind :multi :short "l" :proxy "module"
+               :help "Use a module before the script and the other options."}
+      "--quiet" {:kind :flag :short "q"
+                 :help "Hide the logo."}
       "--repl" {:kind :flag :short "r"
                 :help "Enter the REPL after running all scripts."}
       "--stdin" {:kind :flag :short "s"
                  :help "Read REPL input as raw lines from stdin. Implies --repl."}
-      "--debug" {:kind :flag :short "d"
-                 :help "Set the debug flag in the REPL."}
-      "--quiet" {:kind :flag :short "q"
-                 :help "Hide the logo."}
-      "--color" {:kind :flag :short "c"
-                 :help "Enable ANSI color output in the REPL."}
-      "--no-color" {:kind :flag :short "C"
-                    :help "Disable ANSI color output in the REPL."}
       :script {:rest? true :proxy "script"
                :help "The script to run. Every argument after it is passed to the script."}]})
   (def check-config
     {:validate? validate?
      :help "Compile a script without running it and report every error."
      :rules
-     ["--lint-error" {:kind :single :short "e" :proxy "level" :value lint-level
-                      :help "Set the lint error level. The default is none."}
-      "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
-                     :help "Set the lint warning level. The default is normal."}
-      "--bail" {:kind :flag :short "b"
+     ["--bail" {:kind :flag :short "b"
                 :help "Stop at the first error."}
+      "--lint-error" {:kind :single :short "e" :proxy "level" :value lint-level
+                      :help "Set the lint level at which a message is an error: none, relaxed, normal, strict, all or a number (0 to 3). The default is none."}
+      "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
+                     :help "Set the lint level at which a message is a warning. It takes the same values as --lint-error. The default is normal."}
       :script {:proxy "script"
                :help "The script to check. Standard input is checked when there is none."}]})
   (def build-config
@@ -5464,10 +5460,16 @@
      :help "Manage installed packages."
      :rules []
      :subs
-     ["install" {:validate? validate?
+     ["clean" {:validate? validate?
+               :help "Uninstall all packages that are orphaned."
+               :rules []}
+      "install" {:validate? validate?
                  :help "Install a package from a directory."
                  :rules [:directory {:req? true :proxy "directory"
                                      :help "The directory holding the package."}]}
+      "list" {:validate? validate?
+              :help "List all installed packages."
+              :rules []}
       "reinstall" {:validate? validate?
                    :help "Reinstall a package by name."
                    :rules [:name {:req? true :proxy "name"
@@ -5478,27 +5480,25 @@
                                   :help "The name of the installed package."}]}
       "update" {:validate? validate?
                 :help "Reinstall all installed packages."
-                :rules []}
-      "clean" {:validate? validate?
-               :help "Uninstall all packages that are orphaned."
-               :rules []}
-      "list" {:validate? validate?
-              :help "List all installed packages."
-              :rules []}]})
+                :rules []}]})
   {:validate? validate?
    :info {:about "The Wattle programming language."}
    :implicit "run"
    :rules
-   ["--help" {:kind :help :short "h"
-              :help "Print this usage summary and exit."}
+   ["--color" {:kind :flag :short "c"
+               :help "Enable ANSI color output."}
+    "--no-color" {:kind :flag :short "C"
+                  :help "Disable ANSI color output."}
+    "--syspath" {:kind :single :short "s" :proxy "path"
+                 :help "Set the system path for loading global modules."}
     "--version" {:kind :flag :short "v"
                  :help "Print the version string and exit."}
-    "--syspath" {:kind :single :short "m" :proxy "path"
-                 :help "Set the system path for loading global modules."}]
+    "--help" {:kind :help :short "h"
+              :help "Print this usage summary and exit."}]
    :subs
-   ["run" run-config
+   ["build" build-config
     "check" check-config
-    "build" build-config
+    "run" run-config
     "twig" twig-config]})
 
 ; The rules are fixed, so they are checked here, while the image is generated,
@@ -5529,8 +5529,6 @@
 
   ; Options are applied in a fixed order, not the order they were written in.
   (when (get opts "debug") (setdyn *debug* true) (setdyn *redef* true))
-  (when (get opts "color") (apply-color true))
-  (when (get opts "no-color") (apply-color false))
   (when (get opts "stdin") (set raw-stdin true) (set should-repl true))
   (when (get opts "repl") (set should-repl true))
   (when (get opts "quiet") (set quiet true))
@@ -5650,6 +5648,8 @@
   (def opts (get result :opts))
   (when (get opts "version") (print wattle/version) (os/exit 0))
   (when (has-key? opts "syspath") (setdyn *syspath* (get opts "syspath")))
+  (when (get opts "color") (apply-color true))
+  (when (get opts "no-color") (apply-color false))
 
   (def sub (get result :sub))
   (case (get sub :cmd)

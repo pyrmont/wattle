@@ -6,8 +6,8 @@ _wattle() {
     local cur prev words cword
     _init_completion || return
 
-    local root_flags="-h --help -v --version -m --syspath"
-    local run_flags="-e --eval -l --lib -i --img -r --repl -s --stdin -d --debug -q --quiet -c --color -C --no-color"
+    local root_flags="-c --color -C --no-color -s --syspath -v --version -h --help"
+    local run_flags="-e --eval -l --lib -i --img -r --repl -s --stdin -d --debug -q --quiet"
     local check_flags="-e --lint-error -w --lint-warn -b --bail -h --help"
     local levels="none relaxed normal strict all"
 
@@ -16,20 +16,20 @@ _wattle() {
     local i=1 sub="" sub_at=0
     while [[ $i -lt $cword ]]; do
         case "${words[i]}" in
-            -m|--syspath) ((i += 2)) ;;
+            -s|--syspath) ((i += 2)) ;;
             -h|--help|-v|--version|--syspath=*) ((i++)) ;;
             *) break ;;
         esac
     done
     if [[ $i -lt $cword ]]; then
         case "${words[i]}" in
-            run|check|build|twig|help) sub="${words[i]}"; sub_at=$i ;;
+            build|check|help|run|twig) sub="${words[i]}"; sub_at=$i ;;
             *) sub="run"; sub_at=$((i - 1)) ;;
         esac
     fi
 
     case "$prev" in
-        -m|--syspath)
+        -s|--syspath)
             _filedir -d
             return
             ;;
@@ -54,7 +54,7 @@ _wattle() {
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$root_flags $run_flags" -- "$cur"))
             else
-                COMPREPLY=($(compgen -W "run check build twig help" -- "$cur"))
+                COMPREPLY=($(compgen -W "build check help run twig" -- "$cur"))
                 _filedir wattle
             fi
             ;;
@@ -106,7 +106,7 @@ _wattle() {
             ;;
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
-                1:*) COMPREPLY=($(compgen -W "run check build twig" -- "$cur")) ;;
+                1:*) COMPREPLY=($(compgen -W "build check run twig" -- "$cur")) ;;
                 2:build) COMPREPLY=($(compgen -W "img" -- "$cur")) ;;
                 2:twig) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
             esac

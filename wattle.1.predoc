@@ -14,10 +14,10 @@ NAME
 SYNOPSIS
 ========
 
-**wattle** [**-m** _path_] [**run**] [_options_] [_script_ [_args_ ...]]
-**wattle** [**-m** _path_] **check** [_options_] [_script_]
-**wattle** [**-m** _path_] **build img** [**-l** _module_ ...] _source_ [_output_]
-**wattle** [**-m** _path_] **twig** _verb_ [_argument_]
+**wattle** [**-s** _path_] [**run**] [_options_] [_script_ [_args_ ...]]
+**wattle** [**-s** _path_] **check** [_options_] [_script_]
+**wattle** [**-s** _path_] **build img** [**-l** _module_ ...] _source_ [_output_]
+**wattle** [**-s** _path_] **twig** _verb_ [_argument_]
 **wattle** **help** [_subcommand_ ...]
 **wattle** [**-h** | **-v**]
 
@@ -42,7 +42,7 @@ therefore the same as ``wattle run``, ``wattle run hello.wattle`` and
 script, and a script named after a subcommand is run with ``wattle run``
 in front of it.
 
-**-h**, **-v** and **-m** are read only before the subcommand name. A
+**-c**, **-C**, **-s**, **-v** and **-h** are read only before the subcommand name. A
 subcommand does not read them again.
 
 An option that takes a value can be written ``--eval=code``, and short options
@@ -58,21 +58,29 @@ have finished.
 Options
 -------
 
-- **-h**, **--help**:
-  Print a usage summary and exit. Each subcommand also reads **-h**, and
-  prints its own usage.
+- **-c**, **--color**:
+  Print values, errors and documentation with ANSI colour, and highlight the
+  source typed at the REPL. If **-C** is also given, **-C** applies.
+
+- **-C**, **--no-color**:
+  Print values, errors and documentation without ANSI colour, and do not
+  highlight the source typed at the REPL.
+
+- **-s**, **--syspath** _path_:
+  Set ``*syspath*``, the directory system modules are loaded from, to _path_.
+  This replaces the value taken from `WATTLE_PATH`.
 
 - **-v**, **--version**:
   Print the version of Wattle and exit.
 
-- **-m**, **--syspath** _path_:
-  Set ``*syspath*``, the directory system modules are loaded from, to _path_.
-  This replaces the value taken from `WATTLE_PATH`.
+- **-h**, **--help**:
+  Print a usage summary and exit. Each subcommand also reads **-h**, and
+  prints its own usage.
 
 run
 ---
 
-**wattle** [**-m** _path_] [**run**] [_options_] [_script_ [_args_ ...]]
+**wattle** [**-s** _path_] [**run**] [_options_] [_script_ [_args_ ...]]
 
 Options are read until the first argument that does not begin with ``-``.
 That argument is the _script_, and every argument after it is passed to the
@@ -85,7 +93,7 @@ An error that a _script_, a module loaded with **-l** or code given to
 **-e** does not handle ends the process with status 1.
 
 The options are applied in a fixed order, whatever order they are written in:
-first the settings (**-d**, **-c**, **-C**, **-s**, **-r**, **-q** and
+first the settings (**-d**, **-s**, **-r**, **-q** and
 **-i**), then **-l**, then **-e**, and last the _script_. A setting therefore
 applies to every library, expression and script, and **-l** runs before every
 **-e**. Several **-e** options and several **-l** options run in the order
@@ -117,18 +125,10 @@ given.
 - **-q**, **--quiet**:
   Do not print the banner when the REPL starts.
 
-- **-c**, **--color**:
-  Print values, errors and documentation with ANSI colour, and highlight the
-  source typed at the REPL. If **-C** is also given, **-C** applies.
-
-- **-C**, **--no-color**:
-  Print values, errors and documentation without ANSI colour, and do not
-  highlight the source typed at the REPL.
-
 check
 -----
 
-**wattle** [**-m** _path_] **check** [_options_] [_script_]
+**wattle** [**-s** _path_] **check** [_options_] [_script_]
 
 Compile _script_ without running it and report every error. With no _script_,
 check standard input instead. The exit status is 0 after errors are reported,
@@ -137,7 +137,10 @@ unless **-b** is given.
 - **-e**, **--lint-error** _level_:
   Set the lint level at which a message stops compilation with an error.
   _level_ is one of ``none``, ``relaxed``, ``normal``, ``strict`` or ``all``,
-  written without a leading colon, or a number. The default is ``none``.
+  written without a leading colon, or a number. These are the numbers 0, 1, 2
+  and 3 and infinity. A message is reported when its own level is at most
+  _level_, so ``none`` reports nothing and ``all`` reports every message. The
+  default is ``none``.
 
 - **-w**, **--lint-warn** _level_:
   Set the lint level at which a message is printed as a warning. _level_ takes
@@ -149,7 +152,7 @@ unless **-b** is given.
 build
 -----
 
-**wattle** [**-m** _path_] **build img** [**-l** _module_ ...] _source_ [_output_]
+**wattle** [**-s** _path_] **build img** [**-l** _module_ ...] _source_ [_output_]
 
 Load the module at _source_ and write an image of its environment to
 _output_. If _output_ is omitted, it is _source_ with ``.wattle`` replaced by
@@ -164,7 +167,7 @@ Other targets are not yet available.
 twig
 ----
 
-**wattle** [**-m** _path_] **twig** _verb_ [_argument_]
+**wattle** [**-s** _path_] **twig** _verb_ [_argument_]
 
 Manage the packages installed under ``*syspath*``. A build made without the
 OS library does not include **twig**, and each verb exits with status 1 after

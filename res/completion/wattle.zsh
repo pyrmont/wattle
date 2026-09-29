@@ -12,8 +12,6 @@ _wattle_run_options() {
         '(-s --stdin)'{-s,--stdin}'[Read REPL input as raw lines from stdin]' \
         '(-d --debug)'{-d,--debug}'[Enable debug mode]' \
         '(-q --quiet)'{-q,--quiet}'[Hide the logo in the REPL]' \
-        '(-c --color -C --no-color)'{-c,--color}'[Enable ANSI colour]' \
-        '(-c --color -C --no-color)'{-C,--no-color}'[Disable ANSI colour]' \
         '1:script:_files' \
         '*:script argument:_files'
 }
@@ -32,17 +30,19 @@ _wattle() {
     typeset -A opt_args
     local -a subcommands
     subcommands=(
-        'run:Run a script, evaluate code or start the REPL'
-        'check:Compile a script without running it'
         'build:Build an artifact from source'
-        'twig:Manage installed packages'
+        'check:Compile a script without running it'
         'help:Describe a subcommand'
+        'run:Run a script, evaluate code or start the REPL'
+        'twig:Manage installed packages'
     )
 
     _arguments -C -s \
-        '(- *)'{-h,--help}'[Show usage and exit]' \
+        '(-c --color -C --no-color)'{-c,--color}'[Enable ANSI colour]' \
+        '(-c --color -C --no-color)'{-C,--no-color}'[Disable ANSI colour]' \
+        '(-s --syspath)'{-s+,--syspath=}'[Set the system path for modules]:path:_directories' \
         '(- *)'{-v,--version}'[Show version and exit]' \
-        '(-m --syspath)'{-m+,--syspath=}'[Set the system path for modules]:path:_directories' \
+        '(- *)'{-h,--help}'[Show usage and exit]' \
         '*'{-e+,--eval=}'[Evaluate a string of Wattle]:code:' \
         '*'{-l+,--lib=}'[Use a module before the script]:module:_files -g "*.wattle"' \
         '(-i --img)'{-i,--img}'[Treat script as an image]' \
@@ -50,8 +50,6 @@ _wattle() {
         '(-s --stdin)'{-s,--stdin}'[Read REPL input as raw lines from stdin]' \
         '(-d --debug)'{-d,--debug}'[Enable debug mode]' \
         '(-q --quiet)'{-q,--quiet}'[Hide the logo in the REPL]' \
-        '(-c --color -C --no-color)'{-c,--color}'[Enable ANSI colour]' \
-        '(-c --color -C --no-color)'{-C,--no-color}'[Disable ANSI colour]' \
         '1: :->subcommand' \
         '*:: :->args' && ret=0
 
