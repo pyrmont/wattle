@@ -31,6 +31,14 @@ and the parser reads no more options once it has started. A rule with `:splat?`
 alone collects only the tokens that are not options, and the parser reads
 options between them.
 
+A config with `:subs` may set `:implicit` to the name of one of them. Where the
+parser would otherwise report an unrecognized subcommand or option, or that no
+subcommand was given, it enters that subcommand with the tokens from that point
+as its arguments. Options the config declares itself are read first, so root
+options still precede the implicit subcommand's own. A subcommand may have
+`:subs` of its own and is parsed in the same way. `help` followed by several
+names describes the last one.
+
 `parse-args` checks the config's rules and subcommands on every call. A caller
 whose config never changes can set `:validate?` to `false` in the config to
 skip the check, after running it once with the default.

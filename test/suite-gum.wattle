@@ -163,6 +163,69 @@
   (def result (args/parse-args "sample" nested ["help"]))
   (is (= "help" (get-in result [:sub :cmd]))))
 
+(def implicit-config
+  {:rules ["--version" {:kind :flag :short "v"}]
+   :implicit "run"
+   :subs ["run" {:rules ["--eval" {:kind :multi :short "e"}
+                          "--quiet" {:kind :flag :short "q"}
+                          :script {:rest? true}]}
+          "build" {:rules []
+                   :subs ["img" {:rules [:source {:req? true}
+                                         :output {}]}
+                          "exe" {:rules []}]}]})
+
+(deftest implicit-subcommand
+  (def bare (args/parse-args "sample" implicit-config []))
+  (is (= "" (get bare :err)))
+  (is (= "run" (get-in bare [:sub :cmd])))
+  (def script (args/parse-args "sample" implicit-config ["foo.wattle" "-x"]))
+  (is (= "run" (get-in script [:sub :cmd])))
+  (is (= "-x" (get (get-in script [:sub :params :script]) 1)))
+  (is (= "foo.wattle" (get (get-in script [:sub :params :script]) 0)))
+  (def eval-opt
+    (args/parse-args "sample" implicit-config ["-e" "(+ 1 2)" "-q"]))
+  (is (= "" (get eval-opt :err)))
+  (is (= "(+ 1 2)" (get (get-in eval-opt [:sub :opts "eval"]) 0)))
+  (def long-opt (args/parse-args "sample" implicit-config ["--eval=1"]))
+  (is (= "1" (get (get-in long-opt [:sub :opts "eval"]) 0)))
+  (def root-first (args/parse-args "sample" implicit-config ["-v" "foo"]))
+  (is (= true (get-in root-first [:opts "version"])))
+  (is (= "foo" (get (get-in root-first [:sub :params :script]) 0)))
+  (def stop (args/parse-args "sample" implicit-config ["--" "-q"]))
+  (is (= "-q" (get (get-in stop [:sub :params :script]) 0)))
+  (def named (args/parse-args "sample" implicit-config ["run" "foo"]))
+  (is (= "foo" (get (get-in named [:sub :params :script]) 0)))
+  (def help (args/parse-args "sample" implicit-config ["-h"]))
+  (is (string/find "Without a subcommand, 'run' is assumed." (get help :help)))
+  (is (string/find "[<subcommand>]" (get help :help)))
+  (def sub-help (args/parse-args "sample" implicit-config ["help" "nope"]))
+  (is (string/find "unrecognized subcommand 'nope'" (get sub-help :err))))
+
+(deftest implicit-must-name-a-subcommand
+  (def [ok?]
+    (protect (args/parse-args "sample"
+               {:implicit "go" :subs ["run" {:rules []}]} [])))
+  (is (not ok?)))
+
+(deftest nested-subcommands
+  (def img (args/parse-args "sample" implicit-config ["build" "img" "a" "b"]))
+  (is (= "" (get img :err)))
+  (is (= "build" (get-in img [:sub :cmd])))
+  (is (= "img" (get-in img [:sub :sub :cmd])))
+  (is (= "b" (get-in img [:sub :sub :params :output])))
+  (def missing (args/parse-args "sample" implicit-config ["build" "img"]))
+  (is (string/find "source is required" (get missing :err)))
+  (def bare (args/parse-args "sample" implicit-config ["build"]))
+  (is (string/find "no subcommand provided" (get bare :err)))
+  (def inner-help (args/parse-args "sample" implicit-config ["build" "img" "-h"]))
+  (is (string/find "Usage: sample build img" (get inner-help :help)))
+  (def via-help (args/parse-args "sample" implicit-config ["help" "build" "img"]))
+  (is (string/find "Usage: sample build img" (get via-help :help)))
+  (def mid-help (args/parse-args "sample" implicit-config ["help" "build"]))
+  (is (string/find "Usage: sample build <subcommand>" (get mid-help :help)))
+  (def bad-help (args/parse-args "sample" implicit-config ["help" "build" "zip"]))
+  (is (string/find "unrecognized subcommand 'zip'" (get bad-help :err))))
+
 (deftest params-and-subs-rejected
   (def [ok?]
     (protect (args/parse-args "sample"

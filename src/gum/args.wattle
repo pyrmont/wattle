@@ -241,7 +241,11 @@
                     (when (splat? rule) "...") ">"
                     (unless (get rule :req?) "]")))))
       (when (> (length subs) 0)
-        (set example (string example " <subcommand> [<args>]")))
+        (set example
+          (string example
+                  (if (get config :implicit)
+                    " [<subcommand>] [<args>]"
+                    " <subcommand> [<args>]"))))
       (array/push! lines
         (wrap-line example (- cols pad-right)
                    (+ 8 (length command))))))
@@ -291,6 +295,12 @@
         (array/push! sub-rows [nil nil])))
     (emit-rows lines (get info :subs-header "Subcommands:") sub-rows
                cols pad-inset pad-right)
+    (when (get config :implicit)
+      (array/push! lines "")
+      (array/push! lines
+        (wrap-line (string "Without a subcommand, '" (get config :implicit)
+                           "' is assumed.")
+                   (- cols pad-right) 0)))
     (array/push! lines "")
     (array/push! lines
       (string "For more information on each subcommand, type '"
@@ -400,13 +410,26 @@
   A parameter with :rest? is a splat that must come last. It captures its
   first token and every token after it as given, options included, and
   parsing of options stops there.
+  A config with :subs may set :implicit to the name of one of them. Where
+  the parser would otherwise stop with an unrecognized subcommand or option,
+  or with no subcommand, it enters that subcommand instead, with the tokens
+  from that point as its arguments. Options the config itself declares are
+  read first. A subcommand with :subs is parsed in the same way as the root,
+  and `help` followed by subcommand names describes the last name given.
   Returns :cmd, :opts, :params or :sub, :err, and :help.
   """
   (def info (get config :info {}))
   (def hr (get info :hr default-hr))
   (def rules (rule-pairs (get config :rules []) hr))
   (def subs (rule-pairs (get config :subs []) hr))
-  (when (get config :validate? true) (validate-config rules subs))
+  (when (get config :validate? true)
+    (validate-config rules subs)
+    (when (get config :implicit)
+      (assertf (find-sub subs (get config :implicit))
+               ":implicit must name a subcommand: %p"
+               (get config :implicit))))
+  (def implicit-sub
+    (when (get config :implicit) (find-sub subs (get config :implicit))))
   (def args (array/slice argv))
   (def rest-at
     (do
@@ -423,10 +446,25 @@
   (def positionals ![])
   (var i 0)
   (var done? false)
+  ; Parses sub-args as the arguments of subcommand name and records the
+  ; outcome in result. A subcommand with :subs is parsed in turn.
+  (defn enter! [name sub sub-args]
+    (if (or (get sub :rules) (get sub :subs))
+      (do
+        (def child (parse-args (string command " " name) sub sub-args))
+        (put! child :cmd name)
+        (put! result :sub child)
+        (put! result :err (get child :err))
+        (put! result :help (get child :help)))
+      (put! result :sub {:cmd name :args sub-args}))
+    (set done? true))
   (while (and (< i (length args)) (not done?)
               (empty? (get result :err)) (empty? (get result :help)))
     (def arg (get args i))
     (cond
+      (and (= arg "--") implicit-sub)
+        (enter! (get implicit-sub 0) (get implicit-sub 1)
+                (array/slice args i))
       (= arg "--")
         (do
           (++ i)
@@ -434,6 +472,12 @@
             (array/push! positionals (get args i))
             (++ i))
           (set done? true))
+      (and implicit-sub (string/has-prefix? "--" arg)
+           (not (lookup-option rules
+                  (string/slice arg 2 (or (string/find "=" arg) (length arg)))
+                  false)))
+        (enter! (get implicit-sub 0) (get implicit-sub 1)
+                (array/slice args i))
       (string/has-prefix? "--" arg)
         (do
           ; A --name=value token is split in place when it is reached, so
@@ -456,6 +500,10 @@
           (when (and found (= :help (get rule :kind)))
             (put! result :help (usage command config))
             (set done? true)))
+      (and implicit-sub (string/has-prefix? "-" arg) (not (= arg "-"))
+           (not (lookup-option rules (string/slice arg 1 2) true)))
+        (enter! (get implicit-sub 0) (get implicit-sub 1)
+                (array/slice args i))
       (and (string/has-prefix? "-" arg) (not (= arg "-")))
         (do
           ; A short cluster like -xyz may be bundled flags, a bundled flag
@@ -492,25 +540,39 @@
           (def literal-help? (and (= arg "help") (not (find-sub subs "help"))))
           (def wanted (if literal-help? (get args (+ i 1)) arg))
           (def found (when wanted (find-sub subs wanted)))
-          (if found
-            (do
-              (def [name sub] found)
-              (if literal-help?
-                (do
-                  (put! (get result :opts) "help" true)
-                  (put! result :sub {:cmd name})
-                  (put! result :help (usage (string command " " name) sub)))
-                (if (get sub :rules)
-                  (do
-                    (def child (parse-args (string command " " name) sub
-                                 (array/slice args (+ i 1))))
-                    (put! child :cmd name)
-                    (put! result :sub child)
-                    (put! result :err (get child :err))
-                    (put! result :help (get child :help)))
-                  (put! result :sub
-                    {:cmd name :args (array/slice args (+ i 1))})))
-              (set done? true))
+          (cond
+            (and found literal-help?)
+              (do
+                (def name (get found 0))
+                (var target (get found 1))
+                (var target-cmd (string command " " name))
+                (var j (+ i 2))
+                (def steps ![name])
+                (while (and (empty? (get result :err))
+                            (get target :subs) (get args j))
+                  (def inner (find-sub (rule-pairs (get target :subs) hr)
+                                       (get args j)))
+                  (if inner
+                    (do
+                      (def [inner-name inner-sub] inner)
+                      (set target inner-sub)
+                      (set target-cmd (string target-cmd " " inner-name))
+                      (array/push! steps inner-name)
+                      (++ j))
+                    (put! result :err
+                      (string "unrecognized subcommand '" (get args j) "'"))))
+                (put! (get result :opts) "help" true)
+                (put! result :sub {:cmd name :path steps})
+                (when (empty? (get result :err))
+                  (put! result :help (usage target-cmd target)))
+                (set done? true))
+            found
+              (do
+                (def [name sub] found)
+                (enter! name sub (array/slice args (+ i 1))))
+            (and implicit-sub (not literal-help?))
+              (enter! (get implicit-sub 0) (get implicit-sub 1)
+                      (array/slice args i))
             (put! result :err
               (if wanted
                 (string "unrecognized subcommand '" wanted "'")
@@ -532,7 +594,9 @@
               (if (= :multi (get rule :kind)) (array/slice value) value))))
     (when (not (get result :sub))
       (if (> (length subs) 0)
-        (put! result :err "no subcommand provided")
+        (if implicit-sub
+          (enter! (get implicit-sub 0) (get implicit-sub 1) [])
+          (put! result :err "no subcommand provided"))
         (apply-params result rules positionals))))
   (when (and (not (get result :sub)) (not (empty? (get result :err))))
     (put! result :err
