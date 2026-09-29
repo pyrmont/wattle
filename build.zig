@@ -1492,6 +1492,7 @@ fn coreImage(
     generate_image.setCwd(b.path("."));
     generate_image.addArg(".");
     generate_image.addArgs(&.{ "WATTLE_PATH", "/usr/local/lib/wattle" });
+    generate_image.addArgs(&.{ "WATTLE_SRC", b.getInstallPath(.{ .custom = "share/wattle" }, "") });
     generate_image.addArg("image-out");
     const image = generate_image.addOutputFileArg("wattle-image.bin");
     generate_image.addFileInput(b.path("src/boot/boot.wattle"));

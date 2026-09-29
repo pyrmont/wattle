@@ -1125,4 +1125,12 @@
 (assert (deep= (sort (distinct (values !{0 :a 1 :b 2 :b 3 :a}))) ![:a :b]))
 (assert (deep= (distinct (coro (yield 8) (yield 11) (yield 8))) ![8 11]))
 
+; *wattle-src* is the package directory `build exe` compiles the runtime from.
+; The build sets it to <prefix>/share/wattle, with `\` as the separator on
+; Windows.
+(assert (string? (dyn *wattle-src*)) "*wattle-src* is set")
+(assert (string/has-suffix? "share/wattle"
+                            (string/replace-all "\\" "/" (dyn *wattle-src*)))
+        "*wattle-src* names <prefix>/share/wattle")
+
 (end-suite)
