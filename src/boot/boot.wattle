@@ -5459,6 +5459,32 @@
                               :help "The source file to compile."}
                      :output {:proxy "output"
                               :help "The image path. The default is the source path with .jimage in place of .wattle."}]}]})
+  (def twig-config
+    {:validate? validate?
+     :help "Manage installed bundles."
+     :rules []
+     :subs
+     ["install" {:validate? validate?
+                 :help "Install a bundle from a directory."
+                 :rules [:directory {:req? true :proxy "directory"
+                                     :help "The directory holding the bundle."}]}
+      "reinstall" {:validate? validate?
+                   :help "Reinstall a bundle by name."
+                   :rules [:name {:req? true :proxy "name"
+                                  :help "The name of the installed bundle."}]}
+      "uninstall" {:validate? validate?
+                   :help "Uninstall a bundle by name."
+                   :rules [:name {:req? true :proxy "name"
+                                  :help "The name of the installed bundle."}]}
+      "update" {:validate? validate?
+                :help "Reinstall all installed bundles."
+                :rules []}
+      "clean" {:validate? validate?
+               :help "Uninstall all bundles that are orphaned."
+               :rules []}
+      "list" {:validate? validate?
+              :help "List all installed bundles."
+              :rules []}]})
   {:validate? validate?
    :info {:about "The Wattle programming language."}
    :implicit "run"
@@ -5472,12 +5498,15 @@
    :subs
    ["run" run-config
     "check" check-config
-    "build" build-config]})
+    "build" build-config
+    "twig" twig-config]})
 
 ; The rules are fixed, so they are checked here, while the image is generated,
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
-(each argv [[] ["check"] ["build" "img" "source"]]
+(each argv [[] ["check"] ["build" "img" "source"] ["twig" "install" "directory"]
+            ["twig" "reinstall" "name"] ["twig" "uninstall" "name"]
+            ["twig" "update"] ["twig" "clean"] ["twig" "list"]]
   (cli-parse-args "wattle" (cli-config "wattle" true) argv))
 
 (defn- apply-color
@@ -5562,6 +5591,32 @@
           ".jimage")))
   (spit output-path (make-image e)))
 
+(defn- cli-twig [twig]
+  (def verb (get twig :sub))
+  (def params (get verb :params))
+  (defn unsupported [name]
+    (eprint "twig " name " is not supported with reduced os")
+    (os/exit 1))
+  (case (get verb :cmd)
+    "install" (compif (dyn 'bundle/install)
+                (bundle/install (get params :directory))
+                (unsupported "install"))
+    "reinstall" (compif (dyn 'bundle/reinstall)
+                  (bundle/reinstall (get params :name))
+                  (unsupported "reinstall"))
+    "uninstall" (compif (dyn 'bundle/uninstall)
+                  (bundle/uninstall (get params :name))
+                  (unsupported "uninstall"))
+    "update" (compif (dyn 'bundle/update-all)
+               (bundle/update-all)
+               (unsupported "update"))
+    "clean" (compif (dyn 'bundle/prune)
+              (bundle/prune)
+              (unsupported "clean"))
+    "list" (compif (dyn 'bundle/list)
+             (each l (bundle/list) (print l))
+             (unsupported "list"))))
+
 (defn cli-main
   """
   Entrance for the Wattle CLI tool. Invokes the CLI interface when called with the command line
@@ -5600,7 +5655,8 @@
   (case (get sub :cmd)
     "run" (cli-run (get sub :opts) (or (get (get sub :params) :script) []))
     "check" (cli-check (get sub :opts) (get sub :params))
-    "build" (cli-build sub)))
+    "build" (cli-build sub)
+    "twig" (cli-twig sub)))
 
 ;;;
 ;;;

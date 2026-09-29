@@ -1963,6 +1963,17 @@ fn addCliChecks(
         build_missing.expectStdErrMatch("source is required");
         test_step.dependOn(&build_missing.step);
 
+        const twig_missing = b.addRunArtifact(client);
+        twig_missing.addArgs(&.{ "twig", "install" });
+        twig_missing.expectExitCode(1);
+        twig_missing.expectStdErrMatch("directory is required");
+        test_step.dependOn(&twig_missing.step);
+
+        const twig_help = b.addRunArtifact(client);
+        twig_help.addArgs(&.{ "help", "twig", "uninstall" });
+        twig_help.expectStdOutMatch("Uninstall a bundle by name.");
+        test_step.dependOn(&twig_help.step);
+
         const help_nested = b.addRunArtifact(client);
         help_nested.addArgs(&.{ "help", "build", "img" });
         help_nested.expectStdOutMatch("Compile a source file into an image.");
