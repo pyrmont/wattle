@@ -210,12 +210,12 @@ wasmtime run --dir . zig-out/bin/wattle.wasm
 ```
 
 A WASI program sees only the directories which are mapped in, so a script and
-everything it reads have to be in this tree.  The default `syspath` is
-`/usr/local/lib/wattle`, so `import` needs that name mapped — `--dir
-<host-dir>::/usr/local/lib/wattle` — or `WATTLE_PATH` set to a directory that is:
+everything it reads have to be in this tree.  A plain build has no default
+`syspath`, so `import` of an installed module needs `WATTLE_PATH` set to a root
+whose `lib/wattle` directory is mapped in, here `./lib/wattle`:
 
 ```sh
-wasmtime run --dir . --env WATTLE_PATH=./lib zig-out/bin/wattle.wasm script.wattle
+wasmtime run --dir . --env WATTLE_PATH=. zig-out/bin/wattle.wasm script.wattle
 ```
 
 `zig build examples/web` builds `examples/web/`, Wattle in a web page: the runtime as a

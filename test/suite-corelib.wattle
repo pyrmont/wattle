@@ -138,7 +138,7 @@
 ; module/expand-path regression
 (with-dyns [:syspath ".janet/.janet"]
   (assert (= (string (module/expand-path "hello" ":sys:/:all:.janet"))
-             ".janet/.janet/hello.janet") "module/expand-path 1"))
+             ".janet/.janet/lib/wattle/hello.janet") "module/expand-path 1"))
 
 ; int?
 (assert (int? 1) "int? 1")
@@ -209,7 +209,7 @@
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":name:")) "baz.j") "expand-path :name:")
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":native:"))
            (if (= :windows (os/which)) ".dll" ".so")) "expand-path :native:")
-(assert (= (string (with-dyns [:syspath "/sys"] (module/expand-path "x" ":sys:"))) "/sys")
+(assert (= (string (with-dyns [:syspath "/sys"] (module/expand-path "x" ":sys:"))) "/sys/lib/wattle")
         "expand-path :sys:")
 (assert (= (string (with-dyns [:current-file "x/y/z.janet"] (module/expand-path "q" ":cur:"))) "x/y")
         "expand-path :cur:")

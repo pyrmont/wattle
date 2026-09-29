@@ -2817,15 +2817,6 @@
 (defdyn *syspath*
   "Path of directory to load system modules from.")
 
-(defdyn *wattle-src*
-  "Path of the directory holding the Wattle package, the one that contains build.zig.zon.")
-
-; Initialize syspath and the package directory
-(each [k v] (partition 2 (tuple/slice boot/args 2))
-  (case k
-    "WATTLE_PATH" (setdyn *syspath* v)
-    "WATTLE_SRC" (setdyn *wattle-src* v)))
-
 (defn make-env
   """
   Creates a new environment table. The new environment
@@ -3296,8 +3287,8 @@
 ; Don't expose this externally yet - could break if custom module/paths is setup.
 (defn module/add-syspath
   """
-  Adds a custom syspath to ^module/paths by duplicating all entries that being with `:sys:` and
-  adding duplicates with a specific path prefix instead.
+  Adds a custom syspath to ^module/paths by duplicating all entries that begin with `:sys:` and
+  adding duplicates with the lib/wattle directory of path as the prefix instead.
   """
   [path]
   (def copies ![])
@@ -3307,7 +3298,7 @@
     (def pattern (first entry))
     (when (and (string? pattern) (string/has-prefix? ":sys:/" pattern))
       (set last-index index)
-      (array/push! copies [(string/replace ":sys:" path pattern) |(slice entry 1)])))
+      (array/push! copies [(string/replace ":sys:" (string path "/lib/wattle") pattern) |(slice entry 1)])))
   (array/insert! mp (+ 1 last-index) |copies)
   mp)
 
@@ -3368,8 +3359,8 @@
           (when-let [res (p path)]
             (set ret [res mod-kind])
             (if find-all (array/push! all-matches ret) (break)))
-          (do
-            (def fullpath (string (module/expand-path path p)))
+          (when-let [expanded (module/expand-path path p)]
+            (def fullpath (string expanded))
             (when (fexists fullpath)
               (set ret [fullpath mod-kind])
               (if find-all (array/push! all-matches ret) (break)))))))
@@ -4877,16 +4868,38 @@
     [path]
     (os/realpath path))
 
+  (defn- twig-root
+    """
+    Returns the system path, the root that the library, program and manual
+    directories derive from.
+    """
+    []
+    (wattle/libpath) ; raises if there is no system path or it is empty
+    (dyn *syspath*))
+
+  (defn- twig-mkdirs
+    "Creates the directory at path and any of its parents that are missing."
+    [path]
+    (def s (sep))
+    (var so-far (if (string/has-prefix? s path) s ""))
+    (each part (string/split s path)
+      (unless (empty? part)
+        (set so-far (if (or (empty? so-far) (= so-far s))
+                      (string so-far part)
+                      (string so-far s part)))
+        (protect (os/mkdir so-far))))
+    (assertf (= :directory (os/stat path :mode)) "cannot create directory %s" path))
+
   (defn- twig-dir
     ([] (twig-dir nil))
     ([twig-name]
       (def s (sep))
-      (string (twig-rpath (dyn *syspath*)) s "twig" (if twig-name s) twig-name)))
+      (string (wattle/libpath) s "twig" (if twig-name s) twig-name)))
 
   (defn- twig-file
     [twig-name filename]
     (def s (sep))
-    (string (twig-rpath (dyn *syspath*)) s "twig" s twig-name s filename))
+    (string (wattle/libpath) s "twig" s twig-name s filename))
 
   (defn- get-manifest-filename
     [twig-name]
@@ -4895,9 +4908,7 @@
   (defn- prime-twig-paths
     []
     (def s (sep))
-    (def path (twig-dir))
-    (os/mkdir path)
-    (assert (os/stat path :mode)))
+    (twig-mkdirs (twig-dir)))
 
   (defn- get-files [manifest]
     (def files (get manifest :files ![]))
@@ -4969,7 +4980,7 @@
     (def manifest (twig/manifest twig-name))
     (def dir (os/cwd))
     (def workdir (get manifest :local-source "."))
-    (def fixed-syspath (twig-rpath (dyn *syspath*)))
+    (def fixed-syspath (twig-rpath (twig-root)))
     (try
       (os/cd workdir)
       ([_] (print "cannot enter source directory " workdir " for package " twig-name)))
@@ -4984,9 +4995,9 @@
       (with-env new-env
         (put! new-env :twig-dir (twig-dir twig-name)) ; get the syspath right
         (try
-          (require (string "@syspath/twig/" twig-name))
+          (require (string "@syspath/lib/wattle/twig/" twig-name))
           ([e f]
-            (def pfx "could not find module @syspath/twig/")
+            (def pfx "could not find module @syspath/lib/wattle/twig/")
             (def msg (if (and (string? e)
                               (string/has-prefix? pfx e))
                        "package must contain twig.wattle or twig/init.wattle"
@@ -5175,11 +5186,9 @@
     (when (or (get man :has-exe)
               ; remove eventually
               (get man :has-bin-script))
-      (def binpath (string (dyn *syspath*) s "bin"))
-      (eprintf "executable files have been installed to %s" binpath))
+      (eprintf "executable files have been installed to %s" (wattle/binpath)))
     (when (get man :has-man)
-      (def manpath (string (dyn *syspath*) s "man"))
-      (eprintf "man pages have been installed to %s" manpath))
+      (eprintf "man pages have been installed to %s" (wattle/manpath)))
     twig-name)
 
   (defn- twig/pack
@@ -5200,17 +5209,35 @@
       (def install-hook (string dest-dir s "twig" s "init.wattle"))
       (edefer (rmrf dest-dir) ; don't leave garbage on failure
         (def install-source ![])
-        (def syspath (twig-rpath (dyn *syspath*)))
+        (defn real-or-plain [path] (if (os/stat path :mode) (twig-rpath path) path))
+        (def libpath (real-or-plain (wattle/libpath)))
+        (def binpath (real-or-plain (wattle/binpath)))
+        (def manpath (real-or-plain (wattle/manpath)))
+        (defn relative-to
+          "Returns file relative to dir, or nil if file is not inside dir."
+          [dir file]
+          (when (string/has-prefix? (string dir s) file)
+            (string/triml (slice file (length dir) -1) s)))
         (when is-backup (copyrf (twig-dir twig-name) (string dest-dir s "old-twig")))
         (each file files
           (def {mode :mode perm :permissions} (os/stat file))
-          (def relpath (string/triml (slice file (length syspath) -1) s))
+          (def lib-rel (relative-to libpath file))
+          (def bin-rel (relative-to binpath file))
+          (def man-rel (relative-to manpath file))
           (case mode
-            :directory (array/push! install-source `(twig/add-directory manifest ~relpath ~perm))
+            :directory (if lib-rel
+                         (array/push! install-source `(twig/add-directory manifest ~lib-rel ~perm))
+                         (errorf "unexpected directory %v" file))
             :file (do
                     (def filename (string/format "file_%06d" (++ i)))
                     (copyfile file (string dest-dir s filename))
-                    (array/push! install-source `(twig/add-file manifest ~filename ~relpath ~perm)))
+                    (array/push! install-source
+                                 (cond
+                                   lib-rel `(twig/add-file manifest ~filename ~lib-rel ~perm)
+                                   bin-rel `(twig/add-bin manifest ~filename ~bin-rel ~perm)
+                                   man-rel (let [parts (string/split s man-rel)]
+                                             `(twig/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
+                                   (errorf "unexpected file %v" file))))
             (errorf "unexpected file %v" file)))
         (def b !"(defn install [manifest]")
         (each form install-source (buffer/format! b "\n  %w" form))
@@ -5229,7 +5256,7 @@
     (def config (get manifest :config !{}))
     (def s (sep))
     (assertf (= :directory (os/stat path :mode)) "local source %v not available" path)
-    (def backup-dir (string (dyn *syspath*) s twig-name ".backup"))
+    (def backup-dir (string (wattle/libpath) s twig-name ".backup"))
     (rmrf backup-dir)
     (def backup-twig-source (twig/pack twig-name backup-dir true))
     (edefer (do
@@ -5250,12 +5277,12 @@
     twig-name)
 
   (defn twig/add-directory
-    "Adds a directory during an install relative to `(dyn *syspath*)`."
+    "Adds a directory during an install relative to the lib/wattle directory of `(dyn *syspath*)`."
     ([manifest dest] (twig/add-directory manifest dest nil))
     ([manifest dest chmod-mode]
       (def files (get-files manifest))
       (def s (sep))
-      (def absdest (string (dyn *syspath*) s dest))
+      (def absdest (string (wattle/libpath) s dest))
       (unless (os/mkdir absdest)
         (errorf "collision at %s, directory already exists" absdest))
       (def absdest (os/realpath absdest))
@@ -5278,27 +5305,31 @@
         (break)))
     ret)
 
+  (defn- twig-add-file-to
+    [manifest base src dest chmod-mode]
+    (def files (get-files manifest))
+    (def s (sep))
+    (def absdest (string base s dest))
+    (when (os/stat absdest :mode)
+      (errorf "collision at %s, file already exists" absdest))
+    (copyfile src absdest)
+    (def absdest (os/realpath absdest))
+    (array/push! files absdest)
+    (when chmod-mode
+      (os/chmod absdest chmod-mode))
+    (print "add " absdest)
+    absdest)
+
   (defn twig/add-file
-    "Adds a file during an install relative to `(dyn *syspath*)`."
+    "Adds a file during an install relative to the lib/wattle directory of `(dyn *syspath*)`."
     ([manifest src] (twig/add-file manifest src src nil))
     ([manifest src dest] (twig/add-file manifest src dest nil))
     ([manifest src dest chmod-mode]
-      (def files (get-files manifest))
-      (def s (sep))
-      (def absdest (string (dyn *syspath*) s dest))
-      (when (os/stat absdest :mode)
-        (errorf "collision at %s, file already exists" absdest))
-      (copyfile src absdest)
-      (def absdest (os/realpath absdest))
-      (array/push! files absdest)
-      (when chmod-mode
-        (os/chmod absdest chmod-mode))
-      (print "add " absdest)
-      absdest))
+      (twig-add-file-to manifest (wattle/libpath) src dest chmod-mode)))
 
   (defn twig/add
     """
-    Adds a file or directory during an install relative to `(dyn *syspath*)`.
+    Adds a file or directory during an install relative to the lib/wattle directory of `(dyn *syspath*)`.
     Added files and directories will be recorded in the package manifest such
     that they are properly tracked and removed during an upgrade or uninstall.
     """
@@ -5324,25 +5355,26 @@
     ([manifest src] (twig/add-bin manifest src (last (string/split (sep) src)) 8r755))
     ([manifest src filename] (twig/add-bin manifest src filename 8r755))
     ([manifest src filename chmod-mode]
-      (def s (sep))
-      (os/mkdir (string (dyn *syspath*) s "bin"))
+      (twig-mkdirs (wattle/binpath))
       (put! manifest :has-exe true)
       (put! manifest :has-bin-script true) ; remove eventually
-      (twig/add-file manifest src (string "bin" s filename) chmod-mode)))
+      (twig-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
 
   (defn twig/add-manpage
     """
-    Adds a file to the man subdirectory of the current syspath. Files are
-    copied inside a directory mansec. By default, mansec is "man1".
+    Adds a file to the share/man subdirectory of the current syspath. Files are
+    copied inside a directory mansec, under the name filename. By default,
+    mansec is "man1" and filename is the name of src.
     """
     ([manifest src] (twig/add-manpage manifest src "man1"))
     ([manifest src mansec]
-      (def s (sep))
-      (def filename (last (string/split s src)))
-      (os/mkdir (string (dyn *syspath*) s "man"))
-      (os/mkdir (string (dyn *syspath*) s "man" s mansec))
+      (twig/add-manpage manifest src mansec (last (string/split (sep) src))))
+    ([manifest src mansec filename] (twig/add-manpage manifest src mansec filename nil))
+    ([manifest src mansec filename chmod-mode]
+      (def dir (string (wattle/manpath) (sep) mansec))
+      (twig-mkdirs dir)
       (put! manifest :has-man true)
-      (twig/add-file manifest src (string "man" s mansec s filename))))
+      (twig-add-file-to manifest dir src filename chmod-mode)))
 
   (defn twig/update-all
     "Reinstalls all packages."
@@ -5626,7 +5658,7 @@
     "--no-color" {:kind :flag :short "C"
                   :help "Disable ANSI color output."}
     "--syspath" {:kind :single :short "s" :proxy "path"
-                 :help "Set the system path for loading global modules."}
+                 :help "Set the system path, the root that lib/wattle, bin and share/man derive from."}
     "--version" {:kind :flag :short "v"
                  :help "Print the version string and exit."}
     "--help" {:kind :help :short "h"
@@ -5731,6 +5763,14 @@
   (defn unsupported [name]
     (eprint "twig " name " is not supported with reduced os")
     (os/exit 1))
+  (compwhen (dyn 'twig/list)
+    (def root (dyn *syspath*))
+    (when (nil? root)
+      (eprint "this program has no system path, so twig cannot run")
+      (os/exit 1))
+    (when (empty? root)
+      (eprint "the system path is not set: set WATTLE_PATH or pass --syspath")
+      (os/exit 1)))
   (case (get verb :cmd)
     "install" (compif (dyn 'twig/install)
                 (twig/install (get params :directory))

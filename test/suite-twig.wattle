@@ -95,6 +95,13 @@
 (import mymod)
 (assert (= 288 (mymod/myfn 12)) "using sample-twig")
 
+; The system path is a root: modules go to lib/wattle under it.
+(def root (twig-rpath syspath))
+(assert (os/stat (string root "/lib/wattle/mymod.wattle" ) :mode)
+        "a module is installed under lib/wattle")
+(assert (nil? (os/stat (string root "/mymod.wattle") :mode))
+        "a module is not installed in the root")
+
 ; Manual uninstall of dep1 and dep2 shouldn't work either since that would break dependencies
 (assert-error "cannot uninstall sample-dep1, breaks dependent packages @[\"sample-twig\"]"
               (twig/uninstall "sample-dep1"))
@@ -125,6 +132,36 @@
 ; Now check package listing is again empty
 (assert (= 0 (length (twig/list))) "packages are listed correctly 7")
 (assert (= 0 (length (twig/topolist))) "packages are listed correctly 8")
+
+; Programs and man pages go to bin and share/man under the root, and modules
+; to lib/wattle. Reinstalling goes through twig/pack, which recreates each kind.
+(def hello (string root "/bin/hello"))
+(def hello-man (string root "/share/man/man1/hello.1"))
+(def bin-mod (string root "/lib/wattle/bin-mod.wattle"))
+(assert-no-error "sample-twig-bin install"
+                 (with-dyns [*err* !""] (twig/install "./examples/sample-twig-bin")))
+(assert (os/stat hello :mode) "a program is installed under bin")
+(assert (os/stat hello-man :mode) "a man page is installed under share/man")
+(assert (os/stat bin-mod :mode) "a module of the same package is under lib/wattle")
+(unless (= :windows (os/which))
+  (assert (string/has-prefix? "rwx" (os/stat hello :permissions))
+          "a program is executable"))
+(assert (= "sample-twig-bin" (twig/whois hello)) "twig/whois finds a program")
+(assert-no-error "sample-twig-bin reinstall"
+                 (with-dyns [*err* !""] (twig/reinstall "sample-twig-bin")))
+(assert (and (os/stat hello :mode) (os/stat hello-man :mode) (os/stat bin-mod :mode))
+        "reinstalling recreates programs, man pages and modules")
+(assert-no-error "sample-twig-bin uninstall" (twig/uninstall "sample-twig-bin"))
+(assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode))
+             (nil? (os/stat bin-mod :mode)))
+        "uninstalling removes programs, man pages and modules")
+
+; With no usable system path the twig functions raise.
+(with-dyns [*syspath* ""]
+  (def [ok message] (protect (twig/list)))
+  (assert (not ok) "twig/list raises with an empty system path")
+  (assert (and (string? message) (string/find "WATTLE_PATH" message))
+          "the error names WATTLE_PATH"))
 
 ; Try installing a package that is missing package script
 (assert-error-value "package missing package script"

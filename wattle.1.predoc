@@ -67,8 +67,9 @@ Options
   highlight the source typed at the REPL.
 
 - **-s**, **--syspath** _path_:
-  Set ``*syspath*``, the directory system modules are loaded from, to _path_.
-  This replaces the value taken from `WATTLE_PATH`.
+  Set ``*syspath*``, the root directory that ``lib/wattle``, ``bin`` and
+  ``share/man`` derive from, to _path_. System modules are loaded from
+  ``lib/wattle`` under it. This replaces the value taken from `WATTLE_PATH`.
 
 - **-v**, **--version**:
   Print the version of Wattle and exit.
@@ -169,7 +170,8 @@ twig
 
 **wattle** [**-s** _path_] **twig** _verb_ [_argument_]
 
-Manage the packages installed under ``*syspath*``. A build made without the
+Manage the packages installed under ``*syspath*``. Modules are installed in
+``lib/wattle``, programs in ``bin`` and man pages in ``share/man`` under it. A build made without the
 OS library does not include **twig**, and each verb exits with status 1 after
 saying so.
 
@@ -215,9 +217,13 @@ ENVIRONMENT
 ===========
 
 - `WATTLE_PATH`:
-  A list of directories to load system modules from, separated by ``:``, or by
-  ``;`` on Windows. The last directory becomes ``*syspath*`` and is searched
-  first. If unset, ``*syspath*`` is `/usr/local/lib/wattle`.
+  A list of root directories, separated by ``:``, or by ``;`` on Windows. System
+  modules are loaded from ``lib/wattle`` under each. The last directory becomes
+  ``*syspath*`` and is searched first. If unset, ``*syspath*`` is the value the
+  build was made with: a path, none, or nothing yet. A build with none loads no
+  system modules. A build with nothing yet, which is the default, raises an
+  error that names `WATTLE_PATH` at the first system module lookup or **twig**
+  command.
 
 - `WATTLE_HISTFILE`:
   A file to keep the REPL's history in. Each form submitted at the REPL on a

@@ -358,6 +358,23 @@ produce a silent offset mismatch.
 gates on as `options.<name>`. Both come from a single expression per fact, so a
 file cannot be compiled under `Config` and left out of `Selection`.
 
+`-Dsyspath` sets the built-in value of `*syspath*`, the root that three
+directories derive from: `<syspath>/lib/wattle` for modules, `<syspath>/bin`
+for programs and `<syspath>/share/man` for man pages. A path is used as given.
+`none` builds a runtime with no system path, which skips every `:sys:` module
+pattern and makes the twig commands raise. `required`, the default, sets the
+empty string, and the first `:sys:` lookup or twig command raises an error that
+names `WATTLE_PATH` and `--syspath`. `WATTLE_PATH` and `--syspath` replace the
+built-in value. `wattle/libpath`, `wattle/binpath`, `wattle/manpath` and
+`wattle/srcpath` are functions of no arguments that return the four derived
+directories, `<syspath>/lib/wattle`, `<syspath>/bin`, `<syspath>/share/man` and
+`<syspath>/share/wattle`, and raise where the syspath is nil or empty. They are
+functions and not values because `*syspath*` changes while a program runs, and
+`:sys:` expansion uses the same helper. `runtime/env.zig` puts it in the core environment when it
+unmarshals the image, so the image holds no path and does not depend on the
+option. A binding cannot set nil, because a nil in a fiber's environment falls
+through to the root environment, so only a build made with `none` has it.
+
 A comptime-false branch is never analysed. `if (has_ev) ev.x()` is therefore
 safe in a build with no event loop, and a branch the host does not select gets
 no type checking at all. A change to a platform branch is unchecked until
