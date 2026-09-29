@@ -1642,13 +1642,12 @@ fn quickbinExecutable(
     table.appendSlice(gpa, "};\n") catch @panic("OOM");
 
     // `-l` rather than `-e`, because a generated path is a file argument and
-    // cannot be spliced into an expression; flags run in order, so the
-    // natives are added before `-c` compiles the program.
+    // cannot be spliced into an expression; `build img` imports the library
+    // before it compiles the program, so the natives are added first.
     const make_image = hb.addRunArtifact(host_side.client);
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
-    make_image.addArg("-l");
+    make_image.addArgs(&.{ "build", "img", "-l" });
     make_image.addFileArg(preload_files.add("preload.wattle", preload.items));
-    make_image.addArg("-c");
     make_image.addFileArg(opts.source);
     const image = make_image.addOutputFileArg(b.fmt("{s}.jimage", .{opts.name}));
 
@@ -1942,10 +1941,32 @@ fn addCliChecks(
         evals.expectStdOutEqual("12");
         test_step.dependOn(&evals.step);
 
-        const expression = b.addRunArtifact(client);
-        expression.addArgs(&.{ "-E", "(prin $0 $1)", "a", "b" });
-        expression.expectStdOutEqual("ab");
-        test_step.dependOn(&expression.step);
+        const run_sub = b.addRunArtifact(client);
+        run_sub.addArgs(&.{ "run", "-e", "(prin 3)" });
+        run_sub.expectStdOutEqual("3");
+        test_step.dependOn(&run_sub.step);
+
+        const version_flag = b.addRunArtifact(client);
+        version_flag.addArg("--version");
+        version_flag.expectStdOutEqual(version_string ++ "\n");
+        test_step.dependOn(&version_flag.step);
+
+        const check_ok = b.addRunArtifact(client);
+        check_ok.setCwd(b.path("."));
+        check_ok.addArgs(&.{ "check", "test/zig-cli-input.wattle" });
+        check_ok.expectStdOutEqual("");
+        test_step.dependOn(&check_ok.step);
+
+        const build_missing = b.addRunArtifact(client);
+        build_missing.addArgs(&.{ "build", "img" });
+        build_missing.expectExitCode(1);
+        build_missing.expectStdErrMatch("source is required");
+        test_step.dependOn(&build_missing.step);
+
+        const help_nested = b.addRunArtifact(client);
+        help_nested.addArgs(&.{ "help", "build", "img" });
+        help_nested.expectStdOutMatch("Compile a source file into an image.");
+        test_step.dependOn(&help_nested.step);
 
         const unknown = b.addRunArtifact(client);
         unknown.addArg("--nope");

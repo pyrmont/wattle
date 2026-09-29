@@ -209,7 +209,7 @@
             (array/push! lines line)))
         (array/push! lines "")))))
 
-(defn- usage [command config]
+(defn- usage [command config root]
   (def info (get config :info {}))
   (def hr (get info :hr default-hr))
   (def pad-inset (get info :pad-inset default-pad-inset))
@@ -249,10 +249,11 @@
       (array/push! lines
         (wrap-line example (- cols pad-right)
                    (+ 8 (length command))))))
-  (when (get info :about)
+  (def about (or (get info :about) (get config :help)))
+  (when about
     (array/push! lines "")
     (array/push! lines
-      (wrap-line (get info :about) (- cols pad-right) 0)))
+      (wrap-line about (- cols pad-right) 0)))
   (def parameter-rows ![])
   (def option-rows ![])
   (def sub-rows ![])
@@ -304,7 +305,11 @@
     (array/push! lines "")
     (array/push! lines
       (string "For more information on each subcommand, type '"
-              command " help <subcommand>'.")))
+              root " help "
+              (if (= command root)
+                ""
+                (string (string/slice command (+ (length root) 1)) " "))
+              "<subcommand>'.")))
   (when (get info :rider)
     (array/push! lines "")
     (array/push! lines
@@ -398,26 +403,7 @@
       (set found [name sub])))
   found)
 
-(defn parse-args [command config argv]
-  """
-  Parses argv with Argy-Bargy rules. The argv vector excludes the script name.
-  The config map accepts alternating name/rule entries in :rules and optional
-  subcommand entries in :subs. Option rules use :flag, :count, :single,
-  :multi, or :help as :kind; parameters use keyword names. Rules may set
-  :short, :value, :default, :help, :hide?, :proxy, :req?, :splat?, or :rest?.
-  Setting :validate? to false in the config skips the check of the rules
-  and subcommands, which a caller with a fixed config can do once itself.
-  A parameter with :rest? is a splat that must come last. It captures its
-  first token and every token after it as given, options included, and
-  parsing of options stops there.
-  A config with :subs may set :implicit to the name of one of them. Where
-  the parser would otherwise stop with an unrecognized subcommand or option,
-  or with no subcommand, it enters that subcommand instead, with the tokens
-  from that point as its arguments. Options the config itself declares are
-  read first. A subcommand with :subs is parsed in the same way as the root,
-  and `help` followed by subcommand names describes the last name given.
-  Returns :cmd, :opts, :params or :sub, :err, and :help.
-  """
+(defn- parse-with-root [command config argv root]
   (def info (get config :info {}))
   (def hr (get info :hr default-hr))
   (def rules (rule-pairs (get config :rules []) hr))
@@ -451,7 +437,7 @@
   (defn enter! [name sub sub-args]
     (if (or (get sub :rules) (get sub :subs))
       (do
-        (def child (parse-args (string command " " name) sub sub-args))
+        (def child (parse-with-root (string command " " name) sub sub-args root))
         (put! child :cmd name)
         (put! result :sub child)
         (put! result :err (get child :err))
@@ -498,7 +484,7 @@
             (set i next-i))
           (apply-option result rules name false value)
           (when (and found (= :help (get rule :kind)))
-            (put! result :help (usage command config))
+            (put! result :help (usage command config root))
             (set done? true)))
       (and implicit-sub (string/has-prefix? "-" arg) (not (= arg "-"))
            (not (lookup-option rules (string/slice arg 1 2) true)))
@@ -532,7 +518,7 @@
               (do
                 (apply-option result rules char true nil)
                 (when (and found (= :help (get rule :kind)))
-                  (put! result :help (usage command config))
+                  (put! result :help (usage command config root))
                   (set done? true))
                 (++ p)))))
       (> (length subs) 0)
@@ -564,7 +550,7 @@
                 (put! (get result :opts) "help" true)
                 (put! result :sub {:cmd name :path steps})
                 (when (empty? (get result :err))
-                  (put! result :help (usage target-cmd target)))
+                  (put! result :help (usage target-cmd target root)))
                 (set done? true))
             found
               (do
@@ -603,3 +589,28 @@
       (string command ": " (get result :err) "\n"
               "Try '" command " --help' for more information.\n")))
   result)
+
+(defn parse-args
+  """
+  Parses argv with Argy-Bargy rules. The argv vector excludes the script name.
+  The config map accepts alternating name/rule entries in :rules and optional
+  subcommand entries in :subs. Option rules use :flag, :count, :single,
+  :multi, or :help as :kind; parameters use keyword names. Rules may set
+  :short, :value, :default, :help, :hide?, :proxy, :req?, :splat?, or :rest?.
+  Setting :validate? to false in the config skips the check of the rules
+  and subcommands, which a caller with a fixed config can do once itself.
+  A parameter with :rest? is a splat that must come last. It captures its
+  first token and every token after it as given, options included, and
+  parsing of options stops there.
+  A subcommand's :help also describes it in its own usage text, unless its
+  :info sets :about.
+  A config with :subs may set :implicit to the name of one of them. Where
+  the parser would otherwise stop with an unrecognized subcommand or option,
+  or with no subcommand, it enters that subcommand instead, with the tokens
+  from that point as its arguments. Options the config itself declares are
+  read first. A subcommand with :subs is parsed in the same way as the root,
+  and `help` followed by subcommand names describes the last name given.
+  Returns :cmd, :opts, :params or :sub, :err, and :help.
+  """
+  [command config argv]
+  (parse-with-root command config argv command))

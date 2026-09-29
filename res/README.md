@@ -136,7 +136,7 @@ on every target but wasm and Windows. It runs a command behind a pseudo-terminal
 the bytes the command wrote, or with `-s` the screen those bytes draw:
 
 ```sh
-zig-out/test/wattle-pty -s -w 'repl:1:> ' -i '(+ 1 2)\r' -- zig-out/bin/wattle -q -n -R
+zig-out/test/wattle-pty -s -w 'repl:1:> ' -i '(+ 1 2)\r' -- zig-out/bin/wattle -q -C
 ```
 
 Input waits for text in the output, with `-w` and with `\m{text}` inside the

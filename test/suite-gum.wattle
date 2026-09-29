@@ -222,6 +222,7 @@
   (def via-help (args/parse-args "sample" implicit-config ["help" "build" "img"]))
   (is (string/find "Usage: sample build img" (get via-help :help)))
   (def mid-help (args/parse-args "sample" implicit-config ["help" "build"]))
+  (is (string/find "type 'sample help build <subcommand>'" (get mid-help :help)))
   (is (string/find "Usage: sample build <subcommand>" (get mid-help :help)))
   (def bad-help (args/parse-args "sample" implicit-config ["help" "build" "zip"]))
   (is (string/find "unrecognized subcommand 'zip'" (get bad-help :err))))

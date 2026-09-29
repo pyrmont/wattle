@@ -41,13 +41,13 @@
 
 ; Without a terminal the plain reader runs: the prompt is written to standard
 ; error and nothing is redrawn.
-(let [[out err] (run [(dyn *executable*) "-q" "-n" "-R"] "(+ 1 2)\n")]
+(let [[out err] (run [(dyn *executable*) "-q" "-C"] "(+ 1 2)\n")]
   (assert (= (string "3" line-end) out) "the plain reader evaluates a line from a pipe")
   (assert (= "repl:1:> repl:2:> " err) "the plain reader writes each prompt once"))
 
 ; The plain reader returns one line, so a form of two lines is read by two
 ; calls, and the second prompt shows the open delimiter.
-(let [[out err] (run [(dyn *executable*) "-q" "-n" "-R"] "(+ 1\n2)\n")]
+(let [[out err] (run [(dyn *executable*) "-q" "-C"] "(+ 1\n2)\n")]
   (assert (= (string "3" line-end) out) "the plain reader evaluates a form of two lines")
   (assert (= "repl:1:> repl:2:(> repl:3:> " err)
           "the plain reader shows the open delimiter in the prompt"))
@@ -78,7 +78,7 @@
                "-c" (string (or cols 100)) "-r" (string (or rows 30))
                |(if screen ["-s"] []) |(if cursor ["-k"] [])
                |(if exit ["-x" "-t" "3000"] [])
-               "--" (dyn *executable*) "-q" (if color "-N" "-n") "-R" |(or args [])])
+               "--" (dyn *executable*) "-q" (if color "-c" "-C") |(or args [])])
     (def [out err] (run argv nil env))
     (assert (= "" err) (string "the harness reports nothing: " err))
     out)
