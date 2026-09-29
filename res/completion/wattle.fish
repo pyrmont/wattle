@@ -19,7 +19,7 @@ complete -c wattle -n __fish_use_subcommand -s m -l syspath -r -d 'Set the syste
 complete -c wattle -n __fish_use_subcommand -a run -d 'Run a script, evaluate code or start the REPL'
 complete -c wattle -n __fish_use_subcommand -a check -d 'Compile a script without running it'
 complete -c wattle -n __fish_use_subcommand -a build -d 'Build an artifact from source'
-complete -c wattle -n __fish_use_subcommand -a twig -d 'Manage installed bundles'
+complete -c wattle -n __fish_use_subcommand -a twig -d 'Manage installed packages'
 complete -c wattle -n __fish_use_subcommand -a help -d 'Describe a subcommand'
 
 # run
@@ -49,12 +49,12 @@ complete -c wattle -n '__fish_seen_subcommand_from img' -s h -l help -d 'Show us
 complete -c wattle -n '__fish_seen_subcommand_from img' -F
 
 # twig
-complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a install -d 'Install a bundle from a directory'
-complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a reinstall -d 'Reinstall a bundle by name'
-complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a uninstall -d 'Uninstall a bundle by name'
-complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a update -d 'Reinstall all installed bundles'
-complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a clean -d 'Uninstall all orphaned bundles'
-complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a list -d 'List all installed bundles'
+complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a install -d 'Install a package from a directory'
+complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a reinstall -d 'Reinstall a package by name'
+complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a uninstall -d 'Uninstall a package by name'
+complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a update -d 'Reinstall all installed packages'
+complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a clean -d 'Uninstall all orphaned packages'
+complete -c wattle -n "__fish_seen_subcommand_from twig; and not __fish_seen_subcommand_from $twig_verbs" -a list -d 'List all installed packages'
 complete -c wattle -n '__fish_seen_subcommand_from install' -a '(__fish_complete_directories)'
 complete -c wattle -n '__fish_seen_subcommand_from reinstall uninstall' -a '(wattle twig list 2>/dev/null)'
 

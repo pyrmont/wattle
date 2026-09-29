@@ -1,4 +1,4 @@
 {
-  :name "sample-bundle-aliases"
+  :name "sample-twig"
   :dependencies ["sample-dep1" "sample-dep2"]
 }

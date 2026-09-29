@@ -297,7 +297,7 @@
 # Phase 10 Part 16 traced a wedged matrix to this and found three shared
 # fixtures, not one: `suite-ev.wattle` binds a fixed port 8761,
 # `suite-net.wattle` binds a fixed `/tmp/wattle-suite-net.sock`, and
-# `suite-ev.wattle` and `suite-bundle.wattle` create `unique.txt` and
+# `suite-ev.wattle` and `suite-twig.wattle` create `unique.txt` and
 # `tempdir123` **in the repository working directory**, which every concurrent
 # entry shares. Two overlapping `full` entries therefore cross-connect: usually
 # one of them fails in `net/read`, and occasionally one parks in `kevent` and

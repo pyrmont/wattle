@@ -497,7 +497,7 @@ and runs a file one top-level form at a time.
 only `os/exit`, `os/which`, `os/arch` and `os/compiler`, which breaks
 `test/helper.wattle` itself, so every suite fails before reaching its own code.
 Guarding it would mean skipping `suite-os` entirely along with much of
-`suite-ev` and `suite-bundle`, and the run would pass while testing much less
+`suite-ev` and `suite-twig`, and the run would pass while testing much less
 than it appears to. Revisit it only with a plan for what the suites should
 still assert.
 

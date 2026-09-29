@@ -19,7 +19,7 @@
 //! has to parse back to the value it was given. The printer's tables are not
 //! the parser's, so the two sides are still independently derived, which is
 //! what a contract owes. It is also the property the swap made load-bearing --
-//! `bundle` writes its manifest with `%m` and reads it back with `parse`.
+//! `twig/install` writes its manifest with `%m` and reads it back with `parse`.
 //!
 //! What no round trip can reach is what has no printed form: the refusals,
 //! the adjacency rule, the delimiter messages and the shebang. Those are

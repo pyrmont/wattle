@@ -1,0 +1,3 @@
+(defn install
+  [manifest &]
+  (twig/add-file manifest "aliases-mod.wattle"))

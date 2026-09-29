@@ -35,7 +35,7 @@ _wattle() {
         'run:Run a script, evaluate code or start the REPL'
         'check:Compile a script without running it'
         'build:Build an artifact from source'
-        'twig:Manage installed bundles'
+        'twig:Manage installed packages'
         'help:Describe a subcommand'
     )
 
@@ -88,19 +88,19 @@ _wattle() {
                 twig)
                     if (( CURRENT == 2 )); then
                         _values 'verb' \
-                            'install[Install a bundle from a directory]' \
-                            'reinstall[Reinstall a bundle by name]' \
-                            'uninstall[Uninstall a bundle by name]' \
-                            'update[Reinstall all installed bundles]' \
-                            'clean[Uninstall all orphaned bundles]' \
-                            'list[List all installed bundles]' && ret=0
+                            'install[Install a package from a directory]' \
+                            'reinstall[Reinstall a package by name]' \
+                            'uninstall[Uninstall a package by name]' \
+                            'update[Reinstall all installed packages]' \
+                            'clean[Uninstall all orphaned packages]' \
+                            'list[List all installed packages]' && ret=0
                     else
                         case $line[2] in
                             install) _directories && ret=0 ;;
                             reinstall|uninstall)
-                                local -a bundles
-                                bundles=(${(f)"$(${words[1]} twig list 2>/dev/null)"})
-                                _describe -t bundles 'bundle' bundles && ret=0
+                                local -a packages
+                                packages=(${(f)"$(${words[1]} twig list 2>/dev/null)"})
+                                _describe -t packages 'package' packages && ret=0
                                 ;;
                         esac
                     fi

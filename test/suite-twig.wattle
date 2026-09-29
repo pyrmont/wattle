@@ -1,0 +1,145 @@
+; Copyright (c) 2026 Calvin Rose
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to
+; deal in the Software without restriction, including without limitation the
+; rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+; sell copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+; FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+; IN THE SOFTWARE.
+
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+(assert true) ; smoke test
+
+; This suite's setup resolves a real path and seeds from the system CSPRNG.
+; Both functions still exist without JANET_REALPATH and JANET_CRYPTORAND, and
+; only raise when called, so these are runtime checks rather than compwhen on
+; the bindings.
+(unless (and (first (protect (os/realpath ".")))
+             (first (protect (os/cryptorand 1))))
+  (end-suite)
+  (os/exit 0))
+
+; Testing here is stateful since we are manipulating the filesystem.
+
+; Copy since not exposed in boot.wattle
+(defn- twig-rpath
+  [path]
+  (string/replace-all "\\" "/" (os/realpath path)))
+
+; Test mkdir -> rmdir
+(assert (os/mkdir "tempdir123"))
+(rmrf "tempdir123")
+
+; Setup a temporary syspath for manipultation
+(math/seedrandom (os/cryptorand 16))
+(def syspath (randdir))
+(rmrf syspath)
+(assert (os/mkdir syspath))
+(put! root-env *syspath* (twig-rpath syspath))
+(unless (os/getenv "VERBOSE")
+  (setdyn *out* !""))
+(assert (empty? (twig/list)) "initial twig/list")
+(assert (empty? (twig/topolist)) "initial twig/topolist")
+
+; Try (and fail) to install sample-twig (missing deps)
+(assert-error "missing dependencies sample-dep1, sample-dep2"
+              (twig/install "./examples/sample-twig"))
+(assert (empty? (twig/list)))
+
+; Install deps (dep1 as :auto-remove)
+(assert-no-error "sample-dep2"
+                 (twig/install "./examples/sample-dep2"))
+(assert (= 1 (length (twig/list))))
+(assert-no-error "sample-dep1" (twig/install "./examples/sample-dep1"))
+(assert (= 2 (length (twig/list))))
+
+(assert-no-error "sample-dep2 reinstall" (twig/reinstall "sample-dep2"))
+(assert-no-error "sample-dep1 reinstall" (twig/reinstall "sample-dep1" :auto-remove true))
+
+(assert (= 2 (length (twig/list))) "packages are listed correctly 1")
+(assert (= 2 (length (twig/topolist))) "packages are listed correctly 2")
+
+; Now install sample-twig
+(assert-no-error "sample-twig install" (twig/install "./examples/sample-twig"))
+
+(assert-error "" (twig/install "./examples/sample-dep11111"))
+
+(assert (= 3 (length (twig/list))) "packages are listed correctly 3")
+(assert (= 3 (length (twig/topolist))) "packages are listed correctly 4")
+
+; Check topolist has not bad order
+(def tlist (twig/topolist))
+(assert (> (index-of "sample-twig" tlist) (index-of "sample-dep2" tlist)) "topolist 1")
+(assert (> (index-of "sample-twig" tlist) (index-of "sample-dep1" tlist)) "topolist 2")
+(assert (> (index-of "sample-dep1" tlist) (index-of "sample-dep2" tlist)) "topolist 3")
+
+; Prune should do nothing
+(assert-no-error "first prune" (twig/prune))
+(assert (= 3 (length (twig/list))) "packages are listed correctly 3")
+(assert (= 3 (length (twig/topolist))) "packages are listed correctly 4")
+
+; Check that we can import the main dependency
+(import mymod)
+(assert (= 288 (mymod/myfn 12)) "using sample-twig")
+
+; Manual uninstall of dep1 and dep2 shouldn't work either since that would break dependencies
+(assert-error "cannot uninstall sample-dep1, breaks dependent packages @[\"sample-twig\"]"
+              (twig/uninstall "sample-dep1"))
+
+; Check package file aliases
+(assert-no-error "sample-twig-aliases install" (twig/install "./examples/sample-twig-aliases"))
+(assert (= 4 (length (twig/list))) "packages are listed correctly 5")
+(assert-no-error "import aliases" (import aliases-mod))
+(assert (deep= (range 12) (aliases-mod/fun 12)) "using sample-twig-aliases")
+(assert-no-error "aliases uninstall" (twig/uninstall "sample-twig-aliases"))
+
+; Now re-install sample-twig as auto-remove
+(assert-no-error "sample-twig install" (twig/reinstall "sample-twig" :auto-remove true))
+
+; Reinstallation should also work without being concerned about breaking dependencies
+(assert-no-error "reinstall dep" (twig/reinstall "sample-dep2"))
+
+; Now prune should get rid of everything except sample-dep2
+(assert-no-error "second prune" (twig/prune))
+
+; Now check that we exactly one package left, which is dep2
+(assert (= 1 (length (twig/list))) "packages are listed correctly 5")
+(assert (= 1 (length (twig/topolist))) "packages are listed correctly 6")
+
+; Which we can uninstall manually
+(assert-no-error "uninstall dep2" (twig/uninstall "sample-dep2"))
+
+; Now check package listing is again empty
+(assert (= 0 (length (twig/list))) "packages are listed correctly 7")
+(assert (= 0 (length (twig/topolist))) "packages are listed correctly 8")
+
+; Try installing a package that is missing package script
+(assert-error-value "package missing package script"
+                    "package must contain twig.wattle or twig/init.wattle"
+                    (twig/install "./examples/sample-bad-twig1"))
+(assert (= 0 (length (twig/list))) "check failure 0")
+(assert (= 0 (length (twig/topolist))) "check failure 1")
+
+; Try installing a package that fails check
+(assert-error-value "package check hook fails"
+                    "Check failed!"
+                    (twig/install "./examples/sample-bad-twig2" :check true))
+(assert (= 0 (length (twig/list))) "check failure 0")
+(assert (= 0 (length (twig/topolist))) "check failure 1")
+
+(rmrf syspath)
+
+(end-suite)

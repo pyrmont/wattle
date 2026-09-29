@@ -44,7 +44,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-asm.wattle" },
     .{ .path = "test/suite-boot.wattle" },
     .{ .path = "test/suite-buffer.wattle" },
-    .{ .path = "test/suite-bundle.wattle", .needs_os = true },
+    .{ .path = "test/suite-twig.wattle", .needs_os = true },
     .{ .path = "test/suite-capi.wattle" },
     .{ .path = "test/suite-nfuns.wattle" },
     .{ .path = "test/suite-compile.wattle" },
@@ -1971,7 +1971,7 @@ fn addCliChecks(
 
         const twig_help = b.addRunArtifact(client);
         twig_help.addArgs(&.{ "help", "twig", "uninstall" });
-        twig_help.expectStdOutMatch("Uninstall a bundle by name.");
+        twig_help.expectStdOutMatch("Uninstall a package by name.");
         test_step.dependOn(&twig_help.step);
 
         const help_nested = b.addRunArtifact(client);
