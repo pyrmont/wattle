@@ -268,6 +268,23 @@ pub inline fn fromBytes(bytes: []const u8, comptime as: Bytes) repr.Value {
     };
 }
 
+/// `33^8`, the factor eight steps of `hashBytes` apply to the running hash.
+const hash_block_power: u32 = hash_block_weights[0] *% 33;
+
+/// The factor eight steps of `hashBytes` apply to each byte of the block, first
+/// byte first: `33^7` down to `33^0`.
+const hash_block_weights: @Vector(8, u32) = blk: {
+    var weights: [8]u32 = undefined;
+    var power: u32 = 1;
+    var i: usize = 8;
+    while (i > 0) {
+        i -= 1;
+        weights[i] = power;
+        power *%= 33;
+    }
+    break :blk weights;
+};
+
 /// Returns the hash of a run of bytes.
 ///
 /// `bytes` is the run. Under `-Dprf` this is the pseudo-random half-SipHash
@@ -279,8 +296,17 @@ pub fn hashBytes(bytes: []const u8) i32 {
     }
 
     if (bytes.len == 0) return 5381;
+    // Each step is `hash * 33 + byte`, so eight steps are `hash * 33^8` plus
+    // each byte times `33^k`, where `k` is the number of bytes after it in the
+    // block. A block of eight computes the same hash with one multiply in the
+    // dependency chain rather than eight shift-and-adds.
     var hash: u32 = 5381;
-    for (bytes) |byte| {
+    var rest = bytes;
+    while (rest.len >= 8) : (rest = rest[8..]) {
+        const block: @Vector(8, u32) = @as(@Vector(8, u8), rest[0..8].*);
+        hash = hash *% hash_block_power +% @reduce(.Add, block *% hash_block_weights);
+    }
+    for (rest) |byte| {
         hash = (hash << 5) +% hash +% byte;
     }
     return @bitCast(hashMix(hash, @bitCast(@as(i32, @intCast(bytes.len)))));

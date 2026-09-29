@@ -1214,14 +1214,25 @@ fn readCount(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!usize {
 }
 
 /// Reads a 32-bit integer written by `pushInt`.
-fn readInt(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!i32 {
-    var data = atdata.*;
-    var ret: i32 = undefined;
+///
+/// Inlined for the one-byte case, which is most of the integers a source map
+/// holds; the longer encodings are in `readIntLong`.
+inline fn readInt(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!i32 {
+    const data = atdata.*;
     try eos(st, data);
     if (data[0] < 128) {
-        ret = data[0];
-        data += 1;
-    } else if (data[0] < 192) {
+        atdata.* = data + 1;
+        return data[0];
+    }
+    return readIntLong(st, atdata);
+}
+
+/// `readInt` for an integer of two or five bytes, with the first byte already
+/// checked to be in the stream.
+noinline fn readIntLong(st: *UnmarshalState, atdata: *[*]const u8) raise.Error!i32 {
+    var data = atdata.*;
+    var ret: i32 = undefined;
+    if (data[0] < 192) {
         try eos(st, data + 1);
         var uret: u32 = (@as(u32, data[0] & 0x3F) << 8) + data[1];
         // Sign extend the 18 most significant bits.
@@ -2043,16 +2054,14 @@ fn unmarshalU32s(
     into: [*]u32,
     n: usize,
 ) raise.Error![*]const u8 {
-    var data = data_in;
+    // One check for the run rather than one per word. The division keeps a
+    // count near the top of `usize` from wrapping the product.
+    const remaining = @intFromPtr(st.end) - @intFromPtr(data_in);
+    if (n > remaining / 4) return raise.panic("unexpected end of source");
     for (0..n) |i| {
-        try eos(st, data + 3);
-        into[i] = @as(u32, data[0]) |
-            (@as(u32, data[1]) << 8) |
-            (@as(u32, data[2]) << 16) |
-            (@as(u32, data[3]) << 24);
-        data += 4;
+        into[i] = std.mem.readInt(u32, data_in[4 * i ..][0..4], .little);
     }
-    return data;
+    return data_in + 4 * n;
 }
 
 // ==========================================================================
