@@ -51,6 +51,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-compile.wattle" },
     .{ .path = "test/suite-corelib.wattle" },
     .{ .path = "test/suite-debug.wattle" },
+    .{ .path = "test/suite-edn.wattle" },
     .{ .path = "test/suite-ev.wattle", .needs_os = true },
     .{ .path = "test/suite-ev2.wattle", .needs_os = true },
     .{ .path = "test/suite-ffi.wattle" },

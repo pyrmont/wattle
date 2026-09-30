@@ -1,0 +1,278 @@
+(import ./helper :prefix "")
+
+(start-suite)
+
+; The expectations are the edn grammar's: what each form is, and what a
+; reader that accepts edn and nothing else refuses.
+
+; Decoding: the types
+
+(assert (nil? (edn/decode "nil")) "nil")
+(assert (= true (edn/decode "true")) "true")
+(assert (= false (edn/decode "false")) "false")
+(assert (= "abc" (edn/decode "\"abc\"")) "a string")
+(assert (= :a (edn/decode ":a")) "a keyword")
+(assert (= :a/b (edn/decode ":a/b")) "a keyword with a namespace")
+(assert (= 'a/b (edn/decode "a/b")) "a symbol with a namespace")
+(assert (every? (map #(symbol? (edn/decode $)) ["a" "+" "-" "." "*" "a.b" "a-b" "a?" "a1" "<=" "/"]))
+        "symbols")
+(assert (deep= [1 2 3] (edn/decode "[1 2 3]")) "a vector")
+(assert (vector? (edn/decode "[]")) "an empty vector is a vector")
+(assert (deep= '(1 2) (edn/decode "(1 2)")) "a list is a tuple")
+(assert (tuple? (edn/decode "()")) "an empty list is a tuple")
+(assert (deep= {:a 1 "b" [2]} (edn/decode "{:a 1 \"b\" [2]}")) "a map")
+(assert (map? (edn/decode "{}")) "an empty map is a map")
+(assert (= #{1 2} (edn/decode "#{1 2}")) "a set")
+(assert (= #{} (edn/decode "#{}")) "an empty set")
+(assert (deep= {[1] #{2}} (edn/decode "{[1] #{2}}")) "a collection as a key")
+(assert (= "x" (edn/decode !"\"x\"")) "a buffer is decoded")
+
+; Decoding: whitespace, comments and discards
+
+(assert (= 3 (edn/decode " \n\t\r, 3 ,\n")) "whitespace and commas around a value")
+(assert (deep= [1 2] (edn/decode "[1,2]")) "a comma separates")
+(assert (deep= [1 2] (edn/decode "[1 ; two\n 2]")) "a comment ends at the newline")
+(assert (= 4 (edn/decode "; a\n; b\n4")) "comments before a value")
+(assert (= 4 (edn/decode "4 ; after")) "a comment after a value")
+(assert (deep= [1 3] (edn/decode "[1 #_ 2 3]")) "#_ discards a form")
+(assert (deep= [1] (edn/decode "[1 #_ #_ 2 3]")) "#_ discards one form for each")
+(assert (deep= [1] (edn/decode "[1 #_ [2 {:a 3}]]")) "#_ discards a collection")
+(assert (= 5 (edn/decode "#_ 1 5")) "#_ before the value")
+(assert (= 5 (edn/decode "5 #_ 1")) "#_ after the value")
+(assert-error "a #_ with nothing after it" (edn/decode "[1 #_]"))
+(assert-error "a discarded form that is not edn" (edn/decode "[1 #_ \\a 2]"))
+
+; Decoding: numbers
+
+(assert (= 0 (edn/decode "0")) "zero")
+(assert (= -5 (edn/decode "-5")) "a negative integer")
+(assert (= 5 (edn/decode "+5")) "a redundant plus")
+(assert (= 1.5 (edn/decode "1.5")) "a float")
+(assert (= -0.25 (edn/decode "-0.25")) "a negative float")
+(assert (= 1e10 (edn/decode "1e10")) "an exponent")
+(assert (= 1e10 (edn/decode "1E+10")) "an exponent with a sign")
+(assert (= 0.035 (edn/decode "3.5e-2")) "a fraction and an exponent")
+(assert (= 9007199254740992 (edn/decode "9007199254740992")) "2^53 is exact")
+(assert-error-value "2^53 + 1 is not exact"
+  "invalid edn at line 1, column 1: integer is not exactly a number"
+  (edn/decode "9007199254740993"))
+(assert-error-value "an overflow"
+  "invalid edn at line 1, column 1: number is out of range"
+  (edn/decode "1e999"))
+(each text ["007" "01" "1." ".5" "1.e5" "1e" "1e+" "1_000" "0x1F" "1x" "1/2" "1.5.2"]
+  (assert-error "not a number" (edn/decode text)))
+(assert (every? (map #(symbol? (edn/decode $)) ["--1" "+-1" "-a" "+a"])) "a sign not followed by a digit begins a symbol")
+(assert-error-value "an N suffix"
+  "invalid edn at line 1, column 1: numbers with an N or M suffix are not supported"
+  (edn/decode "10N"))
+(assert-error "an M suffix" (edn/decode "1.5M"))
+(assert-error "a symbolic value" (edn/decode "##Inf"))
+
+; Decoding: symbols and keywords
+
+(each text ["1a" "{a" ":" "::a" "a/" "/a" "a/b/c" "a\\b" ":/" "#a" "a b c"]
+  (assert-error "not a symbol" (edn/decode text)))
+(assert (= :1 (edn/decode ":1")) "a keyword may begin with a digit")
+(assert (= 'a:b (edn/decode "a:b")) "a colon inside a symbol")
+(assert (= 'é (edn/decode "é")) "a symbol may hold a non-ASCII character")
+
+; Decoding: strings
+
+(assert (= "a\"b\\c\nd\re\tf" (edn/decode "\"a\\\"b\\\\c\\nd\\re\\tf\"")) "the five escapes")
+(assert (= "é😀" (edn/decode "\"\\u00e9\\uD83D\\uDE00\"")) "\\u escapes decode to UTF-8")
+(assert (= "\0" (edn/decode "\"\\u0000\"")) "\\u0000 is a zero byte")
+(assert (= "é😀" (edn/decode "\"é😀\"")) "UTF-8 is read as it is")
+(assert (= "a\nb" (edn/decode "\"a\nb\"")) "a literal newline is part of the string")
+(assert (= "a\r\nb" (edn/decode "\"a\r\nb\"")) "a carriage return is part of the string")
+(assert (= "a\n   b" (edn/decode "\"a\n   b\"")) "the indentation is kept")
+(assert (= "" (edn/decode "\"\"")) "the empty string")
+(each text ["\"\\x41\"" "\"\\e\"" "\"\\0\"" "\"\\q\"" "\"\\ud800\"" "\"\\udc00\"" "\"\\ud800\\u0041\"" "\"\\u12\"" "\"\\u12G4\"" "\"abc" "\"abc\\"]
+  (assert-error "a bad string" (edn/decode text)))
+(assert-error "a raw string" (edn/decode "\"\"\"abc\"\"\""))
+(assert-error "text that is not valid UTF-8" (edn/decode "\"\xff\""))
+(assert-error-value "invalid UTF-8 outside a string" "edn text is not valid UTF-8" (edn/decode "[1 \xff]"))
+
+; Decoding: what edn has and Wattle does not
+
+(assert-error-value "a character literal"
+  "invalid edn at line 1, column 2: character literals are not supported"
+  (edn/decode "[\\a]"))
+(assert-error "a named character" (edn/decode "\\newline"))
+(assert-error-value "a nil map value"
+  "invalid edn at line 1, column 1: a map cannot hold nil"
+  (edn/decode "{:a nil}"))
+(assert-error "a nil map key" (edn/decode "{nil 1}"))
+(assert-error-value "a repeated map key"
+  "invalid edn at line 1, column 1: a map has a repeated key"
+  (edn/decode "{:a 1 :a 2}"))
+(assert-error-value "a key with no value"
+  "invalid edn at line 1, column 1: a map has a key with no value"
+  (edn/decode "{:a}"))
+(assert-error-value "a repeated set element"
+  "invalid edn at line 1, column 1: a set has a repeated element"
+  (edn/decode "#{1 1}"))
+(assert-error "a nil set element" (edn/decode "#{nil}"))
+(assert (deep= [nil] (edn/decode "[nil]")) "nil in a vector")
+
+; Decoding: what is not edn
+
+(assert-error "a quote prefix" (edn/decode "'a"))
+(assert-error "a mutable array literal" (edn/decode "![1]"))
+(assert-error "a mutable table literal" (edn/decode "!{}"))
+(assert-error "a short function" (edn/decode "#(+ 1 $)"))
+(assert-error "a keyword beginning with #" (edn/decode "#:a"))
+(assert-error "a dispatch on a space" (edn/decode "# a"))
+
+; Decoding: refusals
+
+(assert-error-value "an unclosed vector" "invalid edn at line 1, column 1: unterminated collection" (edn/decode "[1 2"))
+(assert-error-value "an unclosed map" "invalid edn at line 1, column 1: unterminated collection" (edn/decode "{:a 1"))
+(assert-error-value "an unclosed string" "invalid edn at line 2, column 3: unterminated string" (edn/decode "[1\n  \"abc"))
+(assert-error-value "a mismatched delimiter" "invalid edn at line 1, column 4: mismatched closing delimiter" (edn/decode "[1 )"))
+(assert-error-value "a stray closing delimiter" "invalid edn at line 1, column 1: unexpected closing delimiter" (edn/decode "]"))
+(assert-error-value "a second value" "invalid edn at line 1, column 5: unexpected text after the value" (edn/decode "[1] [2]"))
+(assert-error-value "the line and column" "invalid edn at line 2, column 3: invalid number" (edn/decode "[1\n  1.e5]"))
+(assert-error-value "an empty text" "invalid edn at line 1, column 1: unexpected end of text" (edn/decode ""))
+(assert-error "whitespace alone" (edn/decode " \n "))
+(assert-error "a comment alone" (edn/decode "; nothing"))
+(assert-error "nesting past the limit" (edn/decode (string/repeat "[" 2000)))
+(assert (deep= [[[1]]] (edn/decode "[[[1]]]")) "nesting within the limit")
+(assert-error-value "an unknown decode flag" "unexpected flag x, expected one of \"td\""
+  (edn/decode "1" :x))
+(assert-error "an argument that is not text" (edn/decode 1))
+
+; Decoding: tags
+
+(assert-error-value "a tag without :t"
+  "invalid edn at line 1, column 1: reading a tag needs the :t flag: #wattle/array"
+  (edn/decode "#wattle/array [1]"))
+(assert (deep= ![1 2] (edn/decode "#wattle/array [1 2]" :t)) "a tagged array")
+(assert (array? (edn/decode "#wattle/array [] " :t)) "an empty tagged array is an array")
+(assert (deep= (table :a 1) (edn/decode "#wattle/table {:a 1}" :t)) "a tagged table")
+(assert (table? (edn/decode "#wattle/table {}" :t)) "an empty tagged table is a table")
+(assert (deep= !"hi" (edn/decode "#wattle/buffer \"hi\"" :t)) "a tagged buffer")
+(assert (buffer? (edn/decode "#wattle/buffer \"\"" :t)) "an empty tagged buffer is a buffer")
+(assert (deep= [![1] {:a !{:b 2}}]
+               (edn/decode "[#wattle/array [1] {:a #wattle/table {:b 2}}]" :t))
+        "tags inside collections")
+(assert (deep= ![1] (edn/decode "#wattle/array   ; c\n [1]" :t)) "space and comments between a tag and its form")
+(assert-error-value "an unknown tag"
+  "invalid edn at line 1, column 1: unknown tag #inst"
+  (edn/decode "#inst \"2020-01-01\"" :t))
+(assert-error "an unknown tag with a namespace" (edn/decode "#my/tag 1" :t))
+(assert-error-value "an unknown tag without :t is still unknown"
+  "invalid edn at line 1, column 1: unknown tag #uuid"
+  (edn/decode "#uuid \"x\""))
+(assert-error "a tag on the wrong form" (edn/decode "#wattle/array {:a 1}" :t))
+(assert-error "a table tag on a vector" (edn/decode "#wattle/table [1]" :t))
+(assert-error "a buffer tag on a number" (edn/decode "#wattle/buffer 1" :t))
+(assert-error "a tag with nothing after it" (edn/decode "#wattle/array" :t))
+
+; Decoding: dedent
+
+(defn dedent [text] (edn/decode text :d))
+(assert (= "a\nb\n  c" (dedent "\"a\n   b\n     c\"")) "each line after the first loses the indent of the second")
+(assert (= "a\nb" (dedent "\"a\n b\"")) "an indent of one space")
+(assert (= "a\nb\n\nc" (dedent "\"a\n   b\n\n   c\"")) "a blank line is unchanged")
+(assert (= "a\nb\nc" (dedent "\"a\n   b\n c\"")) "a line with less indent loses only what it has")
+(assert (= "a\nb\n \n" (dedent "\"a\n  b\n   \n  \"")) "a line of spaces keeps those past the indent")
+(assert (= "a\nb" (dedent "\"a\nb\"")) "a second line with no indent is unchanged")
+(assert (= "a\nb\n  c" (dedent "\"a\n b\n   c\"")) "a line indented more keeps the difference")
+(assert (= "one" (dedent "\"one\"")) "a string of one line is unchanged")
+(assert (= "  one" (dedent "\"  one\"")) "the first line keeps its own indent")
+(assert (= "a\r\nb" (dedent "\"a\r\n   b\"")) "a carriage return stays with its line")
+(assert (= "a\n\tb" (dedent "\"a\n   \tb\"")) "a tab is not a space")
+(assert (= "a\n\tb" (dedent "\"a\n\tb\"")) "a tab indent is not removed")
+(assert (= "a\n   b" (dedent "\"a\\n   b\"")) "an escaped newline is not a line break")
+(assert (= "a\n\nb" (dedent "\"a\\n\n b\"")) "an escape then a literal newline: only the literal one is dedented")
+(assert (= "a\nb" (dedent "\"a\n  b\"")) "two spaces")
+(assert (= "a\nb\nc" (dedent "\"a\n  b\n  c\"")) "each later line")
+(assert (deep= ["a\nb" "c\nd"] (dedent "[\"a\n  b\" \"c\n   d\"]")) "each string has its own indent")
+(assert (deep= {"k\nx" 1} (dedent "{\"k\n  x\" 1}")) "a key is dedented")
+(assert (deep= !"a\nb" (edn/decode "#wattle/buffer \"a\n  b\"" :td)) "a tagged buffer is dedented")
+(assert (= "a\n   b" (edn/decode "\"a\n   b\"")) "without :d nothing is removed")
+(assert (= "x" (edn/decode "\"x\"" :d)) ":d on a string with no newline")
+(assert (deep= ![1] (edn/decode "#wattle/array [1]" :dt)) "the flags combine in either order")
+
+; Encoding: the types
+
+(assert (= "nil" (edn/encode nil)) "nil")
+(assert (= "true" (edn/encode true)) "true")
+(assert (= "1" (edn/encode 1)) "an integer")
+(assert (= "1.5" (edn/encode 1.5)) "a float")
+(assert (= "\"abc\"" (edn/encode "abc")) "a string")
+(assert (= ":a/b" (edn/encode :a/b)) "a keyword")
+(assert (= "a/b" (edn/encode 'a/b)) "a symbol")
+(assert (= "[1 2]" (edn/encode [1 2])) "a vector")
+(assert (= "(1 2)" (edn/encode '(1 2))) "a tuple is a list")
+(assert (= "{:a 1}" (edn/encode {:a 1})) "a map")
+(assert (= "#{1}" (edn/encode #{1})) "a set")
+(assert (= "[[]]" (edn/encode [[]])) "nesting")
+
+; Encoding: strings
+
+(assert (= "\"a\\\"b\\\\c\\nd\\re\\tf\"" (edn/encode "a\"b\\c\nd\re\tf")) "the five escapes")
+(assert (= "\"\\u0001\\u001f\\u007f\"" (edn/encode "\x01\x1f\x7f")) "other control characters are \\u escapes")
+(assert (= "\"\\u0000\"" (edn/encode "\0")) "a zero byte")
+(assert (= "\"é😀\"" (edn/encode "é😀")) "UTF-8 is written as it is")
+(assert-error "a string that is not valid UTF-8" (edn/encode "\xff"))
+(assert-error "a string with a truncated sequence" (edn/encode "\xc3"))
+(assert (not (string/find "\\x" (edn/encode "é\x01"))) "no \\x escape, which edn does not have")
+
+; Encoding: refusals
+
+(assert-error-value "a mutable array"
+  "could not print to edn format: a mutable array, table or buffer needs the :t flag"
+  (edn/encode ![1]))
+(assert-error "a mutable table" (edn/encode (table :a 1)))
+(assert-error "a buffer" (edn/encode (buffer "x")))
+(assert-error "a mutable array inside a vector" (edn/encode [1 ![2]]))
+(assert-error "a mutable array as a map value" (edn/encode {:a ![1]}))
+(assert-error "a function" (edn/encode +))
+(assert-error "a function under :t" (edn/encode + :t))
+(assert-error "a fiber" (edn/encode (fiber/new (fn []))))
+(assert-error "a json/null" (edn/encode json/null))
+(assert-error "NaN" (edn/encode math/nan))
+(assert-error "an infinity" (edn/encode math/inf))
+(assert-error "a negative infinity" (edn/encode (- math/inf)))
+(assert-error "NaN under :t" (edn/encode math/nan :t))
+(assert-error "a keyword edn cannot spell" (edn/encode (keyword "a b")))
+(assert-error-value "an unknown encode flag" "unexpected flag x, expected one of \"t\""
+  (edn/encode 1 :x))
+(assert-error "nesting past the limit"
+  (edn/encode (reduce (fn [acc _] [acc]) [] (range 2000))))
+
+; Encoding: tags
+
+(assert (= "#wattle/array [1 2]" (edn/encode ![1 2] :t)) "an array is tagged")
+(assert (= "#wattle/table {:a 1}" (edn/encode (table :a 1) :t)) "a table is tagged")
+(assert (= "#wattle/buffer \"hi\\n\"" (edn/encode (buffer "hi\n") :t)) "a buffer is tagged")
+(assert (= "[#wattle/array [1] {:a #wattle/table {:b 2}}]"
+           (edn/encode [![1] {:a (table :b 2)}] :t))
+        "tags inside collections")
+(assert-error "a buffer that is not valid UTF-8" (edn/encode (buffer "\xff") :t))
+(assert (= "[1]" (edn/encode [1] :t)) ":t changes nothing for a persistent value")
+
+; The round trip
+
+(defn round [x] (edn/decode (edn/encode x)))
+(assert (deep= [1 2.5 "a\nb" :k 'sym nil true false] (round [1 2.5 "a\nb" :k 'sym nil true false])) "scalars")
+(assert (deep= {:a [1 {:b #{2}}] "s" '(1 2)} (round {:a [1 {:b #{2}}] "s" '(1 2)})) "collections")
+(assert (= "é😀\0\x01\n" (round "é😀\0\x01\n")) "a string with every kind of byte")
+(assert (every? (map #(= $ (round $)) [0 1 -1 0.1 1e20 1e-7 123456789012 1.5e300 -2.5])) "numbers")
+(defn round-tagged [x] (edn/decode (edn/encode x :t) :t))
+(assert (deep= ![1 2] (round-tagged ![1 2])) "an array")
+(assert (deep= (table :a 1 :b [2]) (round-tagged (table :a 1 :b [2]))) "a table")
+(assert (deep= !"a\nb" (round-tagged (buffer "a\nb"))) "a buffer")
+(assert (deep= [![1 ![2]] {:k (table :v (buffer "x"))}]
+               (round-tagged [![1 ![2]] {:k (table :v (buffer "x"))}]))
+        "tags nested inside tags and collections")
+(assert (= (edn/encode [1 2] :t) (edn/encode (round-tagged [1 2]) :t)) "encoding is stable")
+
+; What `%y` writes is what `edn/encode` writes
+
+(assert (= (string/format "%y" {:a [1 "é\n"] :b #{1}}) (edn/encode {:a [1 "é\n"] :b #{1}})) "%y and edn/encode agree")
+(assert (= (string/format "%y" ![1 "é"]) (edn/encode ![1 "é"] :t)) "and under :t")
+(assert (= "\"\\u0001\"" (string/format "%y" "\x01")) "%y writes a \\u escape")
+
+(end-suite)

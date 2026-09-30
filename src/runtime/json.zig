@@ -440,7 +440,7 @@ fn enter(depth: *i32) raise.Error!void {
 /// is built in decimal, as its significand doubled once for each power of two
 /// in its exponent, and compared digit by digit. JSON writes no leading zero
 /// before another digit, so equal values have equal digits.
-fn exactInteger(digits: []const u8, magnitude: f64) bool {
+pub fn exactInteger(digits: []const u8, magnitude: f64) bool {
     if (digits.len <= 15) return true;
     // A value of 10^15 or more is normal. Its significand is `m` times two to
     // the `e`, and `e` is not negative once the zero bits `m` ends in are

@@ -141,7 +141,7 @@ Every directory below `runtime/` is relative to it.
 
 The files directly in `runtime/` are the parser, the PEG engine, the
 marshaller, the argument and arity layers, the environment, the pretty
-printer's entry point, the allocator (`gc.zig`), `capi.zig`, `io`, `json`,
+printer's entry point, the allocator (`gc.zig`), `capi.zig`, `edn`, `io`, `json`,
 `math`, `scan` and `signal`.
 `value/` has arrays, buffers, strings, symbols, tuples, tables, fibers,
 functions, abstracts, integer types, vectors, maps and sets, and transients. `value/helpers/` is `wrap`, `access` and `order`.

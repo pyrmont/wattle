@@ -47,6 +47,7 @@ const compiler_primitives = @import("compiler.zig");
 const config = @import("config");
 const constants = @import("constants");
 const corefn = @import("corefn.zig");
+const edn = @import("edn.zig");
 const ev_loop = @import("ev.zig");
 const fatal = @import("fatal.zig");
 const ffi = @import("ffi.zig");
@@ -1460,6 +1461,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     try io_core.libIo(env);
     try math.libMath(env);
     try json.libJson(env);
+    try edn.libEdn(env);
     arrays.lib(env);
     tuples.lib(env);
     vectors.lib(env);

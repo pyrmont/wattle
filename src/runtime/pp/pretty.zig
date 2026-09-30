@@ -56,12 +56,15 @@ const wrap = @import("../value/helpers/wrap.zig");
 // Constants
 // ==========================================================================
 
-/// Which of the two data notations a writer is producing.
+/// Which data notation a writer is producing.
 ///
-/// They agree on everything a value can be except the three mutable types:
-/// edn has no notion of those, so each becomes a namespaced tag, which is
-/// edn's own answer for a type its grammar does not cover.
-pub const Notation = enum { wattle, edn };
+/// `.wattle` and `.edn` agree on everything a value can be except the three
+/// mutable types: edn has no notion of those, so `.edn` writes each as a
+/// namespaced tag, which is edn's own answer for a type its grammar does not
+/// cover. `.edn_strict` writes no tag and has no text for a mutable type.
+/// The two edn notations write a string as edn does, where `.wattle` writes
+/// the escapes of Wattle source.
+pub const Notation = enum { wattle, edn, edn_strict };
 
 /// The two truncation limits, and the size past which sorting a dictionary's
 /// keys is given up on.
@@ -127,6 +130,9 @@ const Pretty = struct {
     /// Which data notation the writer is producing. The pretty printer sets
     /// `.wattle` and never reads it.
     notation: Notation,
+    /// Whether `.edn_strict` has reached a mutable value, which is what
+    /// `data` reports in place of its general message.
+    strict_refused: bool,
 
     keysort_buffer: ?[*]i32,
     keysort_capacity: i32,
@@ -195,7 +201,23 @@ pub fn edn(
     return data(buffer, depth, x, startlen, lookback_barrier, .edn);
 }
 
-/// The body of both, which differ in three arms and a message.
+/// Renders `x` as edn into `buffer` without a tag, or raises saying it cannot
+/// be.
+///
+/// A mutable array, table or buffer has no text here, because edn has no type
+/// for it and a tag is not plain edn. Every other value is written as `edn`
+/// writes it.
+pub fn ednStrict(
+    buffer: ?*buffers.Buffer,
+    depth: c_int,
+    x: repr.Value,
+    startlen: usize,
+    lookback_barrier: usize,
+) raise.Error!*buffers.Buffer {
+    return data(buffer, depth, x, startlen, lookback_barrier, .edn_strict);
+}
+
+/// The body of the three, which differ in three arms and a message.
 ///
 /// This is the only raise the file decides, and why `printDataOne` reports a
 /// flag rather than raising: the message is written once, here.
@@ -214,10 +236,13 @@ fn data(
     var S = initState(buffer, depth, 0, .{}, startlen, lookback_barrier, notation);
     const failed = printDataOne(&S, x, depth);
     tables.deinit(&S.seen);
-    if (try failed) return raise.panic(switch (notation) {
-        .wattle => "could not print as Wattle source",
-        .edn => "could not print to edn format",
-    });
+    if (try failed) {
+        if (S.strict_refused) return raise.panic("could not print to edn format: a mutable array, table or buffer needs the :t flag");
+        return raise.panic(switch (notation) {
+            .wattle => "could not print as Wattle source",
+            .edn, .edn_strict => "could not print to edn format",
+        });
+    }
     return S.buffer;
 }
 
@@ -382,6 +407,7 @@ fn countDig10(start: i32) i32 {
 fn initState(buffer: ?*buffers.Buffer, depth: c_int, width: c_int, flags: PrettyFlags, startlen: usize, lookback_barrier: usize, notation: Notation) Pretty {
     var S = Pretty{
         .notation = notation,
+        .strict_refused = false,
         .buffer = buffer orelse buffers.new(0),
         .depth = depth,
         .width = width,
@@ -507,6 +533,38 @@ fn printDataKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Erro
     return false;
 }
 
+/// Writes `bytes` into `buffer` as an edn string, and returns whether it
+/// did.
+///
+/// A quote, a backslash, a newline, a carriage return and a tab are written
+/// as the escapes edn has. Any other control character, and DEL, is written
+/// as `\uXXXX`, and every other byte as it is, because edn text is UTF-8.
+/// Nothing is written, and the result is false, where `bytes` is not valid
+/// UTF-8, which has no edn text. An escape is at most six bytes for one, so a
+/// caller that reserves that much before it reads `bytes` from `buffer` itself
+/// stays in bounds.
+fn pushEdnString(buffer: *buffers.Buffer, bytes: []const u8) raise.Error!bool {
+    if (!std.unicode.utf8ValidateSlice(bytes)) return false;
+    const hex = "0123456789abcdef";
+    try buffers.pushU8(buffer, '"');
+    for (bytes) |byte| {
+        switch (byte) {
+            '"' => try buffers.pushBytes(buffer, "\\\""),
+            '\\' => try buffers.pushBytes(buffer, "\\\\"),
+            '\n' => try buffers.pushBytes(buffer, "\\n"),
+            '\r' => try buffers.pushBytes(buffer, "\\r"),
+            '\t' => try buffers.pushBytes(buffer, "\\t"),
+            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F, 0x7F => {
+                const escape = [6]u8{ '\\', 'u', '0', '0', hex[byte >> 4], hex[byte & 0xF] };
+                try buffers.pushBytes(buffer, &escape);
+            },
+            else => try buffers.pushU8(buffer, byte),
+        }
+    }
+    try buffers.pushU8(buffer, '"');
+    return true;
+}
+
 /// Writes `x` as Wattle source, recursing to `depth`.
 ///
 /// Failure is reported rather than raised: `true` means the value has no source
@@ -516,12 +574,22 @@ fn printDataKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Erro
 fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
     if (depth == 0) return true;
     switch (repr.typeOf(x)) {
-        repr.Tag.nil, repr.Tag.boolean, repr.Tag.string => {
+        repr.Tag.nil, repr.Tag.boolean => {
             try describe.descriptionB(S.buffer, x);
+        },
+        repr.Tag.string => {
+            if (S.notation == .wattle) {
+                try describe.descriptionB(S.buffer, x);
+            } else if (!try pushEdnString(S.buffer, strings.bytesOf(wrap.toString(x)))) {
+                return true;
+            }
         },
         repr.Tag.buffer => {
             if (S.notation == .wattle) {
                 try describe.descriptionB(S.buffer, x);
+            } else if (S.notation == .edn_strict) {
+                S.strict_refused = true;
+                return true;
             } else {
                 // edn has no mutable string, so the bytes go inside a tag as
                 // an ordinary edn string.
@@ -536,10 +604,14 @@ fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
                 if (source_buffer == S.buffer) {
                     try buffers.ensure(source_buffer, source_buffer.count + 5 * source_buffer.count + tag.len + 3, 1);
                 }
+                // A string that is not UTF-8 has no edn text, and nothing is
+                // written for it, the tag included.
+                const bytes: []const u8 = if (source_buffer.data) |d| d[0..count] else "";
+                if (!std.unicode.utf8ValidateSlice(bytes)) return true;
                 try S.pushCstring(tag);
                 // After `ensure` the block cannot move under the escape, so
                 // the slice taken here stays live for the whole of it.
-                _ = try describe.escapeString(S.buffer, if (source_buffer.data) |d| d[0..count] else "");
+                _ = try pushEdnString(S.buffer, bytes);
             }
         },
         repr.Tag.number => {
@@ -582,6 +654,10 @@ fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             try S.pushByte(']');
         },
         repr.Tag.array => {
+            if (S.notation == .edn_strict) {
+                S.strict_refused = true;
+                return true;
+            }
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const a = wrap.toArray(x);
             try S.pushCstring(if (S.notation == .wattle) "![" else "#wattle/array [");
@@ -592,6 +668,10 @@ fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
             try S.pushByte(']');
         },
         repr.Tag.table => {
+            if (S.notation == .edn_strict) {
+                S.strict_refused = true;
+                return true;
+            }
             _ = tables.put(&S.seen, x, wrap.fromTrue());
             const tab = wrap.toTable(x);
             try S.pushCstring(if (S.notation == .wattle) "!{" else "#wattle/table {");
