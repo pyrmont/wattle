@@ -3305,9 +3305,9 @@
 (module/add-paths ":native:" :native)
 (module/add-paths "/init.wattle" :source)
 (module/add-paths ".wattle" :source)
-(module/add-paths ".jimage" :image)
+(module/add-paths ".wimage" :image)
 (module/add-file-extension ".wattle" :source)
-(module/add-file-extension ".jimage" :source)
+(module/add-file-extension ".wimage" :image)
 ; These obviously won't work on all platforms, but if a user explicitly
 ; tries to import them, we may as well try. `.dylib` is what macOS names a
 ; shared object, and it is here for the reason `.dll` is: the list is an
@@ -5775,7 +5775,7 @@
                      :source {:req? true :proxy "source"
                               :help "The source file to compile."}
                      :output {:proxy "output"
-                              :help "The image path. The default is the source path with .jimage in place of .wattle."}]}
+                              :help "The image path. The default is the source path with .wimage in place of .wattle."}]}
       "lib" {:validate? validate?
              :help "Build the native modules that info.edn declares."
              :rules ["--release" {:kind :single :short "r" :proxy "mode"
@@ -6066,7 +6066,7 @@
     (or (get params :output)
         (string
           (if (string/has-suffix? ".wattle" path) (string/slice path 0 -8) path)
-          ".jimage")))
+          ".wimage")))
   (spit output-path (make-image e)))
 
 (def- cli-release-modes {"safe" "ReleaseSafe" "fast" "ReleaseFast" "small" "ReleaseSmall"})

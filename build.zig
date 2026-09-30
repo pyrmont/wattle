@@ -1688,7 +1688,7 @@ fn buildExecutable(
     make_image.addArgs(&.{ "build", "img", "-l" });
     make_image.addFileArg(preload_files.add("preload.wattle", preload.items));
     make_image.addFileArg(opts.source);
-    const image = make_image.addOutputFileArg(b.fmt("{s}.jimage", .{opts.name}));
+    const image = make_image.addOutputFileArg(b.fmt("{s}.wimage", .{opts.name}));
 
     module.addAnonymousImport("executable_image", .{ .root_source_file = image });
     module.addAnonymousImport("executable_natives", .{

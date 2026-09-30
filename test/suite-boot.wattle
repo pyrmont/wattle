@@ -1186,4 +1186,19 @@
                 paths)
           "module/add-prefix adds the lib/wattle directory of a root"))
 
+; An image imported by its full path goes through the `:image` loader, as it
+; does when named by module name. The full-path entry once selected `:source`,
+; which raised a parse error on the binary image.
+(let [dir (string "wimage-import-" (os/getpid))
+      path (string dir "/up.wimage")
+      env (make-env)]
+  (eval-string "(defn hello [] :up)" env)
+  (os/mkdir dir)
+  (spit path (make-image env))
+  (def [ok loaded] (protect (require (string (os/cwd) "/" path))))
+  (os/rm path)
+  (os/rmdir dir)
+  (assert ok "a .wimage path imports")
+  (assert (= :up ((get-in loaded ['hello :value]))) "a .wimage path loads the image"))
+
 (end-suite)

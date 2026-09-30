@@ -94,7 +94,7 @@ build
 
 Load the module at _source_ and write an image of its environment to
 _output_. If _output_ is omitted, it is _source_ with ``.wattle`` replaced by
-``.jimage``. **run -i** loads the image.
+``.wimage``. **run -i** loads the image.
 
 - **-l**, **--lib** _module_:
   Import _module_ into the environment before _source_ is loaded, as **run**
@@ -388,8 +388,8 @@ $ wattle -e '(print (+ 1 2 3))'
 Compile a program into an image and run the image:
 
 ````
-$ wattle build img hello.wattle hello.jimage
-$ wattle run -i hello.jimage Alice
+$ wattle build img hello.wattle hello.wimage
+$ wattle run -i hello.wimage Alice
 ````
 
 Build the executables that ``info.edn`` declares, optimised for size:
