@@ -1612,6 +1612,22 @@
      (~eprintf (~dyn :pretty-format "%q") ~s)
      ~s))
 
+(defn- thread-form
+  """
+  Returns the form n with arg inserted as its first argument if first? is
+  truthy and as its last otherwise. A symbol or other atom n is called with arg.
+  A tuple keeps its source map.
+  """
+  [n arg first?]
+  (def call? (= :tuple (type n)))
+  (def [h t] (if call?
+               (tuple (in n 0) (array/slice n 1))
+               (tuple n ![])))
+  (def parts (tuple/slice (if first?
+                            (array/concat! ![h arg] t)
+                            (array/concat! ![h] t ![arg]))))
+  (if call? (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
+
 (defmacro ->
   """
   Threads a value through a series of forms as a macro. Inserts x as the first
@@ -1620,13 +1636,7 @@
   data.
   """
   [x & forms]
-  (defn fop [last n]
-    (def [h t] (if (= :tuple (type n))
-                 (tuple (in n 0) (array/slice n 1))
-                 (tuple n ![])))
-    (def parts (tuple/slice (array/concat! ![h last] t)))
-    (if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
-  (reduce fop x forms))
+  (reduce (fn [last n] (thread-form n last true)) x forms))
 
 (defmacro ->>
   """
@@ -1636,13 +1646,7 @@
   data.
   """
   [x & forms]
-  (defn fop [last n]
-    (def [h t] (if (= :tuple (type n))
-                 (tuple (in n 0) (array/slice n 1))
-                 (tuple n ![])))
-    (def parts (tuple/slice (array/concat! ![h] t ![last])))
-    (if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))
-  (reduce fop x forms))
+  (reduce (fn [last n] (thread-form n last false)) x forms))
 
 (defmacro -?>
   """
@@ -1651,13 +1655,8 @@
   """
   [x & forms]
   (defn fop [last n]
-    (def [h t] (if (= :tuple (type n))
-                 (tuple (in n 0) (array/slice n 1))
-                 (tuple n ![])))
     (def sym (gensym))
-    (def parts (tuple/slice (array/concat! ![h sym] t)))
-    `(as-macro ~let [~sym ~last]
-       (if ~sym ~(if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))))
+    `(as-macro ~let [~sym ~last] (if ~sym ~(thread-form n sym true))))
   (reduce fop x forms))
 
 (defmacro -?>>
@@ -1667,13 +1666,8 @@
   """
   [x & forms]
   (defn fop [last n]
-    (def [h t] (if (= :tuple (type n))
-                 (tuple (in n 0) (array/slice n 1))
-                 (tuple n ![])))
     (def sym (gensym))
-    (def parts (tuple/slice (array/concat! ![h] t ![sym])))
-    `(as-macro ~let [~sym ~last]
-       (if ~sym ~(if (= :tuple (type n)) (tuple/sourcemap! parts (tuple/sourcemap n)) parts))))
+    `(as-macro ~let [~sym ~last] (if ~sym ~(thread-form n sym false))))
   (reduce fop x forms))
 
 (defn- walk-ind [f form]
@@ -1928,9 +1922,7 @@
         (put! d k newv)
         (set d newv))
       (set d v)))
-  (def last-key (get ks len-1))
-  (def last-val (get d last-key))
-  (put! d last-key val)
+  (put! d (get ks len-1) val)
   mut)
 
 (defn update!
@@ -3198,7 +3190,7 @@
 (defn- check-dyn-relative [x] (if (string/has-prefix? "@" x) x))
 (defn- check-relative [x] (if (string/has-prefix? "." x) x))
 ; Don't try to preload absolute or relative paths
-(defn- check-preloadable [x] (if-not (or (string/has-prefix? "/" x) (string/find "." x) (string/find "@" x)) x))
+(defn- check-preloadable [x] (unless (or (string/has-prefix? "/" x) (string/find "." x) (string/find "@" x)) x))
 (defn- check-is-dep [x] (unless (or (string/has-prefix? "/" x) (string/has-prefix? "@" x) (string/has-prefix? "." x)) x))
 (defn- check-project-relative [x] (if (string/has-prefix? "/" x) x))
 
@@ -3237,7 +3229,7 @@
   """
   [ext loader]
   (def mp (dyn *module-paths* module/paths))
-  (defn- find-prefix
+  (defn find-prefix
     [pre]
     (or (find-index #(and (string? ($ 0)) (string/has-prefix? pre ($ 0))) mp) 0))
   (def dyn-index (find-prefix ":@all:"))
@@ -3365,7 +3357,7 @@
               (set ret [fullpath mod-kind])
               (if find-all (array/push! all-matches ret) (break)))))))
     (if find-all (break all-matches))
-    (if ret ret
+    (or ret
       (let [expander (fn :expander [[t _ chk]]
                        (when (string? t)
                          (when (mod-filter chk path)
@@ -3394,7 +3386,7 @@
       (let [v (in entry :value)
             r (in entry :ref)
             p (in entry :private)]
-        (if p (if private nil (break)))
+        (when (and p (not private)) (break))
         (if (and r (array? r))
           (get r 0)
           v)))))
@@ -3473,32 +3465,25 @@
   (var exit-error nil)
   (var exit-fiber nil)
   (defn chunks [buf _] (:read f 4096 buf))
-  (defn bp ([] (bp nil nil))
-    ([x] (bp x nil))
-    ([x y]
-      (when exit
-        (bad-parse x y)
-        (os/exit 1))
-      (put! env :exit true)
-      (def buf !"")
-      (with-dyns [*err* buf]
-        (bad-parse x y))
-      (set exit-error (string/slice buf 0 -2))))
-  (defn bc ([] (bc nil nil nil nil nil))
-    ([x] (bc x nil nil nil nil))
-    ([x y] (bc x y nil nil nil))
-    ([x y z] (bc x y z nil nil))
-    ([x y z a] (bc x y z a nil))
-    ([x y z a b]
-      (when exit
-        (bad-compile x y z a b)
-        (os/exit 1))
-      (put! env :exit true)
-      (def buf !"")
-      (with-dyns [*err* buf]
-        (bad-compile x nil z a b))
-      (set exit-error (string/slice buf 0 -2))
-      (set exit-fiber y)))
+  (defn bp [x y]
+    (when exit
+      (bad-parse x y)
+      (os/exit 1))
+    (put! env :exit true)
+    (def buf !"")
+    (with-dyns [*err* buf]
+      (bad-parse x y))
+    (set exit-error (string/slice buf 0 -2)))
+  (defn bc [x y z a b]
+    (when exit
+      (bad-compile x y z a b)
+      (os/exit 1))
+    (put! env :exit true)
+    (def buf !"")
+    (with-dyns [*err* buf]
+      (bad-compile x nil z a b))
+    (set exit-error (string/slice buf 0 -2))
+    (set exit-fiber y))
   (unless f
     (error (string "could not find file " path)))
   (def nenv
@@ -4035,10 +4020,9 @@
         (buffer/push! buf (string/repeat " " delta))
         (set current-column indent)))
 
-    (defn emit-nl ([] (emit-nl nil))
-      ([indent]
-        (buffer/push! buf "\n")
-        (set current-column 0)))
+    (defn emit-nl []
+      (buffer/push! buf "\n")
+      (set current-column 0))
 
     (defn emit-word ([word indent] (emit-word word indent (length word)))
       ([word indent len]
@@ -4850,8 +4834,7 @@
   (put! (dyn sym) :flycheck is-safe-def))
 (each sym ['import 'import* 'dofile 'require]
   (put! (dyn sym) :flycheck flycheck-importer))
-(each sym ['use]
-  (put! (dyn sym) :flycheck flycheck-use))
+(put! (dyn 'use) :flycheck flycheck-use)
 
 ;;;
 ;;;
@@ -4863,10 +4846,6 @@
 
   (def- seps {:windows "\\" :cygwin "\\"})
   (defn- sep [] (get seps (os/which) "/"))
-
-  (defn- pkg-rpath
-    [path]
-    (os/realpath path))
 
   (defn- pkg-root
     """
@@ -4909,11 +4888,6 @@
   (defn- get-manifest-filename
     [pkg-name]
     (pkg-file pkg-name "manifest.edn"))
-
-  (defn- prime-pkg-paths
-    []
-    (def s (sep))
-    (pkg-mkdirs (pkg-dir)))
 
   (defn- get-files [manifest]
     (def files (get manifest :files ![]))
@@ -4985,7 +4959,7 @@
     (def manifest (pkg/manifest pkg-name))
     (def dir (os/cwd))
     (def workdir (get manifest :local-source "."))
-    (def fixed-prefix (pkg-rpath (pkg-root)))
+    (def fixed-prefix (os/realpath (pkg-root)))
     (try
       (os/cd workdir)
       ([_] (print "cannot enter source directory " workdir " for package " pkg-name)))
@@ -5050,15 +5024,12 @@
     function with the same name in the package script.
     """
     [pkg-name]
-    (def breakage !{})
-    (each b (pkg/list)
-      (unless (= b pkg-name)
-        (def m (pkg/manifest b))
-        (def deps (get m :dependencies []))
-        (each d deps
-          (if (= d pkg-name) (put! breakage b true)))))
-    (when (next breakage)
-      (def breakage-list (sort (keys breakage)))
+    (def breakage
+      (filter (fn [b] (and (not= b pkg-name)
+                           (has-value? (get (pkg/manifest b) :dependencies []) pkg-name)))
+              (pkg/list)))
+    (unless (empty? breakage)
+      (def breakage-list (sort breakage))
       (errorf "cannot uninstall %s, breaks dependent packages %n" pkg-name breakage-list))
     (pkg-uninstall-unchecked pkg-name))
 
@@ -5105,15 +5076,13 @@
         (array/push! to-drop b)))
     (print "pruning " (length to-drop) " packages")
     (each b to-drop
-      (print "uninstall " b))
-    (each b to-drop
       (print "uninstalling " b)
       (pkg-uninstall-unchecked b)))
 
   (defn pkg/installed?
     "Checks whether a package is installed."
     [pkg-name]
-    (not (not (os/stat (pkg-dir pkg-name) :mode))))
+    (truthy? (os/stat (pkg-dir pkg-name) :mode)))
 
   (defn pkg/install
     """
@@ -5124,7 +5093,7 @@
     in the package script.
     """
     [path & {:as config}]
-    (def path (pkg-rpath path))
+    (def path (os/realpath path))
     (def s (sep))
     ; Detect package name
     (def infofile-src1 (string path s "pkg" s "info.edn"))
@@ -5148,7 +5117,7 @@
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
     ; Setup installed paths
-    (prime-pkg-paths)
+    (pkg-mkdirs (pkg-dir))
     (os/mkdir (pkg-dir pkg-name))
     ; Copy aliased infofile
     (when (fexists infofile-src2)
@@ -5177,7 +5146,6 @@
       (def check (get config :check))
       (def all-hooks (seq [[k v] :pairs module :when (symbol? k) :unless (get v :private)] (keyword k)))
       (put! man :hooks all-hooks)
-      (do-hook module pkg-name :dependencies man) ; deprecated, use :postdeps
       (do-hook module pkg-name :postdeps man)
       (when clean
         (do-hook module pkg-name :clean man))
@@ -5188,9 +5156,7 @@
       (when check
         (do-hook module pkg-name :check man)))
     (print "installed " pkg-name)
-    (when (or (get man :has-exe)
-              ; remove eventually
-              (get man :has-bin-script))
+    (when (get man :has-exe)
       (eprintf "executable files have been installed to %s" (wattle/binpath)))
     (when (get man :has-man)
       (eprintf "man pages have been installed to %s" (wattle/manpath)))
@@ -5214,7 +5180,7 @@
       (def install-hook (string dest-dir s "pkg" s "init.wattle"))
       (edefer (rmrf dest-dir) ; don't leave garbage on failure
         (def install-source ![])
-        (defn real-or-plain [path] (if (os/stat path :mode) (pkg-rpath path) path))
+        (defn real-or-plain [path] (if (os/stat path :mode) (os/realpath path) path))
         (def libpath (real-or-plain (wattle/libpath)))
         (def binpath (real-or-plain (wattle/binpath)))
         (def manpath (real-or-plain (wattle/manpath)))
@@ -5300,15 +5266,8 @@
   (defn pkg/whois
     "Given a file path, figures out which package installed it."
     [path]
-    (var ret nil)
-    (def rpath (pkg-rpath path))
-    (each pkg-name (pkg/list)
-      (def files (get (pkg/manifest pkg-name) :files []))
-      (def has-file (index-of rpath files))
-      (when has-file
-        (set ret pkg-name)
-        (break)))
-    ret)
+    (def rpath (os/realpath path))
+    (find #(index-of rpath (get (pkg/manifest $) :files [])) (pkg/list)))
 
   (defn- pkg-add-file-to
     [manifest base src dest chmod-mode]
@@ -5362,7 +5321,6 @@
     ([manifest src filename chmod-mode]
       (pkg-mkdirs (wattle/binpath))
       (put! manifest :has-exe true)
-      (put! manifest :has-bin-script true) ; remove eventually
       (pkg-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
 
   (defn pkg/add-manpage
@@ -5439,7 +5397,7 @@
   [i artifact kind]
   (def ok (get pkg-artifact-allowed-keys kind))
   (each k (keys artifact)
-    (unless (find #(= k $) ok)
+    (unless (has-value? ok k)
       (pkg-artifact-fail i artifact "%v is not a key of an %v" k kind))))
 
 (defn- pkg-artifact-check-libs
@@ -5474,8 +5432,7 @@
   (unless (vector? artifacts)
     (error "info.edn: :artifacts must be a vector"))
   (def by-name !{})
-  (var i 0)
-  (each artifact artifacts
+  (loop [[i artifact] :pairs artifacts]
     (unless (map? artifact)
       (errorf "info.edn: artifact %d must be a map" i))
     (def kind (get artifact :type))
@@ -5488,12 +5445,9 @@
                           (get (get by-name name) :index)))
     (put! by-name name {:index i :type kind})
     (pkg-artifact-check-string i artifact (if (= kind :exe) :entry :root))
-    (pkg-artifact-check-keys i artifact kind)
-    (++ i))
-  (set i 0)
-  (each artifact artifacts
-    (pkg-artifact-check-libs i artifact by-name)
-    (++ i))
+    (pkg-artifact-check-keys i artifact kind))
+  (loop [[i artifact] :pairs artifacts]
+    (pkg-artifact-check-libs i artifact by-name))
   artifacts)
 
 (defn pkg/artifacts
@@ -5568,7 +5522,7 @@
   ([x kind name opts]
     (def chosen (pkg/artifacts x kind name))
     (def libs !{})
-    (each artifact (pkg/artifacts x)
+    (each artifact (get x :artifacts)
       (when (= :lib (get artifact :type))
         (put! libs (get artifact :name) artifact)))
     (def dir (get opts :dir))
@@ -5698,7 +5652,20 @@
 (defn- lint-level [text]
   (or (scan-number text) (keyword text)))
 
-(defn- cli-config [executable validate?]
+; The rules that check and test share, and those that build exe and build lib.
+(def- cli-lint-rules
+  ["--lint-error" {:kind :single :short "e" :proxy "level" :value lint-level
+                   :help "Set the lint level at which a message is an error: none, relaxed, normal, strict, all or a number (0 to 3). The default is none."}
+   "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
+                  :help "Set the lint level at which a message is a warning. It takes the same values as --lint-error. The default is normal."}])
+
+(def- cli-target-rules
+  ["--release" {:kind :single :short "r" :proxy "mode"
+                :help "Optimise for safe, fast or small. The default is safe."}
+   "--target" {:kind :single :short "t" :proxy "triple"
+               :help "Build for a Zig target triple. The default is this machine."}])
+
+(defn- cli-config [validate?]
   (def run-config
     {:validate? validate?
      :short "r"
@@ -5727,10 +5694,7 @@
      :rules
      ["--bail" {:kind :flag :short "b"
                 :help "Stop at the first error."}
-      "--lint-error" {:kind :single :short "e" :proxy "level" :value lint-level
-                      :help "Set the lint level at which a message is an error: none, relaxed, normal, strict, all or a number (0 to 3). The default is none."}
-      "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
-                     :help "Set the lint level at which a message is a warning. It takes the same values as --lint-error. The default is normal."}
+      |cli-lint-rules
       :script {:proxy "script"
                :help "The script to check. Standard input is checked when there is none."}]})
   (def test-config
@@ -5742,10 +5706,7 @@
                 :help "Stop after the first test file that fails."}
       "--file" {:kind :multi :short "f" :proxy "path"
                 :help "Run only the test file at path, relative to ./test. It can be repeated and is not compatible with --no-file."}
-      "--lint-error" {:kind :single :short "e" :proxy "level" :value lint-level
-                      :help "Set the lint level at which a message is an error: none, relaxed, normal, strict, all or a number (0 to 3). The default is none."}
-      "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
-                     :help "Set the lint level at which a message is a warning. It takes the same values as --lint-error. The default is normal."}
+      |cli-lint-rules
       "--no-file" {:kind :multi :short "F" :proxy "path"
                    :help "Do not run the test file at path, relative to ./test. It can be repeated and is not compatible with --file."}
       "--no-test" {:kind :multi :short "T" :proxy "name"
@@ -5762,10 +5723,7 @@
      :subs
      ["exe" {:validate? validate?
              :help "Build the executables that info.edn declares."
-             :rules ["--release" {:kind :single :short "r" :proxy "mode"
-                                  :help "Optimise for safe, fast or small. The default is safe."}
-                     "--target" {:kind :single :short "t" :proxy "triple"
-                                 :help "Build for a Zig target triple. The default is this machine."}
+             :rules [|cli-target-rules
                      :name {:proxy "name"
                             :help "The executable to build. The default is every executable."}]}
       "img" {:validate? validate?
@@ -5778,10 +5736,7 @@
                               :help "The image path. The default is the source path with .wimage in place of .wattle."}]}
       "lib" {:validate? validate?
              :help "Build the native modules that info.edn declares."
-             :rules ["--release" {:kind :single :short "r" :proxy "mode"
-                                  :help "Optimise for safe, fast or small. The default is safe."}
-                     "--target" {:kind :single :short "t" :proxy "triple"
-                                 :help "Build for a Zig target triple. The default is this machine."}
+             :rules [|cli-target-rules
                      :name {:proxy "name"
                             :help "The native module to build. The default is every native module."}]}]})
   (def gum-config
@@ -5847,11 +5802,12 @@
 ; The rules are fixed, so they are checked here, while the image is generated,
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
+(def- cli-validating-config (cli-config true))
 (each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
             ["pkg" "install" "directory"]
             ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
             ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"]]
-  (cli-parse-args "wattle" (cli-config "wattle" true) argv))
+  (cli-parse-args "wattle" cli-validating-config argv))
 
 (defn- apply-color
   [colorize]
@@ -5865,18 +5821,14 @@
   (file/read stdin :line buf))
 
 (defn- cli-run [opts script]
-  (var should-repl nil)
+  (def raw-stdin (get opts "stdin"))
+  (def should-repl (or raw-stdin (get opts "repl")))
+  (def quiet (get opts "quiet"))
+  (def expect-image (get opts "img"))
   (var no-file true)
-  (var quiet false)
-  (var raw-stdin false)
-  (var expect-image false)
 
   ; Options are applied in a fixed order, not the order they were written in.
   (when (get opts "debug") (setdyn *debug* true) (setdyn *redef* true))
-  (when (get opts "stdin") (set raw-stdin true) (set should-repl true))
-  (when (get opts "repl") (set should-repl true))
-  (when (get opts "quiet") (set quiet true))
-  (when (get opts "img") (set expect-image true))
 
   (each library (get opts "lib" [])
     (import* library :prefix "" :exit true))
@@ -5911,6 +5863,15 @@
       (getter (getprompt p) buf env))
     (repl getchunk nil env)))
 
+(defn- cli-fail [& parts]
+  (eprint |parts)
+  (os/exit 1))
+
+(defn- cli-require-prefix []
+  (def root (dyn *prefix*))
+  (when (or (nil? root) (empty? root))
+    (cli-fail "the prefix is not set: set WATTLE_PREFIX or pass --prefix")))
+
 (defn- cli-test-setup
   """
   Returns the source that sets the dynamic bindings the test files read.
@@ -5935,17 +5896,14 @@
   a file failed or none was run.
   """
   [opts]
-  (defn fail [& parts]
-    (eprint |parts)
-    (os/exit 1))
   (compif (and (dyn 'os/spawn) (dyn 'os/dir) (dyn 'os/stat))
     (do
       (when (and (get opts "file") (get opts "no-file"))
-        (fail "cannot use both --file and --no-file"))
+        (cli-fail "cannot use both --file and --no-file"))
       (when (and (get opts "test") (get opts "no-test"))
-        (fail "cannot use both --test and --no-test"))
+        (cli-fail "cannot use both --test and --no-test"))
       (unless (= :directory (os/stat "test" :mode))
-        (fail "no directory ./test"))
+        (cli-fail "no directory ./test"))
       (def only (get opts "file"))
       (def skip (get opts "no-file"))
       (defn use? [path]
@@ -5964,8 +5922,8 @@
             :file (when (string/has-suffix? ".wattle" path) (array/push! out path))
             :directory (array/concat! out (test-files path))))
         out)
-      (def files (array/slice (filter use? (test-files "./test"))))
-      (when (empty? files) (fail "no test files to run in ./test"))
+      (def files (filter use? (test-files "./test")))
+      (when (empty? files) (cli-fail "no test files to run in ./test"))
       (def seed
         (or (get opts "seed")
             (math/floor (% (* 1000 (os/clock :realtime :double)) 2147483648))))
@@ -6046,7 +6004,7 @@
       (unless (empty? failed)
         (each path failed (print "  " (shown path)))
         (os/exit 1)))
-    (fail "test is not supported with reduced os")))
+    (cli-fail "test is not supported with reduced os")))
 
 (defn- cli-check [opts params]
   (when (has-key? opts "lint-warn") (setdyn *lint-warn* (get opts "lint-warn")))
@@ -6084,34 +6042,32 @@
   on a failure that is not zig's own.
   """
   [kind cmd]
-  (defn fail [& parts]
-    (eprint |parts)
-    (os/exit 1))
   (compif (dyn 'os/spawn)
     (do
       (def opts (get cmd :opts))
       (def mode (get cli-release-modes (get opts "release" "safe")))
-      (unless mode (fail "release must be safe, fast or small"))
+      (unless mode (cli-fail "release must be safe, fast or small"))
       (def dir (os/realpath (os/cwd)))
       (def info-path
         (find fexists [(string dir "/pkg/info.edn") (string dir "/info.edn")]))
-      (unless info-path (fail "no info.edn in " dir))
+      (unless info-path (cli-fail "no info.edn in " dir))
       (def info (parse (slurp info-path)))
       (def gen (string dir "/" cli-zig-cache "/wattle-build"))
+      (def [src-ok srcpath] (protect (wattle/srcpath)))
+      (unless src-ok (cli-fail "error: " srcpath))
       (def [ok files]
         (protect (pkg/zig-files info kind (get (get cmd :params) :name)
-                                 {:dir dir :srcpath (wattle/srcpath) :gen gen})))
-      (unless ok (fail "error: " files))
-      (def srcpath (wattle/srcpath))
+                                 {:dir dir :srcpath srcpath :gen gen})))
+      (unless ok (cli-fail "error: " files))
       (def zon-path (string srcpath "/" cli-zig-build-file ".zon"))
       (unless (fexists zon-path)
-        (fail "the Wattle package is not at " srcpath ": " zon-path " does not exist"))
-      (def [zig-ok zig-version]
+        (cli-fail "the Wattle package is not at " srcpath ": " zon-path " does not exist"))
+      (def [zig-ok _]
         (protect (let [p (os/spawn ["zig" "version"] :p {:out :pipe})
                        out (ev/read (p :out) :all)]
                    (os/proc-wait p)
                    (string/trim out))))
-      (unless zig-ok (fail "zig was not found on the PATH, and wattle build needs it"))
+      (unless zig-ok (cli-fail "zig was not found on the PATH, and wattle build needs it"))
       (pkg-mkdirs gen)
       (each [file text] [[cli-zig-build-file (get files :build)] [(string cli-zig-build-file ".zon") (get files :zon)]]
         (def path (string gen "/" file))
@@ -6125,7 +6081,7 @@
       (def status (os/execute args :p))
       (unless (zero? status) (os/exit status))
       (print "built " kind " in " dir "/zig-out"))
-    (fail "build " kind " is not supported with reduced os")))
+    (cli-fail "build " kind " is not supported with reduced os")))
 
 (defn- cli-build [build]
   (def sub (get build :sub))
@@ -6137,33 +6093,17 @@
 (defn- cli-pkg [pkg]
   (def verb (get pkg :sub))
   (def params (get verb :params))
-  (defn unsupported [name]
-    (eprint "pkg " name " is not supported with reduced os")
-    (os/exit 1))
-  (compwhen (dyn 'pkg/list)
-    (def root (dyn *prefix*))
-    (when (or (nil? root) (empty? root))
-      (eprint "the prefix is not set: set WATTLE_PREFIX or pass --prefix")
-      (os/exit 1)))
-  (case (get verb :cmd)
-    "install" (compif (dyn 'pkg/install)
-                (pkg/install (get params :directory))
-                (unsupported "install"))
-    "reinstall" (compif (dyn 'pkg/reinstall)
-                  (pkg/reinstall (get params :name))
-                  (unsupported "reinstall"))
-    "uninstall" (compif (dyn 'pkg/uninstall)
-                  (pkg/uninstall (get params :name))
-                  (unsupported "uninstall"))
-    "update" (compif (dyn 'pkg/update-all)
-               (pkg/update-all)
-               (unsupported "update"))
-    "clean" (compif (dyn 'pkg/prune)
-              (pkg/prune)
-              (unsupported "clean"))
-    "list" (compif (dyn 'pkg/list)
-             (each l (pkg/list) (print l))
-             (unsupported "list"))))
+  (compif (dyn 'pkg/list)
+    (do
+      (cli-require-prefix)
+      (case (get verb :cmd)
+        "install" (pkg/install (get params :directory))
+        "reinstall" (pkg/reinstall (get params :name))
+        "uninstall" (pkg/uninstall (get params :name))
+        "update" (pkg/update-all)
+        "clean" (pkg/prune)
+        "list" (each l (pkg/list) (print l))))
+    (cli-fail "pkg " (get verb :cmd) " is not supported with reduced os")))
 
 (defn- cli-gum
   """
@@ -6175,18 +6115,13 @@
   unless --force is set.
   """
   [opts params]
-  (defn fail [& parts]
-    (eprint |parts)
-    (os/exit 1))
   (compif (and (dyn 'os/stat) (dyn 'os/mkdir))
     (do
-      (def root (dyn *prefix*))
-      (when (or (nil? root) (empty? root))
-        (fail "the prefix is not set: set WATTLE_PREFIX or pass --prefix"))
+      (cli-require-prefix)
       (def source-dir (string (wattle/srcpath) "/src/gum"))
       (def list-path (string source-dir "/modules.edn"))
       (unless (fexists list-path)
-        (fail "the Gum modules are not at " source-dir ": " list-path " does not exist"))
+        (cli-fail "the Gum modules are not at " source-dir ": " list-path " does not exist"))
       (def modules (edn/decode (slurp list-path) :p))
       (def names (get params :modules []))
       (if (empty? names)
@@ -6198,7 +6133,7 @@
           (each module modules (put! by-name (get module :name) module))
           (def unknown (filter #(not (get by-name $)) names))
           (unless (empty? unknown)
-            (fail "unknown Gum module: " (string/join ", " unknown)
+            (cli-fail "unknown Gum module: " (string/join ", " unknown)
                   "\nrun gum with no arguments to list the modules"))
           (def target-dir (string (get opts "dir" "deps") "/gum"))
           (def force? (get opts "force" false))
@@ -6210,13 +6145,13 @@
               (def present? (fexists to))
               (def same? (and present? (= content (string (slurp to)))))
               (when (and present? (not same?) (not force?))
-                (fail to " exists and differs from the Gum copy; use --force to replace it"))
+                (cli-fail to " exists and differs from the Gum copy; use --force to replace it"))
               (array/push! copies [to content same?])))
           (pkg-mkdirs target-dir)
           (each [to content same?] copies
             (unless same? (spit to content))
             (print (if same? "unchanged " "copied ") to)))))
-    (fail "gum is not supported with reduced os")))
+    (cli-fail "gum is not supported with reduced os")))
 
 (defn cli-main
   """
@@ -6236,7 +6171,7 @@
       (os/isatty stderr)))
 
   (def executable (dyn *executable* "wattle"))
-  (def result (cli-parse-args executable (cli-config executable false) args))
+  (def result (cli-parse-args executable (cli-config false) args))
   (unless (empty? (get result :err))
     (eprin (get result :err))
     (os/exit 1))
@@ -6301,7 +6236,7 @@
   (def image
     (let [env-pairs (pairs (env-lookup root-env))
           essential-pairs (filter (fn [[k v]] (or (nfunction? v) (abstract? v))) env-pairs)
-          lookup (table |(mapcat identity essential-pairs))
+          lookup (from-pairs essential-pairs)
           reverse-lookup (invert lookup)]
       ; Check no duplicate values
       (def temp !{})

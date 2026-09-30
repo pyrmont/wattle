@@ -119,8 +119,16 @@
 ; Reinstallation should also work without being concerned about breaking dependencies
 (assert-no-error "reinstall dep" (pkg/reinstall "sample-dep2"))
 
-; Now prune should get rid of everything except sample-dep2
-(assert-no-error "second prune" (pkg/prune))
+; Now prune should get rid of everything except sample-dep2. It prints a count
+; and then one line for each package as it is removed.
+(def prune-out !"")
+(assert-no-error "second prune" (with-dyns [*out* prune-out] (pkg/prune)))
+(def prune-lines (string/split "\n" (string prune-out)))
+(assert (= "pruning 2 packages" (first prune-lines)) "prune prints the count")
+(assert (= 2 (length (filter #(string/has-prefix? "uninstalling " $) prune-lines)))
+        "prune prints a line for each package it removes")
+(assert (empty? (filter #(string/has-prefix? "uninstall " $) prune-lines))
+        "prune prints no preview list")
 
 ; Now check that we exactly one package left, which is dep2
 (assert (= 1 (length (pkg/list))) "packages are listed correctly 5")
@@ -156,6 +164,26 @@
 (assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode))
              (nil? (os/stat bin-mod :mode)))
         "uninstalling removes programs, man pages and modules")
+
+; A package script's `dependencies` hook is not run, and add-bin records
+; :has-exe and not :has-bin-script.
+(def hook-dir (string prefix "-hook"))
+(rmrf hook-dir)
+(assert (os/mkdir hook-dir))
+(assert (os/mkdir (string hook-dir "/pkg")))
+(spit (string hook-dir "/hookbin") "#!/bin/sh\n")
+(spit (string hook-dir "/pkg/info.edn") "{:name \"hook-pkg\"}")
+(spit (string hook-dir "/pkg/init.wattle")
+      (string "(defn dependencies [manifest &] (put! manifest :deps-hook-ran true))\n"
+              "(defn install [manifest &] (pkg/add-bin manifest \"hookbin\"))\n"))
+(assert-no-error "hook-pkg install"
+                 (with-dyns [*err* !""] (pkg/install hook-dir)))
+(def hook-manifest (pkg/manifest "hook-pkg"))
+(assert (nil? (get hook-manifest :deps-hook-ran)) "the dependencies hook is not run")
+(assert (get hook-manifest :has-exe) "add-bin records :has-exe")
+(assert (nil? (get hook-manifest :has-bin-script)) "add-bin does not record :has-bin-script")
+(assert-no-error "hook-pkg uninstall" (pkg/uninstall "hook-pkg"))
+(rmrf hook-dir)
 
 ; With no usable prefix the pkg functions raise.
 (with-dyns [*prefix* ""]
