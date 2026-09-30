@@ -10,7 +10,8 @@
 (def run (filter next (string/split " " (os/getenv "SUBRUN" ""))))
 
 ; `wattle test` runs the test files under ./test, one process each. Each case
-; runs it in a fixture project and compares the exit status.
+; runs it in a fixture project and compares the exit status. The child's output
+; goes to a log file so that it stays out of the terminal.
 (compwhen (and (dyn 'os/execute) (dyn 'os/cd) (dyn 'os/mkdir))
   (def module-source (slurp "src/gum/test.wattle"))
   (def home (os/cwd))
@@ -22,7 +23,9 @@
 
   (defn wattle-in-fixture [sub args]
     (os/cd fixture)
-    (def status (os/execute [|run wattle sub |args] :p))
+    (def log (file/open (string root "/log") :ab))
+    (def status (os/execute [|run wattle sub |args] :p {:out log :err log}))
+    (file/close log)
     (os/cd home)
     status)
 
