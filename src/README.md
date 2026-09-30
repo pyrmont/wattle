@@ -362,8 +362,8 @@ file cannot be compiled under `Config` and left out of `Selection`.
 directories derive from: `<syspath>/lib/wattle` for modules, `<syspath>/bin`
 for programs and `<syspath>/share/man` for man pages. A path is used as given.
 `none` builds a runtime with no system path, which skips every `:sys:` module
-pattern and makes the twig commands raise. `required`, the default, sets the
-empty string, and the first `:sys:` lookup or twig command raises an error that
+pattern and makes the pkg commands raise. `required`, the default, sets the
+empty string, and the first `:sys:` lookup or pkg command raises an error that
 names `WATTLE_PATH` and `--syspath`. `WATTLE_PATH` and `--syspath` replace the
 built-in value. `wattle/libpath`, `wattle/binpath`, `wattle/manpath` and
 `wattle/srcpath` are functions of no arguments that return the four derived
@@ -514,7 +514,7 @@ and runs a file one top-level form at a time.
 only `os/exit`, `os/which`, `os/arch` and `os/compiler`, which breaks
 `test/helper.wattle` itself, so every suite fails before reaching its own code.
 Guarding it would mean skipping `suite-os` entirely along with much of
-`suite-ev` and `suite-twig`, and the run would pass while testing much less
+`suite-ev` and `suite-pkg`, and the run would pass while testing much less
 than it appears to. Revisit it only with a plan for what the suites should
 still assert.
 

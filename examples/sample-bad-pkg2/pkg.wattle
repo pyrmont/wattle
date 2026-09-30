@@ -1,6 +1,6 @@
 (defn install
   [manifest &]
-  (twig/add-file manifest "badmod.wattle"))
+  (pkg/add-file manifest "badmod.wattle"))
 
 (defn check
   [&]

@@ -1,4 +1,4 @@
 {
-  :name "sample-twig"
+  :name "sample-pkg"
   :dependencies ["sample-dep1" "sample-dep2"]
 }

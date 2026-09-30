@@ -1,3 +1,0 @@
-(defn install
-  [manifest &]
-  (twig/add-file manifest "dep1.wattle"))

@@ -1,5 +1,0 @@
-(defn install
-  [manifest &]
-  (twig/add-bin manifest "hello")
-  (twig/add-manpage manifest "hello.1")
-  (twig/add-file manifest "bin-mod.wattle"))

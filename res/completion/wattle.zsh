@@ -47,9 +47,9 @@ _wattle() {
         'build:Build an artifact from source'
         'check:Compile a script without running it'
         'help:Describe a subcommand'
+        'pkg:Manage installed packages'
         'run:Run a script, evaluate code or start the REPL'
         'test:Run the tests in ./test'
-        'twig:Manage installed packages'
     )
 
     _arguments -C -s \
@@ -75,21 +75,6 @@ _wattle() {
             ;;
         args)
             case $line[1] in
-                run)
-                    shift words
-                    (( CURRENT-- ))
-                    _wattle_run_options && ret=0
-                    ;;
-                check)
-                    shift words
-                    (( CURRENT-- ))
-                    _wattle_check_options && ret=0
-                    ;;
-                test)
-                    shift words
-                    (( CURRENT-- ))
-                    _wattle_test_options && ret=0
-                    ;;
                 build)
                     if (( CURRENT == 2 )); then
                         _values 'target' \
@@ -118,7 +103,12 @@ _wattle() {
                         esac
                     fi
                     ;;
-                twig)
+                check)
+                    shift words
+                    (( CURRENT-- ))
+                    _wattle_check_options && ret=0
+                    ;;
+                pkg)
                     if (( CURRENT == 2 )); then
                         _values 'verb' \
                             'install[Install a package from a directory]' \
@@ -132,17 +122,27 @@ _wattle() {
                             install) _directories && ret=0 ;;
                             reinstall|uninstall)
                                 local -a packages
-                                packages=(${(f)"$(${words[1]} twig list 2>/dev/null)"})
+                                packages=(${(f)"$(${words[1]} pkg list 2>/dev/null)"})
                                 _describe -t packages 'package' packages && ret=0
                                 ;;
                         esac
                     fi
                     ;;
+                run)
+                    shift words
+                    (( CURRENT-- ))
+                    _wattle_run_options && ret=0
+                    ;;
+                test)
+                    shift words
+                    (( CURRENT-- ))
+                    _wattle_test_options && ret=0
+                    ;;
                 help)
                     case "$CURRENT:$line[2]" in
                         2:*) _describe -t subcommands 'subcommand' subcommands && ret=0 ;;
                         3:build) _values 'target' exe img lib && ret=0 ;;
-                        3:twig) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
+                        3:pkg) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
                     esac
                     ;;
                 *)

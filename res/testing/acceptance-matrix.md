@@ -309,7 +309,7 @@ matrix that is working.**
 **Only one entry runs the Janet suites at a time, and that is not an
 optimisation.** The suites share three fixtures with every other concurrent
 run: `suite-ev.wattle` binds a fixed port 8761, `suite-net.wattle` binds a fixed
-`/tmp/wattle-suite-net.sock`, and `suite-ev.wattle` and `suite-twig.wattle`
+`/tmp/wattle-suite-net.sock`, and `suite-ev.wattle` and `suite-pkg.wattle`
 create `unique.txt` and `tempdir123` **in the repository working directory**.
 Two overlapping `full` entries therefore cross-connect. Usually one fails in
 `net/read`; occasionally one parks in `kevent` and never returns, which is the

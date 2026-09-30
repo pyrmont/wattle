@@ -4864,11 +4864,11 @@
   (def- seps {:windows "\\" :cygwin "\\"})
   (defn- sep [] (get seps (os/which) "/"))
 
-  (defn- twig-rpath
+  (defn- pkg-rpath
     [path]
     (os/realpath path))
 
-  (defn- twig-root
+  (defn- pkg-root
     """
     Returns the system path, the root that the library, program and manual
     directories derive from.
@@ -4877,7 +4877,7 @@
     (wattle/libpath) ; raises if there is no system path or it is empty
     (dyn *syspath*))
 
-  (defn- twig-mkdirs
+  (defn- pkg-mkdirs
     "Creates the directory at path and any of its parents that are missing."
     [path]
     (def s (sep))
@@ -4890,25 +4890,25 @@
         (protect (os/mkdir so-far))))
     (assertf (= :directory (os/stat path :mode)) "cannot create directory %s" path))
 
-  (defn- twig-dir
-    ([] (twig-dir nil))
-    ([twig-name]
+  (defn- pkg-dir
+    ([] (pkg-dir nil))
+    ([pkg-name]
       (def s (sep))
-      (string (wattle/libpath) s "twig" (if twig-name s) twig-name)))
+      (string (wattle/libpath) s "pkg" (if pkg-name s) pkg-name)))
 
-  (defn- twig-file
-    [twig-name filename]
+  (defn- pkg-file
+    [pkg-name filename]
     (def s (sep))
-    (string (wattle/libpath) s "twig" s twig-name s filename))
+    (string (wattle/libpath) s "pkg" s pkg-name s filename))
 
   (defn- get-manifest-filename
-    [twig-name]
-    (twig-file twig-name "manifest.edn"))
+    [pkg-name]
+    (pkg-file pkg-name "manifest.edn"))
 
-  (defn- prime-twig-paths
+  (defn- prime-pkg-paths
     []
     (def s (sep))
-    (twig-mkdirs (twig-dir)))
+    (pkg-mkdirs (pkg-dir)))
 
   (defn- get-files [manifest]
     (def files (get manifest :files ![]))
@@ -4968,96 +4968,96 @@
     (buffer/format! b "%.99m\n" frozen)
     (spit manifest-name b))
 
-  (defn twig/manifest
+  (defn pkg/manifest
     "Gets the manifest for a given installed package."
-    [twig-name]
-    (def name (get-manifest-filename twig-name))
-    (assertf (fexists name) "no package %v found" twig-name)
+    [pkg-name]
+    (def name (get-manifest-filename pkg-name))
+    (assertf (fexists name) "no package %v found" pkg-name)
     (parse (slurp name)))
 
-  (defn- get-twig-module
-    [twig-name]
-    (def manifest (twig/manifest twig-name))
+  (defn- get-pkg-module
+    [pkg-name]
+    (def manifest (pkg/manifest pkg-name))
     (def dir (os/cwd))
     (def workdir (get manifest :local-source "."))
-    (def fixed-syspath (twig-rpath (twig-root)))
+    (def fixed-syspath (pkg-rpath (pkg-root)))
     (try
       (os/cd workdir)
-      ([_] (print "cannot enter source directory " workdir " for package " twig-name)))
+      ([_] (print "cannot enter source directory " workdir " for package " pkg-name)))
     (defer (os/cd dir)
       (def new-env (make-env))
       (put! new-env *module-cache* !{})
       (put! new-env *module-loading* !{})
-      (put! new-env *module-make-env* (fn make-twig-env [&] (make-env new-env)))
+      (put! new-env *module-make-env* (fn make-pkg-env [&] (make-env new-env)))
       (put! new-env :workdir workdir)
-      (put! new-env :name twig-name)
+      (put! new-env :name pkg-name)
       (put! new-env *syspath* fixed-syspath)
       (with-env new-env
-        (put! new-env :twig-dir (twig-dir twig-name)) ; get the syspath right
+        (put! new-env :pkg-dir (pkg-dir pkg-name)) ; get the syspath right
         (try
-          (require (string "@syspath/lib/wattle/twig/" twig-name))
+          (require (string "@syspath/lib/wattle/pkg/" pkg-name))
           ([e f]
-            (def pfx "could not find module @syspath/lib/wattle/twig/")
+            (def pfx "could not find module @syspath/lib/wattle/pkg/")
             (def msg (if (and (string? e)
                               (string/has-prefix? pfx e))
-                       "package must contain twig.wattle or twig/init.wattle"
+                       "package must contain pkg.wattle or pkg/init.wattle"
                        e))
             (propagate msg f))))))
 
   (defn- do-hook
-    [module twig-name hook & args]
+    [module pkg-name hook & args]
     (def hookf (module/value module (symbol hook)))
     (unless hookf (break))
     (def dir (os/cwd))
     (os/cd (get module :workdir "."))
     (defer (os/cd dir)
-      (print "running hook " hook " for package " twig-name)
+      (print "running hook " hook " for package " pkg-name)
       (hookf |args)))
 
-  (defn twig/list
+  (defn pkg/list
     "Gets a list of all installed packages in lexical order."
     []
-    (def d (twig-dir))
+    (def d (pkg-dir))
     (if (os/stat d :mode)
       (sort! (os/dir d))
       ![]))
 
-  (defn- twig-uninstall-unchecked
-    [twig-name]
-    (def man (twig/manifest twig-name))
+  (defn- pkg-uninstall-unchecked
+    [pkg-name]
+    (def man (pkg/manifest pkg-name))
     (def all-hooks (get man :hooks ![]))
     (when (index-of :uninstall all-hooks)
-      (def module (get-twig-module twig-name))
-      (do-hook module twig-name :uninstall man))
+      (def module (get-pkg-module pkg-name))
+      (do-hook module pkg-name :uninstall man))
     (def files (get man :files []))
     (each file (reverse files)
       (print "remove " file)
       (case (os/stat file :mode)
         :file (os/rm file)
         :directory (os/rmdir file)))
-    (rmrf (twig-dir twig-name))
+    (rmrf (pkg-dir pkg-name))
     nil)
 
-  (defn twig/uninstall
+  (defn pkg/uninstall
     """
     Removes a package from the current syspath. There is 1 hook called during
     uninstallation (uninstall). A user can register a hook by defining a
     function with the same name in the package script.
     """
-    [twig-name]
+    [pkg-name]
     (def breakage !{})
-    (each b (twig/list)
-      (unless (= b twig-name)
-        (def m (twig/manifest b))
+    (each b (pkg/list)
+      (unless (= b pkg-name)
+        (def m (pkg/manifest b))
         (def deps (get m :dependencies []))
         (each d deps
-          (if (= d twig-name) (put! breakage b true)))))
+          (if (= d pkg-name) (put! breakage b true)))))
     (when (next breakage)
       (def breakage-list (sort (keys breakage)))
-      (errorf "cannot uninstall %s, breaks dependent packages %n" twig-name breakage-list))
-    (twig-uninstall-unchecked twig-name))
+      (errorf "cannot uninstall %s, breaks dependent packages %n" pkg-name breakage-list))
+    (pkg-uninstall-unchecked pkg-name))
 
-  (defn twig/topolist
+  (defn pkg/topolist
     "Gets topological order of all packages, such that each package is listed after its dependencies."
     []
     (def visited !{})
@@ -5070,21 +5070,21 @@
       (if (get visited b) (break))
       (if (get cycle-detect b) (errorf "cycle detected in package dependencies: %s" (string/join " -> " stack)))
       (put! cycle-detect b true)
-      (each d (get (twig/manifest b) :dependencies []) (visit d))
+      (each d (get (pkg/manifest b) :dependencies []) (visit d))
       (put! cycle-detect b nil)
       (put! visited b true)
       (array/pop! stack)
       (array/push! order b))
-    (each b (twig/list) (visit b))
+    (each b (pkg/list) (visit b))
     order)
 
-  (defn twig/prune
+  (defn pkg/prune
     """
     Removes all orphaned packages from the current syspath. An orphaned package is a
     package that is marked for :auto-remove and is not depended on by any other package.
     """
     []
-    (def topo (twig/topolist))
+    (def topo (pkg/topolist))
     (def rtopo (reverse topo))
     ; Check which auto-remove packages can be dropped
     ; Iterate in (reverse) topological order, and if we see an auto-remove package and have not already seen
@@ -5092,7 +5092,7 @@
     (def exempt !{})
     (def to-drop ![])
     (each b rtopo
-      (def m (twig/manifest b))
+      (def m (pkg/manifest b))
       (if (or (get exempt b) (not (get m :auto-remove)))
         (do
           (put! exempt b true)
@@ -5103,14 +5103,14 @@
       (print "uninstall " b))
     (each b to-drop
       (print "uninstalling " b)
-      (twig-uninstall-unchecked b)))
+      (pkg-uninstall-unchecked b)))
 
-  (defn twig/installed?
+  (defn pkg/installed?
     "Checks whether a package is installed."
-    [twig-name]
-    (not (not (os/stat (twig-dir twig-name) :mode))))
+    [pkg-name]
+    (not (not (os/stat (pkg-dir pkg-name) :mode))))
 
-  (defn twig/install
+  (defn pkg/install
     """
     Installs a package from the local filesystem. The name of the package is
     the value mapped to :name in either config or the info file. There are
@@ -5119,97 +5119,97 @@
     in the package script.
     """
     [path & {:as config}]
-    (def path (twig-rpath path))
+    (def path (pkg-rpath path))
     (def s (sep))
     ; Detect package name
-    (def infofile-src1 (string path s "twig" s "info.edn"))
+    (def infofile-src1 (string path s "pkg" s "info.edn"))
     (def infofile-src2 (string path s "info.edn"))
     (def infofile-src (cond
                         (fexists infofile-src1) infofile-src1
                         (fexists infofile-src2) infofile-src2))
     (def info (-?> infofile-src slurp parse))
-    (def twig-name (get config :name (get info :name)))
-    (assertf twig-name
+    (def pkg-name (get config :name (get info :name)))
+    (assertf pkg-name
              "unable to infer package name for %v, use :name argument or add :name to info file" path)
-    (assertf (not (string/check-set "\\/" twig-name))
-             "package name %v cannot contain path separators" twig-name)
-    (assert (next twig-name) "cannot use empty twig-name")
-    (assertf (not (fexists (get-manifest-filename twig-name)))
-             "package %v is already installed" twig-name)
+    (assertf (not (string/check-set "\\/" pkg-name))
+             "package name %v cannot contain path separators" pkg-name)
+    (assert (next pkg-name) "cannot use empty pkg-name")
+    (assertf (not (fexists (get-manifest-filename pkg-name)))
+             "package %v is already installed" pkg-name)
     ; Check bscript
-    (def bscript-src1 (string path s "twig" s "init.wattle"))
-    (def bscript-src2 (string path s "twig.wattle"))
+    (def bscript-src1 (string path s "pkg" s "init.wattle"))
+    (def bscript-src2 (string path s "pkg.wattle"))
     (def bscript-src (cond
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
     ; Setup installed paths
-    (prime-twig-paths)
-    (os/mkdir (twig-dir twig-name))
+    (prime-pkg-paths)
+    (os/mkdir (pkg-dir pkg-name))
     ; Copy aliased infofile
     (when (fexists infofile-src2)
-      (copyfile infofile-src2 (twig-file twig-name "info.edn")))
+      (copyfile infofile-src2 (pkg-file pkg-name "info.edn")))
     ; Copy aliased bscript
     (when (fexists bscript-src2)
-      (copyfile bscript-src2 (twig-file twig-name "init.wattle")))
+      (copyfile bscript-src2 (pkg-file pkg-name "init.wattle")))
     ; Copy some files into the new location unconditionally
-    (def implicit-sources (string path s "twig"))
+    (def implicit-sources (string path s "pkg"))
     (when (= :directory (os/stat implicit-sources :mode))
-      (copyrf implicit-sources (twig-dir twig-name)))
-    (def man !{:name twig-name :local-source path :files ![]})
+      (copyrf implicit-sources (pkg-dir pkg-name)))
+    (def man !{:name pkg-name :local-source path :files ![]})
     (merge! man config)
     (sync-manifest man)
-    (edefer (do (print "installation error, uninstalling") (twig/uninstall twig-name))
+    (edefer (do (print "installation error, uninstalling") (pkg/uninstall pkg-name))
       (when info
         (def deps (seq [d :in (get info :dependencies ![])]
                     (string (if (dictionary? d) (get d :name) d))))
-        (def missing (filter (complement twig/installed?) deps))
+        (def missing (filter (complement pkg/installed?) deps))
         (when (next missing)
           (error (string "missing dependencies " (string/join ", " missing))))
         (put! man :dependencies deps)
         (put! man :info info))
-      (def module (get-twig-module twig-name))
+      (def module (get-pkg-module pkg-name))
       (def clean (get config :clean))
       (def check (get config :check))
       (def all-hooks (seq [[k v] :pairs module :when (symbol? k) :unless (get v :private)] (keyword k)))
       (put! man :hooks all-hooks)
-      (do-hook module twig-name :dependencies man) ; deprecated, use :postdeps
-      (do-hook module twig-name :postdeps man)
+      (do-hook module pkg-name :dependencies man) ; deprecated, use :postdeps
+      (do-hook module pkg-name :postdeps man)
       (when clean
-        (do-hook module twig-name :clean man))
-      (do-hook module twig-name :build man)
-      (do-hook module twig-name :install man)
-      (if (empty? (get man :files)) (print "no files installed, is this a valid twig?"))
+        (do-hook module pkg-name :clean man))
+      (do-hook module pkg-name :build man)
+      (do-hook module pkg-name :install man)
+      (if (empty? (get man :files)) (print "no files installed, is this a valid pkg?"))
       (sync-manifest man)
       (when check
-        (do-hook module twig-name :check man)))
-    (print "installed " twig-name)
+        (do-hook module pkg-name :check man)))
+    (print "installed " pkg-name)
     (when (or (get man :has-exe)
               ; remove eventually
               (get man :has-bin-script))
       (eprintf "executable files have been installed to %s" (wattle/binpath)))
     (when (get man :has-man)
       (eprintf "man pages have been installed to %s" (wattle/manpath)))
-    twig-name)
+    pkg-name)
 
-  (defn- twig/pack
+  (defn- pkg/pack
     """
     Takes an installed package and creates a package source directory that can be
     used to reinstall the package on a compatible system. This is used to create
     backups for installed packages without rebuilding, or make a prebuilt package
     for other systems.
     """
-    ([twig-name dest-dir] (twig/pack twig-name dest-dir nil))
-    ([twig-name dest-dir is-backup]
+    ([pkg-name dest-dir] (pkg/pack pkg-name dest-dir nil))
+    ([pkg-name dest-dir is-backup]
       (var i 0)
-      (def man (twig/manifest twig-name))
+      (def man (pkg/manifest pkg-name))
       (def files (get man :files ![]))
       (assertf (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
       (def s (sep))
-      (os/mkdir (string dest-dir s "twig"))
-      (def install-hook (string dest-dir s "twig" s "init.wattle"))
+      (os/mkdir (string dest-dir s "pkg"))
+      (def install-hook (string dest-dir s "pkg" s "init.wattle"))
       (edefer (rmrf dest-dir) ; don't leave garbage on failure
         (def install-source ![])
-        (defn real-or-plain [path] (if (os/stat path :mode) (twig-rpath path) path))
+        (defn real-or-plain [path] (if (os/stat path :mode) (pkg-rpath path) path))
         (def libpath (real-or-plain (wattle/libpath)))
         (def binpath (real-or-plain (wattle/binpath)))
         (def manpath (real-or-plain (wattle/manpath)))
@@ -5218,7 +5218,7 @@
           [dir file]
           (when (string/has-prefix? (string dir s) file)
             (string/triml (slice file (length dir) -1) s)))
-        (when is-backup (copyrf (twig-dir twig-name) (string dest-dir s "old-twig")))
+        (when is-backup (copyrf (pkg-dir pkg-name) (string dest-dir s "old-pkg")))
         (each file files
           (def {mode :mode perm :permissions} (os/stat file))
           (def lib-rel (relative-to libpath file))
@@ -5226,17 +5226,17 @@
           (def man-rel (relative-to manpath file))
           (case mode
             :directory (if lib-rel
-                         (array/push! install-source `(twig/add-directory manifest ~lib-rel ~perm))
+                         (array/push! install-source `(pkg/add-directory manifest ~lib-rel ~perm))
                          (errorf "unexpected directory %v" file))
             :file (do
                     (def filename (string/format "file_%06d" (++ i)))
                     (copyfile file (string dest-dir s filename))
                     (array/push! install-source
                                  (cond
-                                   lib-rel `(twig/add-file manifest ~filename ~lib-rel ~perm)
-                                   bin-rel `(twig/add-bin manifest ~filename ~bin-rel ~perm)
+                                   lib-rel `(pkg/add-file manifest ~filename ~lib-rel ~perm)
+                                   bin-rel `(pkg/add-bin manifest ~filename ~bin-rel ~perm)
                                    man-rel (let [parts (string/split s man-rel)]
-                                             `(twig/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
+                                             `(pkg/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
                                    (errorf "unexpected file %v" file))))
             (errorf "unexpected file %v" file)))
         (def b !"(defn install [manifest]")
@@ -5245,40 +5245,40 @@
         (spit install-hook b))
       dest-dir))
 
-  (defn twig/replace
+  (defn pkg/replace
     """
     Reinstalls an existing package from a new directory. Similar to
-    twig/reinstall, but installs the replacement package from any directory.
+    pkg/reinstall, but installs the replacement package from any directory.
     This is necessary to replace a package without breaking any dependencies.
     """
-    [twig-name path & {:as new-config}]
-    (def manifest (twig/manifest twig-name))
+    [pkg-name path & {:as new-config}]
+    (def manifest (pkg/manifest pkg-name))
     (def config (get manifest :config !{}))
     (def s (sep))
     (assertf (= :directory (os/stat path :mode)) "local source %v not available" path)
-    (def backup-dir (string (wattle/libpath) s twig-name ".backup"))
+    (def backup-dir (string (wattle/libpath) s pkg-name ".backup"))
     (rmrf backup-dir)
-    (def backup-twig-source (twig/pack twig-name backup-dir true))
+    (def backup-pkg-source (pkg/pack pkg-name backup-dir true))
     (edefer (do
-              (twig/install backup-twig-source :name twig-name)
-              (copyrf (string backup-twig-source s "old-twig") (twig-dir twig-name))
-              (rmrf backup-twig-source))
-      (twig-uninstall-unchecked twig-name)
-      (twig/install path :name twig-name |(kvs config) |(kvs new-config)))
-    (rmrf backup-twig-source)
-    twig-name)
+              (pkg/install backup-pkg-source :name pkg-name)
+              (copyrf (string backup-pkg-source s "old-pkg") (pkg-dir pkg-name))
+              (rmrf backup-pkg-source))
+      (pkg-uninstall-unchecked pkg-name)
+      (pkg/install path :name pkg-name |(kvs config) |(kvs new-config)))
+    (rmrf backup-pkg-source)
+    pkg-name)
 
-  (defn twig/reinstall
+  (defn pkg/reinstall
     "Reinstalls an existing package from the local source code."
-    [twig-name & {:as new-config}]
-    (def manifest (twig/manifest twig-name))
+    [pkg-name & {:as new-config}]
+    (def manifest (pkg/manifest pkg-name))
     (def path (get manifest :local-source))
-    (twig/replace twig-name path |(kvs new-config))
-    twig-name)
+    (pkg/replace pkg-name path |(kvs new-config))
+    pkg-name)
 
-  (defn twig/add-directory
+  (defn pkg/add-directory
     "Adds a directory during an install relative to the lib/wattle directory of `(dyn *syspath*)`."
-    ([manifest dest] (twig/add-directory manifest dest nil))
+    ([manifest dest] (pkg/add-directory manifest dest nil))
     ([manifest dest chmod-mode]
       (def files (get-files manifest))
       (def s (sep))
@@ -5292,20 +5292,20 @@
       (print "add " absdest)
       absdest))
 
-  (defn twig/whois
+  (defn pkg/whois
     "Given a file path, figures out which package installed it."
     [path]
     (var ret nil)
-    (def rpath (twig-rpath path))
-    (each twig-name (twig/list)
-      (def files (get (twig/manifest twig-name) :files []))
+    (def rpath (pkg-rpath path))
+    (each pkg-name (pkg/list)
+      (def files (get (pkg/manifest pkg-name) :files []))
       (def has-file (index-of rpath files))
       (when has-file
-        (set ret twig-name)
+        (set ret pkg-name)
         (break)))
     ret)
 
-  (defn- twig-add-file-to
+  (defn- pkg-add-file-to
     [manifest base src dest chmod-mode]
     (def files (get-files manifest))
     (def s (sep))
@@ -5320,67 +5320,67 @@
     (print "add " absdest)
     absdest)
 
-  (defn twig/add-file
+  (defn pkg/add-file
     "Adds a file during an install relative to the lib/wattle directory of `(dyn *syspath*)`."
-    ([manifest src] (twig/add-file manifest src src nil))
-    ([manifest src dest] (twig/add-file manifest src dest nil))
+    ([manifest src] (pkg/add-file manifest src src nil))
+    ([manifest src dest] (pkg/add-file manifest src dest nil))
     ([manifest src dest chmod-mode]
-      (twig-add-file-to manifest (wattle/libpath) src dest chmod-mode)))
+      (pkg-add-file-to manifest (wattle/libpath) src dest chmod-mode)))
 
-  (defn twig/add
+  (defn pkg/add
     """
     Adds a file or directory during an install relative to the lib/wattle directory of `(dyn *syspath*)`.
     Added files and directories will be recorded in the package manifest such
     that they are properly tracked and removed during an upgrade or uninstall.
     """
-    ([manifest src] (twig/add manifest src src nil))
-    ([manifest src dest] (twig/add manifest src dest nil))
+    ([manifest src] (pkg/add manifest src src nil))
+    ([manifest src dest] (pkg/add manifest src dest nil))
     ([manifest src dest chmod-mode]
       (def s (sep))
       (def mode (os/stat src :mode))
       (if-not mode (errorf "file %s does not exist" src))
       (case mode
         :directory
-        (let [absdest (twig/add-directory manifest dest chmod-mode)]
-          (each d (os/dir src) (twig/add manifest (string src s d) (string dest s d) chmod-mode))
+        (let [absdest (pkg/add-directory manifest dest chmod-mode)]
+          (each d (os/dir src) (pkg/add manifest (string src s d) (string dest s d) chmod-mode))
           absdest)
-        :file (twig/add-file manifest src dest chmod-mode)
+        :file (pkg/add-file manifest src dest chmod-mode)
         (errorf "bad path %s - file is a %s" src mode))))
 
-  (defn twig/add-bin
+  (defn pkg/add-bin
     """
     Adds a file to the "bin" subdirectory of the current syspath. By default,
     files will be set to be executable.
     """
-    ([manifest src] (twig/add-bin manifest src (last (string/split (sep) src)) 8r755))
-    ([manifest src filename] (twig/add-bin manifest src filename 8r755))
+    ([manifest src] (pkg/add-bin manifest src (last (string/split (sep) src)) 8r755))
+    ([manifest src filename] (pkg/add-bin manifest src filename 8r755))
     ([manifest src filename chmod-mode]
-      (twig-mkdirs (wattle/binpath))
+      (pkg-mkdirs (wattle/binpath))
       (put! manifest :has-exe true)
       (put! manifest :has-bin-script true) ; remove eventually
-      (twig-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
+      (pkg-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
 
-  (defn twig/add-manpage
+  (defn pkg/add-manpage
     """
     Adds a file to the share/man subdirectory of the current syspath. Files are
     copied inside a directory mansec, under the name filename. By default,
     mansec is "man1" and filename is the name of src.
     """
-    ([manifest src] (twig/add-manpage manifest src "man1"))
+    ([manifest src] (pkg/add-manpage manifest src "man1"))
     ([manifest src mansec]
-      (twig/add-manpage manifest src mansec (last (string/split (sep) src))))
-    ([manifest src mansec filename] (twig/add-manpage manifest src mansec filename nil))
+      (pkg/add-manpage manifest src mansec (last (string/split (sep) src))))
+    ([manifest src mansec filename] (pkg/add-manpage manifest src mansec filename nil))
     ([manifest src mansec filename chmod-mode]
       (def dir (string (wattle/manpath) (sep) mansec))
-      (twig-mkdirs dir)
+      (pkg-mkdirs dir)
       (put! manifest :has-man true)
-      (twig-add-file-to manifest dir src filename chmod-mode)))
+      (pkg-add-file-to manifest dir src filename chmod-mode)))
 
-  (defn twig/update-all
+  (defn pkg/update-all
     "Reinstalls all packages."
     [& {:as configs}]
-    (each twig (twig/topolist)
-      (twig/reinstall twig |(kvs configs)))))
+    (each pkg (pkg/topolist)
+      (pkg/reinstall pkg |(kvs configs)))))
 
 ;;;
 ;;;
@@ -5392,20 +5392,20 @@
 ; `:exe` or `:lib` and a `:name`. An `:exe` has an `:entry`, the Wattle file
 ; that defines `main`, and may have `:libs`, a vector of the names of the
 ; `:lib` artifacts compiled into it. A `:lib` has a `:root`, the Zig root file
-; of a native module. ^twig/artifacts raises on the first problem and names the
+; of a native module. ^pkg/artifacts raises on the first problem and names the
 ; artifact and the key. Neither function looks at the file system.
 
-(def- twig-artifact-allowed-keys
+(def- pkg-artifact-allowed-keys
   {:exe [:type :name :entry :libs]
    :lib [:type :name :root]})
 
 ; A `:lib` name is spliced into two symbol names and a string, and an `:exe`
 ; name is a file name.
-(def- twig-artifact-name-chars
+(def- pkg-artifact-name-chars
   (string "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
           "0123456789_-"))
 
-(defn- twig-artifact-where
+(defn- pkg-artifact-where
   "Describes the artifact at index i, by name where it has a usable one."
   [i artifact]
   (def name (get artifact :name))
@@ -5413,53 +5413,53 @@
     (string/format "artifact %d (%s)" i name)
     (string/format "artifact %d" i)))
 
-(defn- twig-artifact-fail
+(defn- pkg-artifact-fail
   [i artifact fmt & vals]
-  (error (string "info.edn: " (twig-artifact-where i artifact) ": "
+  (error (string "info.edn: " (pkg-artifact-where i artifact) ": "
                  (string/format fmt |vals))))
 
-(defn- twig-artifact-check-string
+(defn- pkg-artifact-check-string
   [i artifact key]
   (def val (get artifact key))
   (unless (and (string? val) (not (empty? val)))
-    (twig-artifact-fail i artifact "%v must be a non-empty string" key)))
+    (pkg-artifact-fail i artifact "%v must be a non-empty string" key)))
 
-(defn- twig-artifact-check-name
+(defn- pkg-artifact-check-name
   [i artifact]
-  (twig-artifact-check-string i artifact :name)
-  (unless (string/check-set twig-artifact-name-chars (get artifact :name))
-    (twig-artifact-fail i artifact ":name may hold only letters, digits, `_` and `-`")))
+  (pkg-artifact-check-string i artifact :name)
+  (unless (string/check-set pkg-artifact-name-chars (get artifact :name))
+    (pkg-artifact-fail i artifact ":name may hold only letters, digits, `_` and `-`")))
 
-(defn- twig-artifact-check-keys
+(defn- pkg-artifact-check-keys
   [i artifact kind]
-  (def ok (get twig-artifact-allowed-keys kind))
+  (def ok (get pkg-artifact-allowed-keys kind))
   (each k (keys artifact)
     (unless (find #(= k $) ok)
-      (twig-artifact-fail i artifact "%v is not a key of an %v" k kind))))
+      (pkg-artifact-fail i artifact "%v is not a key of an %v" k kind))))
 
-(defn- twig-artifact-check-libs
+(defn- pkg-artifact-check-libs
   [i artifact by-name]
   (def libs (get artifact :libs))
   (when (nil? libs) (break))
   (unless (vector? libs)
-    (twig-artifact-fail i artifact ":libs must be a vector of names"))
+    (pkg-artifact-fail i artifact ":libs must be a vector of names"))
   (def seen !{})
   (each n libs
     (when (map? n)
-      (twig-artifact-fail i artifact
+      (pkg-artifact-fail i artifact
                   ":libs holds a map, which is reserved for an external library"))
     (unless (string? n)
-      (twig-artifact-fail i artifact ":libs must hold strings, not %v" n))
+      (pkg-artifact-fail i artifact ":libs must hold strings, not %v" n))
     (when (get seen n)
-      (twig-artifact-fail i artifact ":libs names %s twice" n))
+      (pkg-artifact-fail i artifact ":libs names %s twice" n))
     (put! seen n true)
     (def target (get by-name n))
     (unless target
-      (twig-artifact-fail i artifact ":libs names %s, which no artifact declares" n))
+      (pkg-artifact-fail i artifact ":libs names %s, which no artifact declares" n))
     (unless (= :lib (get target :type))
-      (twig-artifact-fail i artifact ":libs names %s, which is not a :lib" n))))
+      (pkg-artifact-fail i artifact ":libs names %s, which is not a :lib" n))))
 
-(defn- twig-artifacts-checked
+(defn- pkg-artifacts-checked
   [x]
   (unless (map? x)
     (error "info.edn: must hold a map"))
@@ -5475,23 +5475,23 @@
       (errorf "info.edn: artifact %d must be a map" i))
     (def kind (get artifact :type))
     (unless (or (= kind :exe) (= kind :lib))
-      (twig-artifact-fail i artifact ":type must be :exe or :lib"))
-    (twig-artifact-check-name i artifact)
+      (pkg-artifact-fail i artifact ":type must be :exe or :lib"))
+    (pkg-artifact-check-name i artifact)
     (def name (get artifact :name))
     (when (get by-name name)
-      (twig-artifact-fail i artifact ":name is already used by artifact %d"
+      (pkg-artifact-fail i artifact ":name is already used by artifact %d"
                           (get (get by-name name) :index)))
     (put! by-name name {:index i :type kind})
-    (twig-artifact-check-string i artifact (if (= kind :exe) :entry :root))
-    (twig-artifact-check-keys i artifact kind)
+    (pkg-artifact-check-string i artifact (if (= kind :exe) :entry :root))
+    (pkg-artifact-check-keys i artifact kind)
     (++ i))
   (set i 0)
   (each artifact artifacts
-    (twig-artifact-check-libs i artifact by-name)
+    (pkg-artifact-check-libs i artifact by-name)
     (++ i))
   artifacts)
 
-(defn twig/artifacts
+(defn pkg/artifacts
   """
   Checks the `:artifacts` of x, a map read from an info.edn, and returns them.
   With kind, `:exe` or `:lib`, returns only the artifacts of that kind, and
@@ -5501,10 +5501,10 @@
   name a `:lib`. Also raises if x declares no artifact of kind, or none called
   name.
   """
-  ([x] (twig-artifacts-checked x))
-  ([x kind] (twig/artifacts x kind nil))
+  ([x] (pkg-artifacts-checked x))
+  ([x kind] (pkg/artifacts x kind nil))
   ([x kind name]
-    (def chosen (filter #(= kind (get $ :type)) (twig-artifacts-checked x)))
+    (def chosen (filter #(= kind (get $ :type)) (pkg-artifacts-checked x)))
     (when (empty? chosen)
       (errorf "info.edn: no %v artifact is declared" kind))
     (if (nil? name)
@@ -5520,27 +5520,27 @@
 ;;;
 ;;;
 
-(defn- twig-path-parts
+(defn- pkg-path-parts
   "Splits path at / and at \\, dropping empty parts."
   [path]
   (filter #(not (empty? $)) (string/split "/" (string/replace-all "\\" "/" path))))
 
-(defn- twig-relative-path
+(defn- pkg-relative-path
   "Returns the path from the directory from to the path to, which are both absolute."
   [from to]
-  (def f (twig-path-parts from))
-  (def t (twig-path-parts to))
+  (def f (pkg-path-parts from))
+  (def t (pkg-path-parts to))
   (var i 0)
   (while (and (< i (length f)) (< i (length t)) (= (get f i) (get t i)))
     (++ i))
   (string/join "/" [|(map (fn [_] "..") (slice f i)) |(slice t i)]))
 
-(defn- twig-zig-string
+(defn- pkg-zig-string
   "Returns s as the body of a Zig string literal."
   [s]
   (string/replace-all "\"" "\\\"" (string/replace-all "\\" "\\\\" s)))
 
-(defn- twig-absolute-path
+(defn- pkg-absolute-path
   "Returns path, or dir followed by path where path is relative."
   [dir path]
   (if (or (string/has-prefix? "/" path) (string/has-prefix? "\\" path)
@@ -5548,7 +5548,7 @@
     path
     (string dir "/" path)))
 
-(defn twig/zig-files
+(defn pkg/zig-files
   """
   Returns a table with the text of the build.zig and the build.zig.zon that
   build the artifacts of x, a map read from an info.edn, under :build and :zon.
@@ -5557,18 +5557,18 @@
   relative artifact paths are resolved against, :srcpath, the Wattle package,
   and :gen, the directory the two files are written to. An executable is
   built with the libs it names in :libs linked in. A lib is built as a shared
-  library. Raises if ^twig/artifacts raises for x, kind and name.
+  library. Raises if ^pkg/artifacts raises for x, kind and name.
   """
-  ([x kind opts] (twig/zig-files x kind nil opts))
+  ([x kind opts] (pkg/zig-files x kind nil opts))
   ([x kind name opts]
-    (def chosen (twig/artifacts x kind name))
+    (def chosen (pkg/artifacts x kind name))
     (def libs !{})
-    (each artifact (twig/artifacts x)
+    (each artifact (pkg/artifacts x)
       (when (= :lib (get artifact :type))
         (put! libs (get artifact :name) artifact)))
     (def dir (get opts :dir))
     (defn zig-path [path]
-      (string ".{ .cwd_relative = \"" (twig-zig-string (twig-absolute-path dir path)) "\" }"))
+      (string ".{ .cwd_relative = \"" (pkg-zig-string (pkg-absolute-path dir path)) "\" }"))
     (def b !"")
     (buffer/push! b
       "const std = @import(\"std\");\n"
@@ -5582,7 +5582,7 @@
         "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug });\n"))
     (var i 0)
     (each artifact chosen
-      (def artifact-name (twig-zig-string (get artifact :name)))
+      (def artifact-name (pkg-zig-string (get artifact :name)))
       (if (= kind :exe)
         (do
           (buffer/format! b "    const exe%d = wattle.quickbin(dep, host, .{\n" i)
@@ -5592,7 +5592,7 @@
           (each lib-name (get artifact :libs [])
             (def lib (get libs lib-name))
             (buffer/format! b "            .{ .name = \"%s\", .root = %s },\n"
-                            (twig-zig-string lib-name) (zig-path (get lib :root))))
+                            (pkg-zig-string lib-name) (zig-path (get lib :root))))
           (buffer/push! b
             "        },\n"
             "        .target = target,\n"
@@ -5622,7 +5622,7 @@
       "    .fingerprint = 0x73d368c0c079d65,\n"
       "    .dependencies = .{\n")
     (buffer/format! zon "        .wattle = .{ .path = \"%s\" },\n"
-                    (twig-zig-string (twig-relative-path (get opts :gen) (get opts :srcpath))))
+                    (pkg-zig-string (pkg-relative-path (get opts :gen) (get opts :srcpath))))
     (buffer/push! zon
       "    },\n"
       "    .paths = .{ \"build.zig\", \"build.zig.zon\" },\n"
@@ -5774,7 +5774,7 @@
                                  :help "Build for a Zig target triple. The default is this machine."}
                      :name {:proxy "name"
                             :help "The native module to build. The default is every native module."}]}]})
-  (def twig-config
+  (def pkg-config
     {:validate? validate?
      :help "Manage installed packages."
      :rules []
@@ -5817,17 +5817,17 @@
    :subs
    ["build" build-config
     "check" check-config
+    "pkg" pkg-config
     "run" run-config
-    "test" test-config
-    "twig" twig-config]})
+    "test" test-config]})
 
 ; The rules are fixed, so they are checked here, while the image is generated,
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
 (each argv [[] ["check"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
-            ["twig" "install" "directory"]
-            ["twig" "reinstall" "name"] ["twig" "uninstall" "name"]
-            ["twig" "update"] ["twig" "clean"] ["twig" "list"]]
+            ["pkg" "install" "directory"]
+            ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
+            ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"]]
   (cli-parse-args "wattle" (cli-config "wattle" true) argv))
 
 (defn- apply-color
@@ -6071,12 +6071,12 @@
       (unless mode (fail "release must be safe, fast or small"))
       (def dir (os/realpath (os/cwd)))
       (def info-path
-        (find fexists [(string dir "/twig/info.edn") (string dir "/info.edn")]))
+        (find fexists [(string dir "/pkg/info.edn") (string dir "/info.edn")]))
       (unless info-path (fail "no info.edn in " dir))
       (def info (parse (slurp info-path)))
       (def gen (string dir "/" cli-zig-cache "/wattle-build"))
       (def [ok files]
-        (protect (twig/zig-files info kind (get (get cmd :params) :name)
+        (protect (pkg/zig-files info kind (get (get cmd :params) :name)
                                  {:dir dir :srcpath (wattle/srcpath) :gen gen})))
       (unless ok (fail "error: " files))
       (def srcpath (wattle/srcpath))
@@ -6089,7 +6089,7 @@
                    (os/proc-wait p)
                    (string/trim out))))
       (unless zig-ok (fail "zig was not found on the PATH, and wattle build needs it"))
-      (twig-mkdirs gen)
+      (pkg-mkdirs gen)
       (each [file text] [[cli-zig-build-file (get files :build)] [(string cli-zig-build-file ".zon") (get files :zon)]]
         (def path (string gen "/" file))
         (unless (and (os/stat path :mode) (= text (slurp path)))
@@ -6111,38 +6111,38 @@
     "exe" (cli-build-artifacts :exe sub)
     "lib" (cli-build-artifacts :lib sub)))
 
-(defn- cli-twig [twig]
-  (def verb (get twig :sub))
+(defn- cli-pkg [pkg]
+  (def verb (get pkg :sub))
   (def params (get verb :params))
   (defn unsupported [name]
-    (eprint "twig " name " is not supported with reduced os")
+    (eprint "pkg " name " is not supported with reduced os")
     (os/exit 1))
-  (compwhen (dyn 'twig/list)
+  (compwhen (dyn 'pkg/list)
     (def root (dyn *syspath*))
     (when (nil? root)
-      (eprint "this program has no system path, so twig cannot run")
+      (eprint "this program has no system path, so pkg cannot run")
       (os/exit 1))
     (when (empty? root)
       (eprint "the system path is not set: set WATTLE_PATH or pass --syspath")
       (os/exit 1)))
   (case (get verb :cmd)
-    "install" (compif (dyn 'twig/install)
-                (twig/install (get params :directory))
+    "install" (compif (dyn 'pkg/install)
+                (pkg/install (get params :directory))
                 (unsupported "install"))
-    "reinstall" (compif (dyn 'twig/reinstall)
-                  (twig/reinstall (get params :name))
+    "reinstall" (compif (dyn 'pkg/reinstall)
+                  (pkg/reinstall (get params :name))
                   (unsupported "reinstall"))
-    "uninstall" (compif (dyn 'twig/uninstall)
-                  (twig/uninstall (get params :name))
+    "uninstall" (compif (dyn 'pkg/uninstall)
+                  (pkg/uninstall (get params :name))
                   (unsupported "uninstall"))
-    "update" (compif (dyn 'twig/update-all)
-               (twig/update-all)
+    "update" (compif (dyn 'pkg/update-all)
+               (pkg/update-all)
                (unsupported "update"))
-    "clean" (compif (dyn 'twig/prune)
-              (twig/prune)
+    "clean" (compif (dyn 'pkg/prune)
+              (pkg/prune)
               (unsupported "clean"))
-    "list" (compif (dyn 'twig/list)
-             (each l (twig/list) (print l))
+    "list" (compif (dyn 'pkg/list)
+             (each l (pkg/list) (print l))
              (unsupported "list"))))
 
 (defn cli-main
@@ -6187,7 +6187,7 @@
     "check" (cli-check (get sub :opts) (get sub :params))
     "test" (cli-test (get sub :opts))
     "build" (cli-build sub)
-    "twig" (cli-twig sub)))
+    "pkg" (cli-pkg sub)))
 
 ;;;
 ;;;

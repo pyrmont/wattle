@@ -45,7 +45,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-asm.wattle" },
     .{ .path = "test/suite-boot.wattle" },
     .{ .path = "test/suite-buffer.wattle" },
-    .{ .path = "test/suite-twig.wattle", .needs_os = true },
+    .{ .path = "test/suite-pkg.wattle", .needs_os = true },
     .{ .path = "test/suite-capi.wattle" },
     .{ .path = "test/suite-nfuns.wattle" },
     .{ .path = "test/suite-compile.wattle" },
@@ -1999,16 +1999,16 @@ fn addCliChecks(
         build_missing.expectStdErrMatch("source is required");
         test_step.dependOn(&build_missing.step);
 
-        const twig_missing = b.addRunArtifact(client);
-        twig_missing.addArgs(&.{ "twig", "install" });
-        twig_missing.expectExitCode(1);
-        twig_missing.expectStdErrMatch("directory is required");
-        test_step.dependOn(&twig_missing.step);
+        const pkg_missing = b.addRunArtifact(client);
+        pkg_missing.addArgs(&.{ "pkg", "install" });
+        pkg_missing.expectExitCode(1);
+        pkg_missing.expectStdErrMatch("directory is required");
+        test_step.dependOn(&pkg_missing.step);
 
-        const twig_help = b.addRunArtifact(client);
-        twig_help.addArgs(&.{ "help", "twig", "uninstall" });
-        twig_help.expectStdOutMatch("Uninstall a package by name.");
-        test_step.dependOn(&twig_help.step);
+        const pkg_help = b.addRunArtifact(client);
+        pkg_help.addArgs(&.{ "help", "pkg", "uninstall" });
+        pkg_help.expectStdOutMatch("Uninstall a package by name.");
+        test_step.dependOn(&pkg_help.step);
 
         const help_nested = b.addRunArtifact(client);
         help_nested.addArgs(&.{ "help", "build", "img" });

@@ -24,7 +24,7 @@ _wattle() {
     done
     if [[ $i -lt $cword ]]; then
         case "${words[i]}" in
-            build|check|help|run|test|twig) sub="${words[i]}"; sub_at=$i ;;
+            build|check|help|pkg|run|test) sub="${words[i]}"; sub_at=$i ;;
             *) sub="run"; sub_at=$((i - 1)) ;;
         esac
     fi
@@ -55,38 +55,8 @@ _wattle() {
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$root_flags $run_flags" -- "$cur"))
             else
-                COMPREPLY=($(compgen -W "build check help run test twig" -- "$cur"))
+                COMPREPLY=($(compgen -W "build check help pkg run test" -- "$cur"))
                 _filedir wattle
-            fi
-            ;;
-        run)
-            # Once the script is given, every word after it is its argument.
-            local j script=""
-            for ((j = sub_at + 1; j < cword; j++)); do
-                case "${words[j]}" in
-                    -e|--eval|-l|--lib) ((j++)) ;;
-                    -*) ;;
-                    *) script="${words[j]}"; break ;;
-                esac
-            done
-            if [[ -n "$script" ]]; then
-                _filedir
-            elif [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "$run_flags -h --help" -- "$cur"))
-            else
-                _filedir wattle
-            fi
-            ;;
-        check)
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "$check_flags" -- "$cur"))
-            else
-                _filedir wattle
-            fi
-            ;;
-        test)
-            if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "$test_flags" -- "$cur"))
             fi
             ;;
         build)
@@ -110,23 +80,53 @@ _wattle() {
                 esac
             fi
             ;;
-        twig)
+        check)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$check_flags" -- "$cur"))
+            else
+                _filedir wattle
+            fi
+            ;;
+        pkg)
             if [[ $((cword - sub_at)) -eq 1 ]]; then
                 COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur"))
             else
                 case "${words[sub_at + 1]}" in
                     install) _filedir -d ;;
                     reinstall|uninstall)
-                        COMPREPLY=($(compgen -W "$("${words[0]}" twig list 2>/dev/null)" -- "$cur"))
+                        COMPREPLY=($(compgen -W "$("${words[0]}" pkg list 2>/dev/null)" -- "$cur"))
                         ;;
                 esac
             fi
             ;;
+        run)
+            # Once the script is given, every word after it is its argument.
+            local j script=""
+            for ((j = sub_at + 1; j < cword; j++)); do
+                case "${words[j]}" in
+                    -e|--eval|-l|--lib) ((j++)) ;;
+                    -*) ;;
+                    *) script="${words[j]}"; break ;;
+                esac
+            done
+            if [[ -n "$script" ]]; then
+                _filedir
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$run_flags -h --help" -- "$cur"))
+            else
+                _filedir wattle
+            fi
+            ;;
+        test)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$test_flags" -- "$cur"))
+            fi
+            ;;
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
-                1:*) COMPREPLY=($(compgen -W "build check run test twig" -- "$cur")) ;;
+                1:*) COMPREPLY=($(compgen -W "build check pkg run test" -- "$cur")) ;;
                 2:build) COMPREPLY=($(compgen -W "exe img lib" -- "$cur")) ;;
-                2:twig) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
+                2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
             esac
             ;;
     esac

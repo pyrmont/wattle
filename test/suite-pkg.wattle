@@ -35,7 +35,7 @@
 ; Testing here is stateful since we are manipulating the filesystem.
 
 ; Copy since not exposed in boot.wattle
-(defn- twig-rpath
+(defn- pkg-rpath
   [path]
   (string/replace-all "\\" "/" (os/realpath path)))
 
@@ -48,134 +48,134 @@
 (def syspath (randdir))
 (rmrf syspath)
 (assert (os/mkdir syspath))
-(put! root-env *syspath* (twig-rpath syspath))
+(put! root-env *syspath* (pkg-rpath syspath))
 (unless (os/getenv "VERBOSE")
   (setdyn *out* !""))
-(assert (empty? (twig/list)) "initial twig/list")
-(assert (empty? (twig/topolist)) "initial twig/topolist")
+(assert (empty? (pkg/list)) "initial pkg/list")
+(assert (empty? (pkg/topolist)) "initial pkg/topolist")
 
-; Try (and fail) to install sample-twig (missing deps)
+; Try (and fail) to install sample-pkg (missing deps)
 (assert-error "missing dependencies sample-dep1, sample-dep2"
-              (twig/install "./examples/sample-twig"))
-(assert (empty? (twig/list)))
+              (pkg/install "./examples/sample-pkg"))
+(assert (empty? (pkg/list)))
 
 ; Install deps (dep1 as :auto-remove)
 (assert-no-error "sample-dep2"
-                 (twig/install "./examples/sample-dep2"))
-(assert (= 1 (length (twig/list))))
-(assert-no-error "sample-dep1" (twig/install "./examples/sample-dep1"))
-(assert (= 2 (length (twig/list))))
+                 (pkg/install "./examples/sample-dep2"))
+(assert (= 1 (length (pkg/list))))
+(assert-no-error "sample-dep1" (pkg/install "./examples/sample-dep1"))
+(assert (= 2 (length (pkg/list))))
 
-(assert-no-error "sample-dep2 reinstall" (twig/reinstall "sample-dep2"))
-(assert-no-error "sample-dep1 reinstall" (twig/reinstall "sample-dep1" :auto-remove true))
+(assert-no-error "sample-dep2 reinstall" (pkg/reinstall "sample-dep2"))
+(assert-no-error "sample-dep1 reinstall" (pkg/reinstall "sample-dep1" :auto-remove true))
 
-(assert (= 2 (length (twig/list))) "packages are listed correctly 1")
-(assert (= 2 (length (twig/topolist))) "packages are listed correctly 2")
+(assert (= 2 (length (pkg/list))) "packages are listed correctly 1")
+(assert (= 2 (length (pkg/topolist))) "packages are listed correctly 2")
 
-; Now install sample-twig
-(assert-no-error "sample-twig install" (twig/install "./examples/sample-twig"))
+; Now install sample-pkg
+(assert-no-error "sample-pkg install" (pkg/install "./examples/sample-pkg"))
 
-(assert-error "" (twig/install "./examples/sample-dep11111"))
+(assert-error "" (pkg/install "./examples/sample-dep11111"))
 
-(assert (= 3 (length (twig/list))) "packages are listed correctly 3")
-(assert (= 3 (length (twig/topolist))) "packages are listed correctly 4")
+(assert (= 3 (length (pkg/list))) "packages are listed correctly 3")
+(assert (= 3 (length (pkg/topolist))) "packages are listed correctly 4")
 
 ; Check topolist has not bad order
-(def tlist (twig/topolist))
-(assert (> (index-of "sample-twig" tlist) (index-of "sample-dep2" tlist)) "topolist 1")
-(assert (> (index-of "sample-twig" tlist) (index-of "sample-dep1" tlist)) "topolist 2")
+(def tlist (pkg/topolist))
+(assert (> (index-of "sample-pkg" tlist) (index-of "sample-dep2" tlist)) "topolist 1")
+(assert (> (index-of "sample-pkg" tlist) (index-of "sample-dep1" tlist)) "topolist 2")
 (assert (> (index-of "sample-dep1" tlist) (index-of "sample-dep2" tlist)) "topolist 3")
 
 ; Prune should do nothing
-(assert-no-error "first prune" (twig/prune))
-(assert (= 3 (length (twig/list))) "packages are listed correctly 3")
-(assert (= 3 (length (twig/topolist))) "packages are listed correctly 4")
+(assert-no-error "first prune" (pkg/prune))
+(assert (= 3 (length (pkg/list))) "packages are listed correctly 3")
+(assert (= 3 (length (pkg/topolist))) "packages are listed correctly 4")
 
 ; Check that we can import the main dependency
 (import mymod)
-(assert (= 288 (mymod/myfn 12)) "using sample-twig")
+(assert (= 288 (mymod/myfn 12)) "using sample-pkg")
 
 ; The system path is a root: modules go to lib/wattle under it.
-(def root (twig-rpath syspath))
+(def root (pkg-rpath syspath))
 (assert (os/stat (string root "/lib/wattle/mymod.wattle" ) :mode)
         "a module is installed under lib/wattle")
 (assert (nil? (os/stat (string root "/mymod.wattle") :mode))
         "a module is not installed in the root")
 
 ; Manual uninstall of dep1 and dep2 shouldn't work either since that would break dependencies
-(assert-error "cannot uninstall sample-dep1, breaks dependent packages @[\"sample-twig\"]"
-              (twig/uninstall "sample-dep1"))
+(assert-error "cannot uninstall sample-dep1, breaks dependent packages @[\"sample-pkg\"]"
+              (pkg/uninstall "sample-dep1"))
 
 ; Check package file aliases
-(assert-no-error "sample-twig-aliases install" (twig/install "./examples/sample-twig-aliases"))
-(assert (= 4 (length (twig/list))) "packages are listed correctly 5")
+(assert-no-error "sample-pkg-aliases install" (pkg/install "./examples/sample-pkg-aliases"))
+(assert (= 4 (length (pkg/list))) "packages are listed correctly 5")
 (assert-no-error "import aliases" (import aliases-mod))
-(assert (deep= (range 12) (aliases-mod/fun 12)) "using sample-twig-aliases")
-(assert-no-error "aliases uninstall" (twig/uninstall "sample-twig-aliases"))
+(assert (deep= (range 12) (aliases-mod/fun 12)) "using sample-pkg-aliases")
+(assert-no-error "aliases uninstall" (pkg/uninstall "sample-pkg-aliases"))
 
-; Now re-install sample-twig as auto-remove
-(assert-no-error "sample-twig install" (twig/reinstall "sample-twig" :auto-remove true))
+; Now re-install sample-pkg as auto-remove
+(assert-no-error "sample-pkg install" (pkg/reinstall "sample-pkg" :auto-remove true))
 
 ; Reinstallation should also work without being concerned about breaking dependencies
-(assert-no-error "reinstall dep" (twig/reinstall "sample-dep2"))
+(assert-no-error "reinstall dep" (pkg/reinstall "sample-dep2"))
 
 ; Now prune should get rid of everything except sample-dep2
-(assert-no-error "second prune" (twig/prune))
+(assert-no-error "second prune" (pkg/prune))
 
 ; Now check that we exactly one package left, which is dep2
-(assert (= 1 (length (twig/list))) "packages are listed correctly 5")
-(assert (= 1 (length (twig/topolist))) "packages are listed correctly 6")
+(assert (= 1 (length (pkg/list))) "packages are listed correctly 5")
+(assert (= 1 (length (pkg/topolist))) "packages are listed correctly 6")
 
 ; Which we can uninstall manually
-(assert-no-error "uninstall dep2" (twig/uninstall "sample-dep2"))
+(assert-no-error "uninstall dep2" (pkg/uninstall "sample-dep2"))
 
 ; Now check package listing is again empty
-(assert (= 0 (length (twig/list))) "packages are listed correctly 7")
-(assert (= 0 (length (twig/topolist))) "packages are listed correctly 8")
+(assert (= 0 (length (pkg/list))) "packages are listed correctly 7")
+(assert (= 0 (length (pkg/topolist))) "packages are listed correctly 8")
 
 ; Programs and man pages go to bin and share/man under the root, and modules
-; to lib/wattle. Reinstalling goes through twig/pack, which recreates each kind.
+; to lib/wattle. Reinstalling goes through pkg/pack, which recreates each kind.
 (def hello (string root "/bin/hello"))
 (def hello-man (string root "/share/man/man1/hello.1"))
 (def bin-mod (string root "/lib/wattle/bin-mod.wattle"))
-(assert-no-error "sample-twig-bin install"
-                 (with-dyns [*err* !""] (twig/install "./examples/sample-twig-bin")))
+(assert-no-error "sample-pkg-bin install"
+                 (with-dyns [*err* !""] (pkg/install "./examples/sample-pkg-bin")))
 (assert (os/stat hello :mode) "a program is installed under bin")
 (assert (os/stat hello-man :mode) "a man page is installed under share/man")
 (assert (os/stat bin-mod :mode) "a module of the same package is under lib/wattle")
 (unless (= :windows (os/which))
   (assert (string/has-prefix? "rwx" (os/stat hello :permissions))
           "a program is executable"))
-(assert (= "sample-twig-bin" (twig/whois hello)) "twig/whois finds a program")
-(assert-no-error "sample-twig-bin reinstall"
-                 (with-dyns [*err* !""] (twig/reinstall "sample-twig-bin")))
+(assert (= "sample-pkg-bin" (pkg/whois hello)) "pkg/whois finds a program")
+(assert-no-error "sample-pkg-bin reinstall"
+                 (with-dyns [*err* !""] (pkg/reinstall "sample-pkg-bin")))
 (assert (and (os/stat hello :mode) (os/stat hello-man :mode) (os/stat bin-mod :mode))
         "reinstalling recreates programs, man pages and modules")
-(assert-no-error "sample-twig-bin uninstall" (twig/uninstall "sample-twig-bin"))
+(assert-no-error "sample-pkg-bin uninstall" (pkg/uninstall "sample-pkg-bin"))
 (assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode))
              (nil? (os/stat bin-mod :mode)))
         "uninstalling removes programs, man pages and modules")
 
-; With no usable system path the twig functions raise.
+; With no usable system path the pkg functions raise.
 (with-dyns [*syspath* ""]
-  (def [ok message] (protect (twig/list)))
-  (assert (not ok) "twig/list raises with an empty system path")
+  (def [ok message] (protect (pkg/list)))
+  (assert (not ok) "pkg/list raises with an empty system path")
   (assert (and (string? message) (string/find "WATTLE_PATH" message))
           "the error names WATTLE_PATH"))
 
 ; Try installing a package that is missing package script
 (assert-error-value "package missing package script"
-                    "package must contain twig.wattle or twig/init.wattle"
-                    (twig/install "./examples/sample-bad-twig1"))
-(assert (= 0 (length (twig/list))) "check failure 0")
-(assert (= 0 (length (twig/topolist))) "check failure 1")
+                    "package must contain pkg.wattle or pkg/init.wattle"
+                    (pkg/install "./examples/sample-bad-pkg1"))
+(assert (= 0 (length (pkg/list))) "check failure 0")
+(assert (= 0 (length (pkg/topolist))) "check failure 1")
 
 ; Try installing a package that fails check
 (assert-error-value "package check hook fails"
                     "Check failed!"
-                    (twig/install "./examples/sample-bad-twig2" :check true))
-(assert (= 0 (length (twig/list))) "check failure 0")
-(assert (= 0 (length (twig/topolist))) "check failure 1")
+                    (pkg/install "./examples/sample-bad-pkg2" :check true))
+(assert (= 0 (length (pkg/list))) "check failure 0")
+(assert (= 0 (length (pkg/topolist))) "check failure 1")
 
 (rmrf syspath)
 
