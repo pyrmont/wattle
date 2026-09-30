@@ -104,17 +104,17 @@ pub const MapTailRefusal = union(enum) {
     invalid_key: repr.Value,
 };
 
-/// The GC header's per-type field, as a fiber reads it.
+/// The event loop's three bits on a fiber.
 ///
-/// `canceled`, `suspended` and `root` are the event loop's three bits, and the
-/// same six bits are where `signal.signalInject` puts the signal it arms the
-/// fiber to raise. Arming a signal clears all three. `abi.GCFlags` records
-/// why that aliasing is kept.
-pub const EvFlags = packed struct(u6) {
+/// `canceled` says a cancellation is queued, `suspended` that the loop holds a
+/// reference to the fiber while it waits, and `root` that the loop owns the
+/// fiber as a task. They are a field of the fiber rather than bits of its GC
+/// header, where `signal.signalInject` keeps a pending signal.
+pub const EvFlags = packed struct(u8) {
     canceled: bool = false,
     suspended: bool = false,
     root: bool = false,
-    _rest: u3 = 0,
+    _rest: u5 = 0,
 };
 
 /// A fiber: its flag word, its stack geometry, its value stack, and the five
@@ -129,9 +129,12 @@ pub const EvFlags = packed struct(u6) {
 /// offset 8. `extern` fixes the declaration order, and the assertion then
 /// is true on every target rather than on the ones that happen to agree.
 ///
-/// The last three fields matter only for a fiber the event loop has scheduled
-/// as a root fiber. `ev_op` is the operation the fiber is waiting on, which
-/// `ev/stream.zig` declares and a stream's own list owns.
+/// The four fields from `sched_id` on matter only for a fiber the event loop
+/// has scheduled as a root fiber. `ev_flags` is the one a build without the
+/// event loop keeps, because the resume checks read its `root` bit, and it sits
+/// after `sched_id` to fill the padding that field leaves before the pointers.
+/// `ev_op` is the operation the fiber is waiting on, which `ev/stream.zig`
+/// declares and a stream's own list owns.
 pub const Fiber = if (config.ev) extern struct {
     gc: abi.GCObject = .{},
     flags: FiberFlags = .{},
@@ -145,6 +148,7 @@ pub const Fiber = if (config.ev) extern struct {
     child: ?*Fiber = null,
     last_value: repr.Value = std.mem.zeroes(repr.Value),
     sched_id: u32 = 0,
+    ev_flags: EvFlags = .{},
     ev_op: ?*ev_stream.Operation = null,
     supervisor_channel: ?*anyopaque = null,
 } else extern struct {
@@ -159,6 +163,7 @@ pub const Fiber = if (config.ev) extern struct {
     data: ?[*]repr.Value = null,
     child: ?*Fiber = null,
     last_value: repr.Value = std.mem.zeroes(repr.Value),
+    ev_flags: EvFlags = .{},
 };
 
 /// A fiber's flag word.
@@ -274,9 +279,9 @@ pub fn current() ?*Fiber {
     return vm_state.current().fiber;
 }
 
-/// A fiber's event-loop bits, read out of the GC header's per-type field.
+/// A fiber's event-loop bits.
 pub inline fn evFlags(fiber: *const Fiber) EvFlags {
-    return @bitCast(fiber.gc.flags.own);
+    return fiber.ev_flags;
 }
 
 /// Whether `f` has run to a stop, which is true of seven of the sixteen

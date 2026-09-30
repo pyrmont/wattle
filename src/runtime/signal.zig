@@ -230,16 +230,8 @@ pub fn signalCommit(message: *const repr.Value) void {
 /// The signal travels in `gc.flags` rather than in `flags`, and that is
 /// deliberate: the interpreter reads it back out of `gc.flags` and clears it
 /// there, so the two halves agree, and the fiber's real status in `flags` is
-/// left untouched meanwhile.
-///
-/// It costs an aliasing worth knowing before anyone tidies it.
-/// `fiber_status_mask` covers bits 16 through 21 of `gc.flags`, and
-/// `fiber_ev_flag_canceled`, `fiber_ev_flag_suspended` and
-/// `fiber_flag_root` are bits 16, 17 and 18 of the same word, so
-/// clearing the mask clears all three. Nothing observable depends on it today,
-/// because `ev.zig`'s `scheduleGeneral` re-sets the root flag on every schedule
-/// and the fiber is running between the clear and the next schedule, but the
-/// aliasing is real and is recorded rather than tidied.
+/// left untouched meanwhile. Nothing else uses those six bits of a fiber's
+/// header: the event loop's bits are the fiber's own `ev_flags`.
 pub fn signalInject(fiber: *fibers.Fiber, sig: abi.Signal) void {
     var child: *fibers.Fiber = fiber;
     while (child.child) |next| child = next;

@@ -70,14 +70,10 @@ pub const ev_tctag_err_stringf = @as(c_int, 6);
 pub const ev_tctag_err_keyword = @as(c_int, 7);
 pub const ev_tctag_boolean = @as(c_int, 8);
 
-/// A fiber's flag word: a mask and a shift for the status field, then three
-/// single bits in ascending order. `src/runtime/signal.zig` and
-/// `src/runtime/value/fibers.zig` read them.
+/// A fiber's flag word: a mask and a shift for the status field.
+/// `src/runtime/signal.zig` and `src/runtime/value/fibers.zig` read them.
 pub const fiber_status_mask = helpers.promoteIntLiteral(c_int, 0x3F0000, .hex);
 pub const fiber_status_offset = @as(c_int, 16);
-pub const fiber_ev_flag_canceled = helpers.promoteIntLiteral(c_int, 0x10000, .hex);
-pub const fiber_ev_flag_suspended = helpers.promoteIntLiteral(c_int, 0x20000, .hex);
-pub const fiber_flag_root = helpers.promoteIntLiteral(c_int, 0x40000, .hex);
 
 /// A file handle's flags, as single bits in ascending order.
 /// `src/runtime/ev/stream.zig` reads them.

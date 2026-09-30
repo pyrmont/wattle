@@ -382,7 +382,7 @@ fn nfunProbe(argv: []repr.Value) raise.Error!repr.Value {
     // the scheduler's own entry points when there is one.
     {
         const rooted = fiberOver("(fn [] 1)");
-        harness.gcSetBits(&rooted.gc.flags, constants.fiber_flag_root);
+        rooted.ev_flags.root = true;
         resumed = vm_entry.continueFiber(rooted, wrap.fromNil());
         expectReport(resumed, if (has_ev) "cannot resume root fiber, use ev/go" else "cannot resume root fiber");
         resumed = vm_entry.continueSignal(rooted, wrap.fromNil(), abi.Signal.@"error");

@@ -886,7 +886,7 @@ fn theRemainingOpcodes() void {
 /// are the opcodes' own arguments to the same check.
 fn theOpcodesRefuseARootFiber() void {
     const rooted = eval("(fiber/new (fn [] 1))");
-    harness.gcSetBits(&wrap.toFiber(rooted).gc.flags, constants.fiber_flag_root);
+    wrap.toFiber(rooted).ev_flags.root = true;
     registry.def(test_env.?, "vmrun-rooted", rooted, null);
     expectError(
         "(resume vmrun-rooted)",

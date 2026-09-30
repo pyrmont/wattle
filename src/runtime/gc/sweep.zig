@@ -244,7 +244,7 @@ fn deinitBlock(mem: *abi.GCObject) void {
                 // owned by the stream's list and released by `ev.zig`'s
                 // `asyncRelease`, and a fiber with one is traced from that
                 // list, so a fiber reaching this sweep has none. The
-                // suspended bit is the GC header's and is the one reference
+                // suspended bit is the fiber's own and is the one reference
                 // this fiber still holds.
                 if (fibers.evFlags(f).suspended) ev.evDecRefcount();
             }

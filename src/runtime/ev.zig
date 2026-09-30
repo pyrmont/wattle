@@ -98,12 +98,6 @@ const SIGUSR1: c_int = 30;
 /// Whether this target is Android, whose arm is recorded rather than written.
 pub const android = builtin.abi.isAndroid();
 
-/// The three fiber flags the scheduler tests, which are `fibers.FiberFlags`
-/// bits read as a word.
-const fiber_flag_canceled: i32 = @intCast(constants.fiber_ev_flag_canceled);
-const fiber_flag_root: i32 = @intCast(constants.fiber_flag_root);
-const fiber_flag_suspended: i32 = @intCast(constants.fiber_ev_flag_suspended);
-
 /// Whether this build has the interrupt, which decides whether `loop1` polls
 /// for one.
 pub const has_interrupt = constants.vm_has_interrupt != 0;
@@ -1030,7 +1024,8 @@ pub fn loop1() raise.Error!?*fibers.Fiber {
         };
         _ = sched.spawn.pop(&task);
         if (fibers.evFlags(task.fiber).suspended) evDecRefcount();
-        task.fiber.gc.flags.own &= ~@as(u6, @bitCast(fibers.EvFlags{ .canceled = true, .suspended = true }));
+        task.fiber.ev_flags.canceled = false;
+        task.fiber.ev_flags.suspended = false;
         if (task.expected_sched_id != task.fiber.sched_id) continue;
         const resumed = vm_entry.continueSignal(task.fiber, task.value, task.sig);
         const sig = resumed.signal;
@@ -1041,7 +1036,7 @@ pub fn loop1() raise.Error!?*fibers.Fiber {
         const sv = task.fiber.supervisor_channel;
         const is_suspended = sig == abi.Signal.event or sig == .yield or sig == abi.Signal.interrupt;
         if (is_suspended) {
-            task.fiber.gc.flags.own |= @as(u6, @bitCast(fibers.EvFlags{ .suspended = true }));
+            task.fiber.ev_flags.suspended = true;
             evIncRefcount();
         }
         if (sv == null) {
@@ -1894,8 +1889,8 @@ fn scheduleGeneral(fiber: *fibers.Fiber, val: repr.Value, sig: abi.Signal, soon:
         .sig = sig,
         .expected_sched_id = fiber.sched_id,
     };
-    fiber.gc.flags.own |= @as(u6, @bitCast(fibers.EvFlags{ .root = true }));
-    if (sig == .@"error") fiber.gc.flags.own |= @as(u6, @bitCast(fibers.EvFlags{ .canceled = true }));
+    fiber.ev_flags.root = true;
+    if (sig == .@"error") fiber.ev_flags.canceled = true;
     const pushed = if (soon)
         sched.spawn.pushHead(t)
     else
