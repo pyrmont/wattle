@@ -270,24 +270,19 @@ const Scanner = struct {
         const opening = run - start;
         s.paint(start, run, .string);
         if (opening == 2) return run;
-        if (opening == 1) return s.ordinary(start, run);
+        if (opening == 1) return s.ordinary(run);
         return s.raw(start, run, opening);
     }
 
-    /// Classes an ordinary string opened at `start`, whose contents begin at
-    /// `from`, and returns the offset after it.
-    fn ordinary(s: *Scanner, start: usize, from: usize) usize {
+    /// Classes an ordinary string whose contents begin at `from`, and returns
+    /// the offset after it. A newline or carriage return is part of the string.
+    fn ordinary(s: *Scanner, from: usize) usize {
         var k = from;
         while (k < s.text.len) {
             switch (s.text[k]) {
                 '"' => {
                     s.paint(k, k + 1, .string);
                     return k + 1;
-                },
-                '\n', '\r' => {
-                    // An ordinary string does not span lines.
-                    s.paint(start, k, .@"error");
-                    return k;
                 },
                 '\\' => k = s.escape(k),
                 else => {
@@ -307,7 +302,8 @@ const Scanner = struct {
         if (start + 1 >= len) return len;
         const letter = s.text[start + 1];
         const escaped = lexicon.escape(letter) orelse {
-            // A newline after the backslash is left to end the string.
+            // A newline after the backslash is an error and is left as a
+            // byte of the string.
             const newline = letter == '\n' or letter == '\r';
             const end = if (newline) start + 1 else start + 2;
             s.paint(start, end, .@"error");
@@ -475,6 +471,12 @@ test "classify: each class" {
 
 test "classify: strings, raw strings and escapes" {
     try expectClasses("\"\" \"a\\n\\x41\\u00e9\"", "ss.sssssssssssssss");
+
+    // An ordinary string takes a newline as a byte, and the unclosed one is
+    // not an error at the end of the buffer.
+    try expectClasses("\"a\nb\"", "sssss");
+    try expectClasses("\"a\nb", "s" ** 4);
+    try expectClasses("\"ab\ncd", "s" ** 6);
     try expectClasses("\"\"\"a\"b\"\"\"c", "sssssssss.");
     // A run longer than the opening run closes the string and opens another.
     try expectClasses("\"\"\"a\"\"\"\"", "ssssssss");
@@ -489,7 +491,6 @@ test "classify: each error" {
     try expectClasses("\"\\x4G\"", "sEEEEs");
     try expectClasses("\"\\u12\"", "sEEEEE");
     try expectClasses("\"\\U110000\"", "sEEEEEEEEs");
-    try expectClasses("\"ab\ncd", "EEE...");
     try expectClasses("1x 1", "EE.n");
     try expectClasses("a\xff :\xff ", "EE.EE.");
     try expectClasses(") (] [}", "E..E..E");

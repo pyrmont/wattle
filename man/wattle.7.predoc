@@ -86,7 +86,8 @@ Byte sequences
 --------------
 
 A string is a sequence of bytes delimited by double quotes. Strings are
-immutable. Strings can include escapes like ``\n``, ``\t``, ``\"`` and ``\\``;
+immutable. A string can span lines, and a line break in it is part of the
+string. Strings can include escapes like ``\n``, ``\t``, ``\"`` and ``\\``;
 ``\xHH`` inserts a byte, and ``\uXXXX`` inserts a Unicode code point encoded as
 UTF-8.
 

@@ -463,17 +463,20 @@ fn theStrings() !void {
     // A raw string processes no escape and takes a newline.
     expect(harness.stringIs(wrap.toString(try only("\"\"\"a\\nb\"\"\"")), "a\\nb"));
 
-    // An ordinary string may not span lines, where Janet dropped the newline.
-    expect(refusalIs("\"a\nb\"", "newline in string"));
+    // An ordinary string keeps a newline or a carriage return as written, and
+    // does not reindent it, where Janet dropped both.
+    expect(harness.stringIs(wrap.toString(try only("\"a\nb\"")), "a\nb"));
+    expect(harness.stringIs(wrap.toString(try only("\"a\rb\"")), "a\rb"));
+    expect(harness.stringIs(wrap.toString(try only("\"a\r\nb\"")), "a\r\nb"));
+    expect(harness.stringIs(wrap.toString(try only("\"a\n  b\"")), "a\n  b"));
 
     // An escape does not hand the rest of the string to a different consumer.
     // The escape states returned to Janet's string consumer rather than
-    // Wattle's, so until step 7 a newline was refused before an escape and
-    // silently dropped after one: `"ab<newline>c"` was a parse error and
-    // `"a\tb<newline>c"` was the four-byte string `a<tab>bc`.
-    expect(refusalIs("\"a\\tb\nc\"", "newline in string"));
-    expect(refusalIs("\"a\\x41b\nc\"", "newline in string"));
-    expect(refusalIs("\"a\\u03bbb\nc\"", "newline in string"));
+    // Wattle's, so a newline after an escape was dropped while one before it
+    // was refused.
+    expect(harness.stringIs(wrap.toString(try only("\"a\\tb\nc\"")), "a\tb\nc"));
+    expect(harness.stringIs(wrap.toString(try only("\"a\\x41b\nc\"")), "aAb\nc"));
+    expect(harness.stringIs(wrap.toString(try only("\"a\\u03bbb\nc\"")), "a\u{3bb}b\nc"));
 
     // A run shorter than the opening one is text inside a raw string.
     expect(harness.stringIs(wrap.toString(try only("\"\"\"a\"b\"\"\"")), "a\"b"));

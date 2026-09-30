@@ -802,10 +802,11 @@ fn wattleQuoteRun(
     }
 }
 
-/// The consumer inside a `"` string, which refuses a bare newline.
+/// The consumer inside a `"` string, which keeps a newline or a carriage
+/// return as written.
 ///
-/// An ordinary string is one line: `"""` is how a string spans lines, so
-/// nothing is left for the quiet behaviour to serve.
+/// An ordinary string may span lines. Its bytes are not reindented, which a
+/// raw string's are.
 fn wattleStringchar(
     parser: *Parser,
     state: *ParseState,
@@ -815,9 +816,6 @@ fn wattleStringchar(
         state.consumer = parserEscape1;
     } else if (character == '"') {
         return try finishString(parser, state);
-    } else if (character == '\n' or character == '\r') {
-        parser.@"error" = "newline in string";
-        return true;
     } else {
         parserPushBuf(parser, character);
     }

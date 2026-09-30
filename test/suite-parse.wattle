@@ -642,12 +642,14 @@
 (assert (= 3 (length "\uffff")) "a codepoint at the three-byte boundary takes three")
 (assert (= 4 (length "\U010000")) "and one just above it takes four")
 
-; A quoted string is one line: `"""` is how a string spans lines, so nothing
-; is left for Janet's quiet behaviour to serve.
-(assert (= "newline in string" (parse-error-of "\"a\nb\""))
-        "a newline inside a quoted string is refused")
-(assert (= "newline in string" (parse-error-of "\"a\rb\""))
-        "and so is a carriage return")
+; A quoted string keeps a newline or a carriage return as written, and does
+; not reindent it.
+(assert (= "a\nb" (parse "\"a\nb\"")) "a newline inside a quoted string is kept")
+(assert (= "a\rb" (parse "\"a\rb\"")) "and so is a carriage return")
+(assert (= "a\n  b" (parse "\"a\n  b\"")) "the indentation after it is kept")
+(assert (= "a\tb\nc" (parse "\"a\\tb\nc\"")) "a newline after an escape is kept")
+(assert (string/find "opened at line 1, column 1" (get (protect (parse "\"a\nb")) 1))
+        "an unclosed string is reported where it opened")
 (assert (= "a\nb" (parse "\"\"\"a\nb\"\"\"")) "a raw string takes both")
 
 ; The number scanner's radix and exponent bounds, which the parser reaches
