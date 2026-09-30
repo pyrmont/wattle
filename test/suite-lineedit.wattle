@@ -9,8 +9,8 @@
 ; argument, and the plain reader's case runs in every build that can start a
 ; process.
 ;
-; Each case starts the client with `-q -n -R`: no banner, no colour and no
-; profile, so the screen is the same on every host.
+; Each case starts the client with `-C run -q`: no colour and no banner, so
+; the screen is the same on every host.
 
 ; Every case starts the client as a process, so a build without `os/spawn`
 ; has nothing here to run. A missing binding is a compile error, and the
@@ -41,13 +41,13 @@
 
 ; Without a terminal the plain reader runs: the prompt is written to standard
 ; error and nothing is redrawn.
-(let [[out err] (run [(dyn *executable*) "-q" "-C"] "(+ 1 2)\n")]
+(let [[out err] (run [(dyn *executable*) "-C" "-q"] "(+ 1 2)\n")]
   (assert (= (string "3" line-end) out) "the plain reader evaluates a line from a pipe")
   (assert (= "repl:1:> repl:2:> " err) "the plain reader writes each prompt once"))
 
 ; The plain reader returns one line, so a form of two lines is read by two
 ; calls, and the second prompt shows the open delimiter.
-(let [[out err] (run [(dyn *executable*) "-q" "-C"] "(+ 1\n2)\n")]
+(let [[out err] (run [(dyn *executable*) "-C" "-q"] "(+ 1\n2)\n")]
   (assert (= (string "3" line-end) out) "the plain reader evaluates a form of two lines")
   (assert (= "repl:1:> repl:2:(> repl:3:> " err)
           "the plain reader shows the open delimiter in the prompt"))
@@ -72,13 +72,13 @@
 (compwhen harness
 
   (defn- drive
-    "Types `input` at the client behind the harness, and returns what the harness printed. The input waits for `:marker`, `repl:1:> ` by default. `:screen` asks for the screen rather than the bytes and `:cursor` for the cursor after it, and `:exit` for the command's exit and the terminal's modes, with the wait for the exit bounded at three seconds. `:cols` and `:rows` size the terminal, `:args` are the client's arguments after `-q -n -R`, and `:env` is a table of environment variables to set. `:color` passes `-N` in place of `-n`."
+    "Types `input` at the client behind the harness, and returns what the harness printed. The input waits for `:marker`, `repl:1:> ` by default. `:screen` asks for the screen rather than the bytes and `:cursor` for the cursor after it, and `:exit` for the command's exit and the terminal's modes, with the wait for the exit bounded at three seconds. `:cols` and `:rows` size the terminal, `:args` are the client's arguments after `-q`, and `:env` is a table of environment variables to set. `:color` passes `-c` in place of `-C`."
     [input & {:keys [marker screen cursor exit cols rows args env color]}]
     (def argv [harness "-w" (or marker "repl:1:> ") "-i" input
                "-c" (string (or cols 100)) "-r" (string (or rows 30))
                |(if screen ["-s"] []) |(if cursor ["-k"] [])
                |(if exit ["-x" "-t" "3000"] [])
-               "--" (dyn *executable*) "-q" (if color "-c" "-C") |(or args [])])
+               "--" (dyn *executable*) (if color "-c" "-C") "-q" |(or args [])])
     (def [out err] (run argv nil env))
     (assert (= "" err) (string "the harness reports nothing: " err))
     out)
@@ -418,7 +418,7 @@
                 "a coloured prompt places the cursor by its visible width"))
 
   ; Highlighting. Each case compares the bytes of the last frame, with the
-  ; client given `-N` so that it colours its output.
+  ; client given `-c` so that it colours its output.
   (task (assert (= (string "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;35m\"a\"\e[0m \e[0;33m:k\e[0m "
                            "\e[0;32m1\e[0m \e[0;36mnil\e[0m) \e[0;38;5;246m; c\e[0m")
                    (from-last "\r\e[Jrepl:1:> "
