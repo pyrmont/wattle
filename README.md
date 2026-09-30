@@ -9,26 +9,24 @@
 > Wattle is experimental. It was written primarily using LLM-based coding
 > agents.
 
-**Wattle** is a Lisp-like programming language. It reimplements the virtual
-machine, compiler and core library from the [Janet][] programming language in
-[Zig][] with a syntax inspired by [Clojure][].
+**Wattle** is a Lisp-like programming language. It reimplements in [Zig][] the
+virtual machine, compiler and core library from [Janet][] with a syntax
+inspired by [Clojure][].
 
 ## Language features
 
-- 700+ functions and macros in the core library
-- Built-in socket networking, threading, subprocesses and file system functions
-- Parsing Expression Grammars (PEG) engine
+- 600+ functions and macros in the core library
+- Parsing expression grammar (PEG) engine
 - Macros and compile-time computation
+- First-class closures
+- Built-in socket networking, threading, subprocesses and file system functions
 - Per-thread event loop for efficient IO (epoll/IOCP/kqueue)
 - First-class green threads (continuations) as well as OS threads
 - Erlang-style supervision trees that integrate with the event loop
-- First-class closures
 - Mutable and immutable indexed sequences (array/vector)
 - Mutable and immutable key-value sequences (table/map)
 - Mutable and immutable byte sequences (buffer/string)
-- Persistent immutable data structures (vector, map, set)
 - Garbage collection
-- Python-style generators (implemented as a plain macro)
 - Tail recursion
 - Native modules written in Zig and loaded dynamically
 - Built-in C FFI for calling C ABI-compatible shared libraries
@@ -49,11 +47,6 @@ Wattle has a syntax inspired by Clojure's:
 | `` `x ``    | quasiquote              | `\|x`         | splice               |
 | `:ab`       | keyword                 | `#(+ $ 1)`    | short function       |
 | `;`         | comment                 |               |                      |
-
-A raw string is closed by a run of quotes as long as the one that opened it.
-Its first and last line breaks are dropped and the opening delimiter's
-indentation is removed from each line, so it can sit inside indented code
-without carrying that indentation into its value.
 
 ## Examples
 
@@ -94,7 +87,7 @@ See the `examples/` directory for all provided example programs.
   (def cellset !{})
   (each cell state (put! cellset cell true))
   (loop [x :range [x1 (+ 1 x2)]
-         :after (print)
+           :after (print)
          y :range [y1 (+ 1 y2)]]
     (file/write stdout (if (get cellset [x y]) "X " ". ")))
   (print))
@@ -147,9 +140,12 @@ See the `examples/` directory for all provided example programs.
 
 ## Documentation
 
-Wattle does not yet have a written manual.
+The `wattle` CLI utility is documented in the `wattle.1` man page. A brief
+overview of the language is in the `wattle.7` man page. Both are generated from
+[Predoc][] files that are included in `man/`. The files are installed to
+`<prefix>/share/man`.
 
-Documentation is available in the REPL. Use the `(doc symbol-name)` macro to
+Documentation about bindings is available in the REPL. Use the `(doc symbol-name)` macro to
 get API documentation for symbols in the core library.
 
 At the REPL
@@ -179,10 +175,14 @@ zig build run          # a REPL
 
 Artifacts are installed under `zig-out`: the executable in `zig-out/bin` and
 the static and shared libraries in `zig-out/lib`. **No header is installed** —
-see "Native modules" below. Pass `-p <prefix>` to install somewhere else, and `zig
-build --help` to see the feature flags — the runtime can be built without the
-event loop, networking, the PEG engine, the assembler, the FFI, integer types,
-dynamic modules or docstrings.
+see "Native modules" below.
+
+### Compilation options
+
+Pass `-p <prefix>` to install somewhere else, and `zig build --help` to see the
+feature flags — the runtime can be built without the event loop, networking,
+the PEG engine, the assembler, the FFI, integer types, dynamic modules or
+docstrings.
 
 ```sh
 zig build -Doptimize=ReleaseFast          # an optimized build
@@ -193,6 +193,10 @@ zig build -Dtarget=wasm32-wasi            # a WASI command-line build
 Cross-compilation needs no extra toolchain: Zig ships the C headers and linkers
 for every supported target.
 
+### Gotchas
+
+#### musl
+
 A [musl][] build is dynamically linked and loads native modules, and needs the
 musl loader (`/lib/ld-musl-<arch>.so.1`, standard on Alpine and installed on
 Debian and Ubuntu by the `musl` package) on the machine that runs it.
@@ -200,6 +204,8 @@ Debian and Ubuntu by the `musl` package) on the machine that runs it.
 executable loads no native module at run time, so that build turns dynamic
 modules off, and `-Ddynamic-modules=true` with it is a build error. A native is
 then linked in at build time with `quickbin`; see "Extending" below.
+
+#### WASI
 
 The WASI build needs no other flag: the target turns off the event loop, the
 FFI, networking, processes and dynamic modules, and builds single-threaded.
@@ -241,13 +247,31 @@ self-contained and can be moved wherever you want on your system.
 
 ## Using
 
-A REPL is launched when the binary is invoked with no arguments. Pass the `-h`
-flag to display the usage information. Individual scripts can be run with
-`./wattle program.wattle`.
+Running `wattle -h` outputs the following:
 
-If you are looking to explore, you can print a list of all available macros,
-functions, and constants by entering the command `(all-bindings)` into the
-REPL.
+```
+The Wattle programming language.
+
+Options:
+
+ -c, --color            Enable ANSI color output.
+ -C, --no-color         Disable ANSI color output.
+ -p, --prefix <path>    Set the prefix, the root that lib/wattle, bin and share/man derive from.
+ -v, --version          Print the version string and exit.
+ -h, --help             Print this usage summary and exit.
+
+Subcommands:
+
+ b, build    Build an artifact from source.
+ c, check    Compile a script without running it and report every error.
+ p, pkg      Manage installed packages.
+ r, run      Run a script, evaluate code or start the REPL.
+ t, test     Run the test files in ./test, each in its own process.
+
+Without a subcommand, 'run' is assumed.
+```
+
+A REPL is launched when the binary is invoked with no arguments.
 
 ```
 $ wattle
@@ -261,38 +285,28 @@ repl:3:> (os/exit)
 $
 ```
 
-Two man pages are in the repository root: `wattle.1`, for the command-line
-tool, and `wattle.7`, for the language itself. Each is generated from its
-`.predoc` source by [Predoc][]. Read one in place with `man ./wattle.1` or
-`man ./wattle.7`.
+Individual scripts can be run with `wattle program.wattle`.
 
 ## Extending
 
 Wattle can be extended with _native modules_. The native-module interface is
-Zig. `examples/numarray/` is a worked example. A C program cannot define an
-nfunction for this runtime: an nfunction returns an error union over Zig's own
-calling convention, so no C body can have that type and no C caller can invoke
-one. The same applies to an `AbstractType`'s callbacks. Native modules are
-therefore written in Zig.
+Zig, a C interface is not provided. Native modules are therefore written in
+Zig. `examples/native-abstract/` is a working example.
 
 A module records the interface it was built against as a fingerprint, and the
-loader refuses to load this unless that fingerprint, the configuration bits and
-the Zig version all match the runtime's own. `wattle/api` is the runtime's
-fingerprint. Wattle's version is not compared, so a module built against one
-release loads into another whose interface is the same.
+loader refuses to load a module if its fingerprint doees not match.
+`wattle/api` is the runtime's fingerprint. The fingerprint is independent of
+Wattle's version so that a module built against one release loads into another
+provided that the interface is the same.
 
 A module can also be linked into an executable, together with the runtime and
 an image of a Wattle program, so that one file cross-compiles and runs with
-nothing beside it. `zig build examples/quickbin` builds `examples/quickbin/`,
-which links `examples/digest/` in, and `build.zig`'s `quickbin` function builds
-one from outside the tree (`examples/standalone/`).
-
-A project that needs nothing beyond that can skip `build.zig`. `wattle build
-exe` reads the project's `info.edn`, which lists the executables to build and
-the native modules each links in, and makes the executable with Zig.
-`wattle build lib` makes each native module as a shared library. Both need Zig
-on the `PATH`, and the prefix, `WATTLE_PREFIX` or `--prefix`, must be a root
-whose `share/wattle` holds the package, as `zig build` installs it:
+nothing beside it. `wattle build exe` reads the project's `info.edn`, which
+lists the executables to build and the native modules each links in, and makes
+the executable with Zig. `wattle build lib` makes each native module as a shared
+library. Both need Zig on the `PATH`, and the prefix, `WATTLE_PREFIX` or
+`--prefix`, must be a root whose `share/wattle` holds the package, as `zig
+build` installs it:
 
 ```clojure
 {:name "hello"
@@ -301,12 +315,19 @@ whose `share/wattle` holds the package, as `zig build` installs it:
 ```
 
 ```sh
-wattle -s /usr/local build exe --release small
+wattle -p /usr/local build exe --release small
 ```
 
-`examples/standalone/info.edn` is a worked instance, and `zig build
+`examples/native-consumer/info.edn` is a worked instance, and `zig build
 examples/build-exe` builds it this way. `man ./wattle.1` describes the file and
 the options.
+
+A project that needs more than that, such as other Zig steps or its own build
+options, can write a `build.zig` and call the `quickbin` function of the
+`wattle` dependency, which is what `wattle build exe` generates. `zig build
+examples/native-executable` builds `examples/native-executable/`, which links
+`examples/native-events/` in, and `examples/native-consumer/build.zig` calls
+`quickbin` from outside the tree.
 
 `zig build` also copies the package's files, `build.zig`, `build.zig.zon`,
 `LICENSE`, `README.md` and `src/`, to `<prefix>/share/wattle/`. A project builds

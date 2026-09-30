@@ -1,9 +1,9 @@
-# quickbin
+# native-executable
 
 A Wattle program, the runtime and a native module in one executable, and the
 worked example of a build that cross-compiles it.
 
-`main.wattle` is the whole program. It imports `examples/digest`, hashes one
+`main.wattle` is the whole program. It imports `examples/native-events`, hashes one
 string and prints the result:
 
 ```clojure
@@ -13,9 +13,9 @@ string and prints the result:
   (print (digest/sha256 "abc")))
 ```
 
-    zig build examples/quickbin                                          # zig-out/bin/quickbin
-    zig build examples/quickbin -Dtarget=aarch64-linux-musl -Dlinkage=static  # a static Linux binary
-    zig build examples/quickbin -Dtarget=x86_64-macos                    # runs under Rosetta
+    zig build examples/native-executable                                          # zig-out/bin/native-executable
+    zig build examples/native-executable -Dtarget=aarch64-linux-musl -Dlinkage=static  # a static Linux binary
+    zig build examples/native-executable -Dtarget=x86_64-macos                    # runs under Rosetta
 
 builds it, and `zig build test` runs it on a native build and checks the
 output. The binary needs no `WATTLE_PREFIX`, no shared object and no image file
@@ -102,10 +102,10 @@ their names.
 
 `digest` schedules its work through the event loop, so this executable needs
 a build with the loop. Under `-Dev=false` the hash raises `event loop not
-enabled`, as `examples/digest/test/digest.wattle` shows.
+enabled`, as `examples/native-events/test/digest.wattle` shows.
 
 ## Building one outside this repository
 
-`examples/standalone` does it, with its own module rather than `digest`. Its
+`examples/native-consumer` does it, with its own module rather than `digest`. Its
 `build.zig` calls the one public function this build offers for the purpose,
-and `zig build examples/standalone` at the repository root runs that build.
+and `zig build examples/native-consumer` at the repository root runs that build.

@@ -1,10 +1,10 @@
-# url
+# native-function
 
 A native Wattle module written in Zig, and the worked example of the built-in
 types. A type crosses to a module author as a view or as a capability. This
-module is the view half and `examples/numarray` is the capability half.
+module is the view half and `examples/native-abstract` is the capability half.
 
-`examples/numarray` is the example of a module that owns something: it declares
+`examples/native-abstract` is the example of a module that owns something: it declares
 an abstract type, allocates a payload and fills in the type's slots. Most native
 modules are not that. A binding around a C library is usually a translator,
 taking arguments in, doing work in the library and returning a result. What it
@@ -23,7 +23,7 @@ needs from the runtime is the ability to read what it was given.
 
     zig build test
 
-builds it and runs `examples/url/test/url.wattle` against it. That file is an
+builds it and runs `examples/native-function/test/url.wattle` against it. That file is an
 ordinary `import*` of the built shared object. The path is an argument only
 because `zig build` leaves the object in its cache rather than on `WATTLE_PREFIX`,
 and everything after the import is what someone who had installed the module
@@ -120,6 +120,6 @@ family of functions.
 
 ## Building a module outside this repository
 
-The same way `numarray` does. `examples/numarray/README.md` has the
+The same way `numarray` does. `examples/native-abstract/README.md` has the
 `build.zig.zon` and `build.zig` an outside package needs, and `zig build
-examples/standalone` is the proof that it works.
+examples/native-consumer` is the proof that it works.

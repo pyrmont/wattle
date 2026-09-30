@@ -1,4 +1,4 @@
-# numarray
+# native-abstract
 
 A native Wattle module written in Zig, and the worked example of an abstract
 type.
@@ -10,7 +10,7 @@ the `JANET_ATEND_*` macro chain.
 
     zig build test
 
-builds it and runs `examples/numarray/test/numarray.wattle` against it, which is
+builds it and runs `examples/native-abstract/test/numarray.wattle` against it, which is
 what makes "a sample module compiles and loads" a check rather than a claim.
 
 ## Building a module outside this repository
@@ -20,7 +20,7 @@ graph available to it. That proves the source experience: one import, and the
 module never names `types`, `raise` or `constants`. It does not prove that an
 outside package can obtain the `wattle` module at all.
 
-`examples/standalone` is that proof, and `zig build examples/standalone` runs it. A
+`examples/native-consumer` is that proof, and `zig build examples/native-consumer` runs it. A
 consumer's `build.zig.zon` names this package as a dependency and its
 `build.zig` asks for one module:
 

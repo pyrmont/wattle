@@ -107,7 +107,7 @@ three host-header translations includes first.
 The directories state the boundary but do not enforce it. Both package roots sit
 at `src/`, so a relative import can cross between directories, and several do
 by design: `api/raise.zig` names four runtime files for the branch that a module
-build does not take. `examples/standalone` enforces the boundary instead: it
+build does not take. `examples/native-consumer` enforces the boundary instead: it
 consumes the package by path, the way an outside author does. A
 compiler-enforced split would make `api` a build module with the runtime
 imported back into it by name. That is possible, and not what the tree does.
@@ -213,7 +213,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
 generator on the host, with `test/contracts.zig` as the root, with
 `test/fuzz.zig` as the root, for the module-error fixtures, and as
 `wattle-runtime-test` rooted at `root.zig`. A cross build builds it a seventh
-time for `zig build examples/quickbin`: on the host, under the target's features, for the
+time for `zig build examples/native-executable`: on the host, under the target's features, for the
 client that makes the image. Every build has the same modules, so a test root
 spells the same types and constants as the runtime.
 
@@ -422,12 +422,12 @@ The tests are steps under `test/`, with `test` running them all:
 
 The examples have steps of their own, named under `examples/`:
 
-| step                  | what it builds                                      |
-| --------------------- | --------------------------------------------------- |
-| `examples`            | the three below                                     |
-| `examples/quickbin`   | `examples/quickbin` as `<prefix>/bin/quickbin`      |
-| `examples/standalone` | `examples/standalone`, a consumer outside the tree  |
-| `examples/web`        | `examples/web`, a WASI reactor, as `<prefix>/web/`  |
+| step                         | what it builds                                                   |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `examples`                   | the three below                                                  |
+| `examples/native-executable` | `examples/native-executable` as `<prefix>/bin/native-executable` |
+| `examples/native-consumer`   | `examples/native-consumer`, a consumer outside the tree          |
+| `examples/web`               | `examples/web`, a WASI reactor, as `<prefix>/web/`               |
 
 A step is run as `zig build <step>`, and `install` is the default, so
 `zig build` alone runs it. `install` builds the static and shared libraries.
@@ -438,7 +438,7 @@ the 39 suites. On a native build it also runs `quickbin`.
 
 `test/runtime` and `test/lineedit` each print `All N tests passed.` Add
 `--fuzz` to `zig build fuzz` for a campaign. `quickbin` builds
-`examples/quickbin/main.wattle` with `examples/digest` linked in.
+`examples/native-executable/main.wattle` with `examples/native-events` linked in.
 
 No header is installed.
 

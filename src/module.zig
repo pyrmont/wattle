@@ -107,7 +107,7 @@
 //! exactly when it has `chunk`.
 //!
 //! The restrictions on the collector's callbacks are in `Spec`, and
-//! `examples/numarray` is the worked example.
+//! `examples/native-abstract` is the worked example.
 //!
 //! ## Values across a re-entry into Janet code
 //!
@@ -138,9 +138,9 @@
 //!   code may read the same abstract's runs, and a type may reuse the storage
 //!   of a run.
 //!
-//! Three examples are included to show how to use modules: `examples/digest`
-//! (the event loop), `examples/numarray` (an abstract type in a module that
-//! owns something) and `examples/url` (the views in a module that owns
+//! Three examples are included to show how to use modules: `examples/native-events`
+//! (the event loop), `examples/native-abstract` (an abstract type in a module that
+//! owns something) and `examples/native-function` (the views in a module that owns
 //! nothing).
 
 // ==========================================================================
@@ -597,7 +597,7 @@ pub fn abstract(p: *anyopaque) Value {
 ///
 /// The result is null when the allocation fails. The caller is responsible for
 /// calling `panic` if that is appropriate. See
-/// `examples/numarray/numarray.zig` for a worked instance.
+/// `examples/native-abstract/numarray.zig` for a worked instance.
 ///
 /// A `T` aligned more strictly than `max_align_t` is a compile error. The
 /// allocator is malloc-backed.
@@ -732,7 +732,7 @@ pub fn def(env: *Env, comptime name: [:0]const u8, val: Value, comptime doc: ?[:
 ///
 /// The failure is a crash during teardown with nothing pointing back at the
 /// declaration that caused it, and Zig offers no way to require the placement,
-/// so this is a rule rather than a check. `examples/numarray` shows it.
+/// so this is a rule rather than a check. `examples/native-abstract` shows it.
 pub fn define(comptime T: type, comptime spec: anytype) AbstractType {
     comptime abstract_type.check(T, spec);
     const cb = comptime abstract_type.collect(T, spec);

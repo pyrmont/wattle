@@ -4,7 +4,7 @@
 //! that the module would fail to compile if `wattle` stopped offering
 //! registration, the raising nfunction shape, or `wattle.define`.
 //!
-//! `build.zig` in this directory builds it, and `zig build examples/standalone` at
+//! `build.zig` in this directory builds it, and `zig build examples/native-consumer` at
 //! the repository root runs that build.
 
 const wattle = @import("wattle");
@@ -25,16 +25,16 @@ const Greeting = struct {
 /// A `Greeting` has no allocation of its own, so there is nothing to free.
 fn greetingGc(_: *Greeting, _: usize) void {}
 
-/// The `standalone/greeting` abstract type, which `hello` passes to
+/// The `consumer/greeting` abstract type, which `hello` passes to
 /// `wattle.new`. It is declared at container level because the runtime keeps
 /// this address and reads it again at teardown.
 const greeting_type = wattle.define(Greeting, .{
-    .name = "standalone/greeting",
+    .name = "consumer/greeting",
     .gc = greetingGc,
 });
 
 /// Returns a new greeting abstract with a `count` of 1. Implements
-/// `(standalone/hello)`.
+/// `(consumer/hello)`.
 ///
 /// `argv` is empty, because this nfunction takes no arguments.
 ///
@@ -53,8 +53,8 @@ fn hello(argv: []wattle.Value) wattle.Error!wattle.Value {
 ///
 /// This function cannot raise.
 fn defs(env: *wattle.Env) wattle.Error!void {
-    wattle.nfuns(env, "standalone", &.{
-        wattle.reg("hello", &hello, "(standalone/hello)", "Returns a greeting."),
+    wattle.nfuns(env, "consumer", &.{
+        wattle.reg("hello", &hello, "(consumer/hello)", "Returns a greeting."),
     });
 }
 

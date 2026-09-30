@@ -3,7 +3,7 @@
 //!
 //! `url` is the worked example of the views and `numarray` is the worked
 //! example of the abstract type. This module imports `wattle` and `std` and
-//! nothing else. `build.zig` builds it and `examples/digest/test/digest.wattle`
+//! nothing else. `build.zig` builds it and `examples/native-events/test/digest.wattle`
 //! loads it, which `zig build test` runs.
 //!
 //! ```janet

@@ -223,7 +223,7 @@ const Selection = struct {
 /// The `wattle` module, for a build that is not this one.
 ///
 /// **This is the whole public build surface, and it exists because the example
-/// did not prove what it looked like it proved.** `examples/numarray` imports
+/// did not prove what it looked like it proved.** `examples/native-abstract` imports
 /// one module, which is the intended source experience -- but the module it
 /// imports is constructed inside `build()` from `RuntimeGraph`, the generated
 /// configuration and the private `abi`, `raise`, `constants` and
@@ -249,7 +249,7 @@ const Selection = struct {
 /// that runtime, because `config` determines `Value`'s layout. Loading a
 /// `-Dnanbox=false` module into a NaN-boxed runtime is not a link error; it
 /// is wrong values.
-/// `examples/standalone` is the worked instance and `zig build examples/standalone`
+/// `examples/native-consumer` is the worked instance and `zig build examples/native-consumer`
 /// builds it the way an outside author would.
 pub fn wattleModule(
     dep: *std.Build.Dependency,
@@ -644,7 +644,7 @@ pub fn build(b: *std.Build) void {
     // test executables for cross-platform runs.
     installModuleTest(b, options, config, native_module);
 
-    // `examples/numarray`, the sample an author reads: the worked example of
+    // `examples/native-abstract`, the sample an author reads: the worked example of
     // an abstract type, which `zig build test` loads and runs.
     const numarray_module = nativeModule(
         b,
@@ -653,12 +653,12 @@ pub fn build(b: *std.Build) void {
         optimize,
         options,
         config,
-        "examples/numarray/numarray.zig",
+        "examples/native-abstract/numarray.zig",
         "numarray",
     );
     installModuleTest(b, options, config, numarray_module);
 
-    // `examples/url`, the worked example of the built-in types: a module that
+    // `examples/native-function`, the worked example of the built-in types: a module that
     // owns nothing, reads every shape an argument can be -- bytes, elements,
     // entries and a range -- and returns a string.
     const url_module = nativeModule(
@@ -668,12 +668,12 @@ pub fn build(b: *std.Build) void {
         optimize,
         options,
         config,
-        "examples/url/url.zig",
+        "examples/native-function/url.zig",
         "url",
     );
     installModuleTest(b, options, config, url_module);
 
-    // `examples/digest`, the worked example of scheduling work through the
+    // `examples/native-events`, the worked example of scheduling work through the
     // event loop: one nfunction that hashes on a thread of its own, so the
     // loop is never blocked.
     const digest_module = nativeModule(
@@ -683,26 +683,26 @@ pub fn build(b: *std.Build) void {
         optimize,
         options,
         config,
-        "examples/digest/digest.zig",
+        "examples/native-events/digest.zig",
         "digest",
     );
     installModuleTest(b, options, config, digest_module);
 
-    // `examples/quickbin`, the worked example of `quickbin`: `main.wattle` with
-    // `examples/digest` linked into one executable. The image is made by
+    // `examples/native-executable`, the worked example of `quickbin`: `main.wattle` with
+    // `examples/native-events` linked into one executable. The image is made by
     // `client` on a native build with dynamic modules, and otherwise by a host
     // client built from the target's configuration with dynamic modules on.
     const quickbin_step = b.step(
-        "examples/quickbin",
-        "Build examples/quickbin, with examples/digest linked in, into <prefix>/bin/quickbin",
+        "examples/native-executable",
+        "Build examples/native-executable, with examples/native-events linked in, into <prefix>/bin/native-executable",
     );
     const quickbin_exe = if (runtime_graph != null) quickbinExecutable(
         built,
         if (target.query.isNative() and config.dynamic_modules) built else hostBuilt(b, options, target, boot_host, image_source),
         .{
-            .name = "quickbin",
-            .source = b.path("examples/quickbin/main.wattle"),
-            .natives = &.{.{ .name = "digest", .root = b.path("examples/digest/digest.zig") }},
+            .name = "native-executable",
+            .source = b.path("examples/native-executable/main.wattle"),
+            .natives = &.{.{ .name = "digest", .root = b.path("examples/native-events/digest.zig") }},
             .target = target,
             .optimize = optimize,
         },
@@ -999,12 +999,12 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // **The standalone consumer, built the way an outside author builds one.**
+    // **The native consumer, built the way an outside author builds one.**
     //
-    // `examples/numarray` is compiled here, with `RuntimeGraph` and the private
+    // `examples/native-abstract` is compiled here, with `RuntimeGraph` and the private
     // modules in hand, so it proves the *source* experience and cannot notice
     // if the published build surface rots. This step runs `zig build test`
-    // inside `examples/standalone`, which depends on this package by path and
+    // inside `examples/native-consumer`, which depends on this package by path and
     // reaches it only through `wattleModule` and `quickbin` -- so a change that
     // breaks a real consumer fails here rather than in somebody else's
     // repository. `test` there runs the executable `quickbin` built, so the
@@ -1013,16 +1013,16 @@ pub fn build(b: *std.Build) void {
     // It is a step of its own rather than part of `zig build test` because it
     // compiles the runtime's modules a second time in a second cache. The
     // acceptance matrix carries it, which is where a per-phase cost belongs.
-    const standalone_step = b.step(
-        "examples/standalone",
+    const consumer_step = b.step(
+        "examples/native-consumer",
         "Build the example that consumes this package from outside",
     );
-    const standalone = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "test" });
-    standalone.setCwd(b.path("examples/standalone"));
-    standalone.setName("zig build test (examples/standalone)");
+    const consumer = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "test" });
+    consumer.setCwd(b.path("examples/native-consumer"));
+    consumer.setName("zig build test (examples/native-consumer)");
     // Its output is its own; nothing here reads it, so the step's verdict is
     // the exit status.
-    standalone.expectExitCode(0);
+    consumer.expectExitCode(0);
     // **It must actually run.** Without this the build graph has no idea what
     // this command reads -- the sub-package's sources and this file's public
     // helper are not declared inputs -- so it is hashed on its argv alone,
@@ -1031,12 +1031,12 @@ pub fn build(b: *std.Build) void {
     // stayed green. An instrument that cannot fail is the thing this whole
     // package of checks exists to avoid. The inner `zig build` does its own
     // caching, so a no-change run is cheap.
-    standalone.has_side_effects = true;
-    standalone_step.dependOn(&standalone.step);
+    consumer.has_side_effects = true;
+    consumer_step.dependOn(&consumer.step);
 
     // **`wattle build exe`, on the same example with no `build.zig`.**
     //
-    // `examples/standalone/info.edn` declares the native module and the
+    // `examples/native-consumer/info.edn` declares the native module and the
     // executable that links it. This step runs the installed `wattle` with the
     // install prefix as `--prefix`, so that `build exe` finds the package
     // under `<prefix>/share/wattle`, and then runs the executable it wrote.
@@ -1045,12 +1045,12 @@ pub fn build(b: *std.Build) void {
     if (!wasm and target.query.isNative()) {
         const build_exe_step = b.step(
             "examples/build-exe",
-            "Build examples/standalone with `wattle build exe` from its info.edn and run it",
+            "Build examples/native-consumer with `wattle build exe` from its info.edn and run it",
         );
         const build_exe = b.addRunArtifact(client);
         build_exe.addArgs(&.{ "-p", b.getInstallPath(.prefix, ""), "build", "exe" });
-        build_exe.setCwd(b.path("examples/standalone"));
-        build_exe.setName("wattle build exe (examples/standalone)");
+        build_exe.setCwd(b.path("examples/native-consumer"));
+        build_exe.setName("wattle build exe (examples/native-consumer)");
         build_exe.expectExitCode(0);
         // Its inputs are the sources of the sub-build, which the graph does not
         // see, so it must run every time.
@@ -1058,8 +1058,8 @@ pub fn build(b: *std.Build) void {
         build_exe.step.dependOn(b.getInstallStep());
 
         const exe_name = if (target.result.os.tag == .windows) "hello-info.exe" else "hello-info";
-        const run_built = b.addSystemCommand(&.{b.pathJoin(&.{ b.build_root.path orelse ".", "examples/standalone/zig-out/bin", exe_name })});
-        run_built.expectStdOutEqual("standalone/greeting\n");
+        const run_built = b.addSystemCommand(&.{b.pathJoin(&.{ b.build_root.path orelse ".", "examples/native-consumer/zig-out/bin", exe_name })});
+        run_built.expectStdOutEqual("consumer/greeting\n");
         run_built.expectExitCode(0);
         run_built.has_side_effects = true;
         run_built.step.dependOn(&build_exe.step);
@@ -1250,9 +1250,9 @@ pub fn build(b: *std.Build) void {
     const web_step = b.step("examples/web", "Build examples/web, Wattle as a wasm32-wasi reactor, with its page into <prefix>/web");
     // The three example steps under one name. `zig build examples` builds
     // every example the build knows how to; each is also its own step.
-    const examples_step = b.step("examples", "Build examples/quickbin, examples/standalone and examples/web");
+    const examples_step = b.step("examples", "Build examples/native-executable, examples/native-consumer and examples/web");
     examples_step.dependOn(quickbin_step);
-    examples_step.dependOn(standalone_step);
+    examples_step.dependOn(consumer_step);
     examples_step.dependOn(web_step);
     {
         const web_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
@@ -1324,7 +1324,7 @@ pub fn build(b: *std.Build) void {
         // step rather than a sentence.
         const run_numarray = b.addRunArtifact(client);
         run_numarray.setCwd(b.path("."));
-        run_numarray.addArg("examples/numarray/test/numarray.wattle");
+        run_numarray.addArg("examples/native-abstract/test/numarray.wattle");
         run_numarray.addFileArg(numarray_module.getEmittedBin());
         for (zig_side) |step| run_numarray.step.dependOn(step);
         test_step.dependOn(&run_numarray.step);
@@ -1332,7 +1332,7 @@ pub fn build(b: *std.Build) void {
         // The views' worked example, loaded the same way.
         const run_url = b.addRunArtifact(client);
         run_url.setCwd(b.path("."));
-        run_url.addArg("examples/url/test/url.wattle");
+        run_url.addArg("examples/native-function/test/url.wattle");
         run_url.addFileArg(url_module.getEmittedBin());
         for (zig_side) |step| run_url.step.dependOn(step);
         test_step.dependOn(&run_url.step);
@@ -1342,7 +1342,7 @@ pub fn build(b: *std.Build) void {
         // is scheduled on the same condition as the other two.
         const run_digest = b.addRunArtifact(client);
         run_digest.setCwd(b.path("."));
-        run_digest.addArg("examples/digest/test/digest.wattle");
+        run_digest.addArg("examples/native-events/test/digest.wattle");
         run_digest.addFileArg(digest_module.getEmittedBin());
         for (zig_side) |step| run_digest.step.dependOn(step);
         test_step.dependOn(&run_digest.step);

@@ -1,10 +1,10 @@
-# digest
+# native-events
 
 A native Wattle module written in Zig, and the worked example of scheduling
 work through the event loop.
 
-`examples/numarray` is the example of a module that owns something, and
-`examples/url` is the example of a module that only reads. This module does
+`examples/native-abstract` is the example of a module that owns something, and
+`examples/native-function` is the example of a module that only reads. This module does
 work on a thread of its own and returns the result through the loop, and it
 owns that thread in an abstract value whose `gc` callback joins it. Every module
 that wraps a library with its own threads, its own poll or its own sockets has
@@ -21,7 +21,7 @@ this shape.
 
     zig build test
 
-builds it and runs `examples/digest/test/digest.wattle` against it. That file is
+builds it and runs `examples/native-events/test/digest.wattle` against it. That file is
 an ordinary `import*` of the built shared object. The path is an argument only
 because `zig build` leaves the object in its cache rather than on `WATTLE_PREFIX`,
 and everything after the import is what someone who had installed the module
@@ -103,7 +103,7 @@ to report. `ev/cancel` may have moved the fiber on, or the fiber may have
 finished, and the runtime would have dropped the resume. The roots are the
 module's either way, so the callback unroots on both branches. A module that
 cleaned up only under the `true` branch would leak the cancelled case.
-`examples/digest/test/digest.wattle` cancels a hash in flight for that reason.
+`examples/native-events/test/digest.wattle` cancels a hash in flight for that reason.
 
 ### Joining the thread
 
@@ -131,7 +131,7 @@ How long a getter's result stays valid is still the getter's rule. A string's,
 a symbol's and a keyword's bytes are stable while the value is reachable, and
 the root secures that stability. A buffer's bytes are `data[0..count]`, and a
 push from another fiber may move them, so hashing a buffer that another fiber
-can write to during the wait is the caller's to avoid. `examples/url` states
+can write to during the wait is the caller's to avoid. `examples/native-function` states
 the same rule, met here at the point where the wait makes it apply.
 
 ## What the test asserts
@@ -155,6 +155,6 @@ taken.
 
 ## Building a module outside this repository
 
-The same way `numarray` does. `examples/numarray/README.md` has the
+The same way `numarray` does. `examples/native-abstract/README.md` has the
 `build.zig.zon` and `build.zig` an outside package needs, and `zig build
-examples/standalone` is the proof that it works.
+examples/native-consumer` is the proof that it works.

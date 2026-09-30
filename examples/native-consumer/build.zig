@@ -10,8 +10,8 @@
 //! Those are private, and a package that required them would not be
 //! consumable.
 //!
-//! That is what this directory is for. `examples/numarray` and
-//! `examples/quickbin` prove the source experience. They are built inside
+//! That is what this directory is for. `examples/native-abstract` and
+//! `examples/native-executable` prove the source experience. They are built inside
 //! the runtime's own `build()` with the private graph available, so they
 //! could keep proving that after the public surface had stopped working.
 //! This build fails to configure if it has.
@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
     // `(type (greet/hello))` is the abstract type's name, which only the
     // linked-in module can have supplied.
     const run = b.addRunArtifact(exe);
-    run.expectStdOutEqual("standalone/greeting\n");
+    run.expectStdOutEqual("consumer/greeting\n");
     run.expectExitCode(0);
     const test_step = b.step("test", "Run the executable and check its output");
     test_step.dependOn(&run.step);

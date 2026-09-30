@@ -3,7 +3,7 @@
 //!
 //! `numarray` is the worked example of the abstract type. This module
 //! imports `wattle` and `std` and nothing else. `build.zig` builds it and
-//! `examples/url/test/url.wattle` loads it, which `zig build test` runs.
+//! `examples/native-function/test/url.wattle` loads it, which `zig build test` runs.
 //!
 //! ## A module that owns nothing
 //!

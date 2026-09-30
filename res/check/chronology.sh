@@ -51,7 +51,7 @@
 # rather than repairing it. `res/testing/acceptance-matrix.md` and
 # `res/testing/mutation.md` are exactly that, and they stay out.
 #
-# Both questions skip `.zig-cache` and `zig-out`. `examples/standalone` builds
+# Both questions skip `.zig-cache` and `zig-out`. `examples/native-consumer` builds
 # a cache of its own inside the tree, and a compiler cache is full of `std`
 # file names that match either pattern.
 #

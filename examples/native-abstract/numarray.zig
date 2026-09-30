@@ -1,6 +1,6 @@
 //! A native module, written in Zig against the published interface.
 //!
-//! `build.zig` builds this module and `examples/numarray/test/numarray.wattle`
+//! `build.zig` builds this module and `examples/native-abstract/test/numarray.wattle`
 //! loads it. `zig build test` runs that test file.
 //!
 //! ## Differences with the C version

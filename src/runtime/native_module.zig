@@ -10,7 +10,7 @@
 //!
 //! A sentence claiming all fifteen slots are writable is not a proof, so
 //! `Keeper` below sets every one of them and the claim is compiled.
-//! `examples/numarray/numarray.zig` is the worked example an author reads; it
+//! `examples/native-abstract/numarray.zig` is the worked example an author reads; it
 //! sets the seven a numeric array has a use for, and the rest are here.
 //!
 //! Loaded by `test/zig-native.wattle`, which `zig build test` runs.
@@ -523,7 +523,7 @@ fn keeperMark(self: *Keeper, _: usize) void {
 }
 
 /// Every `push*` an author has except `pushPointer`, which is meaningful only
-/// in unsafe mode, and `pushNumber`, which `examples/numarray` uses.
+/// in unsafe mode, and `pushNumber`, which `examples/native-abstract` uses.
 fn keeperMarshal(self: *Keeper, m: *wattle.Marshal) wattle.Error!void {
     if (wattle.isUnsafe(m)) unsafe_seen += 1;
     wattle.pushAbstract(m, self);
