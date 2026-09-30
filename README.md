@@ -321,9 +321,9 @@ wattle build exe --release small
 `examples/native-consumer/info.edn` is a worked example. More details are in
 the man page.
 
-A project that needs more than that, such as other Zig steps or its own build
-options, can write a `build.zig` and call the `wattleExecutable` function of
-the `wattle` dependency. `zig build examples/native-executable` builds
+A project that needs more than that, such as other Zig packages or its own
+build options, can write a `build.zig` and call the `wattleExecutable` function
+of the `wattle` dependency. `zig build examples/native-executable` builds
 `examples/native-executable/`, which links `examples/native-events/` in, and
 `examples/native-consumer/build.zig` calls `wattleExecutable` from outside the
 tree.
@@ -336,20 +336,23 @@ Gum is a collection of optional Wattle source modules that is included in the
 `src/gum/` directory. `zig build` copies them to
 `<prefix>/share/wattle/src/gum/`. A project copies the modules it uses into its
 own source tree and imports them by relative path. `wattle gum` with no
-arguments lists the modules. `wattle gum args` copies `args.wattle` and its
-licence into `deps/gum/`, and `--dir` names a different parent of `gum/`. A file
-in the project root then uses:
-
-```clojure
-(import ./deps/gum/args :as args)
-```
-
-See [`src/gum/README.md`](src/gum/README.md) for each module's origin and use.
+arguments lists the modules. See [`src/gum/README.md`](src/gum/README.md) for
+each module's origin and use.
 
 ### Editors
 
-Wattle can be hacked on with pretty much any environment you like. No editor
-yet has a syntax package for Wattle; a Clojure mode is the closest fit for
+`res/editor/` holds support for reading and writing `.wattle` source. `zig
+build` does not build it.
+
+- [`res/editor/tree-sitter/`](res/editor/tree-sitter/README.md) is a
+  Tree-sitter grammar with highlight and fold queries. An editor that loads
+  Tree-sitter grammars can use it.
+- [`res/editor/nvim/`](res/editor/nvim/README.md) is a Neovim runtime path. It
+  sets the filetype, the comment string and Lisp indenting, and starts
+  Tree-sitter with the grammar above. It also has the settings that vim-sexp
+  needs to move by Wattle's delimiters.
+
+Where there is no Wattle support, a Clojure mode is the closest fit for
 `.wattle` source. Any editor with Zig support will do for runtime development.
 
 ## License
