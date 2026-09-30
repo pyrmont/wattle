@@ -73,10 +73,10 @@ Options
   Print values, errors and documentation without ANSI colour, and do not
   highlight the source typed at the REPL.
 
-- **-s**, **--syspath** _path_:
-  Set ``*syspath*``, the root directory that ``lib/wattle``, ``bin`` and
+- **-p**, **--prefix** _path_:
+  Set ``*prefix*``, the root directory that ``lib/wattle``, ``bin`` and
   ``share/man`` derive from, to _path_. System modules are loaded from
-  ``lib/wattle`` under it. This replaces the value taken from `WATTLE_PATH`.
+  ``lib/wattle`` under it. This replaces the value taken from `WATTLE_PREFIX`.
 
 - **-v**, **--version**:
   Print the version of Wattle and exit.
@@ -111,7 +111,7 @@ results are in ``zig-out`` in the current directory. The project needs no
 ``build.zig``.
 
 Both commands need Zig on the ``PATH`` and the Wattle package, which
-**zig build** installs in ``share/wattle``, under ``*syspath*``. They write a
+**zig build** installs in ``share/wattle``, under ``*prefix*``. They write a
 ``build.zig`` and a ``build.zig.zon`` in ``.zig-cache/wattle-build`` and run
 **zig build** on them. Each error in ``info.edn``, and a missing Zig, is
 reported on one line and the exit status is 1.
@@ -172,7 +172,7 @@ pkg
 
 **wattle** [**-s** _path_] **pkg** _verb_ [_argument_]
 
-Manage the packages installed under ``*syspath*``. Modules are installed in
+Manage the packages installed under ``*prefix*``. Modules are installed in
 ``lib/wattle``, programs in ``bin`` and man pages in ``share/man`` under it. A build made without the
 OS library does not include **pkg**, and each verb exits with status 1 after
 saying so.
@@ -310,13 +310,13 @@ Prompts are written to standard error, or to standard output with **-s**.
 ENVIRONMENT
 ===========
 
-- `WATTLE_PATH`:
-  A list of root directories, separated by ``:``, or by ``;`` on Windows. System
-  modules are loaded from ``lib/wattle`` under each. The last directory becomes
-  ``*syspath*`` and is searched first. If unset, ``*syspath*`` is the value the
+- `WATTLE_PREFIX`:
+  The root directory that ``lib/wattle``, ``bin`` and ``share/man`` derive from.
+  It becomes ``*prefix*``, and system modules are loaded from ``lib/wattle``
+  under it. **-p** replaces it. If unset, ``*prefix*`` is the value the
   build was made with: a path, none, or nothing yet. A build with none loads no
   system modules. A build with nothing yet, which is the default, raises an
-  error that names `WATTLE_PATH` at the first system module lookup or **pkg**
+  error that names `WATTLE_PREFIX` at the first system module lookup or **pkg**
   command.
 
 - `WATTLE_HISTFILE`:
@@ -368,7 +368,7 @@ $ wattle run -i hello.jimage Alice
 Build the executables that ``info.edn`` declares, optimised for size:
 
 ````
-$ wattle -s /usr/local build exe --release small
+$ wattle -p /usr/local build exe --release small
 ````
 
 Check a script for compile errors without running it, stopping at the first:

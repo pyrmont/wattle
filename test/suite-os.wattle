@@ -156,6 +156,14 @@
                            (merge (os/environ) {"HELLO" "WORLD"})))
           "os/execute with env")
 
+  ; WATTLE_PREFIX is one root and is not split into a list
+  (def home-sep (if (= :windows (os/which)) ";" ":"))
+  (def home (string "/tmp/a" home-sep "/tmp/b"))
+  (assert (= 0 (os/execute [|run wattle "-e"
+                             (string "(os/exit (if (= (dyn *prefix*) \"" home "\") 0 1))")]
+                           :pe (merge (os/environ) {"WATTLE_PREFIX" home})))
+          "WATTLE_PREFIX is taken whole as *prefix*")
+
   ; os/execute with empty environment
   ; native MinGW can't find system DLLs without PATH, SystemRoot, etc. and so fails
   ; Also fails for address sanitizer builds on windows.

@@ -391,7 +391,7 @@ available:
 ````
 
 ``import`` also accepts ``:as`` or ``:prefix`` to choose the prefix.
-`WATTLE_PATH` selects directories for system modules; see `wattle(1)`.
+`WATTLE_PREFIX` selects the directory for system modules; see `wattle(1)`.
 
 ERRORS
 ======

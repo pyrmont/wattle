@@ -211,11 +211,11 @@ wasmtime run --dir . zig-out/bin/wattle.wasm
 
 A WASI program sees only the directories which are mapped in, so a script and
 everything it reads have to be in this tree.  A plain build has no default
-`syspath`, so `import` of an installed module needs `WATTLE_PATH` set to a root
+`prefix`, so `import` of an installed module needs `WATTLE_PREFIX` set to a root
 whose `lib/wattle` directory is mapped in, here `./lib/wattle`:
 
 ```sh
-wasmtime run --dir . --env WATTLE_PATH=. zig-out/bin/wattle.wasm script.wattle
+wasmtime run --dir . --env WATTLE_PREFIX=. zig-out/bin/wattle.wasm script.wattle
 ```
 
 `zig build examples/web` builds `examples/web/`, Wattle in a web page: the runtime as a
@@ -291,7 +291,7 @@ A project that needs nothing beyond that can skip `build.zig`. `wattle build
 exe` reads the project's `info.edn`, which lists the executables to build and
 the native modules each links in, and makes the executable with Zig.
 `wattle build lib` makes each native module as a shared library. Both need Zig
-on the `PATH`, and the system path, `WATTLE_PATH` or `--syspath`, must be a root
+on the `PATH`, and the prefix, `WATTLE_PREFIX` or `--prefix`, must be a root
 whose `share/wattle` holds the package, as `zig build` installs it:
 
 ```clojure

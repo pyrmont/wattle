@@ -23,7 +23,7 @@ this shape.
 
 builds it and runs `examples/digest/test/digest.wattle` against it. That file is
 an ordinary `import*` of the built shared object. The path is an argument only
-because `zig build` leaves the object in its cache rather than on `WATTLE_PATH`,
+because `zig build` leaves the object in its cache rather than on `WATTLE_PREFIX`,
 and everything after the import is what someone who had installed the module
 would write.
 

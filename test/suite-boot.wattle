@@ -1125,65 +1125,65 @@
 (assert (deep= (sort (distinct (values !{0 :a 1 :b 2 :b 3 :a}))) ![:a :b]))
 (assert (deep= (distinct (coro (yield 8) (yield 11) (yield 8))) ![8 11]))
 
-; *syspath* is the root that <syspath>/lib/wattle, <syspath>/bin and
-; <syspath>/share/man derive from, and `:sys:` expands to the first of them.
-; nil is no system path, "" is one the caller must supply, and any other
+; *prefix* is the root that <prefix>/lib/wattle, <prefix>/bin and
+; <prefix>/share/man derive from, and `:prefix:` expands to the first of them.
+; nil is no prefix, "" is one the caller must supply, and any other
 ; string is the root. Each state is set here with a dynamic binding, since the
 ; built-in value is a build option.
-(def sys-template ":sys:/:all:.wattle")
+(def prefix-template ":prefix:/:all:.wattle")
 (defn- normal [path] (string/replace-all "\\" "/" path))
 
-(with-dyns [*syspath* "/tmp/root"]
+(with-dyns [*prefix* "/tmp/root"]
   (assert (= "/tmp/root/lib/wattle/x.wattle"
-             (normal (module/expand-path "x" sys-template)))
-          ":sys: expands to <syspath>/lib/wattle"))
+             (normal (module/expand-path "x" prefix-template)))
+          ":prefix: expands to <prefix>/lib/wattle"))
 
 ; wattle/libpath, wattle/binpath, wattle/manpath and wattle/srcpath compute
-; the derived directories from *syspath* each time they are called.
-(with-dyns [*syspath* "/tmp/root"]
+; the derived directories from *prefix* each time they are called.
+(with-dyns [*prefix* "/tmp/root"]
   (assert (= "/tmp/root/lib/wattle" (normal (wattle/libpath))) "wattle/libpath")
   (assert (= "/tmp/root/bin" (normal (wattle/binpath))) "wattle/binpath")
   (assert (= "/tmp/root/share/man" (normal (wattle/manpath))) "wattle/manpath")
   (assert (= "/tmp/root/share/wattle" (normal (wattle/srcpath))) "wattle/srcpath"))
-(with-dyns [*syspath* "/tmp/first"]
+(with-dyns [*prefix* "/tmp/first"]
   (def before (wattle/libpath))
-  (setdyn *syspath* "/tmp/second")
-  (assert (not= before (wattle/libpath)) "the derived directories follow *syspath*"))
-(with-dyns [*syspath* ""]
+  (setdyn *prefix* "/tmp/second")
+  (assert (not= before (wattle/libpath)) "the derived directories follow *prefix*"))
+(with-dyns [*prefix* ""]
   (each f [wattle/libpath wattle/binpath wattle/manpath wattle/srcpath]
     (def [ok message] (protect (f)))
-    (assert (not ok) "a derived directory raises with an empty system path")
-    (assert (string/find "WATTLE_PATH" message) "the error names WATTLE_PATH")))
+    (assert (not ok) "a derived directory raises with an empty prefix")
+    (assert (string/find "WATTLE_PREFIX" message) "the error names WATTLE_PREFIX")))
 
 ; nil cannot be set by a binding: a nil in a fiber's environment falls through
 ; to the root environment. It is the state of a build made with
-; -Dsyspath=none, so the cases run only when this binary is one.
-(unless (or (get root-env :syspath) (dyn *syspath*))
-  (assert (nil? (module/expand-path "x" sys-template))
-          ":sys: has no expansion without a system path")
+; -Dwattle-prefix=none, so the cases run only when this binary is one.
+(unless (or (get root-env :prefix) (dyn *prefix*))
+  (assert (nil? (module/expand-path "x" prefix-template))
+          ":prefix: has no expansion without a prefix")
   (def [found message] (module/find "nosuchmodule"))
   (assert (and (nil? found) (string? message))
-          "module/find skips :sys: without a system path")
+          "module/find skips :prefix: without a prefix")
   (each f [wattle/libpath wattle/binpath wattle/manpath wattle/srcpath]
     (def [ok message] (protect (f)))
-    (assert (and (not ok) (string/find "no system path" message))
-            "a derived directory raises without a system path")))
+    (assert (and (not ok) (string/find "no prefix" message))
+            "a derived directory raises without a prefix")))
 
-(with-dyns [*syspath* ""]
-  (def [ok message] (protect (module/expand-path "x" sys-template)))
-  (assert (not ok) ":sys: raises with an empty system path")
-  (assert (string/find "WATTLE_PATH" message) "the error names WATTLE_PATH")
-  (assert (string/find "--syspath" message) "the error names --syspath")
+(with-dyns [*prefix* ""]
+  (def [ok message] (protect (module/expand-path "x" prefix-template)))
+  (assert (not ok) ":prefix: raises with an empty prefix")
+  (assert (string/find "WATTLE_PREFIX" message) "the error names WATTLE_PREFIX")
+  (assert (string/find "--prefix" message) "the error names --prefix")
   (def [found-ok _] (protect (module/find "nosuchmodule")))
-  (assert (not found-ok) "module/find raises with an empty system path")
+  (assert (not found-ok) "module/find raises with an empty prefix")
   (assert (= "x/y" (string (module/expand-path "x/y" ":all:")))
-          "a template with no :sys: is unaffected"))
+          "a template with no :prefix: is unaffected"))
 
-(with-dyns [*syspath* "/tmp/root"]
-  (def paths (module/add-syspath "/tmp/other"))
+(with-dyns [*prefix* "/tmp/root"]
+  (def paths (module/add-prefix "/tmp/other"))
   (assert (find #(and (string? (first $))
                       (string/has-prefix? "/tmp/other/lib/wattle" (first $)))
                 paths)
-          "module/add-syspath adds the lib/wattle directory of a root"))
+          "module/add-prefix adds the lib/wattle directory of a root"))
 
 (end-suite)

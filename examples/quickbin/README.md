@@ -18,7 +18,7 @@ string and prints the result:
     zig build examples/quickbin -Dtarget=x86_64-macos                    # runs under Rosetta
 
 builds it, and `zig build test` runs it on a native build and checks the
-output. The binary needs no `WATTLE_PATH`, no shared object and no image file
+output. The binary needs no `WATTLE_PREFIX`, no shared object and no image file
 beside it.
 
 ## What it shows
@@ -82,7 +82,7 @@ module. `run-image` registers each module under its name, loads the image, puts
 the arguments in its environment and calls `main`, which is what `wattle -i`
 does with an image file. The program name stands where the image path would,
 and the exit status is the event loop's. What the executable does not do is
-read `WATTLE_PATH` or `WATTLE_PROFILE`: there is nothing on the path it needs.
+read `WATTLE_PREFIX`: there is nothing on the path it needs.
 
 ### What differs from `jpm quickbin`
 

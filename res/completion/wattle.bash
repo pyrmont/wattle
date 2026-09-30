@@ -6,7 +6,7 @@ _wattle() {
     local cur prev words cword
     _init_completion || return
 
-    local root_flags="-c --color -C --no-color -s --syspath -v --version -h --help"
+    local root_flags="-c --color -C --no-color -p --prefix -v --version -h --help"
     local run_flags="-e --eval -l --lib -i --img -r --repl -s --stdin -d --debug -q --quiet"
     local check_flags="-e --lint-error -w --lint-warn -b --bail -h --help"
     local test_flags="-e --lint-error -w --lint-warn -b --bail --seed -f --file -F --no-file -t --test -T --no-test -h --help"
@@ -17,8 +17,8 @@ _wattle() {
     local i=1 sub="" sub_at=0
     while [[ $i -lt $cword ]]; do
         case "${words[i]}" in
-            -s|--syspath) ((i += 2)) ;;
-            -h|--help|-v|--version|--syspath=*) ((i++)) ;;
+            -p|--prefix) ((i += 2)) ;;
+            -h|--help|-v|--version|--prefix=*) ((i++)) ;;
             *) break ;;
         esac
     done
@@ -35,7 +35,7 @@ _wattle() {
     fi
 
     case "$prev" in
-        -s|--syspath)
+        -p|--prefix)
             _filedir -d
             return
             ;;

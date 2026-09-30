@@ -55,7 +55,7 @@ _wattle() {
     _arguments -C -s \
         '(-c --color -C --no-color)'{-c,--color}'[Enable ANSI colour]' \
         '(-c --color -C --no-color)'{-C,--no-color}'[Disable ANSI colour]' \
-        '(-s --syspath)'{-s+,--syspath=}'[Set the system path for modules]:path:_directories' \
+        '(-p --prefix)'{-p+,--prefix=}'[Set the prefix for modules]:path:_directories' \
         '(- *)'{-v,--version}'[Show version and exit]' \
         '(- *)'{-h,--help}'[Show usage and exit]' \
         '*'{-e+,--eval=}'[Evaluate a string of Wattle]:code:' \

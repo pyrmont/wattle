@@ -43,12 +43,12 @@
 (assert (os/mkdir "tempdir123"))
 (rmrf "tempdir123")
 
-; Setup a temporary syspath for manipultation
+; Setup a temporary prefix for manipultation
 (math/seedrandom (os/cryptorand 16))
-(def syspath (randdir))
-(rmrf syspath)
-(assert (os/mkdir syspath))
-(put! root-env *syspath* (pkg-rpath syspath))
+(def prefix (randdir))
+(rmrf prefix)
+(assert (os/mkdir prefix))
+(put! root-env *prefix* (pkg-rpath prefix))
 (unless (os/getenv "VERBOSE")
   (setdyn *out* !""))
 (assert (empty? (pkg/list)) "initial pkg/list")
@@ -95,8 +95,8 @@
 (import mymod)
 (assert (= 288 (mymod/myfn 12)) "using sample-pkg")
 
-; The system path is a root: modules go to lib/wattle under it.
-(def root (pkg-rpath syspath))
+; The prefix is a root: modules go to lib/wattle under it.
+(def root (pkg-rpath prefix))
 (assert (os/stat (string root "/lib/wattle/mymod.wattle" ) :mode)
         "a module is installed under lib/wattle")
 (assert (nil? (os/stat (string root "/mymod.wattle") :mode))
@@ -157,12 +157,12 @@
              (nil? (os/stat bin-mod :mode)))
         "uninstalling removes programs, man pages and modules")
 
-; With no usable system path the pkg functions raise.
-(with-dyns [*syspath* ""]
+; With no usable prefix the pkg functions raise.
+(with-dyns [*prefix* ""]
   (def [ok message] (protect (pkg/list)))
-  (assert (not ok) "pkg/list raises with an empty system path")
-  (assert (and (string? message) (string/find "WATTLE_PATH" message))
-          "the error names WATTLE_PATH"))
+  (assert (not ok) "pkg/list raises with an empty prefix")
+  (assert (and (string? message) (string/find "WATTLE_PREFIX" message))
+          "the error names WATTLE_PREFIX"))
 
 ; Try installing a package that is missing package script
 (assert-error-value "package missing package script"
@@ -178,6 +178,6 @@
 (assert (= 0 (length (pkg/list))) "check failure 0")
 (assert (= 0 (length (pkg/topolist))) "check failure 1")
 
-(rmrf syspath)
+(rmrf prefix)
 
 (end-suite)

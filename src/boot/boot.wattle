@@ -2814,7 +2814,7 @@
 ;;;
 ;;;
 
-(defdyn *syspath*
+(defdyn *prefix*
   "Path of directory to load system modules from.")
 
 (defn make-env
@@ -3231,7 +3231,7 @@
   """
   Adds paths to ^module/paths for a given loader such that
   the generated paths behave like other module types, including
-  relative imports and syspath imports. ext is the file extension
+  relative imports and prefix imports. ext is the file extension
   to associate with this module type, including the dot. loader is the
   keyword name of a loader in ^module/loaders. Returns the modified ^module/paths.
   """
@@ -3244,8 +3244,8 @@
   (array/insert! mp dyn-index [(string ":@all:" ext) loader check-dyn-relative])
   (def all-index (find-prefix ".:all:"))
   (array/insert! mp all-index [(string ".:all:" ext) loader check-project-relative])
-  (def sys-index (find-prefix ":sys:"))
-  (array/insert! mp sys-index [(string ":sys:/:all:" ext) loader check-is-dep])
+  (def prefix-index (find-prefix ":prefix:"))
+  (array/insert! mp prefix-index [(string ":prefix:/:all:" ext) loader check-is-dep])
   (def curall-index (find-prefix ":cur:/:all:"))
   (array/insert! mp curall-index [(string ":cur:/:all:" ext) loader check-relative])
   mp)
@@ -3285,9 +3285,9 @@
   env)
 
 ; Don't expose this externally yet - could break if custom module/paths is setup.
-(defn module/add-syspath
+(defn module/add-prefix
   """
-  Adds a custom syspath to ^module/paths by duplicating all entries that begin with `:sys:` and
+  Adds a custom prefix to ^module/paths by duplicating all entries that begin with `:prefix:` and
   adding duplicates with the lib/wattle directory of path as the prefix instead.
   """
   [path]
@@ -3296,9 +3296,9 @@
   (def mp (dyn *module-paths* module/paths))
   (loop [[index entry] :pairs mp]
     (def pattern (first entry))
-    (when (and (string? pattern) (string/has-prefix? ":sys:/" pattern))
+    (when (and (string? pattern) (string/has-prefix? ":prefix:/" pattern))
       (set last-index index)
-      (array/push! copies [(string/replace ":sys:" (string path "/lib/wattle") pattern) |(slice entry 1)])))
+      (array/push! copies [(string/replace ":prefix:" (string path "/lib/wattle") pattern) |(slice entry 1)])))
   (array/insert! mp (+ 1 last-index) |copies)
   mp)
 
@@ -4870,12 +4870,12 @@
 
   (defn- pkg-root
     """
-    Returns the system path, the root that the library, program and manual
+    Returns the prefix, the root that the library, program and manual
     directories derive from.
     """
     []
-    (wattle/libpath) ; raises if there is no system path or it is empty
-    (dyn *syspath*))
+    (wattle/libpath) ; raises if there is no prefix or it is empty
+    (dyn *prefix*))
 
   (defn- pkg-mkdirs
     """
@@ -4985,7 +4985,7 @@
     (def manifest (pkg/manifest pkg-name))
     (def dir (os/cwd))
     (def workdir (get manifest :local-source "."))
-    (def fixed-syspath (pkg-rpath (pkg-root)))
+    (def fixed-prefix (pkg-rpath (pkg-root)))
     (try
       (os/cd workdir)
       ([_] (print "cannot enter source directory " workdir " for package " pkg-name)))
@@ -4996,13 +4996,13 @@
       (put! new-env *module-make-env* (fn make-pkg-env [&] (make-env new-env)))
       (put! new-env :workdir workdir)
       (put! new-env :name pkg-name)
-      (put! new-env *syspath* fixed-syspath)
+      (put! new-env *prefix* fixed-prefix)
       (with-env new-env
-        (put! new-env :pkg-dir (pkg-dir pkg-name)) ; get the syspath right
+        (put! new-env :pkg-dir (pkg-dir pkg-name)) ; get the prefix right
         (try
-          (require (string "@syspath/lib/wattle/pkg/" pkg-name))
+          (require (string "@prefix/lib/wattle/pkg/" pkg-name))
           ([e f]
-            (def pfx "could not find module @syspath/lib/wattle/pkg/")
+            (def pfx "could not find module @prefix/lib/wattle/pkg/")
             (def msg (if (and (string? e)
                               (string/has-prefix? pfx e))
                        "package must contain pkg.wattle or pkg/init.wattle"
@@ -5045,7 +5045,7 @@
 
   (defn pkg/uninstall
     """
-    Removes a package from the current syspath. There is 1 hook called during
+    Removes a package from the current prefix. There is 1 hook called during
     uninstallation (uninstall). A user can register a hook by defining a
     function with the same name in the package script.
     """
@@ -5085,7 +5085,7 @@
 
   (defn pkg/prune
     """
-    Removes all orphaned packages from the current syspath. An orphaned package is a
+    Removes all orphaned packages from the current prefix. An orphaned package is a
     package that is marked for :auto-remove and is not depended on by any other package.
     """
     []
@@ -5282,7 +5282,7 @@
     pkg-name)
 
   (defn pkg/add-directory
-    "Adds a directory during an install relative to the lib/wattle directory of `(dyn *syspath*)`."
+    "Adds a directory during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
     ([manifest dest] (pkg/add-directory manifest dest nil))
     ([manifest dest chmod-mode]
       (def files (get-files manifest))
@@ -5326,7 +5326,7 @@
     absdest)
 
   (defn pkg/add-file
-    "Adds a file during an install relative to the lib/wattle directory of `(dyn *syspath*)`."
+    "Adds a file during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
     ([manifest src] (pkg/add-file manifest src src nil))
     ([manifest src dest] (pkg/add-file manifest src dest nil))
     ([manifest src dest chmod-mode]
@@ -5334,7 +5334,7 @@
 
   (defn pkg/add
     """
-    Adds a file or directory during an install relative to the lib/wattle directory of `(dyn *syspath*)`.
+    Adds a file or directory during an install relative to the lib/wattle directory of `(dyn *prefix*)`.
     Added files and directories will be recorded in the package manifest such
     that they are properly tracked and removed during an upgrade or uninstall.
     """
@@ -5354,7 +5354,7 @@
 
   (defn pkg/add-bin
     """
-    Adds a file to the "bin" subdirectory of the current syspath. By default,
+    Adds a file to the "bin" subdirectory of the current prefix. By default,
     files will be set to be executable.
     """
     ([manifest src] (pkg/add-bin manifest src (last (string/split (sep) src)) 8r755))
@@ -5367,7 +5367,7 @@
 
   (defn pkg/add-manpage
     """
-    Adds a file to the share/man subdirectory of the current syspath. Files are
+    Adds a file to the share/man subdirectory of the current prefix. Files are
     copied inside a directory mansec, under the name filename. By default,
     mansec is "man1" and filename is the name of src.
     """
@@ -5818,8 +5818,8 @@
                :help "Enable ANSI color output."}
     "--no-color" {:kind :flag :short "C"
                   :help "Disable ANSI color output."}
-    "--syspath" {:kind :single :short "s" :proxy "path"
-                 :help "Set the system path, the root that lib/wattle, bin and share/man derive from."}
+    "--prefix" {:kind :single :short "p" :proxy "path"
+                 :help "Set the prefix, the root that lib/wattle, bin and share/man derive from."}
     "--version" {:kind :flag :short "v"
                  :help "Print the version string and exit."}
     "--help" {:kind :help :short "h"
@@ -5969,7 +5969,7 @@
         (-- i))
       (def setup (cli-test-setup opts seed))
       (def exe (dyn *executable* "wattle"))
-      (def syspath (if-let [p (dyn *syspath*)] ["--syspath" p] []))
+      (def prefix (if-let [p (dyn *prefix*)] ["--prefix" p] []))
       (def bail? (get opts "bail" false))
       (defn paint [code text]
         (if (dyn *err-color*) (string "\e[" code "m" text "\e[0m") text))
@@ -5996,7 +5996,7 @@
       (var last-failed? false)
       (each path files
         (when (and bail? (not (empty? failed))) (break))
-        (def p (os/spawn [exe |syspath "run" |(if (empty? setup) [] ["-e" setup]) path]
+        (def p (os/spawn [exe |prefix "run" |(if (empty? setup) [] ["-e" setup]) path]
                          :p {:out :pipe :err :pipe}))
         (def [out err] (ev/gather (ev/read (p :out) :all) (ev/read (p :err) :all)))
         (def status (os/proc-wait p))
@@ -6128,12 +6128,12 @@
     (eprint "pkg " name " is not supported with reduced os")
     (os/exit 1))
   (compwhen (dyn 'pkg/list)
-    (def root (dyn *syspath*))
+    (def root (dyn *prefix*))
     (when (nil? root)
-      (eprint "this program has no system path, so pkg cannot run")
+      (eprint "this program has no prefix, so pkg cannot run")
       (os/exit 1))
     (when (empty? root)
-      (eprint "the system path is not set: set WATTLE_PATH or pass --syspath")
+      (eprint "the prefix is not set: set WATTLE_PREFIX or pass --prefix")
       (os/exit 1)))
   (case (get verb :cmd)
     "install" (compif (dyn 'pkg/install)
@@ -6164,12 +6164,8 @@
 
   (setdyn *args* args)
 
-  (when-let [jp (getenv-alias "WATTLE_PATH")]
-    (def path-sep (if (= :windows (os/which)) ";" ":"))
-    (def paths (reverse! (string/split path-sep jp)))
-    (for i 1 (length paths)
-      (module/add-syspath (get paths i)))
-    (setdyn *syspath* (first paths)))
+  (when-let [home (getenv-alias "WATTLE_PREFIX")]
+    (setdyn *prefix* home))
   (apply-color
     (and
       (not (getenv-alias "NO_COLOR"))
@@ -6187,7 +6183,7 @@
 
   (def opts (get result :opts))
   (when (get opts "version") (print wattle/version) (os/exit 0))
-  (when (has-key? opts "syspath") (setdyn *syspath* (get opts "syspath")))
+  (when (has-key? opts "prefix") (setdyn *prefix* (get opts "prefix")))
   (when (get opts "color") (apply-color true))
   (when (get opts "no-color") (apply-color false))
 

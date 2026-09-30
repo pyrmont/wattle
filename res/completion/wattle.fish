@@ -13,7 +13,7 @@ set -l at_run '__fish_use_subcommand; or __fish_seen_subcommand_from run r'
 # Root options
 complete -c wattle -n __fish_use_subcommand -s c -l color -d 'Enable ANSI colour'
 complete -c wattle -n __fish_use_subcommand -s C -l no-color -d 'Disable ANSI colour'
-complete -c wattle -n __fish_use_subcommand -s s -l syspath -r -d 'Set the system path for modules' -a '(__fish_complete_directories)'
+complete -c wattle -n __fish_use_subcommand -s p -l prefix -r -d 'Set the prefix for modules' -a '(__fish_complete_directories)'
 complete -c wattle -n __fish_use_subcommand -s v -l version -d 'Show version and exit'
 complete -c wattle -n __fish_use_subcommand -s h -l help -d 'Show usage and exit'
 
