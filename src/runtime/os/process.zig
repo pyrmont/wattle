@@ -719,6 +719,7 @@ fn nfunExecute(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(os/pipe [flags])`.
 fn nfunPipe(argv: []repr.Value) raise.Error!repr.Value {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{ "fs_write", "fs_temp" }));
     try args_core.arity(argv, 0, 1);
     var fds: [2]host.Handle = undefined;
     var flags: c_int = 0;

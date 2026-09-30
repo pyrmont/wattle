@@ -908,6 +908,70 @@ fn theRemoveSandbox() void {
     ));
 }
 
+/// `os/setlocale` and the locale sandbox.
+///
+/// The locale is process-wide state, so `os/setlocale` has its own capability
+/// and asserts it. The call is refused with the capability forbidden, in the
+/// query form as well as the setting one because the assertion goes before the
+/// arity check, and works with every other one forbidden.
+///
+/// `sandbox` is irreversible within a VM, so the allowed half runs in a fresh
+/// one.
+fn theLocaleSandbox() void {
+    if (no_locales) return;
+    var env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(sandbox :locale)
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/setlocale)) 1)))
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/setlocale "C")) 1)))
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/setlocale 5 6 7)) 1)))
+    );
+    vm_lifecycle.deinit();
+
+    harness.init();
+    env = harness.coreEnv();
+    harness.inFiber(env,
+        \\(sandbox :env :fs :hrtime :net :subprocess)
+        \\(assert (string? (os/setlocale)))
+    );
+}
+
+/// `os/pipe` and the filesystem sandbox.
+///
+/// A pipe is two new descriptors that nothing else guards, so `os/pipe` asserts
+/// `fs_write` and `fs_temp`, and is refused when either is forbidden. It works
+/// with `fs_read` alone forbidden, which is a read-only sandbox's own
+/// capability. Each case runs in a VM of its own, `sandbox` being irreversible.
+fn thePipeSandbox() void {
+    if (!harness.has_ev) return;
+    var env: *tables.Table = harness.coreEnv();
+    harness.inFiber(env,
+        \\(sandbox :fs-temp)
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/pipe)) 1)))
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/pipe :W :R :x)) 1)))
+    );
+    vm_lifecycle.deinit();
+
+    harness.init();
+    env = harness.coreEnv();
+    harness.inFiber(env,
+        \\(sandbox :fs-write)
+        \\(assert (= "operation forbidden by sandbox" (in (protect (os/pipe)) 1)))
+    );
+    vm_lifecycle.deinit();
+
+    harness.init();
+    env = harness.coreEnv();
+    harness.inFiber(env,
+        \\(sandbox :fs-read)
+        \\(def [r w] (os/pipe))
+        \\(:write w "abc")
+        \\(assert (= "abc" (string (:read r 3))))
+        \\(:close r)
+        \\(:close w)
+    );
+}
+
 /// `os/link`'s third argument decides between a hard link and a symbolic one,
 /// and `os/symlink` is the same call with it forced true. Nothing above looked
 /// at the argument at all.
@@ -1294,6 +1358,8 @@ pub fn run() void {
     // Each of these ends in a VM it opened itself; `section` closes that one.
     section("theOpenFlags", theOpenFlags);
     section("theRemoveSandbox", theRemoveSandbox);
+    section("theLocaleSandbox", theLocaleSandbox);
+    section("thePipeSandbox", thePipeSandbox);
     section("theLinks", theLinks);
     section("theScratchCleanup", theScratchCleanup);
     section("thePipe", thePipe);

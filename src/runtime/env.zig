@@ -180,6 +180,7 @@ const sandbox_options = [_]SandboxOption{
     .{ .name = "fs-temp", .flag = vm_lifecycle.Sandbox.of(&.{"fs_temp"}) },
     .{ .name = "fs-write", .flag = vm_lifecycle.Sandbox.of(&.{"fs_write"}) },
     .{ .name = "hrtime", .flag = vm_lifecycle.Sandbox.of(&.{"hrtime"}) },
+    .{ .name = "locale", .flag = vm_lifecycle.Sandbox.of(&.{"locale"}) },
     .{ .name = "modules", .flag = vm_lifecycle.Sandbox.of(&.{"dynamic_modules"}) },
     .{ .name = "net", .flag = vm_lifecycle.Sandbox.net },
     .{ .name = "net-connect", .flag = vm_lifecycle.Sandbox.of(&.{"net_connect"}) },
@@ -1442,6 +1443,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "| :fs-temp     | disallow creating temporary files                                                       |\n" ++
             "| :fs-write    | disallow write access to the file system                                                |\n" ++
             "| :hrtime      | disallow high-resolution timers                                                         |\n" ++
+            "| :locale      | disallow calling ^os/setlocale                                                          |\n" ++
             "| :modules     | disallow load dynamic modules (natives)                                                 |\n" ++
             "| :net         | disallow network access                                                                 |\n" ++
             "| :net-connect | disallow making outbound network connections                                            |\n" ++

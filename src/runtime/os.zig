@@ -658,6 +658,7 @@ fn nfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(os/setlocale [locale [category]])`.
 fn nfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
+    try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"locale"}));
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
     var category: c_int = h.LC_ALL;

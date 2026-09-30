@@ -588,6 +588,11 @@ fn sandboxAccumulatesEveryCapability() raise.Error!void {
     expect(harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"hrtime"})));
     expect(harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"threads"})));
 
+    // `locale` is a capability of its own and in none of the named unions.
+    expect(!harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"locale"})));
+    expect(try doString("(sandbox :locale)", "contract", &out) == 0);
+    expect(harness.vm().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"locale"})));
+
     // An unknown capability rejects the whole call, including the ones before
     // it in the same argument list.
     before = harness.vm().sandbox_flags;

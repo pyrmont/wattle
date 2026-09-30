@@ -76,11 +76,12 @@ pub const Sandbox = packed struct(u32) {
     threads: bool = false,
     unmarshal: bool = false,
     exit: bool = false,
-    _reserved: u12 = 0,
+    locale: bool = false,
+    _reserved: u11 = 0,
 
     pub const none: Sandbox = .{};
 
-    /// Every bit set, including the twelve reserved ones. Nothing reads a
+    /// Every bit set, including the eleven reserved ones. Nothing reads a
     /// reserved bit and `(os/sandbox :all)` only ever ands with this, so the
     /// width costs nothing.
     pub const all = fromBits(0xFFFFFFFF);
@@ -264,6 +265,7 @@ comptime {
     std.debug.assert(S.of(&.{"threads"}).bits() == 131072);
     std.debug.assert(S.of(&.{"unmarshal"}).bits() == 262144);
     std.debug.assert(S.of(&.{"exit"}).bits() == 524288);
+    std.debug.assert(S.of(&.{"locale"}).bits() == 1048576);
     std.debug.assert(S.ffi.bits() == 16 | 2048 | 4096);
     std.debug.assert(S.fs.bits() == 32 | 64 | 1024);
     std.debug.assert(S.net.bits() == 4 | 8);
