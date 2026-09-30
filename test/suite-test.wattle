@@ -1,0 +1,71 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; A path is made absolute because each case changes directory.
+(def wattle
+  (let [exe (dyn :executable)]
+    (compif (dyn 'os/realpath)
+      (if (or (string/find "/" exe) (string/find "\\" exe)) (os/realpath exe) exe)
+      exe)))
+(def run (filter next (string/split " " (os/getenv "SUBRUN" ""))))
+
+; `wattle test` runs the test files under ./test, one process each. Each case
+; runs it in a fixture project and compares the exit status.
+(compwhen (and (dyn 'os/execute) (dyn 'os/cd) (dyn 'os/mkdir))
+  (def module-source (slurp "src/gum/test.wattle"))
+  (def home (os/cwd))
+  (def root (string (os/getenv "TMPDIR" "/tmp") "/" (randdir)))
+  (def fixture (string root "/project"))
+
+  (defn write [path text]
+    (spit (string fixture "/" path) text))
+
+  (defn wattle-in-fixture [sub args]
+    (os/cd fixture)
+    (def status (os/execute [|run wattle sub |args] :p))
+    (os/cd home)
+    status)
+
+  (defn check [& args] (wattle-in-fixture "test" args))
+
+  (os/mkdir root)
+  (os/mkdir fixture)
+  (os/mkdir (string fixture "/gum"))
+  (os/mkdir (string fixture "/test"))
+  (os/mkdir (string fixture "/test/nested"))
+  (write "gum/test.wattle" module-source)
+  (write "test/a.wattle"
+         """
+         (import ../gum/test :prefix "")
+         (deftest good (is (= 1 1)))
+         (run-tests!)
+         """)
+  (write "test/nested/b.wattle"
+         """
+         (import ../../gum/test :prefix "")
+         (deftest good (is (= 1 1)))
+         (deftest bad (is (= 1 2)))
+         (run-tests!)
+         """)
+  (write "script.wattle" "(+ 1 2)")
+
+  (assert (= 1 (check)) "a failing test file fails the run")
+  (assert (= 0 (check "-f" "a.wattle")) "--file runs only that file")
+  (assert (= 1 (check "-f" "nested/b.wattle")) "--file matches a path below ./test")
+  (assert (= 0 (check "-F" "b.wattle")) "--no-file skips a file")
+  (assert (= 0 (check "-t" "good")) "--test runs only the named tests")
+  (assert (= 1 (check "-t" "bad")) "--test can select a failing test")
+  (assert (= 0 (check "-T" "bad")) "--no-test skips the named tests")
+  (assert (= 1 (check "-f" "a.wattle" "-F" "b.wattle")) "--file excludes --no-file")
+  (assert (= 1 (check "-t" "good" "-T" "bad")) "--test excludes --no-test")
+  (assert (= 1 (check "-f" "absent.wattle")) "no matching file fails the run")
+  (assert (= 1 (check "script.wattle")) "test takes no script")
+  (assert (= 0 (wattle-in-fixture "check" ["script.wattle"])) "check compiles a script")
+  (assert (= 0 (check "--seed" "1" "-f" "a.wattle")) "--seed sets the seed")
+  (assert (= 1 (check "--seed" "1")) "a seed does not hide a failing file")
+  (assert (= 1 (check "--seed" "not-a-number")) "--seed takes an integer")
+  (assert (= 1 (check "-b")) "--bail fails the run on a failing file")
+
+  (rmrf root))
+
+(end-suite)

@@ -9,6 +9,7 @@ _wattle_run_options() {
         '*'{-l+,--lib=}'[Use a module before the script]:module:_files -g "*.wattle"' \
         '(-i --img)'{-i,--img}'[Treat script as an image]' \
         '(-r --repl)'{-r,--repl}'[Open the REPL after running]' \
+        '--seed=[Seed the shuffle of the tests]:seed:' \
         '(-s --stdin)'{-s,--stdin}'[Read REPL input as raw lines from stdin]' \
         '(-d --debug)'{-d,--debug}'[Enable debug mode]' \
         '(-q --quiet)'{-q,--quiet}'[Hide the logo in the REPL]' \
@@ -25,6 +26,19 @@ _wattle_check_options() {
         '1:script:_files -g "*.wattle"'
 }
 
+_wattle_test_options() {
+    _arguments -s \
+        '(- *)'{-h,--help}'[Show usage and exit]' \
+        '(-e --lint-error)'{-e+,--lint-error=}'[Set the lint error level]:level:(none relaxed normal strict all)' \
+        '(-w --lint-warn)'{-w+,--lint-warn=}'[Set the lint warning level]:level:(none relaxed normal strict all)' \
+        '(-b --bail)'{-b,--bail}'[Stop after the first failing test file]' \
+        '--seed=[Seed the shuffle of the tests]:seed:' \
+        '*'{-f+,--file=}'[Run only a test file]:path:_files -g "*.wattle"' \
+        '*'{-F+,--no-file=}'[Do not run a test file]:path:_files -g "*.wattle"' \
+        '*'{-t+,--test=}'[Run only a named test]:name:' \
+        '*'{-T+,--no-test=}'[Do not run a named test]:name:'
+}
+
 _wattle() {
     local curcontext="$curcontext" state state_descr line ret=1
     typeset -A opt_args
@@ -34,6 +48,7 @@ _wattle() {
         'check:Compile a script without running it'
         'help:Describe a subcommand'
         'run:Run a script, evaluate code or start the REPL'
+        'test:Run the tests in ./test'
         'twig:Manage installed packages'
     )
 
@@ -69,6 +84,11 @@ _wattle() {
                     shift words
                     (( CURRENT-- ))
                     _wattle_check_options && ret=0
+                    ;;
+                test)
+                    shift words
+                    (( CURRENT-- ))
+                    _wattle_test_options && ret=0
                     ;;
                 build)
                     if (( CURRENT == 2 )); then

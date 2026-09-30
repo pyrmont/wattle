@@ -1,0 +1,198 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+(setdyn *lint-warn* :none)
+(import ../src/gum/test :as t)
+
+(defmacro is [expression] `(assert ~expression))
+(defmacro deftest [_ & body] `(do ~|body))
+
+; Runs the tests that body defines and returns their reports.
+(defmacro reports-of [& body]
+  `(do
+     (t/reset-all!)
+     ~|body
+     (def reports (t/run-tests! :silent? true :no-exit? true))
+     (t/reset-all!)
+     reports))
+
+(defn- all-equal? [xs]
+  (var same? true)
+  (each x xs
+    (unless (= x (get xs 0)) (set same? false)))
+  same?)
+
+(defn- report-of [reports name]
+  (var found nil)
+  (each r reports
+    (when (= name (get r :test))
+      (set found r)))
+  found)
+
+(deftest pass-and-fail
+  (def reports
+    (reports-of
+      (t/deftest passing (t/is (= 2 (+ 1 1))))
+      (t/deftest failing (t/is (= 5 (+ 2 2))) (t/is (= 4 (+ 2 2))))))
+  (is (= 2 (length reports)))
+  (def passing (report-of reports 'passing))
+  (is (= 1 (length (get passing :passes))))
+  (is (= 0 (length (get passing :failures))))
+  (def failing (report-of reports 'failing))
+  (is (= 1 (length (get failing :passes))))
+  (is (= 1 (length (get failing :failures))))
+  (def failure (get (get failing :failures) 0))
+  (is (= :equal (get failure :kind)))
+  (is (= 5 (get failure :expect)))
+  (is (= 4 (get failure :actual)))
+  (is (= "(= 5 (+ 2 2))" (get failure :note))))
+
+(deftest assertion-kinds
+  (def results ![])
+  (t/reset-all!)
+  (t/set-on-result-hook (fn [r] (array/push! results r)))
+  (t/deftest kinds
+    (t/is (= 1 1))
+    (t/is (deep= [1 [2]] [1 [2]]))
+    (t/is (== [1 2] ![1 2]))
+    (t/is (matches [_ 2] [1 2]))
+    (t/is (thrown? (error "x")))
+    (t/is (thrown? "boom" (error "boom")))
+    (t/is (pos? 1))
+    (t/is (= 1 1) "with a note")
+    (t/assert-expr true)
+    (t/assert-equal 1 1)
+    (t/assert-deep-equal [1] [1])
+    (t/assert-equivalent [1] ![1])
+    (t/assert-matches [_ 2] [1 2])
+    (t/assert-thrown (error "x"))
+    (t/assert-thrown-message "boom" (error "boom"))
+    (t/each-is [(= 1 1) (= 2 2)]))
+  (t/run-tests! :silent? true :no-exit? true)
+  (t/reset-all!)
+  (is (= 17 (length results)))
+  (each r results
+    (is (get r :passed?)))
+  (is (= [:equal :equal :equal :matches :thrown :thrown-message :expr :equal
+          :expr :equal :equal :equal :matches :thrown :thrown-message
+          :equal :equal]
+         (freeze (map #(get $ :kind) results))))
+  (is (= "with a note" (get (get results 7) :note))))
+
+(deftest failing-kinds
+  (def reports
+    (reports-of
+      (t/deftest bad
+        (t/is (thrown? (+ 1 1)))
+        (t/is (thrown? "boom" (error "bang")))
+        (t/is (matches [_ 3] [1 2]))
+        (t/is (pos? -1))
+        (t/is (== [1 2] [1 3])))))
+  (def failures (get (report-of reports 'bad) :failures))
+  (is (= 5 (length failures)))
+  (is (= [:thrown :thrown-message :matches :expr :equal]
+         (freeze (map #(get $ :kind) failures))))
+  (is (= "bang" (get (get failures 1) :actual))))
+
+(deftest equivalence
+  (is (t/== [1 2] ![1 2]))
+  (is (t/== [1 2] (tuple 1 2)))
+  (is (t/== {:a 1} !{:a 1}))
+  (is (t/== "ab" !"ab"))
+  (is (t/== [1 [2 {:a "x"}]] ![1 ![2 !{:a !"x"}]]))
+  (is (t/== math/nan math/nan))
+  (is (not (t/== [1 2] [1 3])))
+  (is (not (t/== [1 2] [1 2 3])))
+  (is (not (t/== {:a 1} {:a 2})))
+  (is (not (t/== {:a 1} {:b 1})))
+  (is (not (t/== 1 "1")))
+  (is (not (t/== [1] {:a 1}))))
+
+(deftest skip-when
+  (def reports
+    (reports-of
+      (t/deftest skipped {:skip-when true :tags [:slow]} (t/is false))
+      (t/deftest kept {:skip-when false} (t/is true))
+      (t/deftest sole-map {:skip-when true})))
+  (is (get (report-of reports 'skipped) :skipped?))
+  (is (= 0 (length (get (report-of reports 'skipped) :failures))))
+  (is (not (get (report-of reports 'kept) :skipped?)))
+  (is (= 1 (length (get (report-of reports 'kept) :passes))))
+  (is (not (get (report-of reports 'sole-map) :skipped?))))
+
+(deftest selection
+  (defn run-with [key names]
+    (setdyn key names)
+    (def reports
+      (reports-of
+        (t/deftest one (t/is true))
+        (t/deftest two (t/is true))
+        (t/deftest three (t/is true))))
+    (setdyn key nil)
+    (sort (map #(string (get $ :test)) reports)))
+  (is (= ["one" "three"] (freeze (run-with :test/tests ['one 'three]))))
+  (is (= ["two"] (freeze (run-with :test/skips ['one 'three]))))
+  (is (= ["one" "three" "two"] (freeze (run-with :test/skips [])))))
+
+(deftest seed
+  (defn order-with [seed]
+    (def ran ![])
+    (setdyn :test/seed seed)
+    (reports-of
+      (t/deftest one (array/push! ran 'one))
+      (t/deftest two (array/push! ran 'two))
+      (t/deftest three (array/push! ran 'three))
+      (t/deftest four (array/push! ran 'four))
+      (t/deftest five (array/push! ran 'five))
+      (t/deftest six (array/push! ran 'six)))
+    (setdyn :test/seed nil)
+    (freeze ran))
+  (def registered ['one 'two 'three 'four 'five 'six])
+  (is (= registered (order-with nil)))
+  (is (= (order-with 1) (order-with 1)))
+  (def orders (map order-with [1 2 3 4 5 6 7 8]))
+  (is (not (all-equal? orders)))
+  (each order orders
+    (is (= (freeze (sort (map string registered))) (freeze (sort (map string order)))))))
+
+(deftest test-function
+  (t/reset-all!)
+  (t/deftest direct (t/is (= 1 1)))
+  (is (nil? (direct :silent? true)))
+  (is (= 0 (length (t/run-tests! :silent? true :no-exit? true))))
+  (t/reset-all!))
+
+(deftest printers
+  (def seen ![])
+  (t/reset-all!)
+  (t/set-report-printer (fn [run asserts passed] (array/push! seen [run asserts passed])))
+  (t/deftest a (t/is true) (t/is true))
+  (t/deftest b (t/is false))
+  (t/run-tests! :no-exit? true)
+  (t/reset-all!)
+  (is (= [[2 3 1]] (freeze seen)))
+  (def [ok?] (protect (t/set-report-printer 1)))
+  (is (not ok?))
+  (def [ok-results?] (protect (t/set-results-printer 1)))
+  (is (not ok-results?))
+  (def [ok-hook?] (protect (t/set-on-result-hook 1)))
+  (is (not ok-hook?)))
+
+(deftest exercise
+  (def reports
+    (t/exercise! [:silent? true :no-exit? true]
+      (t/deftest inside (t/is true))))
+  (is (= 1 (length reports)))
+  (is (= 0 (length (t/run-tests! :silent? true :no-exit? true)))))
+
+(deftest arity
+  (def [ok?] (protect (eval '(t/deftest))))
+  (is (not ok?))
+  (def [ok-name?] (protect (eval '(t/deftest only-a-name))))
+  (is (not ok-name?)))
+
+(deftest review
+  (is (nil? (dyn 'reviewed/stats)))
+  (t/review ../src/gum/test :as reviewed)
+  (is (function? (get (dyn 'reviewed/stats) :value))))
+
+(end-suite)

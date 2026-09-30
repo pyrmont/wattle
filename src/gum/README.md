@@ -42,3 +42,47 @@ names describes the last one.
 `parse-args` checks the config's rules and subcommands on every call. A caller
 whose config never changes can set `:validate?` to `false` in the config to
 skip the check, after running it once with the default.
+
+## Tests
+
+`test.wattle` is a test framework ported from Testament for Janet. Copy
+`test.wattle` and `LICENSE.testament` into a project's `gum/` directory. A test
+file imports it and ends with a call to `run-tests!`:
+
+```clojure
+(import ./gum/test :prefix "")
+
+(deftest one-plus-one
+  (is (= 2 (+ 1 1)) "1 + 1 = 2"))
+
+(deftest two-plus-two
+  {:skip-when (= :windows (os/which))
+   :tags [:arithmetic]}
+  (is (= 5 (+ 2 2)) "2 + 2 = 5"))
+
+(run-tests!)
+```
+
+`wattle test` runs every `.wattle` file under `./test` in its
+own process. It sets the dynamic bindings `:test/tests` and `:test/skips` from
+`--test` and `--no-test`, `:test/seed` from `--seed`, and `:test/color?` when
+output is a terminal. `run-tests!` reads all four. It exits with status 1 if a test failed unless it
+is called with `:no-exit?` set to `true`.
+
+`deftest` takes an optional map after the test name. It is metadata when at
+least one form follows it. A `:skip-when` form is compiled into a function in
+the scope of the test, and `run-tests!` omits the test when it returns a truthy
+value. `is` selects the kind of assertion from the form it is given: `=`,
+`deep=`, `==`, `matches`, `thrown?` with one or two arguments, or any other
+expression. `==` is true for values whose types differ only in mutability.
+`run-tests!` runs the tests in the order they were registered, unless the
+dynamic binding `:test/seed` is an integer. Then it shuffles them with that
+seed, and the same seed gives the same order. `run-tests!` takes no seed of its
+own. `wattle test` sets `:test/runner` to `:wattle`, and the default report then has
+the failures and one line of counts in place of the summary, which `wattle test`
+reads. It also sets `:test/seed` in every test file from the seed it
+prints, so a failed run is reproduced with `--seed`.
+
+A caller in a REPL sets the dynamic binding `:test/repl?` to `true`, so that a
+failure does not exit the REPL. `run-tests!` then resets the reports and empties
+`module/cache` before it returns.

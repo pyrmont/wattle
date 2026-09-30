@@ -5725,6 +5725,26 @@
                      :help "Set the lint level at which a message is a warning. It takes the same values as --lint-error. The default is normal."}
       :script {:proxy "script"
                :help "The script to check. Standard input is checked when there is none."}]})
+  (def test-config
+    {:validate? validate?
+     :help "Run the test files in ./test, each in its own process."
+     :rules
+     ["--bail" {:kind :flag :short "b"
+                :help "Stop after the first test file that fails."}
+      "--file" {:kind :multi :short "f" :proxy "path"
+                :help "Run only the test file at path, relative to ./test. It can be repeated and is not compatible with --no-file."}
+      "--lint-error" {:kind :single :short "e" :proxy "level" :value lint-level
+                      :help "Set the lint level at which a message is an error: none, relaxed, normal, strict, all or a number (0 to 3). The default is none."}
+      "--lint-warn" {:kind :single :short "w" :proxy "level" :value lint-level
+                     :help "Set the lint level at which a message is a warning. It takes the same values as --lint-error. The default is normal."}
+      "--no-file" {:kind :multi :short "F" :proxy "path"
+                   :help "Do not run the test file at path, relative to ./test. It can be repeated and is not compatible with --file."}
+      "--no-test" {:kind :multi :short "T" :proxy "name"
+                   :help "Set name in the dynamic binding :test/skips for the test files. It is not compatible with --test."}
+      "--seed" {:kind :single :proxy "seed" :value :integer
+                :help "Set the seed that shuffles the test files and the tests in each file. The default is taken from the clock and is printed when the tests start."}
+      "--test" {:kind :multi :short "t" :proxy "name"
+                :help "Set name in the dynamic binding :test/tests for the test files. It is not compatible with --no-test."}]})
   (def build-config
     {:validate? validate?
      :help "Build an artifact from source."
@@ -5798,12 +5818,13 @@
    ["build" build-config
     "check" check-config
     "run" run-config
+    "test" test-config
     "twig" twig-config]})
 
 ; The rules are fixed, so they are checked here, while the image is generated,
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
-(each argv [[] ["check"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
+(each argv [[] ["check"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
             ["twig" "install" "directory"]
             ["twig" "reinstall" "name"] ["twig" "uninstall" "name"]
             ["twig" "update"] ["twig" "clean"] ["twig" "list"]]
@@ -5866,6 +5887,143 @@
     (defn getchunk [buf p]
       (getter (getprompt p) buf env))
     (repl getchunk nil env)))
+
+(defn- cli-test-setup
+  """
+  Returns the source that sets the dynamic bindings the test files read.
+  """
+  [opts seed]
+  (def out ![(string "(setdyn :test/seed " seed ") (setdyn :test/runner :wattle)")])
+  (when (dyn *err-color*) (array/push! out "(setdyn :test/color? true)"))
+  (each key ["test" "no-test"]
+    (when-let [names (get opts key)]
+      (array/push! out (string/format "(setdyn %s (map symbol %q))"
+                                      (if (= key "test") ":test/tests" ":test/skips")
+                                      names))))
+  (each key ["lint-warn" "lint-error"]
+    (when (has-key? opts key)
+      (array/push! out (string/format "(setdyn *%s* %q)" key (get opts key)))))
+  (string/join " " out))
+
+(defn- cli-test
+  """
+  Runs each test file in ./test in its own process, prints a line for each with
+  its counts, prints the output of a file that failed and exits with status 1 if
+  a file failed or none was run.
+  """
+  [opts]
+  (defn fail [& parts]
+    (eprint |parts)
+    (os/exit 1))
+  (compif (and (dyn 'os/spawn) (dyn 'os/dir) (dyn 'os/stat))
+    (do
+      (when (and (get opts "file") (get opts "no-file"))
+        (fail "cannot use both --file and --no-file"))
+      (when (and (get opts "test") (get opts "no-test"))
+        (fail "cannot use both --test and --no-test"))
+      (unless (= :directory (os/stat "test" :mode))
+        (fail "no directory ./test"))
+      (def only (get opts "file"))
+      (def skip (get opts "no-file"))
+      (defn use? [path]
+        (defn match? [x] (string/has-suffix? x path))
+        (cond
+          only (find match? only)
+          skip (not (find match? skip))
+          true))
+      ; The files ending in .wattle under dir, in order, descending into each
+      ; directory.
+      (defn test-files [dir]
+        (def out ![])
+        (each name (sort (os/dir dir))
+          (def path (string dir "/" name))
+          (case (os/stat path :mode)
+            :file (when (string/has-suffix? ".wattle" path) (array/push! out path))
+            :directory (array/concat! out (test-files path))))
+        out)
+      (def files (array/slice (filter use? (test-files "./test"))))
+      (when (empty? files) (fail "no test files to run in ./test"))
+      (def seed
+        (or (get opts "seed")
+            (math/floor (% (* 1000 (os/clock :realtime :double)) 2147483648))))
+      (print "seed: " seed)
+      (print)
+      ; Fisher-Yates, so that a seed gives one order.
+      (def rng (math/rng (string seed)))
+      (var i (- (length files) 1))
+      (while (> i 0)
+        (def j (math/rng-int rng (+ i 1)))
+        (def tmp (get files i))
+        (put! files i (get files j))
+        (put! files j tmp)
+        (-- i))
+      (def setup (cli-test-setup opts seed))
+      (def exe (dyn *executable* "wattle"))
+      (def syspath (if-let [p (dyn *syspath*)] ["--syspath" p] []))
+      (def bail? (get opts "bail" false))
+      (defn paint [code text]
+        (if (dyn *err-color*) (string "\e[" code "m" text "\e[0m") text))
+      (defn shown [path] (if (string/has-prefix? "./" path) (string/slice path 2) path))
+      ; Each line of text after a border, which is red when colour is on.
+      (defn bordered [text]
+        (def border (paint 31 (if (dyn *err-color*) "│" "|")))
+        (string/join "\n" (map #(string "  " border (if (empty? $) "" " ") $)
+                                (string/split "\n" (string/trim text)))))
+      ; Returns [tests assertions passed skipped] from the result line that the
+      ; Gum test module prints when :test/runner is :wattle, or nil.
+      (defn result-of [text]
+        (var found nil)
+        (each line (string/split "\n" text)
+          (when (string/has-prefix? "wattle-test-result: " line)
+            (set found (map scan-number (string/split " " (string/slice line 20))))))
+        found)
+      (defn without-result [text]
+        (string/join "\n" (filter #(not (string/has-prefix? "wattle-test-result: " $))
+                                  (string/split "\n" text))))
+      (def width (apply max (map #(length (shown $)) files)))
+      (def failed ![])
+      (var total-tests 0)
+      (var last-failed? false)
+      (each path files
+        (when (and bail? (not (empty? failed))) (break))
+        (def p (os/spawn [exe |syspath "run" |(if (empty? setup) [] ["-e" setup]) path]
+                         :p {:out :pipe :err :pipe}))
+        (def [out err] (ev/gather (ev/read (p :out) :all) (ev/read (p :err) :all)))
+        (def status (os/proc-wait p))
+        (def out (string (or out "")))
+        (def err (string (or err "")))
+        (def result (result-of out))
+        (def counts
+          (if result
+            (let [[tests asserts passed skipped] result]
+              (+= total-tests tests)
+              (string tests " tests"
+                      (if (zero? status)
+                        (string ", " asserts " assertions")
+                        (string ", " (- tests passed skipped) " failed"))
+                      (if (pos? skipped) (string ", " skipped " skipped") "")))
+            ""))
+        (set last-failed? (not (zero? status)))
+        (def label (string (shown path) (string/repeat " " (- width (length (shown path))))))
+        (if (zero? status)
+          (print "  " (paint 32 (if (dyn *err-color*) "✓" "pass")) " " label "  " counts)
+          (do
+            (print "  " (paint 31 (if (dyn *err-color*) "✗" "fail")) " " label "  " counts)
+            (each text [(without-result out) err]
+              (unless (empty? (string/trim text))
+                (print)
+                (print (bordered text))))
+            (print)
+            (array/push! failed path))))
+      (unless last-failed? (print))
+      (print (length files) (if (= 1 (length files)) " file, " " files, ") total-tests " tests: "
+             (if (empty? failed)
+               "all passed"
+               (string (length failed) " failed")))
+      (unless (empty? failed)
+        (each path failed (print "  " (shown path)))
+        (os/exit 1)))
+    (fail "test is not supported with reduced os")))
 
 (defn- cli-check [opts params]
   (when (has-key? opts "lint-warn") (setdyn *lint-warn* (get opts "lint-warn")))
@@ -6027,6 +6185,7 @@
   (case (get sub :cmd)
     "run" (cli-run (get sub :opts) (or (get (get sub :params) :script) []))
     "check" (cli-check (get sub :opts) (get sub :params))
+    "test" (cli-test (get sub :opts))
     "build" (cli-build sub)
     "twig" (cli-twig sub)))
 

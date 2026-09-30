@@ -9,6 +9,7 @@ _wattle() {
     local root_flags="-c --color -C --no-color -s --syspath -v --version -h --help"
     local run_flags="-e --eval -l --lib -i --img -r --repl -s --stdin -d --debug -q --quiet"
     local check_flags="-e --lint-error -w --lint-warn -b --bail -h --help"
+    local test_flags="-e --lint-error -w --lint-warn -b --bail --seed -f --file -F --no-file -t --test -T --no-test -h --help"
     local levels="none relaxed normal strict all"
 
     # The subcommand is the first word after the root options. A word that
@@ -23,7 +24,7 @@ _wattle() {
     done
     if [[ $i -lt $cword ]]; then
         case "${words[i]}" in
-            build|check|help|run|twig) sub="${words[i]}"; sub_at=$i ;;
+            build|check|help|run|test|twig) sub="${words[i]}"; sub_at=$i ;;
             *) sub="run"; sub_at=$((i - 1)) ;;
         esac
     fi
@@ -34,7 +35,7 @@ _wattle() {
             return
             ;;
         -e|--eval)
-            if [[ "$sub" == check ]]; then
+            if [[ "$sub" == check || "$sub" == test ]]; then
                 COMPREPLY=($(compgen -W "$levels" -- "$cur"))
             fi
             return
@@ -54,7 +55,7 @@ _wattle() {
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$root_flags $run_flags" -- "$cur"))
             else
-                COMPREPLY=($(compgen -W "build check help run twig" -- "$cur"))
+                COMPREPLY=($(compgen -W "build check help run test twig" -- "$cur"))
                 _filedir wattle
             fi
             ;;
@@ -81,6 +82,11 @@ _wattle() {
                 COMPREPLY=($(compgen -W "$check_flags" -- "$cur"))
             else
                 _filedir wattle
+            fi
+            ;;
+        test)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$test_flags" -- "$cur"))
             fi
             ;;
         build)
@@ -118,7 +124,7 @@ _wattle() {
             ;;
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
-                1:*) COMPREPLY=($(compgen -W "build check run twig" -- "$cur")) ;;
+                1:*) COMPREPLY=($(compgen -W "build check run test twig" -- "$cur")) ;;
                 2:build) COMPREPLY=($(compgen -W "exe img lib" -- "$cur")) ;;
                 2:twig) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
             esac

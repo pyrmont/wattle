@@ -16,6 +16,7 @@ SYNOPSIS
 
 **wattle** [**-s** _path_] [**run**] [_options_] [_script_ [_args_ ...]]
 **wattle** [**-s** _path_] **check** [_options_] [_script_]
+**wattle** [**-s** _path_] **test** [_options_]
 **wattle** [**-s** _path_] **build img** [**-l** _module_ ...] _source_ [_output_]
 **wattle** [**-s** _path_] **build exe** [**-r** _mode_] [**-t** _triple_] [_name_]
 **wattle** [**-s** _path_] **build lib** [**-r** _mode_] [**-t** _triple_] [_name_]
@@ -30,9 +31,9 @@ DESCRIPTION
 Wattle reimplements the virtual machine, compiler and core library from the
 Janet programming language in Zig with a syntax inspired by Clojure.
 
-**wattle** has four subcommands. **run** runs a script, evaluates code or
+**wattle** has five subcommands. **run** runs a script, evaluates code or
 starts a REPL (read-eval-print loop). **check** compiles a script without
-running it. **build** makes an image from source, or builds the executables
+running it. **test** runs the tests of a project. **build** makes an image from source, or builds the executables
 and native modules that a project declares. **twig** manages installed
 packages. **help** describes a subcommand.
 
@@ -152,6 +153,50 @@ unless **-b** is given.
 
 - **-b**, **--bail**:
   Stop at the first error in the source and exit with status 1.
+
+test
+----
+
+**wattle** [**-s** _path_] **test** [_options_]
+
+Run the tests. **test** runs each file ending in ``.wattle`` under ``./test``,
+in a process of its own. It prints ``seed:`` and the seed. It then prints one
+line for each file, with a mark, the path and the counts of tests and
+assertions. It prints the output of a file that failed after its line, each
+line after a border that is red when colour is on. It ends with the number of
+files and tests and the files that failed. The output of a file that passed is
+not printed. The exit status is 1 if a file failed or no file was run. A test
+file that uses the Gum test module, ``gum/test.wattle``, reads the dynamic
+bindings that **-t**, **-T** and **--seed** set.
+
+- **-f**, **--file** _path_:
+  Run only the test file whose path ends with _path_, which is relative to
+  ``./test``. It can be repeated. It is not compatible with **-F**.
+
+- **-F**, **--no-file** _path_:
+  Do not run the test file whose path ends with _path_. It can be repeated. It
+  is not compatible with **-f**.
+
+- **-t**, **--test** _name_:
+  Add _name_ to the dynamic binding ``:test/tests`` in each test file. It can
+  be repeated. It is not compatible with **-T**.
+
+- **-T**, **--no-test** _name_:
+  Add _name_ to the dynamic binding ``:test/skips`` in each test file. It can
+  be repeated. It is not compatible with **-t**.
+
+- **--seed** _seed_:
+  Use the integer _seed_ to seed the generator that shuffles the test files.
+  Each test file also shuffles its tests with it, as **test** sets the dynamic
+  binding ``:test/seed``. Without **--seed**, the seed is taken from the clock,
+  so each run has a different order. The same seed gives the same order.
+
+- **-b**, **--bail**:
+  Stop after the first test file that fails.
+
+- **-e**, **--lint-error** _level_, **-w**, **--lint-warn** _level_:
+  Set the lint levels of each test file. They take the same values as for
+  **check**.
 
 build
 -----
@@ -327,6 +372,12 @@ Check a script for compile errors without running it, stopping at the first:
 
 ````
 $ wattle check --bail hello.wattle
+````
+
+Run the tests in ``./test``, skipping one file:
+
+````
+$ wattle test --no-file slow.wattle
 ````
 
 Install a package and list the installed packages:
