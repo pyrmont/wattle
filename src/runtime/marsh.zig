@@ -1806,7 +1806,9 @@ fn unmarshalOneDef(
     }
 
     if (def.flags.hasclobitset) {
-        const n = (def.slotcount + 31) >> 5;
+        // Rounded up without adding to `slotcount`, which is untrusted here
+        // and may be `maxInt(i32)`.
+        const n = ((def.slotcount - 1) >> 5) + 1;
         def.closure_bitset = @ptrCast(@alignCast(allocated(
             utils.malloc(@sizeOf(u32) * utils.asSize(n)),
         )));

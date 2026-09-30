@@ -150,7 +150,7 @@ pub const FuncDef = struct {
     pub inline fn closureBits(self: anytype) utils.View(@TypeOf(self), u32) {
         const bits = self.closure_bitset orelse return &.{};
         if (self.slotcount <= 0) return &.{};
-        return bits[0..@intCast((self.slotcount + 31) >> 5)];
+        return bits[0..@intCast(((self.slotcount - 1) >> 5) + 1)];
     }
 };
 

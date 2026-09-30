@@ -72,6 +72,8 @@
 (assert (deep= ![0 1 2 3] (range 3.999)) "range 3")
 (assert (deep= ![0.8 1.8 2.8 3.8] (range 0.8 3.999)) "range 4")
 (assert (deep= ![0.8 1.8 2.8 3.8] (range 0.8 3.999)) "range 5")
+(assert (deep= ![] (range 10 0 0)) "range 6")
+(assert (deep= ![] (range 0 10 0)) "range 7")
 
 (assert (< 1.0 nil false true
            (buffer "hi")

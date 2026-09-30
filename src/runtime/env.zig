@@ -955,10 +955,14 @@ fn nfunRange(argv: []repr.Value) raise.Error!repr.Value {
         return pp_format.panicf("range is too large, %f elements", .{count});
     }
     const int_count: i32 = @intFromFloat(@ceil(count));
-    if (step > 0.0) {
-        assert(start + @as(f64, @floatFromInt(int_count)) * step >= stop, "bad range code");
-    } else {
-        assert(start + @as(f64, @floatFromInt(int_count)) * step <= stop, "bad range code");
+    // A zero step, as in `(range 10 0 0)`, leaves the count at zero and the
+    // bound below does not hold.
+    if (int_count != 0) {
+        if (step > 0.0) {
+            assert(start + @as(f64, @floatFromInt(int_count)) * step >= stop, "bad range code");
+        } else {
+            assert(start + @as(f64, @floatFromInt(int_count)) * step <= stop, "bad range code");
+        }
     }
     const array = arrays.new(@intCast(int_count));
     const room = array.reserved();

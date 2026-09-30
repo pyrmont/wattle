@@ -269,6 +269,12 @@ fn buildDestructureHeads(
     rhs: repr.Value,
 ) raise.Error!void {
     const compiler: *compiler_primitives.Compiler = options.compiler;
+    compiler.recursion_guard -= 1;
+    defer compiler.recursion_guard += 1;
+    if (compiler.recursion_guard <= 0) {
+        compiler_primitives.cerror(compiler, "recursed too deeply");
+        return;
+    }
     const lhs_indexed = repr.TagSet.indexed.has(repr.typeOf(lhs));
     const rhs_indexed = repr.checkType(rhs, repr.Tag.array) or
         repr.checkType(rhs, repr.Tag.vector);
@@ -382,7 +388,6 @@ fn compileBinding(
         return nilSlot();
     }
 
-    if (pairs.items.len == 0) unreachable;
     var result = nilSlot();
     for (pairs.items) |pair| {
         _ = try destructure(compiler, pair.lhs, pair.rhs, binding_kind, attributes);
@@ -482,6 +487,12 @@ fn destructure(
     binding_kind: BindingKind,
     attributes: ?*tables.Table,
 ) raise.Error!bool {
+    compiler.recursion_guard -= 1;
+    defer compiler.recursion_guard += 1;
+    if (compiler.recursion_guard <= 0) {
+        compiler_primitives.cerror(compiler, "recursed too deeply");
+        return true;
+    }
     switch (repr.typeOf(lhs)) {
         repr.Tag.symbol => if (!wrap.isKeyword(lhs)) {
             return try bindLeaf(compiler, wrap.toSymbol(lhs), rhs, binding_kind, attributes);

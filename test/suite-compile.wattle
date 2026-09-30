@@ -575,4 +575,17 @@
                           (map #($) made))))
         "closures made in a nested while body")
 
+; An empty binding pattern compiles, and its value is still produced.
+(check-good-compile '(do (def [] [1]) nil) "def with empty vector binding")
+(check-good-compile '(do (def x (def [] [1])) x) "def value with empty vector binding")
+
+; A pattern nested past the recursion guard is a compile error, not a stack
+; overflow.
+(defn nested-pattern [depth]
+  (def open (string/repeat "[" depth))
+  (def close (string/repeat "]" depth))
+  (parse (string "(def " open "x" close " 1)")))
+(assert (get (compile (nested-pattern 100000)) :error) "deeply nested def pattern")
+(assert (function? (compile (nested-pattern 20))) "shallow nested def pattern")
+
 (end-suite)
