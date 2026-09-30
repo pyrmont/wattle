@@ -128,6 +128,9 @@
 ;; refused, not overflow the word count.
 (assert-error "unmarshal huge slotcount"
               (unmarshal !"\xd7\0\xcd\x02\0\0\0\xcd\x7f\xff\xff\xff\0\0\0\0\0"))
+;; A vararg funcdef whose arity fills every slot has no slot for its tail.
+(assert-error "unmarshal vararg arity"
+              (unmarshal !"\xd7\0\xcd\0\x01\0\0\xcd\x7f\xff\xff\xff\xcd\x7f\xff\xff\xff\0\xcd\x7f\xff\xff\xff\0\x01\x04\0\0\0"))
 ; XXX: still needed?
 (gccollect)
 

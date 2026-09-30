@@ -108,6 +108,19 @@ fn theRefusalsAreNumbered() void {
     definition.arity = 2;
     expect(verify.verify(&definition).number() == 2); // arity exceeds slots
 
+    // The vararg slot counts against the slot count, and neither field may
+    // overflow the comparison.
+    definition = baseDefinition(&bytecode);
+    definition.flags.vararg = true;
+    expect(verify.verify(&definition).number() == 2); // one arg and a tail, one slot
+    definition.arity = 0;
+    expect(verify.verify(&definition).number() == 0);
+    definition.slotcount = std.math.maxInt(i32);
+    definition.arity = std.math.maxInt(i32) - 1;
+    expect(verify.verify(&definition).number() == 0);
+    definition.arity = std.math.maxInt(i32);
+    expect(verify.verify(&definition).number() == 2);
+
     definition = baseDefinition(&bytecode);
     bytecode[0] = 0x7f;
     expect(verify.verify(&definition).number() == 3); // no such opcode

@@ -858,7 +858,7 @@ fn funcframeBegin(fiber: *Fiber, func: *functions.Function) FrameBegin {
     const oldtop = fiber.stacktop;
     const oldframe = fiber.frame;
     const nextframe = fiber.stackstart;
-    const nextstacktop = nextframe +% def.slotcount +% frame_size;
+    const nextstacktop = frameTop(nextframe, def.slotcount);
     const next_arity = fiber.stacktop -% fiber.stackstart;
 
     // Check strict arity before touching any state.
@@ -903,7 +903,7 @@ inline fn saturatedArgc(argc: i32) u6 {
 /// move down.
 fn funcframeTailBegin(fiber: *Fiber, func: *functions.Function) TailBegin {
     const def = func.def.?;
-    const nextstacktop = fiber.frame +% def.slotcount +% frame_size;
+    const nextstacktop = frameTop(fiber.frame, def.slotcount);
     const next_arity = fiber.stacktop -% fiber.stackstart;
 
     // Check strict arity before touching any state.
@@ -1022,6 +1022,18 @@ fn refreshMemory(fiber: *Fiber) void {
         utils.free(fiber.data);
         fiber.data = dest;
     }
+}
+
+/// The stack top after a frame of `slotcount` slots is pushed at `base`.
+///
+/// A funcdef's slot count is untrusted until it has been verified, and
+/// verification does not bound it. Summed without a check it wraps negative,
+/// `reserve` then sees room where there is none, and the varargs tail is
+/// written through a negative index. The overflow is the same refusal as
+/// `reset`'s: no stack of that many slots can be allocated.
+inline fn frameTop(base: i32, slotcount: i32) i32 {
+    const slots = std.math.add(i32, base, slotcount) catch fatal.outOfMemory();
+    return std.math.add(i32, slots, frame_size) catch fatal.outOfMemory();
 }
 
 /// The shape shared by every frame push: grow where the frame will not fit,

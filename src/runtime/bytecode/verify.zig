@@ -190,12 +190,13 @@ pub const Verdict = enum(u8) {
 /// end a function. The symbol map is checked last.
 pub fn verify(definition: *functions.FuncDef) Verdict {
     const varargs: i32 = @intFromBool(definition.flags.vararg);
-    const maximum_argument_slot = definition.arity + varargs;
     const slot_count = definition.slotcount;
     const bytecode_length = definition.bytecode_length;
 
     if (bytecode_length == 0) return .no_bytecode;
-    if (maximum_argument_slot > slot_count) return .arity_exceeds_slots;
+    // Both fields are untrusted and either may be `maxInt(i32)`, so the
+    // vararg slot is taken from the slot count and not added to the arity.
+    if (definition.arity > slot_count -% varargs) return .arity_exceeds_slots;
 
     for (definition.instructions(), 0..) |instruction, index| {
         const opcode = instruction & 0x7f;
