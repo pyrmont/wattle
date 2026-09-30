@@ -134,9 +134,6 @@ const BuildOptions = struct {
     stack_max: i32,
     os_name: ?[]const u8 = null,
     arch_name: ?[]const u8 = null,
-    /// The built-in prefix: null for none, an empty string where the
-    /// caller must supply one, or the root itself. `-Dwattle-prefix` sets it.
-    prefix: ?[]const u8,
 };
 
 /// Which subsystems this configuration answers in Zig.
@@ -2046,16 +2043,6 @@ fn addCliChecks(
     test_step.dependOn(&repl.step);
 }
 
-/// `-Dwattle-prefix`: `none` for no prefix, `required` or nothing for an empty
-/// one that the caller must replace, and any other value for the root itself.
-fn prefixOption(b: *std.Build) ?[]const u8 {
-    const value = b.option([]const u8, "wattle-prefix", "The built-in prefix, the root that <prefix>/lib/wattle, <prefix>/bin and <prefix>/share/man derive from: a path, 'none' for no prefix, or 'required' (the default) to make the caller set WATTLE_PREFIX or --prefix") orelse return "";
-    if (std.mem.eql(u8, value, "none")) return null;
-    if (std.mem.eql(u8, value, "required")) return "";
-    if (value.len == 0) @panic("-Dwattle-prefix must not be empty: use 'required' or 'none'");
-    return value;
-}
-
 fn readOptions(b: *std.Build) BuildOptions {
     // The range depends on the target, so `resolveConfig` checks it.
     const pointer_shift = b.option(i32, "nanbox-pointer-shift", "Override the NaN-box pointer shift (0 through 2 on aarch64, 0 elsewhere)");
@@ -2099,7 +2086,6 @@ fn readOptions(b: *std.Build) BuildOptions {
         .fiber_stack_shuffle = b.option(bool, "fiber-stack-shuffle", "Move every fiber's stack on every frame push, so a pointer kept across one is a use-after-free the allocator can see") orelse false,
         .os_name = b.option([]const u8, "os-name", "Override the keyword os/which reports"),
         .arch_name = b.option([]const u8, "arch-name", "Override the keyword os/arch reports"),
-        .prefix = prefixOption(b),
     };
 
     if (options.recursion_guard) |guard| {
@@ -2206,10 +2192,6 @@ const Config = struct {
     version_extra: []const u8,
     version: []const u8,
     build_name: []const u8,
-    /// The built-in prefix, as `env.zig` publishes it in `:prefix`: null
-    /// for none, an empty string where the caller must supply one, or the root
-    /// that the library, program and manual directories derive from.
-    prefix: ?[]const u8,
     recursion_guard: i32,
     max_proto_depth: i32,
     max_macro_expand: i32,
@@ -2394,7 +2376,6 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         .version_extra = version_extra,
         .version = version_string,
         .build_name = build_name,
-        .prefix = options.prefix,
         // The budget the native recursions spend, one unit per level: the
         // printer, the marshaller, the compiler and the PEG engine all start
         // from it, and it is what turns a deep structure into a Janet error

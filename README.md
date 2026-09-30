@@ -177,12 +177,23 @@ Artifacts are installed under `zig-out`: the executable in `zig-out/bin` and
 the static and shared libraries in `zig-out/lib`. **No header is installed** —
 see "Native modules" below.
 
+### Supported platforms
+
+| platform         | state                                                          |
+| ---------------- | -------------------------------------------------------------- |
+| macOS arm64      | built and fully tested                                         |
+| macOS x86-64     | compiles only; not executed since the Intel runner was dropped |
+| Linux, musl      | built and fully tested; dynamic by default, needs musl loader  |
+| Linux, glibc     | built and fully tested                                         |
+| Windows          | built and fully tested                                         |
+| wasm32-wasi      | built and fully tested under wasmtime, without the event loop  |
+| 32-bit (riscv32) | built and tested under QEMU, without the FFI                   |
+
 ### Compilation options
 
-Pass `-p <prefix>` to install somewhere else, and `zig build --help` to see the
-feature flags — the runtime can be built without the event loop, networking,
-the PEG engine, the assembler, the FFI, integer types, dynamic modules or
-docstrings.
+Use `zig build --help` to see full list of feature flags. To give you a sense,
+the Wattle runtime can be built without the event loop, networking, the PEG
+engine, the assembler, the FFI, integer types, dynamic modules or docstrings.
 
 ```sh
 zig build -Doptimize=ReleaseFast          # an optimized build
@@ -227,23 +238,10 @@ wasmtime run --dir . --env WATTLE_PREFIX=. zig-out/bin/wattle.wasm script.wattle
 `zig build examples/web` builds `examples/web/`, Wattle in a web page: the runtime as a
 WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
 
-### Supported platforms
-
-| platform         | state                                                          |
-| ---------------- | -------------------------------------------------------------- |
-| macOS arm64      | built and fully tested                                         |
-| macOS x86-64     | compiles only; not executed since the Intel runner was dropped |
-| Linux, musl      | built and fully tested; dynamic by default, needs musl loader  |
-| Linux, glibc     | built and fully tested                                         |
-| Windows          | built and fully tested                                         |
-| wasm32-wasi      | built and fully tested under wasmtime, without the event loop  |
-| 32-bit (riscv32) | built and tested under QEMU, without the FFI                   |
-
 ## Installing
 
 If you just want to try out the language, you don't need to install anything:
-build the tree and run `zig-out/bin/wattle` where it is. The executable is
-self-contained and can be moved wherever you want on your system.
+build the tree and run `zig-out/bin/wattle` where it is.
 
 ## Using
 
@@ -264,6 +262,7 @@ Subcommands:
 
  b, build    Build an artifact from source.
  c, check    Compile a script without running it and report every error.
+ g, gum      Copy Gum modules into a project, or list them.
  p, pkg      Manage installed packages.
  r, run      Run a script, evaluate code or start the REPL.
  t, test     Run the test files in ./test, each in its own process.
@@ -290,68 +289,64 @@ Individual scripts can be run with `wattle program.wattle`.
 ## Extending
 
 Wattle can be extended with _native modules_. The native-module interface is
-Zig, a C interface is not provided. Native modules are therefore written in
-Zig. `examples/native-abstract/` is a working example.
+Zig. `examples/native-abstract/` is a worked example.
 
-A module records the interface it was built against as a fingerprint, and the
-loader refuses to load a module if its fingerprint doees not match.
-`wattle/api` is the runtime's fingerprint. The fingerprint is independent of
-Wattle's version so that a module built against one release loads into another
-provided that the interface is the same.
+A module records the interface it was built against as a fingerprint. This is
+important at runtime as the module loader will refuse to load a module if the
+fingerprint of the runtime and the fingerprint of the module do not match. The
+fingerprint is independent of Wattle's version so that a module built against
+one release can load into another provided that the interface is the same.
 
-A module can also be linked into an executable, together with the runtime and
-an image of a Wattle program, so that one file cross-compiles and runs with
-nothing beside it. `wattle build exe` reads the project's `info.edn`, which
-lists the executables to build and the native modules each links in, and makes
-the executable with Zig. `wattle build lib` makes each native module as a shared
-library. Both need Zig on the `PATH`, and the prefix, `WATTLE_PREFIX` or
-`--prefix`, must be a root whose `share/wattle` holds the package, as `zig
-build` installs it:
+A module can also be linked together with the runtime and an image of a Wattle
+program to create a standalone executable. `wattle build exe` will create the
+executable artifacts specified in the project's `info.edn`. `wattle build lib`
+makes each native module as a shared library. Both need Zig on the `PATH`, and
+the prefix, `WATTLE_PREFIX` or `--prefix`. `<prefix>/share/wattle` must point
+to a copy of the Wattle source. An example `info.edn` file could look like
+this:
 
 ```clojure
 {:name "hello"
+ :url "https://example.org/hello"
  :artifacts [{:type :lib :name "greet" :root "greet.zig"}
              {:type :exe :name "hello" :entry "main.wattle" :libs ["greet"]}]}
 ```
 
+A user could then build this for their system using:
+
 ```sh
-wattle -p /usr/local build exe --release small
+wattle build exe --release small
 ```
 
-`examples/native-consumer/info.edn` is a worked instance, and `zig build
-examples/build-exe` builds it this way. `man ./man/wattle.1` describes the file and
-the options.
+`examples/native-consumer/info.edn` is a worked example. More details are in
+the man page.
 
 A project that needs more than that, such as other Zig steps or its own build
-options, can write a `build.zig` and call the `wattleExecutable` function of the
-`wattle` dependency, which is what `wattle build exe` generates. `zig build
-examples/native-executable` builds `examples/native-executable/`, which links
-`examples/native-events/` in, and `examples/native-consumer/build.zig` calls
-`wattleExecutable` from outside the tree.
+options, can write a `build.zig` and call the `wattleExecutable` function of
+the `wattle` dependency. `zig build examples/native-executable` builds
+`examples/native-executable/`, which links `examples/native-events/` in, and
+`examples/native-consumer/build.zig` calls `wattleExecutable` from outside the
+tree.
 
-`zig build` also copies the package's files, `build.zig`, `build.zig.zon`,
-`LICENSE`, `README.md` and `src/`, to `<prefix>/share/wattle/`. A project builds
-a single-binary executable from that copy by naming it as the `wattle`
-dependency with a `.path` relative to the project. Zig does not accept an
-absolute `.path`. The copy has no `test/`, and `build.zig` skips the checks that
-read it.
+## Miscellaney
 
-## Gum
+### Gum
 
-Gum contains optional Wattle source modules. The modules are in `src/gum/` and
-are included in the Wattle source package. `zig build` also copies them to
-`<prefix>/share/wattle/src/gum/`. A project copies the modules it uses into its own
-source tree and imports them by relative path. For example, with
-`args.wattle` copied into `wattle/gum/args.wattle`, a file in `wattle/` uses:
+Gum is a collection of optional Wattle source modules that is included in the
+`src/gum/` directory. `zig build` copies them to
+`<prefix>/share/wattle/src/gum/`. A project copies the modules it uses into its
+own source tree and imports them by relative path. `wattle gum` with no
+arguments lists the modules. `wattle gum args` copies `args.wattle` and its
+licence into `deps/gum/`, and `--dir` names a different parent of `gum/`. A file
+in the project root then uses:
 
 ```clojure
-(import ./gum/args :as args)
+(import ./deps/gum/args :as args)
 ```
 
-Copy `LICENSE.argy-bargy` with `args.wattle`. See
-[`src/gum/README.md`](src/gum/README.md) for the module's origin and use.
+See [`src/gum/README.md`](src/gum/README.md) for each module's origin and use.
 
-## Contributing
+### Editors
 
 Wattle can be hacked on with pretty much any environment you like. No editor
 yet has a syntax package for Wattle; a Clojure mode is the closest fit for

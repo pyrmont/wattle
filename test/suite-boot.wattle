@@ -1127,9 +1127,9 @@
 
 ; *prefix* is the root that <prefix>/lib/wattle, <prefix>/bin and
 ; <prefix>/share/man derive from, and `:prefix:` expands to the first of them.
-; nil is no prefix, "" is one the caller must supply, and any other
-; string is the root. Each state is set here with a dynamic binding, since the
-; built-in value is a build option.
+; nil is no prefix, "" is an empty one, and any other string is the root. A
+; runtime starts with none: `WATTLE_PREFIX` and `--prefix` set it. Each state
+; but nil is set here with a dynamic binding.
 (def prefix-template ":prefix:/:all:.wattle")
 (defn- normal [path] (string/replace-all "\\" "/" path))
 
@@ -1156,8 +1156,8 @@
     (assert (string/find "WATTLE_PREFIX" message) "the error names WATTLE_PREFIX")))
 
 ; nil cannot be set by a binding: a nil in a fiber's environment falls through
-; to the root environment. It is the state of a build made with
-; -Dwattle-prefix=none, so the cases run only when this binary is one.
+; to the root environment. It is the state of a runtime started with neither
+; `WATTLE_PREFIX` nor `--prefix`, so the cases run only when this one was.
 (unless (or (get root-env :prefix) (dyn *prefix*))
   (assert (nil? (module/expand-path "x" prefix-template))
           ":prefix: has no expansion without a prefix")
@@ -1166,7 +1166,7 @@
           "module/find skips :prefix: without a prefix")
   (each f [wattle/libpath wattle/binpath wattle/manpath wattle/srcpath]
     (def [ok message] (protect (f)))
-    (assert (and (not ok) (string/find "no prefix" message))
+    (assert (and (not ok) (string/find "WATTLE_PREFIX" message))
             "a derived directory raises without a prefix")))
 
 (with-dyns [*prefix* ""]
