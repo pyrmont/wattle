@@ -1901,6 +1901,7 @@ fn unmarshalOneFiber(
     fiber.child = null;
     fiber.env = null;
     fiber.last_value = wrap.fromNil();
+    fiber.ev_flags = .{};
     if (has_ev) {
         fiber.sched_id = 0;
         fiber.supervisor_channel = null;

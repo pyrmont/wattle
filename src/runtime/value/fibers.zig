@@ -650,6 +650,9 @@ inline fn addTraps(fiber: *Fiber, more: u14) void {
 /// collection cannot intervene: no allocation happens between the two.
 fn alloc(requested: i32) *Fiber {
     const fiber = gc_alloc.gcalloc(Fiber, .fiber);
+    // `gcalloc` fills in the header and nothing after it, so the field is set
+    // here where the bits it replaced were set with the header.
+    fiber.ev_flags = .{};
     const capacity: i32 = if (requested < 32) 32 else requested;
     fiber.capacity = capacity;
     vm_state.current().gc.next_collection +%= stackBytes(capacity);
