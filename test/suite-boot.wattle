@@ -1189,7 +1189,7 @@
 ; An image imported by its full path goes through the `:image` loader, as it
 ; does when named by module name. The full-path entry once selected `:source`,
 ; which raised a parse error on the binary image.
-(let [dir (string "wimage-import-" (os/getpid))
+(let [dir (randdir)
       path (string dir "/up.wimage")
       env (make-env)]
   (eval-string "(defn hello [] :up)" env)
