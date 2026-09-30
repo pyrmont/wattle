@@ -583,8 +583,8 @@ pub fn build(b: *std.Build) void {
     // would be size spent on symbols nothing can reach.
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
-    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
-    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
+    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("man/wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
+    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("man/wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
     // The package's own files, as `build.zig.zon` lists them, so that a
     // `wattleExecutable` build can name `<prefix>/share/wattle` as its `wattle`
     // dependency by path where no URL and hash are wanted. The copy has the

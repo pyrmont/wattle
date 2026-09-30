@@ -319,7 +319,7 @@ wattle -p /usr/local build exe --release small
 ```
 
 `examples/native-consumer/info.edn` is a worked instance, and `zig build
-examples/build-exe` builds it this way. `man ./wattle.1` describes the file and
+examples/build-exe` builds it this way. `man ./man/wattle.1` describes the file and
 the options.
 
 A project that needs more than that, such as other Zig steps or its own build
