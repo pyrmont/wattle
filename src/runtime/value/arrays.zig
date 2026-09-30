@@ -145,7 +145,7 @@ pub fn ensure(array: *Array, capacity_in: usize, growth: usize) void {
     // the result rather than the width.
     const wanted = std.math.mul(usize, capacity_in, growth) catch std.math.maxInt(usize);
     const capacity: usize = @min(wanted, std.math.maxInt(i32));
-    const new_data = utils.realloc(@ptrCast(old), capacity *% @sizeOf(repr.Value)) orelse
+    const new_data = utils.realloc(@ptrCast(old), utils.byteCount(repr.Value, capacity)) orelse
         fatal.outOfMemory();
     // Charged after the allocation, where the buffer twin charges it before.
     vm_state.current().gc.next_collection +%= (capacity -% array.capacity) *% @sizeOf(repr.Value);
@@ -219,7 +219,7 @@ pub fn newFrom(elements: []const repr.Value) *Array {
     const array = gc_alloc.gcalloc(Array, .array);
     array.capacity = elements.len;
     array.count = elements.len;
-    array.data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% utils.asSize(count))));
+    array.data = @ptrCast(@alignCast(utils.malloc(utils.byteCount(repr.Value, utils.asSize(count)))));
     if (array.data == null) fatal.outOfMemory();
     @memcpy(array.slice(), elements);
     return array;
@@ -556,7 +556,7 @@ fn init(array: *Array, capacity: usize) void {
         // Charged directly rather than through `gc.gcpressure`, because the
         // term is the array's own bytes and nothing else.
         vm_state.current().gc.next_collection +%= capacity *% @sizeOf(repr.Value);
-        data = @ptrCast(@alignCast(utils.malloc(@sizeOf(repr.Value) *% capacity) orelse
+        data = @ptrCast(@alignCast(utils.malloc(utils.byteCount(repr.Value, capacity)) orelse
             fatal.outOfMemory()));
     }
     array.count = 0;

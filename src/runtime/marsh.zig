@@ -1716,7 +1716,7 @@ fn unmarshalOneDef(
 
     if (constants_length != 0) {
         const pool: [*]repr.Value = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(repr.Value) * constants_length),
+            utils.malloc(utils.byteCount(repr.Value, constants_length)),
         )));
         def.constants = pool;
         // The length is declared after the fill, so `constantValues()` is
@@ -1737,7 +1737,7 @@ fn unmarshalOneDef(
 
     if (def.flags.hassymbolmap) {
         const map: [*]functions.SymbolMap = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(functions.SymbolMap) * symbolmap_length),
+            utils.malloc(utils.byteCount(functions.SymbolMap, symbolmap_length)),
         )));
         def.symbolmap = map;
         for (map[0..symbolmap_length]) |*entry| {
@@ -1758,7 +1758,7 @@ fn unmarshalOneDef(
     }
 
     def.bytecode = @ptrCast(@alignCast(allocated(
-        utils.malloc(@sizeOf(u32) * bytecode_length),
+        utils.malloc(utils.byteCount(u32, bytecode_length)),
     )));
     data = try unmarshalU32s(st, data, def.bytecode.?, bytecode_length);
     def.bytecode_length = bytecode_length;
@@ -1793,7 +1793,7 @@ fn unmarshalOneDef(
 
     if (def.flags.hassourcemap) {
         def.sourcemap = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(functions.SourceMapping) * bytecode_length),
+            utils.malloc(utils.byteCount(functions.SourceMapping, bytecode_length)),
         )));
         var current: i32 = 0;
         for (def.sourceMappings()) |*map| {
@@ -1810,7 +1810,7 @@ fn unmarshalOneDef(
         // and may be `maxInt(i32)`.
         const n = ((def.slotcount - 1) >> 5) + 1;
         def.closure_bitset = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(u32) * utils.asSize(n)),
+            utils.malloc(utils.byteCount(u32, utils.asSize(n))),
         )));
         data = try unmarshalU32s(st, data, def.closure_bitset.?, utils.asSize(n));
     }
@@ -1863,7 +1863,7 @@ fn unmarshalOneEnv(
         // Off stack variant
         if (length == 0) return raise.panic("invalid funcenv length");
         env.as.values = @ptrCast(@alignCast(allocated(
-            utils.malloc(@sizeOf(repr.Value) * utils.asSize(length)),
+            utils.malloc(utils.byteCount(repr.Value, utils.asSize(length))),
         )));
         env.offset = 0;
         var i: i32 = 0;
@@ -1932,7 +1932,7 @@ fn unmarshalOneFiber(
     else
         std.math.maxInt(i32);
     fiber.data = @ptrCast(@alignCast(allocated(
-        utils.malloc(@sizeOf(repr.Value) * utils.asSize(fiber.capacity)),
+        utils.malloc(utils.byteCount(repr.Value, utils.asSize(fiber.capacity))),
     )));
     // `fiber.capacity` keeps its width with the rest of the fiber's stack
     // fields; the fill over the slots it counts is a plain index.

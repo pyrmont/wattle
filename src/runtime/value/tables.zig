@@ -573,7 +573,7 @@ inline fn isUnstorableKey(key: repr.Value) bool {
 /// null. Scratch memory is released wholesale by `gc.freeAllScratch`, which is
 /// also what recovers it if a signal unwinds past a scratch table.
 fn memallocEmptyLocal(count: usize) [*]Keyval {
-    const mem: [*]Keyval = @ptrCast(@alignCast(gc_alloc.smalloc(count *% @sizeOf(Keyval))));
+    const mem: [*]Keyval = @ptrCast(@alignCast(gc_alloc.smalloc(utils.byteCount(Keyval, count))));
     for (mem[0..count]) |*kv| {
         kv.key = wrap.fromNil();
         kv.value = wrap.fromNil();

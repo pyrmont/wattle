@@ -229,8 +229,22 @@ pub inline fn alloc(comptime T: type) *T {
     return @ptrCast(@alignCast(rawAlloc(@sizeOf(T))));
 }
 
+/// The byte count of `n` contiguous `T`, or a fatal out-of-memory where the
+/// product does not fit a `usize`.
+///
+/// A count read from an image or from a program can be as large as
+/// `maxInt(i32)`, and on a target with a 32-bit `usize` the product with an
+/// element size wraps to a small number. The allocation then succeeds and the
+/// fill that follows runs over the count, not over the block. On a 64-bit
+/// target the product cannot overflow and this reduces to the multiply.
+pub inline fn byteCount(comptime T: type, n: usize) usize {
+    const product = @mulWithOverflow(n, @sizeOf(T));
+    if (product[1] != 0) fatal.outOfMemory();
+    return product[0];
+}
+
 pub inline fn allocMany(comptime T: type, n: usize) [*]T {
-    return @ptrCast(@alignCast(rawAlloc(n *% @sizeOf(T))));
+    return @ptrCast(@alignCast(rawAlloc(byteCount(T, n))));
 }
 
 pub inline fn allocManyZeroed(comptime T: type, n: usize) [*]T {
@@ -390,7 +404,7 @@ pub fn rawRealloc(ptr: ?*anyopaque, size: usize) *anyopaque {
 
 /// Grows or moves `n` contiguous `T`. A null `old` allocates.
 pub inline fn resizeMany(comptime T: type, old: ?[*]T, n: usize) [*]T {
-    return @ptrCast(@alignCast(rawRealloc(@ptrCast(old), n *% @sizeOf(T))));
+    return @ptrCast(@alignCast(rawRealloc(@ptrCast(old), byteCount(T, n))));
 }
 
 /// Fills `index_buffer` with the occupied bucket indices of a dictionary, in

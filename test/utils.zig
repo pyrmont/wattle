@@ -463,6 +463,17 @@ fn theHeapResizesInPlaceOnlyDownward() void {
     utils.heap.free(shrunk);
 }
 
+/// `byteCount` is the plain product where the product fits, zero included. Where
+/// it does not fit it ends the process, which this case cannot reach: a
+/// `usize` holds every product of an `i32` count here, and only a 32-bit target
+/// overflows.
+fn byteCountIsTheProductWhereItFits() void {
+    expect(utils.byteCount(u32, 0) == 0);
+    expect(utils.byteCount(u32, 3) == 12);
+    expect(utils.byteCount(u8, std.math.maxInt(i32)) == std.math.maxInt(i32));
+    expect(utils.byteCount(repr.Value, 1 << 20) == (1 << 20) * @sizeOf(repr.Value));
+}
+
 /// On a BSD host, macOS among them, `cryptorand` draws from `arc4random_buf`
 /// and opens nothing, so it answers with no descriptor free. The soft limit on
 /// descriptors is lowered to the lowest free one for the call and put back.
@@ -507,6 +518,7 @@ pub fn run() void {
     theTablesAreIndexedByTheNumbersACallerHas();
     getProcessedNameAnchorsABareName();
     theHeapResizesInPlaceOnlyDownward();
+    byteCountIsTheProductWhereItFits();
     cryptorandOpensNoDescriptorOnABsd();
 
     vm_lifecycle.deinit();

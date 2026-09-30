@@ -567,7 +567,7 @@ pub fn root() ?*Fiber {
 pub fn setcapacity(fiber: *Fiber, n: i32) void {
     const old_size = fiber.capacity;
     const diff = n -% old_size;
-    const new_data = utils.realloc(fiber.data, stackBytes(n)) orelse
+    const new_data = utils.realloc(fiber.data, utils.byteCount(repr.Value, utils.asSize(n))) orelse
         fatal.outOfMemory();
     fiber.data = @ptrCast(@alignCast(new_data));
     fiber.capacity = n;

@@ -48,6 +48,7 @@ const pp_format = @import("../pp/format.zig");
 const raise = @import("../../api/raise.zig");
 const repr = @import("repr");
 const tables = @import("tables.zig");
+const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const vectors = @import("vectors.zig");
 const wrap = @import("helpers/wrap.zig");
@@ -94,7 +95,7 @@ pub fn begin(length: usize) [*]repr.Value {
     const hd = gc_alloc.gcallocWithPayload(
         TupleHead,
         .tuple,
-        length *% @sizeOf(repr.Value),
+        utils.byteCount(repr.Value, length),
     );
     hd.sm_line = -1;
     hd.sm_column = -1;

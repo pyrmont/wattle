@@ -425,11 +425,11 @@ inline fn isNil(val: repr.Value) bool {
 
 /// Returns a bucket array's size in bytes.
 ///
-/// `count` is the bucket count. The multiply wraps; a bucket count is a `usize`
-/// and `capacityFor`, which clamps at `INT32_MAX`, is the only thing that
-/// produces one.
+/// `count` is the bucket count. The multiply is checked; a bucket count is a
+/// `usize` and `capacityFor`, which clamps at `INT32_MAX`, is the only thing
+/// that produces one.
 inline fn kvBytes(count: usize) usize {
-    return count *% @sizeOf(tables.Keyval);
+    return utils.byteCount(tables.Keyval, count);
 }
 
 /// Returns a hash folded into a bucket index.

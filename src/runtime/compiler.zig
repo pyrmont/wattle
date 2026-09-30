@@ -1338,7 +1338,7 @@ fn makeSet(options: FormOptions, tree: *maps.Tree) raise.Error!Slot {
 
 /// `count` elements of `T` from the runtime's allocator.
 fn mallocArray(comptime Element: type, count: usize) ?[*]Element {
-    const size = @sizeOf(Element) * count;
+    const size = utils.byteCount(Element, count);
     const memory = utils.malloc(size);
     if (memory == null and size != 0) fatal.outOfMemory();
     return @ptrCast(@alignCast(memory));
