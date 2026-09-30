@@ -1385,7 +1385,11 @@ fn schedAccept(stream: *ev_stream.Stream, fun: ?*functions.Function) raise.Error
 /// failure, with `*err` set.
 fn schedAcceptImpl(state: *NetStateAccept, op: ?*ev_stream.Operation, err: *repr.Value) raise.Error!bool {
     const lsock = sockOf(state.lstream.?);
-    const asock = h.WSASocketW(h.AF_INET, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
+    // An `AF_INET6` socket on Windows is dual-mode unless set otherwise, so
+    // it accepts a connection from either family. An `AF_INET` one cannot be
+    // the accepting socket for an IPv6 listener.
+    const family = if (has_ipv6) h.AF_INET6 else h.AF_INET;
+    const asock = h.WSASocketW(family, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
     if (asock == h.INVALID_SOCKET) {
         err.* = ev_stream.evLasterr();
         return true;
