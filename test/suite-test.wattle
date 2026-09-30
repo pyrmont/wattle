@@ -15,7 +15,7 @@
 (compwhen (and (dyn 'os/execute) (dyn 'os/cd) (dyn 'os/mkdir))
   (def module-source (slurp "src/gum/test.wattle"))
   (def home (os/cwd))
-  (def root (string (os/getenv "TMPDIR" "/tmp") "/" (randdir)))
+  (def root (string home "/" (randdir)))
   (def fixture (string root "/project"))
 
   (defn write [path text]

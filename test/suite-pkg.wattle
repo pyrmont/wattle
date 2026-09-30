@@ -143,7 +143,8 @@
 (assert (os/stat hello :mode) "a program is installed under bin")
 (assert (os/stat hello-man :mode) "a man page is installed under share/man")
 (assert (os/stat bin-mod :mode) "a module of the same package is under lib/wattle")
-(unless (= :windows (os/which))
+; WASI and Windows report no permission bits.
+(unless (or (= :windows (os/which)) (= :wasi (os/which)))
   (assert (string/has-prefix? "rwx" (os/stat hello :permissions))
           "a program is executable"))
 (assert (= "sample-pkg-bin" (pkg/whois hello)) "pkg/whois finds a program")

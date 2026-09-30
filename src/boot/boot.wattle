@@ -4878,9 +4878,14 @@
     (dyn *syspath*))
 
   (defn- pkg-mkdirs
-    "Creates the directory at path and any of its parents that are missing."
-    [path]
+    """
+    Creates the directory at path and any of its parents that are missing. On
+    Windows a forward slash separates as well, so a path that mixes the two
+    is split at each.
+    """
+    [path-in]
     (def s (sep))
+    (def path (if (= s "/") path-in (string/replace-all "/" s path-in)))
     (var so-far (if (string/has-prefix? s path) s ""))
     (each part (string/split s path)
       (unless (empty? part)
