@@ -246,7 +246,7 @@
 
 (defn errorf
   """
-  Raises an error. fmt formats the mssage and works the same as the formatting
+  Raises an error. fmt formats the message and works the same as the formatting
   argument to ^string/format. Same as `(error (string/format fmt |vals))`.
   """
   [fmt & vals]
@@ -838,7 +838,7 @@
 
 (defmacro seq
   """
-  Accomulates body into an array and returns that. It is similar to ^loop. See
+  Accumulates body into an array and returns that. It is similar to ^loop. See
   it for details.
   """
   [head & body]
@@ -1683,7 +1683,7 @@
 
 (defn walk
   """
-  Applies f to each element of f. Returns the results.
+  Applies f to each element of form. Returns the results.
   """
   [f form]
   (case (type form)
@@ -2236,7 +2236,7 @@
   """
   Pattern matching. Matches an expression x against any number of cases.
   Each case is a pattern to match against, followed by an expression to
-  evaluate to if that case is matched.  Legal patterns are:
+  evaluate to if that case is matched. Legal patterns are:
 
   * symbol -- a pattern that is a symbol will match anything, binding x's
     value to that symbol.
@@ -3302,10 +3302,7 @@
 (module/add-file-extension ".wimage" :image)
 ; These obviously won't work on all platforms, but if a user explicitly
 ; tries to import them, we may as well try. `.dylib` is what macOS names a
-; shared object, and it is here for the reason `.dll` is: the list is an
-; escape hatch for a path a user spelled out, and leaving out the one
-; extension a supported platform actually uses made it the one platform the
-; hatch did not cover.
+; shared object.
 (module/add-file-extension ".so" :native)
 (module/add-file-extension ".dll" :native)
 (module/add-file-extension ".dylib" :native)
@@ -3398,7 +3395,7 @@
 (var- debugger-on-status-var nil)
 
 (defn debugger
-  "Runs a repl-based debugger on a fiber. Optionally pass in a level  to differentiate nested debuggers."
+  "Runs a repl-based debugger on a fiber. An optional level differentiates nested debuggers."
   ([fib] (debugger fib 1))
   ([fib level]
     (def nextenv (make-env (fiber/getenv fib)))
@@ -3423,7 +3420,7 @@
     (nextenv :resume-value)))
 
 (defn debugger-on-status
-  "Creates a function that can be passed to ^run-context's `:on-status`  argument that will drop into a debugger on errors. The debugger will  only start on abnormal signals if the env table has the `:debug` dyn  set to a truthy value."
+  "Creates a function that can be passed to ^run-context's `:on-status` argument that will drop into a debugger on errors. The debugger will only start on abnormal signals if the env table has the `:debug` dyn set to a truthy value."
   ([env] (debugger-on-status env 1 nil))
   ([env level] (debugger-on-status env level nil))
   ([env level is-repl]
@@ -4620,7 +4617,7 @@
 
   (defn ev/go-gather
     """
-    Runs a dyanmic number of fibers in parallel and resume the current fiber after they complete. Takes
+    Runs a dynamic number of fibers in parallel and resumes the current fiber after they complete. Takes
     an array of functions or fibers, thunks, that will be run via ^ev/go in another task.
     Returns the gathered results in an array.
     """
@@ -4671,7 +4668,7 @@
 ;;;
 
 (defmacro delay
-  "Lazily evaluates a series of expressions. Returns a function that  returns the result of the last expression. Will only evaluate the  body once, and then memoizes the result."
+  "Lazily evaluates a series of expressions. Returns a function that returns the result of the last expression. Will only evaluate the body once, and then memoizes the result."
   [& forms]
   (def state (gensym))
   (def loaded (gensym))
@@ -4694,7 +4691,7 @@
     (string/replace-all "-" "_" name))
 
   (defn ffi/context
-    "Sets the path of the dynamic library to implicitly bind, as well     as other global state for ease of creating native bindings."
+    "Sets the path of the dynamic library to implicitly bind, as well as other global state for ease of creating native bindings."
     ([] (ffi/context nil))
     ([native-path & {:keys [map-symbols lazy]}]
       (default map-symbols default-mangle)
@@ -4708,7 +4705,7 @@
                 :map-symbols map-symbols})))
 
   (defmacro ffi/defbind-alias :flycheck
-    "Generates bindings for native functions in a convenient manner.     Similar to defbind but allows for the wattle function name to be     different than the FFI function."
+    "Generates bindings for native functions in a convenient manner. Similar to defbind but allows for the wattle function name to be different than the FFI function."
     [name alias ret-type & body]
     (def real-ret-type (eval ret-type))
     (def meta (slice body 0 -2))
@@ -5896,7 +5893,7 @@
   a file failed or none was run.
   """
   [opts]
-  (compif (and (dyn 'os/spawn) (dyn 'os/dir) (dyn 'os/stat))
+  (compif (and (dyn 'os/spawn) (dyn 'os/dir) (dyn 'os/stat) (dyn 'ev/gather))
     (do
       (when (and (get opts "file") (get opts "no-file"))
         (cli-fail "cannot use both --file and --no-file"))
@@ -6042,7 +6039,7 @@
   on a failure that is not zig's own.
   """
   [kind cmd]
-  (compif (dyn 'os/spawn)
+  (compif (and (dyn 'os/spawn) (dyn 'ev/read))
     (do
       (def opts (get cmd :opts))
       (def mode (get cli-release-modes (get opts "release" "safe")))
@@ -6245,20 +6242,9 @@
         (put! temp v k))
       (marshal root-env reverse-lookup)))
 
-  ; Write the core image out, as itself.
-  ;
-  ; **The marshalled stream, not a C source file.** `core_env.zig` reaches
-  ; these bytes with `@embedFile`, so nothing here emits C. Janet writes the
-  ; image as an array of hex literals inside a `#include` instead, which costs
-  ; 2,007,197 bytes of text to carry 324,310 bytes of image and compiles it
-  ; into the library, the client and both contract drivers.
-  ;
-  ; `Makefile` and `meson.build` in this tree still name C sources that are not
-  ; here. They are Janet's build files, kept for a comparison rather than for
-  ; a build, and neither runs.
-  ;
-  ; `spit` defaults to `:wb`, which is what a marshalled stream needs on a
-  ; host that would otherwise translate a 0x0A.
+  ; Write the core image out. `src/runtime/env.zig` embeds the file with
+  ; `@embedFile`. `spit` defaults to `:wb`, which writes a marshalled stream
+  ; without translating a 0x0A.
   (var image-out nil)
   (each [k v] (partition 2 (tuple/slice boot/args 2))
     (when (= k "image-out") (set image-out v)))
