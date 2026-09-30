@@ -1,15 +1,6 @@
-{:preamble "Gum is a set of optional Wattle modules. The runtime does not load them.
-            Naming a module copies it and its licence into deps/gum in the current
-            directory, and --dir sets a different directory to hold gum. A file in the
-            project imports the copy by its relative path:
-
-              (import ./deps/gum/args :as args)
-
-            Modules:"
- :modules
- [{:name "args"
-   :files ["args.wattle" "LICENSE.argy-bargy"]
-   :help "Parses command-line arguments against a config of options, parameters and subcommands, and formats the usage text. It is a port of Argy-Bargy."}
-  {:name "test"
-   :files ["test.wattle" "LICENSE.testament"]
-   :help "Defines tests with deftest, checks them with is and runs them with run-tests!, which reports the failures. wattle test runs the files that use it. It is a port of Testament."}]}
+[{:name "args"
+  :files ["args.wattle" "LICENSE.argy-bargy"]
+  :help "Parses command-line arguments."}
+ {:name "test"
+  :files ["test.wattle" "LICENSE.testament"]
+  :help "Defines, verifies and collates tests."}]

@@ -9,19 +9,19 @@ that module is also part of the core image.
 ## Copying modules
 
 `wattle gum` copies modules from `<prefix>/share/wattle/src/gum` into a
-project. `modules.edn` in that directory is a map, which the command reads with
-`edn/decode` and the `:d` flag. Its `:preamble` is a string of text, and its
-`:modules` is a vector of maps, one for each module. With `:d`, each line of a
-string after the first loses the spaces that begin the second, so the preamble
-can sit under its opening quote. A module's map has the `:name` a caller gives
-the command, the `:files` the module consists of, which are its source and its
-licence, and a `:help` description.
+project. `modules.edn` in that directory is a vector of maps, one for each
+module, which the command reads with `edn/decode` and the `:p` flag. A module's
+map has the `:name` a caller gives the command, the `:files` the module
+consists of, which are its source and its licence, and a `:help` description.
+With `:p`, a description can be wrapped in the file: each line after the first
+loses the spaces that begin the second, and the lines are joined with a space.
+A description is one paragraph, so it has no blank line.
 
-With no arguments, the command prints the preamble, then each
-module's name and description in
-two columns, laid out as the usage text is: the names are indented by one space
-and aligned, and the descriptions wrap at the width of the terminal, up to 120
-columns.
+With no arguments, the command prints `Available modules:`, a blank line and
+then each module's name and description in two columns, laid out as the usage
+text is: the names are indented by one space and aligned, and the descriptions
+wrap at the width of the terminal, up to 120 columns.
+
 With one or more names, it copies the files of each module into `<dir>/gum/`,
 creating the directories that are missing. `<dir>` is `deps`, or the argument
 of `--dir`, which has the short form `-d`. The command prints one line for each

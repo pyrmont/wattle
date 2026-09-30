@@ -48,16 +48,10 @@
 
   (def [list-status list-out] (gum))
   (assert (= 0 list-status) "no names lists the modules")
-  (def preamble-lines
-    (string/split "\n" (get (edn/decode (slurp "src/gum/modules.edn")) :preamble)))
   (def all-lines (string/split "\n" list-out))
-  (assert (= (get preamble-lines 0) (get all-lines 0)) "the list begins with the preamble")
-  (assert (= (string/trim (get preamble-lines 1)) (get all-lines 1))
-          "the preamble's second line is printed without its indentation")
-  (assert (= (string/trim (get preamble-lines (- (length preamble-lines) 1)))
-             (get all-lines (- (length preamble-lines) 1)))
-          "the preamble's last line is printed without its indentation")
-  (def list-lines (filter next (slice all-lines (length preamble-lines))))
+  (assert (= "Available modules:" (get all-lines 0)) "the list begins with its heading")
+  (assert (= "" (get all-lines 1)) "a blank line follows the heading")
+  (def list-lines (filter next (slice all-lines 1)))
   (def args-line (find #(string/has-prefix? " args " $) list-lines))
   (def test-line (find #(string/has-prefix? " test " $) list-lines))
   (assert args-line "the list names args")
@@ -65,27 +59,29 @@
   (assert (= (string/find "Parses" args-line) (string/find "Defines" test-line))
           "the descriptions start in the same column")
   (assert (every? (map #(<= (length $) 120) all-lines)) "a line of the list is at most 120 columns")
-  (assert (> (length list-lines) 2) "a long description wraps")
-  (assert (every? (map #(or (string/has-prefix? " args " $) (string/has-prefix? " test " $)
-                            (string/has-prefix? "         " $))
-                       list-lines))
-          "a wrapped line is indented to the description column")
   (assert (not (exists? "deps")) "listing copies nothing")
 
   (write (string gum-source "/modules.edn")
          """
-         {:preamble "First
-                     second
-                       third
-
-                     last
-                    short"
-          :modules [{:name "a" :files ["args.wattle"] :help "Alpha."}]}
+         [{:name "a" :files ["args.wattle"] :help "Alpha."}
+          {:name "bb" :files ["test.wattle"]
+           :help "Beta one
+                  two, and
+                    three."}]
          """)
   (def [fixture-status fixture-out] (gum))
   (assert (= 0 fixture-status) "a fixture list succeeds")
-  (assert (= "First\nsecond\n  third\n\nlast\nshort\n a    Alpha.\n" (string fixture-out))
-          "each line after the first loses the indentation of the second")
+  (assert (= "Available modules:\n\n a     Alpha.\n bb    Beta one two, and three.\n" (string fixture-out))
+          "a description written on several lines is joined")
+  (write (string gum-source "/modules.edn")
+         (string "[{:name \"a\" :files [\"args.wattle\"] :help \"" (string/repeat "word " 60) "\"}]"))
+  (def [wrap-status wrap-out] (gum))
+  (def wrap-lines (filter next (slice (string/split "\n" wrap-out) 1)))
+  (assert (= 0 wrap-status) "a long description lists")
+  (assert (> (length wrap-lines) 1) "a long description wraps")
+  (assert (every? (map #(<= (length $) 120) wrap-lines)) "a wrapped line is at most 120 columns")
+  (assert (every? (map #(string/has-prefix? "      " $) (slice wrap-lines 1)))
+          "a wrapped line is indented to the description column")
   (write (string gum-source "/modules.edn") (slurp "src/gum/modules.edn"))
 
   (def [copy-status copy-out] (gum "args"))

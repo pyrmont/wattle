@@ -5794,7 +5794,7 @@
       "--force" {:kind :flag :short "f"
                  :help "Replace a file that differs from the Gum copy."}
       :modules {:splat? true :proxy "module"
-                :help "The module to copy. The modules are listed when there are none."}]})
+                :help "The module to copy. Lists available modules if empty."}]})
   (def pkg-config
     {:validate? validate?
      :short "p"
@@ -6170,11 +6170,12 @@
 
 (defn- cli-gum
   """
-  Prints the name and description of each module that modules.edn in the
-  installed Gum lists, or, given names, copies the files of those modules into
-  the gum directory of the --dir option, `deps` by default. Copies nothing and
-  exits with status 1 and a message on a name the list does not hold or on a
-  destination file that differs from its source, unless --force is set.
+  Prints `Available modules:` and then the name and description of each module
+  that modules.edn in the installed Gum lists, or, given names, copies the
+  files of those modules into the gum directory of the --dir option, `deps` by
+  default. Copies nothing and exits with status 1 and a message on a name the
+  list does not hold or on a destination file that differs from its source,
+  unless --force is set.
   """
   [opts params]
   (defn fail [& parts]
@@ -6189,12 +6190,11 @@
       (def list-path (string source-dir "/modules.edn"))
       (unless (fexists list-path)
         (fail "the Gum modules are not at " source-dir ": " list-path " does not exist"))
-      (def listing (edn/decode (slurp list-path) :d))
-      (def modules (get listing :modules))
+      (def modules (edn/decode (slurp list-path) :p))
       (def names (get params :modules []))
       (if (empty? names)
         (do
-          (when-let [preamble (get listing :preamble)] (print preamble))
+          (print "Available modules:\n")
           (print (cli-format-columns (map #(tuple (get $ :name) (get $ :help)) modules))))
         (do
           (def by-name !{})
