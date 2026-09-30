@@ -203,7 +203,7 @@ Debian and Ubuntu by the `musl` package) on the machine that runs it.
 `-Dlinkage=static` builds a self-contained executable instead. A static musl
 executable loads no native module at run time, so that build turns dynamic
 modules off, and `-Ddynamic-modules=true` with it is a build error. A native is
-then linked in at build time with `quickbin`; see "Extending" below.
+then linked in at build time with `wattleExecutable`; see "Extending" below.
 
 #### WASI
 
@@ -323,11 +323,11 @@ examples/build-exe` builds it this way. `man ./wattle.1` describes the file and
 the options.
 
 A project that needs more than that, such as other Zig steps or its own build
-options, can write a `build.zig` and call the `quickbin` function of the
+options, can write a `build.zig` and call the `wattleExecutable` function of the
 `wattle` dependency, which is what `wattle build exe` generates. `zig build
 examples/native-executable` builds `examples/native-executable/`, which links
 `examples/native-events/` in, and `examples/native-consumer/build.zig` calls
-`quickbin` from outside the tree.
+`wattleExecutable` from outside the tree.
 
 `zig build` also copies the package's files, `build.zig`, `build.zig.zon`,
 `LICENSE`, `README.md` and `src/`, to `<prefix>/share/wattle/`. A project builds

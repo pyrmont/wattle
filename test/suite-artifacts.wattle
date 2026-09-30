@@ -115,7 +115,7 @@
            "    const optimize = b.standardOptimizeOption(.{});\n"
            "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize });\n"
            "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug });\n"
-           "    const exe0 = wattle.quickbin(dep, host, .{\n"
+           "    const exe0 = wattle.wattleExecutable(dep, host, .{\n"
            "        .name = \"blues\",\n"
            "        .source = .{ .cwd_relative = \"/proj/lib/cli.wattle\" },\n"
            "        .natives = &.{\n"
@@ -147,7 +147,7 @@
   (is (has text ".name = \"blues_http\","))
   (is (has text ".linkage = .dynamic,"))
   (is (has text "lib0.linker_allow_shlib_undefined = true;"))
-  (is (not (has text "quickbin")))
+  (is (not (has text "wattleExecutable")))
   (is (not (has text "b.graph.host"))))
 
 (deftest zig-files-dependency-path
@@ -180,8 +180,8 @@
                  {:type :exe :name "b" :entry "b.wattle" :libs ["z"]}
                  {:type :exe :name "a" :entry "a.wattle"}]})
   (def all (get (pkg/zig-files many :exe gen-opts) :build))
-  (is (has all "const exe0 = wattle.quickbin"))
-  (is (has all "const exe1 = wattle.quickbin"))
+  (is (has all "const exe0 = wattle.wattleExecutable"))
+  (is (has all "const exe1 = wattle.wattleExecutable"))
   (is (< (string/find ".name = \"b\"," all) (string/find ".name = \"a\"," all)))
   (is (has all ".{ .name = \"z\", .root = .{ .cwd_relative = \"/proj/z.zig\" } },"))
   (def one (get (pkg/zig-files many :exe "a" gen-opts) :build))

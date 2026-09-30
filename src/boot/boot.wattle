@@ -5590,7 +5590,7 @@
       (def artifact-name (pkg-zig-string (get artifact :name)))
       (if (= kind :exe)
         (do
-          (buffer/format! b "    const exe%d = wattle.quickbin(dep, host, .{\n" i)
+          (buffer/format! b "    const exe%d = wattle.wattleExecutable(dep, host, .{\n" i)
           (buffer/format! b "        .name = \"%s\",\n" artifact-name)
           (buffer/format! b "        .source = %s,\n" (zig-path (get artifact :entry)))
           (buffer/push! b "        .natives = &.{\n")

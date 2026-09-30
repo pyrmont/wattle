@@ -250,7 +250,7 @@ fn TypeFlagPredicate(comptime flags: repr.TagSet) type {
 /// order, and returns the refusal for the first difference, or null.
 ///
 /// `mod_config` is the module's `_wattle_mod_config`. `native` calls this for a
-/// module it opened and the `quickbin` client for each module linked into it,
+/// module it opened and the executable client for each module linked into it,
 /// so both report a mismatch in the same words.
 pub fn checkModuleConfig(
     mod_config: *const fn (out: *abi.BuildConfig, size: usize) callconv(.c) usize,

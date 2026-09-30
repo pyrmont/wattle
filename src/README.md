@@ -48,7 +48,7 @@ must never reach `src/host/` or `src/runtime/`.
 | `src/host/`    | 2     | the runtime                             |
 | `src/runtime/` | 81    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 16    | the `wattle` and `quickbin` executables |
+| `src/client/`  | 16    | the `wattle` and executable clients     |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
@@ -434,10 +434,10 @@ A step is run as `zig build <step>`, and `install` is the default, so
 
 `zig build test` runs the contracts, both sets of in-file `test` blocks, the
 fuzz targets over their corpora, the module-error fixtures, the CLI checks and
-the 39 suites. On a native build it also runs `quickbin`.
+the 39 suites. On a native build it also runs `native-executable`.
 
 `test/runtime` and `test/lineedit` each print `All N tests passed.` Add
-`--fuzz` to `zig build fuzz` for a campaign. `quickbin` builds
+`--fuzz` to `zig build fuzz` for a campaign. `native-executable` builds
 `examples/native-executable/main.wattle` with `examples/native-events` linked in.
 
 No header is installed.

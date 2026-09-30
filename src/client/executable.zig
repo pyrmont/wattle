@@ -1,11 +1,11 @@
-//! The `quickbin` client: a Janet program as one executable.
+//! The executable client: a Wattle program as one executable.
 //!
-//! `build.zig`'s `quickbin` roots an executable at this file with two imports
-//! it generates: `quickbin_image`, the image of the program, and
-//! `quickbin_natives`, the native modules linked into the executable. Each
+//! `build.zig`'s `wattleExecutable` roots an executable at this file with two imports
+//! it generates: `executable_image`, the image of the program, and
+//! `executable_natives`, the native modules linked into the executable. Each
 //! native is a separate object whose `module.entry` exports
 //! `_wattle_init_<name>` and `_wattle_mod_config_<name>`, and
-//! `quickbin_natives` names those symbols with `@extern`.
+//! `executable_natives` names those symbols with `@extern`.
 //!
 //! `runRaising` builds the environment as `cli.zig` does and calls
 //! `run-image` on a fiber with the image, the argument vector and one loader
@@ -34,7 +34,7 @@ const fibers = subsystems.value.fibers;
 const gc_alloc = subsystems.gc_alloc;
 const interop = @import("interop.zig");
 const lifecycle = subsystems.lifecycle;
-const natives = @import("quickbin_natives").natives;
+const natives = @import("executable_natives").natives;
 const pp_format = subsystems.pp_format;
 const raise = @import("subsystems").raise;
 const registry = subsystems.registry;
@@ -51,7 +51,7 @@ const wrap = subsystems.value.wrap;
 // ==========================================================================
 
 /// The image of the program, as `wattle -c` wrote it.
-const image = @embedFile("quickbin_image");
+const image = @embedFile("executable_image");
 
 // ==========================================================================
 // Types

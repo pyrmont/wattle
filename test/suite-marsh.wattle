@@ -415,7 +415,7 @@
 (assert (= 99 (resume (unmarshal (marshal suspended))))
         "a frame's environment survives the wire")
 
-; `module/add-native` and `run-image`, which a `quickbin` executable is built
+; `module/add-native` and `run-image`, which a self-contained executable is built
 ; on. A channel stands in for a native module's abstract value: once added,
 ; an image names it rather than copying it, and `main` in the image gives its
 ; arguments to the same channel.

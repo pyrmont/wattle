@@ -320,8 +320,8 @@ pub fn wattleModule(
     return wattle_module;
 }
 
-/// A native module linked into a `quickbin` executable.
-pub const QuickbinNative = struct {
+/// A native module linked into a self-contained executable.
+pub const ExecutableNative = struct {
     /// The name `(import <name>)` finds the module under and the prefix its
     /// bindings carry in the image. Letters, digits, `_` and `-` only: it is
     /// spliced into two symbol names and a Janet string.
@@ -330,14 +330,14 @@ pub const QuickbinNative = struct {
     root: std.Build.LazyPath,
 };
 
-/// What `quickbin` builds.
-pub const QuickbinOptions = struct {
+/// What `wattleExecutable` builds.
+pub const ExecutableOptions = struct {
     /// The executable's name.
     name: []const u8,
     /// The program: a Janet file that defines `main`.
     source: std.Build.LazyPath,
     /// The native modules the program imports.
-    natives: []const QuickbinNative = &.{},
+    natives: []const ExecutableNative = &.{},
     /// The target and mode `dep` was instantiated with.
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -349,7 +349,7 @@ pub const QuickbinOptions = struct {
 /// and `host` is this package instantiated for the build machine:
 ///
 /// ```zig
-/// const exe = wattle.quickbin(
+/// const exe = wattle.wattleExecutable(
 ///     b.dependency("wattle", .{ .target = target, .optimize = optimize }),
 ///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug }),
 ///     .{ .name = "hello", .source = b.path("main.wattle"), .target = target, .optimize = optimize,
@@ -361,37 +361,37 @@ pub const QuickbinOptions = struct {
 /// `host`'s `wattle` client makes the image: each native is built for the host
 /// as a shared library, loaded and passed to `module/add-native`, and then
 /// `wattle -c` compiles `source`. Each native is also built for the target as
-/// an object whose entry symbols carry its name, and `src/client/quickbin.zig`
+/// an object whose entry symbols carry its name, and `src/client/executable.zig`
 /// adds the same modules under the same names before it loads the image, so
 /// every nfunction and abstract value the image names resolves.
 ///
 /// The executable is returned uninstalled.
-pub fn quickbin(
+pub fn wattleExecutable(
     dep: *std.Build.Dependency,
     host: *std.Build.Dependency,
-    opts: QuickbinOptions,
+    opts: ExecutableOptions,
 ) *std.Build.Step.Compile {
     const target_side = builtFor(dep.builder) orelse
-        @panic("quickbin: the target dependency has not run build()");
+        @panic("wattleExecutable: the target dependency has not run build()");
     const host_side = builtFor(host.builder) orelse
-        @panic("quickbin: the host dependency has not run build()");
+        @panic("wattleExecutable: the host dependency has not run build()");
     if (target_side.graph == null or host_side.graph == null)
-        @panic("quickbin: a configuration that selects no subsystem has no runtime to link");
+        @panic("wattleExecutable: a configuration that selects no subsystem has no runtime to link");
     if (!host_side.config.dynamic_modules)
-        @panic("quickbin: the host dependency has dynamic modules off, and its client opens each native to make the image");
+        @panic("wattleExecutable: the host dependency has dynamic modules off, and its client opens each native to make the image");
     if (opts.optimize != target_side.optimize or
         !std.mem.eql(u8, triple(dep.builder, opts.target), triple(dep.builder, target_side.target)))
     {
-        @panic("quickbin: `target` and `optimize` must be the ones `dep` was instantiated with");
+        @panic("wattleExecutable: `target` and `optimize` must be the ones `dep` was instantiated with");
     }
-    return quickbinExecutable(target_side, host_side, opts);
+    return buildExecutable(target_side, host_side, opts);
 }
 
-/// What `build()` made for one builder, which `wattleModule` and `quickbin`
+/// What `build()` made for one builder, which `wattleModule` and `wattleExecutable`
 /// read back.
 ///
 /// Keyed by builder rather than held in one global, because a dependent that
-/// instantiates this package twice -- `quickbin`'s target and host -- runs
+/// instantiates this package twice -- `wattleExecutable`'s target and host -- runs
 /// `build()` twice in one process, and the two runs resolve different options,
 /// configurations and graphs.
 const Built = struct {
@@ -401,7 +401,7 @@ const Built = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     graph: ?RuntimeGraph,
-    /// The `wattle` client, which makes a `quickbin` image on the host.
+    /// The `wattle` client, which makes an executable's image on the host.
     client: *std.Build.Step.Compile,
 };
 
@@ -438,7 +438,7 @@ pub fn build(b: *std.Build) void {
         "-Ddynamic-modules=true: the {t}-{t}-{t} executables are static under -Dlinkage=static, " ++
             "and a static musl executable cannot load a native module. Drop " ++
             "-Dlinkage=static to link dynamically, or drop -Ddynamic-modules=true and " ++
-            "link natives in at build time with quickbin.",
+            "link natives in at build time with wattleExecutable.",
         .{ target.result.cpu.arch, target.result.os.tag, target.result.abi },
     );
     const config = resolveConfig(options, target);
@@ -586,7 +586,7 @@ pub fn build(b: *std.Build) void {
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
     if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
     // The package's own files, as `build.zig.zon` lists them, so that a
-    // `quickbin` build can name `<prefix>/share/wattle` as its `wattle`
+    // `wattleExecutable` build can name `<prefix>/share/wattle` as its `wattle`
     // dependency by path where no URL and hash are wanted. The copy has the
     // layout of the source tree, `src/gum/` included, because the image
     // generator reads `src/gum/args.wattle`.
@@ -688,15 +688,15 @@ pub fn build(b: *std.Build) void {
     );
     installModuleTest(b, options, config, digest_module);
 
-    // `examples/native-executable`, the worked example of `quickbin`: `main.wattle` with
+    // `examples/native-executable`, the worked example of `wattleExecutable`: `main.wattle` with
     // `examples/native-events` linked into one executable. The image is made by
     // `client` on a native build with dynamic modules, and otherwise by a host
     // client built from the target's configuration with dynamic modules on.
-    const quickbin_step = b.step(
+    const executable_step = b.step(
         "examples/native-executable",
         "Build examples/native-executable, with examples/native-events linked in, into <prefix>/bin/native-executable",
     );
-    const quickbin_exe = if (runtime_graph != null) quickbinExecutable(
+    const executable_exe = if (runtime_graph != null) buildExecutable(
         built,
         if (target.query.isNative() and config.dynamic_modules) built else hostBuilt(b, options, target, boot_host, image_source),
         .{
@@ -707,7 +707,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         },
     ) else null;
-    if (quickbin_exe) |exe| quickbin_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+    if (executable_exe) |exe| executable_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
 
     // The three load refusals: one shared object per field the loader
     // compares. Each exports `_wattle_mod_config` and `_wattle_init` by hand,
@@ -1005,9 +1005,9 @@ pub fn build(b: *std.Build) void {
     // modules in hand, so it proves the *source* experience and cannot notice
     // if the published build surface rots. This step runs `zig build test`
     // inside `examples/native-consumer`, which depends on this package by path and
-    // reaches it only through `wattleModule` and `quickbin` -- so a change that
+    // reaches it only through `wattleModule` and `wattleExecutable` -- so a change that
     // breaks a real consumer fails here rather than in somebody else's
-    // repository. `test` there runs the executable `quickbin` built, so the
+    // repository. `test` there runs the executable `wattleExecutable` built, so the
     // step proves the program runs rather than only that it links.
     //
     // It is a step of its own rather than part of `zig build test` because it
@@ -1251,7 +1251,7 @@ pub fn build(b: *std.Build) void {
     // The three example steps under one name. `zig build examples` builds
     // every example the build knows how to; each is also its own step.
     const examples_step = b.step("examples", "Build examples/native-executable, examples/native-consumer and examples/web");
-    examples_step.dependOn(quickbin_step);
+    examples_step.dependOn(executable_step);
     examples_step.dependOn(consumer_step);
     examples_step.dependOn(web_step);
     {
@@ -1359,13 +1359,13 @@ pub fn build(b: *std.Build) void {
 
         // The single-file executable, run with no file beside it. `digest`
         // needs the event loop, and a cross build only builds it.
-        if (quickbin_exe != null and config.ev and target.query.isNative()) {
-            const run_quickbin = b.addRunArtifact(quickbin_exe.?);
-            run_quickbin.expectStdOutEqual(
+        if (executable_exe != null and config.ev and target.query.isNative()) {
+            const run_executable = b.addRunArtifact(executable_exe.?);
+            run_executable.expectStdOutEqual(
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
             );
-            for (zig_side) |step| run_quickbin.step.dependOn(step);
-            test_step.dependOn(&run_quickbin.step);
+            for (zig_side) |step| run_executable.step.dependOn(step);
+            test_step.dependOn(&run_executable.step);
         }
 
         module_side = .{
@@ -1423,7 +1423,7 @@ fn lexiconModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
 
 /// A native module compiled against `graph`: a shared library the loader
 /// opens when `static_name` is null, and otherwise an object whose entry
-/// symbols carry `static_name`, for linking into a `quickbin` executable.
+/// symbols carry `static_name`, for linking into a self-contained executable.
 fn nativeCompile(
     b: *std.Build,
     graph: ?RuntimeGraph,
@@ -1536,7 +1536,7 @@ fn coreImage(
     return image;
 }
 
-/// The host side of an in-repository `quickbin` on a cross build: a runtime
+/// The host side of an in-repository `wattleExecutable` on a cross build: a runtime
 /// and a `wattle` client for `host`, compiled under the target's features.
 ///
 /// The configuration is `bootConfig`'s, the one `image_source` was generated
@@ -1554,7 +1554,7 @@ fn hostBuilt(
     cfg.bootstrap = false;
     cfg.dynamic_modules = true;
     const graph = makeRuntimeGraph(b, host, .Debug, options, cfg, image_source) orelse
-        @panic("quickbin: a configuration that selects no subsystem has no runtime to link");
+        @panic("wattleExecutable: a configuration that selects no subsystem has no runtime to link");
     const module = b.createModule(.{
         .root_source_file = b.path("src/client/cli.zig"),
         .target = host,
@@ -1585,17 +1585,17 @@ fn hostBuilt(
     };
 }
 
-/// `quickbin`, over what `build()` recorded for the target and the host.
-fn quickbinExecutable(
+/// `wattleExecutable`, over what `build()` recorded for the target and the host.
+fn buildExecutable(
     target_side: Built,
     host_side: Built,
-    opts: QuickbinOptions,
+    opts: ExecutableOptions,
 ) *std.Build.Step.Compile {
     const b = target_side.b;
     const hb = host_side.b;
 
     const module = b.createModule(.{
-        .root_source_file = b.path("src/client/quickbin.zig"),
+        .root_source_file = b.path("src/client/executable.zig"),
         .target = target_side.target,
         .optimize = target_side.optimize,
     });
@@ -1636,7 +1636,7 @@ fn quickbinExecutable(
     for (opts.natives) |native| {
         for (native.name) |ch| switch (ch) {
             'a'...'z', 'A'...'Z', '0'...'9', '_', '-' => {},
-            else => std.debug.panic("quickbin: native name '{s}' may hold only letters, digits, '_' and '-'", .{native.name}),
+            else => std.debug.panic("wattleExecutable: native name '{s}' may hold only letters, digits, '_' and '-'", .{native.name}),
         };
         const library = nativeCompile(
             hb,
@@ -1688,8 +1688,8 @@ fn quickbinExecutable(
     make_image.addFileArg(opts.source);
     const image = make_image.addOutputFileArg(b.fmt("{s}.jimage", .{opts.name}));
 
-    module.addAnonymousImport("quickbin_image", .{ .root_source_file = image });
-    module.addAnonymousImport("quickbin_natives", .{
+    module.addAnonymousImport("executable_image", .{ .root_source_file = image });
+    module.addAnonymousImport("executable_natives", .{
         .root_source_file = b.addWriteFiles().add("natives.zig", table.items),
     });
     const exe = selectBackend(b.addExecutable(.{ .name = opts.name, .root_module = module }));
@@ -2154,7 +2154,7 @@ const Config = struct {
     /// under, or null for a module the loader opens.
     ///
     /// `module.entry` appends it to the two symbols it exports, so that the
-    /// natives `quickbin` links into one binary do not collide.
+    /// natives `wattleExecutable` links into one binary do not collide.
     static_name: ?[]const u8 = null,
     docstrings: bool,
     sourcemaps: bool,

@@ -12,7 +12,7 @@ published build surface stops working.
 
 This package does fail. It is a package of its own with its own `build.zig.zon`,
 it depends on `wattle` by path, and it reaches the runtime only through the two
-public functions `wattle.wattleModule` and `wattle.quickbin`. Nothing private is
+public functions `wattle.wattleModule` and `wattle.wattleExecutable`. Nothing private is
 available to it.
 
     zig build examples/native-consumer      # from the repository root

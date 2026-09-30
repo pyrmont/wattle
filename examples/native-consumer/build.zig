@@ -3,7 +3,7 @@
 //!
 //! Nothing here reaches into the runtime's build. This file depends on the
 //! `wattle` package and reaches it through its two public functions:
-//! `wattleModule` for the module a shared object imports, and `quickbin` for
+//! `wattleModule` for the module a shared object imports, and `wattleExecutable` for
 //! an executable that carries the runtime, an image of `main.wattle` and the
 //! module linked statically. There is no `RuntimeGraph`, no generated
 //! configuration, and no `types`, `raise`, `constants` or `abstract_type`.
@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     const host = b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug });
-    const exe = wattle.quickbin(dep, host, .{
+    const exe = wattle.wattleExecutable(dep, host, .{
         .name = "hello",
         .source = b.path("main.wattle"),
         .natives = &.{

@@ -774,7 +774,7 @@ pub fn define(comptime T: type, comptime spec: anytype) AbstractType {
 /// environment to define into and the runtime table, and runs `defs`.
 ///
 /// A module built for linking into an executable, which `build.zig`'s
-/// `quickbin` configures with `static_name`, exports the same two functions as
+/// `wattleExecutable` configures with `static_name`, exports the same two functions as
 /// `_wattle_mod_config_<name>` and `_wattle_init_<name>`, so that several can be
 /// linked into one binary.
 pub fn entry(comptime defs: fn (*Env) Error!void) void {
