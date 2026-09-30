@@ -158,6 +158,15 @@
   (def result (args/parse-args "sample" nested ["run"]))
   (is (= "1" (get-in result [:opts "level"]))))
 
+(deftest help-abbreviation
+  (def nested {:subs ["run" {:short "r" :rules []}]})
+  (def help (args/parse-args "sample" nested ["h" "r"]))
+  (is (string/find "Usage: sample run" (get help :help)))
+  (is (= "run" (get-in help [:sub :cmd])))
+  (def taken {:subs ["hop" {:short "h" :rules []}]})
+  (def result (args/parse-args "sample" taken ["h"]))
+  (is (= "hop" (get-in result [:sub :cmd]))))
+
 (deftest subcommand-named-help
   (def nested {:subs ["help" {:rules []}]})
   (def result (args/parse-args "sample" nested ["help"]))

@@ -523,7 +523,8 @@
                 (++ p)))))
       (> (length subs) 0)
         (do
-          (def literal-help? (and (= arg "help") (not (find-sub subs "help"))))
+          (def literal-help? (and (or (= arg "help") (= arg "h"))
+                                  (not (find-sub subs arg))))
           (def wanted (if literal-help? (get args (+ i 1)) arg))
           (def found (when wanted (find-sub subs wanted)))
           (cond

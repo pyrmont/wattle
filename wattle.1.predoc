@@ -37,14 +37,17 @@ compiles a script without running it. **pkg** manages installed packages.
 **run** runs a script, evaluates code or starts a REPL (read-eval-print loop).
 **test** runs the tests of a project. **help** describes a subcommand.
 
+Each subcommand can be written as its first letter: **b**, **c**, **p**, **r**
+and **t**, and **h** for **help**. ``wattle t`` is the same as ``wattle test``.
+
 **run** is the subcommand when no other is named. Where **wattle** would
 otherwise report an unrecognised subcommand or option, or no subcommand, it
 reads the rest of the command line as the arguments of **run**. The command
 lines ``wattle``, ``wattle hello.wattle`` and ``wattle -e '(+ 1 2)'`` are
 therefore the same as ``wattle run``, ``wattle run hello.wattle`` and
 ``wattle run -e '(+ 1 2)'``. A mistyped subcommand is read as the name of a
-script, and a script named after a subcommand is run with ``wattle run``
-in front of it.
+script, and a script named after a subcommand or its first letter is run
+with ``wattle run`` in front of it.
 
 **-c**, **-C**, **-s**, **-v** and **-h** are read only before the subcommand name. A
 subcommand does not read them again.

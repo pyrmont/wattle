@@ -37,7 +37,8 @@ subcommand was given, it enters that subcommand with the tokens from that point
 as its arguments. Options the config declares itself are read first, so root
 options still precede the implicit subcommand's own. A subcommand may have
 `:subs` of its own and is parsed in the same way. `help` followed by several
-names describes the last one.
+names describes the last one. `h` is read as `help` unless a subcommand is
+named or abbreviated `h`.
 
 `parse-args` checks the config's rules and subcommands on every call. A caller
 whose config never changes can set `:validate?` to `false` in the config to

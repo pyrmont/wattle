@@ -24,7 +24,12 @@ _wattle() {
     done
     if [[ $i -lt $cword ]]; then
         case "${words[i]}" in
-            build|check|help|pkg|run|test) sub="${words[i]}"; sub_at=$i ;;
+            b|build) sub=build; sub_at=$i ;;
+            c|check) sub=check; sub_at=$i ;;
+            h|help) sub=help; sub_at=$i ;;
+            p|pkg) sub=pkg; sub_at=$i ;;
+            r|run) sub=run; sub_at=$i ;;
+            t|test) sub=test; sub_at=$i ;;
             *) sub="run"; sub_at=$((i - 1)) ;;
         esac
     fi
@@ -125,8 +130,8 @@ _wattle() {
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
                 1:*) COMPREPLY=($(compgen -W "build check pkg run test" -- "$cur")) ;;
-                2:build) COMPREPLY=($(compgen -W "exe img lib" -- "$cur")) ;;
-                2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
+                2:b|2:build) COMPREPLY=($(compgen -W "exe img lib" -- "$cur")) ;;
+                2:p|2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
             esac
             ;;
     esac

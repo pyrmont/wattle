@@ -5695,6 +5695,7 @@
 (defn- cli-config [executable validate?]
   (def run-config
     {:validate? validate?
+     :short "r"
      :help "Run a script, evaluate code or start the REPL."
      :rules
      ["--debug" {:kind :flag :short "d"
@@ -5715,6 +5716,7 @@
                :help "The script to run. Every argument after it is passed to the script."}]})
   (def check-config
     {:validate? validate?
+     :short "c"
      :help "Compile a script without running it and report every error."
      :rules
      ["--bail" {:kind :flag :short "b"
@@ -5727,6 +5729,7 @@
                :help "The script to check. Standard input is checked when there is none."}]})
   (def test-config
     {:validate? validate?
+     :short "t"
      :help "Run the test files in ./test, each in its own process."
      :rules
      ["--bail" {:kind :flag :short "b"
@@ -5747,6 +5750,7 @@
                 :help "Set name in the dynamic binding :test/tests for the test files. It is not compatible with --no-test."}]})
   (def build-config
     {:validate? validate?
+     :short "b"
      :help "Build an artifact from source."
      :rules []
      :subs
@@ -5776,6 +5780,7 @@
                             :help "The native module to build. The default is every native module."}]}]})
   (def pkg-config
     {:validate? validate?
+     :short "p"
      :help "Manage installed packages."
      :rules []
      :subs

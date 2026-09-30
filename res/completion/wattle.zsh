@@ -75,7 +75,7 @@ _wattle() {
             ;;
         args)
             case $line[1] in
-                build)
+                b|build)
                     if (( CURRENT == 2 )); then
                         _values 'target' \
                             'exe[Build the executables that info.edn declares]' \
@@ -103,12 +103,12 @@ _wattle() {
                         esac
                     fi
                     ;;
-                check)
+                c|check)
                     shift words
                     (( CURRENT-- ))
                     _wattle_check_options && ret=0
                     ;;
-                pkg)
+                p|pkg)
                     if (( CURRENT == 2 )); then
                         _values 'verb' \
                             'install[Install a package from a directory]' \
@@ -128,21 +128,21 @@ _wattle() {
                         esac
                     fi
                     ;;
-                run)
+                r|run)
                     shift words
                     (( CURRENT-- ))
                     _wattle_run_options && ret=0
                     ;;
-                test)
+                t|test)
                     shift words
                     (( CURRENT-- ))
                     _wattle_test_options && ret=0
                     ;;
-                help)
+                h|help)
                     case "$CURRENT:$line[2]" in
                         2:*) _describe -t subcommands 'subcommand' subcommands && ret=0 ;;
-                        3:build) _values 'target' exe img lib && ret=0 ;;
-                        3:pkg) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
+                        3:(b|build)) _values 'target' exe img lib && ret=0 ;;
+                        3:(p|pkg)) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
                     esac
                     ;;
                 *)
