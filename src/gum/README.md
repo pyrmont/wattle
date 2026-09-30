@@ -6,14 +6,44 @@ modules it uses into its own source tree and imports them by relative path.
 The image generator evaluates `args.wattle` for the `wattle` command line, so
 that module is also part of the core image.
 
+## Copying modules
+
+`wattle gum` copies modules from `<prefix>/share/wattle/src/gum` into a
+project. `modules.edn` in that directory is a map, which the command reads with
+`edn/decode` and the `:d` flag. Its `:preamble` is a string of text, and its
+`:modules` is a vector of maps, one for each module. With `:d`, each line of a
+string after the first loses the spaces that begin the second, so the preamble
+can sit under its opening quote. A module's map has the `:name` a caller gives
+the command, the `:files` the module consists of, which are its source and its
+licence, and a `:help` description.
+
+With no arguments, the command prints the preamble, then each
+module's name and description in
+two columns, laid out as the usage text is: the names are indented by one space
+and aligned, and the descriptions wrap at the width of the terminal, up to 120
+columns.
+With one or more names, it copies the files of each module into `<dir>/gum/`,
+creating the directories that are missing. `<dir>` is `deps`, or the argument
+of `--dir`, which has the short form `-d`. The command prints one line for each
+file, `copied` or `unchanged`, followed by its path.
+
+The command checks every name and every destination before it copies a file.
+A name that `modules.edn` does not list, or a destination file that exists
+with content that differs from the source, is reported and the command exits
+with status 1 having copied nothing. `--force`, which has the short form `-f`,
+replaces the differing files. A destination file with the same content as the
+source is left as it is. A project can edit its vendored copy, and a later call
+does not overwrite the edit unless `--force` is given.
+
 ## Arguments
 
 `args.wattle` parses command-line arguments and formats usage text. It is a
 Wattle port of Argy-Bargy. Copy `args.wattle` and `LICENSE.argy-bargy` into a
-project's `gum/` directory, then import it from the caller:
+project's `gum/` directory with `wattle gum args`, then import it from the
+caller. With the default `--dir`, the copy is in `deps/gum/`:
 
 ```clojure
-(import ./gum/args :as args)
+(import ./deps/gum/args :as args)
 ```
 
 The import path is relative to the importing file. A project can edit its
@@ -24,6 +54,13 @@ the `:max-width` of the config's `:info` map, 120 columns by default. When
 standard output is not a terminal, or the build registers no `os/term-size`, as
 with `-Dreduced-os=true`, it wraps at `:max-width`. `args.wattle` loads in either
 build.
+
+`format-columns` takes a sequence of `[name description]` pairs and returns
+them as the two columns the usage text uses. Each name is indented by one space,
+the descriptions start in one column four columns after the longest name, and a
+description wraps at the terminal width described above. An optional second
+argument replaces the 120-column maximum. `wattle gum` prints its list of
+modules with it.
 
 A parameter rule with `:rest?` is a splat that must be the last parameter. It
 captures its first token and every token after it as given, options included,
@@ -47,11 +84,11 @@ skip the check, after running it once with the default.
 ## Tests
 
 `test.wattle` is a test framework ported from Testament for Janet. Copy
-`test.wattle` and `LICENSE.testament` into a project's `gum/` directory. A test
-file imports it and ends with a call to `run-tests!`:
+`test.wattle` and `LICENSE.testament` into a project's `gum/` directory with
+`wattle gum test`. A test file imports it and ends with a call to `run-tests!`:
 
 ```clojure
-(import ./gum/test :prefix "")
+(import ../deps/gum/test :prefix "")
 
 (deftest one-plus-one
   (is (= 2 (+ 1 1)) "1 + 1 = 2"))

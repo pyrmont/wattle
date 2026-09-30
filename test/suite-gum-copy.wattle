@@ -1,0 +1,122 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; A path is made absolute because each case changes directory.
+(def wattle
+  (let [exe (dyn :executable)]
+    (compif (dyn 'os/realpath)
+      (if (or (string/find "/" exe) (string/find "\\" exe)) (os/realpath exe) exe)
+      exe)))
+(def run (filter next (string/split " " (os/getenv "SUBRUN" ""))))
+
+; `wattle gum` copies modules from `<prefix>/share/wattle/src/gum` into a
+; project. The prefix here is a directory that holds a copy of `src/gum/`, so
+; that the case does not depend on an installed build. Each case runs the
+; command in a fixture project and reads its status and its standard output.
+(compwhen (and (dyn 'os/execute) (dyn 'os/cd) (dyn 'os/mkdir))
+  (def home (os/cwd))
+  (def root (string home "/" (randdir)))
+  (def prefix (string root "/prefix"))
+  (def gum-source (string prefix "/share/wattle/src/gum"))
+  (def project (string root "/project"))
+  (var calls 0)
+
+  (defn write [path text] (spit path text))
+
+  (defn gum [& args]
+    (os/cd project)
+    (def out-path (string root "/out" (++ calls)))
+    (def out (file/open out-path :wb))
+    (def status
+      (os/execute [|run wattle "--prefix" prefix "gum" |args] :p {:out out :err out}))
+    (file/close out)
+    (os/cd home)
+    [status (slurp out-path)])
+
+  (defn status-of [& args] (get (gum |args) 0))
+  (defn read-project [path] (string (slurp (string project "/" path))))
+  (defn exists? [path] (os/stat (string project "/" path) :mode))
+
+  (os/mkdir root)
+  (os/mkdir prefix)
+  (each dir ["share" "share/wattle" "share/wattle/src" "share/wattle/src/gum"]
+    (os/mkdir (string prefix "/" dir)))
+  (os/mkdir project)
+  (each file ["modules.edn" "args.wattle" "LICENSE.argy-bargy" "test.wattle" "LICENSE.testament"]
+    (write (string gum-source "/" file) (slurp (string "src/gum/" file))))
+  (def args-source (string (slurp "src/gum/args.wattle")))
+
+  (def [list-status list-out] (gum))
+  (assert (= 0 list-status) "no names lists the modules")
+  (def preamble-lines
+    (string/split "\n" (get (edn/decode (slurp "src/gum/modules.edn")) :preamble)))
+  (def all-lines (string/split "\n" list-out))
+  (assert (= (get preamble-lines 0) (get all-lines 0)) "the list begins with the preamble")
+  (assert (= (string/trim (get preamble-lines 1)) (get all-lines 1))
+          "the preamble's second line is printed without its indentation")
+  (assert (= (string/trim (get preamble-lines (- (length preamble-lines) 1)))
+             (get all-lines (- (length preamble-lines) 1)))
+          "the preamble's last line is printed without its indentation")
+  (def list-lines (filter next (slice all-lines (length preamble-lines))))
+  (def args-line (find #(string/has-prefix? " args " $) list-lines))
+  (def test-line (find #(string/has-prefix? " test " $) list-lines))
+  (assert args-line "the list names args")
+  (assert test-line "the list names test")
+  (assert (= (string/find "Parses" args-line) (string/find "Defines" test-line))
+          "the descriptions start in the same column")
+  (assert (every? (map #(<= (length $) 120) all-lines)) "a line of the list is at most 120 columns")
+  (assert (> (length list-lines) 2) "a long description wraps")
+  (assert (every? (map #(or (string/has-prefix? " args " $) (string/has-prefix? " test " $)
+                            (string/has-prefix? "         " $))
+                       list-lines))
+          "a wrapped line is indented to the description column")
+  (assert (not (exists? "deps")) "listing copies nothing")
+
+  (write (string gum-source "/modules.edn")
+         """
+         {:preamble "First
+                     second
+                       third
+
+                     last
+                    short"
+          :modules [{:name "a" :files ["args.wattle"] :help "Alpha."}]}
+         """)
+  (def [fixture-status fixture-out] (gum))
+  (assert (= 0 fixture-status) "a fixture list succeeds")
+  (assert (= "First\nsecond\n  third\n\nlast\nshort\n a    Alpha.\n" (string fixture-out))
+          "each line after the first loses the indentation of the second")
+  (write (string gum-source "/modules.edn") (slurp "src/gum/modules.edn"))
+
+  (def [copy-status copy-out] (gum "args"))
+  (assert (= 0 copy-status) "a name copies its module")
+  (assert (= args-source (read-project "deps/gum/args.wattle")) "the source is copied into deps/gum")
+  (assert (exists? "deps/gum/LICENSE.argy-bargy") "the licence is copied with the module")
+  (assert (not (exists? "deps/gum/test.wattle")) "a module that is not named is not copied")
+  (assert (string/find "copied deps/gum/args.wattle" copy-out) "a copied file is reported")
+
+  (def [again-status again-out] (gum "args"))
+  (assert (= 0 again-status) "copying an unchanged module succeeds")
+  (assert (string/find "unchanged deps/gum/args.wattle" again-out) "an identical file is reported as unchanged")
+
+  (assert (= 0 (status-of "--dir" "vendor" "args" "test")) "--dir names the parent of gum")
+  (assert (exists? "vendor/gum/args.wattle") "--dir receives the first module")
+  (assert (exists? "vendor/gum/LICENSE.testament") "--dir receives every named module")
+  (assert (not (exists? "deps/gum/test.wattle")) "--dir leaves deps alone")
+
+  (write (string project "/deps/gum/args.wattle") "edited")
+  (assert (= 1 (status-of "args" "test")) "a differing file fails the run")
+  (assert (= "edited" (read-project "deps/gum/args.wattle")) "a differing file is not replaced")
+  (assert (not (exists? "deps/gum/test.wattle")) "a failed run copies none of the modules")
+  (assert (= 0 (status-of "--force" "args" "test")) "--force replaces a differing file")
+  (assert (= args-source (read-project "deps/gum/args.wattle")) "--force restores the source")
+  (assert (exists? "deps/gum/test.wattle") "--force run copies every module")
+
+  (def [unknown-status unknown-out] (gum "--dir" "other" "args" "absent"))
+  (assert (= 1 unknown-status) "an unknown name fails the run")
+  (assert (string/find "absent" unknown-out) "the unknown name is reported")
+  (assert (not (exists? "other")) "an unknown name copies nothing")
+
+  (rmrf root))
+
+(end-suite)

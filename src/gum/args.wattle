@@ -190,24 +190,50 @@
 (defn- wrap-line [input limit hang]
   (string/join "\n" (wrap-words input limit 0 "" hang)))
 
+; Returns the lines of rows, each a [prefix description] pair, with the
+; descriptions in a column that starts pad-inset columns after the longest
+; prefix and wraps before cols less pad-right. A row with a nil prefix is a
+; blank line.
+(defn- column-lines [rows cols pad-inset pad-right]
+  (var width 0)
+  (each [prefix _] rows
+    (when prefix
+      (set width (max width (+ pad-inset (length prefix))))))
+  (def lines ![])
+  (each [prefix description] rows
+    (if prefix
+      (do
+        (def line-start (string prefix
+                          (string/repeat " " (- width (length prefix)))))
+        (def limit (- cols pad-right))
+        (each line (wrap-words description limit width line-start width)
+          (array/push! lines line)))
+      (array/push! lines "")))
+  lines)
+
 (defn- emit-rows [lines heading rows cols pad-inset pad-right]
   (when (> (length rows) 0)
-    (var width 0)
-    (each [prefix _] rows
-      (when prefix
-        (set width (max width (+ pad-inset (length prefix))))))
     (array/push! lines "")
     (array/push! lines heading)
     (array/push! lines "")
-    (each [prefix description] rows
-      (if prefix
-        (do
-          (def line-start (string prefix
-                            (string/repeat " " (- width (length prefix)))))
-          (def limit (- cols pad-right))
-          (each line (wrap-words description limit width line-start width)
-            (array/push! lines line)))
-        (array/push! lines "")))))
+    (each line (column-lines rows cols pad-inset pad-right)
+      (array/push! lines line))))
+
+(defn format-columns
+  """
+  Formats rows, a sequence of [name description] pairs, as two columns in the
+  layout of the usage text. Each name is indented by one space. The
+  descriptions start in one column, four columns after the longest name, and
+  wrap at the width of the terminal standard output is open on, up to
+  max-width, which is 120 columns by default. Returns the lines joined by
+  newlines, with none at the end.
+  """
+  ([rows] (format-columns rows default-max-width))
+  ([rows max-width]
+    (def cols (get-cols max-width))
+    (string/join "\n"
+      (column-lines (map (fn [[name description]] [(string " " name) description]) rows)
+                    cols default-pad-inset default-pad-right))))
 
 (defn- usage [command config root]
   (def info (get config :info {}))

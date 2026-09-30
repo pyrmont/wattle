@@ -18,6 +18,7 @@ SYNOPSIS
 **wattle** [**-s** _path_] **build exe** [**-r** _mode_] [**-t** _triple_] [_name_]
 **wattle** [**-s** _path_] **build lib** [**-r** _mode_] [**-t** _triple_] [_name_]
 **wattle** [**-s** _path_] **check** [_options_] [_script_]
+**wattle** [**-s** _path_] **gum** [**-d** _directory_] [**-f**] [_module_ ...]
 **wattle** [**-s** _path_] **pkg** _verb_ [_argument_]
 **wattle** [**-s** _path_] [**run**] [_options_] [_script_ [_args_ ...]]
 **wattle** [**-s** _path_] **test** [_options_]
@@ -31,14 +32,15 @@ DESCRIPTION
 Wattle reimplements the virtual machine, compiler and core library from the
 Janet programming language in Zig with a syntax inspired by Clojure.
 
-**wattle** has five subcommands. **build** makes an image from source, or
+**wattle** has six subcommands. **build** makes an image from source, or
 builds the executables and native modules that a project declares. **check**
-compiles a script without running it. **pkg** manages installed packages.
+compiles a script without running it. **gum** copies Gum modules into a
+project. **pkg** manages installed packages.
 **run** runs a script, evaluates code or starts a REPL (read-eval-print loop).
 **test** runs the tests of a project. **help** describes a subcommand.
 
-Each subcommand can be written as its first letter: **b**, **c**, **p**, **r**
-and **t**, and **h** for **help**. ``wattle t`` is the same as ``wattle test``.
+Each subcommand can be written as its first letter: **b**, **c**, **g**, **p**,
+**r** and **t**, and **h** for **help**. ``wattle t`` is the same as ``wattle test``.
 
 **run** is the subcommand when no other is named. Where **wattle** would
 otherwise report an unrecognised subcommand or option, or no subcommand, it
@@ -166,6 +168,31 @@ unless **-b** is given.
 
 - **-b**, **--bail**:
   Stop at the first error in the source and exit with status 1.
+
+gum
+---
+
+**wattle** [**-s** _path_] **gum** [**-d** _directory_] [**-f**] [_module_ ...]
+
+Copy Gum modules into a project. Gum is the set of optional Wattle modules
+installed in ``share/wattle/src/gum`` under ``*prefix*``. With no _module_,
+**gum** prints the name and a description of each module in two columns, wrapped as **--help** wraps. With one or more,
+it copies the files of each, which are its source and its licence, into the
+``gum`` directory of _directory_, and prints ``copied`` or ``unchanged`` and
+the path of each file. A project imports a copy by its path, as in
+``(import ./deps/gum/args :as args)``. A build made without the OS library
+does not include **gum**, and it exits with status 1 after saying so.
+
+**gum** checks every _module_ and every destination before it copies a file.
+It exits with status 1 having copied nothing if a _module_ is not one of
+Gum's, or if a destination file exists with content that differs from its
+source. A file with the same content is left as it is.
+
+- **-d**, **--dir** _directory_:
+  Copy into ``gum`` under _directory_. The default is ``deps``.
+
+- **-f**, **--force**:
+  Replace a destination file that differs from its source.
 
 pkg
 ---
@@ -316,8 +343,8 @@ ENVIRONMENT
   under it. **-p** replaces it. If unset, ``*prefix*`` is the value the
   build was made with: a path, none, or nothing yet. A build with none loads no
   system modules. A build with nothing yet, which is the default, raises an
-  error that names `WATTLE_PREFIX` at the first system module lookup or **pkg**
-  command.
+  error that names `WATTLE_PREFIX` at the first system module lookup, **gum**
+  command or **pkg** command.
 
 - `WATTLE_HISTFILE`:
   A file to keep the REPL's history in. Each form submitted at the REPL on a

@@ -277,4 +277,15 @@
   (is (not valid-kind?))
   (is (not valid-splat?)))
 
+(deftest format-columns
+  (def rows [["a" "First."] ["longer" "Second."]])
+  (is (= " a         First.\n longer    Second."
+         (args/format-columns rows)))
+  (is (= "" (args/format-columns [])))
+  (def wrapped (string/split "\n" (args/format-columns [["a" "one two three four"]] 20)))
+  (is (= [" a    one two three" "      four"] (freeze wrapped)))
+  (def long-text (string/repeat "word " 100))
+  (is (every? (map #(<= (length $) 120)
+                   (string/split "\n" (args/format-columns [["a" long-text]]))))))
+
 (end-suite)

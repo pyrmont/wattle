@@ -5691,8 +5691,9 @@
 
 ; The argument parser is gum's, evaluated here rather than imported so that
 ; the core image holds one private copy and no module lookup happens at start.
-(def- cli-parse-args
-  (get (get (dofile "src/gum/args.wattle") 'parse-args) :value))
+(def- cli-args (dofile "src/gum/args.wattle"))
+(def- cli-parse-args (get (get cli-args 'parse-args) :value))
+(def- cli-format-columns (get (get cli-args 'format-columns) :value))
 
 (defn- lint-level [text]
   (or (scan-number text) (keyword text)))
@@ -5783,6 +5784,17 @@
                                  :help "Build for a Zig target triple. The default is this machine."}
                      :name {:proxy "name"
                             :help "The native module to build. The default is every native module."}]}]})
+  (def gum-config
+    {:validate? validate?
+     :short "g"
+     :help "Copy Gum modules into a project, or list them."
+     :rules
+     ["--dir" {:kind :single :short "d" :proxy "directory"
+               :help "Copy into the gum directory of this directory. The default is deps."}
+      "--force" {:kind :flag :short "f"
+                 :help "Replace a file that differs from the Gum copy."}
+      :modules {:splat? true :proxy "module"
+                :help "The module to copy. The modules are listed when there are none."}]})
   (def pkg-config
     {:validate? validate?
      :short "p"
@@ -5827,6 +5839,7 @@
    :subs
    ["build" build-config
     "check" check-config
+    "gum" gum-config
     "pkg" pkg-config
     "run" run-config
     "test" test-config]})
@@ -5834,7 +5847,7 @@
 ; The rules are fixed, so they are checked here, while the image is generated,
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
-(each argv [[] ["check"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
+(each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
             ["pkg" "install" "directory"]
             ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
             ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"]]
@@ -6155,6 +6168,59 @@
              (each l (pkg/list) (print l))
              (unsupported "list"))))
 
+(defn- cli-gum
+  """
+  Prints the name and description of each module that modules.edn in the
+  installed Gum lists, or, given names, copies the files of those modules into
+  the gum directory of the --dir option, `deps` by default. Copies nothing and
+  exits with status 1 and a message on a name the list does not hold or on a
+  destination file that differs from its source, unless --force is set.
+  """
+  [opts params]
+  (defn fail [& parts]
+    (eprint |parts)
+    (os/exit 1))
+  (compif (and (dyn 'os/stat) (dyn 'os/mkdir))
+    (do
+      (def root (dyn *prefix*))
+      (when (nil? root) (fail "this program has no prefix, so gum cannot run"))
+      (when (empty? root) (fail "the prefix is not set: set WATTLE_PREFIX or pass --prefix"))
+      (def source-dir (string (wattle/srcpath) "/src/gum"))
+      (def list-path (string source-dir "/modules.edn"))
+      (unless (fexists list-path)
+        (fail "the Gum modules are not at " source-dir ": " list-path " does not exist"))
+      (def listing (edn/decode (slurp list-path) :d))
+      (def modules (get listing :modules))
+      (def names (get params :modules []))
+      (if (empty? names)
+        (do
+          (when-let [preamble (get listing :preamble)] (print preamble))
+          (print (cli-format-columns (map #(tuple (get $ :name) (get $ :help)) modules))))
+        (do
+          (def by-name !{})
+          (each module modules (put! by-name (get module :name) module))
+          (def unknown (filter #(not (get by-name $)) names))
+          (unless (empty? unknown)
+            (fail "unknown Gum module: " (string/join ", " unknown)
+                  "\nrun gum with no arguments to list the modules"))
+          (def target-dir (string (get opts "dir" "deps") "/gum"))
+          (def force? (get opts "force" false))
+          (def copies ![])
+          (each name names
+            (each file (get (get by-name name) :files)
+              (def to (string target-dir "/" file))
+              (def content (string (slurp (string source-dir "/" file))))
+              (def present? (fexists to))
+              (def same? (and present? (= content (string (slurp to)))))
+              (when (and present? (not same?) (not force?))
+                (fail to " exists and differs from the Gum copy; use --force to replace it"))
+              (array/push! copies [to content same?])))
+          (pkg-mkdirs target-dir)
+          (each [to content same?] copies
+            (unless same? (spit to content))
+            (print (if same? "unchanged " "copied ") to)))))
+    (fail "gum is not supported with reduced os")))
+
 (defn cli-main
   """
   Entrance for the Wattle CLI tool. Invokes the CLI interface when called with the command line
@@ -6193,6 +6259,7 @@
     "check" (cli-check (get sub :opts) (get sub :params))
     "test" (cli-test (get sub :opts))
     "build" (cli-build sub)
+    "gum" (cli-gum (get sub :opts) (get sub :params))
     "pkg" (cli-pkg sub)))
 
 ;;;

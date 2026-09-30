@@ -57,6 +57,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-ffi.wattle" },
     .{ .path = "test/suite-filewatch.wattle", .needs_os = true },
     .{ .path = "test/suite-gum.wattle" },
+    .{ .path = "test/suite-gum-copy.wattle", .needs_os = true, .needs_processes = true },
     .{ .path = "test/suite-gumtest.wattle" },
     .{ .path = "test/suite-inttypes.wattle" },
     .{ .path = "test/suite-io.wattle", .needs_os = true },
