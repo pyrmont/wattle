@@ -137,7 +137,7 @@
 (assert-error "a comment alone" (edn/decode "; nothing"))
 (assert-error "nesting past the limit" (edn/decode (string/repeat "[" 2000)))
 (assert (deep= [[[1]]] (edn/decode "[[[1]]]")) "nesting within the limit")
-(assert-error-value "an unknown decode flag" "unexpected flag x, expected one of \"td\""
+(assert-error-value "an unknown decode flag" "unexpected flag x, expected one of \"tdp\""
   (edn/decode "1" :x))
 (assert-error "an argument that is not text" (edn/decode 1))
 
@@ -193,6 +193,30 @@
 (assert (= "a\n   b" (edn/decode "\"a\n   b\"")) "without :d nothing is removed")
 (assert (= "x" (edn/decode "\"x\"" :d)) ":d on a string with no newline")
 (assert (deep= ![1] (edn/decode "#wattle/array [1]" :dt)) "the flags combine in either order")
+
+; Decoding: paragraphs
+
+(defn paragraphs [text] (edn/decode text :p))
+(assert (= "a b c" (paragraphs "\"a\n  b\n  c\"")) "the lines of a paragraph are joined with a space")
+(assert (= "a b\n\nc d" (paragraphs "\"a\n  b\n\n  c\n    d\"")) "a blank line is a paragraph break")
+(assert (= "a b c" (paragraphs "\"a\n  b\n      c\"")) "extra indentation inside a paragraph is dropped")
+(assert (= "a b\n\nc" (paragraphs "\"a\n  b\n   \n  c\"")) "a line of only spaces is blank")
+(assert (= "a b\n\nc" (paragraphs "\"a\n  b\n\n\n\n  c\"")) "several blank lines are one break")
+(assert (= "x y\n\n  (ex)\n\nz" (paragraphs "\"x\n  y\n\n    (ex)\n\n  z\""))
+        "the first line of a paragraph keeps its indentation past the dedent")
+(assert (= "a b c" (paragraphs "\"a\r\n  b\r\n  c\"")) "the carriage return of a CRLF is part of the break")
+(assert (= "a\nb" (paragraphs "\"a\\n\n  b\"")) "a line break after an escaped newline adds no space")
+(assert (= "a\nb c" (paragraphs "\"a\\nb\n  c\"")) "an escaped newline is a hard line break")
+(assert (= "a b" (paragraphs "\"a  \n  b  \n  \"")) "trailing spaces are dropped, and so is a break at the end")
+(assert (= "a b" (paragraphs "\"\n  a\n  b\n\"")) "a break at the start is dropped")
+(assert (= "a  b" (paragraphs "\"a\\u0020\n  b\"")) "a space that an escape wrote is kept")
+(assert (= "one" (paragraphs "\"one\"")) "a string of one line is unchanged")
+(assert (= "a\n   b" (edn/decode "\"a\\n   b\"" :p)) "an escaped newline is not dedented")
+(assert (= "a\nb" (edn/decode "\"a\n  b\"" :d)) ":d does not join lines")
+(assert (= (paragraphs "\"a\n  b\n\n  c\"") (edn/decode "\"a\n  b\n\n  c\"" :pd)) ":d with :p adds nothing")
+(assert (deep= ["a b" "c d"] (paragraphs "[\"a\n  b\" \"c\n   d\"]")) "each string has its own indentation")
+(assert (deep= {"k x" 1} (paragraphs "{\"k\n  x\" 1}")) "a key is joined")
+(assert (deep= !"a b" (edn/decode "#wattle/buffer \"a\n  b\"" :tp)) "a tagged buffer is joined")
 
 ; Encoding: the types
 

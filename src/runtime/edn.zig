@@ -20,6 +20,10 @@
 //!   leading spaces as the second line has. An escaped `\n` is not a literal
 //!   newline, so the flag works on the text and not on the decoded value.
 //!
+//! - `:p` dedents as `:d` does and then joins the lines of each paragraph
+//!   with a space. A blank line ends a paragraph and is written as two
+//!   newlines, and an escaped `\n` stays a hard line break.
+//!
 //! - A character literal, a number with an `N` or `M` suffix, a tag other than
 //!   the three, a map whose value is nil, a map with a repeated key, a set
 //!   with a repeated element and an integer that is not exactly a double are
@@ -80,14 +84,15 @@ const symbol_punctuation = ".*+!-_?$%&=<>:#/";
 
 /// The state of one `edn/decode` call.
 ///
-/// `text` is the argument and `at` the offset of the next byte. `tags` and
-/// `dedent` are the `:t` and `:d` flags, and `depth` counts the collections
-/// open.
+/// `text` is the argument and `at` the offset of the next byte. `tags`,
+/// `dedent` and `paragraphs` are the `:t`, `:d` and `:p` flags, and `depth`
+/// counts the collections open.
 const Decoder = struct {
     text: []const u8,
     at: usize = 0,
     tags: bool,
     dedent: bool,
+    paragraphs: bool,
     depth: i32 = 0,
 
     /// Raises with the line and column of `at` and `reason`.
@@ -326,37 +331,106 @@ const Decoder = struct {
     ///
     /// Under `:d`, the spaces counted from the first literal newline are the
     /// indentation, and up to that many are dropped after every literal
-    /// newline.
+    /// newline. Under `:p`, the same indentation is dropped and the lines of
+    /// a paragraph are joined as `joinLines` says. An escaped newline is
+    /// neither, because only a literal one is a line break in the text.
     fn string(self: *Decoder) raise.Error!repr.Value {
         const open = self.at;
         self.at += 1;
         var out: scratch_vector.Vector(u8) = .empty;
         defer scratch_vector.free(&out);
         var indent: ?usize = null;
+        var protected: usize = 0;
         while (true) {
             if (self.at >= self.text.len) return self.fail(open, "unterminated string");
             const byte = self.text[self.at];
             self.at += 1;
             switch (byte) {
                 '"' => break,
-                '\\' => try self.escape(&out, open),
+                '\\' => {
+                    try self.escape(&out, open);
+                    protected = out.items.len;
+                },
+                '\r' => {
+                    const crlf = self.at < self.text.len and self.text[self.at] == '\n';
+                    if (!(self.paragraphs and crlf)) scratch_vector.push(&out, byte);
+                },
                 '\n' => {
-                    scratch_vector.push(&out, '\n');
-                    if (!self.dedent) continue;
-                    if (indent == null) {
-                        var spaces: usize = 0;
-                        while (self.at + spaces < self.text.len and self.text[self.at + spaces] == ' ') spaces += 1;
-                        indent = spaces;
-                    }
-                    var dropped: usize = 0;
-                    while (dropped < indent.? and self.at < self.text.len and self.text[self.at] == ' ') : (dropped += 1) {
-                        self.at += 1;
+                    if (self.paragraphs) {
+                        self.joinLines(&out, &indent, protected);
+                    } else {
+                        scratch_vector.push(&out, '\n');
+                        if (!self.dedent) continue;
+                        if (indent == null) indent = self.spacesAhead();
+                        self.dropSpaces(indent.?);
                     }
                 },
                 else => scratch_vector.push(&out, byte),
             }
         }
         return value.fromBytes(out.items, .string);
+    }
+
+    /// Returns the number of spaces that begin the text at `self.at`.
+    fn spacesAhead(self: *Decoder) usize {
+        var spaces: usize = 0;
+        while (self.at + spaces < self.text.len and self.text[self.at + spaces] == ' ') spaces += 1;
+        return spaces;
+    }
+
+    /// Steps over up to `limit` spaces.
+    fn dropSpaces(self: *Decoder, limit: usize) void {
+        var dropped: usize = 0;
+        while (dropped < limit and self.at < self.text.len and self.text[self.at] == ' ') : (dropped += 1) {
+            self.at += 1;
+        }
+    }
+
+    /// Ends a line under `:p`, where `self.at` is the offset after the
+    /// literal newline and `out` is the string so far.
+    ///
+    /// The spaces before the newline are dropped, except those an escape
+    /// wrote, which end at offset `protected` of `out`. The indentation of
+    /// the next line is dropped, and a line of only spaces is blank. The
+    /// lines after this one that are blank are a paragraph break, which is
+    /// written as two newlines, and the next line keeps the spaces it has past
+    /// the indentation. Where there is none, the next line joins this one
+    /// after a single space, and loses the spaces it has past the
+    /// indentation. A break at the start or the end of the string writes
+    /// nothing, and neither does a break after an escaped newline, which is a
+    /// hard line break.
+    fn joinLines(
+        self: *Decoder,
+        out: *scratch_vector.Vector(u8),
+        indent: *?usize,
+        protected: usize,
+    ) void {
+        while (out.items.len > protected and out.items[out.items.len - 1] == ' ') {
+            out.shrinkRetainingCapacity(out.items.len - 1);
+        }
+        if (indent.* == null) indent.* = self.spacesAhead();
+        var blanks: usize = 0;
+        while (true) {
+            self.dropSpaces(indent.*.?);
+            var end = self.at;
+            while (end < self.text.len and self.text[end] == ' ') end += 1;
+            if (end + 1 < self.text.len and self.text[end] == '\r' and self.text[end + 1] == '\n') end += 1;
+            if (end >= self.text.len or self.text[end] != '\n') break;
+            self.at = end + 1;
+            blanks += 1;
+        }
+        if (self.at < self.text.len and self.text[self.at] == '"') return;
+        const length = out.items.len;
+        if (length == 0) return;
+        var newlines: usize = 0;
+        while (newlines < 2 and newlines < length and out.items[length - 1 - newlines] == '\n') newlines += 1;
+        if (blanks > 0) {
+            var missing = 2 - newlines;
+            while (missing > 0) : (missing -= 1) scratch_vector.push(out, '\n');
+            return;
+        }
+        self.dropSpaces(std.math.maxInt(usize));
+        if (newlines == 0) scratch_vector.push(out, ' ');
     }
 
     /// Appends the character the escape after a backslash stands for, where
@@ -513,11 +587,12 @@ fn validSymbol(text: []const u8, keyword: bool) bool {
 fn nfunDecode(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
-    const flags = if (argv.len > 1) try args_core.getFlags(argv, 1, "td") else 0;
+    const flags = if (argv.len > 1) try args_core.getFlags(argv, 1, "tdp") else 0;
     var decoder: Decoder = .{
         .text = if (view.bytes) |p| p[0..view.len] else &.{},
         .tags = flags & 1 != 0,
         .dedent = flags & 2 != 0,
+        .paragraphs = flags & 4 != 0,
     };
     return decoder.document();
 }
@@ -547,6 +622,7 @@ pub fn libEdn(env: *tables.Table) raise.Error!void {
             "A list is a tuple, a vector is a vector, a map is a map and a set is a set, each persistent. " ++
             "flags is a keyword of characters. `:t` reads the tags #wattle/array, #wattle/table and #wattle/buffer as a mutable array, table and buffer. " ++
             "`:d` dedents each string: a line after a literal newline loses up to as many leading spaces as the second line has, and an escaped newline is left alone. " ++
+            "`:p` dedents as `:d` does and joins the lines of each paragraph with a space, where a blank line ends a paragraph and an escaped newline is a hard line break. " ++
             "Raises an error if x is not edn, if it has a character literal, a number with an N or M suffix or a tag that is not read, " ++
             "if a map has a nil value or a repeated key, if a set has a repeated element, if an integer is not exactly a number, " ++
             "if a number is out of range, or if the nesting is too deep."),
