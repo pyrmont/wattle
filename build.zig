@@ -1567,6 +1567,9 @@ fn hostBuilt(
     module.addImport("repr", graph.repr);
     module.addImport("constants", graph.constants);
     module.addImport("config", graph.config);
+    module.addImport("cabi", graph.cabi);
+    module.addImport("lexicon", graph.lexicon);
+    module.addImport("lineedit", lineeditModule(b, host, .Debug, graph.lexicon));
     const client = selectBackend(b.addExecutable(.{ .name = "wattle-host", .root_module = module }));
     // The two settings `build()` gives the client, for the reason given there:
     // a native module resolves into the client's symbol table.

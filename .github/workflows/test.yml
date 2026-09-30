@@ -135,6 +135,23 @@ jobs:
             if ! ./zig-out/bin/wattle "$s"; then echo "SUITE FAILED: $s"; fail=1; fi
           done
           exit $fail
+      # The cross-build path of `wattleExecutable`. An explicit `-Dtarget`
+      # is not a native query, so the image is made by a separate host client,
+      # built as its own compilation with its own module list. Nothing else
+      # here builds that client. The runner's architecture is the target's, so
+      # the result runs without emulation.
+      - name: Native executable
+        run: |
+          set -eu
+          zig build examples/native-executable \
+            -Dtarget=${{ matrix.target }} -Dcpu=baseline -Dlinkage=static \
+            -p native-executable-out
+          out=$(./native-executable-out/bin/native-executable)
+          expected=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+          if [ "$out" != "$expected" ]; then
+            echo "UNEXPECTED OUTPUT: $out"
+            exit 1
+          fi
 
   # glibc is the runner's own libc, so this build is native and dynamically
   # linked and runs `zig build test` outright, as the macOS job does. That
