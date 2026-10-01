@@ -260,8 +260,18 @@ fn theEmbedderChannelApi() void {
 /// A raising call this contract expects to return. `try` needs an error union
 /// in the enclosing signature and these sections are `void`, so the unwrap is
 /// here with the panic that says which one it was.
-fn try_(result: anytype) @typeInfo(@TypeOf(result)).error_union.payload {
-    return result catch @panic("ev_loop: a call that should have returned raised");
+fn try_(result: anytype) Tried(@TypeOf(result)) {
+    if (comptime @typeInfo(@TypeOf(result)) == .error_union) {
+        return result catch @panic("ev_loop: a call that should have returned raised");
+    }
+    return raise.unwrap(result) catch @panic("ev_loop: a call that should have returned raised");
+}
+
+/// The payload of a raising call, whether it returns an error union or a
+/// stored callback's result.
+fn Tried(comptime T: type) type {
+    if (@typeInfo(T) == .error_union) return @typeInfo(T).error_union.payload;
+    return raise.Unwrapped(T);
 }
 
 fn theThreadedChannel() void {

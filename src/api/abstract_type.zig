@@ -111,7 +111,8 @@ pub const Spec = module.Spec;
 /// The returned type has one `pub` function per slot, in the order `slots`
 /// names them. Each takes the payload as `*anyopaque`, which is the shape the
 /// runtime stores, casts it back to `*T` or `*const T`, and calls the callback
-/// in `spec`.
+/// in `spec`. A slot that may raise returns a result that carries the raise as
+/// a flag, because a `callconv(.c)` function cannot return an error union.
 ///
 /// That cast is written here and nowhere else, generated from the type given
 /// to `define`, so an author writes no cast in a callback.
@@ -135,17 +136,22 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         pub fn gcperthread(p: *anyopaque, len: usize) callconv(.c) void {
             return spec.gcperthread.?(mut(p), len);
         }
-        pub fn get(p: *anyopaque, key: repr.Value) raise.Error!?repr.Value {
-            return spec.get.?(mut(p), key);
+        pub fn get(p: *anyopaque, key: repr.Value) callconv(.c) abi.OptResult {
+            const found = spec.get.?(mut(p), key) catch return .{ .value = raise.blank(repr.Value), .present = false, .raised = true };
+            if (found) |v| return .{ .value = v, .present = true, .raised = false };
+            return .{ .value = raise.blank(repr.Value), .present = false, .raised = false };
         }
-        pub fn put(p: *anyopaque, key: repr.Value, value: repr.Value) raise.Error!void {
-            return spec.put.?(mut(p), key, value);
+        pub fn put(p: *anyopaque, key: repr.Value, value: repr.Value) callconv(.c) bool {
+            spec.put.?(mut(p), key, value) catch return true;
+            return false;
         }
-        pub fn next(p: *anyopaque, key: repr.Value) raise.Error!repr.Value {
-            return spec.next.?(mut(p), key);
+        pub fn next(p: *anyopaque, key: repr.Value) callconv(.c) abi.NResult {
+            const v = spec.next.?(mut(p), key) catch return .{ .value = raise.blank(repr.Value), .raised = true };
+            return .{ .value = v, .raised = false };
         }
-        pub fn length(p: *anyopaque, len: usize) raise.Error!usize {
-            return spec.length.?(mut(p), len);
+        pub fn length(p: *anyopaque, len: usize) callconv(.c) abi.SizeResult {
+            const n = spec.length.?(mut(p), len) catch return .{ .value = 0, .raised = true };
+            return .{ .value = n, .raised = false };
         }
         /// Rebuilds the argument slice from the pointer and count the
         /// interpreter dispatches with.
@@ -153,8 +159,9 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         /// This is the one slot whose shape changes on the way through. A
         /// module author writes `call` over a `[]Value`, as an nfunction is
         /// written.
-        pub fn call(p: *anyopaque, argc: i32, argv: [*]repr.Value) raise.Error!repr.Value {
-            return spec.call.?(mut(p), argv[0..@intCast(argc)]);
+        pub fn call(p: *anyopaque, argc: i32, argv: [*]repr.Value) callconv(.c) abi.NResult {
+            const v = spec.call.?(mut(p), argv[0..@intCast(argc)]) catch return .{ .value = raise.blank(repr.Value), .raised = true };
+            return .{ .value = v, .raised = false };
         }
         pub fn compare(lhs: *anyopaque, rhs: *anyopaque) callconv(.c) i32 {
             return spec.compare.?(ro(lhs), ro(rhs));
@@ -162,18 +169,21 @@ pub fn Erased(comptime T: type, comptime spec: Spec(T)) type {
         pub fn hash(p: *anyopaque, len: usize) callconv(.c) i32 {
             return spec.hash.?(ro(p), len);
         }
-        pub fn tostring(p: *anyopaque, render: *abi.Render) raise.Error!void {
-            return spec.tostring.?(mut(p), render);
+        pub fn tostring(p: *anyopaque, render: *abi.Render) callconv(.c) bool {
+            spec.tostring.?(mut(p), render) catch return true;
+            return false;
         }
         pub fn bytes(p: *anyopaque, len: usize) callconv(.c) abi.ByteView {
             const b = spec.bytes.?(ro(p), len);
             return .{ .bytes = b.ptr, .len = b.len };
         }
-        pub fn marshal(p: *anyopaque, m: *abi.Marshal) raise.Error!void {
-            return spec.marshal.?(mut(p), m);
+        pub fn marshal(p: *anyopaque, m: *abi.Marshal) callconv(.c) bool {
+            spec.marshal.?(mut(p), m) catch return true;
+            return false;
         }
-        pub fn unmarshal(u: *abi.Unmarshal) raise.Error!?*anyopaque {
-            return try spec.unmarshal.?(u);
+        pub fn unmarshal(u: *abi.Unmarshal) callconv(.c) abi.PtrResult {
+            const payload = spec.unmarshal.?(u) catch return .{ .value = null, .raised = true };
+            return .{ .value = payload, .raised = false };
         }
         pub fn chunk(p: *anyopaque, index: usize) callconv(.c) abi.Chunk {
             const c = spec.chunk.?(mut(p), index);

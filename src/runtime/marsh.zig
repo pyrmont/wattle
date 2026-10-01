@@ -910,7 +910,7 @@ fn marshalOneAbstract(st: *MarshalState, x: repr.Value, flags: c_int) raise.Erro
         const outer_flags = st.flags;
         defer st.flags = outer_flags;
         st.flags = flags + 1;
-        try marshal_fn(abstract, @ptrCast(st));
+        try raise.unwrap(marshal_fn(abstract, @ptrCast(st)));
     } else {
         return pp_format.panicf("cannot marshal %p", .{x});
     }
@@ -1637,7 +1637,7 @@ fn unmarshalOneAbstract(
         // A null from an abstract type's `unmarshal` callback is a defect in
         // that callback rather than a program error, so it aborts rather than
         // raising.
-        const abst = (try unmarshal_fn(@ptrCast(st))) orelse fatal.fatal("null pointer abstract");
+        const abst = (try raise.unwrap(unmarshal_fn(@ptrCast(st)))) orelse fatal.fatal("null pointer abstract");
         const decoded = wrap.fromAbstract(abst);
         if (st.at != null) return raise.panic("unmarshal_abstract not called");
         return .{ .value = decoded, .next = st.data.? };

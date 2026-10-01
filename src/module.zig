@@ -7,12 +7,13 @@
 //! interface.
 //!
 //! A module must be built with the same Zig version as the runtime that loads
-//! it. The runtime table's fields are `callconv(.c)`, and so is the function
-//! the runtime stores for an nfunction, which takes a count and a pointer and
-//! returns the value and a flag for a raise. An abstract type's eight raising
-//! callbacks are not `callconv(.c)`. They return Zig error unions, so the
-//! runtime calls into a module through the `.auto` convention. That convention
-//! is deterministic for a compiler version and target rather than documented.
+//! it. The runtime table's fields are `callconv(.c)`. So is the function the
+//! runtime stores for an nfunction, which takes a count and a pointer and
+//! returns the value and a flag for a raise, and so is each of an abstract
+//! type's eight raising callbacks, which return a result that includes the
+//! same flag. An author writes an nfunction and a callback over a slice or a
+//! `*T` and returns an error union, and `reg` and `define` generate the
+//! `callconv(.c)` function around it.
 //!
 //! ## How a module reaches the runtime
 //!

@@ -6,33 +6,41 @@
 # **Class `residue` must be empty.**
 #
 #   export    2
-#   slot      88
-#   callback  24
+#   slot      93
+#   callback  27
 #   residue   0
 #
-#   not definitions: 124 `extern fn` declarations, 113 function-pointer types
+#   not definitions: 124 `extern fn` declarations, 121 function-pointer types
 #
 # columns: class  site  function
 
-callback  api/abstract_type.zig:129                    gc
-callback  api/abstract_type.zig:132                    gcmark
-callback  api/abstract_type.zig:135                    gcperthread
-slot      api/abstract_type.zig:159                    compare
-slot      api/abstract_type.zig:162                    hash
-slot      api/abstract_type.zig:168                    bytes
-callback  api/abstract_type.zig:178                    chunk
-slot      api/raise.zig:176                            abi
-slot      api/raise.zig:181                            abi
-slot      api/raise.zig:186                            abi
-slot      api/raise.zig:191                            abi
-slot      api/raise.zig:196                            abi
-slot      api/raise.zig:201                            abi
-slot      api/raise.zig:226                            abi
-slot      api/raise.zig:231                            abi
-slot      api/raise.zig:236                            abi
-callback  api/raise.zig:317                            run
-export    module.zig:805                               modConfig
-export    module.zig:817                               modInit
+callback  api/abstract_type.zig:130                    gc
+callback  api/abstract_type.zig:133                    gcmark
+callback  api/abstract_type.zig:136                    gcperthread
+slot      api/abstract_type.zig:139                    get
+slot      api/abstract_type.zig:144                    put
+callback  api/abstract_type.zig:148                    next
+slot      api/abstract_type.zig:152                    length
+callback  api/abstract_type.zig:162                    call
+slot      api/abstract_type.zig:166                    compare
+slot      api/abstract_type.zig:169                    hash
+callback  api/abstract_type.zig:172                    tostring
+slot      api/abstract_type.zig:176                    bytes
+slot      api/abstract_type.zig:180                    marshal
+slot      api/abstract_type.zig:184                    unmarshal
+callback  api/abstract_type.zig:188                    chunk
+slot      api/raise.zig:203                            abi
+slot      api/raise.zig:208                            abi
+slot      api/raise.zig:213                            abi
+slot      api/raise.zig:218                            abi
+slot      api/raise.zig:223                            abi
+slot      api/raise.zig:228                            abi
+slot      api/raise.zig:253                            abi
+slot      api/raise.zig:258                            abi
+slot      api/raise.zig:263                            abi
+callback  api/raise.zig:356                            run
+export    module.zig:806                               modConfig
+export    module.zig:818                               modInit
 slot      runtime/args.zig:1037                        bytesViewAbi
 slot      runtime/args.zig:1054                        checkArityAbi
 slot      runtime/args.zig:1259                        dictionaryChunkAbi

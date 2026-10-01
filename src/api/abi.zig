@@ -139,7 +139,11 @@ pub const AbstractHead = extern struct {
 /// unreachable, `gcmark` mid-traversal, and `compare` and `hash` from inside a
 /// comparison that cannot raise. `chunk` hands out storage that a reader holds
 /// while it reads. The other eight run inside an interpreter frame, where a
-/// raise reaches the fiber that called it.
+/// raise reaches the fiber that called it. Each of the eight is a
+/// `callconv(.c)` function that returns a flag for a raise: a `bool` where it
+/// has no value, otherwise an `NResult`, `OptResult`, `SizeResult` or
+/// `PtrResult`. `module.define` generates each from the author's callback,
+/// which returns an error union.
 pub const AbstractType = struct {
     name: []const u8,
 
@@ -149,23 +153,23 @@ pub const AbstractType = struct {
     gcperthread: ?*const fn (data: *anyopaque, len: usize) callconv(.c) void = null,
 
     // Access.
-    get: ?*const fn (data: *anyopaque, key: repr.Value) error{Signal}!?repr.Value = null,
-    put: ?*const fn (data: *anyopaque, key: repr.Value, value: repr.Value) error{Signal}!void = null,
-    next: ?*const fn (p: *anyopaque, key: repr.Value) error{Signal}!repr.Value = null,
-    length: ?*const fn (p: *anyopaque, len: usize) error{Signal}!usize = null,
-    call: ?*const fn (p: *anyopaque, argc: i32, argv: [*]repr.Value) error{Signal}!repr.Value = null,
+    get: ?*const fn (data: *anyopaque, key: repr.Value) callconv(.c) OptResult = null,
+    put: ?*const fn (data: *anyopaque, key: repr.Value, value: repr.Value) callconv(.c) bool = null,
+    next: ?*const fn (p: *anyopaque, key: repr.Value) callconv(.c) NResult = null,
+    length: ?*const fn (p: *anyopaque, len: usize) callconv(.c) SizeResult = null,
+    call: ?*const fn (p: *anyopaque, argc: i32, argv: [*]repr.Value) callconv(.c) NResult = null,
 
     // Identity.
     compare: ?*const fn (lhs: *anyopaque, rhs: *anyopaque) callconv(.c) i32 = null,
     hash: ?*const fn (p: *anyopaque, len: usize) callconv(.c) i32 = null,
 
     // Rendering.
-    tostring: ?*const fn (p: *anyopaque, render: *Render) error{Signal}!void = null,
+    tostring: ?*const fn (p: *anyopaque, render: *Render) callconv(.c) bool = null,
     bytes: ?*const fn (p: *anyopaque, len: usize) callconv(.c) ByteView = null,
 
     // Marshalling.
-    marshal: ?*const fn (p: *anyopaque, m: *Marshal) error{Signal}!void = null,
-    unmarshal: ?*const fn (u: *Unmarshal) error{Signal}!?*anyopaque = null,
+    marshal: ?*const fn (p: *anyopaque, m: *Marshal) callconv(.c) bool = null,
+    unmarshal: ?*const fn (u: *Unmarshal) callconv(.c) PtrResult = null,
 
     // Contents.
     chunk: ?*const fn (p: *anyopaque, index: usize) callconv(.c) Chunk = null,
@@ -243,6 +247,33 @@ pub const Chunk = extern struct {
 /// field of the result.
 pub const NResult = extern struct {
     value: repr.Value,
+    raised: bool,
+};
+
+/// What an abstract type's `get` callback returns across the C ABI.
+///
+/// `present` is false where the callback found no value, and `value` is zero.
+/// `raised` is true where it raised, and then `present` is false and `value`
+/// is zero.
+pub const OptResult = extern struct {
+    value: repr.Value,
+    present: bool,
+    raised: bool,
+};
+
+/// What an abstract type's `length` callback returns across the C ABI.
+///
+/// `raised` is true where the callback raised, and `value` is then zero.
+pub const SizeResult = extern struct {
+    value: usize,
+    raised: bool,
+};
+
+/// What an abstract type's `unmarshal` callback returns across the C ABI.
+///
+/// `raised` is true where the callback raised, and `value` is then null.
+pub const PtrResult = extern struct {
+    value: ?*anyopaque,
     raised: bool,
 };
 

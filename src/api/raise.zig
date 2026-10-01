@@ -119,8 +119,25 @@ pub const Error = module.Error;
 ///
 /// See `stored`, which builds the slot's function.
 pub inline fn call(slot: abi.NFunction, argv: []repr.Value) Error!repr.Value {
-    const result = slot.?(@intCast(argv.len), argv.ptr);
+    return unwrap(slot.?(@intCast(argv.len), argv.ptr));
+}
+
+/// Returns what a stored callback produced, or the error it reported.
+///
+/// `result` is what a callback of an abstract type or an nfunction returned
+/// across the C ABI: an `abi.NResult`, `abi.OptResult`, `abi.SizeResult` or
+/// `abi.PtrResult`, or a `bool` where the callback has no value, which is true
+/// where it raised. This function raises if the callback raised.
+///
+/// See `stored`, which builds an nfunction's callback.
+pub inline fn unwrap(result: anytype) Error!Unwrapped(@TypeOf(result)) {
+    const T = @TypeOf(result);
+    if (T == bool) {
+        if (result) return error.Signal;
+        return;
+    }
     if (result.raised) return error.Signal;
+    if (T == abi.OptResult) return if (result.present) result.value else null;
     return result.value;
 }
 
@@ -139,6 +156,16 @@ pub inline fn call(slot: abi.NFunction, argv: []repr.Value) Error!repr.Value {
 pub inline fn fromAbi(value: anytype) Error!@TypeOf(value) {
     if (tookCRaise()) return error.Signal;
     return value;
+}
+
+/// The type `unwrap` returns the payload of for a result of type `T`.
+///
+/// `T` is `bool`, which gives `void`, `abi.OptResult`, which gives
+/// `?Value`, or a result with a `value` field, which gives that field's type.
+pub fn Unwrapped(comptime T: type) type {
+    if (T == bool) return void;
+    if (T == abi.OptResult) return ?repr.Value;
+    return @FieldType(T, "value");
 }
 
 /// Raises an error whose message is a string.
@@ -286,6 +313,18 @@ pub inline fn reportToAbi(comptime T: type) T {
     return blank(T);
 }
 
+/// Returns an all-zero value of any type an abi can return.
+///
+/// `std.mem.zeroes` rejects a non-nullable pointer, and rightly: zero is not a
+/// value of a `*JanetTable`. Writing the bytes instead keeps `reportToAbi`'s
+/// determinacy without asking the type system to accept the result as
+/// meaningful. No caller may read it.
+pub inline fn blank(comptime T: type) T {
+    var value: T = undefined;
+    if (@sizeOf(T) != 0) @memset(std.mem.asBytes(&value), 0);
+    return value;
+}
+
 /// Raises `sig` with `message`.
 ///
 /// `sig` is the signal to raise and `message` is the value that goes with it.
@@ -369,18 +408,6 @@ pub inline fn total(
 // ==========================================================================
 // Private functions
 // ==========================================================================
-
-/// Returns an all-zero value of any type an abi can return.
-///
-/// `std.mem.zeroes` rejects a non-nullable pointer, and rightly: zero is not a
-/// value of a `*JanetTable`. Writing the bytes instead keeps `reportToAbi`'s
-/// determinacy without asking the type system to accept the result as
-/// meaningful. No caller may read it.
-inline fn blank(comptime T: type) T {
-    var value: T = undefined;
-    if (@sizeOf(T) != 0) @memset(std.mem.asBytes(&value), 0);
-    return value;
-}
 
 /// Records that a raise reached an abi.
 ///

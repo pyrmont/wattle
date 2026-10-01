@@ -98,7 +98,7 @@ pub fn get(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
                 if (at.contents != .elements) return wrap.fromNil();
                 return try chunkElement(ds, key) orelse wrap.fromNil();
             };
-            return try getter(abst, key) orelse wrap.fromNil();
+            return try raise.unwrap(getter(abst, key)) orelse wrap.fromNil();
         },
         repr.Tag.array, repr.Tag.tuple, repr.Tag.buffer => {
             if (!args_core.checkint(key)) return wrap.fromNil();
@@ -192,7 +192,7 @@ pub fn getIndex(ds: repr.Value, index: i32) raise.Error!repr.Value {
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.get) |getter| {
-                val = try getter(wrap.toAbstract(ds), wrap.fromInteger(index)) orelse wrap.fromNil();
+                val = try raise.unwrap(getter(wrap.toAbstract(ds), wrap.fromInteger(index))) orelse wrap.fromNil();
             } else if (at.contents == .elements) {
                 val = try chunkElement(ds, wrap.fromInteger(index)) orelse wrap.fromNil();
             } else {
@@ -259,7 +259,7 @@ pub fn in(ds: repr.Value, key: repr.Value) raise.Error!repr.Value {
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.get) |getter| {
-                val = try getter(wrap.toAbstract(ds), key) orelse
+                val = try raise.unwrap(getter(wrap.toAbstract(ds), key)) orelse
                     return pp_format.panicf("key %v not found in %v ", .{ key, ds });
             } else if (at.contents == .elements) {
                 val = try chunkElement(ds, key) orelse
@@ -310,7 +310,7 @@ pub fn length(x: repr.Value) raise.Error!i32 {
             const abst = wrap.toAbstract(x);
             const at = abstract_type.ofAbstract(abst);
             if (at.length) |callback| {
-                const len = try callback(abst, utils.abstractHead(abst).size);
+                const len = try raise.unwrap(callback(abst, utils.abstractHead(abst).size));
                 if (len > @as(usize, @intCast(std.math.maxInt(i32)))) {
                     return pp_format.panicf("invalid integer length %u", .{@as(u64, len)});
                 }
@@ -346,7 +346,7 @@ pub fn lengthv(x: repr.Value) raise.Error!repr.Value {
             const abst = wrap.toAbstract(x);
             const at = abstract_type.ofAbstract(abst);
             if (at.length) |callback| {
-                const len = try callback(abst, utils.abstractHead(abst).size);
+                const len = try raise.unwrap(callback(abst, utils.abstractHead(abst).size));
                 // If len is always less then double, we can never overflow
                 if (comptime !config.bits64) {
                     return wrap.fromNumber(@floatFromInt(len));
@@ -436,7 +436,7 @@ pub fn nextImpl(ds: repr.Value, key: repr.Value, is_interpreter: bool) raise.Err
                 if (at.contents != .elements) return wrap.fromNil();
                 return chunkNext(ds, key);
             };
-            return callback(abst, key);
+            return raise.unwrap(callback(abst, key));
         },
         repr.Tag.fiber => {
             const child = wrap.toFiber(ds);
@@ -533,7 +533,7 @@ pub fn put(ds: repr.Value, key: repr.Value, val: repr.Value) raise.Error!void {
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.put) |callback| {
-                try callback(wrap.toAbstract(ds), key, val);
+                try raise.unwrap(callback(wrap.toAbstract(ds), key, val));
             } else {
                 return pp_format.panicf("no setter for %v ", .{ds});
             }
@@ -585,7 +585,7 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
         repr.Tag.abstract => {
             const at = abstract_type.ofAbstract(wrap.toAbstract(ds));
             if (at.put) |callback| {
-                try callback(wrap.toAbstract(ds), wrap.fromInteger(index), val);
+                try raise.unwrap(callback(wrap.toAbstract(ds), wrap.fromInteger(index), val));
             } else {
                 return pp_format.panicf("no setter for %v ", .{ds});
             }

@@ -664,7 +664,7 @@ pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Val
         repr.Tag.abstract => {
             const abst = wrap.toAbstract(method);
             const at = abstract_type.ofAbstract(abst);
-            if (at.call) |call| return try call(abst, @intCast(argv.len), argv.ptr);
+            if (at.call) |call| return try raise.unwrap(call(abst, @intCast(argv.len), argv.ptr));
             return try invokeIndexed(method, argv, true);
         },
         repr.Tag.string,

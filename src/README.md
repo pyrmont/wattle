@@ -281,6 +281,13 @@ nfunction takes the same path, so the VM does not test which kind it is
 calling. An nfunction pointer cast into a slot without `raise.stored` compiles
 and crashes when called.
 
+An abstract type's eight raising callbacks (`get`, `put`, `next`, `length`,
+`call`, `tostring`, `marshal` and `unmarshal`) cross the same way. An author
+writes each over `*T` and returns an error union. `module.define` generates a
+`callconv(.c)` function that returns a flag for a raise, as a `bool` or in an
+`abi.NResult`, `abi.OptResult`, `abi.SizeResult` or `abi.PtrResult`. The
+runtime reads the flag with `raise.unwrap` at each call.
+
 Its documented call shape uses nested square brackets for optional arguments:
 `(os/date [time [local]])` accepts zero, one or two arguments. The brackets
 are documentation notation, not Wattle vector literals.

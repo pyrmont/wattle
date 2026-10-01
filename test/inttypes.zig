@@ -36,6 +36,7 @@ const abi = @import("abi");
 const buffers = @import("subsystems").value.buffers;
 const constants = @import("constants");
 const core_env = @import("subsystems").env;
+const raise = @import("subsystems").raise;
 const expect = @import("expect.zig").expect;
 const functions = @import("subsystems").value.functions;
 const gc_alloc = @import("subsystems").gc_alloc;
@@ -92,7 +93,7 @@ fn compareU64Double(x: u64, y: f64) f64 {
 
 /// Render through the abstract type's own `tostring`, which raises.
 fn render(at: *const AbstractType, p: *const anyopaque, b: *buffers.Buffer) !void {
-    try at.tostring.?(@constCast(p), @ptrCast(b));
+    try raise.unwrap(at.tostring.?(@constCast(p), @ptrCast(b)));
 }
 
 fn bufferIs(b: *buffers.Buffer, expected: []const u8) bool {

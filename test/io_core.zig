@@ -422,7 +422,7 @@ fn theMethodOrder() raise.Error!void {
     var key = wrap.fromNil();
     var i: usize = 0;
     while (true) : (i += 1) {
-        key = try at.next.?(payload, key);
+        key = try raise.unwrap(at.next.?(payload, key));
         if (harness.isType(key, repr.Tag.nil)) break;
         expect(i < expected.len);
         expect(harness.keywordIs(key, expected[i]));
@@ -430,10 +430,10 @@ fn theMethodOrder() raise.Error!void {
     expect(i == expected.len);
 
     // The getter accepts only keywords, and only names in the table.
-    const out = (try at.get.?(payload, value.fromBytes("read", .keyword))).?;
+    const out = (try raise.unwrap(at.get.?(payload, value.fromBytes("read", .keyword)))).?;
     expect(harness.isType(out, repr.Tag.nfunction));
-    expect((try at.get.?(payload, value.fromBytes("open", .keyword))) == null);
-    expect((try at.get.?(payload, value.fromBytes("read", .string))) == null);
+    expect((try raise.unwrap(at.get.?(payload, value.fromBytes("open", .keyword)))) == null);
+    expect((try raise.unwrap(at.get.?(payload, value.fromBytes("read", .string)))) == null);
 }
 
 fn thePublicApi() raise.Error!void {

@@ -106,7 +106,7 @@ pub fn descriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
                 try buffers.pushCString(buffer, "<");
                 try buffers.pushBytes(buffer, t.name);
                 try buffers.pushCString(buffer, " ");
-                try tostring(p, @ptrCast(buffer));
+                try raise.unwrap(tostring(p, @ptrCast(buffer)));
                 try buffers.pushCString(buffer, ">");
             } else {
                 try stringDescriptionB(buffer, t.name, p);
@@ -202,7 +202,7 @@ pub fn toStringB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
             if (t == &maps.set_type) return stringDescriptionB(buffer, t.name, p);
             if (t.tostring) |tostring| {
                 // The slot takes `*abi.Render`; see `abi.zig`.
-                try tostring(p, @ptrCast(buffer));
+                try raise.unwrap(tostring(p, @ptrCast(buffer)));
             } else {
                 try stringDescriptionB(buffer, t.name, p);
             }

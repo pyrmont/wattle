@@ -115,7 +115,7 @@ fn treeValue(kind: maps.Kind, t: *const maps.Tree) repr.Value {
 fn nextOf(kind: maps.Kind, t: *maps.Tree, key: repr.Value) !repr.Value {
     return switch (kind) {
         .map => maps.nextKey(t, key),
-        .set => try maps.set_type.next.?(t, key),
+        .set => try raise.unwrap(maps.set_type.next.?(t, key)),
     };
 }
 
@@ -123,7 +123,7 @@ fn nextOf(kind: maps.Kind, t: *maps.Tree, key: repr.Value) !repr.Value {
 fn getOf(kind: maps.Kind, t: *maps.Tree, key: repr.Value) !repr.Value {
     return switch (kind) {
         .map => maps.lookup(t, key),
-        .set => (try maps.set_type.get.?(t, key)).?,
+        .set => (try raise.unwrap(maps.set_type.get.?(t, key))).?,
     };
 }
 
