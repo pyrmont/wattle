@@ -123,6 +123,9 @@ pub fn collect() void {
     // Null outside the interpreter loop, which `collect` may be called from.
     if (vm.root_fiber) |root| markFiber(vm, root);
 
+    // `setdyn` writes here when no fiber is running, so nothing else reaches it.
+    if (vm.top_dyns) |dyns| markGuarded(vm, wrap.fromTable(dyns));
+
     var i: usize = 0;
     while (i < g.orig_rootcount) : (i += 1) {
         markGuarded(vm, roots.items[i]);

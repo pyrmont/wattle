@@ -901,6 +901,31 @@ fn theMarkPhaseFlag() void {
     _ = gc_alloc.gcunroot(abstract_value);
 }
 
+/// `setdyn` writes the VM's `top_dyns` when no fiber is running, and nothing
+/// else refers to that table. The value is held only there and by a weak table,
+/// so the entry survives the sweep only if `collect` marked `top_dyns`.
+fn topLevelDynsAreMarked() void {
+    const vm = harness.vm();
+    expect(vm.fiber == null);
+    expect(vm.top_dyns == null);
+
+    const witness = tables.weakv(2);
+    const witness_value = wrap.fromTable(witness);
+    gc_alloc.gcroot(witness_value);
+    const key = value.fromBytes("bound", .keyword);
+    const bound = value.fromBytes("held by top_dyns", .string);
+    vm_state.setdyn("gc-mark-test", bound);
+    tables.put(witness, key, bound);
+
+    gc_mark.collect();
+
+    expect(harness.equals(tables.get(witness, key), bound));
+    expect(harness.equals(vm_state.dyn("gc-mark-test"), bound));
+
+    vm.top_dyns = null;
+    _ = gc_alloc.gcunroot(witness_value);
+}
+
 /// A locked collector does nothing at all, not even the bookkeeping at the end
 /// of a collection, which is how the early return is told apart from a
 /// collection that found nothing to do.
@@ -987,6 +1012,7 @@ fn body() !void {
     try aCollectionFinishesDeepGraphs();
 
     aCollectionDrainsRootsAddedDuringMarking();
+    topLevelDynsAreMarked();
     theMarkPhaseFlag();
     aLockedCollectorDoesNothing();
     theIntervalHeuristic();
