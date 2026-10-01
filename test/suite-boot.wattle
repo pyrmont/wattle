@@ -926,6 +926,9 @@
 (assert (= "\n    Sees \e[38;5;245mx\e[39m.\n"
            (string (doc-format "Sees `x`." 80 4 true ["x"])))
         "doc-format leaves a word in backticks as raw code")
+(assert (= "\n    Is \e[3mnot\e[23m bold.\n"
+           (string (doc-format "Is *not* bold." 80 4 true)))
+        "doc-format italicises with the italic escapes, not underline")
 ; A table is a header row, a delimiter row and the rows that follow. The
 ; renderer draws a rule under the header and between rows, and wraps a cell
 ; that does not fit
