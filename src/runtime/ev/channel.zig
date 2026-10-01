@@ -313,7 +313,10 @@ fn nfunChoice(argv: []repr.Value) raise.Error!repr.Value {
         }
     }
 
-    // Wait for all readers or writers.
+    // Wait for all readers or writers. A threaded channel can change between
+    // the check above and here: another thread may have closed it or given or
+    // taken an item, so each clause is checked again as it is queued and the
+    // first to be ready resumes the fiber.
     for (argv, 0..) |arg, i| {
         var pair: [2]repr.Value = undefined;
         const data = (try writeClause(arg, &pair)) orelse &[_]repr.Value{};
@@ -321,13 +324,27 @@ fn nfunChoice(argv: []repr.Value) raise.Error!repr.Value {
             const chan = try channelArg(data, 0);
             lock(chan);
             defer unlock(chan);
-            _ = try pushWithLock(chan, data[1], .choice);
+            if (chan.closed) {
+                ev.schedule(vm_state.current().root_fiber.?, makeCloseResult(chan));
+                break;
+            }
+            if (!try pushWithLock(chan, data[1], .choice)) {
+                ev.schedule(vm_state.current().root_fiber.?, makeWriteResult(chan));
+                break;
+            }
         } else {
             var item: repr.Value = undefined;
             const chan = try channelArg(argv, i);
             lock(chan);
             defer unlock(chan);
-            _ = try popWithLock(chan, &item, .choice);
+            if (chan.closed) {
+                ev.schedule(vm_state.current().root_fiber.?, makeCloseResult(chan));
+                break;
+            }
+            if (try popWithLock(chan, &item, .choice)) {
+                ev.schedule(vm_state.current().root_fiber.?, makeReadResult(chan, item));
+                break;
+            }
         }
     }
 
@@ -354,14 +371,17 @@ fn nfunClose(argv: []repr.Value) raise.Error!repr.Value {
                         .argj = wrap.fromNil(),
                     });
                 }
-            } else if (fibers.canResume(writer.fiber) and
-                writer.sched_id == writer.fiber.sched_id)
-            {
-                if (writer.mode == .choice_write) {
-                    ev.schedule(writer.fiber, makeCloseResult(chan));
-                } else {
-                    ev.schedule(writer.fiber, wrap.fromNil());
+            } else {
+                if (fibers.canResume(writer.fiber) and
+                    writer.sched_id == writer.fiber.sched_id)
+                {
+                    if (writer.mode == .choice_write) {
+                        ev.schedule(writer.fiber, makeCloseResult(chan));
+                    } else {
+                        ev.schedule(writer.fiber, wrap.fromNil());
+                    }
                 }
+                if (isThreaded(chan)) _ = gc_alloc.gcunroot(wrap.fromFiber(writer.fiber));
             }
         }
         var reader: Pending = undefined;
@@ -376,14 +396,17 @@ fn nfunClose(argv: []repr.Value) raise.Error!repr.Value {
                         .argj = wrap.fromNil(),
                     });
                 }
-            } else if (fibers.canResume(reader.fiber) and
-                reader.sched_id == reader.fiber.sched_id)
-            {
-                if (reader.mode == .choice_read) {
-                    ev.schedule(reader.fiber, makeCloseResult(chan));
-                } else {
-                    ev.schedule(reader.fiber, wrap.fromNil());
+            } else {
+                if (fibers.canResume(reader.fiber) and
+                    reader.sched_id == reader.fiber.sched_id)
+                {
+                    if (reader.mode == .choice_read) {
+                        ev.schedule(reader.fiber, makeCloseResult(chan));
+                    } else {
+                        ev.schedule(reader.fiber, wrap.fromNil());
+                    }
                 }
+                if (isThreaded(chan)) _ = gc_alloc.gcunroot(wrap.fromFiber(reader.fiber));
             }
         }
     }
@@ -660,6 +683,7 @@ fn popWithLock(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Error
             .sched_id = vm_state.current().root_fiber.?.sched_id,
             .mode = if (is_choice == .choice) Mode.choice_read else Mode.read,
         };
+        if (is_threaded) removeStale(&chan.read_pending);
         _ = chan.read_pending.push(pending);
         if (is_threaded) gc_alloc.gcroot(wrap.fromFiber(pending.fiber));
         return false;
@@ -725,6 +749,7 @@ fn pushWithLock(chan: *Channel, x_in: repr.Value, mode: Caller) raise.Error!bool
                 .sched_id = vm_state.current().root_fiber.?.sched_id,
                 .mode = if (mode == .choice) Mode.choice_write else Mode.write,
             };
+            if (is_threaded) removeStale(&chan.write_pending);
             _ = chan.write_pending.push(pending);
             if (is_threaded) gc_alloc.gcroot(wrap.fromFiber(pending.fiber));
             return true;
@@ -754,12 +779,41 @@ fn pushWithLock(chan: *Channel, x_in: repr.Value, mode: Caller) raise.Error!bool
 }
 
 /// Replaces every reference to this thread's VM in a pending queue with null,
-/// so that a channel outliving the thread does not name it.
+/// so that a channel outliving the thread does not name it, and releases the
+/// root each of those entries took when it was queued.
 fn removeVMRef(fq: *ev.Queue(Pending)) void {
     const me = vm_state.current();
     for (fq.segments()) |run| {
         for (run) |*pending| {
-            if (pending.thread == me) pending.thread = null;
+            if (pending.thread == me) {
+                pending.thread = null;
+                _ = gc_alloc.gcunroot(wrap.fromFiber(pending.fiber));
+            }
+        }
+    }
+}
+
+/// Drops the entries of this thread's fibers that were resumed some other way,
+/// by another clause of a select for one, and releases the root taken when each
+/// was queued. An entry still in the queue has nothing posted for it, so each
+/// root is released once. A fiber of another thread is never dereferenced.
+/// The caller holds the channel's lock.
+///
+/// The queue is scanned only when its length is a power of two. That keeps the
+/// cost amortised constant per call and bounds the stale entries to about the
+/// number of live ones.
+fn removeStale(fq: *ev.Queue(Pending)) void {
+    const n = fq.count();
+    if (n & (n - 1) != 0) return;
+    var i: i32 = 0;
+    while (i < n) : (i += 1) {
+        var pending: Pending = undefined;
+        _ = fq.pop(&pending);
+        if (pending.thread == vm_state.current() and pending.sched_id != pending.fiber.sched_id) {
+            _ = gc_alloc.gcunroot(wrap.fromFiber(pending.fiber));
+        } else {
+            // A live entry goes back in the order it came out.
+            _ = fq.push(pending);
         }
     }
 }
@@ -772,6 +826,10 @@ fn threadChanCallback(msg: ev.GenericMessage) callconv(.c) void {
     const mode: Mode = @enumFromInt(msg.tag);
     const chan = unwrap(msg.argp);
     var x = msg.argj;
+    // The sender rooted the fiber when it queued the entry, and this is the
+    // one place that entry is consumed on the fiber's own thread. It is
+    // declared first so that it runs after the unlock.
+    defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     lock(chan);
     defer unlock(chan);
     if (fiber.sched_id == sched_id) {
@@ -807,7 +865,13 @@ fn threadChanCallback(msg: ev.GenericMessage) callconv(.c) void {
                 sent = true;
                 break;
             }
-            if (!sent) _ = raise.total(unpack(chan, &x, true), "a threaded channel's wakeup");
+            if (!sent) {
+                // Keep the value for the next reader unless the channel is
+                // closed or cannot take another item.
+                if (chan.closed or chan.items.pushHead(x) != 0) {
+                    _ = raise.total(unpack(chan, &x, true), "a threaded channel's wakeup");
+                }
+            }
         } else {
             var writer: Pending = undefined;
             while (chan.write_pending.pop(&writer) == 0) {
