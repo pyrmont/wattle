@@ -87,4 +87,11 @@
 
 #define _FILE_OFFSET_BITS 64
 
+/* Every translation reads the system headers and none compiles them, so
+ * fortification has nothing to check. glibc's `bits/fcntl2.h` wraps `open` in
+ * inline functions that call a `__error__` function on a branch only
+ * `__builtin_va_arg_pack_len` rules out, and `translate-c` cannot evaluate it.
+ * ReleaseSafe defines `_FORTIFY_SOURCE`, which loads that wrapper. */
+#undef _FORTIFY_SOURCE
+
 #endif
