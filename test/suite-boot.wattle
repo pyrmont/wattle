@@ -967,14 +967,16 @@
 
   ; A docstring may name a binding that a reduced configuration leaves out: the
   ; ev module, the ffi module, the assembler, the process functions, or
-  ; os/posix-chroot on a target without chroot
+  ; os/posix-chroot on a target without chroot, or os/setlocale in a build
+  ; without locales
   (defn absent-by-configuration? [name]
     (or (and (string/has-prefix? "ev/" name) (not (dyn 'ev/chan)))
         (and (string/has-prefix? "ffi/" name) (not (dyn 'ffi/native)))
         (and (= name "asm") (not (dyn 'disasm)))
         (and (= name "disasm") (not (dyn 'asm)))
         (and (= name "os/spawn") (not (dyn 'os/execute)))
-        (= name "os/posix-chroot")))
+        (= name "os/posix-chroot")
+        (= name "os/setlocale")))
   (each sym (all-bindings)
     (each name (peg/match reference-scan (get (dyn sym) :doc ""))
       (unless (or (dyn (symbol name))
@@ -1189,16 +1191,18 @@
 ; An image imported by its full path goes through the `:image` loader, as it
 ; does when named by module name. The full-path entry once selected `:source`,
 ; which raised a parse error on the binary image.
-(let [dir (randdir)
-      path (string dir "/up.wimage")
-      env (make-env)]
-  (eval-string "(defn hello [] :up)" env)
-  (os/mkdir dir)
-  (spit path (make-image env))
-  (def [ok loaded] (protect (require (string (os/cwd) "/" path))))
-  (os/rm path)
-  (os/rmdir dir)
-  (assert ok "a .wimage path imports")
-  (assert (= :up ((get-in loaded ['hello :value]))) "a .wimage path loads the image"))
+; The case writes to the file system, which a reduced OS build lacks.
+(compwhen (dyn 'os/mkdir)
+  (let [dir (randdir)
+        path (string dir "/up.wimage")
+        env (make-env)]
+    (eval-string "(defn hello [] :up)" env)
+    (os/mkdir dir)
+    (spit path (make-image env))
+    (def [ok loaded] (protect (require (string (os/cwd) "/" path))))
+    (os/rm path)
+    (os/rmdir dir)
+    (assert ok "a .wimage path imports")
+    (assert (= :up ((get-in loaded ['hello :value]))) "a .wimage path loads the image")))
 
 (end-suite)
