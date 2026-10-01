@@ -6,9 +6,10 @@
 # **Class `tested` must be empty.**
 #
 #   tested       0 sites, 0 occurrences
-#   accumulator  1 sites
-#   `.?` in src/  574 occurrences
+#   accumulator  2 sites
+#   `.?` in src/  593 occurrences
 #
 # columns: class  site  receiver  occurrences  function
 
-accumulator src/runtime/net.zig:714                  sa                           1    nfunConnect
+accumulator src/runtime/edn.zig:337                  indent                       1    string
+accumulator src/runtime/net.zig:718                  sa                           1    nfunConnect

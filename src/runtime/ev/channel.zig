@@ -805,8 +805,7 @@ fn removeVMRef(fq: *ev.Queue(Pending)) void {
 fn removeStale(fq: *ev.Queue(Pending)) void {
     const n = fq.count();
     if (n & (n - 1) != 0) return;
-    var i: i32 = 0;
-    while (i < n) : (i += 1) {
+    for (0..@intCast(@max(n, 0))) |_| {
         var pending: Pending = undefined;
         _ = fq.pop(&pending);
         if (pending.thread == vm_state.current() and pending.sched_id != pending.fiber.sched_id) {
