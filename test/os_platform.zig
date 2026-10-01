@@ -157,9 +157,9 @@ fn theSurfaceAgreesWithTheKernels() !void {
     const arch = harness.core("os/arch");
     const compiler = harness.core("os/compiler");
 
-    expect(harness.keywordIs(try which(&.{}), os.osName()));
-    expect(harness.keywordIs(try arch(&.{}), os.osArch()));
-    expect(harness.keywordIs(try compiler(&.{}), os.osCompiler()));
+    expect(harness.keywordIs(try which.call(&.{}), os.osName()));
+    expect(harness.keywordIs(try arch.call(&.{}), os.osArch()));
+    expect(harness.keywordIs(try compiler.call(&.{}), os.osCompiler()));
 }
 
 /// `os/which`'s three behaviours; see the header comment.
@@ -168,14 +168,14 @@ fn theThreeReadingsOfWhich() !void {
     var argument: [1]repr.Value = undefined;
 
     argument[0] = value.fromBytes(std.mem.span(os.osName()), .keyword);
-    expect(wrap.toBoolean(try which(argument[0..1])));
+    expect(wrap.toBoolean(try which.call(argument[0..1])));
 
     argument[0] = value.fromBytes("not-a-platform", .keyword);
-    expect(!wrap.toBoolean(try which(argument[0..1])));
+    expect(!wrap.toBoolean(try which.call(argument[0..1])));
 
     // `nil` is not a platform to test against; it is the same as no argument.
     argument[0] = wrap.fromNil();
-    expect(harness.keywordIs(try which(argument[0..1]), os.osName()));
+    expect(harness.keywordIs(try which.call(argument[0..1]), os.osName()));
 }
 
 /// `os/cpu-count` gives the kernel's number, or the caller's fallback when
@@ -189,16 +189,16 @@ fn theCpuCount() !void {
     const direct = os.osCpuCount();
     var fallback = [1]repr.Value{value.fromBytes("fallback", .keyword)};
 
-    const answered = try cpuCount(fallback[0..1]);
+    const answered = try cpuCount.call(fallback[0..1]);
     if (direct < 0) {
         expect(harness.equals(answered, fallback[0]));
         // With no fallback to give, the result is nil rather than an error.
-        expect(harness.isType(try cpuCount(&.{}), repr.Tag.nil));
+        expect(harness.isType(try cpuCount.call(&.{}), repr.Tag.nil));
     } else {
         expect(args_core.checkint(answered));
         expect(wrap.toInteger(answered) == direct);
         // The fallback is not consulted when there is a real count.
-        expect(wrap.toInteger(try cpuCount(&.{})) == direct);
+        expect(wrap.toInteger(try cpuCount.call(&.{})) == direct);
     }
 }
 

@@ -791,7 +791,7 @@ fn itU64Tostring(box: *u64, render: *abi.Render) raise.Error!void {
 
 /// Builds one method table row.
 fn method(comptime name: [:0]const u8, comptime f: anytype) method_type.Method {
-    return .{ .name = name, .nfun = f };
+    return .{ .name = name, .nfun = raise.stored(f) };
 }
 
 /// The refusal `nfunToNumber` raises for a box outside a double's exact range.

@@ -101,7 +101,7 @@ const fd_cloexec: c_int = std.c.FD_CLOEXEC;
 const o_nonblock: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .NONBLOCK = true })));
 var post_record: PostRecord = .{};
 
-const probe_methods = [_]method_type.CMethod{
+const probe_methods = [_]method_type.Method{
     .{ .name = "probe", .nfun = raise.stored(&probeMethod) },
     .{ .name = null, .nfun = null },
 };

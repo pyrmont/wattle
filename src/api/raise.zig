@@ -97,8 +97,8 @@ const in_module = config.native_module;
 /// raises, so a caller has to `try` it. Janet's own signature is
 /// `Janet (*)(int32_t, Janet *)`, which returns no error union, so a C body
 /// cannot have this type and a C caller cannot invoke it. `abi.NFunction` is
-/// the C ABI's shape for the same pointer, and `nfunction` and `stored` are
-/// the casts between the two.
+/// the C ABI's shape for the same function. `stored` builds a function of that
+/// shape around an nfunction, and `call` calls one.
 pub const NFunction = module.NFunction;
 
 /// The one error a raise-capable function returns. This is `module.Error`,
@@ -110,17 +110,18 @@ pub const Error = module.Error;
 // Public functions
 // ==========================================================================
 
-/// Reads an nfunction out of a stored slot.
+/// Calls an nfunction through its stored slot.
 ///
-/// `slot` is the C ABI's shape for the pointer, which is how a `Value`'s union
-/// member, a registration row, a registry key and a stack frame's `pc` are
-/// typed. That is a layout rather than a calling convention, so this is a cast
-/// and everything downstream of it is an ordinary Zig call that returns an
-/// error. This function cannot raise.
+/// `slot` is the C ABI's shape for the nfunction, which is how a `Value`'s
+/// union member, a registration row, a registry key and a stack frame's `pc`
+/// are typed. `argv` is the arguments. This function raises if the nfunction
+/// raised.
 ///
-/// See `stored`, which is the same pointer on its way into that storage.
-pub inline fn nfunction(slot: abi.NFunction) NFunction {
-    return @ptrCast(slot.?);
+/// See `stored`, which builds the slot's function.
+pub inline fn call(slot: abi.NFunction, argv: []repr.Value) Error!repr.Value {
+    const result = slot.?(@intCast(argv.len), argv.ptr);
+    if (result.raised) return error.Signal;
+    return result.value;
 }
 
 /// Returns the value a call through an abi produced, or the error it reported.
@@ -303,13 +304,22 @@ pub fn signal(sig: abi.Signal, message: repr.Value) Error {
     return error.Signal;
 }
 
-/// Returns an nfunction on its way into a stored slot, at registration.
+/// Returns the C ABI function that calls an nfunction, for a stored slot.
 ///
-/// `nfun` is the nfunction. This function cannot raise.
+/// `nfun` is the nfunction, known at compile time. The result takes a count
+/// and a pointer, rebuilds the slice, calls `nfun`, and reports a raise in the
+/// `raised` field of its result. This function cannot raise.
 ///
-/// See `nfunction`, which is the cast back out of that storage.
-pub inline fn stored(nfun: anytype) abi.NFunction {
-    return @ptrCast(nfun);
+/// See `call`, which makes the call through the slot.
+pub inline fn stored(comptime nfun: anytype) abi.NFunction {
+    const f = if (@typeInfo(@TypeOf(nfun)) == .pointer) nfun.* else nfun;
+    const Shim = struct {
+        fn run(argc: i32, argv: [*c]repr.Value) callconv(.c) abi.NResult {
+            const value = f(argv[0..@intCast(argc)]) catch return .{ .value = blank(repr.Value), .raised = true };
+            return .{ .value = value, .raised = false };
+        }
+    };
+    return &Shim.run;
 }
 
 /// Returns the value a raise-capable call produced, or a determinate zero if

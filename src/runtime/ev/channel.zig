@@ -59,14 +59,14 @@ const max_channel_capacity: i32 = 0xFFFFFF;
 
 /// The methods reached through `(:give ch x)` and its siblings.
 const chanat_methods = [_]method_type.Method{
-    .{ .name = "select", .nfun = &nfunChoice },
-    .{ .name = "rselect", .nfun = &nfunRchoice },
-    .{ .name = "count", .nfun = &nfunCount },
-    .{ .name = "take", .nfun = &nfunTake },
-    .{ .name = "give", .nfun = &nfunGive },
-    .{ .name = "capacity", .nfun = &nfunCapacity },
-    .{ .name = "full", .nfun = &nfunFull },
-    .{ .name = "close", .nfun = &nfunClose },
+    .{ .name = "select", .nfun = raise.stored(&nfunChoice) },
+    .{ .name = "rselect", .nfun = raise.stored(&nfunRchoice) },
+    .{ .name = "count", .nfun = raise.stored(&nfunCount) },
+    .{ .name = "take", .nfun = raise.stored(&nfunTake) },
+    .{ .name = "give", .nfun = raise.stored(&nfunGive) },
+    .{ .name = "capacity", .nfun = raise.stored(&nfunCapacity) },
+    .{ .name = "full", .nfun = raise.stored(&nfunFull) },
+    .{ .name = "close", .nfun = raise.stored(&nfunClose) },
     .{ .name = null, .nfun = null },
 };
 

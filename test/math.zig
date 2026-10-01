@@ -189,7 +189,7 @@ fn theDefaultRng() void {
 
 fn call2(fun: anytype, a: f64, b: f64) !f64 {
     var argv = [2]repr.Value{ wrap.fromNumber(a), wrap.fromNumber(b) };
-    return wrap.toNumber(try fun(argv[0..2]));
+    return wrap.toNumber(try fun.call(argv[0..2]));
 }
 
 fn theGcdAndLcm() !void {
@@ -228,7 +228,7 @@ fn theGcdAndLcm() !void {
     expect(std.math.isNan(try call2(lcm, inf, 4)));
     expect(std.math.isNan(try call2(lcm, 4, inf)));
 
-    // NaN in, NaN out, and `lcm(0, 0)` is NaN rather than zero, because it
+    // NaN in, NaN out, and `lcm.call(0, 0)` is NaN rather than zero, because it
     // divides by the gcd.
     expect(std.math.isNan(try call2(gcd, nan, 4)));
     expect(std.math.isNan(try call2(gcd, 4, nan)));

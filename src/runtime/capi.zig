@@ -392,7 +392,7 @@ pub fn gcunroot(v: repr.Value) callconv(.c) bool {
 }
 
 /// Looks `method` up in a method table, for an abstract type's `get` slot.
-pub fn getmethod(method: [*:0]const u8, methods: [*]const method_type.CMethod, out: *repr.Value) callconv(.c) c_int {
+pub fn getmethod(method: [*:0]const u8, methods: [*]const method_type.Method, out: *repr.Value) callconv(.c) c_int {
     requireVmThread();
     return impl.args.getmethod(method, methods, out);
 }
@@ -572,7 +572,7 @@ pub fn new_tuple(items: [*]const repr.Value, len: usize) callconv(.c) repr.Value
 }
 
 /// The method after `key`, for an abstract type's `next` slot.
-pub fn nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) callconv(.c) repr.Value {
+pub fn nextmethod(methods: [*]const method_type.Method, key: repr.Value) callconv(.c) repr.Value {
     requireVmThread();
     return impl.args.nextmethod(methods, key);
 }

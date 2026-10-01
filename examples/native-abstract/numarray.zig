@@ -254,9 +254,9 @@ fn length(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// The method table `numArrayGet` looks a keyword key up in, with a row for
 /// `scale`, `sum` and `length`.
 const methods = [_]wattle.Method{
-    .{ .name = "scale", .nfun = &scale },
-    .{ .name = "sum", .nfun = &sum },
-    .{ .name = "length", .nfun = &length },
+    .{ .name = "scale", .nfun = wattle.nfunction(&scale) },
+    .{ .name = "sum", .nfun = wattle.nfunction(&sum) },
+    .{ .name = "length", .nfun = wattle.nfunction(&length) },
 };
 
 // ==========================================================================

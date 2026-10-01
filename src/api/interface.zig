@@ -221,11 +221,9 @@ pub const Runtime = extern struct {
     getdictionary: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.Dictionary,
     getindexed: *const fn (argv: [*]const Value, n: i32) callconv(.c) abi.Indexed,
     getinteger: *const fn (argv: [*]const Value, n: i32) callconv(.c) i32,
-    /// Takes `method_type.CMethod` rather than `module.Method`. The two share
-    /// one layout and differ only in the declared type of `nfun`. This field
-    /// declares the C form because a table field is a crossing, and
-    /// `runtime/method_type.zig` asserts that the two layouts match.
-    getmethod: *const fn (method: [*:0]const u8, methods: [*]const method_type.CMethod, out: *Value) callconv(.c) c_int,
+    /// Takes `method_type.Method`, which is `module.Method` under the name the
+    /// runtime uses.
+    getmethod: *const fn (method: [*:0]const u8, methods: [*]const method_type.Method, out: *Value) callconv(.c) c_int,
     getnumber: *const fn (argv: [*]const Value, n: i32) callconv(.c) f64,
     getrange: *const fn (argv: [*]const Value, argc: i32, n: i32, length: i32) callconv(.c) abi.Range,
     getsize: *const fn (argv: [*]const Value, n: i32) callconv(.c) usize,
@@ -254,7 +252,7 @@ pub const Runtime = extern struct {
     new_symbol: *const fn (bytes: [*]const u8, len: usize) callconv(.c) Value,
     new_table: *const fn (kvs: [*]const abi.Keyval, len: usize) callconv(.c) Value,
     new_tuple: *const fn (items: [*]const Value, len: usize) callconv(.c) Value,
-    nextmethod: *const fn (methods: [*]const method_type.CMethod, key: Value) callconv(.c) Value,
+    nextmethod: *const fn (methods: [*]const method_type.Method, key: Value) callconv(.c) Value,
     pcall_value: *const fn (
         f: Value,
         args: [*]const Value,

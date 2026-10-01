@@ -68,11 +68,10 @@ var process_io: std.Io = undefined;
 // Aliased types
 // ==========================================================================
 
-/// The type of an nfunction in this file. This is `raise.NFunction`, which
-/// returns `raise.Error!Value` over Zig's own calling convention, so a
-/// raise is a returned error and a caller that forgets the `try` gets a
-/// compile error.
-const NFunction = raise.NFunction;
+/// The type of an nfunction's stored slot in this file. This is
+/// `abi.NFunction`, which `raise.stored` builds from a function returning
+/// `raise.Error!Value`.
+const NFunction = abi.NFunction;
 
 // ==========================================================================
 // Types
@@ -96,7 +95,7 @@ pub const WattleLine = struct {
 ///
 /// The result wraps `lineGetter`. This function cannot raise.
 pub fn lineGetterValue() repr.Value {
-    return wrap.fromNfunction(@ptrCast(&lineGetter));
+    return wrap.fromNfunction(raise.stored(&lineGetter));
 }
 
 /// Defines the five `zig/*` builtins in `env`, and returns whether that
@@ -177,14 +176,14 @@ fn nfunZigRooted(argv: []repr.Value) raise.Error!repr.Value {
 /// The local `defs` is the table and this function is what installs it.
 fn define(env: *tables.Table) raise.Error!void {
     const defs = [_]struct { name: [*:0]const u8, nfun: NFunction, doc: [*:0]const u8 }{
-        .{ .name = "zig/identity", .nfun = &nfunZigIdentity, .doc = "Round-trips one Wattle value through Zig." },
-        .{ .name = "zig/length", .nfun = &nfunZigLength, .doc = "Reads the length of a Wattle collection in Zig." },
-        .{ .name = "zig/call", .nfun = &nfunZigCall, .doc = "Calls a Wattle closure from Zig through a protected call." },
-        .{ .name = "zig/rooted", .nfun = &nfunZigRooted, .doc = "Creates and roots a Wattle value across a forced collection." },
-        .{ .name = "zig/fail", .nfun = &nfunZigFail, .doc = "Raises a controlled Wattle error after returning from Zig." },
+        .{ .name = "zig/identity", .nfun = raise.stored(&nfunZigIdentity), .doc = "Round-trips one Wattle value through Zig." },
+        .{ .name = "zig/length", .nfun = raise.stored(&nfunZigLength), .doc = "Reads the length of a Wattle collection in Zig." },
+        .{ .name = "zig/call", .nfun = raise.stored(&nfunZigCall), .doc = "Calls a Wattle closure from Zig through a protected call." },
+        .{ .name = "zig/rooted", .nfun = raise.stored(&nfunZigRooted), .doc = "Creates and roots a Wattle value across a forced collection." },
+        .{ .name = "zig/fail", .nfun = raise.stored(&nfunZigFail), .doc = "Raises a controlled Wattle error after returning from Zig." },
     };
     for (defs) |d| {
-        registry.def(env, d.name, wrap.fromNfunction(@ptrCast(d.nfun)), d.doc);
+        registry.def(env, d.name, wrap.fromNfunction(d.nfun), d.doc);
     }
 }
 

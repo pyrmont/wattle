@@ -78,7 +78,7 @@ const wrap = @import("subsystems").value.wrap;
 const method_one = raise.stored(&methodOne);
 const method_two = raise.stored(&methodTwo);
 
-const methods = [_]method_type.CMethod{
+const methods = [_]method_type.Method{
     .{ .name = "one", .nfun = method_one },
     .{ .name = "two", .nfun = method_two },
     .{ .name = null, .nfun = null },

@@ -131,7 +131,7 @@ fn decode(frame: *vm_state.StackFrame) tf.TraceFrame {
 
 /// `raise.stored` is the cast from one of the three probes into the `Row` key
 /// the registry is indexed by.
-fn keyOf(probe: raise.NFunction) abi.NFunction {
+fn keyOf(comptime probe: anytype) abi.NFunction {
     return raise.stored(probe);
 }
 

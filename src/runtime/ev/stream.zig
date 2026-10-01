@@ -122,10 +122,10 @@ const chunk_size_windows: i32 = 4096;
 
 /// The methods every stream has, which the abstract type's `get` looks in.
 const default_methods = [_]method_type.Method{
-    .{ .name = "close", .nfun = &nfunStreamClose },
-    .{ .name = "read", .nfun = &nfunStreamRead },
-    .{ .name = "chunk", .nfun = &nfunStreamChunk },
-    .{ .name = "write", .nfun = &nfunStreamWrite },
+    .{ .name = "close", .nfun = raise.stored(&nfunStreamClose) },
+    .{ .name = "read", .nfun = raise.stored(&nfunStreamRead) },
+    .{ .name = "chunk", .nfun = raise.stored(&nfunStreamChunk) },
+    .{ .name = "write", .nfun = raise.stored(&nfunStreamWrite) },
     .{ .name = null, .nfun = null },
 };
 
@@ -522,7 +522,7 @@ pub fn makePipe(handles: *[2]host.Handle, mode: c_int) c_int {
 pub fn makeStream(
     handle: host.Handle,
     flags: u32,
-    methods: ?[*]const method_type.CMethod,
+    methods: ?[*]const method_type.Method,
 ) raise.Error!*Stream {
     return makeStreamExt(handle, flags, methods, @sizeOf(Stream));
 }
@@ -536,7 +536,7 @@ pub fn makeStream(
 pub fn makeStreamExt(
     handle: host.Handle,
     flags: u32,
-    methods: ?[*]const method_type.CMethod,
+    methods: ?[*]const method_type.Method,
     size: usize,
 ) raise.Error!*Stream {
     ev.assert(@src(), size >= @sizeOf(Stream), "bad size");

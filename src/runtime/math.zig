@@ -58,9 +58,9 @@ pub const rngType = abstract_type.define(Rng, .{
 
 /// The methods reached through `(:int rng 10)` and its two siblings.
 const rng_methods = [_]method_type.Method{
-    .{ .name = "uniform", .nfun = &nfunRngUniform },
-    .{ .name = "int", .nfun = &nfunRngInt },
-    .{ .name = "buffer", .nfun = &nfunRngBuffer },
+    .{ .name = "uniform", .nfun = raise.stored(&nfunRngUniform) },
+    .{ .name = "int", .nfun = raise.stored(&nfunRngInt) },
+    .{ .name = "buffer", .nfun = raise.stored(&nfunRngBuffer) },
     .{ .name = null, .nfun = null },
 };
 

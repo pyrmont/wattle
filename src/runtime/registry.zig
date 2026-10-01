@@ -23,9 +23,8 @@
 //! `Binding` the compiler and `resolve` work from.
 //!
 //! `textSubstitution` runs arbitrary Janet code: a call for a function, and an
-//! nfunction pointer for a builtin. The second goes through `raise.nfunction`,
-//! which is what makes forgetting the raise impossible, and that function's
-//! block says what forgetting it costs.
+//! nfunction pointer for a builtin. The second goes through `raise.call`,
+//! which returns an error union, so forgetting the raise is a compile error.
 
 // ==========================================================================
 // Standard library imports
@@ -533,7 +532,7 @@ pub fn resolveExt(env: *tables.Table, sym: [*:0]const u8) Binding {
 /// `(string/replace "a" "b" s)` does not. This function raises what the call
 /// raises.
 ///
-/// The nfunction call goes through `raise.nfunction`, and Janet's does not.
+/// The nfunction call goes through `raise.call`, and Janet's does not.
 /// Without the test a raising substitution passes this frame unnoticed and is
 /// reported against whichever builtin called it, and the remaining matches are
 /// substituted with nil in the meantime.
@@ -557,7 +556,7 @@ pub fn textSubstitution(
             if (value_type == repr.Tag.function) {
                 return toByteView(try vm_entry.call(wrap.toFunction(subst.*), argv[0..@intCast(argc)]));
             }
-            return toByteView(try raise.nfunction(wrap.toNfunction(subst.*))(argv[0..@intCast(argc)]));
+            return toByteView(try raise.call(wrap.toNfunction(subst.*), argv[0..@intCast(argc)]));
         },
         else => return memoizeByteView(subst),
     }

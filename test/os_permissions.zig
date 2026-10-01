@@ -92,20 +92,20 @@ fn theCoreFunctions() !void {
     var args: [1]repr.Value = undefined;
 
     args[0] = value.fromBytes("rw-r-----", .string);
-    expect(wrap.toInteger(try permInt(args[0..1])) == 0o640);
+    expect(wrap.toInteger(try permInt.call(args[0..1])) == 0o640);
 
     args[0] = harness.wrapInteger(0o640);
-    const rendered = try permString(args[0..1]);
+    const rendered = try permString.call(args[0..1]);
     expect(harness.stringIs(wrap.toString(rendered), "rw-r-----"));
 
     // `os/perm-string` accepts a string as well as an integer and gives it
     // back, so that a caller can pass either through without asking which.
     args[0] = value.fromBytes("rwxrwxrwx", .string);
-    expect(harness.stringIs(wrap.toString(try permString(args[0..1])), "rwxrwxrwx"));
+    expect(harness.stringIs(wrap.toString(try permString.call(args[0..1])), "rwxrwxrwx"));
 
     // The permissive parse survives the public function too.
     args[0] = value.fromBytes("xxxxxxxxx", .string);
-    expect(wrap.toInteger(try permInt(args[0..1])) == 0o111);
+    expect(wrap.toInteger(try permInt.call(args[0..1])) == 0o111);
 }
 
 /// Validation happens before either kernel is entered, and this is where it is

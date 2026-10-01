@@ -120,16 +120,16 @@ fn theCoreFunctions() !void {
 
     args[0] = value.fromBytes(test_name, .string);
     args[1] = value.fromBytes("public-value", .string);
-    expect(harness.isType(try setenv(args[0..2]), repr.Tag.nil));
+    expect(harness.isType(try setenv.call(args[0..2]), repr.Tag.nil));
 
-    const found = try getenv(args[0..1]);
+    const found = try getenv.call(args[0..1]);
     expect(harness.isType(found, repr.Tag.string));
     expect(harness.stringIs(wrap.toString(found), "public-value"));
 
     // `os/environ` is absent on Plan 9, where there is no `environ` to walk.
     if (!(builtin.os.tag == .plan9)) {
         const environ = harness.core("os/environ");
-        const snapshot = wrap.toTable(try environ(&.{}));
+        const snapshot = wrap.toTable(try environ.call(&.{}));
         const captured = tables.get(snapshot, args[0]);
         expect(harness.isType(captured, repr.Tag.string));
         expect(harness.stringIs(wrap.toString(captured), "public-value"));
@@ -139,13 +139,13 @@ fn theCoreFunctions() !void {
     // unset, and it comes back as it stands rather than coerced to a string.
     args[0] = value.fromBytes(missing_name, .string);
     args[1] = value.fromBytes("fallback", .keyword);
-    expect(harness.equals(try getenv(args[0..2]), args[1]));
+    expect(harness.equals(try getenv.call(args[0..2]), args[1]));
 
     // One argument to `os/setenv` unsets, which is the same path
     // `os.environSet(name, NULL)` takes above and a different caller of it.
     args[0] = value.fromBytes(test_name, .string);
-    expect(harness.isType(try setenv(args[0..1]), repr.Tag.nil));
-    expect(harness.isType(try getenv(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try setenv.call(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try getenv.call(args[0..1]), repr.Tag.nil));
 }
 
 /// An entry whose name is empty has its separator at index zero, and
@@ -158,7 +158,7 @@ fn anEntryWithAnEmptyName() !void {
     const slot = host.vector();
     const saved = slot.*;
     slot.* = &entries;
-    const result = harness.core("os/environ")(&.{});
+    const result = harness.core("os/environ").call(&.{});
     slot.* = saved;
 
     const snapshot = wrap.toTable(try result);

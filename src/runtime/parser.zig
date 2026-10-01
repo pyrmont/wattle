@@ -61,18 +61,18 @@ const wrap = @import("value/helpers/wrap.zig");
 /// table, so `(keys p)` and `next` report the methods in the order they are
 /// written here.
 const methods = [_]method_type.Method{
-    .{ .name = "byte", .nfun = nfunParserByte },
-    .{ .name = "clone", .nfun = nfunParserClone },
-    .{ .name = "consume", .nfun = nfunParserConsume },
-    .{ .name = "eof", .nfun = nfunParserEof },
-    .{ .name = "error", .nfun = nfunParserError },
-    .{ .name = "flush", .nfun = nfunParserFlush },
-    .{ .name = "has-more", .nfun = nfunParserHasMore },
-    .{ .name = "insert", .nfun = nfunParserInsert },
-    .{ .name = "produce", .nfun = nfunParserProduce },
-    .{ .name = "state", .nfun = nfunParserState },
-    .{ .name = "status", .nfun = nfunParserStatus },
-    .{ .name = "where", .nfun = nfunParserWhere },
+    .{ .name = "byte", .nfun = raise.stored(nfunParserByte) },
+    .{ .name = "clone", .nfun = raise.stored(nfunParserClone) },
+    .{ .name = "consume", .nfun = raise.stored(nfunParserConsume) },
+    .{ .name = "eof", .nfun = raise.stored(nfunParserEof) },
+    .{ .name = "error", .nfun = raise.stored(nfunParserError) },
+    .{ .name = "flush", .nfun = raise.stored(nfunParserFlush) },
+    .{ .name = "has-more", .nfun = raise.stored(nfunParserHasMore) },
+    .{ .name = "insert", .nfun = raise.stored(nfunParserInsert) },
+    .{ .name = "produce", .nfun = raise.stored(nfunParserProduce) },
+    .{ .name = "state", .nfun = raise.stored(nfunParserState) },
+    .{ .name = "status", .nfun = raise.stored(nfunParserStatus) },
+    .{ .name = "where", .nfun = raise.stored(nfunParserWhere) },
     .{ .name = null, .nfun = null },
 };
 

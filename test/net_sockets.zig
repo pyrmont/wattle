@@ -466,7 +466,7 @@ fn theStreamFaults() void {
             "evchunk", "evwrite",     "shutdown", "setsockopt",
         };
         const stream: *ev_stream.Stream = @ptrCast(@alignCast(wrap.toAbstract(listener)));
-        const methods: [*]const method_type.CMethod = @ptrCast(@alignCast(stream.methods));
+        const methods: [*]const method_type.Method = @ptrCast(@alignCast(stream.methods));
         for (expected, 0..) |name, i| {
             expect(methods[i].name != null);
             expect(std.mem.eql(u8, std.mem.span(methods[i].name.?), name));

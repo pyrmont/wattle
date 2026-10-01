@@ -7,10 +7,10 @@
 #
 #   export    2
 #   slot      88
-#   callback  23
+#   callback  24
 #   residue   0
 #
-#   not definitions: 124 `extern fn` declarations, 112 function-pointer types
+#   not definitions: 124 `extern fn` declarations, 113 function-pointer types
 #
 # columns: class  site  function
 
@@ -21,17 +21,18 @@ slot      api/abstract_type.zig:159                    compare
 slot      api/abstract_type.zig:162                    hash
 slot      api/abstract_type.zig:168                    bytes
 callback  api/abstract_type.zig:178                    chunk
-slot      api/raise.zig:175                            abi
-slot      api/raise.zig:180                            abi
-slot      api/raise.zig:185                            abi
-slot      api/raise.zig:190                            abi
-slot      api/raise.zig:195                            abi
-slot      api/raise.zig:200                            abi
-slot      api/raise.zig:225                            abi
-slot      api/raise.zig:230                            abi
-slot      api/raise.zig:235                            abi
-export    module.zig:783                               modConfig
-export    module.zig:795                               modInit
+slot      api/raise.zig:176                            abi
+slot      api/raise.zig:181                            abi
+slot      api/raise.zig:186                            abi
+slot      api/raise.zig:191                            abi
+slot      api/raise.zig:196                            abi
+slot      api/raise.zig:201                            abi
+slot      api/raise.zig:226                            abi
+slot      api/raise.zig:231                            abi
+slot      api/raise.zig:236                            abi
+callback  api/raise.zig:317                            run
+export    module.zig:805                               modConfig
+export    module.zig:817                               modInit
 slot      runtime/args.zig:1037                        bytesViewAbi
 slot      runtime/args.zig:1054                        checkArityAbi
 slot      runtime/args.zig:1259                        dictionaryChunkAbi
@@ -106,24 +107,24 @@ slot      runtime/capi.zig:699                         c_raise_record
 slot      runtime/capi.zig:703                         c_raise_take
 slot      runtime/capi.zig:707                         fatal
 slot      runtime/capi.zig:711                         signal_record
-callback  runtime/ev.zig:1474                          goThreadSubr
-callback  runtime/ev.zig:1701                          threadBodyPosix
-callback  runtime/ev.zig:1750                          timeoutBodyPosix
-callback  runtime/ev.zig:1791                          timeoutCallback
-callback  runtime/ev.zig:498                           evDefaultThreadedCallback
-callback  runtime/ev/channel.zig:766                   threadChanCallback
+callback  runtime/ev.zig:1730                          goThreadSubr
+callback  runtime/ev.zig:1958                          threadBodyPosix
+callback  runtime/ev.zig:2007                          timeoutBodyPosix
+callback  runtime/ev.zig:2048                          timeoutCallback
+callback  runtime/ev.zig:557                           evDefaultThreadedCallback
+callback  runtime/ev/channel.zig:823                   threadChanCallback
 callback  runtime/ffi/call.zig:467                     aapcs64Callback
 callback  runtime/ffi/call.zig:970                     sysv64Callback
 callback  runtime/ffi/call.zig:974                     win64Callback
-callback  runtime/native_module.zig:1017               workDone
+callback  runtime/native_module.zig:1018               workDone
 callback  runtime/native_module.zig:196                abandonDone
-callback  runtime/native_module.zig:869                stampedeDone
-callback  runtime/os/process.zig:1388                  shellSubroutine
-callback  runtime/os/process.zig:1400                  signalCallback
-callback  runtime/os/process.zig:298                   plain
-callback  runtime/os/process.zig:304                   interrupting
-callback  runtime/os/process.zig:317                   subroutine
-callback  runtime/os/process.zig:356                   callbackAbi
+callback  runtime/native_module.zig:870                stampedeDone
+callback  runtime/os/process.zig:1404                  shellSubroutine
+callback  runtime/os/process.zig:1416                  signalCallback
+callback  runtime/os/process.zig:299                   plain
+callback  runtime/os/process.zig:305                   interrupting
+callback  runtime/os/process.zig:318                   subroutine
+callback  runtime/os/process.zig:357                   callbackAbi
 slot      runtime/value/helpers/wrap.zig:114           fromString
 slot      runtime/value/helpers/wrap.zig:161           fromAbstract
 slot      runtime/value/helpers/wrap.zig:165           fromPointer

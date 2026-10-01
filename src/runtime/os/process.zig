@@ -115,9 +115,9 @@ const proc_waiting: c_int = 4;
 /// walks, so `(keys p)` reports `:in`, `:out` and `:err` as well; the table's
 /// order is observable for the same reason, and it is preserved.
 const proc_methods = [_]method_type.Method{
-    .{ .name = "wait", .nfun = &nfunProcWait },
-    .{ .name = "kill", .nfun = &nfunProcKill },
-    .{ .name = "close", .nfun = &nfunProcClose },
+    .{ .name = "wait", .nfun = raise.stored(&nfunProcWait) },
+    .{ .name = "kill", .nfun = raise.stored(&nfunProcKill) },
+    .{ .name = "close", .nfun = raise.stored(&nfunProcClose) },
     .{ .name = "in", .nfun = null },
     .{ .name = "out", .nfun = null },
     .{ .name = "err", .nfun = null },

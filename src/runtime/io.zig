@@ -114,12 +114,12 @@ const file_serializable: i32 = 128;
 /// `findMethod` scans it linearly, so the order here is the order `nextmethod`
 /// reports and a caller may depend on it.
 const file_methods = [_]method_type.Method{
-    .{ .name = "close", .nfun = nfunFclose },
-    .{ .name = "flush", .nfun = nfunFflush },
-    .{ .name = "read", .nfun = nfunFread },
-    .{ .name = "seek", .nfun = nfunFseek },
-    .{ .name = "tell", .nfun = nfunFtell },
-    .{ .name = "write", .nfun = nfunFwrite },
+    .{ .name = "close", .nfun = raise.stored(nfunFclose) },
+    .{ .name = "flush", .nfun = raise.stored(nfunFflush) },
+    .{ .name = "read", .nfun = raise.stored(nfunFread) },
+    .{ .name = "seek", .nfun = raise.stored(nfunFseek) },
+    .{ .name = "tell", .nfun = raise.stored(nfunFtell) },
+    .{ .name = "write", .nfun = raise.stored(nfunFwrite) },
     .{ .name = null, .nfun = null },
 };
 

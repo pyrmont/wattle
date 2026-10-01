@@ -235,18 +235,29 @@ pub const Chunk = extern struct {
     start: usize = 0,
 };
 
+/// What an nfunction returns across the C ABI.
+///
+/// `value` is the result. `raised` is true when the nfunction raised, in which
+/// case `value` is zero and the signal is in the runtime's pending signal. A
+/// `callconv(.c)` function cannot return an error union, so the raise is a
+/// field of the result.
+pub const NResult = extern struct {
+    value: repr.Value,
+    raised: bool,
+};
+
 /// The type of the slot an nfunction pointer is stored in.
 ///
 /// A module author writes an nfunction as `fn ([]Value) Error!Value`, which is
 /// `module.NFunction`, declared in `module.zig` and re-exported by
 /// `api/raise.zig`. `NFunction` here is a different type: it is the C ABI's
-/// shape for the same pointer, and it is what the runtime stores in `Reg.nfun`
-/// and in `runtime/method_type.zig`'s `CMethod.nfun`.
+/// shape for the same function, and it is what the runtime stores in
+/// `Reg.nfun` and in `Method.nfun`.
 ///
-/// `api/raise.zig` converts between the two. Its `stored` casts an author's
-/// nfunction into this type at registration, and its `nfunction` casts the
-/// stored pointer back before the runtime makes a call.
-pub const NFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) repr.Value;
+/// `api/raise.zig` converts between the two. Its `stored` builds a function of
+/// this type around an author's nfunction at registration, and its `call`
+/// makes the call through the stored pointer.
+pub const NFunction = ?*const fn (argc: i32, argv: [*c]repr.Value) callconv(.c) NResult;
 
 /// What a value holds: nothing a reader walks, elements, or pairs.
 ///

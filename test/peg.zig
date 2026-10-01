@@ -67,7 +67,7 @@ const wrap = @import("subsystems").value.wrap;
 // ==========================================================================
 
 /// `peg/compile`, resolved once. The type assertion is `harness.core`'s.
-var compile_nfun: raise.NFunction = undefined;
+var compile_nfun: harness.Core = undefined;
 const lb_integer: u8 = 205;
 const lb_nil: u8 = 201;
 

@@ -174,7 +174,7 @@ fn slot(prim: u32, spec: u32, size: u64, alignment: u32) ArgSlot {
 /// tell which one `:default` will resolve to.
 fn supports(want: [*:0]const u8) bool {
     const conventions = harness.core("ffi/calling-conventions");
-    const listed = conventions(&.{}) catch return false;
+    const listed = conventions.call(&.{}) catch return false;
     if (!harness.isType(listed, repr.Tag.array)) return false;
     const array = wrap.toArray(listed);
     var i: i32 = 0;
@@ -254,8 +254,8 @@ fn primTable() void {
     const align_of = harness.core("ffi/align");
     for (cases) |case| {
         var arg = value.fromBytes(std.mem.span(case.name), .keyword);
-        const size = size_of((&arg)[0..1]) catch @panic("ffi_core: ffi/size raised");
-        const alignment = align_of((&arg)[0..1]) catch @panic("ffi_core: ffi/align raised");
+        const size = size_of.call((&arg)[0..1]) catch @panic("ffi_core: ffi/size raised");
+        const alignment = align_of.call((&arg)[0..1]) catch @panic("ffi_core: ffi/align raised");
         expect(wrap.toNumber(size) == @as(f64, @floatFromInt(case.size)));
         expect(wrap.toNumber(alignment) == @as(f64, @floatFromInt(case.alignment)));
     }
@@ -413,12 +413,12 @@ fn theRaises() void {
     // size the expression names, and as a struct field that moves every later
     // field's offset. The message names the spelling that works.
     argv[0] = eval("![:u8 4]");
-    expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 4);
+    expect(wrap.toNumber(ffi_size.call(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 4);
     argv[0] = eval("![![:u8 4] 3]");
     expectRaisePrefix(ffi_size, .{argv[0..1]}, "nested array type ");
     // The struct of inner arrays is the working spelling, and it is twelve.
     argv[0] = eval("![[:u8 :u8 :u8 :u8] 3]");
-    expect(wrap.toNumber(ffi_size(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 12);
+    expect(wrap.toNumber(ffi_size.call(argv[0..1]) catch @panic("ffi_core: ffi/size raised")) == 12);
     // An inner array of count zero is an array too.
     argv[0] = eval("![![:u8] 3]");
     expectRaisePrefix(ffi_size, .{argv[0..1]}, "nested array type ");
@@ -462,7 +462,7 @@ fn theRaises() void {
     {
         argv[0] = value.fromBytes("none", .keyword);
         argv[1] = value.fromBytes("void", .keyword);
-        const sig = ffi_signature(argv[0..2]) catch @panic("ffi_core: ffi/signature raised");
+        const sig = ffi_signature.call(argv[0..2]) catch @panic("ffi_core: ffi/signature raised");
         var call_argv: [2]repr.Value = undefined;
         call_argv[0] = wrap.fromPointer(@ptrCast(@constCast(&theRaises)));
         call_argv[1] = sig;
@@ -523,7 +523,7 @@ fn theRaises() void {
         expectRaise(harness.core("ffi/close"), .{self_argv[0..1]}, "cannot close self");
         {
             var lookup = [_]repr.Value{ self, value.fromBytes("a_symbol_that_does_not_exist", .string) };
-            const found = harness.core("ffi/lookup")(lookup[0..2]) catch
+            const found = harness.core("ffi/lookup").call(lookup[0..2]) catch
                 @panic("ffi_core: ffi/lookup raised");
             expect(harness.isType(found, repr.Tag.nil));
         }
@@ -560,7 +560,7 @@ fn theSignatureArityBound() void {
     // Thirty-two argument types is exactly the structure's room, so the bound
     // admits it. The two leading arguments are the convention and the return
     // type, so the arity the message names is thirty-four.
-    const full = signature(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
+    const full = signature.call(argv[0..34]) catch @panic("ffi_core: 32 arguments were refused");
     expect(harness.isType(full, repr.Tag.abstract));
 
     // One more is refused as an ordinary arity error rather than a corrupted
@@ -614,14 +614,14 @@ fn homogeneousFloatAggregates() void {
     const ffi_call_fn = harness.core("ffi/call");
 
     var pair = [_]repr.Value{ value.fromBytes("float", .keyword), value.fromBytes("float", .keyword) };
-    const hfa = ffi_struct(pair[0..2]) catch @panic("ffi_core: ffi/struct raised");
+    const hfa = ffi_struct.call(pair[0..2]) catch @panic("ffi_core: ffi/struct raised");
 
     // Outgoing: 1.5 in the first vector register and 2.5 in the second, so the
     // callee's weighted sum is 1.5 + 5. Sized by bytes it was one register,
     // the second member was never written, and the sum was 1.5.
     {
         var argtypes = [_]repr.Value{ value.fromBytes("default", .keyword), value.fromBytes("double", .keyword), hfa };
-        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
+        const sig = ffi_signature.call(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
         const members = tuples.begin(2);
         members[0] = wrap.fromNumber(1.5);
@@ -631,7 +631,7 @@ fn homogeneousFloatAggregates() void {
             sig,
             wrap.fromTuple(tuples.end(members)),
         };
-        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        const answer = ffi_call_fn.call(args[0..3]) catch @panic("ffi_core: ffi/call raised");
         expect(harness.isType(answer, repr.Tag.number));
         expect(wrap.toNumber(answer) == 6.5);
     }
@@ -641,14 +641,14 @@ fn homogeneousFloatAggregates() void {
     // member is the first register's unused half.
     {
         var argtypes = [_]repr.Value{ value.fromBytes("default", .keyword), hfa, value.fromBytes("float", .keyword) };
-        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
+        const sig = ffi_signature.call(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
         var args = [_]repr.Value{
             wrap.fromPointer(@ptrCast(@constCast(&hfa2Build))),
             sig,
             wrap.fromNumber(1.5),
         };
-        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        const answer = ffi_call_fn.call(args[0..3]) catch @panic("ffi_core: ffi/call raised");
         expect(harness.isIndexed(answer));
         const built = harness.elems(answer);
         expect(built.len == 2);
@@ -660,9 +660,9 @@ fn homogeneousFloatAggregates() void {
     // scatter.
     {
         var one = [_]repr.Value{value.fromBytes("float", .keyword)};
-        const hfa1 = ffi_struct(one[0..1]) catch @panic("ffi_core: ffi/struct raised");
+        const hfa1 = ffi_struct.call(one[0..1]) catch @panic("ffi_core: ffi/struct raised");
         var argtypes = [_]repr.Value{ value.fromBytes("default", .keyword), value.fromBytes("double", .keyword), hfa1 };
-        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
+        const sig = ffi_signature.call(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
 
         const members = tuples.begin(1);
         members[0] = wrap.fromNumber(1.5);
@@ -671,7 +671,7 @@ fn homogeneousFloatAggregates() void {
             sig,
             wrap.fromTuple(tuples.end(members)),
         };
-        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        const answer = ffi_call_fn.call(args[0..3]) catch @panic("ffi_core: ffi/call raised");
         expect(wrap.toNumber(answer) == 3);
     }
 
@@ -684,7 +684,7 @@ fn homogeneousFloatAggregates() void {
             hfa,
             value.fromBytes("double", .keyword),
         };
-        const sig = ffi_signature(argtypes[0..4]) catch @panic("ffi_core: ffi/signature raised");
+        const sig = ffi_signature.call(argtypes[0..4]) catch @panic("ffi_core: ffi/signature raised");
 
         const members = tuples.begin(2);
         members[0] = wrap.fromNumber(1.5);
@@ -695,7 +695,7 @@ fn homogeneousFloatAggregates() void {
             wrap.fromTuple(tuples.end(members)),
             wrap.fromNumber(10),
         };
-        const answer = ffi_call_fn(args[0..4]) catch @panic("ffi_core: ffi/call raised");
+        const answer = ffi_call_fn.call(args[0..4]) catch @panic("ffi_core: ffi/call raised");
         expect(wrap.toNumber(answer) == 1.5 + 5 + 40);
     }
 }
@@ -758,13 +758,13 @@ fn narrowIntegerArgumentsAreExtended() void {
             value.fromBytes("double", .keyword),
             value.fromBytes(std.mem.span(case.argtype), .keyword),
         };
-        const sig = ffi_signature(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
+        const sig = ffi_signature.call(argtypes[0..3]) catch @panic("ffi_core: ffi/signature raised");
         var args = [_]repr.Value{
             wrap.fromPointer(@constCast(case.callee)),
             sig,
             case.given,
         };
-        const answer = ffi_call_fn(args[0..3]) catch @panic("ffi_core: ffi/call raised");
+        const answer = ffi_call_fn.call(args[0..3]) catch @panic("ffi_core: ffi/call raised");
         expect(harness.isType(answer, repr.Tag.number));
         expect(wrap.toNumber(answer) == case.want);
     }
@@ -816,14 +816,14 @@ fn anAggregateBehindAStackArgument() void {
         value.fromBytes("int64", .keyword),
         value.fromBytes("int64", .keyword),
     };
-    const large = ffi_struct(members[0..3]) catch @panic("ffi_core: ffi/struct raised");
+    const large = ffi_struct.call(members[0..3]) catch @panic("ffi_core: ffi/struct raised");
 
     var argtypes: [12]repr.Value = undefined;
     argtypes[0] = value.fromBytes("default", .keyword);
     argtypes[1] = value.fromBytes("double", .keyword);
     for (argtypes[2..11]) |*t| t.* = value.fromBytes("int64", .keyword);
     argtypes[11] = large;
-    const sig = ffi_signature(argtypes[0..12]) catch @panic("ffi_core: ffi/signature raised");
+    const sig = ffi_signature.call(argtypes[0..12]) catch @panic("ffi_core: ffi/signature raised");
 
     const payload = tuples.begin(3);
     payload[0] = harness.wrapInteger(11);
@@ -836,7 +836,7 @@ fn anAggregateBehindAStackArgument() void {
     for (args[2..11], 1..) |*a, n| a.* = harness.wrapInteger(@intCast(n));
     args[11] = wrap.fromTuple(tuples.end(payload));
 
-    const answer = ffi_call_fn(args[0..12]) catch @panic("ffi_core: ffi/call raised");
+    const answer = ffi_call_fn.call(args[0..12]) catch @panic("ffi_core: ffi/call raised");
     // The nine integers weighted 1..9 are the sum of the squares, 285; the
     // three members weighted 10..12 are 110 + 242 + 396.
     expect(harness.isType(answer, repr.Tag.number));
@@ -895,7 +895,7 @@ fn aVectorPairWithOneRegisterLeft() void {
     args[0] = wrap.fromPointer(@ptrCast(@constCast(&sixThenPair)));
     args[1] = parts[0];
     args[8] = parts[2];
-    const six = ffi_call_fn(args[0..9]) catch @panic("ffi_core: ffi/call raised");
+    const six = ffi_call_fn.call(args[0..9]) catch @panic("ffi_core: ffi/call raised");
     // 1 + 4 + ... + 36 is 91, and 7 * 7 + 8 * 8 is 113.
     expect(wrap.toNumber(six) == 91 + 113);
 
@@ -903,7 +903,7 @@ fn aVectorPairWithOneRegisterLeft() void {
     args[1] = parts[1];
     args[8] = wrap.fromNumber(7);
     args[9] = parts[3];
-    const seven = ffi_call_fn(args[0..10]) catch @panic("ffi_core: ffi/call raised");
+    const seven = ffi_call_fn.call(args[0..10]) catch @panic("ffi_core: ffi/call raised");
     // 1 + 4 + ... + 49 is 140, and 8 * 8 + 9 * 9 is 145.
     expect(wrap.toNumber(seven) == 140 + 145);
 }
@@ -962,11 +962,11 @@ fn theAapcs64ReturnBound() void {
     argv[0] = value.fromBytes("aapcs64", .keyword);
 
     argv[1] = eval("[![:u8 24]]");
-    const narrow = signature(argv[0..2]) catch @panic("ffi_core: a 24-byte return was refused");
+    const narrow = signature.call(argv[0..2]) catch @panic("ffi_core: a 24-byte return was refused");
     expect(harness.isType(narrow, repr.Tag.abstract));
 
     argv[1] = eval("[![:u8 128]]");
-    const widest = signature(argv[0..2]) catch @panic("ffi_core: a 128-byte return was refused");
+    const widest = signature.call(argv[0..2]) catch @panic("ffi_core: a 128-byte return was refused");
     expect(harness.isType(widest, repr.Tag.abstract));
 
     argv[1] = eval("[![:u8 129]]");
@@ -1016,14 +1016,14 @@ fn theFrameIsScratchOnlyPastTheInlineSize() void {
 
     args[0] = wrap.fromPointer(@ptrCast(@constCast(&eightBig)));
     args[1] = parts[0];
-    const eight = ffi_call_fn(args[0..10]) catch @panic("ffi_core: ffi/call raised");
+    const eight = ffi_call_fn.call(args[0..10]) catch @panic("ffi_core: ffi/call raised");
     expect(wrap.toNumber(eight) == 64);
     expect(scratch_during == before);
     expect(harness.vm().scratch.items.len == before);
 
     args[0] = wrap.fromPointer(@ptrCast(@constCast(&nineBig)));
     args[1] = parts[1];
-    const nine = ffi_call_fn(args[0..11]) catch @panic("ffi_core: ffi/call raised");
+    const nine = ffi_call_fn.call(args[0..11]) catch @panic("ffi_core: ffi/call raised");
     expect(wrap.toNumber(nine) == 72);
     expect(scratch_during == before + 1);
     expect(harness.vm().scratch.items.len == before);
@@ -1050,7 +1050,7 @@ fn aZeroCountArrayArgumentWritesNothing() void {
         wrap.fromTuple(tuples.end(tuples.begin(0))),
         wrap.fromNumber(-1),
     };
-    const answer = harness.core("ffi/call")(args[0..4]) catch @panic("ffi_core: ffi/call raised");
+    const answer = harness.core("ffi/call").call(args[0..4]) catch @panic("ffi_core: ffi/call raised");
     expect(wrap.toNumber(answer) == -1);
 }
 

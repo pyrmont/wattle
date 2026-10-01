@@ -267,8 +267,20 @@ and end the watch, so a watcher that dies is something a program learns about
 rather than a channel that goes quiet.
 
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
-An nfunction is a Zig function: `raise.NFunction` takes `[]Value` and returns
-`raise.Error!Value` in Zig's calling convention, so `argv[n]` is bounds-checked.
+An nfunction is written as a Zig function: `raise.NFunction` takes `[]Value`
+and returns `raise.Error!Value`, so `argv[n]` is bounds-checked. What the
+runtime stores and calls is a `callconv(.c)` function of type `abi.NFunction`,
+which takes `argc` and `argv` and returns an `abi.NResult`: the value and a
+`raised` flag. `raise.stored` builds that function around an nfunction at
+compile time, and `raise.call` makes the call and returns `error.Signal` where
+`raised` is set. A registration row and a method table row hold the result of
+`raise.stored`, which a module author writes `wattle.nfunction`. A slice and an
+error union have no layout that holds across compilations, so the call from the
+runtime into a module's nfunction goes through the C convention. A runtime
+nfunction takes the same path, so the VM does not test which kind it is
+calling. An nfunction pointer cast into a slot without `raise.stored` compiles
+and crashes when called.
+
 Its documented call shape uses nested square brackets for optional arguments:
 `(os/date [time [local]])` accepts zero, one or two arguments. The brackets
 are documentation notation, not Wattle vector literals.

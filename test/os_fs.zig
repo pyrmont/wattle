@@ -122,29 +122,29 @@ fn theCoreFunctions(original: [:0]const u8) !void {
     const remove = harness.core("os/rm");
     var args: [2]repr.Value = undefined;
 
-    const here = try getcwd(&.{});
+    const here = try getcwd.call(&.{});
     expect(harness.isType(here, repr.Tag.string));
     expect(harness.stringIs(wrap.toString(here), original.ptr));
 
     args[0] = value.fromBytes(public_dir, .string);
     // True the first time, false the second, and not a raise.
-    expect(wrap.toBoolean(try mkdir(args[0..1])));
-    expect(!wrap.toBoolean(try mkdir(args[0..1])));
+    expect(wrap.toBoolean(try mkdir.call(args[0..1])));
+    expect(!wrap.toBoolean(try mkdir.call(args[0..1])));
 
-    expect(harness.isType(try cd(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try cd.call(args[0..1]), repr.Tag.nil));
     makeFile("source");
 
     args[0] = value.fromBytes(original, .string);
-    expect(harness.isType(try cd(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try cd.call(args[0..1]), repr.Tag.nil));
 
     args[0] = value.fromBytes(public_source, .string);
     args[1] = value.fromBytes(public_dest, .string);
-    expect(harness.isType(try rename(args[0..2]), repr.Tag.nil));
+    expect(harness.isType(try rename.call(args[0..2]), repr.Tag.nil));
 
     args[0] = args[1];
-    expect(harness.isType(try remove(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try remove.call(args[0..1]), repr.Tag.nil));
     args[0] = value.fromBytes(public_dir, .string);
-    expect(harness.isType(try rmdir(args[0..1]), repr.Tag.nil));
+    expect(harness.isType(try rmdir.call(args[0..1]), repr.Tag.nil));
 }
 
 /// What the Janet surface refuses. Each is a

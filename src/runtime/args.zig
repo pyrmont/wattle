@@ -934,8 +934,8 @@ pub fn argIsdefault(argv: []const repr.Value, n: usize) bool {
 /// The entry `method` names in `methods`, or nothing.
 pub fn argMethod(
     method: [*:0]const u8,
-    methods: [*]const method_type.CMethod,
-) ?*const method_type.CMethod {
+    methods: [*]const method_type.Method,
+) ?*const method_type.Method {
     var entry = methods;
     while (entry[0].name) |name| : (entry += 1) {
         if (utils.cstrcmp(method, name) == 0) return &entry[0];
@@ -963,9 +963,9 @@ pub fn argNat(argv: []const repr.Value, n: usize, fault: *Fault) ?i32 {
 /// which is what makes this an iterator rather than a lookup: a nil key starts
 /// at the head, and any other key resumes after the one it names.
 pub fn argNextmethod(
-    methods: [*]const method_type.CMethod,
+    methods: [*]const method_type.Method,
     key: repr.Value,
-) [*]const method_type.CMethod {
+) [*]const method_type.Method {
     var entry = methods;
     if (!repr.checkType(key, repr.Tag.nil)) {
         while (entry[0].name) |name| {
@@ -1312,7 +1312,7 @@ pub fn endRange(argv: []const repr.Value, n: usize, length: i32) raise.Error!i32
 /// The `?Value` form of `getmethod`, and what an abstract type's `get`
 /// callback gives back: absence is `null` rather than a zero beside an
 /// out-parameter the caller then has to know not to read.
-pub fn findMethod(key: repr.Value, methods: [*]const method_type.CMethod) ?repr.Value {
+pub fn findMethod(key: repr.Value, methods: [*]const method_type.Method) ?repr.Value {
     if (!wrap.isKeyword(key)) return null;
     const found = argMethod(wrap.toKeyword(key), methods) orelse return null;
     return wrap.fromNfunction(found.nfun);
@@ -1573,7 +1573,7 @@ pub fn getSlice(argv: []const repr.Value) raise.Error!Range {
 /// whether one was found.
 pub fn getmethod(
     method: [*:0]const u8,
-    methods: [*]const method_type.CMethod,
+    methods: [*]const method_type.Method,
     out: *repr.Value,
 ) c_int {
     const found = argMethod(method, methods) orelse return 0;
@@ -1680,7 +1680,7 @@ pub fn keyvals(x: repr.Value) raise.Error!?Keyvals {
 
 /// The keyword naming the method after `key` in `methods`, or nil at the end.
 /// Wrapping the name allocates, so the kernel stops at the entry.
-pub fn nextmethod(methods: [*]const method_type.CMethod, key: repr.Value) repr.Value {
+pub fn nextmethod(methods: [*]const method_type.Method, key: repr.Value) repr.Value {
     const found = argNextmethod(methods, key);
     if (found[0].name) |name| return value.fromBytes(std.mem.span(name), .keyword);
     return wrap.fromNil();

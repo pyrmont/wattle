@@ -77,8 +77,8 @@ var marks: u32 = 0;
 
 /// What `get`'s keyword arm and `next` both walk.
 const methods = [_]wattle.Method{
-    .{ .name = "kept", .nfun = &kept },
-    .{ .name = "rank", .nfun = &rank },
+    .{ .name = "kept", .nfun = wattle.nfunction(&kept) },
+    .{ .name = "rank", .nfun = wattle.nfunction(&rank) },
 };
 
 /// The serial number `keep` stamps each payload with, so that the marshal pair
@@ -87,7 +87,7 @@ var next_serial: i64 = 1;
 
 /// A method table with a `:length`, which a call such as `(:length o)` finds
 /// through `get`.
-const odd_methods = [_]wattle.Method{.{ .name = "length", .nfun = &oddLength }};
+const odd_methods = [_]wattle.Method{.{ .name = "length", .nfun = wattle.nfunction(&oddLength) }};
 
 /// No `length` slot, on purpose: `length` refuses such a type rather than
 /// calling its `:length` method, as C Janet would.

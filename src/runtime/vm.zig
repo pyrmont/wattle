@@ -656,7 +656,7 @@ pub fn mcall(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
 /// work, while calling a table looks the argument up in the table.
 pub fn methodInvoke(method: repr.Value, argv: []repr.Value) raise.Error!repr.Value {
     switch (repr.typeOf(method)) {
-        repr.Tag.nfunction => return raise.nfunction(wrap.toNfunction(method))(argv),
+        repr.Tag.nfunction => return raise.call(wrap.toNfunction(method), argv),
         repr.Tag.function => {
             const fun = wrap.toFunction(method);
             return try vm_entry.call(fun, argv);
@@ -1240,7 +1240,8 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
                 self.commit();
                 const argc = fiber.stacktop - fiber.stackstart;
                 fibers.cframe(fiber, wrap.toNfunction(callee));
-                const v = try raise.nfunction(wrap.toNfunction(callee))(
+                const v = try raise.call(
+                    wrap.toNfunction(callee),
                     (fiber.data.? + utils.asSize(fiber.frame))[0..@intCast(argc)],
                 );
                 fibers.popframe(fiber);
@@ -1299,7 +1300,8 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             if (repr.checkType(callee, repr.Tag.nfunction)) {
                 const argc = fiber.stacktop - fiber.stackstart;
                 fibers.cframe(fiber, wrap.toNfunction(callee));
-                retreg = try raise.nfunction(wrap.toNfunction(callee))(
+                retreg = try raise.call(
+                    wrap.toNfunction(callee),
                     (fiber.data.? + utils.asSize(fiber.frame))[0..@intCast(argc)],
                 );
                 fibers.popframe(fiber);

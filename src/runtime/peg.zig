@@ -95,11 +95,11 @@ pub const pegType = abstract_type.define(Peg, .{
 /// so the order here is the order `(keys peg)` reports, and a caller may
 /// depend on it.
 const peg_methods = [_]method_type.Method{
-    .{ .name = "match", .nfun = nfunPegMatch },
-    .{ .name = "find", .nfun = nfunPegFind },
-    .{ .name = "find-all", .nfun = nfunPegFindAll },
-    .{ .name = "replace", .nfun = nfunPegReplace },
-    .{ .name = "replace-all", .nfun = nfunPegReplaceAll },
+    .{ .name = "match", .nfun = raise.stored(nfunPegMatch) },
+    .{ .name = "find", .nfun = raise.stored(nfunPegFind) },
+    .{ .name = "find-all", .nfun = raise.stored(nfunPegFindAll) },
+    .{ .name = "replace", .nfun = raise.stored(nfunPegReplace) },
+    .{ .name = "replace-all", .nfun = raise.stored(nfunPegReplaceAll) },
     .{ .name = null, .nfun = null },
 };
 
@@ -1565,7 +1565,8 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                     // Both of these run arbitrary Janet code in the middle of
                     // the matcher's recursion.
                     repr.Tag.nfunction => {
-                        cap = try raise.nfunction(wrap.toNfunction(constant))(
+                        cap = try raise.call(
+                            wrap.toNfunction(constant),
                             s.captures.slice()[@intCast(cs.cap)..],
                         );
                     },

@@ -319,18 +319,26 @@ pub fn arrayPush(array: *arrays.Array, val: repr.Value) void {
 /// where the value is what the case is about, and `coreRaised` where the
 /// refusal is.
 pub fn callCore(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {
-    return core(name)(argv);
+    return core(name).call(argv);
 }
 
-/// A core nfunction by name, with the calling convention it actually has.
+/// A core nfunction's stored slot, with a call that raises.
+pub const Core = struct {
+    slot: boundary.NFunction,
+
+    pub fn call(self: Core, argv: []repr.Value) raise.Error!repr.Value {
+        return raise.call(self.slot, argv);
+    }
+};
+
+/// A core nfunction by name.
 ///
-/// `registry.resolveCore` returns a `Value` wrapping an `NFunction`, which is
-/// a pointer to a raising Zig function rather than to a C one.
-/// `raise.nfunction` is the cast that says so.
-pub fn core(name: [*:0]const u8) raise.NFunction {
+/// `registry.resolveCore` returns a `Value` wrapping the nfunction's stored
+/// slot. `Core.call` makes the call through it.
+pub fn core(name: [*:0]const u8) Core {
     const val = registry.resolveCore(name);
     expect(isType(val, repr.Tag.nfunction));
-    return raise.nfunction(wrap.toNfunction(val));
+    return .{ .slot = wrap.toNfunction(val) };
 }
 
 /// `core_env.coreEnv(null)`, on the same rule as `init` and `arrayPush`.
@@ -350,10 +358,10 @@ pub fn coreEnv() *tables.Table {
 /// *registration*. `os/cpu-count` is absent from a reduced-OS build while
 /// `os_platform` itself is compiled either way, so no field of `Selection`
 /// covers it.
-pub fn coreOptional(name: [*:0]const u8) ?raise.NFunction {
+pub fn coreOptional(name: [*:0]const u8) ?Core {
     const val = registry.resolveCore(name);
     if (!isType(val, repr.Tag.nfunction)) return null;
-    return raise.nfunction(wrap.toNfunction(val));
+    return .{ .slot = wrap.toNfunction(val) };
 }
 
 /// `callCore` under a protected scope, returning the raise it made, or null
@@ -544,7 +552,11 @@ pub fn raised(function: anytype, args: anytype) ?Raise {
     var state: vm_state.TryState = undefined;
     signal_core.tryInit(&state);
     defer signal_core.restore(&state);
-    if (@call(.auto, function, args)) |_| {
+    const outcome = if (comptime @TypeOf(function) == Core)
+        @call(.auto, Core.call, .{function} ++ args)
+    else
+        @call(.auto, function, args);
+    if (outcome) |_| {
         return null;
     } else |_| {
         return .{ .signal = vm_state.current().pending_signal, .payload = state.payload };

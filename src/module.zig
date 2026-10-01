@@ -7,8 +7,10 @@
 //! interface.
 //!
 //! A module must be built with the same Zig version as the runtime that loads
-//! it. The runtime table's fields are `callconv(.c)`, but an abstract type's
-//! eight raising callbacks are not. They return Zig error unions, so the
+//! it. The runtime table's fields are `callconv(.c)`, and so is the function
+//! the runtime stores for an nfunction, which takes a count and a pointer and
+//! returns the value and a flag for a raise. An abstract type's eight raising
+//! callbacks are not `callconv(.c)`. They return Zig error unions, so the
 //! runtime calls into a module through the `.auto` convention. That convention
 //! is deterministic for a compiler version and target rather than documented.
 //!
@@ -459,16 +461,31 @@ pub const Indexed = struct {
 /// One row of a method table: a name and an nfunction that raises.
 ///
 /// `getMethod` and `nextMethod` take a slice of `Method`. `name` is the
-/// method's name without its colon, and `nfun` is a pointer to an nfunction of
-/// the shape `NFunction` describes. A row is written:
+/// method's name without its colon, and `nfun` is what `nfunction` returns for
+/// an nfunction of the shape `NFunction` describes. A row is written:
 ///
 /// ```zig
-/// .{ .name = "scale", .nfun = &scale }
+/// .{ .name = "scale", .nfun = wattle.nfunction(scale) }
 /// ```
 pub const Method = extern struct {
     name: ?[*:0]const u8 = null,
-    nfun: ?NFunction = null,
+    nfun: abi.NFunction = null,
 };
+
+/// Returns the form of an nfunction that a method table or a registration
+/// row stores.
+///
+/// `f` is an nfunction, known at compile time, of the shape `NFunction`
+/// describes. A function of any other shape is a compile error. A row is
+/// written:
+///
+/// ```zig
+/// .{ .name = "scale", .nfun = wattle.nfunction(scale) }
+/// ```
+pub fn nfunction(comptime f: anytype) abi.NFunction {
+    comptime checkNFunction("method", @TypeOf(f));
+    return raise.stored(f);
+}
 
 /// The callback that `post` queues for the loop thread.
 ///
@@ -1473,7 +1490,7 @@ pub fn put(d: Value, key: Value, x: Value) Error!void {
 /// docstring. `nfun` must be of type `fn (argv: []Value) Error!Value`. A
 /// function of any other shape is a compile error describing what is wrong
 /// with it.
-pub fn reg(comptime name: [:0]const u8, nfun: anytype, comptime sigs: ?[:0]const u8, comptime doc: ?[:0]const u8) Reg {
+pub fn reg(comptime name: [:0]const u8, comptime nfun: anytype, comptime sigs: ?[:0]const u8, comptime doc: ?[:0]const u8) Reg {
     comptime checkNFunction(name, @TypeOf(nfun));
     return .{
         .name = name.ptr,
