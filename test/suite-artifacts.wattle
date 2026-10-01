@@ -161,7 +161,14 @@
                                     :gen "/a/proj/.zig-cache/wattle-build"})))
   (is (= "../../../../../usr/local/share/wattle"
          (dep-path {:dir "/home/u/p" :srcpath "/usr/local/share/wattle"
-                    :gen "/home/u/p/.zig-cache/wattle-build"}))))
+                    :gen "/home/u/p/.zig-cache/wattle-build"})))
+  ; A relative :srcpath, as from `-p ../wattle/zig-out`, is relative to :dir.
+  (is (= "../../../wattle/zig-out/share/wattle"
+         (dep-path {:dir "/a/proj" :srcpath "../wattle/zig-out/share/wattle"
+                    :gen "/a/proj/.zig-cache/wattle-build"})))
+  (is (= "../../vendor/w"
+         (dep-path {:dir "/a/proj" :srcpath "./vendor/x/../w"
+                    :gen "/a/proj/.zig-cache/wattle-build"}))))
 
 (deftest zig-files-paths
   (def info {:artifacts [{:type :exe :name "a" :entry "/abs/main.wattle"}]})

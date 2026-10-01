@@ -5477,9 +5477,15 @@
 ;;;
 
 (defn- pkg-path-parts
-  "Splits path at / and at \\, dropping empty parts."
+  "Splits path at / and at \\, dropping empty parts and . parts and resolving .. parts against the part before."
   [path]
-  (filter #(not (empty? $)) (string/split "/" (string/replace-all "\\" "/" path))))
+  (def out ![])
+  (each part (string/split "/" (string/replace-all "\\" "/" path))
+    (cond
+      (or (empty? part) (= part ".")) nil
+      (and (= part "..") (not (empty? out)) (not= (last out) "..")) (array/pop! out)
+      (array/push! out part)))
+  out)
 
 (defn- pkg-relative-path
   "Returns the path from the directory from to the path to, which are both absolute."
@@ -5509,9 +5515,10 @@
   Returns a table with the text of the build.zig and the build.zig.zon that
   build the artifacts of x, a map read from an info.edn, under :build and :zon.
   kind is `:exe` or `:lib`. With name, only the artifact called name is built.
-  opts is a map with three absolute directories: :dir, the project, which
-  relative artifact paths are resolved against, :srcpath, the Wattle package,
-  and :gen, the directory the two files are written to. An executable is
+  opts is a map with three directories: :dir, the absolute path of the project,
+  which relative artifact paths are resolved against, :srcpath, the Wattle
+  package, and :gen, the directory the two files are written to. :srcpath and
+  :gen are resolved against :dir where they are relative. An executable is
   built with the libs it names in :libs linked in. A lib is built as a shared
   library. Raises if ^pkg/artifacts raises for x, kind and name.
   """
@@ -5578,7 +5585,8 @@
       "    .fingerprint = 0x73d368c0c079d65,\n"
       "    .dependencies = .{\n")
     (buffer/format! zon "        .wattle = .{ .path = \"%s\" },\n"
-                    (pkg-zig-string (pkg-relative-path (get opts :gen) (get opts :srcpath))))
+                    (pkg-zig-string (pkg-relative-path (pkg-absolute-path (get opts :dir) (get opts :gen))
+                                                       (pkg-absolute-path (get opts :dir) (get opts :srcpath)))))
     (buffer/push! zon
       "    },\n"
       "    .paths = .{ \"build.zig\", \"build.zig.zon\" },\n"
@@ -6050,8 +6058,11 @@
       (unless info-path (cli-fail "no info.edn in " dir))
       (def info (parse (slurp info-path)))
       (def gen (string dir "/" cli-zig-cache "/wattle-build"))
-      (def [src-ok srcpath] (protect (wattle/srcpath)))
-      (unless src-ok (cli-fail "error: " srcpath))
+      (def [src-ok src] (protect (wattle/srcpath)))
+      (unless src-ok (cli-fail "error: " src))
+      ; A relative prefix is relative to the working directory.
+      (def [real-ok real] (protect (os/realpath src)))
+      (def srcpath (if real-ok real (pkg-absolute-path dir src)))
       (def [ok files]
         (protect (pkg/zig-files info kind (get (get cmd :params) :name)
                                  {:dir dir :srcpath srcpath :gen gen})))
