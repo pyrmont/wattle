@@ -24,8 +24,8 @@
 //! `compare` callback may not re-enter a comparison, and neither `compare` nor
 //! `hash` may allocate through the collector. A callback that raises strands
 //! nothing here, because the traversal array belongs to the VM and the next
-//! comparison resets the cursor over whatever was left. Each entry point
-//! resets on the way in rather than on the way out.
+//! comparison using the traversal stack resets its cursor before use.
+//! Scalar equality leaves the traversal cursor unchanged.
 
 // ==========================================================================
 // Standard library imports
@@ -65,6 +65,13 @@ const isBoxedUnion = config.value_repr != .tagged;
 // ==========================================================================
 // Types
 // ==========================================================================
+
+/// What `equalsOperands` receives for a value.
+///
+/// A NaN-boxed value is one word, which the native calling convention passes
+/// in a register where it would pass the extern union in memory. The tagged
+/// layout has no word member and is passed whole.
+const Operand = if (isBoxedUnion) u64 else repr.Value;
 
 /// The comparison and marshalling traversal stack: `base` and `top` bound the
 /// allocation and `at` is the cursor into it, so all three go together.
@@ -231,11 +238,10 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
 ///
 /// `x_in` and `y_in` are the two values.
 ///
-/// This does not pop what it pushes. It resets the cursor to `base` on entry
-/// and leaves whatever it pushed behind on an early return, because the stack
-/// is scratch space owned by whichever comparison is running rather than state
-/// that survives one. That is why an early return needs no unwinding, and also
-/// why this may not be re-entered from a callback it invokes.
+/// Scalar comparisons leave the traversal cursor unchanged. A tuple, vector,
+/// map or abstract comparison resets it to `base` before using the loop.
+/// An early return may leave traversal nodes on the scratch stack.
+/// This function may not be re-entered from a comparison callback.
 ///
 /// Note what the tuple, vector and map cases do before pushing: identity, then
 /// the stored hash, then the length, plus the bracket flag for a tuple. Those
@@ -250,83 +256,8 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
 /// callback, because the abstract type interface has no such callback:
 /// ordering is the only relation a third-party type provides, and equality is
 /// defined as its zero.
-pub fn equals(x_in: repr.Value, y_in: repr.Value) bool {
-    var x = x_in;
-    var y = y_in;
-    // Captured, for the reason `compare` gives.
-    const stack = &vm_state.pinned().traversal;
-    stack.at = stack.base;
-    while (true) {
-        if (repr.typeOf(x) != repr.typeOf(y)) return false;
-        switch (repr.typeOf(x)) {
-            repr.Tag.nil => {},
-            repr.Tag.boolean => {
-                if (wrap.toBoolean(x) != wrap.toBoolean(y)) return false;
-            },
-            repr.Tag.number => {
-                if (wrap.toNumber(x) != wrap.toNumber(y)) return false;
-            },
-            repr.Tag.string => {
-                // Only strings. Symbols and keywords reach the pointer
-                // comparison below, which is sound because both are interned
-                // and a string is not. Merging the three arms would compute the
-                // same result more slowly.
-                if (!strings.equal(wrap.toString(x), wrap.toString(y))) return false;
-            },
-            repr.Tag.abstract => {
-                const xx = wrap.toAbstract(x);
-                const yy = wrap.toAbstract(y);
-                switch (walkedTogether(xx, yy)) {
-                    // Two sets are walked element by element in order once
-                    // their counts and hashes are equal, since equal entries
-                    // are in one order.
-                    .tree => {
-                        const hx = abi.abstractHead(xx);
-                        const hy = abi.abstractHead(yy);
-                        if (!maps.mayEqual(maps.ofHead(&hx.gc), maps.ofHead(&hy.gc))) return false;
-                        pushTraversalNode(stack, hx, hy, 0);
-                    },
-                    .none => if (compareAbstract(xx, yy) != 0) return false,
-                }
-            },
-            repr.Tag.vector => {
-                // Walked element by element, as two tuples are, once their
-                // lengths and hashes are equal.
-                const v1 = wrap.toVector(x);
-                const v2 = wrap.toVector(y);
-                if (v1 != v2) {
-                    if (!vectors.mayEqual(v1, v2)) return false;
-                    pushTraversalNode(stack, vectorHead(v1), vectorHead(v2), 0);
-                }
-            },
-            repr.Tag.tuple => {
-                const t1 = wrap.toTuple(x);
-                const t2 = wrap.toTuple(y);
-                if (t1 != t2) {
-                    const h1 = tuples.head(t1);
-                    const h2 = tuples.head(t2);
-                    if (h1.hash != h2.hash) return false;
-                    if (h1.length != h2.length) return false;
-                    pushTraversalNode(stack, h1, h2, 0);
-                }
-            },
-            repr.Tag.map => {
-                // Walked entry by entry in order once the counts and hashes
-                // are equal, since equal entries are in one order.
-                const t1 = wrap.toMap(x);
-                const t2 = wrap.toMap(y);
-                if (t1 != t2) {
-                    if (!maps.mayEqual(t1, t2)) return false;
-                    pushTraversalNode(stack, mapHead(t1), mapHead(t2), 0);
-                }
-            },
-            else => {
-                if (wrap.toPointer(x) != wrap.toPointer(y)) return false;
-            },
-        }
-        if (traversalNext(stack, &x, &y) != 0) break;
-    }
-    return true;
+pub inline fn equals(x_in: repr.Value, y_in: repr.Value) bool {
+    return equalsOperands(operandOf(x_in), operandOf(y_in));
 }
 
 /// Returns a value's hash.
@@ -439,6 +370,110 @@ fn compareAbstract(xx: abstracts.Abstract, yy: abstracts.Abstract) i32 {
     return callback(xx, yy);
 }
 
+/// Compares two values passed as operands.
+///
+/// `x_op` and `y_op` are the operands. A tuple, vector, map or abstract pair
+/// continues in `equalsTraversing`.
+noinline fn equalsOperands(x_op: Operand, y_op: Operand) bool {
+    const x_in = valueOf(x_op);
+    const y_in = valueOf(y_op);
+    const tag = repr.typeOf(x_in);
+    if (tag != repr.typeOf(y_in)) return false;
+    return switch (tag) {
+        .nil => true,
+        .boolean => wrap.toBoolean(x_in) == wrap.toBoolean(y_in),
+        .number => wrap.toNumber(x_in) == wrap.toNumber(y_in),
+        .string => strings.equal(wrap.toString(x_in), wrap.toString(y_in)),
+        .tuple, .vector, .map, .abstract => equalsTraversing(x_in, y_in, tag),
+        else => wrap.toPointer(x_in) == wrap.toPointer(y_in),
+    };
+}
+
+/// Returns deep equality using the traversal stack.
+///
+/// `x_in` and `y_in` have the same tag, `tag_in`.
+/// This function cannot raise. It resets the traversal cursor before use.
+noinline fn equalsTraversing(x_in: repr.Value, y_in: repr.Value, tag_in: repr.Tag) bool {
+    var x = x_in;
+    var y = y_in;
+    var tag = tag_in;
+    // Captured, for the reason `compare` gives.
+    const stack = &vm_state.pinned().traversal;
+    stack.at = stack.base;
+    while (true) {
+        switch (tag) {
+            repr.Tag.nil => {},
+            repr.Tag.boolean => {
+                if (wrap.toBoolean(x) != wrap.toBoolean(y)) return false;
+            },
+            repr.Tag.number => {
+                if (wrap.toNumber(x) != wrap.toNumber(y)) return false;
+            },
+            repr.Tag.string => {
+                // Only strings. Symbols and keywords reach the pointer
+                // comparison below, which is sound because both are interned
+                // and a string is not. Merging the three arms would compute the
+                // same result more slowly.
+                if (!strings.equal(wrap.toString(x), wrap.toString(y))) return false;
+            },
+            repr.Tag.abstract => {
+                const xx = wrap.toAbstract(x);
+                const yy = wrap.toAbstract(y);
+                switch (walkedTogether(xx, yy)) {
+                    // Two sets are walked element by element in order once
+                    // their counts and hashes are equal, since equal entries
+                    // are in one order.
+                    .tree => {
+                        const hx = abi.abstractHead(xx);
+                        const hy = abi.abstractHead(yy);
+                        if (!maps.mayEqual(maps.ofHead(&hx.gc), maps.ofHead(&hy.gc))) return false;
+                        pushTraversalNode(stack, hx, hy, 0);
+                    },
+                    .none => if (compareAbstract(xx, yy) != 0) return false,
+                }
+            },
+            repr.Tag.vector => {
+                // Walked element by element, as two tuples are, once their
+                // lengths and hashes are equal.
+                const v1 = wrap.toVector(x);
+                const v2 = wrap.toVector(y);
+                if (v1 != v2) {
+                    if (!vectors.mayEqual(v1, v2)) return false;
+                    pushTraversalNode(stack, vectorHead(v1), vectorHead(v2), 0);
+                }
+            },
+            repr.Tag.tuple => {
+                const t1 = wrap.toTuple(x);
+                const t2 = wrap.toTuple(y);
+                if (t1 != t2) {
+                    const h1 = tuples.head(t1);
+                    const h2 = tuples.head(t2);
+                    if (h1.hash != h2.hash) return false;
+                    if (h1.length != h2.length) return false;
+                    pushTraversalNode(stack, h1, h2, 0);
+                }
+            },
+            repr.Tag.map => {
+                // Walked entry by entry in order once the counts and hashes
+                // are equal, since equal entries are in one order.
+                const t1 = wrap.toMap(x);
+                const t2 = wrap.toMap(y);
+                if (t1 != t2) {
+                    if (!maps.mayEqual(t1, t2)) return false;
+                    pushTraversalNode(stack, mapHead(t1), mapHead(t2), 0);
+                }
+            },
+            else => {
+                if (wrap.toPointer(x) != wrap.toPointer(y)) return false;
+            },
+        }
+        if (traversalNext(stack, &x, &y) != 0) break;
+        tag = repr.typeOf(x);
+        if (tag != repr.typeOf(y)) return false;
+    }
+    return true;
+}
+
 /// The finalizer from MurmurHash3, used on its own as an integer mixer.
 ///
 /// `h_in` is the input. Wrapping is the algorithm: both multiplies overflow a
@@ -452,6 +487,13 @@ fn murmur64(h_in: u64) u64 {
     h *%= 0xc4ceb9fe1a85ec53;
     h ^= h >> 33;
     return h;
+}
+
+/// Returns a value as an `Operand`.
+///
+/// `x` is the value.
+inline fn operandOf(x: repr.Value) Operand {
+    return if (comptime isBoxedUnion) asU64(x) else x;
 }
 
 /// Pushes one frame, growing the stack when the top is one short of the end.
@@ -539,6 +581,13 @@ inline fn traversalNext(stack: *Traversal, x: *repr.Value, y: *repr.Value) i32 {
     }
     stack.at = t;
     return 2;
+}
+
+/// Returns an `Operand` as a value.
+///
+/// `o` is the operand.
+inline fn valueOf(o: Operand) repr.Value {
+    return if (comptime isBoxedUnion) .{ .u64 = o } else o;
 }
 
 /// The collector header of the block a vector's payload is in, which is what a

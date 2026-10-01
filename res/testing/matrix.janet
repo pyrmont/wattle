@@ -277,8 +277,12 @@
   # at all under `-Dev=false` or `-Dsingle-threaded=true`, and the other two
   # own fixtures two concurrent entries would share. The `full` entries run
   # all 68 and cover them.
+  #
+  # The scalar equality increment added `value_order`, which asserts equality
+  # for every tag and the traversal stack's reset, and which has no fixture
+  # two concurrent entries share.
   ["value_alloc" "fiber_core" "marsh" "gc_alloc" "gc_mark" "gc_sweep"
-   "signal_core" "registry" "core_env" "vm_run"])
+   "signal_core" "registry" "core_env" "vm_run" "value_order"])
 
 # Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 # `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty

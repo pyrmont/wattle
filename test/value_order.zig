@@ -19,8 +19,9 @@
 //! so the depth cases here use depths that would blow a native stack.
 //!
 //! The stack is scratch rather than state. Both entry points reset it on the
-//! way in and neither pops what it pushed, so a comparison that returns early
-//! leaves nodes behind. That is only correct if the next comparison is
+//! way in when using the stack. Neither pops on an early return, which
+//! leaves nodes behind. Scalar equality leaves the cursor unchanged.
+//! This is correct only if the next comparison is
 //! unaffected, which is asserted directly rather than assumed.
 //!
 //! ## The abstract fixtures
@@ -57,6 +58,7 @@ const repr = @import("repr");
 const maps = @import("subsystems").value.maps;
 const tables = @import("subsystems").value.tables;
 const tuples = @import("subsystems").value.tuples;
+const vectors = @import("subsystems").value.vectors;
 const utils = @import("subsystems").utils;
 const value = @import("subsystems").value;
 const vm_lifecycle = @import("subsystems").lifecycle;
@@ -427,6 +429,61 @@ fn theEqualityOfMutableContainers() void {
     harness.arrayPush(a2, intv(1));
     expect(harness.equals(wrap.fromArray(a1), wrap.fromArray(a1)));
     expect(!harness.equals(wrap.fromArray(a1), wrap.fromArray(a2)));
+}
+
+/// Backing words for values whose equality is pointer identity. Equality
+/// compares the addresses and reads nothing through them.
+var identity_words: [8]u128 align(16) = undefined;
+
+fn identityWord(i: usize) *align(16) anyopaque {
+    return @ptrCast(&identity_words[i]);
+}
+
+/// One triple per tag: a value, a second value that is equal to it, and a
+/// third that is not. The second is the same value for tags that compare by
+/// identity. Every pair drawn from different triples must be unequal, which
+/// is the cross-tag rejection in front of each tag's own comparison.
+fn theEqualityOfEveryTag() void {
+    const buf1 = buffers.new(4);
+    const buf2 = buffers.new(4);
+    const arr1 = arrays.new(4);
+    const arr2 = arrays.new(4);
+    const tbl1 = tables.new(4);
+    const tbl2 = tables.new(4);
+    const vec1 = wrap.fromVector(vectors.fromSlice(&.{ intv(1), intv(2) }));
+    const vec2 = wrap.fromVector(vectors.fromSlice(&.{ intv(1), intv(2) }));
+    const vec3 = wrap.fromVector(vectors.fromSlice(&.{ intv(1), intv(3) }));
+    const triples = [_][3]repr.Value{
+        .{ wrap.fromNil(), wrap.fromNil(), wrap.fromNil() },
+        .{ wrap.fromTrue(), wrap.fromTrue(), wrap.fromFalse() },
+        .{ num(1.5), num(1.5), num(2.5) },
+        .{ str("ab"), str("ab"), str("ac") },
+        .{ sym("ab"), sym("ab"), sym("ac") },
+        .{ wrap.fromBuffer(buf1), wrap.fromBuffer(buf1), wrap.fromBuffer(buf2) },
+        .{ wrap.fromArray(arr1), wrap.fromArray(arr1), wrap.fromArray(arr2) },
+        .{ wrap.fromTable(tbl1), wrap.fromTable(tbl1), wrap.fromTable(tbl2) },
+        .{ vec1, vec2, vec3 },
+        .{ mkmap(&.{ kw("a"), intv(1) }), mkmap(&.{ kw("a"), intv(1) }), mkmap(&.{ kw("a"), intv(2) }) },
+        .{ mktuple(&.{intv(1)}), mktuple(&.{intv(1)}), mktuple(&.{intv(2)}) },
+        .{ mkcell(1), mkcell(1), mkcell(2) },
+        .{ wrap.fromPointer(identityWord(0)), wrap.fromPointer(identityWord(0)), wrap.fromPointer(identityWord(1)) },
+        .{ wrap.fromFiber(@ptrCast(@alignCast(identityWord(2)))), wrap.fromFiber(@ptrCast(@alignCast(identityWord(2)))), wrap.fromFiber(@ptrCast(@alignCast(identityWord(3)))) },
+        .{ wrap.fromFunction(@ptrCast(@alignCast(identityWord(4)))), wrap.fromFunction(@ptrCast(@alignCast(identityWord(4)))), wrap.fromFunction(@ptrCast(@alignCast(identityWord(5)))) },
+        .{ wrap.fromNfunction(@ptrCast(@alignCast(identityWord(6)))), wrap.fromNfunction(@ptrCast(@alignCast(identityWord(6)))), wrap.fromNfunction(@ptrCast(@alignCast(identityWord(7)))) },
+    };
+    for (triples, 0..) |t, i| {
+        expect(harness.equals(t[0], t[0]));
+        expect(harness.equals(t[0], t[1]));
+        expect(harness.equals(t[1], t[0]));
+        // Nil has one value, so its third is another nil.
+        expect(harness.equals(t[0], t[2]) == (i == 0));
+        expect(harness.equals(t[2], t[0]) == (i == 0));
+        for (triples, 0..) |u, j| {
+            if (i == j) continue;
+            expect(!harness.equals(t[0], u[0]));
+            expect(!harness.equals(t[2], u[2]));
+        }
+    }
 }
 
 /// Tuple equality traverses, and each of the three cheap rejections in front
@@ -866,10 +923,10 @@ fn aShorterTupleIsNotReadPastItsEnd() void {
     expect(order.compare(wrap.fromTuple(short), mktuple(&long)) == -1);
 }
 
-/// Neither entry point pops what it pushed: an early rejection deep inside a
-/// traversal leaves nodes on the stack. That is only sound because the next
-/// comparison resets the pointer on the way in, which is asserted by running a
-/// comparison that must return 1 immediately after one that bailed out deep.
+/// Checks scalar and nested equality after an early return from traversal.
+///
+/// The preceding ordering leaves two hundred nodes on the scratch stack.
+/// Later comparisons must produce their specified results independently.
 fn theStackIsResetNotUnwound() void {
     const deep_a = nestTuples(200, intv(0));
     const deep_b = nestTuples(200, intv(1));
@@ -883,9 +940,9 @@ fn theStackIsResetNotUnwound() void {
     // The next comparison sees a stack with two hundred nodes still on it and
     // must not be affected by any of them.
     expect(harness.equals(intv(1), intv(1)));
-    expect(stackDepth() == 0);
     const deep_c = nestTuples(200, intv(0));
     expect(harness.equals(deep_a, deep_c));
+    expect(stackDepth() == 0);
     expect(order.compare(deep_a, deep_b) == -1);
     expect(order.compare(deep_b, deep_a) == 1);
     expect(!harness.equals(deep_a, deep_b));
@@ -1096,6 +1153,7 @@ pub fn run() void {
     theEqualityOfAtoms();
     theEqualityOfNumbers();
     theEqualityOfStringLikes();
+    theEqualityOfEveryTag();
     theEqualityOfMutableContainers();
     theEqualityOfTuples();
     aTupleHoldingNanEqualsItself();
