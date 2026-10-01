@@ -195,6 +195,7 @@ const sandbox_options = [_]SandboxOption{
 /// Whether this target is Windows, which separates path segments differently
 /// and has no `dlopen`.
 const windows = builtin.os.tag == .windows;
+const macos = builtin.os.tag == .macos;
 
 // ==========================================================================
 // Types
@@ -758,7 +759,7 @@ fn nfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
             try buffers.pushCString(out, input + name);
             i += 5;
         } else if (matches(rest, ":native:")) {
-            try buffers.pushCString(out, if (windows) ".dll" else ".so");
+            try buffers.pushCString(out, if (windows) ".dll" else if (macos) ".dylib" else ".so");
             i += 7;
         } else {
             try buffers.pushU8(out, ':');
@@ -1303,7 +1304,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     const entries = comptime [_]corefn.Entry{
         corefn.reg("native", &nfunNative, @src(), "(native path)\n(native path env)", "Loads a native module from the given path. If env, a table, is given, it is the environment the module is loaded into. The path " ++
             "must be an absolute or relative path on the file system, and is " ++
-            "usually a .so file on Unix systems, and a .dll file on Windows. " ++
+            "usually a .so file on Linux, a .dylib file on macOS and a .dll file on Windows. " ++
             "Returns an environment table that contains functions and other values " ++
             "from the native module."),
         corefn.reg("describe", &nfunDescribe, @src(), "(describe x)", "Returns a string that is a human-readable description of x. " ++
@@ -1383,7 +1384,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "- :cur: -- the directory portion, if any, of (dyn :current-file)\n\n" ++
             "- :dir: -- the directory portion, if any, of the path argument\n\n" ++
             "- :name: -- the name component of path, with extension if given\n\n" ++
-            "- :native: -- the extension used to load natives, .so or .dll\n\n" ++
+            "- :native: -- the extension used to load natives, .so, .dylib or .dll\n\n" ++
             "- :prefix: -- the library directory of the prefix, (dyn :prefix) followed by /lib/wattle. " ++
             "The result is nil where there is no prefix, and the call raises where it is the empty string."),
         corefn.reg("wattle/binpath", &nfunBinpath, @src(), "(wattle/binpath)", "Returns the directory programs are installed in, `(dyn :prefix)` followed by /bin. " ++

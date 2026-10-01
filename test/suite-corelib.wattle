@@ -210,7 +210,7 @@
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":dir:")) "foo/bar/") "expand-path :dir:")
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":name:")) "baz.j") "expand-path :name:")
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":native:"))
-           (if (= :windows (os/which)) ".dll" ".so")) "expand-path :native:")
+           (case (os/which) :windows ".dll" :macos ".dylib" ".so")) "expand-path :native:")
 (assert (= (string (with-dyns [:prefix "/sys"] (module/expand-path "x" ":prefix:"))) "/sys/lib/wattle")
         "expand-path :prefix:")
 (assert (= (string (with-dyns [:current-file "x/y/z.janet"] (module/expand-path "q" ":cur:"))) "x/y")
