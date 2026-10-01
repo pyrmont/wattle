@@ -771,7 +771,7 @@ fn nfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
 
 /// `(gccollect)`.
 fn nfunGccollect(argv: []repr.Value) raise.Error!repr.Value {
-    _ = argv;
+    try args_core.fixarity(argv, 0);
     gc_mark.collect();
     return wrap.fromNil();
 }

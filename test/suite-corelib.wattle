@@ -356,6 +356,8 @@
 ; last one set.
 (assert (number? (gcinterval)) "gcinterval answers a number")
 (gcsetinterval 0x400000)
+(assert-error-value "gccollect takes no arguments" "arity mismatch, expected 0, got 1"
+                    (gccollect 1))
 
 ; range
 (assert-error-value "range infinite step" "infinite step not allowed" (range 0 10 math/inf))
