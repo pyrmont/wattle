@@ -96,7 +96,7 @@ See the `examples/` directory for all provided example programs.
 ; Run the example
 ;
 
-(var *state* '[[0 0] [-1 0] [1 0] [1 1] [0 2]])
+(var *state* [[0 0] [-1 0] [1 0] [1 1] [0 2]])
 
 (for i 0 20
   (print "generation " i)
