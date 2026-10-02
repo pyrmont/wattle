@@ -1156,6 +1156,57 @@ noinline fn pegMatchError(s: *PegState, text: [*]const u8) raise.Error {
     return pp_format.panicf("match error at line %d, column %d", .{ lc.line, lc.col });
 }
 
+/// What `scanLeaf` found.
+const Scan = union(enum) {
+    /// The rule is not one `scanLeaf` handles.
+    unsupported,
+    /// The rule matches nowhere from the start to the end of the text.
+    none,
+    /// The rule first matches at `start` and the match ends at `end`.
+    hit: struct { start: [*]const u8, end: [*]const u8 },
+};
+
+/// Finds the first position from `text` at which `leaf` matches, for the rules
+/// that match a literal or one byte of a class and so push no capture and
+/// cannot match at the end of the text. This is what `(to rule)` and
+/// `(thru rule)` look for, without a call of the matcher at each byte. A
+/// literal of no bytes matches where it starts and is left to the general
+/// loop.
+fn scanLeaf(s: *PegState, leaf: [*]const u32, text: [*]const u8) Scan {
+    if (at(text) > at(s.text_end)) return .unsupported;
+    const remaining = text[0 .. at(s.text_end) -% at(text)];
+    switch (constants.PegRule.fromWord(leaf[0])) {
+        .literal => {
+            const len: usize = leaf[1];
+            if (len == 0) return .unsupported;
+            const bytes: [*]const u8 = @ptrCast(leaf + 2);
+            const found = if (len == 1)
+                std.mem.indexOfScalar(u8, remaining, bytes[0])
+            else
+                std.mem.indexOf(u8, remaining, bytes[0..len]);
+            const index = found orelse return .none;
+            return .{ .hit = .{ .start = text + index, .end = text + index + len } };
+        },
+        .set => {
+            for (remaining, 0..) |byte, index| {
+                if (leaf[1 + (byte >> 5)] & (@as(u32, 1) << @truncate(byte & 0x1F)) != 0)
+                    return .{ .hit = .{ .start = text + index, .end = text + index + 1 } };
+            }
+            return .none;
+        },
+        .range => {
+            const lo: u8 = @truncate(leaf[1]);
+            const top: u8 = @truncate(leaf[1] >> 16);
+            for (remaining, 0..) |byte, index| {
+                if (byte >= lo and byte <= top)
+                    return .{ .hit = .{ .start = text + index, .end = text + index + 1 } };
+            }
+            return .none;
+        },
+        else => return .unsupported,
+    }
+}
+
 /// Where a run of a leaf rule ends, and how many times the rule matched.
 const Run = struct { text: [*]const u8, count: u32 };
 
@@ -1337,6 +1388,19 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
 
             .thru, constants.PegRule.to => {
                 const rule_a = s.ruleAt(rule[1]);
+                switch (scanLeaf(s, rule_a, text)) {
+                    .unsupported => {},
+                    .none => {
+                        try down1(s);
+                        up1(s);
+                        return null;
+                    },
+                    .hit => |hit| {
+                        try down1(s);
+                        up1(s);
+                        return if (constants.PegRule.fromWord(rule[0]) == .to) hit.start else hit.end;
+                    },
+                }
                 var next_text: ?[*]const u8 = null;
                 const cs = capSave(s);
                 try down1(s);
