@@ -45,6 +45,7 @@
   (os/mkdir project)
   (each file ["modules.edn" "args.wattle" "test.wattle"]
     (write (string gum-source "/" file) (slurp (string "src/gum/" file))))
+  (write (string prefix "/share/wattle/LICENSE") "fixture licence")
   (def args-source (string (slurp "src/gum/args.wattle")))
 
   (def [list-status list-out] (gum))
@@ -91,6 +92,7 @@
   (def [copy-status copy-out] (gum "args"))
   (assert (= 0 copy-status) "a name copies its module")
   (assert (= args-source (read-project "deps/gum/args.wattle")) "the source is copied into deps/gum")
+  (assert (= "fixture licence" (read-project "deps/gum/LICENSE")) "the Wattle licence is copied with the module")
   (assert (not (exists? "deps/gum/test.wattle")) "a module that is not named is not copied")
   (assert (string/find "copied deps/gum/args.wattle" copy-out) "a copied file is reported")
 
@@ -98,7 +100,10 @@
   (assert (= 0 again-status) "copying an unchanged module succeeds")
   (assert (string/find "unchanged deps/gum/args.wattle" again-out) "an identical file is reported as unchanged")
 
-  (assert (= 0 (status-of "--dir" "vendor" "args" "test")) "--dir names the parent of gum")
+  (def [dir-status dir-out] (gum "--dir" "vendor" "args" "test"))
+  (assert (= 0 dir-status) "--dir names the parent of gum")
+  (assert (exists? "vendor/gum/LICENSE") "--dir receives the licence")
+  (assert (= 1 (length (string/find-all "vendor/gum/LICENSE" dir-out))) "the licence is copied once for several modules")
   (assert (exists? "vendor/gum/args.wattle") "--dir receives the first module")
   (assert (exists? "vendor/gum/test.wattle") "--dir receives every named module")
   (assert (not (exists? "deps/gum/test.wattle")) "--dir leaves deps alone")
