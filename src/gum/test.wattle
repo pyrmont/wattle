@@ -1,5 +1,5 @@
 ; Test framework ported from Testament for Janet. The original is MIT
-; licensed; see LICENSE.testament.
+; licensed.
 
 (def- default-result-hook (fn [_]))
 

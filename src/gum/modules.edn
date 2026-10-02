@@ -1,6 +1,6 @@
 [{:name "args"
-  :files ["args.wattle" "LICENSE.argy-bargy"]
+  :files ["args.wattle"]
   :help "Parses command-line arguments."}
  {:name "test"
-  :files ["test.wattle" "LICENSE.testament"]
+  :files ["test.wattle"]
   :help "Defines, verifies and collates tests."}]

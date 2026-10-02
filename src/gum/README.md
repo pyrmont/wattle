@@ -12,7 +12,7 @@ that module is also part of the core image.
 project. `modules.edn` in that directory is a vector of maps, one for each
 module, which the command reads with `edn/decode` and the `:p` flag. A module's
 map has the `:name` a caller gives the command, the `:files` the module
-consists of, which are its source and its licence, and a `:help` description.
+consists of, which are its source, and a `:help` description.
 With `:p`, a description can be wrapped in the file: each line after the first
 loses the spaces that begin the second, and the lines are joined with a space.
 A description is one paragraph, so it has no blank line.
@@ -38,7 +38,7 @@ does not overwrite the edit unless `--force` is given.
 ## Arguments
 
 `args.wattle` parses command-line arguments and formats usage text. It is a
-Wattle port of Argy-Bargy. Copy `args.wattle` and `LICENSE.argy-bargy` into a
+Wattle port of Argy-Bargy. Copy `args.wattle` into a
 project's `gum/` directory with `wattle gum args`, then import it from the
 caller. With the default `--dir`, the copy is in `deps/gum/`:
 
@@ -84,7 +84,7 @@ skip the check, after running it once with the default.
 ## Tests
 
 `test.wattle` is a test framework ported from Testament for Janet. Copy
-`test.wattle` and `LICENSE.testament` into a project's `gum/` directory with
+`test.wattle` into a project's `gum/` directory with
 `wattle gum test`. A test file imports it and ends with a call to `run-tests!`:
 
 ```clojure

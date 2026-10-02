@@ -43,7 +43,7 @@
   (each dir ["share" "share/wattle" "share/wattle/src" "share/wattle/src/gum"]
     (os/mkdir (string prefix "/" dir)))
   (os/mkdir project)
-  (each file ["modules.edn" "args.wattle" "LICENSE.argy-bargy" "test.wattle" "LICENSE.testament"]
+  (each file ["modules.edn" "args.wattle" "test.wattle"]
     (write (string gum-source "/" file) (slurp (string "src/gum/" file))))
   (def args-source (string (slurp "src/gum/args.wattle")))
 
@@ -91,7 +91,6 @@
   (def [copy-status copy-out] (gum "args"))
   (assert (= 0 copy-status) "a name copies its module")
   (assert (= args-source (read-project "deps/gum/args.wattle")) "the source is copied into deps/gum")
-  (assert (exists? "deps/gum/LICENSE.argy-bargy") "the licence is copied with the module")
   (assert (not (exists? "deps/gum/test.wattle")) "a module that is not named is not copied")
   (assert (string/find "copied deps/gum/args.wattle" copy-out) "a copied file is reported")
 
@@ -101,7 +100,7 @@
 
   (assert (= 0 (status-of "--dir" "vendor" "args" "test")) "--dir names the parent of gum")
   (assert (exists? "vendor/gum/args.wattle") "--dir receives the first module")
-  (assert (exists? "vendor/gum/LICENSE.testament") "--dir receives every named module")
+  (assert (exists? "vendor/gum/test.wattle") "--dir receives every named module")
   (assert (not (exists? "deps/gum/test.wattle")) "--dir leaves deps alone")
 
   (write (string project "/deps/gum/args.wattle") "edited")
