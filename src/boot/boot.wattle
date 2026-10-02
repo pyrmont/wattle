@@ -6121,7 +6121,7 @@
   """
   Prints `Available modules:` and then the name and description of each module
   that modules.edn in the installed Gum lists, or, given names, copies the
-  files of those modules, and the Wattle LICENSE once, into the gum directory of
+  files of those modules, and the Gum LICENSE once, into the gum directory of
   the --dir option, `deps` by default. Copies nothing and exits with status 1
   and a message on a name the list does not hold or on a destination file that
   differs from its source, unless --force is set.
@@ -6160,7 +6160,7 @@
           (each name names
             (each file (get (get by-name name) :files)
               (plan (string source-dir "/" file) (string target-dir "/" file))))
-          (plan (string (wattle/srcpath) "/LICENSE") (string target-dir "/LICENSE"))
+          (plan (string source-dir "/LICENSE") (string target-dir "/LICENSE"))
           (pkg-mkdirs target-dir)
           (each [to content same?] copies
             (unless same? (spit to content))

@@ -23,7 +23,7 @@ text is: the names are indented by one space and aligned, and the descriptions
 wrap at the width of the terminal, up to 120 columns.
 
 With one or more names, it copies the files of each module into `<dir>/gum/`,
-along with Wattle's `LICENSE`, once however many modules are named, creating
+along with the Gum `LICENSE`, once however many modules are named, creating
 the directories that are missing. `<dir>` is `deps`, or the argument of
 `--dir`, which has the short form `-d`. The command prints one line for each
 file, `copied` or `unchanged`, followed by its path.
