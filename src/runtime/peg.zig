@@ -1156,6 +1156,45 @@ noinline fn pegMatchError(s: *PegState, text: [*]const u8) raise.Error {
     return pp_format.panicf("match error at line %d, column %d", .{ lc.line, lc.col });
 }
 
+/// Where a run of a leaf rule ends, and how many times the rule matched.
+const Run = struct { text: [*]const u8, count: u32 };
+
+/// Matches `leaf` up to `hi` times from `text` without the recursion and the
+/// capture bookkeeping `(between ...)` otherwise does per match, for the rules
+/// that match a byte class or a literal and so push no capture. Null for any
+/// other rule, and for a literal of no bytes, which matches without advancing
+/// and is left to the general loop's guard against spinning.
+fn repeatLeaf(s: *PegState, leaf: [*]const u32, start: [*]const u8, hi: u32) ?Run {
+    var text = start;
+    var count: u32 = 0;
+    switch (constants.PegRule.fromWord(leaf[0])) {
+        .set => while (count < hi and at(text) < at(s.text_end)) : (count += 1) {
+            const word = leaf[1 + (text[0] >> 5)];
+            if (word & (@as(u32, 1) << @truncate(text[0] & 0x1F)) == 0) break;
+            text += 1;
+        },
+        .range => {
+            const lo: u8 = @truncate(leaf[1]);
+            const top: u8 = @truncate(leaf[1] >> 16);
+            while (count < hi and at(text) < at(s.text_end) and text[0] >= lo and text[0] <= top) : (count += 1) {
+                text += 1;
+            }
+        },
+        .literal => {
+            const len: usize = leaf[1];
+            if (len == 0) return null;
+            const bytes: [*]const u8 = @ptrCast(leaf + 2);
+            while (count < hi and at(text) +% len <= at(s.text_end) and
+                std.mem.eql(u8, text[0..len], bytes[0..len])) : (count += 1)
+            {
+                text = skip(text, len);
+            }
+        },
+        else => return null,
+    }
+    return .{ .text = text, .count = count };
+}
+
 /// Evaluates a peg rule.
 ///
 /// `s` is the matcher state, `rule_in` the rule to run and `text_in` where to
@@ -1323,6 +1362,13 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                 const lo = rule[1];
                 const hi = rule[2];
                 const rule_a = s.ruleAt(rule[3]);
+                if (repeatLeaf(s, rule_a, text, hi)) |run| {
+                    // The depth check the general path makes, so that a leaf
+                    // repetition raises at the same nesting as any other.
+                    try down1(s);
+                    up1(s);
+                    return if (run.count < lo) null else run.text;
+                }
                 var captured: u32 = 0;
                 const cs = capSave(s);
                 try down1(s);
