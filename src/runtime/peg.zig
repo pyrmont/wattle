@@ -1052,6 +1052,110 @@ fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Error!repr.Value 
     return wrap.fromBuffer(ret);
 }
 
+/// Prints the `(debug)` rule's report: the text at the match position and each
+/// capture stack that is not empty. Kept out of `pegRule` so its buffer and
+/// format arguments are not part of that function's frame.
+noinline fn pegDebug(s: *PegState, text: [*]const u8) raise.Error!void {
+    var buffer: [32]u8 = @splat(0);
+    const remaining = at(s.outer_text_end) - at(text);
+    const shown = @min(remaining, 31);
+    @memcpy(buffer[0..shown], text[0..shown]);
+    try eprintf("?? at [%s] (index %d)\n", .{
+        @as([*]const u8, &buffer),
+        @as(i32, @intCast(at(text) - at(s.text_start))),
+    });
+    const has_color = repr.truthy(vm_state.dyn("err-color"));
+    if (s.scratch.count != 0) {
+        try eprintf("accumulate buffer: %v\n", .{wrap.fromBuffer(s.scratch)});
+    }
+    if (s.captures.count != 0) {
+        try eprintf("stack [%d]:\n", .{@as(i64, @intCast(s.captures.count))});
+        for (s.captures.slice(), 0..) |capture, index| {
+            // Two calls rather than one: the format string is
+            // `comptime`, so a runtime `has_color` cannot choose
+            // between two of them.
+            const i: i32 = @intCast(index);
+            if (has_color)
+                try eprintf("  [%d]: %M\n", .{ i, capture })
+            else
+                try eprintf("  [%d]: %m\n", .{ i, capture });
+        }
+    }
+    if (s.tagged_captures.count != 0) {
+        try eprintf("tag stack [%d]:\n", .{@as(i64, @intCast(s.tagged_captures.count))});
+        for (s.tagged_captures.slice(), 0..) |capture, index| {
+            const i: i32 = @intCast(index);
+            const tag = @as(i32, s.tags.slice()[index]);
+            if (has_color)
+                try eprintf("  [%d] tag=%d: %M\n", .{ i, tag, capture })
+            else
+                try eprintf("  [%d] tag=%d: %m\n", .{ i, tag, capture });
+        }
+    }
+}
+
+/// The value a `replace`, `matchsplice` or `cmt` rule captures for `constant`:
+/// a lookup in a map or table, a call, or the constant itself. `from` is where
+/// this rule's own captures start on the capture stack. Kept out of `pegRule`
+/// so the lookups and the two calls into user code do not take frame space.
+noinline fn replacement(s: *PegState, constant: repr.Value, from: usize) raise.Error!repr.Value {
+    var cap = wrap.fromNil();
+    switch (repr.typeOf(constant)) {
+        repr.Tag.map => {
+            if (s.captures.count != 0) {
+                cap = maps.lookup(
+                    wrap.toMap(constant),
+                    s.captures.slice()[@intCast(s.captures.count - 1)],
+                );
+            }
+        },
+        repr.Tag.table => {
+            if (s.captures.count != 0) {
+                cap = tables.get(
+                    wrap.toTable(constant),
+                    s.captures.slice()[@intCast(s.captures.count - 1)],
+                );
+            }
+        },
+        // A dictionary abstract is looked up as a table is, and any
+        // other abstract is the replacement itself.
+        repr.Tag.abstract => {
+            if (!args_core.checkdictionary(constant)) {
+                cap = constant;
+            } else if (s.captures.count != 0) {
+                cap = try access.get(
+                    constant,
+                    s.captures.slice()[@intCast(s.captures.count - 1)],
+                );
+            }
+        },
+        // Both of these run arbitrary Janet code in the middle of
+        // the matcher's recursion.
+        repr.Tag.nfunction => {
+            cap = try raise.call(
+                wrap.toNfunction(constant),
+                s.captures.slice()[from..],
+            );
+        },
+        repr.Tag.function => {
+            cap = try vm_entry.call(
+                wrap.toFunction(constant),
+                s.captures.slice()[from..],
+            );
+        },
+        else => cap = constant,
+    }
+    return cap;
+}
+
+/// Raises the error `(error)` makes when it has no capture to raise: the line
+/// and column of `text`. Out of line for the same reason as `pegDebug`.
+noinline fn pegMatchError(s: *PegState, text: [*]const u8) raise.Error {
+    const start: i32 = @intCast(at(text) - at(s.text_start));
+    const lc = getLinecolFromPosition(s, start);
+    return pp_format.panicf("match error at line %d, column %d", .{ lc.line, lc.col });
+}
+
 /// Evaluates a peg rule.
 ///
 /// `s` is the matcher state, `rule_in` the rule to run and `text_in` where to
@@ -1078,42 +1182,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
             },
 
             .debug => {
-                var buffer: [32]u8 = @splat(0);
-                const remaining = at(s.outer_text_end) - at(text);
-                const shown = @min(remaining, 31);
-                @memcpy(buffer[0..shown], text[0..shown]);
-                try eprintf("?? at [%s] (index %d)\n", .{
-                    @as([*]const u8, &buffer),
-                    @as(i32, @intCast(at(text) - at(s.text_start))),
-                });
-                const has_color = repr.truthy(vm_state.dyn("err-color"));
-                if (s.scratch.count != 0) {
-                    try eprintf("accumulate buffer: %v\n", .{wrap.fromBuffer(s.scratch)});
-                }
-                if (s.captures.count != 0) {
-                    try eprintf("stack [%d]:\n", .{@as(i64, @intCast(s.captures.count))});
-                    for (s.captures.slice(), 0..) |capture, index| {
-                        // Two calls rather than one: the format string is
-                        // `comptime`, so a runtime `has_color` cannot choose
-                        // between two of them.
-                        const i: i32 = @intCast(index);
-                        if (has_color)
-                            try eprintf("  [%d]: %M\n", .{ i, capture })
-                        else
-                            try eprintf("  [%d]: %m\n", .{ i, capture });
-                    }
-                }
-                if (s.tagged_captures.count != 0) {
-                    try eprintf("tag stack [%d]:\n", .{@as(i64, @intCast(s.tagged_captures.count))});
-                    for (s.tagged_captures.slice(), 0..) |capture, index| {
-                        const i: i32 = @intCast(index);
-                        const tag = @as(i32, s.tags.slice()[index]);
-                        if (has_color)
-                            try eprintf("  [%d] tag=%d: %M\n", .{ i, tag, capture })
-                        else
-                            try eprintf("  [%d] tag=%d: %m\n", .{ i, tag, capture });
-                    }
-                }
+                try pegDebug(s, text);
                 return text;
             },
 
@@ -1531,53 +1600,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                 s.mode = oldmode;
                 const matched = result orelse return null;
 
-                var cap = wrap.fromNil();
-                const constant = s.constants[rule[2]];
-                switch (repr.typeOf(constant)) {
-                    repr.Tag.map => {
-                        if (s.captures.count != 0) {
-                            cap = maps.lookup(
-                                wrap.toMap(constant),
-                                s.captures.slice()[@intCast(s.captures.count - 1)],
-                            );
-                        }
-                    },
-                    repr.Tag.table => {
-                        if (s.captures.count != 0) {
-                            cap = tables.get(
-                                wrap.toTable(constant),
-                                s.captures.slice()[@intCast(s.captures.count - 1)],
-                            );
-                        }
-                    },
-                    // A dictionary abstract is looked up as a table is, and any
-                    // other abstract is the replacement itself.
-                    repr.Tag.abstract => {
-                        if (!args_core.checkdictionary(constant)) {
-                            cap = constant;
-                        } else if (s.captures.count != 0) {
-                            cap = try access.get(
-                                constant,
-                                s.captures.slice()[@intCast(s.captures.count - 1)],
-                            );
-                        }
-                    },
-                    // Both of these run arbitrary Janet code in the middle of
-                    // the matcher's recursion.
-                    repr.Tag.nfunction => {
-                        cap = try raise.call(
-                            wrap.toNfunction(constant),
-                            s.captures.slice()[@intCast(cs.cap)..],
-                        );
-                    },
-                    repr.Tag.function => {
-                        cap = try vm_entry.call(
-                            wrap.toFunction(constant),
-                            s.captures.slice()[@intCast(cs.cap)..],
-                        );
-                    },
-                    else => cap = constant,
-                }
+                const cap = try replacement(s, s.constants[rule[2]], @intCast(cs.cap));
                 capLoadKeept(s, cs);
                 if (constants.PegRule.fromWord(rule[0]) != .replace and !repr.truthy(cap)) return null;
                 // Gathered rather than read a run at a time, because
@@ -1610,9 +1633,7 @@ fn pegRule(s: *PegState, rule_in: [*]const u32, text_in: [*]const u8) raise.Erro
                 if (s.captures.count > old_cap) {
                     return raise.panicv(s.captures.slice()[@intCast(s.captures.count - 1)]);
                 }
-                const start: i32 = @intCast(at(text) - at(s.text_start));
-                const lc = getLinecolFromPosition(s, start);
-                return pp_format.panicf("match error at line %d, column %d", .{ lc.line, lc.col });
+                return pegMatchError(s, text);
             },
 
             .backmatch => {
@@ -1816,11 +1837,24 @@ fn pegUnmarshal(u: *abi.Unmarshal) raise.Error!*Peg {
 /// grammar's use of backrefs call for.
 fn pushcap(s: *PegState, capture: repr.Value, tag: u32) raise.Error!void {
     if (s.mode == .accumulate) try pp_describe.toStringB(s.scratch, capture);
-    if (s.mode == .normal) try arrays.push(s.captures, capture);
+    if (s.mode == .normal) try pushValue(s.captures, capture);
     if (s.has_backref) {
-        try arrays.push(s.tagged_captures, capture);
-        try buffers.pushU8(s.tags, @truncate(tag));
+        try pushValue(s.tagged_captures, capture);
+        try pushTag(s.tags, @truncate(tag));
     }
+}
+
+/// `arrays.push` with the append that needs no growth done inline, so a
+/// capture that fits costs a compare and a store rather than a call.
+inline fn pushValue(array: *arrays.Array, capture: repr.Value) raise.Error!void {
+    if (array.count < array.capacity) return array.appendAssumingCapacity(capture);
+    return arrays.push(array, capture);
+}
+
+/// `buffers.pushU8` with the same inline fast path as `pushValue`.
+inline fn pushTag(buffer: *buffers.Buffer, tag: u8) raise.Error!void {
+    if (buffer.count < buffer.capacity) return buffer.appendAssumingCapacity(tag);
+    return buffers.pushU8(buffer, tag);
 }
 
 /// Takes `size` words of bytecode for a rule an `emit` will fill in.
