@@ -1,5 +1,4 @@
-; Test framework ported from Testament for Janet. The original is MIT
-; licensed.
+; A testing framework library
 
 (def- default-result-hook (fn [_]))
 
