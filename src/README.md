@@ -454,9 +454,11 @@ directory is the package root. The manifest records `source` and `ref` and does
 not record the temporary path. `pkg reinstall` and `pkg update` download a
 recorded source again. For a directory they install from the recorded directory.
 
-`curl`, `tar` and `git` are found on `PATH`, and `pkg install` names the one that
-is missing. The package script runs with the privileges of the caller, and no
-source is verified.
+`curl`, `tar` and `git` are found on `PATH`, and `pkg install` names the one
+that is missing. A tool that exits with a status other than 0 raises an error.
+Its message is the name and status of the tool, followed on the next line by
+what the tool wrote to standard error. The package script runs with the
+privileges of the caller, and no source is verified.
 
 ## Build steps
 

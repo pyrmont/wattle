@@ -75,7 +75,13 @@
 ; Now install sample-pkg
 (assert-no-error "sample-pkg install" (pkg/install "./examples/sample-pkg"))
 
-(assert-error "" (pkg/install "./examples/sample-dep11111"))
+; A directory that does not exist is read as a Git repository, and the error
+; carries what git wrote.
+(let [message (try (pkg/install "./examples/sample-dep11111") ([e] e))]
+  (assert (and (string? message)
+               (string/has-prefix? "git exited with status 128\nfatal: repository" message)
+               (string/find "sample-dep11111" message))
+          "a missing directory is reported with the message of git"))
 
 (assert (= 3 (length (pkg/list))) "packages are listed correctly 3")
 (assert (= 3 (length (pkg/topolist))) "packages are listed correctly 4")
@@ -335,7 +341,22 @@
     (assert-no-error (string name " uninstall") (pkg/uninstall "demo")))
 
   ; A tarball that fails to download raises and leaves nothing behind.
-  (assert-error "a missing tarball" (install-quietly (string "file://" src-dir "/nothere.tar")))
+  (def missing-url (string "file://" src-dir "/nothere.tar"))
+  (let [message (try (install-quietly missing-url) ([e] e))]
+    (assert (and (string? message)
+                 (string/has-prefix? "curl exited with status 37\ncurl: (37)" message)
+                 (string/find "nothere.tar" message))
+            "a missing tarball is reported with the message of curl"))
+  (let [err-file (string prefix "-cli-err")
+        f (file/open err-file :wb)
+        status (os/execute [(dyn :executable) "-p" (dyn *prefix*) "pkg" "install" missing-url]
+                           :p {:out null :err f})]
+    (file/close f)
+    (assert (= 1 status) "a failed download exits with status 1")
+    (assert (string/has-prefix? "error: curl exited with status 37\ncurl: (37)"
+                                (string (slurp err-file)))
+            "the command line prints the message of curl as the error")
+    (rmrf err-file))
   (assert (no-fetch-left) "a failed download leaves no temporary directory")
   (assert (= 0 (length (pkg/list))) "a failed download installs nothing")
 
@@ -360,7 +381,11 @@
   (assert (string/find "one" (text)) "git reinstall keeps the ref")
   (assert (no-fetch-left) "git install leaves no temporary directory")
   (assert-no-error "git at a ref uninstall" (pkg/uninstall "demo"))
-  (assert-error "a missing ref" (install-quietly repo :ref "no-such-ref"))
+  (let [message (try (install-quietly repo :ref "no-such-ref") ([e] e))]
+    (assert (and (string? message)
+                 (string/has-prefix? "git exited with status 128\n" message)
+                 (string/find "no-such-ref" message))
+            "a missing ref is reported with the message of git"))
   (assert (= 0 (length (pkg/list))) "a missing ref installs nothing")
 
   ; A ref is accepted only for a Git repository.

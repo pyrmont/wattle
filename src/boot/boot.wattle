@@ -5173,12 +5173,19 @@
   (defn- pkg-run
     """
     Runs tool with args. Raises if tool cannot be started or exits with a
-    status other than 0.
+    status other than 0. The message of the second error is followed by what
+    tool wrote to its standard error, which is not shown otherwise.
     """
     [tool & args]
-    (def [ok status] (protect (os/execute [tool |args] :p)))
-    (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
-    (pkg-assertf (zero? status) "%s exited with status %d" tool status))
+    (def err (file/temp))
+    (defer (file/close err)
+      (def [ok status] (protect (os/execute [tool |args] :p {:err err})))
+      (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
+      (unless (zero? status)
+        (file/seek err :set 0)
+        (def text (string/trim (string (or (file/read err :all) ""))))
+        (pkg-fail (string tool " exited with status " status
+                          (if (empty? text) "" (string "\n" text)))))))
 
   (defn- pkg-unpack-root
     """
