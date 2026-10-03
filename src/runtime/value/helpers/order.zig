@@ -260,6 +260,39 @@ pub inline fn equals(x_in: repr.Value, y_in: repr.Value) bool {
     return equalsOperands(operandOf(x_in), operandOf(y_in));
 }
 
+/// Returns whether a stored dictionary key equals a lookup key, without the
+/// call to `equals` where the tags settle it.
+///
+/// `stored` is the key in a bucket and `key` the key sought. The result is the
+/// same as `equals(stored, key)` when `stored` is not NaN, which a stored key
+/// never is. Differing tags are unequal. A type that compares by identity is
+/// settled on its payload pointer, which includes a keyword, because a symbol
+/// is interned. A number compares as a double, so signed zeros are equal and a
+/// NaN query matches nothing. A string, tuple, vector or map is equal on
+/// identical pointers and otherwise goes to `equals`. A nil, boolean or
+/// abstract does too, the last so that its comparison callback is still called.
+pub inline fn keyEquals(stored: repr.Value, key: repr.Value) bool {
+    const tag = repr.typeOf(stored);
+    if (tag != repr.typeOf(key)) return false;
+    return switch (tag) {
+        .number => wrap.toNumber(stored) == wrap.toNumber(key),
+        .buffer, .array, .table, .symbol, .fiber, .function, .nfunction, .pointer => wrap.toPointer(stored) == wrap.toPointer(key),
+        .string, .tuple, .vector, .map => wrap.toPointer(stored) == wrap.toPointer(key) or equals(stored, key),
+        .nil, .boolean, .abstract => equals(stored, key),
+    };
+}
+
+/// Returns the hash of a dictionary lookup key, reading a symbol's or
+/// string's stored hash without the call to `hash`.
+///
+/// `x` is the key. The result is `hash(x)`.
+pub inline fn keyHash(x: repr.Value) i32 {
+    if (repr.checkType(x, repr.Tag.symbol) or repr.checkType(x, repr.Tag.string)) {
+        return stringHeadHash(wrap.toString(x));
+    }
+    return hash(x);
+}
+
 /// Returns a value's hash.
 ///
 /// `x` is the value. The pointer fallback reads the raw payload word, so a hash

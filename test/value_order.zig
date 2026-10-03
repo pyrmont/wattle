@@ -667,6 +667,138 @@ fn theEqualityOfAbstracts() void {
     expect(!harness.equals(p, r));
 }
 
+/// A table lookup settles a key by tag and identity where it can, and the
+/// results are those of `equals`. The expectations are written out per key
+/// rather than derived from `harness.equals`, so a shortcut that disagrees with
+/// general equality fails here.
+fn aTableKeyIsFoundAsEqualityDecides() void {
+    const t = tables.new(8);
+    const cell_a = mkcell(5);
+    const bare = mkbare(bareType());
+    tables.put(t, kw("hit"), intv(1));
+    tables.put(t, sym("hit"), intv(2));
+    tables.put(t, str("hit"), intv(3));
+    tables.put(t, num(0.0), intv(4));
+    tables.put(t, intv(7), intv(5));
+    tables.put(t, mktuple(&.{ intv(1), kw("x") }), intv(6));
+    tables.put(t, mkmap(&.{ kw("k"), intv(1) }), intv(7));
+    tables.put(t, cell_a, intv(8));
+    tables.put(t, bare, intv(9));
+    tables.put(t, kw("gone"), intv(10));
+    expect(harness.equals(tables.remove(t, kw("gone")), intv(10)));
+
+    // A keyword, a symbol and a string with equal bytes are three keys.
+    expect(harness.equals(tables.rawget(t, kw("hit")), intv(1)));
+    expect(harness.equals(tables.rawget(t, sym("hit")), intv(2)));
+    expect(harness.equals(tables.rawget(t, str("hit")), intv(3)));
+    expect(harness.isType(tables.rawget(t, kw("miss")), repr.Tag.nil));
+    expect(harness.isType(tables.rawget(t, kw("gone")), repr.Tag.nil));
+
+    // Signed zero finds the stored zero in both directions.
+    expect(harness.equals(tables.rawget(t, num(-0.0)), intv(4)));
+    const u = tables.new(8);
+    tables.put(u, num(-0.0), intv(1));
+    expect(harness.equals(tables.rawget(u, num(0.0)), intv(1)));
+    expect(harness.equals(tables.rawget(u, num(-0.0)), intv(1)));
+
+    // A NaN query finds nothing, and an integer is its double.
+    expect(harness.isType(tables.rawget(t, num(std.math.nan(f64))), repr.Tag.nil));
+    expect(harness.equals(tables.rawget(t, num(7.0)), intv(5)));
+    expect(harness.isType(tables.rawget(t, num(7.5)), repr.Tag.nil));
+
+    // Distinct but equal strings, tuples and maps are the same key.
+    expect(harness.equals(tables.rawget(t, str("hit")), intv(3)));
+    expect(harness.equals(tables.rawget(t, mktuple(&.{ intv(1), kw("x") })), intv(6)));
+    expect(harness.isType(tables.rawget(t, mktuple(&.{ intv(1), kw("y") })), repr.Tag.nil));
+    expect(harness.equals(tables.rawget(t, mkmap(&.{ kw("k"), intv(1) })), intv(7)));
+    expect(harness.isType(tables.rawget(t, mkmap(&.{ kw("k"), intv(2) })), repr.Tag.nil));
+
+    // An abstract with a compare callback matches an equal distinct instance,
+    // and one without matches only itself.
+    expect(harness.equals(tables.rawget(t, mkcell(5)), intv(8)));
+    expect(harness.isType(tables.rawget(t, mkcell(6)), repr.Tag.nil));
+    expect(harness.equals(tables.rawget(t, bare), intv(9)));
+    expect(harness.isType(tables.rawget(t, mkbare(bareType())), repr.Tag.nil));
+
+    // A prototype's key is found through the receiver, and the receiver's own
+    // key shadows it.
+    const proto = tables.new(2);
+    tables.put(proto, kw("bump"), intv(1));
+    tables.put(proto, kw("both"), intv(2));
+    const obj = tables.new(2);
+    obj.proto = proto;
+    tables.put(obj, kw("both"), intv(3));
+    expect(harness.equals(tables.get(obj, kw("bump")), intv(1)));
+    expect(harness.equals(tables.get(obj, kw("both")), intv(3)));
+    expect(harness.isType(tables.get(obj, kw("none")), repr.Tag.nil));
+}
+
+/// The bucket a key would like to occupy in an array of `capacity` buckets.
+/// Spelled out rather than reusing `value.zig`'s `mapHash`, for the reason
+/// `test/tables.zig` gives.
+fn idealIndex(capacity: u32, key: repr.Value) usize {
+    const hash: u32 = @bitCast(order.hash(key));
+    return hash & (capacity - 1);
+}
+
+/// Fills `names` with the names of keywords whose ideal bucket in an array of
+/// `capacity` buckets is `target`.
+///
+/// Searched rather than hard-coded, because the hash of a keyword is not
+/// stable across builds, so a fixed set of names would stop colliding without
+/// a case failing.
+fn collidingKeywords(capacity: u32, target: usize, names: [][16:0]u8) void {
+    var found: usize = 0;
+    var i: usize = 0;
+    while (i < 100000 and found < names.len) : (i += 1) {
+        const name = std.fmt.bufPrintZ(&names[found], "k{d}", .{i}) catch unreachable;
+        if (idealIndex(capacity, kw(name.ptr)) == target) found += 1;
+    }
+    expect(found == names.len);
+}
+
+/// Keys that share one ideal bucket are each found past the others, and a key
+/// that shares it and is absent is not found.
+///
+/// The bucket holds a number, which a keyword probing past it rejects on its
+/// tag, and the keywords after it are rejected on identity. The case asserts
+/// that the displacement happened rather than assuming it.
+fn collidingKeysAreFoundPastEachOther() void {
+    const t = tables.new(4);
+    expect(t.capacity == 8);
+    const num_key = intv(0);
+    const target = idealIndex(8, num_key);
+    var names: [4][16:0]u8 = undefined;
+    collidingKeywords(8, target, &names);
+
+    tables.put(t, num_key, intv(100));
+    tables.put(t, kw(&names[0]), intv(0));
+    tables.put(t, kw(&names[1]), intv(1));
+    tables.put(t, kw(&names[2]), intv(2));
+    expect(t.count == 4);
+    expect(t.capacity == 8);
+
+    // The number holds the ideal bucket, so every keyword was displaced.
+    const slots = t.slots();
+    expect(tables.find(t, num_key) == &slots[target]);
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        expect(tables.find(t, kw(&names[i])) != &slots[target]);
+        expect(harness.equals(tables.rawget(t, kw(&names[i])), intv(@intCast(i))));
+    }
+    expect(harness.equals(tables.rawget(t, num_key), intv(100)));
+    expect(harness.isType(tables.rawget(t, kw(&names[3])), repr.Tag.nil));
+
+    // Removing the first of the run leaves a tombstone the others pass.
+    _ = tables.remove(t, num_key);
+    expect(harness.isType(tables.rawget(t, num_key), repr.Tag.nil));
+    i = 0;
+    while (i < 3) : (i += 1) {
+        expect(harness.equals(tables.rawget(t, kw(&names[i])), intv(@intCast(i))));
+    }
+    expect(harness.isType(tables.rawget(t, kw(&names[3])), repr.Tag.nil));
+}
+
 /// Across types the order is the `repr.Tag` enumeration, which makes it
 /// arbitrary and stable, and the sort in the standard library depends on
 /// both.
@@ -1161,6 +1293,8 @@ pub fn run() void {
     theChecksBehindTheHash();
     theMapOrderingCriteriaAreInOrder();
     theEqualityOfAbstracts();
+    aTableKeyIsFoundAsEqualityDecides();
+    collidingKeysAreFoundPastEachOther();
 
     theOrderAcrossTypes();
     theOrderOfNumbers();

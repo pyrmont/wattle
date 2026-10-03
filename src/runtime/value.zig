@@ -137,7 +137,7 @@ pub fn capacityFor(val: usize) usize {
 /// than reading below the array.
 pub fn dictionaryFind(buckets: []const tables.Keyval, key: repr.Value) ?*const tables.Keyval {
     const cap: i32 = @intCast(buckets.len);
-    const index = mapHash(cap, order.hash(key));
+    const index = mapHash(cap, order.keyHash(key));
     var first_bucket: ?*const tables.Keyval = null;
 
     // Index loops, rather than `for (buckets[start..]) |*kv|`. Zig's `for`
@@ -152,7 +152,7 @@ pub fn dictionaryFind(buckets: []const tables.Keyval, key: repr.Value) ?*const t
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
-        } else if (order.equals(kv.key, key)) {
+        } else if (order.keyEquals(kv.key, key)) {
             return kv;
         }
     }
@@ -163,7 +163,7 @@ pub fn dictionaryFind(buckets: []const tables.Keyval, key: repr.Value) ?*const t
         if (isNil(kv.key)) {
             if (isNil(kv.value)) return kv;
             if (first_bucket == null) first_bucket = kv;
-        } else if (order.equals(kv.key, key)) {
+        } else if (order.keyEquals(kv.key, key)) {
             return kv;
         }
     }
