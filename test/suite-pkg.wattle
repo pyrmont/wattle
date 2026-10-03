@@ -288,6 +288,20 @@
     (assert (= 0 (length (pkg/list))) "a package whose hook fails is not installed")
     (rmrf bug-dir)))
 
+; The build of an :exe artifact is not captured, so its output reaches the
+; command line as it is written. The prefix of this suite holds no source of the
+; runtime, so the build fails, and the command line prints what the build wrote
+; and then the failure of the build.
+(compwhen (dyn 'os/execute)
+  (do
+    (make-info-pkg "{:name \"exe-pkg\" :artifacts [{:type :exe :name \"x\" :entry \"x.wattle\"}]}")
+    (def [status text] (run-cli "pkg" "install" info-dir))
+    (assert (= 1 status) "a build that fails exits with status 1")
+    (assert (string/find "the Wattle package is not at" text) "the output of the build is shown")
+    (assert (string/has-suffix? (string "error: wattle build exe exited with status 1" line-end) text)
+            "the failure of the build is the last line")
+    (assert (= 0 (length (pkg/list))) "a package whose build fails is not installed")))
+
 (make-info-pkg "{:name \"man-pkg\" :man [\"docs/man-pkg.1\" \"docs/man-pkg.txt\"]}")
 (assert-error "a :man entry with no section" (with-dyns [*err* !""] (pkg/install info-dir)))
 (assert (= 0 (length (pkg/list))) "a bad :man entry installs nothing")

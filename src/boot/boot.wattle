@@ -5195,6 +5195,21 @@
                             (if (empty? text) "" (string "\n" text))))))
       (pkg-errorf "cannot run %s, this build has no os/execute" tool)))
 
+  (defn- pkg-run-live
+    """
+    Runs tool with args, which write to the standard streams of this process as
+    they run. Raises if tool cannot be started or exits with a status other
+    than 0, and names label, in place of tool, in the second message. Raises in
+    a build that has no os/execute.
+    """
+    [label tool & args]
+    (compif (dyn 'os/execute)
+      (do
+        (def [ok status] (protect (os/execute [tool |args] :p)))
+        (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
+        (pkg-assertf (zero? status) "%s exited with status %d" label status))
+      (pkg-errorf "cannot run %s, this build has no os/execute" tool)))
+
   (defn- pkg-unpack-root
     """
     Returns the package root of an unpacked tree: the one directory in dir if
@@ -5274,8 +5289,10 @@
       (def dir (os/cwd))
       (os/cd path)
       (defer (os/cd dir)
-        (print "running default build")
-        (pkg-run exe "-p" (dyn *prefix*) "build" "exe"))))
+        (print "building " (string/join ", " (map #(get $ :name) (pkg-artifacts-of info :exe))))
+        ; Not captured, so that the output of the build appears as it runs and
+        ; Zig can draw its progress on a terminal.
+        (pkg-run-live "wattle build exe" exe "-p" (dyn *prefix*) "build" "exe"))))
 
   (defn- pkg-default-install
     """

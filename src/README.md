@@ -457,8 +457,11 @@ recorded source again. For a directory they install from the recorded directory.
 `curl`, `tar` and `git` are found on `PATH`, and `pkg install` names the one
 that is missing. A tool that exits with a status other than 0 raises an error.
 Its message is the name and status of the tool, followed on the next line by
-what the tool wrote to standard error. The package script runs with the
-privileges of the caller, and no source is verified.
+what the tool wrote to standard error. The build of an `:exe` artifact is the
+exception. Its output is not captured, so that it appears as it is written and
+Zig can draw its progress on a terminal, and the message names `wattle build
+exe` and its status. The package script runs with the privileges of the caller,
+and no source is verified.
 
 ## Build steps
 
