@@ -392,6 +392,183 @@ pub fn wattleExecutable(
     return buildExecutable(target_side, host_side, opts);
 }
 
+/// What `wattleWeb` builds.
+pub const WebOptions = struct {
+    /// The program's name. It names the files and the directory they install
+    /// into, so it holds letters, digits, `_` and `-` only.
+    name: []const u8,
+    /// The program: a Wattle file that defines `main`.
+    source: std.Build.LazyPath,
+    /// The mode the runtime is built in.
+    optimize: std.builtin.OptimizeMode = .ReleaseSmall,
+};
+
+/// What a page needs to run a Wattle program, from `wattleWeb`.
+pub const Web = struct {
+    /// The program's name.
+    name: []const u8,
+    /// The runtime, a wasm32-wasi reactor that has no parser or compiler and
+    /// loads an image. Its file in `files` is named by its contents.
+    runtime: *std.Build.Step.Compile,
+    /// The program as an image, under the name `<name>.wimage`.
+    image: std.Build.LazyPath,
+    /// A directory holding the files a page serves: `wattle-<hash>.wasm`,
+    /// `<name>-<hash>.wimage`, `wasi-<hash>.js` and `<name>.js`. The first
+    /// three share one hash of their contents. The loader is an ES module that
+    /// exports `run`, which fetches the first two.
+    files: std.Build.LazyPath,
+
+    /// Makes the install step install `files` under `web/<name>` in the install
+    /// prefix.
+    pub fn install(self: Web, b: *std.Build) void {
+        b.getInstallStep().dependOn(&b.addInstallDirectory(.{
+            .source_dir = self.files,
+            .install_dir = .{ .custom = "web" },
+            .install_subdir = self.name,
+        }).step);
+    }
+};
+
+/// A Wattle program as an image and the runtime and JavaScript that load it in
+/// a browser.
+///
+/// `host` is this package instantiated for the build machine, as `wattleExecutable`'s
+/// is, because its `wattle` client makes the image:
+///
+/// ```zig
+/// const web = wattle.wattleWeb(
+///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = false, .sourcemaps = false }),
+///     .{ .name = "hello", .source = b.path("main.wattle") },
+/// );
+/// web.install(b);
+/// ```
+///
+/// The runtime is built for wasm32-wasi whatever target `host` names. It has no
+/// parser or compiler, no docstrings and no source maps, so the program cannot
+/// call `eval` or `parse` and the core image has no documentation. `host`'s own
+/// `docstrings` and `sourcemaps` options decide whether the program's image has
+/// them.
+///
+/// A packer, built for the build machine, copies the runtime, the image and
+/// `wasi.js` into one directory under names that include one hash of their
+/// contents, and writes `<name>.js` to refer to them. The files are returned
+/// uninstalled. This function panics if `host` has not
+/// run `build()` or if `name` has a character outside the set above.
+pub fn wattleWeb(host: *std.Build.Dependency, opts: WebOptions) Web {
+    const host_side = builtFor(host.builder) orelse
+        @panic("wattleWeb: the host dependency has not run build()");
+    const b = host_side.b;
+    for (opts.name) |ch| switch (ch) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_', '-' => {},
+        else => std.debug.panic("wattleWeb: name '{s}' may hold only letters, digits, '_' and '-'", .{opts.name}),
+    };
+    const runtime = webRuntime(b, host_side.options, opts.optimize, bootHost(b), true) orelse
+        @panic("wattleWeb: a configuration that selects no subsystem has no runtime to build");
+
+    const make_image = b.addRunArtifact(host_side.client);
+    make_image.setName(b.fmt("make image ({s})", .{opts.name}));
+    make_image.addArgs(&.{ "build", "img" });
+    make_image.addFileArg(opts.source);
+    const image = make_image.addOutputFileArg(b.fmt("{s}.wimage", .{opts.name}));
+
+    const pack_module = b.createModule(.{
+        .root_source_file = b.path("src/client/web/pack.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const pack = selectBackend(b.addExecutable(.{ .name = "wattle-web-pack", .root_module = pack_module }));
+    const run_pack = b.addRunArtifact(pack);
+    run_pack.setName(b.fmt("pack ({s})", .{opts.name}));
+    run_pack.addArg(opts.name);
+    run_pack.addFileArg(runtime.getEmittedBin());
+    run_pack.addFileArg(image);
+    run_pack.addFileArg(b.path(web_support));
+    const files = run_pack.addOutputDirectoryArg("web");
+    return .{
+        .name = b.dupe(opts.name),
+        .runtime = runtime,
+        .image = image,
+        .files = files,
+    };
+}
+
+/// The JavaScript the reactor's page and `wattleWeb` both ship.
+const web_support = "src/client/web/wasi.js";
+
+/// The machine the image generator runs on, with the CPU model pinned.
+///
+/// The generator translates system headers, and a translated structure's size
+/// depends on the CPU model. Starting from the host's own query keeps the
+/// version and pins the model.
+fn bootHost(b: *std.Build) std.Build.ResolvedTarget {
+    var query = b.graph.host.query;
+    query.cpu_model = .baseline;
+    return b.resolveTargetQuery(query);
+}
+
+/// The web reactor: `src/client/web.zig` built as a wasm32-wasi reactor, with
+/// its own core image and runtime graph.
+///
+/// A reactor has `_initialize` and exported functions and no `_start`, so the
+/// page calls into the runtime rather than the runtime reading a terminal,
+/// which a page cannot supply. It is built for wasm32-wasi whatever the build's
+/// `-Dtarget` names.
+///
+/// **The stack ceiling is 1000000 slots rather than the command's
+/// 0x7fffffff.** At the default, unbounded recursion exhausts wasm32's heap
+/// before the ceiling is reached, and the out-of-memory path ends in a trap. A
+/// trap leaves the instance unusable, so the page loses every definition made
+/// in it. At 1000000 slots the same recursion raises `stack overflow`, an
+/// ordinary error after which the instance keeps its state. `-Dstack-max`
+/// overrides it. The NaN-box pointer shift is cleared because its range
+/// depends on the target, and wasm32 allows only 0.
+///
+/// `image_only` selects a runtime that has no parser, compiler, docstrings or
+/// source maps. The image generator still compiles `boot.wattle`, because
+/// `bootConfig` sets `compiler`, so the image holds every binding and the
+/// runtime registers a stub under the name of each one it lacks.
+///
+/// The result is null when the configuration selects no subsystem.
+fn webRuntime(
+    b: *std.Build,
+    options: BuildOptions,
+    optimize: std.builtin.OptimizeMode,
+    boot_host: std.Build.ResolvedTarget,
+    image_only: bool,
+) ?*std.Build.Step.Compile {
+    const web_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+    var web_options = options;
+    if (!b.user_input_options.contains("stack-max")) web_options.stack_max = 1000000;
+    web_options.nanbox_pointer_shift = null;
+    if (image_only) {
+        web_options.compiler = false;
+        web_options.docstrings = false;
+        web_options.sourcemaps = false;
+    }
+    const web_config = resolveConfig(web_options, web_target);
+    const web_image = coreImage(b, web_options, web_target, boot_host);
+    const g = makeRuntimeGraph(b, web_target, optimize, web_options, web_config, web_image) orelse return null;
+    const web_module = b.createModule(.{
+        .root_source_file = b.path("src/client/web.zig"),
+        .target = web_target,
+        .optimize = optimize,
+    });
+    configureCModule(b, web_module, web_target, web_options, web_config);
+    web_module.addImport("subsystems", g.subsystems);
+    web_module.addImport("config", g.config);
+    web_module.addImport("abi", g.abi);
+    web_module.addImport("repr", g.repr);
+    const web = selectBackend(b.addExecutable(.{ .name = "wattle-web", .root_module = web_module }));
+    web.wasi_exec_model = .reactor;
+    // `_initialize` is wasi-libc's `crt1-reactor.o`, and the root has no `main`
+    // for the standard library to wrap in an entry point.
+    web.entry = .disabled;
+    // Exports the root's `export fn` declarations. The runtime declares no
+    // other.
+    web.rdynamic = true;
+    return web;
+}
+
 /// What `build()` made for one builder, which `wattleModule` and `wattleExecutable`
 /// read back.
 ///
@@ -485,11 +662,7 @@ pub fn build(b: *std.Build) void {
     // translates a system header notices, and this is the first one that
     // does. Starting from the host's own query keeps the version and still
     // pins the CPU model, which is what this is for.
-    const boot_host = blk: {
-        var query = b.graph.host.query;
-        query.cpu_model = .baseline;
-        break :blk b.resolveTargetQuery(query);
-    };
+    const boot_host = bootHost(b);
     const image_source = coreImage(b, options, target, boot_host);
 
     // The image on its own, so that a build can be asked for the generator's
@@ -1235,23 +1408,10 @@ pub fn build(b: *std.Build) void {
         for (wasm_binaries.items) |binary| test_step.dependOn(checkImports(b, checker, binary));
     }
 
-    // `examples/web`, Janet in a web page: `examples/web/main.zig` built as a
-    // wasm32-wasi reactor. A reactor has `_initialize` and exported functions
-    // and no `_start`, so the page calls into the runtime once per submission
-    // rather than the runtime reading a terminal, which a page cannot supply.
-    // The step builds for wasm32-wasi whatever `-Dtarget` names, ReleaseSmall
-    // unless `-Doptimize` or `--release` is given, and generates its own image
-    // and runtime graph for that configuration.
-    //
-    // **The stack ceiling is 1000000 slots rather than the command's
-    // 0x7fffffff.** At the default, unbounded Janet recursion exhausts
-    // wasm32's heap before the ceiling is reached, and the out-of-memory path
-    // ends in a trap. A trap leaves the instance unusable, so the page loses
-    // every definition made in it. At 1000000 slots the same recursion raises
-    // `stack overflow`, an ordinary Janet error after which the instance keeps
-    // its state. `-Dstack-max` overrides it. The NaN-box pointer shift is
-    // cleared because its range depends on the target, and wasm32 allows only
-    // 0.
+    // `examples/web`, Wattle in a web page. `webRuntime` builds the reactor
+    // for wasm32-wasi whatever `-Dtarget` names, ReleaseSmall unless
+    // `-Doptimize` or `--release` is given. `-Dwasm-image` builds the
+    // image-only runtime and installs no page.
     const web_step = b.step("examples/web", "Build examples/web, Wattle as a wasm32-wasi reactor, with its page into <prefix>/web");
     // The three example steps under one name. `zig build examples` builds
     // every example the build knows how to; each is also its own step.
@@ -1260,54 +1420,20 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(consumer_step);
     examples_step.dependOn(web_step);
     {
-        const web_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
         const web_optimize: std.builtin.OptimizeMode =
             if (b.user_input_options.contains("optimize") or b.release_mode != .off) optimize else .ReleaseSmall;
-        var web_options = options;
-        if (!b.user_input_options.contains("stack-max")) web_options.stack_max = 1000000;
-        web_options.nanbox_pointer_shift = null;
-        // An image-only runtime has no parser, compiler, docstrings or source
-        // maps. The image generator still compiles `boot.wattle`, because
-        // `bootConfig` sets `compiler`, so the image holds every binding and
-        // the runtime registers a stub under the name of each one it lacks.
-        if (options.wasm_image) {
-            web_options.compiler = false;
-            web_options.docstrings = false;
-            web_options.sourcemaps = false;
-        }
-        const web_config = resolveConfig(web_options, web_target);
-        const web_image = coreImage(b, web_options, web_target, boot_host);
-        if (makeRuntimeGraph(b, web_target, web_optimize, web_options, web_config, web_image)) |g| {
-            const web_module = b.createModule(.{
-                .root_source_file = b.path("examples/web/main.zig"),
-                .target = web_target,
-                .optimize = web_optimize,
-            });
-            configureCModule(b, web_module, web_target, web_options, web_config);
-            web_module.addImport("subsystems", g.subsystems);
-            web_module.addImport("config", g.config);
-            web_module.addImport("abi", g.abi);
-            web_module.addImport("repr", g.repr);
-            const web = selectBackend(b.addExecutable(.{ .name = "wattle-web", .root_module = web_module }));
-            web.wasi_exec_model = .reactor;
-            // `_initialize` is wasi-libc's `crt1-reactor.o`, and the root has
-            // no `main` for the standard library to wrap in an entry point.
-            web.entry = .disabled;
-            // Exports the root's four `export fn` declarations. The runtime
-            // declares no other.
-            web.rdynamic = true;
-
+        if (webRuntime(b, options, web_optimize, boot_host, options.wasm_image)) |web| {
             const web_dir: std.Build.InstallDir = .{ .custom = "web" };
             const install_web = b.addInstallArtifact(web, .{ .dest_dir = .{ .override = web_dir } });
             install_web.step.dependOn(checkImports(b, checker, web));
             web_step.dependOn(&install_web.step);
             // Copied beside the binary, so that the installed directory is
-            // servable on its own.
-            // The page submits source, which an image-only runtime cannot
-            // run, so that build installs the binary and `wasi.js` alone.
-            const web_files: []const []const u8 = if (options.wasm_image) &.{"wasi.js"} else &.{ "index.html", "wasi.js" };
-            for (web_files) |file| {
-                web_step.dependOn(&b.addInstallFileWithDir(b.path(b.fmt("examples/web/{s}", .{file})), web_dir, file).step);
+            // servable on its own. The page submits source, which an
+            // image-only runtime cannot run, so that build installs the
+            // binary and `wasi.js` alone.
+            web_step.dependOn(&b.addInstallFileWithDir(b.path(web_support), web_dir, "wasi.js").step);
+            if (!options.wasm_image) {
+                web_step.dependOn(&b.addInstallFileWithDir(b.path("examples/web/index.html"), web_dir, "index.html").step);
             }
         }
     }

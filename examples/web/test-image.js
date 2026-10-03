@@ -7,7 +7,7 @@
 // mismatch. It needs Node 22.7 or later, as `test.js` does.
 
 import { readFileSync } from "node:fs";
-import { start } from "./wasi.js";
+import { start } from "../../src/client/web/wasi.js";
 
 const [wasmPath, imagePath, stdout, stderr = ""] = process.argv.slice(2);
 if (!imagePath || stdout === undefined) {

@@ -80,7 +80,8 @@ _wattle() {
                         _values 'target' \
                             'exe[Build the executables that info.edn declares]' \
                             'img[Compile a source file into an image]' \
-                            'lib[Build the native modules that info.edn declares]' && ret=0
+                            'lib[Build the native modules that info.edn declares]' \
+                            'web[Build the web programs that info.edn declares]' && ret=0
                     else
                         local target=$words[2]
                         shift 2 words
@@ -98,6 +99,12 @@ _wattle() {
                                     '(- *)'{-h,--help}'[Show usage and exit]' \
                                     '(-r --release)'{-r+,--release=}'[Optimise for safe, fast or small]:mode:(safe fast small)' \
                                     '(-t --target)'{-t+,--target=}'[Build for a Zig target triple]:triple:' \
+                                    '1:name:' && ret=0
+                                ;;
+                            web)
+                                _arguments -s \
+                                    '(- *)'{-h,--help}'[Show usage and exit]' \
+                                    '(-r --release)'{-r+,--release=}'[Optimise for safe, fast or small]:mode:(safe fast small)' \
                                     '1:name:' && ret=0
                                 ;;
                         esac

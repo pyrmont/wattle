@@ -17,6 +17,7 @@ SYNOPSIS
 **wattle** [**-s** _path_] **build img** [**-l** _module_ ...] _source_ [_output_]
 **wattle** [**-s** _path_] **build exe** [**-r** _mode_] [**-t** _triple_] [_name_]
 **wattle** [**-s** _path_] **build lib** [**-r** _mode_] [**-t** _triple_] [_name_]
+**wattle** [**-s** _path_] **build web** [**-r** _mode_] [_name_]
 **wattle** [**-s** _path_] **check** [_options_] [_script_]
 **wattle** [**-s** _path_] **gum** [**-d** _directory_] [**-f**] [_module_ ...]
 **wattle** [**-s** _path_] **pkg** _verb_ [_argument_]
@@ -104,11 +105,16 @@ _output_. If _output_ is omitted, it is _source_ with ``.wattle`` replaced by
 
 **wattle** [**-s** _path_] **build lib** [**-r** _mode_] [**-t** _triple_] [_name_]
 
+**wattle** [**-s** _path_] **build web** [**-r** _mode_] [_name_]
+
 Build the artifacts declared in the ``info.edn`` in the current directory, or
 in its ``pkg`` subdirectory. **build exe** makes a single-file executable for
 each ``:exe``, containing the Wattle runtime, the compiled program and the
 native modules it links. **build lib** makes a shared library for each
-``:lib``. If _name_ is given, only the artifact of that name is built. The
+``:lib``. **build web** makes, for each ``:web``, an image of the program, a
+Wattle runtime built for WebAssembly that loads an image, and the JavaScript
+that runs them in a browser. If _name_ is given, only the artifact of that name
+is built. The
 results are in ``zig-out`` in the current directory. The project needs no
 ``build.zig``.
 
@@ -131,19 +137,36 @@ The ``info.edn`` declares the artifacts in a vector, in the ``:artifacts`` key:
               :libs ["greet"]}]}
 ````
 
-Every artifact has a ``:type``, ``:exe`` or ``:lib``, and a ``:name`` of
+Every artifact has a ``:type``, ``:exe``, ``:lib`` or ``:web``, and a ``:name`` of
 letters, digits, ``_`` and ``-`` that is unique in the project. An ``:exe`` has
 an ``:entry``, the Wattle file that defines ``main``, and may have ``:libs``,
 the names of the ``:lib`` artifacts linked into it. A ``:lib`` has a ``:root``,
-the Zig root file of a native module. Relative paths are relative to the
-current directory.
+the Zig root file of a native module. A ``:web`` has an ``:entry`` and no
+other key. Relative paths are relative to the current directory.
+
+**build web** writes ``zig-out/web/<name>/`` with four files: ``wattle-<hash>.wasm``,
+the runtime; ``<name>-<hash>.wimage``, the program; ``wasi-<hash>.js``, the
+WASI support; and ``<name>.js``, an ES module that exports ``run`` and imports
+the support. ``<hash>`` is the same in the three names. It is sixteen
+hexadecimal digits of a SHA-256 over the contents of the runtime, the image and
+the support, so a change to any of them gives all three new names and files
+with the same hash belong together. ``<name>.js`` keeps its name and refers to
+the other three. ``run`` fetches
+the runtime and the image, loads the image, calls its ``main`` with no
+arguments and returns an object with ``status``, ``stdout``, ``stderr`` and
+``error``. It takes the URLs of the two files as ``wasm`` and ``image`` when
+they are not beside the module. The runtime has no parser and no compiler, so
+the program cannot call ``eval``, ``parse`` or ``run-context``, and it has no
+docstrings or source maps. The runtime is built for ``wasm32-wasi`` and
+**build web** takes no **-t**.
 
 - **-r**, **--release** _mode_:
-  Optimise for ``safe``, ``fast`` or ``small``. The default is ``safe``.
+  Optimise for ``safe``, ``fast`` or ``small``. The default is ``safe``, and
+  ``small`` for **build web**.
 
 - **-t**, **--target** _triple_:
   Build for _triple_, a Zig target such as ``x86_64-linux-musl``. The default is
-  this machine.
+  this machine. **build web** does not take it.
 
 check
 -----

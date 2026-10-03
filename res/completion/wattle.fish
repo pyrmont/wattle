@@ -26,12 +26,15 @@ complete -c wattle -n __fish_use_subcommand -a test -d 'Run the tests in ./test'
 complete -c wattle -n __fish_use_subcommand -a help -d 'Describe a subcommand'
 
 # build
-complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib' -a exe -d 'Build the executables that info.edn declares'
-complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib' -a img -d 'Compile a source file into an image'
-complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib' -a lib -d 'Build the native modules that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a exe -d 'Build the executables that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a img -d 'Compile a source file into an image'
+complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a lib -d 'Build the native modules that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a web -d 'Build the web programs that info.edn declares'
 complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s r -l release -x -a 'safe fast small' -d 'Optimise for safe, fast or small'
 complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s t -l target -x -d 'Build for a Zig target triple'
 complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s h -l help -d 'Show usage and exit'
+complete -c wattle -n '__fish_seen_subcommand_from web' -s r -l release -x -a 'safe fast small' -d 'Optimise for safe, fast or small'
+complete -c wattle -n '__fish_seen_subcommand_from web' -s h -l help -d 'Show usage and exit'
 complete -c wattle -n '__fish_seen_subcommand_from img' -s l -l lib -r -d 'Use a module before the source'
 complete -c wattle -n '__fish_seen_subcommand_from img' -s h -l help -d 'Show usage and exit'
 complete -c wattle -n '__fish_seen_subcommand_from img' -F
@@ -77,5 +80,5 @@ complete -c wattle -n '__fish_seen_subcommand_from test t' -s h -l help -d 'Show
 
 # help
 complete -c wattle -n '__fish_seen_subcommand_from help h; and not __fish_seen_subcommand_from build b check c pkg p run r test t' -a 'build check pkg run test'
-complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from build b' -a 'exe img lib'
+complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from build b' -a 'exe img lib web'
 complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from pkg p' -a "$pkg_verbs"

@@ -321,9 +321,22 @@ wattle build exe --release small
 `examples/native-consumer/info.edn` is a worked example. More details are in
 the man page.
 
+`wattle build web` builds a program for a browser. An artifact of type `:web`
+has a `:name` and an `:entry`, and the command writes `zig-out/web/<name>/`
+with `wattle-<hash>.wasm`, `<name>-<hash>.wimage`, `wasi-<hash>.js` and
+`<name>.js`. The three hashes are one hash, taken from the contents of the three
+files, so files with the same hash belong together. The `.wasm` is the
+runtime without its parser and compiler, so it loads the image and nothing
+else, and `<name>.js` exports `run`, which fetches the two files, runs the
+program and returns its output.
+
+```clojure
+{:artifacts [{:type :web :name "hello" :entry "main.wattle"}]}
+```
+
 A project that needs more than that, such as other Zig packages or its own
 build options, can write a `build.zig` and call the `wattleExecutable` function
-of the `wattle` dependency. `zig build examples/native-executable` builds
+of the `wattle` dependency, or `wattleWeb` for a web program. `zig build examples/native-executable` builds
 `examples/native-executable/`, which links `examples/native-events/` in, and
 `examples/native-consumer/build.zig` calls `wattleExecutable` from outside the
 tree.

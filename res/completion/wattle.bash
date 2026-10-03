@@ -66,7 +66,7 @@ _wattle() {
             ;;
         build)
             if [[ $((cword - sub_at)) -eq 1 ]]; then
-                COMPREPLY=($(compgen -W "exe img lib" -- "$cur"))
+                COMPREPLY=($(compgen -W "exe img lib web" -- "$cur"))
             elif [[ "${words[sub_at + 1]}" == img ]]; then
                 if [[ "$cur" == -* ]]; then
                     COMPREPLY=($(compgen -W "-l --lib -h --help" -- "$cur"))
@@ -78,7 +78,9 @@ _wattle() {
                     -r|--release) COMPREPLY=($(compgen -W "safe fast small" -- "$cur")) ;;
                     -t|--target) ;;
                     *)
-                        if [[ "$cur" == -* ]]; then
+                        if [[ "$cur" == -* && "${words[sub_at + 1]}" == web ]]; then
+                            COMPREPLY=($(compgen -W "-r --release -h --help" -- "$cur"))
+                        elif [[ "$cur" == -* ]]; then
                             COMPREPLY=($(compgen -W "-r --release -t --target -h --help" -- "$cur"))
                         fi
                         ;;
@@ -130,7 +132,7 @@ _wattle() {
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
                 1:*) COMPREPLY=($(compgen -W "build check pkg run test" -- "$cur")) ;;
-                2:b|2:build) COMPREPLY=($(compgen -W "exe img lib" -- "$cur")) ;;
+                2:b|2:build) COMPREPLY=($(compgen -W "exe img lib web" -- "$cur")) ;;
                 2:p|2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
             esac
             ;;

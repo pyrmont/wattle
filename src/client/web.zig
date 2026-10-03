@@ -1,6 +1,6 @@
 //! The `web` client: the runtime as a wasm32-wasi reactor a page calls into.
 //!
-//! `build.zig`'s `web` step roots a reactor at this file. A reactor has no
+//! `build.zig`'s `webRuntime` roots a reactor at this file. A reactor has no
 //! `main`: the host calls `_initialize`, which runs wasi-libc's constructors,
 //! and then the functions exported here. `wattle_web_init` starts the runtime
 //! and evaluates `eval_line_source` once, and `wattle_web_eval` calls the

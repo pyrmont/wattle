@@ -46,9 +46,9 @@ must never reach `src/host/` or `src/runtime/`.
 | -------------- | ----- | --------------------------------------- |
 | `src/api/`     | 7     | a native module's `.so` and the runtime |
 | `src/host/`    | 2     | the runtime                             |
-| `src/runtime/` | 81    | the runtime, as a single compilation    |
+| `src/runtime/` | 82    | the runtime, as a single compilation    |
 | `src/boot/`    | 2     | the image generator                     |
-| `src/client/`  | 16    | the `wattle` and executable clients     |
+| `src/client/`  | 18    | the `wattle`, executable and web clients |
 
 The counts are of `.zig` files. `src/host/` also has one header and
 `src/runtime/` has three.
@@ -539,6 +539,22 @@ than it appears to. Revisit it only with a plan for what the suites should
 still assert.
 
 ## Image-only builds
+
+`src/client/web.zig` is the root of the web reactor and `src/client/web/wasi.js`
+is the JavaScript that provides WASI to it. Both are under `src/` so that a
+package that depends on Wattle has them.
+
+`wattleWeb` in `build.zig` is the public entry point. It takes the dependency
+instantiated for the build machine, a name and a source file. It builds the
+reactor for wasm32-wasi in the image-only configuration below and makes the
+image with that dependency's `wattle` client. It then runs
+`client/web/pack.zig` on the build machine, which copies the runtime, the image
+and `wasi.js` into one directory under names that share one hash of their
+contents, and writes a loader module that refers to them. The directory is
+returned as a `Web`. `wattle build web` writes a `build.zig` that calls
+`wattleWeb` for each `:web` artifact in `info.edn`, with `docstrings` and
+`sourcemaps` off in the host dependency so that the program's image has
+neither.
 
 `-Dwasm-image=true` applies to `zig build examples/web` and to no other step.
 It builds the web reactor without `runtime/compiler.zig`,

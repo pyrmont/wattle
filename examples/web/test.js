@@ -8,7 +8,7 @@
 // mismatch.
 
 import { readFileSync } from "node:fs";
-import { createWasi, start } from "./wasi.js";
+import { createWasi, start } from "../../src/client/web/wasi.js";
 
 const path = process.argv[2] ?? "zig-out/web/wattle-web.wasm";
 const module = new WebAssembly.Module(readFileSync(path));

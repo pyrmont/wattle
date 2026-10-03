@@ -30,13 +30,15 @@
 
 (defn- exe [& fields] (extend {:type :exe :name "a" :entry "m"} fields))
 (defn- lib [& fields] (extend {:type :lib :name "z" :root "r"} fields))
+(defn- web [& fields] (extend {:type :web :name "w" :entry "m"} fields))
 (defn- declares [& artifacts] {:artifacts (vec artifacts)})
 
 (deftest valid-info
   (is (nil? (refusal blueshift)))
   (is (= 2 (length (pkg/artifacts blueshift))))
   (is (nil? (refusal (declares (exe)))))
-  (is (nil? (refusal (declares (lib))))))
+  (is (nil? (refusal (declares (lib)))))
+  (is (nil? (refusal (declares (web))))))
 
 (deftest top-level
   (refuses [] "must hold a map")
@@ -46,8 +48,8 @@
 
 (deftest type-and-name
   (refuses (declares {:name "a" :entry "m"})
-           "artifact 0 (a): :type must be :exe or :lib")
-  (refuses (declares (exe :type :dll)) ":type must be :exe or :lib")
+           "artifact 0 (a): :type must be :exe, :lib or :web")
+  (refuses (declares (exe :type :dll)) ":type must be :exe, :lib or :web")
   (refuses (declares {:type :exe :entry "m"})
            "artifact 0: :name must be a non-empty string")
   (refuses (declares (exe :name "")) ":name must be a non-empty string")
@@ -59,12 +61,16 @@
            "artifact 0 (a): :entry must be a non-empty string")
   (refuses (declares (exe :entry "")) ":entry must be a non-empty string")
   (refuses (declares {:type :lib :name "a"})
-           "artifact 0 (a): :root must be a non-empty string"))
+           "artifact 0 (a): :root must be a non-empty string")
+  (refuses (declares {:type :web :name "a"})
+           "artifact 0 (a): :entry must be a non-empty string"))
 
 (deftest unknown-keys
   (refuses (declares (exe :link ["b"])) ":link is not a key of an :exe")
   (refuses (declares (lib :libs [])) ":libs is not a key of an :lib")
-  (refuses (declares (exe :root "r")) ":root is not a key of an :exe"))
+  (refuses (declares (exe :root "r")) ":root is not a key of an :exe")
+  (refuses (declares (web :libs [])) ":libs is not a key of a :web")
+  (refuses (declares (web :root "r")) ":root is not a key of a :web"))
 
 (deftest duplicate-names
   (refuses (declares (exe) (exe :entry "n"))
@@ -150,6 +156,34 @@
   (is (has text "lib0.linker_allow_shlib_undefined = true;"))
   (is (not (has text "wattleExecutable")))
   (is (not (has text "b.graph.host"))))
+
+(deftest zig-files-web
+  (def info {:artifacts [{:type :web :name "page" :entry "app/main.wattle"}]})
+  (def files (pkg/zig-files info :web gen-opts))
+  (is (= (string
+           "const std = @import(\"std\");\n"
+           "const wattle = @import(\"wattle\");\n\n"
+           "pub fn build(b: *std.Build) void {\n"
+           "    const optimize = b.standardOptimizeOption(.{});\n"
+           "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = false, .sourcemaps = false });\n"
+           "    const web0 = wattle.wattleWeb(host, .{\n"
+           "        .name = \"page\",\n"
+           "        .source = .{ .cwd_relative = \"/proj/app/main.wattle\" },\n"
+           "        .optimize = optimize,\n"
+           "    });\n"
+           "    web0.install(b);\n"
+           "}\n")
+         (get files :build)))
+  (is (has (get files :zon) ".wattle = .{ .path = \"../../../opt/w/share/wattle\" },"))
+  ; A web artifact takes no target and no native modules.
+  (is (not (has (get files :build) "standardTargetOptions")))
+  (is (not (has (get files :build) "wattleExecutable")))
+  (def [ok message] (protect (pkg/zig-files info :exe gen-opts)))
+  (is (not ok))
+  (is (has message "no :exe artifact is declared"))
+  (def [ok2 message2] (protect (pkg/zig-files blueshift :web gen-opts)))
+  (is (not ok2))
+  (is (has message2 "no :web artifact is declared")))
 
 (deftest zig-files-dependency-path
   (defn dep-path [opts]

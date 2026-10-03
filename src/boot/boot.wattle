@@ -5357,10 +5357,11 @@
 
 (def- pkg-artifact-allowed-keys
   {:exe [:type :name :entry :libs]
-   :lib [:type :name :root]})
+   :lib [:type :name :root]
+   :web [:type :name :entry]})
 
 ; A `:lib` name is spliced into two symbol names and a string, and an `:exe`
-; name is a file name.
+; or `:web` name is a file name.
 (def- pkg-artifact-name-chars
   (string "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
           "0123456789_-"))
@@ -5395,7 +5396,8 @@
   (def ok (get pkg-artifact-allowed-keys kind))
   (each k (keys artifact)
     (unless (has-value? ok k)
-      (pkg-artifact-fail i artifact "%v is not a key of an %v" k kind))))
+      (pkg-artifact-fail i artifact "%v is not a key of %s %v" k
+                         (if (= kind :web) "a" "an") kind))))
 
 (defn- pkg-artifact-check-libs
   [i artifact by-name]
@@ -5433,15 +5435,15 @@
     (unless (map? artifact)
       (errorf "info.edn: artifact %d must be a map" i))
     (def kind (get artifact :type))
-    (unless (or (= kind :exe) (= kind :lib))
-      (pkg-artifact-fail i artifact ":type must be :exe or :lib"))
+    (unless (or (= kind :exe) (= kind :lib) (= kind :web))
+      (pkg-artifact-fail i artifact ":type must be :exe, :lib or :web"))
     (pkg-artifact-check-name i artifact)
     (def name (get artifact :name))
     (when (get by-name name)
       (pkg-artifact-fail i artifact ":name is already used by artifact %d"
                           (get (get by-name name) :index)))
     (put! by-name name {:index i :type kind})
-    (pkg-artifact-check-string i artifact (if (= kind :exe) :entry :root))
+    (pkg-artifact-check-string i artifact (if (= kind :lib) :root :entry))
     (pkg-artifact-check-keys i artifact kind))
   (loop [[i artifact] :pairs artifacts]
     (pkg-artifact-check-libs i artifact by-name))
@@ -5450,7 +5452,7 @@
 (defn pkg/artifacts
   """
   Checks the `:artifacts` of x, a map read from an info.edn, and returns them.
-  With kind, `:exe` or `:lib`, returns only the artifacts of that kind, and
+  With kind, `:exe`, `:lib` or `:web`, returns only the artifacts of that kind, and
   with name as well, only the one called name. The artifacts are in the order
   x declares them. Raises an error naming the artifact and the key for a
   missing or misplaced key, a name used twice, or a `:libs` entry that does not
@@ -5514,13 +5516,15 @@
   """
   Returns a table with the text of the build.zig and the build.zig.zon that
   build the artifacts of x, a map read from an info.edn, under :build and :zon.
-  kind is `:exe` or `:lib`. With name, only the artifact called name is built.
+  kind is `:exe`, `:lib` or `:web`. With name, only the artifact called name is built.
   opts is a map with three directories: :dir, the absolute path of the project,
   which relative artifact paths are resolved against, :srcpath, the Wattle
   package, and :gen, the directory the two files are written to. :srcpath and
   :gen are resolved against :dir where they are relative. An executable is
   built with the libs it names in :libs linked in, and without docstrings
-  unless the optimize mode is Debug. A lib is built as a shared library.
+  unless the optimize mode is Debug. A lib is built as a shared library. A web
+  artifact is built as an image and a runtime for a browser, with no docstrings,
+  whatever the target is.
   Raises if ^pkg/artifacts raises for x, kind and name.
   """
   ([x kind opts] (pkg/zig-files x kind nil opts))
@@ -5537,20 +5541,36 @@
     (buffer/push! b
       "const std = @import(\"std\");\n"
       "const wattle = @import(\"wattle\");\n\n"
-      "pub fn build(b: *std.Build) void {\n"
-      "    const target = b.standardTargetOptions(.{});\n"
-      "    const optimize = b.standardOptimizeOption(.{});\n")
-    (if (= kind :exe)
+      "pub fn build(b: *std.Build) void {\n")
+    ; A web artifact is built for the browser, so it takes no target.
+    (unless (= kind :web)
+      (buffer/push! b "    const target = b.standardTargetOptions(.{});\n"))
+    (buffer/push! b "    const optimize = b.standardOptimizeOption(.{});\n")
+    (case kind
+      :exe
       (buffer/push! b
         "    const docstrings = optimize == .Debug;\n"
         "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize, .docstrings = docstrings });\n"
         "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = docstrings });\n")
+      :web
+      (buffer/push! b
+        "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = false, .sourcemaps = false });\n")
       (buffer/push! b
         "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize });\n"))
     (var i 0)
     (each artifact chosen
       (def artifact-name (pkg-zig-string (get artifact :name)))
-      (if (= kind :exe)
+      (case kind
+        :web
+        (do
+          (buffer/format! b "    const web%d = wattle.wattleWeb(host, .{\n" i)
+          (buffer/format! b "        .name = \"%s\",\n" artifact-name)
+          (buffer/format! b "        .source = %s,\n" (zig-path (get artifact :entry)))
+          (buffer/push! b
+            "        .optimize = optimize,\n"
+            "    });\n")
+          (buffer/format! b "    web%d.install(b);\n" i))
+        :exe
         (do
           (buffer/format! b "    const exe%d = wattle.wattleExecutable(dep, host, .{\n" i)
           (buffer/format! b "        .name = \"%s\",\n" artifact-name)
@@ -5674,6 +5694,10 @@
    "--target" {:kind :single :short "t" :proxy "triple"
                :help "Build for a Zig target triple. The default is this machine."}])
 
+(def- cli-web-rules
+  ["--release" {:kind :single :short "r" :proxy "mode"
+                :help "Optimise for safe, fast or small. The default is small."}])
+
 (defn- cli-config [validate?]
   (def run-config
     {:validate? validate?
@@ -5747,7 +5771,12 @@
              :help "Build the native modules that info.edn declares."
              :rules [|cli-target-rules
                      :name {:proxy "name"
-                            :help "The native module to build. The default is every native module."}]}]})
+                            :help "The native module to build. The default is every native module."}]}
+      "web" {:validate? validate?
+             :help "Build the web programs that info.edn declares: an image, a runtime for a browser and the JavaScript that loads them."
+             :rules [|cli-web-rules
+                     :name {:proxy "name"
+                            :help "The web program to build. The default is every web program."}]}]})
   (def gum-config
     {:validate? validate?
      :short "g"
@@ -5812,7 +5841,7 @@
 ; and not on every start. A parse validates the subcommand it enters, so each
 ; subcommand is entered once.
 (def- cli-validating-config (cli-config true))
-(each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"]
+(each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"] ["build" "web"]
             ["pkg" "install" "directory"]
             ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
             ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"]]
@@ -6045,7 +6074,7 @@
 
 (defn- cli-build-artifacts
   """
-  Builds the artifacts of kind, `:exe` or `:lib`, that the info.edn in the
+  Builds the artifacts of kind, `:exe`, `:lib` or `:web`, that the info.edn in the
   current directory declares, by writing a build.zig and a build.zig.zon under
   .zig-cache and running zig build on them. Exits with status 1 and a message
   on a failure that is not zig's own.
@@ -6054,7 +6083,7 @@
   (compif (and (dyn 'os/spawn) (dyn 'ev/read))
     (do
       (def opts (get cmd :opts))
-      (def mode (get cli-release-modes (get opts "release" "safe")))
+      (def mode (get cli-release-modes (get opts "release" (if (= kind :web) "small" "safe"))))
       (unless mode (cli-fail "release must be safe, fast or small"))
       (def dir (os/realpath (os/cwd)))
       (def info-path
@@ -6100,7 +6129,8 @@
   (case (get sub :cmd)
     "img" (cli-build-img sub)
     "exe" (cli-build-artifacts :exe sub)
-    "lib" (cli-build-artifacts :lib sub)))
+    "lib" (cli-build-artifacts :lib sub)
+    "web" (cli-build-artifacts :web sub)))
 
 (defn- cli-pkg [pkg]
   (def verb (get pkg :sub))

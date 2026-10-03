@@ -3,11 +3,11 @@
 Wattle in a web page: the runtime built as a wasm32-wasi reactor, a page that
 calls into it, and the JavaScript that supplies WASI in its place.
 
-- `main.zig` is the reactor's root. It exports `wattle_web_init`,
+- `src/client/web.zig` is the reactor's root. It exports `wattle_web_init`,
   `wattle_web_eval`, `wattle_web_alloc` and `wattle_web_free`. A build made
   with `-Dwasm-image` exports `wattle_web_run_image` in place of
   `wattle_web_eval`.
-- `wasi.js` is the `wasi_snapshot_preview1` import object, hand-written and
+- `src/client/web/wasi.js` is the `wasi_snapshot_preview1` import object, hand-written and
   without dependencies, and `start`, which instantiates the binary and
   returns an `eval` over it.
 - `index.html` is the page: a text area, a run button and an output pane.
@@ -124,7 +124,8 @@ node examples/web/test-image.js zig-out/web/wattle-web.wasm /tmp/hello.wimage \
 
 `-Dwasm-image` builds the reactor without the parser and the compiler, and
 without docstrings and source maps. A page that only runs a prewritten image
-needs none of them. On a ReleaseSmall build the binary is 735,356 bytes against
+needs none of them. `wattle build web` builds one for a project; the man page
+describes it. On a ReleaseSmall build the binary is 735,356 bytes against
 1,001,100 for the default, and 304,077 against 397,967 gzipped. The installed
 directory holds `wattle-web.wasm` and `wasi.js`, and no page.
 
