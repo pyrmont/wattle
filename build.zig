@@ -2142,7 +2142,9 @@ fn addCliChecks(
 
         // A script that does not exist is reported as one line, whichever
         // subcommand reads it. `check` follows its own rule for the status.
-        const missing_file = "error: could not find file no-such-script.wattle\n";
+        // Windows writes a carriage return before each newline of standard error.
+        const eol = if (b.graph.host.result.os.tag == .windows) "\r\n" else "\n";
+        const missing_file = b.fmt("error: could not find file no-such-script.wattle{s}", .{eol});
         const run_nofile = b.addRunArtifact(client);
         run_nofile.addArgs(&.{ "run", "no-such-script.wattle" });
         run_nofile.expectExitCode(1);
