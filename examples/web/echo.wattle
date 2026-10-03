@@ -1,0 +1,4 @@
+(defn main [& args]
+  (print (string/join "|" args))
+  (print (string "stdin: " (file/read stdin :all)))
+  (when (has-value? args "--fail") (error "failed")))

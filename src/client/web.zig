@@ -19,8 +19,10 @@
 //! source. It exports `wattle_web_run_image` in place of `wattle_web_eval`.
 //! `wattle_web_init` starts the runtime and keeps the core environment, and
 //! `wattle_web_run_image` calls the core function `run-image` on the bytes of
-//! an image made by `make-image` and on an empty argument array, as `wattle -i`
-//! does. The image is unmarshalled and its `main` is called.
+//! an image made by `make-image` and on an array of the arguments the host
+//! gives it, as `wattle -i` does. The image is unmarshalled and its `main` is
+//! called. The instance stays usable afterwards, so the host can call it
+//! again.
 
 // ==========================================================================
 // Standard library imports
@@ -42,6 +44,7 @@ const functions = subsystems.value.functions;
 const gc_alloc = subsystems.gc_alloc;
 const lifecycle = subsystems.lifecycle;
 const raise = subsystems.raise;
+const stdio = subsystems.stdio;
 const repr = @import("repr");
 const subsystems = @import("subsystems");
 const tables = value.tables;
@@ -131,18 +134,24 @@ fn wattleWebEval(ptr: [*]const u8, len: usize) callconv(.c) i32 {
     return if (wrap.toNumber(resumed.value) == 0) 0 else 1;
 }
 
-/// Unmarshals `len` bytes of image at `ptr` and calls its `main`, and returns 0,
-/// or 1 when the image did not load or `run-image` raised.
+/// Unmarshals `image_len` bytes of image at `image_ptr` and calls its `main`
+/// with the strings in the buffer at `args_ptr`, and returns 0, or 1 when the
+/// image did not load or `run-image` raised.
 ///
-/// The bytes are those `make-image` returns. A raise, from loading the image or
+/// The image is the bytes `make-image` returns. The buffer holds `args_len`
+/// bytes in which each argument is followed by a NUL, so an empty buffer is no
+/// arguments and the buffer `a\0b\0` is two. `main` receives the arguments as
+/// they are and `*args*` is bound to them, as `wattle -i` does, so the first
+/// is the program's name by that convention. A raise, from loading the image or
 /// from `main`, is printed to standard error with its stack trace, as a
 /// submission's is. Standard output and standard error are flushed before the
 /// call returns. The result is also 1 when `wattle_web_init` has not
 /// succeeded.
-fn wattleWebRunImage(ptr: [*]const u8, len: usize) callconv(.c) i32 {
+fn wattleWebRunImage(image_ptr: [*]const u8, image_len: usize, args_ptr: [*]const u8, args_len: usize) callconv(.c) i32 {
     const function = run_image orelse return 1;
-    const image = value.fromBytes(ptr[0..len], .string);
-    const args = wrap.fromArray(arrays.new(0));
+    const image = value.fromBytes(image_ptr[0..image_len], .string);
+    const array = arrays.new(0);
+    const args = wrap.fromArray(array);
     // Rooted until `fibers.new` has copied them onto the fiber's stack, since
     // making the fiber allocates.
     gc_alloc.gcroot(image);
@@ -150,6 +159,20 @@ fn wattleWebRunImage(ptr: [*]const u8, len: usize) callconv(.c) i32 {
     defer _ = gc_alloc.gcunroot(image);
     defer _ = gc_alloc.gcunroot(args);
     defer _ = fflush(null);
+    // A previous call that read standard input to its end left the stream at
+    // end of file, and one that stopped early left bytes buffered. The host has
+    // given this call new input, so the stream starts over.
+    _ = fflush(stdio.in());
+    clearerr(stdio.in());
+    var rest = args_ptr[0..args_len];
+    while (std.mem.indexOfScalar(u8, rest, 0)) |end| {
+        const argument = value.fromBytes(rest[0..end], .string);
+        // The array is rooted and the string is not until it is in the array.
+        gc_alloc.gcroot(argument);
+        defer _ = gc_alloc.gcunroot(argument);
+        arrays.push(array, argument) catch return 1;
+        rest = rest[end + 1 ..];
+    }
     // `fibers.new` refuses only on an arity mismatch, and `run-image` takes
     // two to three arguments and is given two.
     const fiber = fibers.new(function, 64, &.{ image, args }) catch return 1;
@@ -185,8 +208,12 @@ export fn wattle_web_free(ptr: ?[*]u8, len: usize) void {
 // Private functions
 // ==========================================================================
 
-/// The C library's flush. A null stream flushes every open one.
+/// The C library's flush. A null stream flushes every open one, and an input
+/// stream discards what it has buffered.
 extern fn fflush(stream: ?*anyopaque) callconv(.c) c_int;
+
+/// The C library's reset of a stream's end-of-file and error flags.
+extern fn clearerr(stream: ?*anyopaque) callconv(.c) void;
 
 /// `wattle_web_init`'s work in a build without the compiler: starts the
 /// runtime and finds `run-image` in the core environment.

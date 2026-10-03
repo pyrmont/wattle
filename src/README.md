@@ -550,7 +550,11 @@ reactor for wasm32-wasi in the image-only configuration below and makes the
 image with that dependency's `wattle` client. It then runs
 `client/web/pack.zig` on the build machine, which copies the runtime, the image
 and `wasi.js` into one directory under names that share one hash of their
-contents, and writes a loader module that refers to them. The directory is
+contents, and writes a loader module that refers to them. The reactor's
+`wattle_web_run_image` takes the arguments as a buffer of NUL-terminated
+strings, and standard input is served by `wasi.js`; `web.zig` clears the end of
+file and the buffered input of the C stream before each call, so a loaded
+instance can read new input. The directory is
 returned as a `Web`. `wattle build web` writes a `build.zig` that calls
 `wattleWeb` for each `:web` artifact in `info.edn`, with `docstrings` and
 `sourcemaps` off in the host dependency so that the program's image has

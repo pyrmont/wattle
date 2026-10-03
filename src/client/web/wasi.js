@@ -45,11 +45,15 @@ export class WasiExit extends Error {
   }
 }
 
-// Returns the import object and the two things the host does with it:
-// `bind`, given the instance's memory once it exists, and `take`, which
-// returns and clears the output collected since the last `take`.
+// Returns the import object and the three things the host does with it:
+// `bind`, given the instance's memory once it exists, `take`, which returns and
+// clears the output collected since the last `take`, and `setStdin`, which
+// replaces what standard input holds with a string or a `Uint8Array` and
+// starts reading it from the beginning.
 export function createWasi() {
   let memory = null;
+  let stdin = new Uint8Array(0);
+  let stdinOffset = 0;
   const decoders = { 1: new TextDecoder(), 2: new TextDecoder() };
   const chunks = { 1: [], 2: [] };
 
@@ -132,10 +136,21 @@ export function createWasi() {
       return EBADF;
     },
 
-    // Standard input is at end of file: zero bytes read.
+    // Standard input is what `setStdin` last gave, and then end of file. A
+    // read fills the buffers in order and reports how many bytes it wrote.
     fd_read(fd, iovsPtr, iovsLen, readPtr) {
       if (fd !== 0) return EBADF;
-      view().setUint32(readPtr, 0, true);
+      const v = view();
+      let read = 0;
+      for (let i = 0; i < iovsLen && stdinOffset < stdin.length; i++) {
+        const ptr = v.getUint32(iovsPtr + i * 8, true);
+        const len = v.getUint32(iovsPtr + i * 8 + 4, true);
+        const count = Math.min(len, stdin.length - stdinOffset);
+        bytes(ptr, count).set(stdin.subarray(stdinOffset, stdinOffset + count));
+        stdinOffset += count;
+        read += count;
+      }
+      v.setUint32(readPtr, read, true);
       return SUCCESS;
     },
 
@@ -232,6 +247,10 @@ export function createWasi() {
     bind(instanceMemory) {
       memory = instanceMemory;
     },
+    setStdin(data) {
+      stdin = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      stdinOffset = 0;
+    },
     take() {
       const out = { stdout: "", stderr: "" };
       for (const [fd, key] of [[1, "stdout"], [2, "stderr"]]) {
@@ -254,8 +273,14 @@ export function createWasi() {
 // throws; the host starts a new one.
 //
 // A build made with `-Dwasm-image` has no compiler and returns an object whose
-// `runImage(bytes)` takes the bytes of an image, as a `Uint8Array`, and
-// returns the same result for loading it and calling its `main`.
+// `runImage(bytes, { args, stdin })` takes the bytes of an image, as a
+// `Uint8Array`, loads it and calls its `main`. `args` is an array of strings
+// that `main` receives as they are, so the first is the program's name by the
+// convention of `wattle -i`. `stdin` is a string or a `Uint8Array` that
+// standard input reads from the start. Both default to nothing. The result is
+// the same as `eval`'s. The instance stays usable after a call that returns
+// status 1, and the host calls `runImage` again on it. After an `error` it does
+// not, as for `eval`.
 //
 // Throws when `wattle_web_init` fails.
 export async function start(module) {
@@ -275,15 +300,18 @@ export async function start(module) {
 
   // Copies `bytes` into wasm memory, calls the export `name` on them and
   // collects what it wrote.
-  function submit(name, bytes) {
+  function submit(name, ...buffers) {
     if (stopped) throw new Error("the instance has stopped", { cause: stopped });
-    const ptr = exports.wattle_web_alloc(bytes.length);
-    if (ptr === 0) throw new Error(`could not allocate ${bytes.length} bytes`);
-    new Uint8Array(exports.memory.buffer, ptr, bytes.length).set(bytes);
+    const pointers = buffers.map((buffer) => {
+      const ptr = exports.wattle_web_alloc(buffer.length);
+      if (ptr === 0 && buffer.length > 0) throw new Error(`could not allocate ${buffer.length} bytes`);
+      new Uint8Array(exports.memory.buffer, ptr, buffer.length).set(buffer);
+      return ptr;
+    });
     let status = 1;
     try {
-      status = exports[name](ptr, bytes.length);
-      exports.wattle_web_free(ptr, bytes.length);
+      status = exports[name](...buffers.flatMap((buffer, i) => [pointers[i], buffer.length]));
+      buffers.forEach((buffer, i) => exports.wattle_web_free(pointers[i], buffer.length));
     } catch (error) {
       stopped = error;
     }
@@ -291,7 +319,14 @@ export async function start(module) {
   }
 
   if (exports.wattle_web_run_image) {
-    return { runImage: (bytes) => submit("wattle_web_run_image", bytes) };
+    return {
+      runImage(bytes, { args = [], stdin = "" } = {}) {
+        wasi.setStdin(stdin);
+        // Each argument is followed by a NUL, which is how the runtime splits them.
+        const joined = encoder.encode(args.map((arg) => `${arg}\0`).join(""));
+        return submit("wattle_web_run_image", bytes, joined);
+      },
+    };
   }
   return { eval: (source) => submit("wattle_web_eval", encoder.encode(source)) };
 }

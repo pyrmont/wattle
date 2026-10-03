@@ -34,13 +34,19 @@ const std = @import("std");
 /// The loader, with the names of the runtime, the image and `wasi.js` in that
 /// order.
 ///
-/// `run` fetches the runtime and the image, runs the image and returns
-/// `{ status, stdout, stderr, error }`. A caller passes other URLs to serve the
-/// files from elsewhere.
+/// `load` fetches the runtime and the image once, compiles the runtime and
+/// returns an object with `run`. `run` takes `args`, an array of strings that
+/// the program's `main` receives, and `stdin`, a string or a `Uint8Array`. It
+/// returns `{ status, stdout, stderr, error }`. The first `run` starts an
+/// instance and later calls use it, so the cost of starting is paid once. A
+/// call that traps or exits leaves no usable instance, and the next call starts
+/// another. `fresh: true` starts one for that call. `run` at the top level is
+/// `load` and one call. A caller passes other URLs as `wasm` and `image` to
+/// serve the files from elsewhere.
 const loader =
     \\import {{ start }} from "./{2s}";
     \\
-    \\export async function run({{
+    \\export async function load({{
     \\  wasm = new URL("./{0s}", import.meta.url),
     \\  image = new URL("./{1s}", import.meta.url),
     \\}} = {{}}) {{
@@ -48,8 +54,21 @@ const loader =
     \\    fetch(wasm).then((response) => response.arrayBuffer()),
     \\    fetch(image).then((response) => response.arrayBuffer()),
     \\  ]);
-    \\  const wattle = await start(await WebAssembly.compile(binary));
-    \\  return wattle.runImage(new Uint8Array(bytes));
+    \\  const module = await WebAssembly.compile(binary);
+    \\  const program = new Uint8Array(bytes);
+    \\  let instance = null;
+    \\  return {{
+    \\    async run({{ args, stdin, fresh = false }} = {{}}) {{
+    \\      if (fresh || !instance) instance = await start(module);
+    \\      const result = instance.runImage(program, {{ args, stdin }});
+    \\      if (result.error) instance = null;
+    \\      return result;
+    \\    }},
+    \\  }};
+    \\}}
+    \\
+    \\export async function run(options = {{}}) {{
+    \\  return (await load(options)).run(options);
     \\}}
     \\
 ;

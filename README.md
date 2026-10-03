@@ -327,8 +327,10 @@ with `wattle-<hash>.wasm`, `<name>-<hash>.wimage`, `wasi-<hash>.js` and
 `<name>.js`. The three hashes are one hash, taken from the contents of the three
 files, so files with the same hash belong together. The `.wasm` is the
 runtime without its parser and compiler, so it loads the image and nothing
-else, and `<name>.js` exports `run`, which fetches the two files, runs the
-program and returns its output.
+else, and `<name>.js` exports `load`, which fetches and compiles the two files once and
+returns an object whose `run({ args, stdin })` runs the program and returns its
+output. `run` reuses one instance of the runtime between calls, so a page can
+call it for each new input.
 
 ```clojure
 {:artifacts [{:type :web :name "hello" :entry "main.wattle"}]}

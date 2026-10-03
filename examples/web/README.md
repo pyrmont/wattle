@@ -12,8 +12,8 @@ calls into it, and the JavaScript that supplies WASI in its place.
   returns an `eval` over it.
 - `index.html` is the page: a text area, a run button and an output pane.
 - `test.js` runs the binary under Node with the same `wasi.js`.
-- `test-image.js` runs an image under a `-Dwasm-image` binary, and
-  `hello.wattle` is the source of the image the CI job uses.
+- `test-image.js` runs two images under a `-Dwasm-image` binary, made from
+  `hello.wattle` and `echo.wattle`.
 
 ```sh
 zig build examples/web                # zig-out/web, ReleaseSmall
@@ -118,8 +118,8 @@ not end freezes the tab.
 ```sh
 zig build examples/web -Dwasm-image=true
 wattle build img examples/web/hello.wattle /tmp/hello.wimage
-node examples/web/test-image.js zig-out/web/wattle-web.wasm /tmp/hello.wimage \
-  'hello from image\nsum 6\n' 'to stderr\n'
+wattle build img examples/web/echo.wattle /tmp/echo.wimage
+node examples/web/test-image.js zig-out/web/wattle-web.wasm /tmp/hello.wimage /tmp/echo.wimage
 ```
 
 `-Dwasm-image` builds the reactor without the parser and the compiler, and
@@ -129,11 +129,17 @@ describes it. On a ReleaseSmall build the binary is 735,356 bytes against
 1,001,100 for the default, and 304,077 against 397,967 gzipped. The installed
 directory holds `wattle-web.wasm` and `wasi.js`, and no page.
 
-`start` in `wasi.js` returns an object with `runImage(bytes)` for this build
-in place of `eval(source)`. `bytes` is the content of a file `wattle build img`
-or `make-image` produced. `runImage` unmarshals the image and calls its `main`
-with no arguments, and returns `{ status, stdout, stderr, error }` as `eval`
-does. A raise from loading the image or from `main` is printed to standard
+`start` in `wasi.js` returns an object with `runImage(bytes, { args, stdin })`
+for this build in place of `eval(source)`. `bytes` is the content of a file
+`wattle build img` or `make-image` produced. `runImage` unmarshals the image
+and calls its `main` with the strings in `args`, which `main` receives as they
+are, so the first is the program's name by the convention of `wattle -i`.
+Standard input reads `stdin`, a string or a `Uint8Array`, to its end and then
+reports end of file. Both default to nothing. It returns
+`{ status, stdout, stderr, error }` as `eval` does, and the same instance can
+run another image or the same one again. A call to `runImage` takes about 0.01
+milliseconds on a loaded instance and about a millisecond on a new one, on a
+small image under Node. A raise from loading the image or from `main` is printed to standard
 error with its stack trace and gives status 1. The instance survives it.
 
 The core image still contains `eval`, `run-context` and the other functions
