@@ -649,9 +649,6 @@
     (ev/gather
       (os/proc-wait p)
       (ev/slurp (p :out))))
-  ; On Windows the C library writes both streams in text mode, which writes
-  ; each newline as `\r\n`.
-  (def line-end (if (= :windows (os/which)) "\r\n" "\n"))
   (assert (zero? exit-code) "subprocess ran")
   (assert (= (string data) (string "hi" line-end "there" line-end)) "output is correct"))
 

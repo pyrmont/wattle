@@ -295,6 +295,25 @@ the fix at `:118`, and the suite passes 79 of 79. In the container, the runtime
 matched C Janet event for event, C Janet failed the same six assertions, and
 inotify never merges `:create` and `:close-write`, which differ in mask.
 
+## Line endings
+
+A process on Windows writes each newline on its standard output and standard
+error as `\r\n`, because the C library opens those streams in text mode. A file
+opened with `file/open` is binary on every platform and is not translated.
+`.gitattributes` sets `eol=lf` on the sources.
+
+A test that compares what a child process wrote to a standard stream spells
+each newline as `line-end`. `test/helper.wattle` defines it, and every suite
+imports it. A step in `build.zig` that compares a stream uses `streamEol`.
+Neither normalises the text, so a `\r` that appears on another platform fails
+the test.
+
+A value that a program builds is not translated. An error message, a string
+before it is written, and the text of a file read in binary mode all have
+`\n`, so a test of such a value spells the newline `\n`. `pkg-run` replaces
+`\r\n` with `\n` in what a tool wrote to its standard error, so that the message
+it raises is the same on every platform.
+
 ## Five limitations
 
 Five limitations constrain this, none of which are Wattle defects:

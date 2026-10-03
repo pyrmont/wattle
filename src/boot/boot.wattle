@@ -5185,7 +5185,9 @@
         (def err (file/open path :wb))
         (def [ok status] (protect (os/execute [tool |args] :p {:err err})))
         (file/close err)
-        (def text (string/trim (string (slurp path))))
+        ; The tool may end its lines with a carriage return and a newline. The
+        ; stream that prints the message adds the carriage return itself.
+        (def text (string/trim (string/replace-all "\r\n" "\n" (string (slurp path)))))
         (rmrf path)
         (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
         (unless (zero? status)

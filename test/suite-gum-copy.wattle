@@ -19,7 +19,6 @@
   (def prefix (string root "/prefix"))
   (def gum-source (string prefix "/share/wattle/src/gum"))
   (def project (string root "/project"))
-  (def newline (if (= :windows (os/which)) "\r\n" "\n"))
   (var calls 0)
 
   (defn write [path text] (spit path text))
@@ -49,7 +48,7 @@
 
   (def [list-status list-out] (gum))
   (assert (= 0 list-status) "no names lists the modules")
-  (def all-lines (string/split newline list-out))
+  (def all-lines (string/split line-end list-out))
   (assert (= "Available modules:" (get all-lines 0)) "the list begins with its heading")
   (assert (= "" (get all-lines 1)) "a blank line follows the heading")
   (def list-lines (filter next (slice all-lines 1)))
@@ -72,7 +71,7 @@
          """)
   (def [fixture-status fixture-out] (gum))
   (assert (= 0 fixture-status) "a fixture list succeeds")
-  (assert (= (string/join newline
+  (assert (= (string/join line-end
                          ["Available modules:" "" " a     Alpha."
                           " bb    Beta one two, and three." ""])
              (string fixture-out))
@@ -80,7 +79,7 @@
   (write (string gum-source "/modules.edn")
          (string "[{:name \"a\" :files [\"args.wattle\"] :help \"" (string/repeat "word " 60) "\"}]"))
   (def [wrap-status wrap-out] (gum))
-  (def wrap-lines (filter next (slice (string/split newline wrap-out) 1)))
+  (def wrap-lines (filter next (slice (string/split line-end wrap-out) 1)))
   (assert (= 0 wrap-status) "a long description lists")
   (assert (> (length wrap-lines) 1) "a long description wraps")
   (assert (every? (map #(<= (length $) 120) wrap-lines)) "a wrapped line is at most 120 columns")

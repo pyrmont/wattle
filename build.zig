@@ -608,6 +608,16 @@ fn recordBuilt(built: Built) void {
     @panic("build.zig: more than eight instances of the wattle package");
 }
 
+/// Returns the bytes that a program run by the build writes for each newline on
+/// its standard output and standard error. They are `\r\n` when the build runs
+/// on Windows, where the C library opens the standard streams in text mode, and
+/// `\n` elsewhere.
+///
+/// This function cannot raise.
+fn streamEol(b: *std.Build) []const u8 {
+    return if (b.graph.host.result.os.tag == .windows) "\r\n" else "\n";
+}
+
 fn triple(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
     return target.result.zigTriple(b.allocator) catch @panic("OOM");
 }
@@ -1237,7 +1247,7 @@ pub fn build(b: *std.Build) void {
 
         const exe_name = if (target.result.os.tag == .windows) "hello-info.exe" else "hello-info";
         const run_built = b.addSystemCommand(&.{b.pathJoin(&.{ b.build_root.path orelse ".", "examples/native-consumer/zig-out/bin", exe_name })});
-        run_built.expectStdOutEqual("consumer/greeting\n");
+        run_built.expectStdOutEqual(b.fmt("consumer/greeting{s}", .{streamEol(b)}));
         run_built.expectExitCode(0);
         run_built.has_side_effects = true;
         run_built.step.dependOn(&build_exe.step);
@@ -1506,7 +1516,7 @@ pub fn build(b: *std.Build) void {
         if (executable_exe != null and config.ev and target.query.isNative()) {
             const run_executable = b.addRunArtifact(executable_exe.?);
             run_executable.expectStdOutEqual(
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
+                b.fmt("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad{s}", .{streamEol(b)}),
             );
             for (zig_side) |step| run_executable.step.dependOn(step);
             test_step.dependOn(&run_executable.step);
@@ -2142,9 +2152,7 @@ fn addCliChecks(
 
         // A script that does not exist is reported as one line, whichever
         // subcommand reads it. `check` follows its own rule for the status.
-        // Windows writes a carriage return before each newline of standard error.
-        const eol = if (b.graph.host.result.os.tag == .windows) "\r\n" else "\n";
-        const missing_file = b.fmt("error: could not find file no-such-script.wattle{s}", .{eol});
+        const missing_file = b.fmt("error: could not find file no-such-script.wattle{s}", .{streamEol(b)});
         const run_nofile = b.addRunArtifact(client);
         run_nofile.addArgs(&.{ "run", "no-such-script.wattle" });
         run_nofile.expectExitCode(1);

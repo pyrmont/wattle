@@ -35,10 +35,6 @@
     (os/proc-wait p)
     [out err]))
 
-; On Windows the C library writes standard output in text mode, which writes
-; each newline as `\r\n`.
-(def- line-end (if (= :windows (os/which)) "\r\n" "\n"))
-
 ; Without a terminal the plain reader runs: the prompt is written to standard
 ; error and nothing is redrawn.
 (let [[out err] (run [(dyn *executable*) "-C" "-q"] "(+ 1 2)\n")]

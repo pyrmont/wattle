@@ -215,8 +215,9 @@
 (assert (= 0 (length (pkg/topolist))) "check failure 1")
 
 ; Runs the wattle executable with the prefix of this suite and args. Returns the
-; exit status and what the command wrote to standard error. Standard output goes
-; to its own file, so that the order of the two does not matter.
+; exit status and what the command wrote to standard error, which has line-end
+; for each newline. Standard output goes to its own file, so that the order of
+; the two does not matter.
 (compwhen (dyn 'os/execute)
 (defn- run-cli
   [& args]
@@ -227,8 +228,7 @@
   (def status (os/execute [(dyn :executable) "-p" (dyn *prefix*) |args] :p {:out out :err err}))
   (file/close out)
   (file/close err)
-  ; Line endings are normalised, since Windows writes a carriage return too.
-  (def text (string/replace-all "\r\n" "\n" (string (slurp err-file))))
+  (def text (string (slurp err-file)))
   (rmrf out-file)
   (rmrf err-file)
   [status text]))
@@ -260,8 +260,8 @@
   (do
     (def [status text] (run-cli "pkg" "install" info-dir))
     (assert (= 1 status) "installing an installed package exits with status 1")
-    (assert (= text (string "error: package \"man-pkg\" is already installed\n"
-                            "use 'wattle pkg reinstall man-pkg' to install it again\n"))
+    (assert (= text (string "error: package \"man-pkg\" is already installed" line-end
+                            "use 'wattle pkg reinstall man-pkg' to install it again" line-end))
             "the message is followed by the hint and nothing else")))
 (assert-no-error "info-only reinstall" (with-dyns [*err* !""] (pkg/reinstall "man-pkg")))
 (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-pkg.1")))
@@ -284,7 +284,7 @@
     (assert (= 1 status) "a hook that fails exits with status 1")
     (assert (string/has-prefix? "error: could not find method" text)
             "the message of the failure is printed")
-    (assert (string/find "\n  in " text) "the stack trace of a failing hook is printed")
+    (assert (string/find (string line-end "  in ") text) "the stack trace of a failing hook is printed")
     (assert (= 0 (length (pkg/list))) "a package whose hook fails is not installed")
     (rmrf bug-dir)))
 
@@ -361,7 +361,7 @@
             "a missing tarball is reported with the message of curl"))
   (let [[status text] (run-cli "pkg" "install" missing-url)]
     (assert (= 1 status) "a failed download exits with status 1")
-    (assert (string/has-prefix? "error: curl exited with status 37\ncurl: (37)" text)
+    (assert (string/has-prefix? (string "error: curl exited with status 37" line-end "curl: (37)") text)
             "the command line prints the message of curl as the error"))
   (assert (no-fetch-left) "a failed download leaves no temporary directory")
   (assert (= 0 (length (pkg/list))) "a failed download installs nothing")

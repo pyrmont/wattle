@@ -98,6 +98,15 @@
     (set start-time (clock-now))
     (eprint "Starting suite " suite-name "...")))
 
+(def line-end
+  """
+  The bytes a child process writes for each newline on its standard output and
+  standard error. They are `\r\n` on Windows, where the C library opens the
+  standard streams in text mode, and `\n` elsewhere. A file opened with
+  file/open is binary and is not translated.
+  """
+  (compif (dyn 'os/which) (if (= :windows (os/which)) "\r\n" "\n") "\n"))
+
 (defn end-suite []
   (def delta (- (clock-now) start-time))
   (eprinf "Finished suite %s in %.3f seconds - " suite-name delta)
