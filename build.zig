@@ -2180,7 +2180,9 @@ fn addCliChecks(
         test_step.dependOn(&build_missing.step);
 
         const pkg_missing = b.addRunArtifact(client);
-        pkg_missing.addArgs(&.{ "pkg", "install" });
+        // The prefix is given because the environment of a run may set none, and
+        // the check for a prefix comes before the check for a package script.
+        pkg_missing.addArgs(&.{ "-p", "no-such-prefix", "pkg", "install" });
         pkg_missing.expectExitCode(1);
         pkg_missing.expectStdErrMatch("package must contain pkg.wattle, pkg/init.wattle or an info.edn");
         test_step.dependOn(&pkg_missing.step);

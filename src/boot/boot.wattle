@@ -5174,18 +5174,24 @@
     """
     Runs tool with args. Raises if tool cannot be started or exits with a
     status other than 0. The message of the second error is followed by what
-    tool wrote to its standard error, which is not shown otherwise.
+    tool wrote to its standard error, which is not shown otherwise. Raises
+    in a build that has no os/execute.
     """
     [tool & args]
-    (def err (file/temp))
-    (defer (file/close err)
-      (def [ok status] (protect (os/execute [tool |args] :p {:err err})))
-      (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
-      (unless (zero? status)
-        (file/seek err :set 0)
-        (def text (string/trim (string (or (file/read err :all) ""))))
-        (pkg-fail (string tool " exited with status " status
-                          (if (empty? text) "" (string "\n" text)))))))
+    (compif (dyn 'os/execute)
+      (do
+        (pkg-mkdirs (wattle/libpath))
+        (def path (string (wattle/libpath) (sep) ".stderr"))
+        (def err (file/open path :wb))
+        (def [ok status] (protect (os/execute [tool |args] :p {:err err})))
+        (file/close err)
+        (def text (string/trim (string (slurp path))))
+        (rmrf path)
+        (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
+        (unless (zero? status)
+          (pkg-fail (string tool " exited with status " status
+                            (if (empty? text) "" (string "\n" text))))))
+      (pkg-errorf "cannot run %s, this build has no os/execute" tool)))
 
   (defn- pkg-unpack-root
     """
@@ -5287,8 +5293,10 @@
         (def file (string (get artifact :name) ext))
         (pkg/add-bin manifest (string path s "zig-out" s "bin" s file) file))
       (each file (get info :man ![])
-        (pkg/add-manpage manifest (string path s file) (pkg-man-section file)
-                         (last (string/split s file))))))
+        ; The separator on Windows is a backslash, so an entry written with
+        ; forward slashes is split at both.
+        (def base (last (string/split "/" (string/replace-all s "/" file))))
+        (pkg/add-manpage manifest (string path s file) (pkg-man-section file) base))))
 
   (defn- pkg-install-dir
     """

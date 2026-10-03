@@ -76,12 +76,14 @@
 (assert-no-error "sample-pkg install" (pkg/install "./examples/sample-pkg"))
 
 ; A directory that does not exist is read as a Git repository, and the error
-; carries what git wrote.
-(let [message (try (pkg/install "./examples/sample-dep11111") ([e] e))]
-  (assert (and (string? message)
-               (string/has-prefix? "git exited with status 128\nfatal: repository" message)
-               (string/find "sample-dep11111" message))
-          "a missing directory is reported with the message of git"))
+; carries what git wrote where processes can be run.
+(compif (dyn 'os/execute)
+  (let [message (try (pkg/install "./examples/sample-dep11111") ([e] e))]
+    (assert (and (string? message)
+                 (string/has-prefix? "git exited with status 128\nfatal: repository" message)
+                 (string/find "sample-dep11111" message))
+            "a missing directory is reported with the message of git"))
+  (assert-error "a missing directory is an error" (pkg/install "./examples/sample-dep11111")))
 
 (assert (= 3 (length (pkg/list))) "packages are listed correctly 3")
 (assert (= 3 (length (pkg/topolist))) "packages are listed correctly 4")
@@ -212,6 +214,25 @@
 (assert (= 0 (length (pkg/list))) "check failure 0")
 (assert (= 0 (length (pkg/topolist))) "check failure 1")
 
+; Runs the wattle executable with the prefix of this suite and args. Returns the
+; exit status and what the command wrote to standard error. Standard output goes
+; to its own file, so that the order of the two does not matter.
+(compwhen (dyn 'os/execute)
+(defn- run-cli
+  [& args]
+  (def out-file (string prefix "-cli-out"))
+  (def err-file (string prefix "-cli-err"))
+  (def out (file/open out-file :wb))
+  (def err (file/open err-file :wb))
+  (def status (os/execute [(dyn :executable) "-p" (dyn *prefix*) |args] :p {:out out :err err}))
+  (file/close out)
+  (file/close err)
+  ; Line endings are normalised, since Windows writes a carriage return too.
+  (def text (string/replace-all "\r\n" "\n" (string (slurp err-file))))
+  (rmrf out-file)
+  (rmrf err-file)
+  [status text]))
+
 ; A package with no script is installed from its info file. The case has no
 ; :exe artifact, since building one needs a prefix that holds the runtime's
 ; source, so it covers the :man entries and the rejections.
@@ -235,18 +256,13 @@
 (assert (= [] (get (pkg/manifest "man-pkg") :hooks)) "an info-only package has no hooks")
 ; The command line prints the message of an error and, for a package that is
 ; already installed, the command that installs it again. It prints no trace.
-(do
-  (def err-file (string prefix "-stderr"))
-  (def f (file/open err-file :wb))
-  (def status (os/execute [(dyn :executable) "-p" (dyn *prefix*) "pkg" "install" info-dir]
-                          :p {:out f :err f}))
-  (file/close f)
-  (def text (string (slurp err-file)))
-  (assert (= 1 status) "installing an installed package exits with status 1")
-  (assert (= text (string "error: package \"man-pkg\" is already installed\n"
-                          "use 'wattle pkg reinstall man-pkg' to install it again\n"))
-          "the message is followed by the hint and nothing else")
-  (rmrf err-file))
+(compwhen (dyn 'os/execute)
+  (do
+    (def [status text] (run-cli "pkg" "install" info-dir))
+    (assert (= 1 status) "installing an installed package exits with status 1")
+    (assert (= text (string "error: package \"man-pkg\" is already installed\n"
+                            "use 'wattle pkg reinstall man-pkg' to install it again\n"))
+            "the message is followed by the hint and nothing else")))
 (assert-no-error "info-only reinstall" (with-dyns [*err* !""] (pkg/reinstall "man-pkg")))
 (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-pkg.1")))
         "reinstalling an info-only package installs its pages again")
@@ -256,26 +272,21 @@
 
 ; A bug in a package script keeps its stack trace on the command line, since
 ; only the errors that pkg raises on purpose are printed as a message.
-(do
-  (def bug-dir (string prefix "-bug"))
-  (def err-file (string prefix "-stderr"))
-  (rmrf bug-dir)
-  (assert (os/mkdir bug-dir))
-  (assert (os/mkdir (string bug-dir "/pkg")))
-  (spit (string bug-dir "/pkg/info.edn") "{:name \"bug-pkg\"}")
-  (spit (string bug-dir "/pkg/init.wattle") "(defn install [manifest &] (+ 1 nil))\n")
-  (def f (file/open err-file :wb))
-  (def status (os/execute [(dyn :executable) "-p" (dyn *prefix*) "pkg" "install" bug-dir]
-                          :p {:out f :err f}))
-  (file/close f)
-  (def text (string (slurp err-file)))
-  (assert (= 1 status) "a hook that fails exits with status 1")
-  (assert (string/has-prefix? "error: could not find method" text)
-          "the message of the failure is printed")
-  (assert (string/find "\n  in " text) "the stack trace of a failing hook is printed")
-  (assert (= 0 (length (pkg/list))) "a package whose hook fails is not installed")
-  (rmrf bug-dir)
-  (rmrf err-file))
+(compwhen (dyn 'os/execute)
+  (do
+    (def bug-dir (string prefix "-bug"))
+    (rmrf bug-dir)
+    (assert (os/mkdir bug-dir))
+    (assert (os/mkdir (string bug-dir "/pkg")))
+    (spit (string bug-dir "/pkg/info.edn") "{:name \"bug-pkg\"}")
+    (spit (string bug-dir "/pkg/init.wattle") "(defn install [manifest &] (+ 1 nil))\n")
+    (def [status text] (run-cli "pkg" "install" bug-dir))
+    (assert (= 1 status) "a hook that fails exits with status 1")
+    (assert (string/has-prefix? "error: could not find method" text)
+            "the message of the failure is printed")
+    (assert (string/find "\n  in " text) "the stack trace of a failing hook is printed")
+    (assert (= 0 (length (pkg/list))) "a package whose hook fails is not installed")
+    (rmrf bug-dir)))
 
 (make-info-pkg "{:name \"man-pkg\" :man [\"docs/man-pkg.1\" \"docs/man-pkg.txt\"]}")
 (assert-error "a :man entry with no section" (with-dyns [*err* !""] (pkg/install info-dir)))
@@ -296,6 +307,7 @@
 ; Installing from a tarball or a Git repository. The sources are file:// URLs,
 ; so no network is used. The case is skipped where a tool is missing and on
 ; Windows, where a file:// URL has a different form.
+(compwhen (dyn 'os/execute)
 (def- null (unless (= :windows (os/which)) (file/open "/dev/null" :wb)))
 
 (defn- tool?
@@ -319,7 +331,7 @@
   (spit (string demo-dir "/pkg/init.wattle")
         "(defn install [manifest &] (pkg/add-file manifest \"demo.wattle\"))\n")
   (spit (string demo-dir "/demo.wattle") "; one\n")
-  (defn- text [] (slurp demo-module))
+  (defn- module-text [] (slurp demo-module))
   (defn- install-quietly [& args] (with-dyns [*err* !""] (pkg/install |args)))
   (defn- no-fetch-left [] (nil? (os/stat (string prefix "/lib/wattle/.fetch") :mode)))
 
@@ -333,11 +345,11 @@
     (def manifest (pkg/manifest "demo"))
     (assert (= url (get manifest :source)) (string name " records its source"))
     (assert (nil? (get manifest :local-source)) (string name " records no temporary path"))
-    (assert (string/find "one" (text)) (string name " installs the module"))
+    (assert (string/find "one" (module-text)) (string name " installs the module"))
     (assert (no-fetch-left) (string name " leaves no temporary directory"))
     (spit demo-module "; changed\n")
     (assert-no-error (string name " reinstall") (with-dyns [*err* !""] (pkg/reinstall "demo")))
-    (assert (string/find "one" (text)) (string name " reinstalls from a new download"))
+    (assert (string/find "one" (module-text)) (string name " reinstalls from a new download"))
     (assert-no-error (string name " uninstall") (pkg/uninstall "demo")))
 
   ; A tarball that fails to download raises and leaves nothing behind.
@@ -347,16 +359,10 @@
                  (string/has-prefix? "curl exited with status 37\ncurl: (37)" message)
                  (string/find "nothere.tar" message))
             "a missing tarball is reported with the message of curl"))
-  (let [err-file (string prefix "-cli-err")
-        f (file/open err-file :wb)
-        status (os/execute [(dyn :executable) "-p" (dyn *prefix*) "pkg" "install" missing-url]
-                           :p {:out null :err f})]
-    (file/close f)
+  (let [[status text] (run-cli "pkg" "install" missing-url)]
     (assert (= 1 status) "a failed download exits with status 1")
-    (assert (string/has-prefix? "error: curl exited with status 37\ncurl: (37)"
-                                (string (slurp err-file)))
-            "the command line prints the message of curl as the error")
-    (rmrf err-file))
+    (assert (string/has-prefix? "error: curl exited with status 37\ncurl: (37)" text)
+            "the command line prints the message of curl as the error"))
   (assert (no-fetch-left) "a failed download leaves no temporary directory")
   (assert (= 0 (length (pkg/list))) "a failed download installs nothing")
 
@@ -370,15 +376,15 @@
   (sh |git "commit" "-q" "-a" "-m" "two")
   (def repo (string "file://" demo-dir))
   (assert-no-error "git install" (install-quietly repo))
-  (assert (string/find "two" (text)) "git install reads the default branch")
+  (assert (string/find "two" (module-text)) "git install reads the default branch")
   (assert (= repo (get (pkg/manifest "demo") :source)) "git install records its source")
   (assert-no-error "git uninstall" (pkg/uninstall "demo"))
   (assert-no-error "git install at a ref" (install-quietly repo :ref "v1"))
-  (assert (string/find "one" (text)) "git install at a ref reads that ref")
+  (assert (string/find "one" (module-text)) "git install at a ref reads that ref")
   (assert (= "v1" (get (pkg/manifest "demo") :ref)) "git install records its ref")
   (spit demo-module "; changed\n")
   (assert-no-error "git reinstall" (with-dyns [*err* !""] (pkg/reinstall "demo")))
-  (assert (string/find "one" (text)) "git reinstall keeps the ref")
+  (assert (string/find "one" (module-text)) "git reinstall keeps the ref")
   (assert (no-fetch-left) "git install leaves no temporary directory")
   (assert-no-error "git at a ref uninstall" (pkg/uninstall "demo"))
   (let [message (try (install-quietly repo :ref "no-such-ref") ([e] e))]
@@ -392,7 +398,7 @@
   (assert-error "a ref with a directory" (install-quietly demo-dir :ref "v1"))
   (assert-error "a ref with a tarball"
                 (install-quietly (string "file://" src-dir "/demo.tar") :ref "v1"))
-  (rmrf src-dir))
+  (rmrf src-dir)))
 
 (rmrf prefix)
 
