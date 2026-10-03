@@ -6300,20 +6300,39 @@
     "lib" (cli-build-artifacts :lib sub)
     "web" (cli-build-artifacts :web sub)))
 
+(defn- cli-pkg-hint
+  """
+  Returns the line that follows the message of err, or nil. The line names the
+  command that installs a package again, for the error that a package is
+  already installed.
+  """
+  [err]
+  (def before "package \"")
+  (def after "\" is already installed")
+  (when (and (string? err) (string/has-prefix? before err) (string/has-suffix? after err))
+    (def name (string/slice err (length before) (- (length err) (length after))))
+    (string "use 'wattle pkg reinstall " name "' to install it again")))
+
 (defn- cli-pkg [pkg]
   (def verb (get pkg :sub))
   (def params (get verb :params))
   (compif (dyn 'pkg/list)
     (do
       (cli-require-prefix)
-      (case (get verb :cmd)
-        "install" (let [ref (get params :ref)]
-                    (pkg/install (get params :source ".") |(if ref [:ref ref] [])))
-        "reinstall" (pkg/reinstall (get params :name))
-        "uninstall" (pkg/uninstall (get params :name))
-        "update" (pkg/update-all)
-        "clean" (pkg/prune)
-        "list" (each l (pkg/list) (print l))))
+      (def [ok err]
+        (protect
+          (case (get verb :cmd)
+            "install" (let [ref (get params :ref)]
+                        (pkg/install (get params :source ".") |(if ref [:ref ref] [])))
+            "reinstall" (pkg/reinstall (get params :name))
+            "uninstall" (pkg/uninstall (get params :name))
+            "update" (pkg/update-all)
+            "clean" (pkg/prune)
+            "list" (each l (pkg/list) (print l)))))
+      (unless ok
+        (eprint "error: " (if (string? err) err (string/format "%q" err)))
+        (when-let [hint (cli-pkg-hint err)] (eprint hint))
+        (os/exit 1)))
     (cli-fail "pkg " (get verb :cmd) " is not supported with reduced os")))
 
 (defn- cli-gum

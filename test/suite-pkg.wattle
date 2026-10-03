@@ -227,6 +227,20 @@
 (assert (string/find "MAN-PKG 7" (slurp (string prefix "/share/man/man7/man-pkg.7")))
         "a .7 file goes to man7")
 (assert (= [] (get (pkg/manifest "man-pkg") :hooks)) "an info-only package has no hooks")
+; The command line prints the message of an error and, for a package that is
+; already installed, the command that installs it again. It prints no trace.
+(do
+  (def err-file (string prefix "-stderr"))
+  (def f (file/open err-file :wb))
+  (def status (os/execute [(dyn :executable) "-p" (dyn *prefix*) "pkg" "install" info-dir]
+                          :p {:out f :err f}))
+  (file/close f)
+  (def text (string (slurp err-file)))
+  (assert (= 1 status) "installing an installed package exits with status 1")
+  (assert (= text (string "error: package \"man-pkg\" is already installed\n"
+                          "use 'wattle pkg reinstall man-pkg' to install it again\n"))
+          "the message is followed by the hint and nothing else")
+  (rmrf err-file))
 (assert-no-error "info-only reinstall" (with-dyns [*err* !""] (pkg/reinstall "man-pkg")))
 (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-pkg.1")))
         "reinstalling an info-only package installs its pages again")
