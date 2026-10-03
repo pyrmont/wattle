@@ -4844,6 +4844,40 @@
   (def- seps {:windows "\\" :cygwin "\\"})
   (defn- sep [] (get seps (os/which) "/"))
 
+  (def- pkg-expected !{})
+
+  (defn- pkg-fail
+    """
+    Raises message, a string, as an error that wattle pkg prints without a
+    stack trace. The message is recorded so that the command line can tell it
+    from an error that was not expected.
+    """
+    [message]
+    (put! pkg-expected message true)
+    (error message))
+
+  (defn- pkg-errorf
+    """
+    Raises the string that fmt and vals format, as ^pkg-fail does.
+    """
+    [fmt & vals]
+    (pkg-fail (string/format fmt |vals)))
+
+  (defn- pkg-assert
+    """
+    Raises message as ^pkg-fail does unless x is truthy.
+    """
+    [x message]
+    (unless x (pkg-fail message)))
+
+  (defn- pkg-assertf
+    """
+    Raises the string that fmt and vals format, as ^pkg-fail does, unless x is
+    truthy.
+    """
+    [x fmt & vals]
+    (unless x (pkg-fail (string/format fmt |vals))))
+
   (defn- pkg-root
     """
     Returns the prefix, the root that the library, program and manual
@@ -4869,7 +4903,7 @@
                       (string so-far part)
                       (string so-far s part)))
         (protect (os/mkdir so-far))))
-    (assertf (= :directory (os/stat path :mode)) "cannot create directory %s" path))
+    (pkg-assertf (= :directory (os/stat path :mode)) "cannot create directory %s" path))
 
   (defn- pkg-dir
     ([] (pkg-dir nil))
@@ -4916,8 +4950,8 @@
             (when (empty? b) (buffer/trim! b) (os/chmod to perm) (break))
             (file/write fto b)
             (buffer/clear! b)))
-        (errorf "destination file %s cannot be opened for writing" to))
-      (errorf "source file %s cannot be opened for reading" from)))
+        (pkg-errorf "destination file %s cannot be opened for writing" to))
+      (pkg-errorf "source file %s cannot be opened for reading" from)))
 
   (defn- copyrf
     [from to]
@@ -4948,7 +4982,7 @@
     "Gets the manifest for a given installed package."
     [pkg-name]
     (def name (get-manifest-filename pkg-name))
-    (assertf (fexists name) "no package %v found" pkg-name)
+    (pkg-assertf (fexists name) "no package %v found" pkg-name)
     (parse (slurp name)))
 
   (defn- get-pkg-module
@@ -5027,7 +5061,7 @@
               (pkg/list)))
     (unless (empty? breakage)
       (def breakage-list (sort breakage))
-      (errorf "cannot uninstall %s, breaks dependent packages %n" pkg-name breakage-list))
+      (pkg-errorf "cannot uninstall %s, breaks dependent packages %n" pkg-name breakage-list))
     (pkg-uninstall-unchecked pkg-name))
 
   (defn pkg/topolist
@@ -5041,7 +5075,7 @@
       [b]
       (array/push! stack b)
       (if (get visited b) (break))
-      (if (get cycle-detect b) (errorf "cycle detected in package dependencies: %s" (string/join " -> " stack)))
+      (if (get cycle-detect b) (pkg-errorf "cycle detected in package dependencies: %s" (string/join " -> " stack)))
       (put! cycle-detect b true)
       (each d (get (pkg/manifest b) :dependencies []) (visit d))
       (put! cycle-detect b nil)
@@ -5087,7 +5121,7 @@
     (def s (sep))
     (def absdest (string base s dest))
     (when (os/stat absdest :mode)
-      (errorf "collision at %s, file already exists" absdest))
+      (pkg-errorf "collision at %s, file already exists" absdest))
     (copyfile src absdest)
     (def absdest (os/realpath absdest))
     (array/push! files absdest)
@@ -5143,8 +5177,8 @@
     """
     [tool & args]
     (def [ok status] (protect (os/execute [tool |args] :p)))
-    (assertf ok "could not run %s, is it on the PATH?" tool)
-    (assertf (zero? status) "%s exited with status %d" tool status))
+    (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
+    (pkg-assertf (zero? status) "%s exited with status %d" tool status))
 
   (defn- pkg-unpack-root
     """
@@ -5167,7 +5201,7 @@
     """
     [source ref f]
     (def kind (pkg-source-kind source))
-    (assertf (or (nil? ref) (= kind :git))
+    (pkg-assertf (or (nil? ref) (= kind :git))
              "a ref is accepted only for a Git repository, not %v" source)
     (if (= kind :directory)
       (f source)
@@ -5205,7 +5239,7 @@
     """
     [file]
     (def digit (last (string/split "." file)))
-    (assertf (and (= 1 (length digit)) (string/check-set "123456789" digit))
+    (pkg-assertf (and (= 1 (length digit)) (string/check-set "123456789" digit))
              ":man entry %v must end in a period and a digit from 1 to 9" file)
     (string "man" digit))
 
@@ -5237,7 +5271,7 @@
     [manifest path info]
     (def s (sep))
     (when (next (pkg-artifacts-of info :lib))
-      (error "a :lib artifact is installed only by a package script"))
+      (pkg-fail "a :lib artifact is installed only by a package script"))
     (def ext (if (get seps (os/which)) ".exe" ""))
     ; The manifest is written first on a failure so that the uninstall that
     ; follows removes the files added so far.
@@ -5269,16 +5303,16 @@
     (def bscript-src (cond
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
-    (assert (or bscript-src (get info :artifacts) (get info :man))
+    (pkg-assert (or bscript-src (get info :artifacts) (get info :man))
             "package must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man")
     ; Detect package name
     (def pkg-name (get config :name (get info :name)))
-    (assertf pkg-name
+    (pkg-assertf pkg-name
              "unable to infer package name for %v, use :name argument or add :name to info file" path)
-    (assertf (not (string/check-set "\\/" pkg-name))
+    (pkg-assertf (not (string/check-set "\\/" pkg-name))
              "package name %v cannot contain path separators" pkg-name)
-    (assert (next pkg-name) "cannot use empty pkg-name")
-    (assertf (not (fexists (get-manifest-filename pkg-name)))
+    (pkg-assert (next pkg-name) "cannot use empty pkg-name")
+    (pkg-assertf (not (fexists (get-manifest-filename pkg-name)))
              "package %v is already installed" pkg-name)
     ; Setup installed paths
     (pkg-mkdirs (pkg-dir))
@@ -5302,7 +5336,7 @@
                     (string (if (dictionary? d) (get d :name) d))))
         (def missing (filter (complement pkg/installed?) deps))
         (when (next missing)
-          (error (string "missing dependencies " (string/join ", " missing))))
+          (pkg-fail (string "missing dependencies " (string/join ", " missing))))
         (put! man :dependencies deps)
         (put! man :info info))
       (def module (when bscript-src (get-pkg-module pkg-name)))
@@ -5372,7 +5406,7 @@
       (var i 0)
       (def man (pkg/manifest pkg-name))
       (def files (get man :files ![]))
-      (assertf (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
+      (pkg-assertf (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
       (def s (sep))
       (os/mkdir (string dest-dir s "pkg"))
       (def install-hook (string dest-dir s "pkg" s "init.wattle"))
@@ -5396,7 +5430,7 @@
           (case mode
             :directory (if lib-rel
                          (array/push! install-source `(pkg/add-directory manifest ~lib-rel ~perm))
-                         (errorf "unexpected directory %v" file))
+                         (pkg-errorf "unexpected directory %v" file))
             :file (do
                     (def filename (string/format "file_%06d" (++ i)))
                     (copyfile file (string dest-dir s filename))
@@ -5406,8 +5440,8 @@
                                    bin-rel `(pkg/add-bin manifest ~filename ~bin-rel ~perm)
                                    man-rel (let [parts (string/split s man-rel)]
                                              `(pkg/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
-                                   (errorf "unexpected file %v" file))))
-            (errorf "unexpected file %v" file)))
+                                   (pkg-errorf "unexpected file %v" file))))
+            (pkg-errorf "unexpected file %v" file)))
         (def b !"(defn install [manifest]")
         (each form install-source (buffer/format! b "\n  %w" form))
         (buffer/push! b ")\n")
@@ -5424,7 +5458,7 @@
     (def manifest (pkg/manifest pkg-name))
     (def config (get manifest :config !{}))
     (def s (sep))
-    (assertf (= :directory (os/stat path :mode)) "local source %v not available" path)
+    (pkg-assertf (= :directory (os/stat path :mode)) "local source %v not available" path)
     (def backup-dir (string (wattle/libpath) s pkg-name ".backup"))
     (rmrf backup-dir)
     (def backup-pkg-source (pkg/pack pkg-name backup-dir true))
@@ -5461,7 +5495,7 @@
       (def s (sep))
       (def absdest (string (wattle/libpath) s dest))
       (unless (os/mkdir absdest)
-        (errorf "collision at %s, directory already exists" absdest))
+        (pkg-errorf "collision at %s, directory already exists" absdest))
       (def absdest (os/realpath absdest))
       (array/push! files absdest)
       (when chmod-mode
@@ -5493,14 +5527,14 @@
     ([manifest src dest chmod-mode]
       (def s (sep))
       (def mode (os/stat src :mode))
-      (if-not mode (errorf "file %s does not exist" src))
+      (if-not mode (pkg-errorf "file %s does not exist" src))
       (case mode
         :directory
         (let [absdest (pkg/add-directory manifest dest chmod-mode)]
           (each d (os/dir src) (pkg/add manifest (string src s d) (string dest s d) chmod-mode))
           absdest)
         :file (pkg/add-file manifest src dest chmod-mode)
-        (errorf "bad path %s - file is a %s" src mode))))
+        (pkg-errorf "bad path %s - file is a %s" src mode))))
 
   (defn pkg/update-all
     "Reinstalls all packages."
@@ -6026,6 +6060,20 @@
   (file/flush stdout)
   (file/read stdin :line buf))
 
+(defn- cli-fail [& parts]
+  (eprint |parts)
+  (os/exit 1))
+
+(defn- cli-exists?
+  """
+  Checks whether path names anything, a pipe or a device as well as a file, so
+  that a script read from /dev/stdin or a process substitution is accepted.
+  """
+  [path]
+  (compif (dyn 'os/stat)
+    (truthy? (os/stat path :mode))
+    (fexists path)))
+
 (defn- cli-run [opts script]
   (def raw-stdin (get opts "stdin"))
   (def should-repl (or raw-stdin (get opts "repl")))
@@ -6047,6 +6095,7 @@
     (def path (get script 0))
     (def subargs (array/slice script))
     (set no-file false)
+    (unless (cli-exists? path) (cli-fail "error: could not find file " path))
     (if expect-image
       (run-image (slurp path) subargs)
       (do
@@ -6068,10 +6117,6 @@
     (defn getchunk [buf p]
       (getter (getprompt p) buf env))
     (repl getchunk nil env)))
-
-(defn- cli-fail [& parts]
-  (eprint |parts)
-  (os/exit 1))
 
 (defn- cli-require-prefix []
   (def root (dyn *prefix*))
@@ -6217,7 +6262,11 @@
   (when (has-key? opts "lint-error") (setdyn *lint-error* (get opts "lint-error")))
   (def bail? (get opts "bail" false))
   (if-let [path (get params :script)]
-    (flycheck path :exit bail? :env (make-env))
+    (do
+      (unless (cli-exists? path)
+        (eprint "error: could not find file " path)
+        (os/exit (if bail? 1 0)))
+      (flycheck path :exit bail? :env (make-env)))
     (flycheck stdin :source :stdin :exit bail?)))
 
 (defn- cli-build-img [image]
@@ -6225,6 +6274,7 @@
   (each library (get (get image :opts) "lib" [])
     (import* library :prefix "" :exit true))
   (def path (get params :source))
+  (unless (cli-exists? path) (cli-fail "error: could not find file " path))
   (def e (dofile path))
   (def output-path
     (or (get params :output)
@@ -6319,20 +6369,22 @@
   (compif (dyn 'pkg/list)
     (do
       (cli-require-prefix)
-      (def [ok err]
-        (protect
-          (case (get verb :cmd)
-            "install" (let [ref (get params :ref)]
-                        (pkg/install (get params :source ".") |(if ref [:ref ref] [])))
-            "reinstall" (pkg/reinstall (get params :name))
-            "uninstall" (pkg/uninstall (get params :name))
-            "update" (pkg/update-all)
-            "clean" (pkg/prune)
-            "list" (each l (pkg/list) (print l)))))
-      (unless ok
-        (eprint "error: " (if (string? err) err (string/format "%q" err)))
-        (when-let [hint (cli-pkg-hint err)] (eprint hint))
-        (os/exit 1)))
+      (try
+        (case (get verb :cmd)
+          "install" (let [ref (get params :ref)]
+                      (pkg/install (get params :source ".") |(if ref [:ref ref] [])))
+          "reinstall" (pkg/reinstall (get params :name))
+          "uninstall" (pkg/uninstall (get params :name))
+          "update" (pkg/update-all)
+          "clean" (pkg/prune)
+          "list" (each l (pkg/list) (print l)))
+        ([err fib]
+          ; Only a message that pkg raised on purpose is printed without a trace.
+          (unless (and (string? err) (get pkg-expected err))
+            (propagate err fib))
+          (eprint "error: " err)
+          (when-let [hint (cli-pkg-hint err)] (eprint hint))
+          (os/exit 1))))
     (cli-fail "pkg " (get verb :cmd) " is not supported with reduced os")))
 
 (defn- cli-gum

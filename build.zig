@@ -2140,6 +2140,39 @@ fn addCliChecks(
         check_ok.expectStdOutEqual("");
         test_step.dependOn(&check_ok.step);
 
+        // A script that does not exist is reported as one line, whichever
+        // subcommand reads it. `check` follows its own rule for the status.
+        const missing_file = "error: could not find file no-such-script.wattle\n";
+        const run_nofile = b.addRunArtifact(client);
+        run_nofile.addArgs(&.{ "run", "no-such-script.wattle" });
+        run_nofile.expectExitCode(1);
+        run_nofile.expectStdErrEqual(missing_file);
+        test_step.dependOn(&run_nofile.step);
+
+        const implicit_nofile = b.addRunArtifact(client);
+        implicit_nofile.addArgs(&.{"no-such-script.wattle"});
+        implicit_nofile.expectExitCode(1);
+        implicit_nofile.expectStdErrEqual(missing_file);
+        test_step.dependOn(&implicit_nofile.step);
+
+        const build_nofile = b.addRunArtifact(client);
+        build_nofile.addArgs(&.{ "build", "img", "no-such-script.wattle" });
+        build_nofile.expectExitCode(1);
+        build_nofile.expectStdErrEqual(missing_file);
+        test_step.dependOn(&build_nofile.step);
+
+        const check_nofile = b.addRunArtifact(client);
+        check_nofile.addArgs(&.{ "check", "no-such-script.wattle" });
+        check_nofile.expectExitCode(0);
+        check_nofile.expectStdErrEqual(missing_file);
+        test_step.dependOn(&check_nofile.step);
+
+        const check_bail_nofile = b.addRunArtifact(client);
+        check_bail_nofile.addArgs(&.{ "check", "--bail", "no-such-script.wattle" });
+        check_bail_nofile.expectExitCode(1);
+        check_bail_nofile.expectStdErrEqual(missing_file);
+        test_step.dependOn(&check_bail_nofile.step);
+
         const build_missing = b.addRunArtifact(client);
         build_missing.addArgs(&.{ "build", "img" });
         build_missing.expectExitCode(1);
