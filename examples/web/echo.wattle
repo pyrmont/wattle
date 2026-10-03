@@ -1,4 +1,7 @@
 (defn main [& args]
   (print (string/join "|" args))
   (print (string "stdin: " (file/read stdin :all)))
-  (when (has-value? args "--fail") (error "failed")))
+  (when (has-value? args "--fail") (error "failed"))
+  (each arg args
+    (when (string/has-prefix? "--exit=" arg)
+      (os/exit (scan-number (string/slice arg 7))))))

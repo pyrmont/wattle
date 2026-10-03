@@ -92,4 +92,22 @@ for (const expected of cases) {
   console.log(`ok ${label}`);
 }
 
-console.log(`All ${cases.length} cases matched.`);
+// `os/exit` ends the instance. The call that exits returns the exit code as its
+// status, with the exception as its error, and the next call throws.
+for (const code of [0, 3]) {
+  const exiting = await start(module);
+  const result = exiting.runImage(echo, { args: ["prog", `--exit=${code}`] });
+  if (result.status !== code) fail(`exit ${code}: status ${result.status}`);
+  if (result.error?.name !== "WasiExit" || result.error.code !== code) fail(`exit ${code}: error was ${result.error}`);
+  if (result.stdout !== `prog|--exit=${code}\nstdin: \n`) fail(`exit ${code}: stdout was ${JSON.stringify(result.stdout)}`);
+  let threw = false;
+  try {
+    exiting.runImage(echo);
+  } catch {
+    threw = true;
+  }
+  if (!threw) fail(`exit ${code}: a stopped instance ran another call`);
+  console.log(`ok exit ${code}`);
+}
+
+console.log(`All ${cases.length} cases and 2 exits matched.`);

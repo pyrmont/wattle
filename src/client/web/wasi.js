@@ -269,7 +269,8 @@ export function createWasi() {
 // submission and returns `{ status, stdout, stderr, error }`: `status` is 0, or
 // 1 when the submission failed, and `error` is null, or the exception that
 // stopped the instance (a `WebAssembly.RuntimeError` for a trap, a `WasiExit`
-// for `os/exit`). After an `error`, the instance is unusable and `eval`
+// for `os/exit`). The `status` of a call that ended in `os/exit` is the exit
+// code, so 0 for a clean exit, and `error` is the `WasiExit`. After an `error`, the instance is unusable and `eval`
 // throws; the host starts a new one.
 //
 // A build made with `-Dwasm-image` has no compiler and returns an object whose
@@ -314,6 +315,9 @@ export async function start(module) {
       buffers.forEach((buffer, i) => exports.wattle_web_free(pointers[i], buffer.length));
     } catch (error) {
       stopped = error;
+      // An exit reports its own status, so `os/exit 0` is a success. Any other
+      // exception, a trap included, is status 1.
+      if (error instanceof WasiExit) status = error.code;
     }
     return { status, ...wasi.take(), error: stopped };
   }

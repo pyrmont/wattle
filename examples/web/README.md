@@ -84,7 +84,8 @@ reaching a `path_*` import, so `slurp`, `spit`, `os/dir` and `import` raise a
 Wattle error.
 
 `poll_oneoff` returns at once, so `os/sleep` does not wait. `proc_exit` throws,
-so `os/exit` ends the instance.
+so `os/exit` ends the instance. The call that exits returns the exit code as
+its `status`, so 0 for a clean exit, with the `WasiExit` as its `error`.
 
 ### Unbounded recursion
 
