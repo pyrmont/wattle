@@ -47,7 +47,7 @@ complete -c wattle -n '__fish_seen_subcommand_from check c' -s h -l help -d 'Sho
 complete -c wattle -n '__fish_seen_subcommand_from check c' -F
 
 # pkg
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a install -d 'Install a package from a directory'
+complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a install -d 'Install a package from a directory, tarball or Git repository'
 complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a reinstall -d 'Reinstall a package by name'
 complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a uninstall -d 'Uninstall a package by name'
 complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a update -d 'Reinstall all installed packages'

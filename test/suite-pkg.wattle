@@ -206,6 +206,88 @@
 (assert (= 0 (length (pkg/list))) "check failure 0")
 (assert (= 0 (length (pkg/topolist))) "check failure 1")
 
+; Installing from a tarball or a Git repository. The sources are file:// URLs,
+; so no network is used. The case is skipped where a tool is missing and on
+; Windows, where a file:// URL has a different form.
+(def- null (unless (= :windows (os/which)) (file/open "/dev/null" :wb)))
+
+(defn- tool?
+  [name]
+  (def [ok status] (protect (os/execute [name "--version"] :p {:out null :err null})))
+  (and ok (= 0 status)))
+
+(defn- sh
+  [& args]
+  (assert (= 0 (os/execute args :p {:out null :err null})) (string/join " " args)))
+
+(when (and (not= :windows (os/which)) (tool? "curl") (tool? "tar") (tool? "git"))
+  (def src-dir (string (os/realpath prefix) "-src"))
+  (def demo-dir (string src-dir "/demo"))
+  (def demo-module (string prefix "/lib/wattle/demo.wattle"))
+  (rmrf src-dir)
+  (assert (os/mkdir src-dir))
+  (assert (os/mkdir demo-dir))
+  (assert (os/mkdir (string demo-dir "/pkg")))
+  (spit (string demo-dir "/pkg/info.edn") "{:name \"demo\"}")
+  (spit (string demo-dir "/pkg/init.wattle")
+        "(defn install [manifest &] (pkg/add-file manifest \"demo.wattle\"))\n")
+  (spit (string demo-dir "/demo.wattle") "; one\n")
+  (defn- text [] (slurp demo-module))
+  (defn- install-quietly [& args] (with-dyns [*err* !""] (pkg/install |args)))
+  (defn- no-fetch-left [] (nil? (os/stat (string prefix "/lib/wattle/.fetch") :mode)))
+
+  ; A tarball and a gzipped tarball each install, record only their source,
+  ; reinstall from a new download and leave no temporary directory.
+  (each [name flags] [["demo.tar" "-cf"] ["demo.tar.gz" "-czf"]]
+    (def archive (string src-dir "/" name))
+    (def url (string "file://" archive))
+    (sh "tar" flags archive "-C" src-dir "demo")
+    (assert-no-error (string name " install") (install-quietly url))
+    (def manifest (pkg/manifest "demo"))
+    (assert (= url (get manifest :source)) (string name " records its source"))
+    (assert (nil? (get manifest :local-source)) (string name " records no temporary path"))
+    (assert (string/find "one" (text)) (string name " installs the module"))
+    (assert (no-fetch-left) (string name " leaves no temporary directory"))
+    (spit demo-module "; changed\n")
+    (assert-no-error (string name " reinstall") (with-dyns [*err* !""] (pkg/reinstall "demo")))
+    (assert (string/find "one" (text)) (string name " reinstalls from a new download"))
+    (assert-no-error (string name " uninstall") (pkg/uninstall "demo")))
+
+  ; A tarball that fails to download raises and leaves nothing behind.
+  (assert-error "a missing tarball" (install-quietly (string "file://" src-dir "/nothere.tar")))
+  (assert (no-fetch-left) "a failed download leaves no temporary directory")
+  (assert (= 0 (length (pkg/list))) "a failed download installs nothing")
+
+  ; A Git repository installs at its default branch, or at the ref given.
+  (def git ["git" "-C" demo-dir "-c" "commit.gpgsign=false" "-c" "user.name=t" "-c" "user.email=t@t"])
+  (sh "git" "-C" demo-dir "init" "-q" "-b" "main")
+  (sh "git" "-C" demo-dir "add" "-A")
+  (sh |git "commit" "-q" "-m" "one")
+  (sh "git" "-C" demo-dir "tag" "v1")
+  (spit (string demo-dir "/demo.wattle") "; two\n")
+  (sh |git "commit" "-q" "-a" "-m" "two")
+  (def repo (string "file://" demo-dir))
+  (assert-no-error "git install" (install-quietly repo))
+  (assert (string/find "two" (text)) "git install reads the default branch")
+  (assert (= repo (get (pkg/manifest "demo") :source)) "git install records its source")
+  (assert-no-error "git uninstall" (pkg/uninstall "demo"))
+  (assert-no-error "git install at a ref" (install-quietly repo :ref "v1"))
+  (assert (string/find "one" (text)) "git install at a ref reads that ref")
+  (assert (= "v1" (get (pkg/manifest "demo") :ref)) "git install records its ref")
+  (spit demo-module "; changed\n")
+  (assert-no-error "git reinstall" (with-dyns [*err* !""] (pkg/reinstall "demo")))
+  (assert (string/find "one" (text)) "git reinstall keeps the ref")
+  (assert (no-fetch-left) "git install leaves no temporary directory")
+  (assert-no-error "git at a ref uninstall" (pkg/uninstall "demo"))
+  (assert-error "a missing ref" (install-quietly repo :ref "no-such-ref"))
+  (assert (= 0 (length (pkg/list))) "a missing ref installs nothing")
+
+  ; A ref is accepted only for a Git repository.
+  (assert-error "a ref with a directory" (install-quietly demo-dir :ref "v1"))
+  (assert-error "a ref with a tarball"
+                (install-quietly (string "file://" src-dir "/demo.tar") :ref "v1"))
+  (rmrf src-dir))
+
 (rmrf prefix)
 
 (end-suite)

@@ -234,11 +234,18 @@ Manage the packages installed under ``*prefix*``. Modules are installed in
 OS library does not include **pkg**, and each verb exits with status 1 after
 saying so.
 
-- **install** _directory_:
-  Install the package in _directory_.
+- **install** [_source_ [_ref_]]:
+  Install a package. _source_ is a directory, a name ending in ``.tar`` or
+  ``.tar.gz``, or a Git repository. A directory is installed as it is. A name
+  ending in ``.tar`` or ``.tar.gz`` is downloaded with **curl** and unpacked
+  with **tar**. Anything else is cloned with **git**. With no _source_, the
+  current directory is installed. The package must contain ``pkg.wattle`` or
+  ``pkg/init.wattle``. _ref_ is a branch or tag, and applies only to a Git
+  repository.
 
 - **reinstall** _name_:
-  Reinstall the installed package _name_.
+  Reinstall the installed package _name_. A package installed from a tarball or
+  a Git repository is downloaded again.
 
 - **uninstall** _name_:
   Uninstall the package _name_.
@@ -440,10 +447,12 @@ Run the tests in ``./test``, skipping one file:
 $ wattle test --no-file slow.wattle
 ````
 
-Install a package and list the installed packages:
+Install packages from a directory, a tarball and a Git repository, and list the installed packages:
 
 ````
 $ wattle pkg install ./my-pkg
+$ wattle pkg install https://example.com/my-pkg.tar.gz
+$ wattle pkg install https://example.com/my-pkg.git v1.2
 $ wattle pkg list
 ````
 

@@ -417,6 +417,36 @@ file reached only through the `pub const` block, or only through another file's
 container-level `const`, is not collected. `os/fs/stat.zig` is named in the
 comptime block for that reason only.
 
+## Installing packages
+
+`wattle pkg install [source [ref]]` installs a package from a _source_. The
+form of `source` selects the kind, in this order:
+
+- An existing directory is installed as it stands.
+- A name ending in `.tar` or `.tar.gz` is a tarball. `curl` downloads it and
+  `tar` unpacks it.
+- Anything else is a Git repository. `git clone --depth 1` copies it.
+
+With no `source`, the current directory is installed. It must contain
+`pkg.wattle` or `pkg/init.wattle`. A package without one of them is not
+installed, and the `:artifacts` of its `info.edn` do not stand in for it.
+
+`ref` is a branch or a tag. It is accepted only with a Git repository, and
+`pkg install` raises if it follows a directory or a tarball. `source` is read as
+written, so a `?query` is part of the name and a URL that ends in one is read as
+a Git repository.
+
+A downloaded source is unpacked into a temporary directory under
+`<prefix>/lib/wattle`. The directory is removed after the install, whether or
+not it succeeds. If the unpacked tree has one top-level directory, that
+directory is the package root. The manifest records `source` and `ref` and does
+not record the temporary path. `pkg reinstall` and `pkg update` download a
+recorded source again. For a directory they install from the recorded directory.
+
+`curl`, `tar` and `git` are found on `PATH`, and `pkg install` names the one that
+is missing. The package script runs with the privileges of the caller, and no
+source is verified.
+
 ## Build steps
 
 | step                | what it runs                                        |

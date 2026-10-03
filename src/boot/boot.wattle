@@ -5081,17 +5081,86 @@
     [pkg-name]
     (truthy? (os/stat (pkg-dir pkg-name) :mode)))
 
-  (defn pkg/install
+  (defn- pkg-source-kind
     """
-    Installs a package from the local filesystem. The name of the package is
-    the value mapped to :name in either config or the info file. There are
-    5 hooks called during installation (postdeps, clean, build, install and
-    check). A user can register a hook by defining a function with the same name
-    in the package script.
+    Returns :directory for an existing directory, :tarball for a name ending in
+    .tar or .tar.gz and :git for anything else.
+    """
+    [source]
+    (cond
+      (= :directory (os/stat source :mode)) :directory
+      (or (string/has-suffix? ".tar" source)
+          (string/has-suffix? ".tar.gz" source)) :tarball
+      :git))
+
+  (defn- pkg-run
+    """
+    Runs tool with args. Raises if tool cannot be started or exits with a
+    status other than 0.
+    """
+    [tool & args]
+    (def [ok status] (protect (os/execute [tool |args] :p)))
+    (assertf ok "could not run %s, is it on the PATH?" tool)
+    (assertf (zero? status) "%s exited with status %d" tool status))
+
+  (defn- pkg-unpack-root
+    """
+    Returns the package root of an unpacked tree: the one directory in dir if
+    that is all dir holds, and dir otherwise.
+    """
+    [dir]
+    (def entries (os/dir dir))
+    (def only (when (= 1 (length entries)) (string dir (sep) (first entries))))
+    (if (and only (= :directory (os/stat only :mode))) only dir))
+
+  (defn- pkg-with-source
+    """
+    Calls f with the root directory of source and returns what f returns. A
+    directory is passed as it is. A tarball is downloaded and unpacked, and a
+    Git repository is cloned, into a temporary directory under the library
+    directory of the prefix. That directory is removed after f returns or
+    raises. Raises if ref, a branch or tag, is given for anything but a Git
+    repository.
+    """
+    [source ref f]
+    (def kind (pkg-source-kind source))
+    (assertf (or (nil? ref) (= kind :git))
+             "a ref is accepted only for a Git repository, not %v" source)
+    (if (= kind :directory)
+      (f source)
+      (do
+        (def s (sep))
+        (def tmp (string (wattle/libpath) s ".fetch"))
+        (def dest (string tmp s "src"))
+        (rmrf tmp)
+        (pkg-mkdirs dest)
+        (defer (rmrf tmp)
+          (print "fetching " source)
+          (case kind
+            :tarball (let [archive (string tmp s "archive")]
+                       (pkg-run "curl" "--fail" "--silent" "--show-error" "--location"
+                                "--output" archive "--url" source)
+                       (pkg-run "tar" "-xf" archive "-C" dest))
+            :git (do
+                   (pkg-run "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
+                            |(if ref ["--branch" ref] []) "--" source dest)
+                   (rmrf (string dest s ".git"))))
+          (f (pkg-unpack-root dest))))))
+
+  (defn- pkg-install-dir
+    """
+    Installs the package in the directory path. See ^pkg/install.
     """
     [path & {:as config}]
     (def path (os/realpath path))
     (def s (sep))
+    ; Check bscript
+    (def bscript-src1 (string path s "pkg" s "init.wattle"))
+    (def bscript-src2 (string path s "pkg.wattle"))
+    (def bscript-src (cond
+                       (fexists bscript-src1) bscript-src1
+                       (fexists bscript-src2) bscript-src2))
+    (assert bscript-src "package must contain pkg.wattle or pkg/init.wattle")
     ; Detect package name
     (def infofile-src1 (string path s "pkg" s "info.edn"))
     (def infofile-src2 (string path s "info.edn"))
@@ -5107,12 +5176,6 @@
     (assert (next pkg-name) "cannot use empty pkg-name")
     (assertf (not (fexists (get-manifest-filename pkg-name)))
              "package %v is already installed" pkg-name)
-    ; Check bscript
-    (def bscript-src1 (string path s "pkg" s "init.wattle"))
-    (def bscript-src2 (string path s "pkg.wattle"))
-    (def bscript-src (cond
-                       (fexists bscript-src1) bscript-src1
-                       (fexists bscript-src2) bscript-src2))
     ; Setup installed paths
     (pkg-mkdirs (pkg-dir))
     (os/mkdir (pkg-dir pkg-name))
@@ -5152,12 +5215,38 @@
       (sync-manifest man)
       (when check
         (do-hook module pkg-name :check man)))
+    ; A fetched source is a temporary directory, so only its origin is kept.
+    (when (get man :source)
+      (put! man :local-source nil)
+      (sync-manifest man))
     (print "installed " pkg-name)
     (when (get man :has-exe)
       (eprintf "executable files have been installed to %s" (wattle/binpath)))
     (when (get man :has-man)
       (eprintf "man pages have been installed to %s" (wattle/manpath)))
     pkg-name)
+
+  (defn pkg/install
+    """
+    Installs a package from source, which is an existing directory, a name
+    ending in .tar or .tar.gz that curl downloads and tar unpacks, or any other
+    name, which git clones. The name of the package is the value mapped to :name
+    in either config or the info file. The :ref in config is a branch or tag and
+    is accepted only for a Git repository. There are 5 hooks called during
+    installation (postdeps, clean, build, install and check). A user can
+    register a hook by defining a function with the same name in the package
+    script. The package must have pkg.wattle or pkg/init.wattle.
+    """
+    [source & {:as config}]
+    ; A :source in config marks a root that was fetched earlier, so its :ref is
+    ; a record and not a request.
+    (def ref (if (get config :source) nil (get config :ref)))
+    (def kind (pkg-source-kind source))
+    (pkg-with-source source ref
+      (fn [root]
+        (if (= kind :directory)
+          (pkg-install-dir root |(kvs config))
+          (pkg-install-dir root :source source |(kvs config))))))
 
   (defn- pkg/pack
     """
@@ -5237,11 +5326,19 @@
     pkg-name)
 
   (defn pkg/reinstall
-    "Reinstalls an existing package from the local source code."
+    """
+    Reinstalls an existing package from its source: the directory it was
+    installed from, or a new download of the tarball or Git repository.
+    """
     [pkg-name & {:as new-config}]
     (def manifest (pkg/manifest pkg-name))
-    (def path (get manifest :local-source))
-    (pkg/replace pkg-name path |(kvs new-config))
+    (def source (get manifest :source))
+    (def ref (get manifest :ref))
+    (if source
+      (pkg-with-source source ref
+        (fn [root]
+          (pkg/replace pkg-name root :source source |(if ref [:ref ref] []) |(kvs new-config))))
+      (pkg/replace pkg-name (get manifest :local-source) |(kvs new-config)))
     pkg-name)
 
   (defn pkg/add-directory
@@ -5798,9 +5895,11 @@
                :help "Uninstall all packages that are orphaned."
                :rules []}
       "install" {:validate? validate?
-                 :help "Install a package from a directory."
-                 :rules [:directory {:req? true :proxy "directory"
-                                     :help "The directory holding the package."}]}
+                 :help "Install a package from a directory, a tarball or a Git repository."
+                 :rules [:source {:proxy "source"
+                                  :help "A directory, a URL ending in .tar or .tar.gz, or a Git repository. The default is the current directory."}
+                         :ref {:proxy "ref"
+                               :help "The branch or tag to clone. It applies only to a Git repository."}]}
       "list" {:validate? validate?
               :help "List all installed packages."
               :rules []}
@@ -5842,7 +5941,7 @@
 ; subcommand is entered once.
 (def- cli-validating-config (cli-config true))
 (each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"] ["build" "web"]
-            ["pkg" "install" "directory"]
+            ["pkg" "install"] ["pkg" "install" "source" "ref"]
             ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
             ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"]]
   (cli-parse-args "wattle" cli-validating-config argv))
@@ -6139,7 +6238,8 @@
     (do
       (cli-require-prefix)
       (case (get verb :cmd)
-        "install" (pkg/install (get params :directory))
+        "install" (let [ref (get params :ref)]
+                    (pkg/install (get params :source ".") |(if ref [:ref ref] [])))
         "reinstall" (pkg/reinstall (get params :name))
         "uninstall" (pkg/uninstall (get params :name))
         "update" (pkg/update-all)

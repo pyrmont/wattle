@@ -118,7 +118,7 @@ _wattle() {
                 p|pkg)
                     if (( CURRENT == 2 )); then
                         _values 'verb' \
-                            'install[Install a package from a directory]' \
+                            'install[Install a package from a directory, tarball or Git repository]' \
                             'reinstall[Reinstall a package by name]' \
                             'uninstall[Uninstall a package by name]' \
                             'update[Reinstall all installed packages]' \
