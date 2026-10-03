@@ -38,7 +38,6 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
-const compiler_primitives = @import("../compiler.zig");
 const constants = @import("constants");
 const fatal = @import("../fatal.zig");
 const fibers = @import("fibers.zig");
@@ -285,6 +284,24 @@ pub const defs = struct {
 // Public functions
 // ==========================================================================
 
+/// Computes a definition's flag bits from the optional parts it has.
+///
+/// The assembler, the unmarshaller and the compiler each call it on a
+/// definition they have filled in.
+pub fn defAddflags(definition: *FuncDef) void {
+    // The six "has" bits say which optional parts the definition has, so
+    // each is a read of the field it describes rather than a flag anyone sets
+    // by hand. Other active flags survive.
+    var flags = definition.flags.withoutControlled();
+    flags.hasname = definition.name != null;
+    flags.hassource = definition.source != null;
+    flags.hasdefs = definition.defs != null;
+    flags.hasenvs = definition.environments != null;
+    flags.hassourcemap = definition.sourcemap != null;
+    flags.hasclobitset = definition.closure_bitset != null;
+    definition.flags = flags;
+}
+
 /// Copies a closure environment off the fiber's stack so it can outlive the
 /// frame that produced it.
 ///
@@ -439,6 +456,6 @@ pub fn thunkDelay(x: repr.Value) *Function {
     def.name = null;
     def.constantValues()[0] = x;
     @memcpy(def.instructions()[0..bytecode.len], &bytecode);
-    compiler_primitives.defAddflags(def);
+    defAddflags(def);
     return thunk(def);
 }

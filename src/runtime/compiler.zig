@@ -374,20 +374,10 @@ pub inline fn currentScope(compiler: *Compiler) *Scope {
     return compiler.scope orelse unreachable;
 }
 
-/// Computes a definition's flag bits from the optional parts it has.
-pub fn defAddflags(definition: *functions.FuncDef) void {
-    // The six "has" bits say which optional parts the definition has, so
-    // each is a read of the field it describes rather than a flag anyone sets
-    // by hand. Other active flags survive.
-    var flags = definition.flags.withoutControlled();
-    flags.hasname = definition.name != null;
-    flags.hassource = definition.source != null;
-    flags.hasdefs = definition.defs != null;
-    flags.hasenvs = definition.environments != null;
-    flags.hassourcemap = definition.sourcemap != null;
-    flags.hasclobitset = definition.closure_bitset != null;
-    definition.flags = flags;
-}
+/// Computes a definition's flag bits from the optional parts it has. The
+/// function is `functions.zig`'s, so that a build without the compiler still
+/// has it.
+pub const defAddflags = functions.defAddflags;
 
 /// A fresh far register as a slot, or null where the allocator refused.
 pub fn farslot(compiler: *Compiler) ?Slot {

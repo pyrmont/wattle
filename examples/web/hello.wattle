@@ -1,0 +1,4 @@
+(defn main [& args]
+  (print "hello from image")
+  (print (string "sum " (+ 1 2 3)))
+  (eprint "to stderr"))

@@ -108,6 +108,12 @@ const BuildOptions = struct {
     linkage: ?std.builtin.LinkMode,
     docstrings: bool,
     sourcemaps: bool,
+    /// Whether the runtime has the parser and the compiler. No `-D` flag sets
+    /// it: `-Dwasm-image` clears it for the `examples/web` build alone.
+    compiler: bool = true,
+    /// `-Dwasm-image`: build `examples/web` as a runtime that loads an image
+    /// and has no parser, compiler, docstrings or source maps.
+    wasm_image: bool,
     reduced_os: bool,
     assembler: bool,
     peg: bool,
@@ -1260,6 +1266,15 @@ pub fn build(b: *std.Build) void {
         var web_options = options;
         if (!b.user_input_options.contains("stack-max")) web_options.stack_max = 1000000;
         web_options.nanbox_pointer_shift = null;
+        // An image-only runtime has no parser, compiler, docstrings or source
+        // maps. The image generator still compiles `boot.wattle`, because
+        // `bootConfig` sets `compiler`, so the image holds every binding and
+        // the runtime registers a stub under the name of each one it lacks.
+        if (options.wasm_image) {
+            web_options.compiler = false;
+            web_options.docstrings = false;
+            web_options.sourcemaps = false;
+        }
         const web_config = resolveConfig(web_options, web_target);
         const web_image = coreImage(b, web_options, web_target, boot_host);
         if (makeRuntimeGraph(b, web_target, web_optimize, web_options, web_config, web_image)) |g| {
@@ -1270,6 +1285,7 @@ pub fn build(b: *std.Build) void {
             });
             configureCModule(b, web_module, web_target, web_options, web_config);
             web_module.addImport("subsystems", g.subsystems);
+            web_module.addImport("config", g.config);
             web_module.addImport("abi", g.abi);
             web_module.addImport("repr", g.repr);
             const web = selectBackend(b.addExecutable(.{ .name = "wattle-web", .root_module = web_module }));
@@ -1287,7 +1303,10 @@ pub fn build(b: *std.Build) void {
             web_step.dependOn(&install_web.step);
             // Copied beside the binary, so that the installed directory is
             // servable on its own.
-            for ([_][]const u8{ "index.html", "wasi.js" }) |file| {
+            // The page submits source, which an image-only runtime cannot
+            // run, so that build installs the binary and `wasi.js` alone.
+            const web_files: []const []const u8 = if (options.wasm_image) &.{"wasi.js"} else &.{ "index.html", "wasi.js" };
+            for (web_files) |file| {
                 web_step.dependOn(&b.addInstallFileWithDir(b.path(b.fmt("examples/web/{s}", .{file})), web_dir, file).step);
             }
         }
@@ -2058,6 +2077,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .linkage = b.option(std.builtin.LinkMode, "linkage", "Link the executables dynamically (the default) or statically. A dynamic musl executable needs /lib/ld-musl-<arch>.so.1 at run time; a static one loads no native module"),
         .docstrings = b.option(bool, "docstrings", "Include documentation strings") orelse true,
         .sourcemaps = b.option(bool, "sourcemaps", "Include source maps") orelse true,
+        .wasm_image = b.option(bool, "wasm-image", "Build examples/web as a runtime that loads an image: no parser, compiler, docstrings or source maps, and an entry point that runs an image") orelse false,
         .reduced_os = b.option(bool, "reduced-os", "Build the reduced OS library") orelse false,
         .assembler = b.option(bool, "assembler", "Enable the assembler") orelse true,
         .peg = b.option(bool, "peg", "Enable PEG support") orelse true,
@@ -2149,6 +2169,10 @@ const Config = struct {
     static_name: ?[]const u8 = null,
     docstrings: bool,
     sourcemaps: bool,
+    /// Whether the runtime compiles the parser and the compiler. The image
+    /// generator always does, because it compiles `boot.wattle`; `bootConfig`
+    /// sets it.
+    compiler: bool,
     dynamic_modules: bool,
     assembler: bool,
     peg: bool,
@@ -2318,6 +2342,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         .debug = options.fiber_stack_shuffle,
         .docstrings = options.docstrings,
         .sourcemaps = options.sourcemaps,
+        .compiler = options.compiler,
         .dynamic_modules = !wasi and (options.dynamic_modules orelse !staticExecutable(options, target)),
         .assembler = options.assembler,
         .peg = options.peg,
@@ -2445,6 +2470,8 @@ fn bootConfig(
 
     var cfg = resolveConfig(options, target);
     cfg.bootstrap = true;
+    // The generator compiles `boot.wattle`, whatever the runtime will have.
+    cfg.compiler = true;
     cfg.ev_epoll = machine.ev_epoll;
     cfg.ev_kqueue = machine.ev_kqueue;
     cfg.ev_poll = machine.ev_poll;
@@ -2613,15 +2640,15 @@ fn zigSelection(cfg: Config) Selection {
         .scratch_vector = true,
         .utilities = true,
         .registry = true,
-        .regalloc = true,
+        .regalloc = cfg.compiler,
         .verify = true,
-        .emit_core = true,
+        .emit_core = cfg.compiler,
         .disasm = cfg.assembler,
         .bytecode = cfg.assembler,
-        .compiler_primitives = true,
-        .parser = true,
-        .specials_core = true,
-        .optimize = true,
+        .compiler_primitives = cfg.compiler,
+        .parser = cfg.compiler,
+        .specials_core = cfg.compiler,
+        .optimize = cfg.compiler,
         .scan = true,
         .math_core = true,
         .int_types_core = cfg.int_types,

@@ -4,12 +4,16 @@ Wattle in a web page: the runtime built as a wasm32-wasi reactor, a page that
 calls into it, and the JavaScript that supplies WASI in its place.
 
 - `main.zig` is the reactor's root. It exports `wattle_web_init`,
-  `wattle_web_eval`, `wattle_web_alloc` and `wattle_web_free`.
+  `wattle_web_eval`, `wattle_web_alloc` and `wattle_web_free`. A build made
+  with `-Dwasm-image` exports `wattle_web_run_image` in place of
+  `wattle_web_eval`.
 - `wasi.js` is the `wasi_snapshot_preview1` import object, hand-written and
   without dependencies, and `start`, which instantiates the binary and
   returns an `eval` over it.
 - `index.html` is the page: a text area, a run button and an output pane.
 - `test.js` runs the binary under Node with the same `wasi.js`.
+- `test-image.js` runs an image under a `-Dwasm-image` binary, and
+  `hello.wattle` is the source of the image the CI job uses.
 
 ```sh
 zig build examples/web                # zig-out/web, ReleaseSmall
@@ -108,6 +112,34 @@ The WASI target has no event loop, threads, FFI, networking, processes or
 dynamic modules, as `wattle.wasm` has none. A submission runs on the page's
 main thread until it returns, and nothing interrupts it, so a loop that does
 not end freezes the tab.
+
+## Loading an image without the compiler
+
+```sh
+zig build examples/web -Dwasm-image=true
+wattle build img examples/web/hello.wattle /tmp/hello.wimage
+node examples/web/test-image.js zig-out/web/wattle-web.wasm /tmp/hello.wimage \
+  'hello from image\nsum 6\n' 'to stderr\n'
+```
+
+`-Dwasm-image` builds the reactor without the parser and the compiler, and
+without docstrings and source maps. A page that only runs a prewritten image
+needs none of them. On a ReleaseSmall build the binary is 735,356 bytes against
+1,001,100 for the default, and 304,077 against 397,967 gzipped. The installed
+directory holds `wattle-web.wasm` and `wasi.js`, and no page.
+
+`start` in `wasi.js` returns an object with `runImage(bytes)` for this build
+in place of `eval(source)`. `bytes` is the content of a file `wattle build img`
+or `make-image` produced. `runImage` unmarshals the image and calls its `main`
+with no arguments, and returns `{ status, stdout, stderr, error }` as `eval`
+does. A raise from loading the image or from `main` is printed to standard
+error with its stack trace and gives status 1. The instance survives it.
+
+The core image still contains `eval`, `run-context` and the other functions
+that need the compiler. An image whose `main` calls one gets the error
+`this runtime has no compiler or parser; it can only load an image`. The
+build registers a stub under the name of `compile` and of each `parser/`
+function so that the core image loads.
 
 ## What the test asserts
 

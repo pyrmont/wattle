@@ -25,7 +25,6 @@ const args_core = @import("args.zig");
 const vectors = @import("value/vectors.zig");
 const fatal = @import("fatal.zig");
 const gc_alloc = @import("gc.zig");
-const compiler_primitives = @import("compiler.zig");
 const constants = @import("constants");
 const corefn = @import("corefn.zig");
 const disasm = @import("bytecode/disasm.zig");
@@ -630,7 +629,7 @@ pub fn finalize(a: *Assembler) AsmError!void {
     const definition = a.def;
     const verify_status = verify.verify(definition);
     if (verify_status != .ok) return a.failv(invalidError(verify_status));
-    compiler_primitives.defAddflags(definition);
+    functions.defAddflags(definition);
 }
 
 /// The value of `source`'s field `name`, as a keyword lookup.

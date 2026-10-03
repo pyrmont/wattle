@@ -14,6 +14,13 @@
 //!
 //! `wattle_web_alloc` and `wattle_web_free` are how the host places the source
 //! in wasm memory before the call.
+//!
+//! A build with `-Dwasm-image` has no parser or compiler, so it cannot run
+//! source. It exports `wattle_web_run_image` in place of `wattle_web_eval`.
+//! `wattle_web_init` starts the runtime and keeps the core environment, and
+//! `wattle_web_run_image` calls the core function `run-image` on the bytes of
+//! an image made by `make-image` and on an empty argument array, as `wattle -i`
+//! does. The image is unmarshalled and its `main` is called.
 
 // ==========================================================================
 // Standard library imports
@@ -26,13 +33,18 @@ const std = @import("std");
 // ==========================================================================
 
 const abi = @import("abi");
+const arrays = value.arrays;
+const config = @import("config");
+const debug = subsystems.debug;
 const env_core = subsystems.env;
+const fibers = value.fibers;
 const functions = subsystems.value.functions;
 const gc_alloc = subsystems.gc_alloc;
 const lifecycle = subsystems.lifecycle;
 const raise = subsystems.raise;
 const repr = @import("repr");
 const subsystems = @import("subsystems");
+const tables = value.tables;
 const value = subsystems.value;
 const vm_entry = subsystems.vm_entry;
 const wrap = subsystems.value.wrap;
@@ -78,8 +90,12 @@ const eval_line_source =
 // ==========================================================================
 
 /// `eval-line`, rooted against collection. Null until `wattle_web_init` has
-/// succeeded.
+/// succeeded, and always null in a build without the compiler.
 var eval_line: ?*functions.Function = null;
+
+/// `run-image`, rooted against collection. Null until `wattle_web_init` has
+/// succeeded, and always null in a build with the compiler.
+var run_image: ?*functions.Function = null;
 
 // ==========================================================================
 // Public functions
@@ -92,8 +108,8 @@ var eval_line: ?*functions.Function = null;
 /// doing anything when a previous call succeeded. The host calls
 /// `_initialize` first.
 export fn wattle_web_init() i32 {
-    if (eval_line != null) return 0;
-    return initRaising() catch 2;
+    if (eval_line != null or run_image != null) return 0;
+    return (if (config.compiler) initRaising() else initImageRaising()) catch 2;
 }
 
 /// Evaluates `len` bytes of Wattle source at `ptr`, and returns 0, or 1 when
@@ -102,7 +118,7 @@ export fn wattle_web_init() i32 {
 /// The value or the error is printed as the REPL prints it. The result is
 /// also 1 when `eval-line` itself did not return, and when `wattle_web_init`
 /// has not succeeded.
-export fn wattle_web_eval(ptr: [*]const u8, len: usize) i32 {
+fn wattleWebEval(ptr: [*]const u8, len: usize) callconv(.c) i32 {
     const function = eval_line orelse return 1;
     const source = value.fromBytes(ptr[0..len], .string);
     // Rooted until `pcall` has copied it onto the fiber's stack, since
@@ -113,6 +129,44 @@ export fn wattle_web_eval(ptr: [*]const u8, len: usize) i32 {
     if (resumed.signal != abi.Signal.ok) return 1;
     if (!repr.checkType(resumed.value, repr.Tag.number)) return 1;
     return if (wrap.toNumber(resumed.value) == 0) 0 else 1;
+}
+
+/// Unmarshals `len` bytes of image at `ptr` and calls its `main`, and returns 0,
+/// or 1 when the image did not load or `run-image` raised.
+///
+/// The bytes are those `make-image` returns. A raise, from loading the image or
+/// from `main`, is printed to standard error with its stack trace, as a
+/// submission's is. Standard output and standard error are flushed before the
+/// call returns. The result is also 1 when `wattle_web_init` has not
+/// succeeded.
+fn wattleWebRunImage(ptr: [*]const u8, len: usize) callconv(.c) i32 {
+    const function = run_image orelse return 1;
+    const image = value.fromBytes(ptr[0..len], .string);
+    const args = wrap.fromArray(arrays.new(0));
+    // Rooted until `fibers.new` has copied them onto the fiber's stack, since
+    // making the fiber allocates.
+    gc_alloc.gcroot(image);
+    gc_alloc.gcroot(args);
+    defer _ = gc_alloc.gcunroot(image);
+    defer _ = gc_alloc.gcunroot(args);
+    defer _ = fflush(null);
+    // `fibers.new` refuses only on an arity mismatch, and `run-image` takes
+    // two to three arguments and is given two.
+    const fiber = fibers.new(function, 64, &.{ image, args }) catch return 1;
+    gc_alloc.gcroot(wrap.fromFiber(fiber));
+    defer _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
+    const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
+    if (resumed.signal == abi.Signal.ok) return 0;
+    debug.stacktraceExt(fiber, resumed.value, "") catch {};
+    return 1;
+}
+
+comptime {
+    if (config.compiler) {
+        @export(&wattleWebEval, .{ .name = "wattle_web_eval" });
+    } else {
+        @export(&wattleWebRunImage, .{ .name = "wattle_web_run_image" });
+    }
 }
 
 /// Allocates `len` bytes for the host to write source into, or returns null.
@@ -130,6 +184,23 @@ export fn wattle_web_free(ptr: ?[*]u8, len: usize) void {
 // ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// The C library's flush. A null stream flushes every open one.
+extern fn fflush(stream: ?*anyopaque) callconv(.c) c_int;
+
+/// `wattle_web_init`'s work in a build without the compiler: starts the
+/// runtime and finds `run-image` in the core environment.
+fn initImageRaising() raise.Error!i32 {
+    if (try lifecycle.init() != 0) return 1;
+    const env = try env_core.coreEnv(null);
+    const binding = tables.get(env, value.fromBytes("run-image", .symbol));
+    if (!repr.checkType(binding, repr.Tag.table)) return 2;
+    const function = tables.getKeyword(wrap.toTable(binding), "value");
+    if (!repr.checkType(function, repr.Tag.function)) return 2;
+    gc_alloc.gcroot(function);
+    run_image = wrap.toFunction(function);
+    return 0;
+}
 
 /// `wattle_web_init`'s work, with a raise left to the caller.
 fn initRaising() raise.Error!i32 {

@@ -65,6 +65,7 @@ const marsh = @import("marsh.zig");
 const maps = @import("value/maps.zig");
 const math = @import("math.zig");
 const net = @import("net.zig");
+const no_compiler = @import("no_compiler.zig");
 const numscan = @import("scan.zig");
 const order = @import("value/helpers/order.zig");
 const os_surface = @import("os.zig");
@@ -350,7 +351,23 @@ pub fn dobytes(
 }
 
 /// `dobytes` over a slice, which is where the work is.
+///
+/// A build without the compiler (`config.compiler`) prints a diagnostic,
+/// leaves `out` alone and returns the compile-error flag, since there is no
+/// parser or compiler to run `bytes` through.
 pub fn dobytesImpl(
+    env: *tables.Table,
+    bytes: []const u8,
+    source_path: ?[*:0]const u8,
+    out: ?*repr.Value,
+) raise.Error!c_int {
+    if (config.compiler) return dobytesCompiled(env, bytes, source_path, out);
+    try eprintf(no_compiler.message ++ "\n", .{});
+    return constants.do_error_compile;
+}
+
+/// `dobytesImpl` in a build that has the parser and the compiler.
+fn dobytesCompiled(
     env: *tables.Table,
     bytes: []const u8,
     source_path: ?[*:0]const u8,
@@ -1469,8 +1486,12 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     tables.lib(env);
     try fibers.lib(env);
     try os_surface.libOs(env);
-    parser_core.libParse(env);
-    compiler_primitives.libCompile(env);
+    if (config.compiler) {
+        parser_core.libParse(env);
+        compiler_primitives.libCompile(env);
+    } else {
+        no_compiler.lib(env);
+    }
     trace_frames.libDebug(env);
     strings.lib(env);
     marsh.libMarsh(env);
@@ -1718,7 +1739,7 @@ fn quickAsm(
     def.bytecode_length = @intCast(bytecode.len);
     def.name = strings.cstring(name);
     @memcpy(def.instructions()[0..bytecode.len], bytecode);
-    compiler_primitives.defAddflags(def);
+    functions.defAddflags(def);
     return def;
 }
 

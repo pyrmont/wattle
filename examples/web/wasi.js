@@ -246,12 +246,18 @@ export function createWasi() {
 
 // Instantiates `module`, a compiled `wattle-web.wasm`, and starts the runtime.
 //
-// Returns an object whose `eval(source)` runs one submission and returns
-// `{ status, stdout, stderr, error }`: `status` is 0, or 1 when the
-// submission failed, and `error` is null, or the exception that stopped the
-// instance (a `WebAssembly.RuntimeError` for a trap, a `WasiExit` for
-// `os/exit`). After an `error`, the instance is unusable and `eval` throws;
-// the host starts a new one. Throws when `wattle_web_init` fails.
+// A build with a compiler returns an object whose `eval(source)` runs one
+// submission and returns `{ status, stdout, stderr, error }`: `status` is 0, or
+// 1 when the submission failed, and `error` is null, or the exception that
+// stopped the instance (a `WebAssembly.RuntimeError` for a trap, a `WasiExit`
+// for `os/exit`). After an `error`, the instance is unusable and `eval`
+// throws; the host starts a new one.
+//
+// A build made with `-Dwasm-image` has no compiler and returns an object whose
+// `runImage(bytes)` takes the bytes of an image, as a `Uint8Array`, and
+// returns the same result for loading it and calling its `main`.
+//
+// Throws when `wattle_web_init` fails.
 export async function start(module) {
   const wasi = createWasi();
   const instance = await WebAssembly.instantiate(module, wasi.imports);
@@ -267,21 +273,25 @@ export async function start(module) {
   const encoder = new TextEncoder();
   let stopped = null;
 
-  return {
-    eval(source) {
-      if (stopped) throw new Error("the instance has stopped", { cause: stopped });
-      const encoded = encoder.encode(source);
-      const ptr = exports.wattle_web_alloc(encoded.length);
-      if (ptr === 0) throw new Error(`could not allocate ${encoded.length} bytes`);
-      new Uint8Array(exports.memory.buffer, ptr, encoded.length).set(encoded);
-      let status = 1;
-      try {
-        status = exports.wattle_web_eval(ptr, encoded.length);
-        exports.wattle_web_free(ptr, encoded.length);
-      } catch (error) {
-        stopped = error;
-      }
-      return { status, ...wasi.take(), error: stopped };
-    },
-  };
+  // Copies `bytes` into wasm memory, calls the export `name` on them and
+  // collects what it wrote.
+  function submit(name, bytes) {
+    if (stopped) throw new Error("the instance has stopped", { cause: stopped });
+    const ptr = exports.wattle_web_alloc(bytes.length);
+    if (ptr === 0) throw new Error(`could not allocate ${bytes.length} bytes`);
+    new Uint8Array(exports.memory.buffer, ptr, bytes.length).set(bytes);
+    let status = 1;
+    try {
+      status = exports[name](ptr, bytes.length);
+      exports.wattle_web_free(ptr, bytes.length);
+    } catch (error) {
+      stopped = error;
+    }
+    return { status, ...wasi.take(), error: stopped };
+  }
+
+  if (exports.wattle_web_run_image) {
+    return { runImage: (bytes) => submit("wattle_web_run_image", bytes) };
+  }
+  return { eval: (source) => submit("wattle_web_eval", encoder.encode(source)) };
 }

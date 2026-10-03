@@ -122,7 +122,7 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 
 | directory        | files | contents                                            |
 | ---------------- | ----- | --------------------------------------------------- |
-| `runtime/`       | 34    | subsystems with no subdirectory                     |
+| `runtime/`       | 35    | subsystems with no subdirectory                     |
 | `value/`         | 13    | a file per Wattle value type                        |
 | `value/helpers/` | 3     | operations on any value                             |
 | `vm/`            | 3     | `entry`, `lifecycle`, `state`                       |
@@ -141,7 +141,7 @@ Every directory below `runtime/` is relative to it.
 
 The files directly in `runtime/` are the parser, the PEG engine, the
 marshaller, the argument and arity layers, the environment, the pretty
-printer's entry point, the allocator (`gc.zig`), `capi.zig`, `edn`, `io`, `json`,
+printer's entry point, `no_compiler`, the allocator (`gc.zig`), `capi.zig`, `edn`, `io`, `json`,
 `math`, `scan` and `signal`.
 `value/` has arrays, buffers, strings, symbols, tuples, tables, fibers,
 functions, abstracts, integer types, vectors, maps and sets, and transients. `value/helpers/` is `wrap`, `access` and `order`.
@@ -537,6 +537,29 @@ Guarding it would mean skipping `suite-os` entirely along with much of
 `suite-ev` and `suite-pkg`, and the run would pass while testing much less
 than it appears to. Revisit it only with a plan for what the suites should
 still assert.
+
+## Image-only builds
+
+`-Dwasm-image=true` applies to `zig build examples/web` and to no other step.
+It builds the web reactor without `runtime/compiler.zig`,
+`runtime/compiler/` and `runtime/parser.zig`, and with `-Ddocstrings=false` and
+`-Dsourcemaps=false`. The reactor exports `wattle_web_run_image` in place of
+`wattle_web_eval`. It unmarshals an image made by `make-image` and calls the
+`main` the image defines, as `wattle -i` does. The step installs the binary and
+`wasi.js` and no page, because the page submits source.
+
+The image generator keeps the compiler, because it compiles `boot.wattle`.
+`bootConfig` sets `Config.compiler`, so the core image has every binding,
+including the ones that need the compiler. The runtime has no implementation
+for `compile` or for the `parser/` functions. `runtime/no_compiler.zig`
+registers a stub under each of those names, so the image unmarshals, and a call
+to one raises an error. `eval`, `run-context`, `parse` and the other functions
+written in Wattle on top of them are in the image and raise when called.
+`env.zig`'s `dobytesImpl` prints the same message and returns the compile-error
+flag.
+
+A build with `Config.compiler` false is not a configuration the contract
+driver or the suites run in: both compile and run source.
 
 ## Cross-platform constraints
 
