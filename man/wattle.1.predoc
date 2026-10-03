@@ -239,8 +239,14 @@ saying so.
   ``.tar.gz``, or a Git repository. A directory is installed as it is. A name
   ending in ``.tar`` or ``.tar.gz`` is downloaded with **curl** and unpacked
   with **tar**. Anything else is cloned with **git**. With no _source_, the
-  current directory is installed. The package must contain ``pkg.wattle`` or
-  ``pkg/init.wattle``. _ref_ is a branch or tag, and applies only to a Git
+  current directory is installed. If the package contains ``pkg.wattle`` or
+  ``pkg/init.wattle``, **pkg** runs the hooks of that script and nothing else.
+  Otherwise **pkg** builds each ``:exe`` artifact of ``info.edn`` with
+  **build exe**, installs the program in ``bin``, and installs each file in the
+  ``:man`` vector of ``info.edn`` in ``share/man``. The section is the digit
+  that ends the file name, so ``man/greet.1`` is installed in ``man1``. A
+  ``:web`` artifact is not installed, and a package with a ``:lib`` artifact
+  needs a script. _ref_ is a branch or tag, and applies only to a Git
   repository.
 
 - **reinstall** _name_:

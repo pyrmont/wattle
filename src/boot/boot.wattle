@@ -5081,6 +5081,49 @@
     [pkg-name]
     (truthy? (os/stat (pkg-dir pkg-name) :mode)))
 
+  (defn- pkg-add-file-to
+    [manifest base src dest chmod-mode]
+    (def files (get-files manifest))
+    (def s (sep))
+    (def absdest (string base s dest))
+    (when (os/stat absdest :mode)
+      (errorf "collision at %s, file already exists" absdest))
+    (copyfile src absdest)
+    (def absdest (os/realpath absdest))
+    (array/push! files absdest)
+    (when chmod-mode
+      (os/chmod absdest chmod-mode))
+    (print "add " absdest)
+    absdest)
+
+  (defn pkg/add-bin
+    """
+    Adds a file to the "bin" subdirectory of the current prefix. By default,
+    files will be set to be executable.
+    """
+    ([manifest src] (pkg/add-bin manifest src (last (string/split (sep) src)) 8r755))
+    ([manifest src filename] (pkg/add-bin manifest src filename 8r755))
+    ([manifest src filename chmod-mode]
+      (pkg-mkdirs (wattle/binpath))
+      (put! manifest :has-exe true)
+      (pkg-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
+
+  (defn pkg/add-manpage
+    """
+    Adds a file to the share/man subdirectory of the current prefix. Files are
+    copied inside a directory mansec, under the name filename. By default,
+    mansec is "man1" and filename is the name of src.
+    """
+    ([manifest src] (pkg/add-manpage manifest src "man1"))
+    ([manifest src mansec]
+      (pkg/add-manpage manifest src mansec (last (string/split (sep) src))))
+    ([manifest src mansec filename] (pkg/add-manpage manifest src mansec filename nil))
+    ([manifest src mansec filename chmod-mode]
+      (def dir (string (wattle/manpath) (sep) mansec))
+      (pkg-mkdirs dir)
+      (put! manifest :has-man true)
+      (pkg-add-file-to manifest dir src filename chmod-mode)))
+
   (defn- pkg-source-kind
     """
     Returns :directory for an existing directory, :tarball for a name ending in
@@ -5147,6 +5190,65 @@
                    (rmrf (string dest s ".git"))))
           (f (pkg-unpack-root dest))))))
 
+  (defn- pkg-artifacts-of
+    """
+    Returns the artifacts of info that have type kind, in order.
+    """
+    [info kind]
+    (filter #(= kind (get $ :type)) (get info :artifacts ![])))
+
+  (defn- pkg-man-section
+    """
+    Returns the directory of share/man for the manual page file, `man` and the
+    digit that ends its name. Raises if the name does not end in a period and a
+    digit from 1 to 9.
+    """
+    [file]
+    (def digit (last (string/split "." file)))
+    (assertf (and (= 1 (length digit)) (string/check-set "123456789" digit))
+             ":man entry %v must end in a period and a digit from 1 to 9" file)
+    (string "man" digit))
+
+  (defn- pkg-default-build
+    """
+    Builds the :exe artifacts of info in the directory path, by running wattle
+    build exe there with the prefix of the install. Does nothing if info
+    declares none.
+    """
+    [path info]
+    (when (next (pkg-artifacts-of info :exe))
+      (def s (sep))
+      (def exe0 (dyn :executable "wattle"))
+      ; A path with a separator is relative to the current directory, which
+      ; the build leaves.
+      (def exe (if (string/find s exe0) (os/realpath exe0) exe0))
+      (def dir (os/cwd))
+      (os/cd path)
+      (defer (os/cd dir)
+        (print "running default build")
+        (pkg-run exe "-p" (dyn *prefix*) "build" "exe"))))
+
+  (defn- pkg-default-install
+    """
+    Adds to manifest the program of each :exe artifact of info, from zig-out/bin
+    under path, and each file in the :man of info. Raises if info declares a
+    :lib artifact.
+    """
+    [manifest path info]
+    (def s (sep))
+    (when (next (pkg-artifacts-of info :lib))
+      (error "a :lib artifact is installed only by a package script"))
+    (def ext (if (get seps (os/which)) ".exe" ""))
+    ; The manifest is written first on a failure so that the uninstall that
+    ; follows removes the files added so far.
+    (edefer (sync-manifest manifest)
+      (each artifact (pkg-artifacts-of info :exe)
+        (def file (string (get artifact :name) ext))
+        (pkg/add-bin manifest (string path s "zig-out" s "bin" s file) file))
+      (each file (get info :man ![])
+        (pkg/add-manpage manifest (string path s file) (pkg-man-section file)
+                         (last (string/split s file))))))
+
   (defn- pkg-install-dir
     """
     Installs the package in the directory path. See ^pkg/install.
@@ -5154,20 +5256,22 @@
     [path & {:as config}]
     (def path (os/realpath path))
     (def s (sep))
-    ; Check bscript
-    (def bscript-src1 (string path s "pkg" s "init.wattle"))
-    (def bscript-src2 (string path s "pkg.wattle"))
-    (def bscript-src (cond
-                       (fexists bscript-src1) bscript-src1
-                       (fexists bscript-src2) bscript-src2))
-    (assert bscript-src "package must contain pkg.wattle or pkg/init.wattle")
-    ; Detect package name
+    ; Detect info file
     (def infofile-src1 (string path s "pkg" s "info.edn"))
     (def infofile-src2 (string path s "info.edn"))
     (def infofile-src (cond
                         (fexists infofile-src1) infofile-src1
                         (fexists infofile-src2) infofile-src2))
     (def info (-?> infofile-src slurp parse))
+    ; Check bscript
+    (def bscript-src1 (string path s "pkg" s "init.wattle"))
+    (def bscript-src2 (string path s "pkg.wattle"))
+    (def bscript-src (cond
+                       (fexists bscript-src1) bscript-src1
+                       (fexists bscript-src2) bscript-src2))
+    (assert (or bscript-src (get info :artifacts) (get info :man))
+            "package must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man")
+    ; Detect package name
     (def pkg-name (get config :name (get info :name)))
     (assertf pkg-name
              "unable to infer package name for %v, use :name argument or add :name to info file" path)
@@ -5201,19 +5305,26 @@
           (error (string "missing dependencies " (string/join ", " missing))))
         (put! man :dependencies deps)
         (put! man :info info))
-      (def module (get-pkg-module pkg-name))
+      (def module (when bscript-src (get-pkg-module pkg-name)))
       (def clean (get config :clean))
       (def check (get config :check))
-      (def all-hooks (seq [[k v] :pairs module :when (symbol? k) :unless (get v :private)] (keyword k)))
+      (def all-hooks (if module
+                       (seq [[k v] :pairs module :when (symbol? k) :unless (get v :private)] (keyword k))
+                       ![]))
       (put! man :hooks all-hooks)
-      (do-hook module pkg-name :postdeps man)
-      (when clean
-        (do-hook module pkg-name :clean man))
-      (do-hook module pkg-name :build man)
-      (do-hook module pkg-name :install man)
+      (if module
+        (do
+          (do-hook module pkg-name :postdeps man)
+          (when clean
+            (do-hook module pkg-name :clean man))
+          (do-hook module pkg-name :build man)
+          (do-hook module pkg-name :install man))
+        (do
+          (pkg-default-build path info)
+          (pkg-default-install man path info)))
       (if (empty? (get man :files)) (print "no files installed, is this a valid pkg?"))
       (sync-manifest man)
-      (when check
+      (when (and module check)
         (do-hook module pkg-name :check man)))
     ; A fetched source is a temporary directory, so only its origin is kept.
     (when (get man :source)
@@ -5235,7 +5346,8 @@
     is accepted only for a Git repository. There are 5 hooks called during
     installation (postdeps, clean, build, install and check). A user can
     register a hook by defining a function with the same name in the package
-    script. The package must have pkg.wattle or pkg/init.wattle.
+    script. A package without pkg.wattle or pkg/init.wattle is built and
+    installed from the :artifacts and :man of its info file instead.
     """
     [source & {:as config}]
     ; A :source in config marks a root that was fetched earlier, so its :ref is
@@ -5363,21 +5475,6 @@
     (def rpath (os/realpath path))
     (find #(index-of rpath (get (pkg/manifest $) :files [])) (pkg/list)))
 
-  (defn- pkg-add-file-to
-    [manifest base src dest chmod-mode]
-    (def files (get-files manifest))
-    (def s (sep))
-    (def absdest (string base s dest))
-    (when (os/stat absdest :mode)
-      (errorf "collision at %s, file already exists" absdest))
-    (copyfile src absdest)
-    (def absdest (os/realpath absdest))
-    (array/push! files absdest)
-    (when chmod-mode
-      (os/chmod absdest chmod-mode))
-    (print "add " absdest)
-    absdest)
-
   (defn pkg/add-file
     "Adds a file during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
     ([manifest src] (pkg/add-file manifest src src nil))
@@ -5404,34 +5501,6 @@
           absdest)
         :file (pkg/add-file manifest src dest chmod-mode)
         (errorf "bad path %s - file is a %s" src mode))))
-
-  (defn pkg/add-bin
-    """
-    Adds a file to the "bin" subdirectory of the current prefix. By default,
-    files will be set to be executable.
-    """
-    ([manifest src] (pkg/add-bin manifest src (last (string/split (sep) src)) 8r755))
-    ([manifest src filename] (pkg/add-bin manifest src filename 8r755))
-    ([manifest src filename chmod-mode]
-      (pkg-mkdirs (wattle/binpath))
-      (put! manifest :has-exe true)
-      (pkg-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
-
-  (defn pkg/add-manpage
-    """
-    Adds a file to the share/man subdirectory of the current prefix. Files are
-    copied inside a directory mansec, under the name filename. By default,
-    mansec is "man1" and filename is the name of src.
-    """
-    ([manifest src] (pkg/add-manpage manifest src "man1"))
-    ([manifest src mansec]
-      (pkg/add-manpage manifest src mansec (last (string/split (sep) src))))
-    ([manifest src mansec filename] (pkg/add-manpage manifest src mansec filename nil))
-    ([manifest src mansec filename chmod-mode]
-      (def dir (string (wattle/manpath) (sep) mansec))
-      (pkg-mkdirs dir)
-      (put! manifest :has-man true)
-      (pkg-add-file-to manifest dir src filename chmod-mode)))
 
   (defn pkg/update-all
     "Reinstalls all packages."

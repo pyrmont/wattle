@@ -2149,7 +2149,7 @@ fn addCliChecks(
         const pkg_missing = b.addRunArtifact(client);
         pkg_missing.addArgs(&.{ "pkg", "install" });
         pkg_missing.expectExitCode(1);
-        pkg_missing.expectStdErrMatch("package must contain pkg.wattle or pkg/init.wattle");
+        pkg_missing.expectStdErrMatch("package must contain pkg.wattle, pkg/init.wattle or an info.edn");
         test_step.dependOn(&pkg_missing.step);
 
         const pkg_help = b.addRunArtifact(client);

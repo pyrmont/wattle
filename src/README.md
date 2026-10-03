@@ -427,9 +427,19 @@ form of `source` selects the kind, in this order:
   `tar` unpacks it.
 - Anything else is a Git repository. `git clone --depth 1` copies it.
 
-With no `source`, the current directory is installed. It must contain
-`pkg.wattle` or `pkg/init.wattle`. A package without one of them is not
-installed, and the `:artifacts` of its `info.edn` do not stand in for it.
+With no `source`, the current directory is installed.
+
+A package is built and installed by one of two means. If it contains
+`pkg.wattle` or `pkg/init.wattle`, the hooks of that script run and nothing
+else does. Otherwise its `info.edn` must declare `:artifacts` or `:man`. Each
+`:exe` artifact is built with `wattle build exe` in the package root, and the
+program `zig-out/bin/<name>` is added to `bin`. Each path in the `:man` vector
+is added to `share/man`. The section is the digit after the last `.` of the
+file name, so `man/predoc.1` goes to `man1`, and a name that does not end in
+`.` and a digit from 1 to 9 raises. A `:web` artifact is not installed. A
+`:lib` artifact is not installed either, and a package that declares one
+without a script raises. A package with neither a script nor `:artifacts` or
+`:man` is not installed.
 
 `ref` is a branch or a tag. It is accepted only with a Git repository, and
 `pkg install` raises if it follows a directory or a tarball. `source` is read as

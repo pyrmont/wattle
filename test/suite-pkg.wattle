@@ -194,7 +194,7 @@
 
 ; Try installing a package that is missing package script
 (assert-error-value "package missing package script"
-                    "package must contain pkg.wattle or pkg/init.wattle"
+                    "package must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man"
                     (pkg/install "./examples/sample-bad-pkg1"))
 (assert (= 0 (length (pkg/list))) "check failure 0")
 (assert (= 0 (length (pkg/topolist))) "check failure 1")
@@ -205,6 +205,50 @@
                     (pkg/install "./examples/sample-bad-pkg2" :check true))
 (assert (= 0 (length (pkg/list))) "check failure 0")
 (assert (= 0 (length (pkg/topolist))) "check failure 1")
+
+; A package with no script is installed from its info file. The case has no
+; :exe artifact, since building one needs a prefix that holds the runtime's
+; source, so it covers the :man entries and the rejections.
+(def info-dir (string prefix "-info"))
+(defn- make-info-pkg
+  [info-text]
+  (rmrf info-dir)
+  (assert (os/mkdir info-dir))
+  (assert (os/mkdir (string info-dir "/docs")))
+  (spit (string info-dir "/docs/man-pkg.1") ".TH MAN-PKG 1\n")
+  (spit (string info-dir "/docs/man-pkg.7") ".TH MAN-PKG 7\n")
+  (spit (string info-dir "/docs/man-pkg.txt") "not a manual page\n")
+  (spit (string info-dir "/info.edn") info-text))
+
+(make-info-pkg "{:name \"man-pkg\" :man [\"docs/man-pkg.1\" \"docs/man-pkg.7\"]}")
+(assert-no-error "info-only install" (with-dyns [*err* !""] (pkg/install info-dir)))
+(assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-pkg.1")))
+        "a .1 file goes to man1")
+(assert (string/find "MAN-PKG 7" (slurp (string prefix "/share/man/man7/man-pkg.7")))
+        "a .7 file goes to man7")
+(assert (= [] (get (pkg/manifest "man-pkg") :hooks)) "an info-only package has no hooks")
+(assert-no-error "info-only reinstall" (with-dyns [*err* !""] (pkg/reinstall "man-pkg")))
+(assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-pkg.1")))
+        "reinstalling an info-only package installs its pages again")
+(assert-no-error "info-only uninstall" (pkg/uninstall "man-pkg"))
+(assert (nil? (os/stat (string prefix "/share/man/man1/man-pkg.1") :mode))
+        "uninstalling removes the pages of an info-only package")
+
+(make-info-pkg "{:name \"man-pkg\" :man [\"docs/man-pkg.1\" \"docs/man-pkg.txt\"]}")
+(assert-error "a :man entry with no section" (with-dyns [*err* !""] (pkg/install info-dir)))
+(assert (= 0 (length (pkg/list))) "a bad :man entry installs nothing")
+(assert (nil? (os/stat (string prefix "/share/man/man1/man-pkg.1") :mode))
+        "a bad :man entry leaves no page behind")
+
+(make-info-pkg "{:name \"man-pkg\" :artifacts [{:type :lib :name \"x\" :root \"x.zig\"}]}")
+(assert-error "a :lib artifact without a script" (with-dyns [*err* !""] (pkg/install info-dir)))
+(assert (= 0 (length (pkg/list))) "a :lib artifact without a script installs nothing")
+
+(make-info-pkg "{:name \"man-pkg\"}")
+(assert-error-value "an info file that declares neither"
+                    "package must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man"
+                    (pkg/install info-dir))
+(rmrf info-dir)
 
 ; Installing from a tarball or a Git repository. The sources are file:// URLs,
 ; so no network is used. The case is skipped where a tool is missing and on
