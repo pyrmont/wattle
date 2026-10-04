@@ -1,7 +1,7 @@
 // Runs images under a `wattle-web.wasm` built with `-Dwasm-image`, and checks
 // what each call writes and returns.
 //
-// Usage: node examples/web/test-image.js <wasm> <hello-image> <echo-image>
+// Usage: node examples/web-repl/test-image.js <wasm> <hello-image> <echo-image>
 //
 // `hello-image` is made from `hello.wattle` and `echo-image` from
 // `echo.wattle`, each with `wattle build img`. One instance runs every case,
@@ -14,7 +14,7 @@ import { start } from "../../src/client/web/wasi.js";
 
 const [wasmPath, helloPath, echoPath] = process.argv.slice(2);
 if (!echoPath) {
-  console.error("usage: node examples/web/test-image.js <wasm> <hello-image> <echo-image>");
+  console.error("usage: node examples/web-repl/test-image.js <wasm> <hello-image> <echo-image>");
   process.exit(2);
 }
 

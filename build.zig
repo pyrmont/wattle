@@ -109,9 +109,9 @@ const BuildOptions = struct {
     docstrings: bool,
     sourcemaps: bool,
     /// Whether the runtime has the parser and the compiler. No `-D` flag sets
-    /// it: `-Dwasm-image` clears it for the `examples/web` build alone.
+    /// it: `-Dwasm-image` clears it for the `examples/web-repl` build alone.
     compiler: bool = true,
-    /// `-Dwasm-image`: build `examples/web` as a runtime that loads an image
+    /// `-Dwasm-image`: build `examples/web-repl` as a runtime that loads an image
     /// and has no parser, compiler, docstrings or source maps.
     wasm_image: bool,
     reduced_os: bool,
@@ -1418,14 +1418,14 @@ pub fn build(b: *std.Build) void {
         for (wasm_binaries.items) |binary| test_step.dependOn(checkImports(b, checker, binary));
     }
 
-    // `examples/web`, Wattle in a web page. `webRuntime` builds the reactor
+    // `examples/web-repl`, Wattle in a web page. `webRuntime` builds the reactor
     // for wasm32-wasi whatever `-Dtarget` names, ReleaseSmall unless
     // `-Doptimize` or `--release` is given. `-Dwasm-image` builds the
     // image-only runtime and installs no page.
-    const web_step = b.step("examples/web", "Build examples/web, Wattle as a wasm32-wasi reactor, with its page into <prefix>/web");
+    const web_step = b.step("examples/web-repl", "Build examples/web-repl, Wattle as a wasm32-wasi reactor, with its page into <prefix>/web-repl");
     // The three example steps under one name. `zig build examples` builds
     // every example the build knows how to; each is also its own step.
-    const examples_step = b.step("examples", "Build examples/native-executable, examples/native-consumer and examples/web");
+    const examples_step = b.step("examples", "Build examples/native-executable, examples/native-consumer and examples/web-repl");
     examples_step.dependOn(executable_step);
     examples_step.dependOn(consumer_step);
     examples_step.dependOn(web_step);
@@ -1433,7 +1433,7 @@ pub fn build(b: *std.Build) void {
         const web_optimize: std.builtin.OptimizeMode =
             if (b.user_input_options.contains("optimize") or b.release_mode != .off) optimize else .ReleaseSmall;
         if (webRuntime(b, options, web_optimize, boot_host, options.wasm_image)) |web| {
-            const web_dir: std.Build.InstallDir = .{ .custom = "web" };
+            const web_dir: std.Build.InstallDir = .{ .custom = "web-repl" };
             const install_web = b.addInstallArtifact(web, .{ .dest_dir = .{ .override = web_dir } });
             install_web.step.dependOn(checkImports(b, checker, web));
             web_step.dependOn(&install_web.step);
@@ -1443,7 +1443,7 @@ pub fn build(b: *std.Build) void {
             // binary and `wasi.js` alone.
             web_step.dependOn(&b.addInstallFileWithDir(b.path(web_support), web_dir, "wasi.js").step);
             if (!options.wasm_image) {
-                web_step.dependOn(&b.addInstallFileWithDir(b.path("examples/web/index.html"), web_dir, "index.html").step);
+                web_step.dependOn(&b.addInstallFileWithDir(b.path("examples/web-repl/index.html"), web_dir, "index.html").step);
             }
         }
     }
@@ -2248,7 +2248,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .linkage = b.option(std.builtin.LinkMode, "linkage", "Link the executables dynamically (the default) or statically. A dynamic musl executable needs /lib/ld-musl-<arch>.so.1 at run time; a static one loads no native module"),
         .docstrings = b.option(bool, "docstrings", "Include documentation strings") orelse true,
         .sourcemaps = b.option(bool, "sourcemaps", "Include source maps") orelse true,
-        .wasm_image = b.option(bool, "wasm-image", "Build examples/web as a runtime that loads an image: no parser, compiler, docstrings or source maps, and an entry point that runs an image") orelse false,
+        .wasm_image = b.option(bool, "wasm-image", "Build examples/web-repl as a runtime that loads an image: no parser, compiler, docstrings or source maps, and an entry point that runs an image") orelse false,
         .reduced_os = b.option(bool, "reduced-os", "Build the reduced OS library") orelse false,
         .assembler = b.option(bool, "assembler", "Enable the assembler") orelse true,
         .peg = b.option(bool, "peg", "Enable PEG support") orelse true,

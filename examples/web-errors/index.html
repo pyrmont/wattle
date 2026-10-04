@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web-errors</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem auto; max-width: 40rem; padding: 0 1rem; }
+  pre { border: 1px solid #ccc; padding: 0.5rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>web-errors</h1>
+<p>
+  <label>Mode
+    <select id="mode">
+      <option>ok</option>
+      <option>eprint</option>
+      <option>raise</option>
+      <option>exit</option>
+      <option>bogus</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="fresh"> fresh</label>
+  <button id="go" disabled>Run</button>
+</p>
+<pre id="out"></pre>
+<script type="module">
+import { load } from "./errors.js";
+
+const app = await load();
+const go = document.getElementById("go");
+go.disabled = false;
+
+go.onclick = async () => {
+  const result = await app.run({
+    args: ["errors", document.getElementById("mode").value],
+    fresh: document.getElementById("fresh").checked,
+  });
+  document.getElementById("out").textContent = JSON.stringify(result, null, 2);
+};
+</script>
+</body>
+</html>

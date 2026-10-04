@@ -1,0 +1,4 @@
+{:name "counter"
+ :artifacts [{:type :web
+              :name "counter"
+              :entry "main.wattle"}]}

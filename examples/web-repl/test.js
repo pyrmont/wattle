@@ -1,16 +1,16 @@
 // Runs `wattle-web.wasm` under Node with the page's own `wasi.js`, and checks
 // what each submission writes and returns.
 //
-// Usage: node examples/web/test.js [path/to/wattle-web.wasm]
+// Usage: node examples/web-repl/test.js [path/to/wattle-web.wasm]
 //
-// The path defaults to `zig-out/web/wattle-web.wasm`, where `zig build examples/web`
+// The path defaults to `zig-out/web-repl/wattle-web.wasm`, where `zig build examples/web-repl`
 // installs it, relative to the working directory. Exits 1 on the first
 // mismatch.
 
 import { readFileSync } from "node:fs";
 import { createWasi, start } from "../../src/client/web/wasi.js";
 
-const path = process.argv[2] ?? "zig-out/web/wattle-web.wasm";
+const path = process.argv[2] ?? "zig-out/web-repl/wattle-web.wasm";
 const module = new WebAssembly.Module(readFileSync(path));
 
 function fail(message) {

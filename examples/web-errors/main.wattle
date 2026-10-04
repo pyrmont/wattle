@@ -1,0 +1,8 @@
+(defn main [& args]
+  (def [_ mode] args)
+  (cond
+    (= mode "ok") (print "finished")
+    (= mode "eprint") (do (print "to stdout") (eprint "to stderr"))
+    (= mode "raise") (error "raised by main")
+    (= mode "exit") (os/exit 3)
+    (error (string "unknown mode: " mode))))

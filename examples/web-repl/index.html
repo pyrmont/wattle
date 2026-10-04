@@ -25,8 +25,8 @@
 <p>
   A browser will not load the WebAssembly from a <code>file://</code> page.
   Serve this directory instead, for example with
-  <code>python3 -m http.server</code> run inside it, and open
-  <code>http://localhost:8000/</code>.
+  <code>wattle examples/http-server.wattle localhost 8000 zig-out/web-repl</code> run in
+  the repository root, and open <code>http://localhost:8000/</code>.
 </p>
 <textarea id="source" spellcheck="false" disabled>(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 (fib 20)</textarea>

@@ -1,0 +1,98 @@
+; A static file server for trying the web examples in a browser. It serves
+; GET and HEAD requests from one or more directories on one address.
+;
+;     wattle examples/http-server.wattle <host> <port> <directory> [<directory> ...]
+;
+; A request for a path is looked up in each directory in turn, and a request
+; for `/` is a request for `index.html`. A path with `..` in it is refused. A
+; browser loads the output of `wattle build web` only from a server, and an
+; ES module is refused unless its type is a JavaScript one, so the table
+; below names the types the examples use. Every response closes the
+; connection. There is no percent-decoding, caching, range request or TLS.
+
+(def types
+  {".html"   "text/html; charset=utf-8"
+   ".js"     "text/javascript; charset=utf-8"
+   ".css"    "text/css; charset=utf-8"
+   ".json"   "application/json"
+   ".txt"    "text/plain; charset=utf-8"
+   ".wasm"   "application/wasm"
+   ".wimage" "application/octet-stream"})
+
+(defn content-type
+  "Returns the type of the file at path, from its extension."
+  [path]
+  (def hit (find (fn [[ext _]] (string/has-suffix? ext path)) (pairs types)))
+  (if hit (get hit 1) "application/octet-stream"))
+
+(defn respond
+  "Writes a response to conn. The body is left out when head? is true."
+  [conn status reason type body head?]
+  (net/write conn (string "HTTP/1.1 " status " " reason "\r\n"
+                          "Content-Type: " type "\r\n"
+                          "Content-Length: " (length body) "\r\n"
+                          "Connection: close\r\n\r\n"))
+  (unless head? (net/write conn body)))
+
+(defn read-head
+  "Reads from conn until the blank line that ends the request's headers."
+  [conn]
+  (def buf (buffer))
+  (var more true)
+  (while (and more
+              (not (string/find "\r\n\r\n" buf))
+              (< (length buf) 16384))
+    (set more (truthy? (net/read conn 1024 buf 5))))
+  buf)
+
+(defn find-file
+  "Returns the path of the file for rel in the first of dirs that has one."
+  [dirs rel]
+  (def dir (find (fn [dir] (= :file (os/stat (string dir "/" rel) :mode))) dirs))
+  (when dir (string dir "/" rel)))
+
+(defn locate
+  "Returns the path of the file that target names in dirs. Returns :bad if
+  target has `..` in it, and nil if no directory has the file."
+  [dirs target]
+  (def path (first (string/split "?" target)))
+  (def rel (if (= path "/") "index.html" (string/slice path 1)))
+  (if (string/find ".." rel) :bad (find-file dirs rel)))
+
+(defn handle
+  "Answers the request on conn from dirs."
+  [dirs conn]
+  (defer (:close conn)
+    (try
+      (do
+        (def head (read-head conn))
+        (def line (string/slice head 0 (or (string/find "\r\n" head) (length head))))
+        (def [method target] (string/split " " line))
+        (def head? (= method "HEAD"))
+        (cond
+          (not (or (= method "GET") head?))
+          (respond conn 405 "Method Not Allowed" "text/plain" "405\n" head?)
+
+          (not (string/has-prefix? "/" (or target "")))
+          (respond conn 400 "Bad Request" "text/plain" "400\n" head?)
+
+          (let [file (locate dirs target)]
+            (cond
+              (= file :bad)
+              (respond conn 400 "Bad Request" "text/plain" "400\n" head?)
+
+              file
+              (respond conn 200 "OK" (content-type file) (slurp file) head?)
+
+              (respond conn 404 "Not Found" "text/plain" "404\n" head?)))))
+      ([err] (eprint "request failed: " err)))))
+
+(defn main [& args]
+  (def [_ host port & dirs] args)
+  (when (or (nil? host) (nil? port) (empty? dirs))
+    (eprint "usage: wattle http-server.wattle <host> <port> <directory> [<directory> ...]")
+    (os/exit 2))
+  (def server (net/server host port))
+  (print "Serving " (string/join ", " dirs) " on http://" host ":" port "/")
+  (flush)
+  (forever (ev/call handle dirs (net/accept server))))

@@ -1,0 +1,3 @@
+(defn main [& args]
+  (def [_ name] args)
+  (print "Hello, " name "! You wrote: " (file/read stdin :all)))

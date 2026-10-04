@@ -235,8 +235,8 @@ whose `lib/wattle` directory is mapped in, here `./lib/wattle`:
 wasmtime run --dir . --env WATTLE_PREFIX=. zig-out/bin/wattle.wasm script.wattle
 ```
 
-`zig build examples/web` builds `examples/web/`, Wattle in a web page: the runtime as a
-WASI reactor, with the page and its JavaScript host, into `zig-out/web`.
+`zig build examples/web-repl` builds `examples/web-repl/`, Wattle in a web page: the runtime as a
+WASI reactor, with the page and its JavaScript host, into `zig-out/web-repl`.
 
 ## Installing
 
@@ -330,7 +330,8 @@ runtime without its parser and compiler, so it loads the image and nothing
 else, and `<name>.js` exports `load`, which fetches and compiles the two files once and
 returns an object whose `run({ args, stdin })` runs the program and returns its
 output. `run` reuses one instance of the runtime between calls, so a page can
-call it for each new input.
+call it for each new input. `examples/web-greeter/`, `examples/web-counter/` and
+`examples/web-errors/` are worked examples.
 
 ```clojure
 {:artifacts [{:type :web :name "hello" :entry "main.wattle"}]}

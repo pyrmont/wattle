@@ -1,0 +1,4 @@
+(defn main [& args]
+  (def [_ amount] args)
+  (def total (or (scan-number (string/trim (file/read stdin :all))) 0))
+  (print (+ total (or (scan-number amount) 0))))

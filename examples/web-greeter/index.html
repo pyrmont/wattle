@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web-greeter</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem auto; max-width: 40rem; padding: 0 1rem; }
+  textarea { box-sizing: border-box; font: inherit; width: 100%; }
+  pre { border: 1px solid #ccc; min-height: 3rem; padding: 0.5rem; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>web-greeter</h1>
+<p><label>Name <input id="name" value="Ann"></label></p>
+<p><textarea id="text" rows="3">Some text</textarea></p>
+<p><button id="go">Run</button></p>
+<pre id="out"></pre>
+<script type="module">
+import { run } from "./greeter.js";
+
+document.getElementById("go").onclick = async () => {
+  const result = await run({
+    args: ["greeter", document.getElementById("name").value],
+    stdin: document.getElementById("text").value,
+  });
+  document.getElementById("out").textContent =
+    result.status === 0 ? result.stdout : result.stderr;
+};
+</script>
+</body>
+</html>

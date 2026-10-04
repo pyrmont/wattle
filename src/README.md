@@ -490,7 +490,7 @@ The examples have steps of their own, named under `examples/`:
 | `examples`                   | the three below                                                  |
 | `examples/native-executable` | `examples/native-executable` as `<prefix>/bin/native-executable` |
 | `examples/native-consumer`   | `examples/native-consumer`, a consumer outside the tree          |
-| `examples/web`               | `examples/web`, a WASI reactor, as `<prefix>/web/`               |
+| `examples/web-repl`          | `examples/web-repl`, a WASI reactor, as `<prefix>/web-repl/`     |
 
 A step is run as `zig build <step>`, and `install` is the default, so
 `zig build` alone runs it. `install` builds the static and shared libraries.
@@ -606,7 +606,7 @@ returned as a `Web`. `wattle build web` writes a `build.zig` that calls
 `sourcemaps` off in the host dependency so that the program's image has
 neither.
 
-`-Dwasm-image=true` applies to `zig build examples/web` and to no other step.
+`-Dwasm-image=true` applies to `zig build examples/web-repl` and to no other step.
 It builds the web reactor without `runtime/compiler.zig`,
 `runtime/compiler/` and `runtime/parser.zig`, and with `-Ddocstrings=false` and
 `-Dsourcemaps=false`. The reactor exports `wattle_web_run_image` in place of

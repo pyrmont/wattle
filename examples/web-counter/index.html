@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web-counter</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem auto; max-width: 40rem; padding: 0 1rem; }
+  #total { font-size: 3rem; }
+</style>
+</head>
+<body>
+<h1>web-counter</h1>
+<p id="total">0</p>
+<p>
+  <button data-amount="1" disabled>+1</button>
+  <button data-amount="10" disabled>+10</button>
+  <button id="reset" disabled>Reset</button>
+</p>
+<script type="module">
+import { load } from "./zig-out/web/counter/counter.js";
+
+const display = document.getElementById("total");
+const buttons = document.querySelectorAll("button");
+let total = "0";
+
+// The runtime is fetched and compiled once. Each click is a call to `run`.
+const app = await load();
+buttons.forEach((button) => (button.disabled = false));
+
+document.querySelectorAll("[data-amount]").forEach((button) => {
+  button.onclick = async () => {
+    const result = await app.run({
+      args: ["counter", button.dataset.amount],
+      stdin: total,
+    });
+    total = result.stdout.trim();
+    display.textContent = total;
+  };
+});
+
+document.getElementById("reset").onclick = () => {
+  total = "0";
+  display.textContent = total;
+};
+</script>
+</body>
+</html>
