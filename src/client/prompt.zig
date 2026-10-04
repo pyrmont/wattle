@@ -208,6 +208,7 @@ pub fn read(prompt: []const u8, buffer: *buffers.Buffer, source: bool, env: ?*ta
             functions.?.number = &scan.isNumber;
             functions.?.special = &special;
             functions.?.bound = &isBound;
+            functions.?.palette = if (subsystems.pp_pretty.extendedColor()) .extended else .basic;
         }
     }
     const opened = s.begin(prompt, size(), functions, browsed) catch {

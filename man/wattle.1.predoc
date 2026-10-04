@@ -398,6 +398,11 @@ ENVIRONMENT
   If set to a non-empty value, disable colour. Colour is otherwise used when
   both standard output and standard error are terminals.
 
+- `TERM`, `COLORTERM`:
+  The terminal has 256 colours if `TERM` contains `256color` or `COLORTERM` is
+  set to a non-empty value, and 16 otherwise. With 16, `nil`, `true` and
+  `false` are bright magenta and comments are grey rather than orange.
+
 An environment variable set to the empty string is treated as unset.
 
 EXIT STATUS

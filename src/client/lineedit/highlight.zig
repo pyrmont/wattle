@@ -77,8 +77,9 @@ pub const Special = *const fn (token: []const u8) bool;
 ///
 /// `classify` writes a `Class` for each byte and `render.Frame` takes them.
 /// `plain` is a byte drawn in the terminal's own colour: a symbol that is not
-/// bound, a delimiter, a prefix and whitespace. `bound` is a symbol that is
-/// bound, `constant` is `nil`, `true` and `false`, and `string` includes a
+/// bound, a delimiter, a prefix and whitespace. `call` is a bound symbol that
+/// is the first token after a `(`, `bound` is any other bound symbol,
+/// `constant` is `nil`, `true` and `false`, and `string` includes a
 /// buffer and the `!` before it.
 pub const Class = enum(u8) {
     plain,
@@ -88,6 +89,7 @@ pub const Class = enum(u8) {
     keyword,
     constant,
     special,
+    call,
     bound,
     @"error",
 };
@@ -108,7 +110,8 @@ pub const Predicates = struct {
 /// `classify` makes a `Scanner`. `at` is the offset of the next byte,
 /// `closers` the closing delimiter of each open delimiter up to
 /// `depth_limit`, `depth` the number open, and `pending` the offset of the
-/// prefix whose form has not begun, or null.
+/// prefix whose form has not begun, or null. `head` is whether the next token
+/// is the first after a `(` and `call` whether the item being classified is.
 const Scanner = struct {
     text: []const u8,
     classes: []Class,
@@ -117,24 +120,33 @@ const Scanner = struct {
     closers: [depth_limit]u8 = undefined,
     depth: usize = 0,
     pending: ?usize = null,
+    head: bool = false,
+    call: bool = false,
 
     /// Classifies every byte.
     fn scan(s: *Scanner) void {
         while (s.at < s.text.len) {
             const c = s.text[s.at];
+            s.call = s.head;
+            s.head = false;
             switch (c) {
                 '\n', '\r' => {
                     // A prefix's form begins on the prefix's line.
                     if (s.pending) |p| s.paint(p, p + 1, .@"error");
                     s.pending = null;
+                    s.head = s.call;
                     s.at += 1;
                 },
                 '\'', '`', '~', '|' => {
                     if (s.pending == null) s.pending = s.at;
                     s.at += 1;
                 },
-                // A comment does not begin a prefix's form, so `pending` stays.
-                ';' => s.at = s.comment(s.at),
+                // A comment does not begin a prefix's form, so `pending` stays,
+                // and it leaves a token that follows at the head.
+                ';' => {
+                    s.head = s.call;
+                    s.at = s.comment(s.at);
+                },
                 '"' => {
                     s.pending = null;
                     s.at = s.string(s.at);
@@ -142,12 +154,13 @@ const Scanner = struct {
                 '#' => s.dispatch(),
                 '!' => s.bang(),
                 '@', '^' => s.refuse(),
-                '(' => s.open(')', 1),
-                '[' => s.open(']', 1),
-                '{' => s.open('}', 1),
+                '(' => s.open(')', 1, s.pending == null),
+                '[' => s.open(']', 1, false),
+                '{' => s.open('}', 1, false),
                 ')', ']', '}' => s.close(c),
                 else => {
                     if (lexicon.isWhitespace(c)) {
+                        s.head = s.call;
                         s.at += 1;
                         continue;
                     }
@@ -170,9 +183,11 @@ const Scanner = struct {
     }
 
     /// Opens a delimiter whose opening bytes are `width` long and whose
-    /// closing delimiter is `closer`.
-    fn open(s: *Scanner, closer: u8, width: usize) void {
+    /// closing delimiter is `closer`. `call` is whether the token after it is
+    /// the head of a call.
+    fn open(s: *Scanner, closer: u8, width: usize, call: bool) void {
         s.pending = null;
+        s.head = call;
         if (s.depth < depth_limit) s.closers[s.depth] = closer;
         s.depth += 1;
         s.at += width;
@@ -203,6 +218,7 @@ const Scanner = struct {
     /// error.
     fn dispatch(s: *Scanner) void {
         const start = s.at;
+        const quoted = s.pending != null;
         s.pending = null;
         if (start + 1 >= s.text.len) {
             s.at += 1;
@@ -216,8 +232,8 @@ const Scanner = struct {
             return;
         }
         switch (next) {
-            '(' => s.open(')', 2),
-            '{' => s.open('}', 2),
+            '(' => s.open(')', 2, !quoted),
+            '{' => s.open('}', 2, false),
             else => {
                 // A word tag is refused, and the word is classed with the `#`.
                 var end = start + 1;
@@ -238,9 +254,9 @@ const Scanner = struct {
             return;
         }
         switch (s.text[start + 1]) {
-            '(' => s.open(')', 2),
-            '[' => s.open(']', 2),
-            '{' => s.open('}', 2),
+            '(' => s.open(')', 2, false),
+            '[' => s.open(']', 2, false),
+            '{' => s.open('}', 2, false),
             '"' => {
                 s.paint(start, start + 1, .string);
                 s.at = s.string(start + 1);
@@ -254,7 +270,7 @@ const Scanner = struct {
     fn token(s: *Scanner, start: usize, from: usize) usize {
         var end = from;
         while (end < s.text.len and lexicon.isSymbolChar(s.text[end])) end += 1;
-        var class = tokenClass(s.text[start..end], s.predicates);
+        var class = tokenClass(s.text[start..end], s.predicates, s.call);
         // The parser checks a token when a byte after it ends it.
         if (class == .@"error" and end == s.text.len) class = if (s.text[start] == ':') .keyword else .plain;
         s.paint(start, end, class);
@@ -382,11 +398,12 @@ pub fn classify(text: []const u8, classes: []Class, predicates: Predicates) void
 // Private functions
 // ==========================================================================
 
-/// Returns the class of the token `text`, a run of symbol bytes.
+/// Returns the class of the token `text`, a run of symbol bytes, where `call`
+/// is whether it is the first token after a `(`.
 ///
 /// The order is the parser's: a keyword, a number, `nil`, `true` or `false`,
 /// and otherwise a symbol, which may not begin with a digit.
-fn tokenClass(text: []const u8, predicates: Predicates) Class {
+fn tokenClass(text: []const u8, predicates: Predicates, call: bool) Class {
     const first = text[0];
     if (first == ':') return if (lexicon.validUtf8(text[1..])) .keyword else .@"error";
     const digit = first >= '0' and first <= '9';
@@ -395,7 +412,7 @@ fn tokenClass(text: []const u8, predicates: Predicates) Class {
     if (digit or !lexicon.validUtf8(text)) return .@"error";
     if (predicates.special(text)) return .special;
     if (predicates.bound) |bound| {
-        if (bound(text)) return .bound;
+        if (bound(text)) return if (call) .call else .bound;
     }
     return .plain;
 }
@@ -435,7 +452,7 @@ const test_predicates: Predicates = .{ .number = &testNumber, .special = &testSp
 
 /// Checks the classes of `text` against `expected`, one letter for each byte:
 /// `.` plain, `c` comment, `s` string, `n` number, `k` keyword, `o`
-/// constant, `p` special, `b` bound and `E` error.
+/// constant, `p` special, `f` call, `b` bound and `E` error.
 fn expectClasses(text: []const u8, expected: []const u8) !void {
     try std.testing.expectEqual(text.len, expected.len);
     var classes: [256]Class = undefined;
@@ -450,6 +467,7 @@ fn expectClasses(text: []const u8, expected: []const u8) !void {
             .keyword => 'k',
             .constant => 'o',
             .special => 'p',
+            .call => 'f',
             .bound => 'b',
             .@"error" => 'E',
         };
@@ -466,7 +484,20 @@ test "classify: each class" {
     try expectClasses("(if true -1.5 +)", ".pp.oooo.nnnn...");
     try expectClasses("!\"ab\" ![1] !{} !x x!", "sssss...n...........");
     // A special form is a special form whether or not it is bound.
-    try expectClasses("(map if mapx)", ".bbb.pp......");
+    try expectClasses("(map if mapx)", ".fff.pp......");
+}
+
+test "classify: a bound symbol is a call at the head of a (" {
+    try expectClasses("(map map)", ".fff.bbb.");
+    try expectClasses("(mapx map)", "......bbb.");
+    try expectClasses("( map)", "..fff.");
+    try expectClasses("(; c\nmap)", ".ccc.fff.");
+    try expectClasses("(\nmap)", "..fff.");
+    try expectClasses("#(map map)", "..fff.bbb.");
+    try expectClasses("[map (map)]", ".bbb..fff..");
+    try expectClasses("{map} !(map) '(map)", ".bbb....bbb....bbb.");
+    try expectClasses("(1 map)", ".n.bbb.");
+    try expectClasses("((map) map)", "..fff..bbb.");
 }
 
 test "classify: strings, raw strings and escapes" {

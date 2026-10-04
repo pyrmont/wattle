@@ -28,6 +28,7 @@
 // ==========================================================================
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ==========================================================================
 // Project imports
@@ -35,6 +36,7 @@ const std = @import("std");
 
 const args_core = @import("../args.zig");
 const buffers = @import("../value/buffers.zig");
+const c = @import("cabi");
 const describe = @import("../pp.zig");
 const fatal = @import("../fatal.zig");
 const gc_alloc = @import("../gc.zig");
@@ -76,18 +78,21 @@ const dict_limit: i32 = 30;
 const bufsize = 64;
 
 /// The escapes that are not per type: a prototype's `_name`, the reset that
-/// follows any escape, a cycle marker, and a keyword, which has the symbol's
-/// tag.
+/// follows any escape, a cycle marker, a keyword, which has the symbol's tag,
+/// and `nil`, `true` and `false`, which are orange where the terminal has 256
+/// colours and bright magenta where it does not.
 const class_color = "\x1B[34m";
 const color_reset = "\x1B[0m";
 const cycle_color = "\x1B[36m";
 const keyword_color = "\x1B[33m";
+const constant_color_extended = "\x1B[38;5;208m";
+const constant_color_basic = "\x1B[95m";
 
 /// One escape per tag, in `repr.Tag` order.
 const type_colors = [16][*:0]const u8{
     "\x1B[32m", // number
-    "\x1B[36m", // nil
-    "\x1B[36m", // boolean
+    "", // nil, which `typeColor` gives its colour
+    "", // boolean, as nil
     "\x1B[35m", // buffer
     "\x1B[35m", // string
     "\x1B[36m", // array
@@ -274,8 +279,41 @@ pub fn prettyBuffer(
 }
 
 // ==========================================================================
+// Public functions
+// ==========================================================================
+
+/// Returns whether the terminal has 256 colours.
+///
+/// It has them where `TERM` contains `256color` or `COLORTERM` is not empty,
+/// and always on Windows. An unset or other `TERM` has 16. The environment is
+/// read at each call.
+pub fn extendedColor() bool {
+    return builtin.os.tag == .windows or envContains("TERM", "256color") or envSet("COLORTERM");
+}
+
+// ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// Returns whether the environment variable `name` is set to a non-empty value.
+fn envSet(name: [*:0]const u8) bool {
+    const found = c.getenv(name) orelse return false;
+    return found[0] != 0;
+}
+
+/// Returns whether the environment variable `name` contains `needle`.
+fn envContains(name: [*:0]const u8, needle: []const u8) bool {
+    const found = c.getenv(name) orelse return false;
+    return std.mem.indexOf(u8, std.mem.span(found), needle) != null;
+}
+
+/// Returns the escape that begins a value of `tag`.
+fn typeColor(tag: repr.Tag) [*:0]const u8 {
+    return switch (tag) {
+        .nil, .boolean => if (extendedColor()) constant_color_extended else constant_color_basic,
+        else => type_colors[@intFromEnum(tag)],
+    };
+}
 
 /// Having just closed a bracket, walks back over what was written and, where
 /// the whole tail fits inside the page width, pulls it up onto one line by
@@ -317,13 +355,19 @@ fn backtrackNewlines(S: *const Pretty) void {
         } else {
             align_run = 0;
             // A colour escape occupies no columns, so step over it rather
-            // than charging the page for it: `\x1B[0m` and `\x1B[3<n>m`.
+            // than charging the page for it: `\x1B[`, digits and `;`, then
+            // `m`.
             if (S.flags.color and at[0] == 'm') {
-                if (offset >= 3 + b0 and std.mem.eql(u8, (at - 3)[0..4], color_reset)) {
-                    offset -= 3;
-                    columns += 1;
-                } else if (offset >= 4 + b0 and std.mem.eql(u8, (at - 4)[0..3], "\x1B[3")) {
-                    offset -= 4;
+                const bytes = S.buffer.data.?;
+                var back: isize = 1;
+                while (offset - back >= b0) : (back += 1) {
+                    const byte = bytes[@intCast(offset - back)];
+                    if (!(byte >= '0' and byte <= '9') and byte != ';') break;
+                }
+                if (offset - back - 1 >= b0 and bytes[@intCast(offset - back)] == '[' and
+                    bytes[@intCast(offset - back - 1)] == 0x1B)
+                {
+                    offset -= back + 1;
                     columns += 1;
                 }
             }
@@ -890,7 +934,7 @@ fn prettyIndexed(S: *Pretty, x: repr.Value) raise.Error!void {
 /// The alignment is recovered from how much the buffer grew, since that layer
 /// counts no columns.
 fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Error!void {
-    try S.pushColor(if (wrap.isKeyword(x)) keyword_color else type_colors[@intFromEnum(repr.typeOf(x))]);
+    try S.pushColor(if (wrap.isKeyword(x)) keyword_color else typeColor(repr.typeOf(x)));
     if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
         // Printing a buffer into itself. Reserve the worst case first, then
         // escape only what was there when printing started, so that the loop

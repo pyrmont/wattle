@@ -4202,7 +4202,7 @@
     (when sigs
       (def has-color (dyn *doc-color*))
       (string "\n"
-              (when has-color "\e[32m")
+              (when has-color "\e[94m")
               "    " (string/replace-all "\n" "\n    " sigs)
               (when has-color "\e[39m")
               "\n")))

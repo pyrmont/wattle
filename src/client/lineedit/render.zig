@@ -131,25 +131,34 @@ const selected_style = "\x1b[7m";
 /// The escape that ends a styled run.
 const style_reset = "\x1b[0m";
 
-/// The escape that begins a run of each class.
+/// The escape that begins a run of each class on a terminal with 256 colours.
 ///
 /// Each resets the style first. The string, number, keyword and constant
-/// colours are the printer's in `runtime/pp/pretty.zig`.
+/// colours are the printer's in `runtime/pp/pretty.zig`. `classStyle` gives
+/// the comment and the constant their 16-colour escapes on other terminals.
 const class_styles: std.enums.EnumArray(highlight.Class, []const u8) = .init(.{
     .plain = style_reset,
     .comment = "\x1b[0;38;5;246m",
     .string = "\x1b[0;35m",
     .number = "\x1b[0;32m",
     .keyword = "\x1b[0;33m",
-    .constant = "\x1b[0;36m",
+    .constant = "\x1b[0;38;5;208m",
     .special = "\x1b[0;93m",
-    .bound = "\x1b[0;94m",
+    .call = "\x1b[0;94m",
+    .bound = "\x1b[0;36m",
     .@"error" = "\x1b[0;31m",
 });
 
 // ==========================================================================
 // Types
 // ==========================================================================
+
+/// The colours a terminal has.
+///
+/// `Frame.palette` is a `Palette`. `extended` is a terminal with 256 colours
+/// and `basic` one with 16, which draws the comment and the constant in
+/// colours of the 16.
+pub const Palette = enum { basic, extended };
 
 /// What one frame draws.
 ///
@@ -171,6 +180,7 @@ pub const Frame = struct {
     listing: ?Listing = null,
     hint: []const u8 = "",
     classes: []const highlight.Class = &.{},
+    palette: Palette = .extended,
 };
 
 /// The candidates a frame lists beneath the input.
@@ -274,7 +284,7 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
         const r = rune.decode(frame.buffer[i..]);
         const w: usize = if (newline) 0 else rune.width(r);
         if (newline or layout.wraps(column, w, frame.columns)) {
-            try restyle(out, &style, .plain);
+            try restyle(out, &style, .plain, frame.palette);
             if (row + 1 >= last) {
                 stopped = true;
                 break;
@@ -289,13 +299,13 @@ pub fn draw(out: *std.Io.Writer, climb: usize, frame: Frame) std.Io.Writer.Error
             }
         }
         if (row >= first) {
-            if (frame.classes.len > 0) try restyle(out, &style, frame.classes[i]);
+            if (frame.classes.len > 0) try restyle(out, &style, frame.classes[i], frame.palette);
             try drawRune(out, r, frame.buffer[i..][0..r.len]);
         }
         column += w;
         i += r.len;
     }
-    try restyle(out, &style, .plain);
+    try restyle(out, &style, .plain, frame.palette);
     // A full last row leaves the terminal waiting to wrap. The display row
     // below makes the cursor's place definite.
     if (!stopped and extra_row and last == display_rows) {
@@ -508,11 +518,22 @@ fn place(out: *std.Io.Writer, column: usize) std.Io.Writer.Error!void {
 }
 
 /// Writes the escape that changes the style from `style` to `class`, where
-/// the two differ, and sets `style` to `class`.
-fn restyle(out: *std.Io.Writer, style: *highlight.Class, class: highlight.Class) std.Io.Writer.Error!void {
+/// the two differ, and sets `style` to `class`. `palette` is the terminal's.
+fn restyle(out: *std.Io.Writer, style: *highlight.Class, class: highlight.Class, palette: Palette) std.Io.Writer.Error!void {
     if (style.* == class) return;
-    try out.writeAll(class_styles.get(class));
+    try out.writeAll(classStyle(class, palette));
     style.* = class;
+}
+
+/// Returns the escape that begins a run of `class` on a terminal with
+/// `palette`.
+fn classStyle(class: highlight.Class, palette: Palette) []const u8 {
+    if (palette == .extended) return class_styles.get(class);
+    return switch (class) {
+        .comment => "\x1b[0;90m",
+        .constant => "\x1b[0;95m",
+        else => class_styles.get(class),
+    };
 }
 
 /// Returns the columns `text` occupies as a frame draws it.
@@ -860,6 +881,34 @@ test "draw: the style is reset before a wrap and a newline and written again aft
         .cursor = 5,
         .columns = 80,
         .classes = &.{ S.comment, S.comment, S.plain, S.comment, S.comment },
+    });
+}
+
+test "draw: a terminal with 16 colours draws a comment and a constant in them" {
+    const S = highlight.Class;
+    try expectFrame("\r\x1b[J> \x1b[0;90m;a\x1b[0m", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = ";a",
+        .cursor = 2,
+        .columns = 80,
+        .classes = &.{ S.comment, S.comment },
+        .palette = .basic,
+    });
+    try expectFrame("\r\x1b[J> \x1b[0;95mnil\x1b[0m", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "nil",
+        .cursor = 3,
+        .columns = 80,
+        .classes = &.{ S.constant, S.constant, S.constant },
+        .palette = .basic,
+    });
+    try expectFrame("\r\x1b[J> \x1b[0;32m1\x1b[0m", .{ .climb = 0, .top = 0 }, 0, .{
+        .prompt = "> ",
+        .buffer = "1",
+        .cursor = 1,
+        .columns = 80,
+        .classes = &.{S.number},
+        .palette = .basic,
     });
 }
 

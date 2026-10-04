@@ -416,10 +416,24 @@
   ; Highlighting. Each case compares the bytes of the last frame, with the
   ; client given `-c` so that it colours its output.
   (task (assert (= (string "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;35m\"a\"\e[0m \e[0;33m:k\e[0m "
-                           "\e[0;32m1\e[0m \e[0;36mnil\e[0m) \e[0;38;5;246m; c\e[0m")
+                           "\e[0;32m1\e[0m \e[0;38;5;208mnil\e[0m) \e[0;38;5;246m; c\e[0m")
                    (from-last "\r\e[Jrepl:1:> "
-                              (drive """(def x "a" :k 1 nil) ; c""" :color true)))
+                              (drive """(def x "a" :k 1 nil) ; c"""
+                                     :color true :env {"TERM" "xterm-256color" "COLORTERM" ""})))
                 "each class is drawn in its colour"))
+
+  ; A terminal without 256 colours draws a comment and a constant in colours
+  ; of the 16, and COLORTERM alone is enough for the 256.
+  (task (assert (= (string "\r\e[Jrepl:1:> (\e[0;93mdef\e[0m x \e[0;35m\"a\"\e[0m \e[0;33m:k\e[0m "
+                           "\e[0;32m1\e[0m \e[0;95mnil\e[0m) \e[0;90m; c\e[0m")
+                   (from-last "\r\e[Jrepl:1:> "
+                              (drive """(def x "a" :k 1 nil) ; c"""
+                                     :color true :env {"TERM" "xterm" "COLORTERM" ""})))
+                "a terminal with 16 colours draws a comment and a constant in them"))
+  (task (assert (= "\r\e[Jrepl:1:> \e[0;38;5;208mnil\e[0m"
+                   (from-last "\r\e[Jrepl:1:> "
+                              (drive "nil" :color true :env {"TERM" "xterm" "COLORTERM" "truecolor"})))
+                "COLORTERM alone gives a terminal 256 colours"))
 
   ; A raw string across a wrap and a newline. The style is reset before each
   ; row break and written again after it, after the marker on a row a newline
@@ -437,14 +451,17 @@
                    (from-last "\r\e[Jrepl:1:> " (drive "(+ 1 2]" :color true)))
                 "a mismatched delimiter is drawn as an error"))
 
-  ; A symbol bound in the environment is drawn in bright blue, and one that
-  ; is not is drawn plain. The bound names are
-  ; collected for each line, so a name defined on one line is coloured on
-  ; the next, with its type as the hint.
+  ; A symbol bound in the environment is drawn in bright blue at the head of
+  ; a call and in cyan anywhere else, and one that is not bound is drawn
+  ; plain. The bound names are collected for each line, so a name defined on
+  ; one line is coloured on the next, with its type as the hint.
   (task (assert (= "\r\e[Jrepl:1:> (\e[0;94mmap\e[0m zzq)"
                    (from-last "\r\e[Jrepl:1:> " (drive "(map zzq)" :color true)))
                 "a bound symbol is coloured and an unbound one is not"))
-  (task (assert (= "\r\e[Jrepl:2:> \e[0;94mzzq\e[0m\e[3C\e[90m:number\e[0m\r\e[12C"
+  (task (assert (= "\r\e[Jrepl:1:> (\e[0;94mmap\e[0m \e[0;36mmap\e[0m zzq)"
+                   (from-last "\r\e[Jrepl:1:> " (drive "(map map zzq)" :color true)))
+                "a bound symbol that is not at the head of a call is cyan"))
+  (task (assert (= "\r\e[Jrepl:2:> \e[0;36mzzq\e[0m\e[3C\e[90m:number\e[0m\r\e[12C"
                    (from-last "\r\e[Jrepl:2:> "
                               (drive "(def zzq 1)\r\\m{repl:2:> }zzq" :color true)))
                 "a name defined on one line is coloured on the next"))

@@ -112,7 +112,8 @@ pub const End = enum { submit, eof, cancel };
 /// `editor.Editor.finished` does. `symbol` reports which bytes a token has,
 /// `gather` adds the candidates for a token, and `hint` returns a token's
 /// hint. `number` and `special` report which tokens are numbers and special
-/// forms, and `bound` which symbols are bound. Tab completes only with
+/// forms, and `bound` which symbols are bound. `palette` is the colours the
+/// terminal has. Tab completes only with
 /// `symbol` and `gather`, a frame draws a hint only with `symbol` and `hint`,
 /// and a frame is highlighted only with `number` and `special`.
 pub const Source = struct {
@@ -123,6 +124,7 @@ pub const Source = struct {
     number: ?highlight.Number = null,
     special: ?highlight.Special = null,
     bound: ?highlight.Bound = null,
+    palette: render.Palette = .extended,
 };
 
 /// The terminal's size, in columns and rows.
@@ -454,6 +456,7 @@ pub const Session = struct {
             .listing = listing,
             .hint = if (bounded) session.hintText() else "",
             .classes = classes,
+            .palette = if (session.source) |source| source.palette else .extended,
         }) catch return error.OutOfMemory;
         session.climb = drawn.climb;
         session.top = drawn.top;
