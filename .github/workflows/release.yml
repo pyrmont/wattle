@@ -1,0 +1,123 @@
+name: Release
+
+# Builds the archives for a tagged release and attaches them to a draft
+# GitHub release. `RELEASING.md` is the procedure this is one step of.
+#
+# Each archive is an installation prefix: `bin/`, `lib/`, `share/man/` and
+# `share/wattle/`, with `LICENSE`, `README.md` and `CHANGELOG.md` beside them.
+# The Linux builds are linked against glibc 2.31, the glibc of Debian 11 and
+# Ubuntu 20.04, so that a binary runs on that release and later ones. glibc
+# 2.28 does not have `posix_spawn_file_actions_addchdir_np`, which the runtime
+# uses.
+#
+# This file is verified by its first run, as `test.yml` is.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The tag to release, such as v0.1.0"
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  build:
+    name: Builds ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,     name: macos-aarch64,   target: "" }
+          - { os: ubuntu-latest,    name: linux-x86_64,    target: x86_64-linux-gnu.2.31 }
+          - { os: ubuntu-24.04-arm, name: linux-aarch64,   target: aarch64-linux-gnu.2.31 }
+          - { os: windows-latest,   name: windows-x86_64,  target: "" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Test
+        run: zig build test
+      - name: Build
+        run: |
+          set -eu
+          args="-Doptimize=ReleaseFast -p wattle-${{ inputs.version }}"
+          if [ -n "${{ matrix.target }}" ]; then
+            args="$args -Dtarget=${{ matrix.target }} -Dcpu=baseline"
+          fi
+          zig build $args
+          cp LICENSE README.md CHANGELOG.md "wattle-${{ inputs.version }}/"
+      # The tag's `build.zig` sets the label, so the built program reports the
+      # number without its `v`. A different label is a tag on a commit that
+      # `res/repo/version.janet` did not prepare.
+      - name: Check the version
+        run: |
+          set -eu
+          expected="${{ inputs.version }}"
+          expected="${expected#v}"
+          actual=$("./wattle-${{ inputs.version }}/bin/wattle" --version | tr -d '\r')
+          if [ "$actual" != "$expected" ]; then
+            echo "the build reports $actual, and the tag is ${{ inputs.version }}"
+            exit 1
+          fi
+      - name: Package
+        run: |
+          set -eu
+          package="wattle-${{ inputs.version }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "${package}-${{ matrix.name }}.zip" "$package"
+          else
+            tar -czf "${package}-${{ matrix.name }}.tar.gz" "$package"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.name }}
+          path: wattle-${{ inputs.version }}-${{ matrix.name }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+      # The release's notes are its section of `CHANGELOG.md`: the lines after
+      # its heading and before the next.
+      - name: Extract the notes
+        run: |
+          set -eu
+          version="${{ inputs.version }}"
+          awk -v heading="## ${version#v} " '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for ${version#v}"
+            exit 1
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          files: artifacts/*
+          overwrite_files: false
+          tag_name: ${{ inputs.version }}
+          body_path: notes.md

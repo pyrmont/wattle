@@ -12,16 +12,13 @@
 
 const builtin = @import("builtin");
 
-const config = @import("config");
 const constants = @import("constants");
 const report = @import("report.zig");
 
 comptime {
     report.entry(.{
-        .major = config.version_major,
-        .minor = config.version_minor,
-        .patch = config.version_patch,
         .bits = @intCast(constants.current_config_bits | 0x40000000),
-        .zig = report.padded(builtin.zig_version_string),
+        .zig = report.padded(32, builtin.zig_version_string),
+        .label = report.padded(64, "fixture"),
     });
 }

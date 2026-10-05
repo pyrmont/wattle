@@ -417,6 +417,31 @@ file reached only through the `pub const` block, or only through another file's
 container-level `const`, is not collected. `os/fs/stat.zig` is named in the
 comptime block for that reason only.
 
+## Versions
+
+A build has a _version label_, which `wattle/version`, `--version` and the
+REPL banner print. A release's label is its number, such as `0.1.0`. Any other
+build's label is `DEVEL-` and the abbreviated hash of the commit it was built
+from, with `-dirty` appended when a tracked file differs from that commit.
+Untracked files are not counted, so `AGENTS.md` and `.agents/` do not make a
+build dirty. A development build has no number, because the number of the
+next release is chosen when it is cut, from what `CHANGELOG.md` lists.
+
+`build.zig`'s `version` is a release number or `DEVEL`, and
+`res/repo/version.janet` sets it. Where it is `DEVEL`, `versionLabel` runs
+`git describe` in the build root. A build root with no `.git`, such as a
+fetched package or the copy installed under `share/wattle`, gives `DEVEL`
+alone. The label is a `Config` field, so a commit, or a tree that becomes
+dirty or clean, rebuilds the runtime and the image.
+
+The label is used in messages and is never compared. A native module loads
+where its configuration bits, Zig version and `api` fingerprint equal the
+runtime's. `abi.BuildConfig` includes the label so that a refusal names both
+builds. `build.zig.zon` requires a semantic version, and its `.version` is
+the most recent release's number, which `res/repo/version.janet` sets with
+the label for a release. The static and shared libraries have no version in
+their file names.
+
 ## Installing packages
 
 `wattle pkg install [source [ref]]` installs a package from a _source_. The

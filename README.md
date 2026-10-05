@@ -243,6 +243,15 @@ WASI reactor, with the page and its JavaScript host, into `zig-out/web-repl`.
 If you just want to try out the language, you don't need to install anything:
 build the tree and run `zig-out/bin/wattle` where it is.
 
+Each [release][releases] has an archive for macOS on aarch64, Linux on x86-64
+and aarch64, and Windows on x86-64. An archive is an installation prefix, with
+the `wattle` executable under `bin/`. [CHANGELOG.md](CHANGELOG.md) lists the
+changes in each release.
+
+A build from the repository between releases reports its version as `DEVEL`
+and the abbreviated hash of its commit, such as `DEVEL-3c31337`, with `-dirty`
+appended when a tracked file has uncommitted changes.
+
 ## Using
 
 Running `wattle -h` outputs the following:
@@ -379,4 +388,5 @@ details.
 [Clojure]: https://clojure.org
 [Janet]: https://janet-lang.org
 [Predoc]: https://pyrmont.github.io/predoc
+[releases]: https://github.com/pyrmont/wattle/releases
 [Zig]: https://ziglang.org

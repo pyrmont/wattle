@@ -4,7 +4,8 @@
 ; arguments, in the order the loader compares the fields: bits, then the Zig
 ; version, then the interface fingerprint. Each fixture reports a
 ; configuration it was not built with, so each load fails, and the message
-; names the field that differed. `test/module-load/report.zig` says how a
+; names the field that differed and the two version labels. Each fixture
+; reports the label `fixture`. `test/module-load/report.zig` says how a
 ; fixture lies.
 ;
 ; `test/zig-native.wattle` and the three examples are the positive case: a
@@ -24,5 +25,9 @@
   (def message (string result))
   (assert (string/find (string "config mismatch - " field " - ") message)
           (string "the refusal should name " field ", and says: " message))
+  (assert (string/find (string "host " wattle/version " (") message)
+          (string "the refusal should name the host's version label, and says: " message))
+  (assert (string/find "module fixture (" message)
+          (string "the refusal should name the module's version label, and says: " message))
   (assert (string/find "native needs to be recompiled!" message)
           (string "the refusal should say what to do, and says: " message)))

@@ -176,8 +176,8 @@ pub const AbstractType = struct {
     contents: Contents = .none,
 };
 
-/// What a module was built against: a Janet version, the configuration bits,
-/// the interface fingerprint and the compiler's version.
+/// What a module was built against: the configuration bits, the interface
+/// fingerprint, the compiler's version and the version label.
 ///
 /// `module.entry` exports a function named `_wattle_mod_config` that writes a
 /// `BuildConfig`. The loader looks `_wattle_mod_config` up in the loaded shared
@@ -187,21 +187,19 @@ pub const AbstractType = struct {
 ///
 /// `api` is `api/fingerprint.zig`'s number, and `zig` is the compiler's
 /// version string NUL-padded to thirty-two bytes and compared byte for byte.
-/// `major`, `minor` and `patch` are the Janet version. They appear in a
-/// refusal message and are not compared, so a module built against one release
-/// loads into another whose interface is the same.
+/// `label` is the Wattle version label NUL-padded to sixty-four bytes. It
+/// appears in a refusal message and is not compared, so a module built
+/// against one build loads into another whose interface is the same.
 ///
 /// The loader reads this struct field by field, so both `_wattle_mod_config`
 /// and this layout are part of the published interface. `_wattle_mod_config`
 /// takes the width the loader has and returns the width the module has, so a
 /// later loader can read a shorter, older `BuildConfig` than its own.
 pub const BuildConfig = extern struct {
-    major: c_uint = 0,
-    minor: c_uint = 0,
-    patch: c_uint = 0,
     bits: c_uint = 0,
     api: u64 = 0,
     zig: [32]u8 = std.mem.zeroes([32]u8),
+    label: [64]u8 = std.mem.zeroes([64]u8),
 };
 
 /// A byte sequence and its length.

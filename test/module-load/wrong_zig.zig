@@ -8,16 +8,13 @@
 //! Loaded by `test/zig-native-refused.wattle`. `report.zig` says why a fixture
 //! exports the loader symbols itself.
 
-const config = @import("config");
 const constants = @import("constants");
 const report = @import("report.zig");
 
 comptime {
     report.entry(.{
-        .major = config.version_major,
-        .minor = config.version_minor,
-        .patch = config.version_patch,
         .bits = @intCast(constants.current_config_bits),
-        .zig = report.padded("0.0.0-fixture"),
+        .zig = report.padded(32, "0.0.0-fixture"),
+        .label = report.padded(64, "fixture"),
     });
 }

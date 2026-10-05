@@ -1,0 +1,89 @@
+#!/usr/bin/env janet
+
+# Sets Wattle's version for a release, or returns the tree to `DEVEL`.
+#
+#   janet res/repo/version.janet 0.1.0
+#   janet res/repo/version.janet DEVEL
+#
+# The argument is `DEVEL` or a release number of the form MAJOR.MINOR.PATCH,
+# without a `v`. Both forms set the `version` line of `build.zig` and the
+# `Version:` line of the two man page sources, then regenerate the man pages
+# with the `predoc` on the PATH.
+#
+# A release number also sets `build.zig.zon`'s `.version`, the version in the
+# REPL banner that `README.md` shows, and the `## Unreleased` heading of
+# `CHANGELOG.md`, which becomes the number and the date. `DEVEL` adds an
+# `## Unreleased` heading above the most recent release where there is none,
+# and leaves `build.zig.zon` at the number of that release.
+#
+# Each file must have exactly one line to set, and the script stops before
+# writing anything when a file does not.
+
+(import ../common :as tools)
+
+(def- release-peg (peg/compile ~(* :d+ "." :d+ "." :d+ -1)))
+
+(defn- path [name] (string tools/root "/" name))
+
+(defn- set-line
+  "Returns `text` with its one line that `prefix` matches replaced by `line`,
+  or by what `line` returns for the old line when it is a function. A string
+  `prefix` matches a line that begins with it, and a PEG matches a line it
+  matches. Raises when `text` has no such line, or more than one."
+  [name text prefix line]
+  (def new-line (if (function? line) line (fn [_] line)))
+  (def matches? (if (string? prefix)
+                  |(string/has-prefix? prefix $)
+                  |(peg/match prefix $)))
+  (def lines (string/split "\n" text))
+  (def hits (filter matches? lines))
+  (unless (= 1 (length hits))
+    (error (string name ": expected one line matching " (describe prefix)
+                   ", found " (length hits))))
+  (string/join (map |(if (matches? $) (new-line $) $) lines) "\n"))
+
+(defn- today []
+  (def d (os/date (os/time) true))
+  (string/format "%d-%02d-%02d" (d :year) (inc (d :month)) (inc (d :month-day))))
+
+(defn- changelog
+  "Returns the text of `CHANGELOG.md` for `version`."
+  [text version]
+  (if (= "DEVEL" version)
+    (if (string/find "\n## Unreleased\n" text)
+      text
+      (let [at (string/find "\n## " text)]
+        (unless at (error "CHANGELOG.md: no '## ' heading to add 'Unreleased' above"))
+        (string (string/slice text 0 (inc at)) "## Unreleased\n\n"
+                (string/slice text (inc at)))))
+    (set-line "CHANGELOG.md" text "## Unreleased"
+              (string "## " version " (" (today) ")"))))
+
+(defn main
+  [_ &opt version]
+  (unless (and version (or (= "DEVEL" version) (peg/match release-peg version)))
+    (eprint "usage: janet res/repo/version.janet (DEVEL | MAJOR.MINOR.PATCH)")
+    (os/exit 2))
+  (def release (not= "DEVEL" version))
+  (def updates
+    @[["build.zig" "const version = " (string "const version = \"" version "\";")]
+      ["man/wattle.1.predoc" "Version: " (string "Version: " version)]
+      ["man/wattle.7.predoc" "Version: " (string "Version: " version)]])
+  (when release
+    (array/push updates
+                ["build.zig.zon" "    .version = " (string "    .version = \"" version "\",")]
+                # The banner's version is the second word, and the platform
+                # after it stays as it is.
+                ["README.md" (peg/compile ~(* "Wattle " (some (if-not " " 1)) " " (thru "for help") -1))
+                 |(string "Wattle " version (string/slice $ (string/find " " $ 7)))]))
+  # Every new text is computed before any file is written, so a file without
+  # its line leaves the tree as it was.
+  (def texts @{})
+  (each [name prefix line] updates
+    (put texts name (set-line name (get texts name (slurp (path name))) prefix line)))
+  (put texts "CHANGELOG.md" (changelog (slurp (path "CHANGELOG.md")) version))
+  (eachp [name text] texts
+    (spit (path name) text)
+    (print "set " name))
+  (each page ["man/wattle.1.predoc" "man/wattle.7.predoc"]
+    (os/execute ["predoc" (path page)] :px)))

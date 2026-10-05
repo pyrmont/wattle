@@ -182,8 +182,17 @@ touches rather than the newest.
 ## repo
 
 Chores, run occasionally and by hand: `tm_lang_gen.janet` emits the TextMate
-grammar, `removecr.janet` strips carriage returns, and
-`janet-to-wattle.janet` rewrites Janet source as Wattle source.
+grammar, `removecr.janet` strips carriage returns,
+`janet-to-wattle.janet` rewrites Janet source as Wattle source, and
+`version.janet` sets the version for a release or returns it to `DEVEL`.
+
+`version.janet 0.1.0` and `version.janet DEVEL` are steps of `RELEASING.md`.
+Each form sets the version in `build.zig` and the man page sources and
+regenerates the man pages with the `predoc` on the PATH. A release number also
+sets `build.zig.zon`, the banner in `README.md` and the heading of the
+Unreleased section of `CHANGELOG.md`. The script computes every file's new
+text before it writes any, and stops where a file does not have exactly one
+line to set.
 
 **The instruments here stay Janet.** They run on whatever `janet` is on the
 PATH, never on the build under test, and nothing here is loaded by Wattle, so

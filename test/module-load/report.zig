@@ -41,11 +41,11 @@ pub fn entry(comptime reported: abi.BuildConfig) void {
     @export(&Shim.modInit, .{ .name = "_wattle_init" });
 }
 
-/// A version string in the fixed-width, NUL-padded field
-/// `abi.BuildConfig.zig` gives it.
-pub fn padded(comptime text: []const u8) [32]u8 {
+/// A string in a fixed-width, NUL-padded field of `n` bytes, the form
+/// `abi.BuildConfig.zig` and `abi.BuildConfig.label` give it.
+pub fn padded(comptime n: usize, comptime text: []const u8) [n]u8 {
     comptime {
-        var out: [32]u8 = std.mem.zeroes([32]u8);
+        var out: [n]u8 = std.mem.zeroes([n]u8);
         @memcpy(out[0..text.len], text);
         return out;
     }

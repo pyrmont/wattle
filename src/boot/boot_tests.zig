@@ -130,11 +130,6 @@ pub fn numberTest() void {
 pub fn systemTest() void {
     expect(@sizeOf(*anyopaque) == if (!config.bits64) 4 else 8, "pointer width");
 
-    // No version-consistency check, because there is nothing left to compare.
-    // `build.zig` has one `version`, and `version_string` is `comptimePrint`ed
-    // from `major`, `minor`, `patch` and `version_extra`, so the whole is
-    // built from the parts and the comparison would be a tautology.
-
     // Reflexive equality, which is also the nanbox test.
     expect(order.equals(wrap.fromNil(), wrap.fromNil()), "nil");
     expect(order.equals(wrap.fromFalse(), wrap.fromFalse()), "false");

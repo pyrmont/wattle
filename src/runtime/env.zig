@@ -284,8 +284,8 @@ pub fn checkModuleConfig(
             "zig version",
             host,
             modconf,
-            zigText(&host_text, host.zig),
-            zigText(&module_text, modconf.zig),
+            paddedText(32, &host_text, host.zig),
+            paddedText(32, &module_text, modconf.zig),
         );
     }
     if (host.api != modconf.api) {
@@ -642,7 +642,9 @@ fn bootstrapCoreEnv(replacements: ?*tables.Table) raise.Error!*tables.Table {
     templatizeComparator(env, .{ .tag = constants.fun_neq }, "not=", true, constants.Opcode.equals, "(not= & xs)", "Checks whether any values in xs are not equal. Returns a boolean.");
 
     // Platform detection
-    registry.def(env, "wattle/version", value.fromBytes(version_z, .string), "The version number of the running Wattle program.");
+    registry.def(env, "wattle/version", value.fromBytes(version_z, .string), "The version label of the running Wattle program. A release's label is its number, such as \"0.1.0\". " ++
+        "A development build's label is DEVEL and the abbreviated hash of its commit, with -dirty appended " ++
+        "where a tracked file differed from the commit, such as \"DEVEL-3c31337-dirty\".");
     registry.def(env, "wattle/build", value.fromBytes(build_z, .string), "The build identifier of the running Wattle program.");
     registry.def(env, "wattle/api", value.fromBytes(&api_z, .string), "The fingerprint of the native module interface this program was built " ++
         "with, as sixteen hexadecimal digits. A native module loads only into a " ++
@@ -1160,7 +1162,7 @@ fn nfunUntrace(argv: []repr.Value) raise.Error!repr.Value {
 ///
 /// `field` names the field that differed, and `host_value` and `module_value`
 /// are that field's two values already spelled as text. `host` and
-/// `module_config` supply the two Janet versions, which the message reports
+/// `module_config` supply the two version labels, which the message reports
 /// and `native` does not compare.
 fn configMismatch(
     field: [*:0]const u8,
@@ -1169,24 +1171,18 @@ fn configMismatch(
     host_value: [*:0]const u8,
     module_value: [*:0]const u8,
 ) strings.String {
-    var errbuf: [256]u8 = undefined;
-    // Both versions are spelled with `%d`. `%.d` is precision zero, which
-    // writes nothing at all for a value of zero, so a host built from an
-    // `x.0.y` release would report itself as `x..y` beside a module reporting
-    // `x.0.y`: one message, two spellings of one field.
+    var errbuf: [320]u8 = undefined;
+    var host_label: [65]u8 = undefined;
+    var module_label: [65]u8 = undefined;
     _ = c.snprintf(
         &errbuf,
         errbuf.len,
-        "config mismatch - %s - host %d.%d.%d(%s) vs. module %d.%d.%d(%s) - " ++
+        "config mismatch - %s - host %s (%s) vs. module %s (%s) - " ++
             "native needs to be recompiled!",
         field,
-        host.major,
-        host.minor,
-        host.patch,
+        paddedText(64, &host_label, host.label),
         host_value,
-        module_config.major,
-        module_config.minor,
-        module_config.patch,
+        paddedText(64, &module_label, module_config.label),
         module_value,
     );
     return strings.cstring(@ptrCast(&errbuf));
@@ -1718,6 +1714,21 @@ fn overwriteBinding(env: *tables.Table, name: [*:0]const u8, v: repr.Value) void
     tables.put(wrap.toTable(binding), value.fromBytes("value", .keyword), v);
 }
 
+/// Spells a NUL-padded field of `n` bytes in `buf` and returns `buf` as a C
+/// string.
+///
+/// `raw` is the `zig` or `label` field of an `abi.BuildConfig`, which a module
+/// fills in and so may hold anything. Copying stops at the first byte outside
+/// printable ASCII, which is what the padding is, and a terminator is
+/// appended. `buf` is written over and holds the result until its caller
+/// returns.
+fn paddedText(comptime n: usize, buf: *[n + 1]u8, raw: [n]u8) [*:0]const u8 {
+    var len: usize = 0;
+    while (len < raw.len and raw[len] >= ' ' and raw[len] < 0x7F) : (len += 1) buf[len] = raw[len];
+    buf[len] = 0;
+    return @ptrCast(buf);
+}
+
 /// Assembles one function from a bytecode array, for the bootstrap.
 fn quickAsm(
     flags: functions.FuncDefFlags,
@@ -1873,18 +1884,4 @@ fn varargOf(flags: functions.FuncDefFlags) functions.FuncDefFlags {
     var out = flags;
     out.vararg = true;
     return out;
-}
-
-/// Spells a compiler version in `buf` and returns `buf` as a C string.
-///
-/// `raw` is the NUL-padded field of an `abi.BuildConfig`, which a module fills
-/// in and so may hold anything. Copying stops at the first byte outside
-/// printable ASCII, which is what the padding is, and a terminator is
-/// appended. `buf` is written over and holds the result until its caller
-/// returns.
-fn zigText(buf: *[33]u8, raw: [32]u8) [*:0]const u8 {
-    var len: usize = 0;
-    while (len < raw.len and raw[len] >= ' ' and raw[len] < 0x7F) : (len += 1) buf[len] = raw[len];
-    buf[len] = 0;
-    return @ptrCast(buf);
 }

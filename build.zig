@@ -1,16 +1,12 @@
 const std = @import("std");
 
-/// Wattle's version, in one place.
+/// Wattle's version: the number of a release, or `DEVEL` between releases.
 ///
-/// `Config` carries these four values into the runtime: `env.zig` publishes
-/// `wattle/version`, `fingerprint.zig` reports the three numbers to a module
-/// loader, and the libraries take the same number, so every reader resolves
-/// back to this declaration rather than to a spelling of its own.
-const version = std.SemanticVersion{ .major = 0, .minor = 1, .patch = 0 };
-const version_extra = "-dev";
-const version_string = std.fmt.comptimePrint("{d}.{d}.{d}{s}", .{
-    version.major, version.minor, version.patch, version_extra,
-});
+/// `res/repo/version.janet` sets this line. `versionLabel` derives the label a
+/// build reports from it, and `Config.version` is that label: `env.zig`
+/// publishes it as `wattle/version` and `fingerprint.zig` reports it to a
+/// module loader.
+const version = "DEVEL";
 const build_name = "zig";
 
 /// The Janet suites, and the configuration each one needs.
@@ -140,6 +136,8 @@ const BuildOptions = struct {
     stack_max: i32,
     os_name: ?[]const u8 = null,
     arch_name: ?[]const u8 = null,
+    /// The label `versionLabel` derives. No `-D` flag sets it.
+    version: []const u8,
 };
 
 /// Which subsystems this configuration answers in Zig.
@@ -693,7 +691,6 @@ pub fn build(b: *std.Build) void {
     const static_library = selectBackend(b.addLibrary(.{
         .name = "wattle",
         .linkage = .static,
-        .version = version,
         .root_module = static_module,
     }));
     // **No header is installed, and the gap is deliberate.** What a native
@@ -709,7 +706,6 @@ pub fn build(b: *std.Build) void {
     const shared_library = selectBackend(b.addLibrary(.{
         .name = "wattle",
         .linkage = .dynamic,
-        .version = version,
         .root_module = shared_module,
     }));
     // A ThreadSanitizer build produces test binaries, not distributable
@@ -1379,7 +1375,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(runtime_tests_step);
     test_step.dependOn(lineedit_tests_step);
     test_step.dependOn(module_errors_step);
-    addCliChecks(b, test_step, client);
+    addCliChecks(b, test_step, client, config.version);
 
     // **A wasm binary that links can still be refused by its host.** Zig turns
     // an unresolved `extern fn` into an import from the module `env` rather
@@ -2109,6 +2105,7 @@ fn addCliChecks(
     b: *std.Build,
     test_step: *std.Build.Step,
     zig_client: *std.Build.Step.Compile,
+    label: []const u8,
 ) void {
     const clients = [_]*std.Build.Step.Compile{zig_client};
     for (clients) |client| {
@@ -2141,7 +2138,7 @@ fn addCliChecks(
 
         const version_flag = b.addRunArtifact(client);
         version_flag.addArg("--version");
-        version_flag.expectStdOutMatch(version_string);
+        version_flag.expectStdOutMatch(label);
         test_step.dependOn(&version_flag.step);
 
         const check_ok = b.addRunArtifact(client);
@@ -2228,7 +2225,7 @@ fn addCliChecks(
     const repl = b.addRunArtifact(zig_client);
     repl.setStdIn(.{ .bytes = "(+ 1 2)\n" });
     repl.expectStdOutMatch("3");
-    repl.expectStdOutMatch("Wattle " ++ version_string ++ " ");
+    repl.expectStdOutMatch(b.fmt("Wattle {s} ", .{label}));
     repl.expectStdErrMatch("repl:1:>");
     test_step.dependOn(&repl.step);
 }
@@ -2277,6 +2274,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .fiber_stack_shuffle = b.option(bool, "fiber-stack-shuffle", "Move every fiber's stack on every frame push, so a pointer kept across one is a use-after-free the allocator can see") orelse false,
         .os_name = b.option([]const u8, "os-name", "Override the keyword os/which reports"),
         .arch_name = b.option([]const u8, "arch-name", "Override the keyword os/arch reports"),
+        .version = versionLabel(b),
     };
 
     if (options.recursion_guard) |guard| {
@@ -2290,6 +2288,33 @@ fn readOptions(b: *std.Build) BuildOptions {
         @panic("-Dstack-max must be at least 8096");
 
     return options;
+}
+
+/// Returns the version label: `version` for a release, and `DEVEL-` and the
+/// commit's abbreviated hash otherwise.
+///
+/// `git describe --dirty` appends `-dirty` where a tracked file differs from
+/// the commit, and `--match=NONE` excludes every tag, so a tagged commit still
+/// gives a hash. A build root without `.git`, or a `git` that fails, gives
+/// `DEVEL` alone.
+fn versionLabel(b: *std.Build) []const u8 {
+    if (!std.mem.eql(u8, version, "DEVEL")) return version;
+    b.build_root.handle.access(b.graph.io, ".git", .{}) catch return version;
+    var code: u8 = undefined;
+    const argv = [_][]const u8{
+        "git",
+        "-C",
+        b.build_root.path orelse ".",
+        "describe",
+        "--always",
+        "--dirty",
+        "--abbrev=7",
+        "--match=NONE",
+    };
+    const out = b.runAllowFail(&argv, &code, .ignore) catch return version;
+    const hash = std.mem.trim(u8, out, " \r\n");
+    if (hash.len == 0) return version;
+    return b.fmt("DEVEL-{s}", .{hash});
 }
 
 /// Which of the three value representations this build compiles.
@@ -2377,14 +2402,10 @@ const Config = struct {
     single_threaded: bool,
     interpreter_interrupt: bool,
 
-    /// Wattle's version quintet and the four limits, which the runtime reads
-    /// as `config` fields: `env.zig` publishes `wattle/version` and
-    /// `wattle/build`, and the limits are read at nineteen, eleven, one and
-    /// two sites.
-    version_major: i32,
-    version_minor: i32,
-    version_patch: i32,
-    version_extra: []const u8,
+    /// Wattle's version label, the build name and the four limits, which the
+    /// runtime reads as `config` fields: `env.zig` publishes `wattle/version`
+    /// and `wattle/build`, and the limits are read at nineteen, eleven, one
+    /// and two sites.
     version: []const u8,
     build_name: []const u8,
     recursion_guard: i32,
@@ -2566,11 +2587,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         .arch_name = options.arch_name,
         .single_threaded = single_threaded,
         .interpreter_interrupt = options.interpreter_interrupt,
-        .version_major = version.major,
-        .version_minor = version.minor,
-        .version_patch = version.patch,
-        .version_extra = version_extra,
-        .version = version_string,
+        .version = options.version,
         .build_name = build_name,
         // The budget the native recursions spend, one unit per level: the
         // printer, the marshaller, the compiler and the PEG engine all start

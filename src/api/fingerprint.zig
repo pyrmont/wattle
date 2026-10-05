@@ -80,15 +80,13 @@ pub const api: u64 = digest(description);
 /// module's report against.
 ///
 /// `module.entry`'s `_wattle_mod_config` writes this, and `runtime/env.zig`'s
-/// `native` reads both this and the module's copy. `major`, `minor` and
-/// `patch` are reported in a refusal and are not compared.
+/// `native` reads both this and the module's copy. `label` is reported in a
+/// refusal and is not compared.
 pub const build_config: abi.BuildConfig = .{
-    .major = config.version_major,
-    .minor = config.version_minor,
-    .patch = config.version_patch,
     .bits = constants.current_config_bits,
     .api = api,
     .zig = zig_version,
+    .label = label,
 };
 
 /// The six capabilities, each with the label `typeDesc` writes for it.
@@ -148,6 +146,17 @@ const description: []const u8 = blk: {
     for (covered) |entry| text = text ++ entry.name ++ "=" ++ typeDesc(entry.type, &.{}) ++ "\n";
     text = text ++ std.fmt.comptimePrint("abstract_payload={d}\n", .{abi.abstract_payload});
     break :blk text;
+};
+
+/// The version label, NUL-padded to the width `abi.BuildConfig` gives it.
+const label: [64]u8 = blk: {
+    const text = config.version;
+    if (text.len > 64) @compileError(
+        "the version label is longer than `abi.BuildConfig.label`",
+    );
+    var padded: [64]u8 = std.mem.zeroes([64]u8);
+    @memcpy(padded[0..text.len], text);
+    break :blk padded;
 };
 
 /// The compiler's version, NUL-padded to the width `abi.BuildConfig` gives it.
