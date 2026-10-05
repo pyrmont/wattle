@@ -2,7 +2,7 @@ const std = @import("std");
 
 /// Wattle's version: the number of a release, or `DEVEL` between releases.
 ///
-/// `res/repo/version.janet` sets this line. `versionLabel` derives the label a
+/// `res/repo/version.wattle` sets this line. `versionLabel` derives the label a
 /// build reports from it, and `Config.version` is that label: `env.zig`
 /// publishes it as `wattle/version` and `fingerprint.zig` reports it to a
 /// module loader.
@@ -1031,7 +1031,7 @@ pub fn build(b: *std.Build) void {
         // it tests is inside.
         //
         // Not on wasm, where none of the four readers of it --
-        // `contract.sh`, `leaks.sh`, `mutate.janet` and `matrix.janet` --
+        // `contract.sh`, `leaks.sh`, `mutate.wattle` and `matrix.wattle` --
         // can run the file they would find: it needs a wasm host, and each of
         // them executes `<prefix>/test/wattle-contract-test` directly.
         if (!wasm) installTest(b, options, exe);

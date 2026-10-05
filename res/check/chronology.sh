@@ -84,7 +84,7 @@
 # **`src/core/` names a retired directory; `janet.h` no longer names
 # anything here.** The header was asked after because this project once had a
 # `janet.h` of its own, so a bare mention was ambiguous. Step 7 removed it,
-# and `res/check/seam.janet` fails on an `extern fn janet*` anywhere under
+# and `res/check/seam.wattle` fails on an `extern fn janet*` anywhere under
 # `src/`, so every remaining mention is upstream's and the question has
 # expired. It came out of the pattern on 2026-09-19; the comments that name
 # it say C Janet. `src/core/` stays.

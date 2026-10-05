@@ -62,7 +62,7 @@ jobs:
           cp LICENSE README.md CHANGELOG.md "wattle-${{ inputs.version }}/"
       # The tag's `build.zig` sets the label, so the built program reports the
       # number without its `v`. A different label is a tag on a commit that
-      # `res/repo/version.janet` did not prepare.
+      # `res/repo/version.wattle` did not prepare.
       - name: Check the version
         run: |
           set -eu

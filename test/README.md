@@ -27,7 +27,7 @@ Six layers, and a change is believed when the layers it touches pass:
 - The fuzz targets, `test/fuzz.zig`: parser, compiler, marshalling and bytecode,
   run once over their corpora by `zig build test` and as a campaign by
   `zig build fuzz --fuzz`.
-- Debug, optimized and sanitizer builds, through `res/testing/matrix.janet`.
+- Debug, optimized and sanitizer builds, through `res/testing/matrix.wattle`.
   Optimized builds must keep the contracts' assertions live, and
   `test/expect.zig` is what keeps them: `std.debug.assert` is `unreachable`, and
   in `ReleaseFast` and `ReleaseSmall` that is undefined behaviour the optimizer

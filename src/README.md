@@ -308,7 +308,7 @@ runtime inconsistent if it did.
 
 A report that nothing consumes aborts the process at the next protected scope,
 and the message names neither the cause nor the caller.
-`res/check/swallowed.janet` lists every raising function that reaches a
+`res/check/swallowed.wattle` lists every raising function that reaches a
 report through a C-ABI function, and prints "no raising caller reaches a report"
 on a clean tree. Run it for every change that touches a raise.
 
@@ -357,7 +357,7 @@ part of a dynamically loaded module rather than of the runtime.
 ### External declarations
 
 `host/cabi.zig` has the runtime's `extern` declarations, for libc and the host,
-with no Janet name among them. `res/check/seam.janet --check` fails if an
+with no Janet name among them. `res/check/seam.wattle --check` fails if an
 `extern fn janet*` appears anywhere in `src/`.
 
 ### Host structures
@@ -405,7 +405,7 @@ zig build -Dtarget=x86_64-linux-musl --cache-dir /tmp/xc -p /tmp/out
 ```
 
 An instrument must be gated the same way as its subject.
-`res/check/gates.janet --check` builds thirteen configurations and compares
+`res/check/gates.wattle --check` builds thirteen configurations and compares
 their symbol tables against `res/check/gated.txt`. The check exists because
 reading `root.zig` cannot settle which files a configuration compiles: its
 comptime block does not name every file, and its `pub const` block is lazy and
@@ -428,7 +428,7 @@ build dirty. A development build has no number, because the number of the
 next release is chosen when it is cut, from what `CHANGELOG.md` lists.
 
 `build.zig`'s `version` is a release number or `DEVEL`, and
-`res/repo/version.janet` sets it. Where it is `DEVEL`, `versionLabel` runs
+`res/repo/version.wattle` sets it. Where it is `DEVEL`, `versionLabel` runs
 `git describe` in the build root. A build root with no `.git`, such as a
 fetched package or the copy installed under `share/wattle`, gives `DEVEL`
 alone. The label is a `Config` field, so a commit, or a tree that becomes
@@ -438,7 +438,7 @@ The label is used in messages and is never compared. A native module loads
 where its configuration bits, Zig version and `api` fingerprint equal the
 runtime's. `abi.BuildConfig` includes the label so that a refusal names both
 builds. `build.zig.zon` requires a semantic version, and its `.version` is
-the most recent release's number, which `res/repo/version.janet` sets with
+the most recent release's number, which `res/repo/version.wattle` sets with
 the label for a release. The static and shared libraries have no version in
 their file names.
 

@@ -15,8 +15,8 @@
 #
 # C Janet cannot read a `.wattle` file, so a comparison needs the workload in
 # both syntaxes. The `.janet` side is the original and the `.wattle` side is
-# what `res/repo/janet-to-wattle.janet` made from it, which is what lets
-# `res/check/bench-arms.janet` *derive* that the two arms are the same program
+# what `res/repo/janet-to-wattle.wattle` made from it, which is what lets
+# `res/check/bench-arms.wattle` *derive* that the two arms are the same program
 # rather than assert it. Run that check before believing a number from here.
 #
 # ## What the ratio is
@@ -82,7 +82,7 @@ if [ "$w_names" != "$j_names" ]; then
     echo "yardstick.sh: the two arms do not report the same workloads, in the same order." >&2
     echo "  $wattle_arm: $(echo "$w_names" | tr '\n' ' ')" >&2
     echo "  $janet_arm: $(echo "$j_names" | tr '\n' ' ')" >&2
-    echo "Run res/check/bench-arms.janet --check; the arms have diverged." >&2
+    echo "Run res/check/bench-arms.wattle --check; the arms have diverged." >&2
     exit 1
 fi
 

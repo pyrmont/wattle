@@ -1,8 +1,8 @@
 # Mutation sweeps
 
-*Moved verbatim from the former root `AGENTS.md` on 2026-08-30. Read this before running, repairing, or interpreting `res/testing/mutate.janet` and its artifacts.*
+*Moved verbatim from the former root `AGENTS.md` on 2026-08-30. Read this before running, repairing, or interpreting `res/testing/mutate.wattle` and its artifacts.*
 
-**A bare `./res/testing/mutate.janet` prints its usage and stops.** A sweep
+**A bare `./res/testing/mutate.wattle` prints its usage and stops.** A sweep
 needs `--src <file>` or `--all`, because a whole-tree run is thirty hours and
 is not something to start by typing the program's name. `--src` is repeatable
 and sweeps the sources in the order given under one warm-up, one log and one
@@ -10,7 +10,7 @@ set of totals, which is the batch Phase 20 Part 2 runs:
 
 ```sh
 unsetopt BG_NICE
-nohup ./res/testing/mutate.janet --src A --src B --no-strings --log /tmp/wattle-mutate-2a.log &
+nohup ./res/testing/mutate.wattle --src A --src B --no-strings --log /tmp/wattle-mutate-2a.log &
 ```
 
 **`unsetopt BG_NICE` is not optional under zsh.** The option is on by default
@@ -87,7 +87,7 @@ final, because `zig build test` installs nothing and every build passes
 everything the full stage would compile. The judge is the same for every
 source, which is what
 retired the three per-increment constants: all sixty-five contracts in one
-process, then every `test/suite-*.janet` read from the directory. The third
+process, then every `test/suite-*.wattle` read from the directory. The third
 defect was that `ev/stream.zig` and `ev/backend.zig` had never run to
 completion, and `--all` sweeps them first for that reason. A build that fails
 is read rather than counted: the compiler refusing the mutation is
@@ -104,7 +104,7 @@ passing step's cost that a busy host starves one past it: three of Part 3e's
 hang catches named a suite with no connection to the subject and none of the
 three repeated.
 
-`./res/testing/mutate.janet`, run from the repository root. Its header has the design;
+`./res/testing/mutate.wattle`, run from the repository root. Its header has the design;
 two rules survive here because they
 are about what you do *around* it rather than what it does.
 
@@ -120,7 +120,7 @@ The way this rule actually gets broken is not a deliberate edit to the source.
 It is a bulk `sed`, a `grep -l | xargs`, or a global rename whose *file list*
 happens to include it — in that case, a one-word fix to three documentation
 files, one of which was the Zig source. Reasoning "I am only touching docs" is
-exactly the check that passes when it should not. `mutate.janet` now verifies
+exactly the check that passes when it should not. `mutate.wattle` now verifies
 after every mutant that the file still holds what it wrote and aborts if not,
 so the failure is loud rather than silent, but the abort costs you the run.
 
@@ -129,7 +129,7 @@ harness rebuilds and re-runs the tests for each mutant, so a test added midway
 judges the later mutants and not the earlier ones, and the log stops being one
 measurement. Let the pass finish, close the holes it found, then re-run over
 *just the survivors* — which is also far cheaper than a second full pass, and
-which `mutate.janet` prints the `--only` line for.
+which `mutate.wattle` prints the `--only` line for.
 
 A round of re-runs is one invocation. `--only` names sites in the `--src`
 before it, so `--src A --only 3,17 --src B --only 5` re-runs both sources
@@ -289,7 +289,7 @@ a distinct source *content*, so each deposits a fresh object set. Unbounded that
 reached 116GB and filled a 460GB disk, after which builds fail for reasons
 unrelated to any mutation and those failures are recorded as verdicts too.
 
-Pruning, not wiping: `mutate.janet` builds the *unmutated* source once per stage
+Pruning, not wiping: `mutate.wattle` builds the *unmutated* source once per stage
 before it starts, snapshots the cache, and after each mutant deletes everything
 outside that snapshot. The cache then sits at one baseline plus at most one
 mutant — measured at 6.0GB steady and 10.9GB peak for the escalating judge, or
@@ -317,7 +317,7 @@ measures nothing.** Better to learn that in the first minute than from two
 hundred meaningless verdicts.
 
 **A contract that leaves a child behind is scored as a hang, whatever it
-decided.** `mutate.janet` runs the contract through `tools/sh`, which reads
+decided.** `mutate.wattle` runs the contract through `tools/sh`, which reads
 both pipes to `:all`, and that blocks until every writer to the pipe closes --
 including a grandchild the contract spawned and did not reap. It was
 `capture_output=True` in the Python and the hazard is unchanged by the port. Phase 10 Part 12's contract spawns
@@ -339,7 +339,7 @@ signal is what turns that mutant into a real catch. A sweep whose catches are
 mostly timeouts is a sweep to distrust before it is a sweep to report.
 
 **A sweep that is killed leaves the source mutated, and it compiles.**
-`mutate.janet` restores from its own backup after each verdict, so a run that
+`mutate.wattle` restores from its own backup after each verdict, so a run that
 dies between the write and the restore leaves a live mutation in the tree. It
 will not announce itself: a mutation is a *behaviour* change, so `zig build`
 is clean and only the tests notice. Phase 10 Part 12 hit this by starting the
@@ -348,7 +348,7 @@ poll timed out, the process group went with it, and `statOrLstat`'s keyword
 check was left inverted in the working tree.
 
 Two habits fix it. Launch a long sweep from a command that *returns
-immediately* -- `nohup ./res/testing/mutate.janet ... &` and nothing else -- and poll from a
+immediately* -- `nohup ./res/testing/mutate.wattle ... &` and nothing else -- and poll from a
 separate one; chaining the poll onto the launch means a timeout on the poll
 kills the sweep with it. (`setsid` is not available on macOS, so the detach is
 `nohup` plus a short command.) And after any sweep that did not print its own
@@ -362,7 +362,7 @@ fails the same suite for a reason unrelated to its own mutation. Phase 10 Part
 12 lost a whole phase to this: a mutated `os/open` mode created `unique.txt`
 with permissions 0000, `test/suite-ev.wattle` could never reopen it, and
 **fifty-seven of seventy-four mutants were recorded as caught by
-`suite-ev.wattle (fail)`**. `mutate.janet` now clears a `debris` list before every
+`suite-ev.wattle (fail)`**. `mutate.wattle` now clears a `debris` list before every
 judged run. What gave it away was the attribution column -- a file-writing
 suite has no business catching mutations in a permission parser -- which is
 Part 8's "label the catcher" rule paying for itself a second time. **Read the
@@ -404,7 +404,7 @@ purgeable notion is not.
 **Mutants that only one configuration compiles need a judge that builds it.**
 Half of `core_env.zig` exists only in the image generator, so a default `zig
 build` cannot see a mutation in it at all and reports it as surviving.
-`mutate.janet` escalates — plain build, then the whole `zig build test` graph —
+`mutate.wattle` escalates — plain build, then the whole `zig build test` graph —
 so cheap mutants die cheaply and the expensive judge runs only for what needs
 it. (There was a `-Dboot=zig` stage between the two; Phase 10 Part 17g removed
 the option by removing the C generator, and Part 19 removed the stage.)

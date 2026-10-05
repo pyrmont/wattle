@@ -37,7 +37,7 @@ jobs:
   # arm64 only. The `macos-15-intel` entry was dropped: Apple no longer
   # supports the platform, and the entry was three times slower than any other
   # in the matrix. x86-64 still executes on the two native Linux jobs, and
-  # `res/testing/matrix.janet` keeps an `x86_64-macos` build-only entry, so the
+  # `res/testing/matrix.wattle` keeps an `x86_64-macos` build-only entry, so the
   # Darwin arms are still compiled at that width. What no longer runs anywhere
   # is x86-64 *on Darwin*, which that entry declines to run in any case because
   # it needs Rosetta.

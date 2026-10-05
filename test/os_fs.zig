@@ -13,7 +13,7 @@
 //! Once before the run and once after. Before, because a previous run that
 //! aborted mid-way leaves the tree behind and every assertion after that fails
 //! for the wrong reason, so one suite's leftover file cannot make fifty-seven
-//! mutants look caught. After, because `res/testing/matrix.janet` runs
+//! mutants look caught. After, because `res/testing/matrix.wattle` runs
 //! entries concurrently in the repository working directory.
 //!
 //! The names have a random-looking suffix for the same reason: two matrix

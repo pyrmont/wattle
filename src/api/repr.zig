@@ -307,7 +307,7 @@ pub const Value = switch (config.value_repr) {
 ///
 /// `build.zig` selects this arm wherever the pointer is four bytes wide and
 /// `-Dnanbox` is not false, which is the default on such a target.
-/// `res/testing/matrix.janet` runs the suites on it under wasmtime through
+/// `res/testing/matrix.wattle` runs the suites on it under wasmtime through
 /// the `wasm32-wasi` entry, and builds it for `riscv32-linux-musl`,
 /// `x86-linux-musl` and `arm-linux-musleabihf`.
 pub const nanbox32 = struct {

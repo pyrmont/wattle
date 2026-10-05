@@ -1,16 +1,16 @@
 # Acceptance matrix
 
-*Moved verbatim from the former root `AGENTS.md` on 2026-08-30. Read this before configuring or running `res/testing/matrix.janet`, interpreting its timing and flaky results, or changing its contract population.*
+*Moved verbatim from the former root `AGENTS.md` on 2026-08-30. Read this before configuring or running `res/testing/matrix.wattle`, interpreting its timing and flaky results, or changing its contract population.*
 
 ## The acceptance matrix
 
-`res/testing/matrix.janet`. Set `contracts-default` at its head to the increment's own contract
+`res/testing/matrix.wattle`. Set `contracts-default` at its head to the increment's own contract
 files — that is the only per-increment edit it needs.
 
 **`zig fmt` is `zig fmt src test build.zig`, and not `port/` or `res/`.** The spike
 corpora under `port/` are historical sources kept as
 they were measured, and they are not `zig fmt` clean; reformatting one edits a
-record. `matrix.janet`'s preflight checks the tree the build compiles, which is
+record. `matrix.wattle`'s preflight checks the tree the build compiles, which is
 the right population.
 
 **Read it per entry before believing its total.** The summary line is
@@ -94,7 +94,7 @@ to compile on `test/helper.wattle`'s first line.
     `/tmp/wattle-os-surface-contract`. The rule below is about a shared fixture;
     the working directory is only where one usually is.
 
-**Since the hinge, `matrix.janet` refuses to start rather than letting you find
+**Since the hinge, `matrix.wattle` refuses to start rather than letting you find
 this out one entry at a time.** A preflight checks, in about a second and with
 no build at all, that every `contracts-default` name is a real `test/*.zig`, that
 every `-D` option every job passes still exists in `build.zig`, and that
@@ -135,7 +135,7 @@ has been folded in rather than kept. 263s at `-j2` for thirty-three, against
 186s for twenty-one.
 
 **Do not hand-roll a reduced-configuration sweep beside the matrix.** Phase 11
-Parts 7 and 8 each did, over thirteen configurations, and `matrix.janet` covers
+Parts 7 and 8 each did, over thirteen configurations, and `matrix.wattle` covers
 twelve of the thirteen. A cold build in a throwaway cache was 11s then and is
 about 25s now, so the loop cost about what the whole matrix costs (172s at
 `-j2` for twenty-one entries) and checked strictly less — no suites, no
@@ -188,7 +188,7 @@ collides with the job still holding it; the symptom is `failed to rename
 compilation results into local cache: FileNotFound`, which names nothing useful.
 
 **A parked entry poisons the rest of the run, so read FLAKY before FAIL.**
-A park holds `matrix.janet`'s suites lock for its whole 300-second bound, and the
+A park holds `matrix.wattle`'s suites lock for its whole 300-second bound, and the
 other worker can only build meanwhile; when the lock finally releases the
 queued test steps bunch. Phase 10 Part 17e watched a run with **three** parks
 produce two FAILs -- `call trampoline` and `value-wrap=c`, both on
@@ -238,7 +238,7 @@ afternoon to find out. Running a `wc` and a `grep` during one matrix produced
 the spurious `deadline expired` above. Then, during the *next* matrix, editing
 three source files produced three FAILs -- `filewatch-core=c`,
 `value-access=c`, `buffer-array=c` -- which were nothing but half-applied
-edits: **`matrix.janet` builds from the working tree as it goes**, so an edit
+edits: **`matrix.wattle` builds from the working tree as it goes**, so an edit
 landing mid-run gives some entries the old sources and some the new, and the
 whole run is void.
 
@@ -319,14 +319,14 @@ Measured at **17 failures in 32 two-at-a-time runs, 8 on one arm of the
 selector under test and 9 on the other** -- and that even split is the whole
 argument, because it is what distinguishes a shared fixture from a defect in
 the code being tested. A one-armed failure would have been the port's; an even
-one cannot be. `matrix.janet` now compiles concurrently, which is where the time
+one cannot be. `matrix.wattle` now compiles concurrently, which is where the time
 goes, and takes a lock to run. `WATTLE_TEST_PORT` is also set per slot, but that
 fixes only the first of the three -- the other two are cwd- and /tmp-relative
 and cannot move without editing the suites.
 
 **What each entry runs matters more than how many run at once.** A full
 `zig build test` entry is 24s, of which 14 are the library; library plus the
-increment's own contracts is 20s. `matrix.janet` keeps the full `test` for the four
+increment's own contracts is 20s. `matrix.wattle` keeps the full `test` for the four
 entries where catching a regression *outside* those contracts is the point — the
 default, every selector `c`, and one release mode — because a misplaced
 `#endif` shows up as a suite failure, not a contract failure. (`-Dboot=zig` was

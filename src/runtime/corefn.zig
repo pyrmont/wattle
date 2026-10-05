@@ -83,7 +83,7 @@ pub const end: Entry = .{};
 ///
 /// Repo-relative keeps the build machine's directory out of the source map
 /// and therefore out of the core image.
-/// `res/check/image-diff.janet` counts what host paths remain.
+/// `res/check/image-diff.wattle` counts what host paths remain.
 const source_root = "src/";
 
 /// Whether a registration here records a docstring.

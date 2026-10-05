@@ -1698,7 +1698,7 @@ fn goThreadBody(ctx: *GoThreadContext) raise.Error!void {
     schedule(fiber, val);
     // The raise is returned rather than flattened: this function is
     // raise-capable, and a report nobody here consumes is exactly what
-    // `res/check/swallowed.janet` finds.
+    // `res/check/swallowed.wattle` finds.
     try loop();
     ctx.args.tag = constants.ev_tctag_nil;
 }

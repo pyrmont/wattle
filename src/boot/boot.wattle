@@ -6320,7 +6320,7 @@
 (def- cli-release-modes {"safe" "ReleaseSafe" "fast" "ReleaseFast" "small" "ReleaseSmall"})
 
 ; Kept apart from the separator so that the image holds no string that reads as
-; an absolute path to a .zig file, which `res/check/image-diff.janet` counts.
+; an absolute path to a .zig file, which `res/check/image-diff.wattle` counts.
 (def- cli-zig-build-file "build.zig")
 (def- cli-zig-cache ".zig-cache")
 

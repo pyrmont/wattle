@@ -1,42 +1,42 @@
-#!/usr/bin/env janet
-# Every C-compatible layout in the tree, with the evidence that fixes it.
-#
-# Phase 13 Part 2, increment 2e.  The exit condition asks for every
-# C-compatible layout to be classified.
-#
-# ## The compiler is not the oracle here, and that was measured
-#
-# Stripping `extern` from all 104 declarations and building compiles once 24
-# are restored -- Zig refuses a non-extern aggregate in a `callconv(.c)`
-# signature, and refuses an `extern struct` with a non-extern field, so those
-# two reasons are checked.  The resulting binary then **aborts in the
-# bootstrap**, because a third reason is not checked: a layout whose field
-# order or in-memory representation something reads directly.  Zig may reorder
-# the fields of an ordinary struct, and `std.mem.zeroes`, a `@ptrCast` to
-# another view, an `@offsetOf` and a `memcpy` are all silent about it.
-#
-# So a classification driven by the compiler would be confidently wrong.  This
-# collects the evidence for each of the three reasons instead:
-#
-#   abi     the type, or a pointer to it, is in a `callconv(.c)` signature
-#           -- in *code*: the corpus below has its comments stripped first
-#   field   it is a by-value field of another `extern` layout
-#   repr    something reads its representation -- `@sizeOf`, `@offsetOf`,
-#           `@bitCast`, `@ptrCast`, `std.mem.zeroes`, `safe_memcpy`
-#   host    its file translates a header, or its name is a foreign structure
-#
-# A layout with none of the four is migration residue: it is `extern` because
-# the C implementation's was, and nothing has reconsidered it.
-#
-#     ./res/check/layouts.janet           regenerate res/check/layouts.txt
-#     ./res/check/layouts.janet --check   fail if the tree disagrees with it
+#!/usr/bin/env wattle
+; Every C-compatible layout in the tree, with the evidence that fixes it.
+;
+; Phase 13 Part 2, increment 2e.  The exit condition asks for every
+; C-compatible layout to be classified.
+;
+; ## The compiler is not the oracle here, and that was measured
+;
+; Stripping `extern` from all 104 declarations and building compiles once 24
+; are restored -- Zig refuses a non-extern aggregate in a `callconv(.c)`
+; signature, and refuses an `extern struct` with a non-extern field, so those
+; two reasons are checked.  The resulting binary then **aborts in the
+; bootstrap**, because a third reason is not checked: a layout whose field
+; order or in-memory representation something reads directly.  Zig may reorder
+; the fields of an ordinary struct, and `std.mem.zeroes`, a `@ptrCast` to
+; another view, an `@offsetOf` and a `memcpy` are all silent about it.
+;
+; So a classification driven by the compiler would be confidently wrong.  This
+; collects the evidence for each of the three reasons instead:
+;
+;   abi     the type, or a pointer to it, is in a `callconv(.c)` signature
+;           -- in *code*: the corpus below has its comments stripped first
+;   field   it is a by-value field of another `extern` layout
+;   repr    something reads its representation -- `@sizeOf`, `@offsetOf`,
+;           `@bitCast`, `@ptrCast`, `std.mem.zeroes`, `safe_memcpy`
+;   host    its file translates a header, or its name is a foreign structure
+;
+; A layout with none of the four is migration residue: it is `extern` because
+; the C implementation's was, and nothing has reconsidered it.
+;
+;     ./res/check/layouts.wattle           regenerate res/check/layouts.txt
+;     ./res/check/layouts.wattle --check   fail if the tree disagrees with it
 
 (import ../common :as tools)
 
 (def list-path "res/check/layouts.txt")
 
-# Structures a platform, not this project, defines.  Named rather than
-# detected: `OVERLAPPED` is Win32's whatever file spells it.
+; Structures a platform, not this project, defines.  Named rather than
+; detected: `OVERLAPPED` is Win32's whatever file spells it.
 (def foreign
   {"OVERLAPPED" true "Overlapped" true "OverlappedWatch" true
    "WSABUF" true "FILETIME" true "ConsoleScreenBufferInfo" true
@@ -46,45 +46,45 @@
    "Sysv64SseIntReturn" true "Aapcs64ReturnGeneral" true
    "Aapcs64ReturnSse" true "Aapcs64ReturnPointer" true "JittedFn" true})
 
-# The layouts the *compiler* proves must stay `extern`, from the experiment in
-# this file's header: strip `extern` from every layout not listed here, build,
-# restore whatever Zig names, repeat.  It converges in three rounds.
-#
-# **This list cannot be derived by reading the source, and that is the point.**
-# `raise.panicking(f).abi`, `args.zig`'s `IndexAbi` and `Boxed(T)` generate
-# their `callconv(.c)` signature from a comptime type, so the layout's name
-# never appears beside the calling convention anywhere -- no grep can see the
-# crossing.  `Range` is the clearest: `raise.zig` returns one from a
-# generated abi and `args.zig` says nothing about it.
-#
-# `./res/check/layouts.janet --verify` re-runs the experiment against this
-# list, and first refuses any entry that no longer names an `extern`
-# declaration -- the strip skips these names, so a stale one is invisible to it.
-#
-# ## What the evidence column cannot see
-#
-# **Evidence is collected per *name*, and two names are declared in more than
-# one file.** `Head` is in `value/maps.zig` and `value/vectors.zig`, and
-# `SignedHead` in `value/strings.zig` and `value/tuples.zig`. A use of the bare
-# identifier anywhere is counted as evidence for every declaration that shares
-# the name, so the column over-attributes across those two and a genuinely
-# unevidenced one could be rescued by a same-named neighbour. One is today:
-# `maps.zig`'s `Head` has no `repr` evidence in its own file, and its row is
-# fixed by `vectors.zig`'s. It is `extern` because `gc.gcalloc` asserts that
-# the collector's header is its first field, which no pattern below matches.
-# Each `SignedHead` has its own `@sizeOf` and `@offsetOf`. It is a hole in the
-# `residue` class and it is named here rather than hidden, because the row it
-# would hide is exactly the row this list exists to show.
+; The layouts the *compiler* proves must stay `extern`, from the experiment in
+; this file's header: strip `extern` from every layout not listed here, build,
+; restore whatever Zig names, repeat.  It converges in three rounds.
+;
+; **This list cannot be derived by reading the source, and that is the point.**
+; `raise.panicking(f).abi`, `args.zig`'s `IndexAbi` and `Boxed(T)` generate
+; their `callconv(.c)` signature from a comptime type, so the layout's name
+; never appears beside the calling convention anywhere -- no grep can see the
+; crossing.  `Range` is the clearest: `raise.zig` returns one from a
+; generated abi and `args.zig` says nothing about it.
+;
+; `./res/check/layouts.wattle --verify` re-runs the experiment against this
+; list, and first refuses any entry that no longer names an `extern`
+; declaration -- the strip skips these names, so a stale one is invisible to it.
+;
+; ## What the evidence column cannot see
+;
+; **Evidence is collected per *name*, and two names are declared in more than
+; one file.** `Head` is in `value/maps.zig` and `value/vectors.zig`, and
+; `SignedHead` in `value/strings.zig` and `value/tuples.zig`. A use of the bare
+; identifier anywhere is counted as evidence for every declaration that shares
+; the name, so the column over-attributes across those two and a genuinely
+; unevidenced one could be rescued by a same-named neighbour. One is today:
+; `maps.zig`'s `Head` has no `repr` evidence in its own file, and its row is
+; fixed by `vectors.zig`'s. It is `extern` because `gc.gcalloc` asserts that
+; the collector's header is its first field, which no pattern below matches.
+; Each `SignedHead` has its own `@sizeOf` and `@offsetOf`. It is a hole in the
+; `residue` class and it is named here rather than hidden, because the row it
+; would hide is exactly the row this list exists to show.
 (def compiler-fixed
   {"Aapcs64ReturnGeneral" true "Aapcs64ReturnPointer" true
    "Aapcs64ReturnSse" true "AssembleResult" true
    "Binding" true "BuildConfig" true "ByteView" true
    "DictView" true "GenericMessage" true "FuncEnvRef" true
    "GCData" true "GCObject" true "Range" true
-   # `Value` is the one comptime-selected declaration in the list, and it was
-   # invisible until the strip learned to reach an arm head. `repr.Value` is a
-   # parameter and a return type across the C ABI in every representation, so
-   # the compiler refuses the stripped form the moment `cabi.zig` is analysed.
+   ; `Value` is the one comptime-selected declaration in the list, and it was
+   ; invisible until the strip learned to reach an arm head. `repr.Value` is a
+   ; parameter and a return type across the C ABI in every representation, so
+   ; the compiler refuses the stripped form the moment `cabi.zig` is analysed.
    "Value" true})
 
 (defn- declaration-end
@@ -137,18 +137,18 @@
   half: the row is the name, and the arm count is not a column because a
   configuration compiles exactly one of them."
   []
-  (def out @[])
+  (def out ![])
   (each path (tools/src-files)
     (def lines (string/split "\n" (slurp path)))
     (loop [i :range [0 (length lines)]]
-      (def m (peg/match ~(* (thru "const ") (<- (some (+ :w "_"))) " = " (<- (thru -1)))
+      (def m (peg/match `(* (thru "const ") (<- (some (+ :w "_"))) " = " (<- (thru -1)))
                         (lines i)))
       (when m
         (def [name rest] m)
-        (def direct (peg/match ~(* "extern " (+ "struct" "union")) rest))
+        (def direct (peg/match `(* "extern " (+ "struct" "union")) rest))
         (def conditional
           (and (not direct)
-               (peg/match ~(+ "if (" "switch (" "(if (") rest)
+               (peg/match `(+ "if (" "switch (" "(if (") rest)
                (do (var found false)
                    (def stop (declaration-end lines i))
                    (loop [j :range [i (inc stop)]]
@@ -157,40 +157,40 @@
                        (break)))
                    found)))
         (when (or direct conditional)
-          (array/push out {:file (string/replace "src/" "" path)
+          (array/push! out {:file (string/replace "src/" "" path)
                            :line (inc i)
                            :name (string name)})))))
   out)
 
 (defn- corpus []
-  (def out @{})
-  # **Comments stripped, because prose is not evidence.**  The scan below
-  # decides `abi` by finding `callconv(.c)` or `extern fn` near an occurrence
-  # of the name, and a comment that merely *mentions* a layout beside an
-  # `extern fn` declaration satisfied that.  Five of the 63 rows carried
-  # evidence they did not have -- `Method` from a sentence in the module's
-  # declaration file naming `abi.Method` above an `extern fn` block, three
-  # `OVERLAPPED` rows
-  # the same way, and `ffi/types.Layout`, which is used only inside its own
-  # file and was `fixed` by a paragraph containing the words "extern fn".
-  # Found at Phase 17 Part 2f, when rewriting one of those sentences moved a
-  # row.  `strip-comments` keeps string literals, so a name inside an
-  # `@export(.{ .name = "..." })` still counts.
+  (def out !{})
+  ; **Comments stripped, because prose is not evidence.**  The scan below
+  ; decides `abi` by finding `callconv(.c)` or `extern fn` near an occurrence
+  ; of the name, and a comment that merely *mentions* a layout beside an
+  ; `extern fn` declaration satisfied that.  Five of the 63 rows carried
+  ; evidence they did not have -- `Method` from a sentence in the module's
+  ; declaration file naming `abi.Method` above an `extern fn` block, three
+  ; `OVERLAPPED` rows
+  ; the same way, and `ffi/types.Layout`, which is used only inside its own
+  ; file and was `fixed` by a paragraph containing the words "extern fn".
+  ; Found at Phase 17 Part 2f, when rewriting one of those sentences moved a
+  ; row.  `strip-comments` keeps string literals, so a name inside an
+  ; `@export(.{ .name = "..." })` still counts.
   (each path (tools/src-files)
-    (put out path (tools/strip-comments (slurp path))))
+    (put! out path (tools/strip-comments (slurp path))))
   out)
 
 (defn- word-hits
   "Every path whose text names `word` as a whole identifier."
   [text word]
-  (def out @[])
+  (def out ![])
   (var at 0)
   (while (def i (string/find word text at))
     (def before (if (zero? i) nil (text (dec i))))
     (def after (get text (+ i (length word))))
     (when (and (or (nil? before) (not (tools/word-byte? before)))
                (or (nil? after) (not (tools/word-byte? after))))
-      (array/push out i))
+      (array/push! out i))
     (set at (+ i (length word))))
   out)
 
@@ -250,72 +250,72 @@
   (string/slice text start end))
 
 (defn- evidence [decls texts]
-  (def out @{})
+  (def out !{})
   (each d decls
     (def name (d :name))
-    (def tags @{})
-    (when (get foreign name) (put tags "host" true))
-    # The three host-header translations are the `abi.zig` files inside the
-    # runtime -- `os/`, `net/`, `filewatch/`. `api/abi.zig` is the module
-    # boundary and is not one of them, so the suffix alone is not the test.
+    (def tags !{})
+    (when (get foreign name) (put! tags "host" true))
+    ; The three host-header translations are the `abi.zig` files inside the
+    ; runtime -- `os/`, `net/`, `filewatch/`. `api/abi.zig` is the module
+    ; boundary and is not one of them, so the suffix alone is not the test.
     (when (and (string/has-prefix? "runtime/" (d :file))
                (string/has-suffix? "/abi.zig" (d :file)))
-      (put tags "host" true))
-    (when (get compiler-fixed name) (put tags "abi" true))
-    # A layout with a member typed out of the file's `@cImport` is the
-    # platform's whatever its own name is: `net.zig`'s `OptValue` holds a
-    # `struct_ip_mreq` and its bytes go to `setsockopt`.
+      (put! tags "host" true))
+    (when (get compiler-fixed name) (put! tags "abi" true))
+    ; A layout with a member typed out of the file's `@cImport` is the
+    ; platform's whatever its own name is: `net.zig`'s `OptValue` holds a
+    ; `struct_ip_mreq` and its bytes go to `setsockopt`.
     (let [text (get texts (string "src/" (d :file)) "")
           at (string/find (string "const " name " = extern") text)]
       (when at
         (def close (or (string/find "\n};" text at) (length text)))
         (def body (string/slice text at close))
-        (when (peg/match ~(* (thru (* ":" :s* (+ "h." "c."))) (thru -1)) body)
-          (put tags "host" true))))
-    (eachp [path text] texts
+        (when (peg/match `(* (thru (* ":" :s* (+ "h." "c."))) (thru -1)) body)
+          (put! tags "host" true))))
+    (each [path text] texts
       (each i (word-hits text name)
-        # The declaration is not evidence about itself.  Skipping it is the
-        # whole difference between "104 layouts, 0 residue" and a measurement.
+        ; The declaration is not evidence about itself.  Skipping it is the
+        ; whole difference between "104 layouts, 0 residue" and a measurement.
         (def decl (string/slice text (max 0 (- i 12)) (min (length text) (+ i (length name) 10))))
         (unless (and (string/find "const " decl) (string/find " = extern" decl))
           (def line (line-around text i))
-          # A parameter is found by scanning forward to the first `{`; a
-          # *return* type is on the same line as the convention, because
-          # `) callconv(.c) T {` puts them together.
-          # An `extern fn` declaration is a C-ABI crossing that never spells
-          # the convention, so the literal is not enough to look for.
+          ; A parameter is found by scanning forward to the first `{`; a
+          ; *return* type is on the same line as the convention, because
+          ; `) callconv(.c) T {` puts them together.
+          ; An `extern fn` declaration is a C-ABI crossing that never spells
+          ; the convention, so the literal is not enough to look for.
           (when (or (string/find "callconv(.c)" line)
                     (string/find "extern fn" line)
                     (crosses-c text i))
-            (put tags "abi" true))
+            (put! tags "abi" true))
           (when (or (string/find (string "@sizeOf(" name ")") text)
                     (string/find (string "@offsetOf(" name) text)
                     (string/find (string "zeroes(" name ")") text)
                     (string/find "@ptrCast" line)
                     (string/find "@bitCast" line)
                     (string/find "memcpy" line))
-            (put tags "repr" true))
-          (when (and (peg/match ~(* :s* (some (+ :w "_")) ":" :s* (thru -1)) line)
+            (put! tags "repr" true))
+          (when (and (peg/match `(* :s* (some (+ :w "_")) ":" :s* (thru -1)) line)
                      (container-is-extern text i))
-            (put tags "field" true)))))
-    (put out name (sort (keys tags))))
+            (put! tags "field" true)))))
+    (put! out name (sort (keys tags))))
   out)
 
 (defn classify []
   (def decls (declarations))
   (def ev (evidence decls (corpus)))
   (map (fn [d]
-         (def tags (get ev (d :name) @[]))
+         (def tags (get ev (d :name) ![]))
          (merge d {:tags tags
                    :class (if (empty? tags) "residue" "fixed")}))
        decls))
 
 (defn render [rows]
-  (def out @"")
-  (def residue (count |(= ($ :class) "residue") rows))
-  (buffer/push out
+  (def out !"")
+  (def residue (count #(= ($ :class) "residue") rows))
+  (buffer/push! out
     "# Every C-compatible layout, with the evidence that fixes it.\n"
-    "# Generated by `./res/check/layouts.janet`; do not edit.\n"
+    "# Generated by `./res/check/layouts.wattle`; do not edit.\n"
     "#\n"
     "# `abi`   the type, or a pointer to it, is in a `callconv(.c)` signature\n"
     "# `field` it is a by-value field of another `extern` layout\n"
@@ -330,20 +330,20 @@
     "#\n"
     (string/format "# layouts  %d\n# residue  %d\n#\n" (length rows) residue)
     "# columns: class  name  file:line  evidence\n\n")
-  # Sorted by name *and* file, because the sort is not stable and several names
-  # carry more than one row -- `Overlapped` has three, `SignedHead` four. Keyed
-  # on the name alone those rows permuted between two runs over an unchanged
-  # tree, so a diff of this file reported churn that was the sort's and not the
-  # tree's.
-  (each r (sort-by |(string ($ :name) "\0" ($ :file)) rows)
-    (buffer/push out (string/format "%-8s %-28s %-34s %s\n"
+  ; Sorted by name *and* file, because the sort is not stable and several names
+  ; carry more than one row -- `Overlapped` has three, `SignedHead` four. Keyed
+  ; on the name alone those rows permuted between two runs over an unchanged
+  ; tree, so a diff of this file reported churn that was the sort's and not the
+  ; tree's.
+  (each r (sort-by #(string ($ :name) "\0" ($ :file)) rows)
+    (buffer/push! out (string/format "%-8s %-28s %-34s %s\n"
                                     (r :class) (r :name)
                                     (string (r :file) ":" (r :line))
-                                    (string/join (r :tags) ","))))
+                                    (string/join "," (r :tags)))))
   (string out))
 
 (defn parse
-  ``A rendered list as `{"name file" -> {:class :tags}}`.
+  """A rendered list as `{"name file" -> {:class :tags}}`.
 
   **Keyed without the line number, and comparing the evidence.** The key was
   `name file:line`, so a comment gaining a line above a declaration retired one
@@ -353,26 +353,26 @@
   each, so the file stays in the key and only the line leaves it.
 
   The `evidence` column was written and never read back, which is the same hole
-  the export inventory's `audience` column had.``
+  the export inventory's `audience` column had."""
   [text]
-  (def out @{})
+  (def out !{})
   (each line (string/split "\n" text)
     (def t (string/trim line))
     (unless (or (empty? t) (string/has-prefix? "#" t))
-      (def f (filter |(not (empty? $)) (string/split " " t)))
+      (def f (filter #(not (empty? $)) (string/split " " t)))
       (def loc (get f 2))
       (def file (first (string/split ":" loc)))
-      (put out (string (get f 1) " " file)
-           {:class (get f 0) :tags (string/join (slice f 3) " ")})))
+      (put! out (string (get f 1) " " file)
+           {:class (get f 0) :tags (string/join " " (slice f 3))})))
   out)
 
-# One directory per invocation, so two runs cannot share a scratch tree and a
-# crashed run cannot poison the next one. The live tree is never written.
+; One directory per invocation, so two runs cannot share a scratch tree and a
+; crashed run cannot poison the next one. The live tree is never written.
 (def workdir
   (string "/tmp/wattle-layouts-" (os/getpid) "-" (math/floor (os/clock :monotonic))))
 
 (defn verify
-  ``Strip `extern` from every layout this file does *not* list as
+  """Strip `extern` from every layout this file does *not* list as
   compiler-fixed, and build.
 
   It first checks the list for **staleness**, which the strip cannot: a name
@@ -398,7 +398,7 @@
 
   `.git`, `.zig-cache` and `zig-out` are excluded from the copy -- the rest of
   the repository is about 13MB and the build needs all of it, because a build
-  reads `build.zig`, `test/` and `examples/` as well as `src/`.``
+  reads `build.zig`, `test/` and `examples/` as well as `src/`."""
   []
   (tools/rm-rf workdir)
   (def copy (tools/sh (string "mkdir -p " workdir " && tar -c "
@@ -409,12 +409,12 @@
   (unless (zero? (copy :code))
     (tools/rm-rf workdir)
     (tools/die "could not copy the repository into " workdir))
-  # An entry that no longer names an `extern` declaration is dead weight the
-  # strip below cannot see: it skips names in `compiler-fixed`, so a stale one
-  # is silently "fixed" for ever. Phase 14 Part 4b found eleven at once --
-  # three types that had been deleted and eight whose `extern` had come off
-  # without the compiler objecting -- and `--verify` had passed throughout,
-  # because completeness and staleness are different questions.
+  ; An entry that no longer names an `extern` declaration is dead weight the
+  ; strip below cannot see: it skips names in `compiler-fixed`, so a stale one
+  ; is silently "fixed" for ever. Phase 14 Part 4b found eleven at once --
+  ; three types that had been deleted and eight whose `extern` had come off
+  ; without the compiler objecting -- and `--verify` had passed throughout,
+  ; because completeness and staleness are different questions.
   (def declared (tabseq [d :in (declarations)] (d :name) true))
   (def stale (sort (seq [name :keys compiler-fixed :when (not (get declared name))] name)))
   (unless (empty? stale)
@@ -427,8 +427,8 @@
 
   (var stripped 0)
   (var built nil)
-  # No early exit inside this block: a `defer` does not run through `os/exit`,
-  # and leaving the scratch tree behind fills /tmp a gigabyte at a time.
+  ; No early exit inside this block: a `defer` does not run through `os/exit`,
+  ; and leaving the scratch tree behind fills /tmp a gigabyte at a time.
   (def decls (declarations))
   (defer (tools/rm-rf workdir)
     (each path (tools/zig-files (string workdir "/src"))
@@ -441,23 +441,23 @@
           (def i (dec (d :line)))
           (def a (string "const " (d :name) " = extern "))
           (if (string/find a (lines i))
-            # A direct declaration: one `extern` on the declaring line.
-            (do (put lines i (string/replace a (string "const " (d :name) " = ")
+            ; A direct declaration: one `extern` on the declaring line.
+            (do (put! lines i (string/replace a (string "const " (d :name) " = ")
                                              (lines i)))
                 (set touched true)
                 (++ stripped))
-            # A comptime-selected declaration: `extern` sits on each arm head
-            # instead, and every arm has to lose it or the ones left keep the
-            # fixing this is trying to remove. This is `NITS.md`'s Part 2 item 3
-            # second half -- the naming half closed at increment 3a, and until
-            # this the strip experiment still could not reach a conditional arm.
+            ; A comptime-selected declaration: `extern` sits on each arm head
+            ; instead, and every arm has to lose it or the ones left keep the
+            ; fixing this is trying to remove. This is `NITS.md`'s Part 2 item 3
+            ; second half -- the naming half closed at increment 3a, and until
+            ; this the strip experiment still could not reach a conditional arm.
             (let [stop (declaration-end lines i)]
               (loop [j :range [i (inc stop)]]
                 (when (arm-head? (lines j))
-                  (put lines j (string/replace-all "extern " "" (lines j)))
+                  (put! lines j (string/replace-all "extern " "" (lines j)))
                   (set touched true)
                   (++ stripped)))))))
-      (when touched (spit path (string/join lines "\n"))))
+      (when touched (spit path (string/join "\n" lines))))
     (set built (tools/sh (string "cd " workdir " && zig build "
                                  "--cache-dir " workdir "/.zig-cache "
                                  "-p " workdir "/zig-out")
@@ -465,7 +465,7 @@
   (print "stripped " stripped " layouts the list does not fix")
   (def output (string (built :out) (built :err)))
   (def diagnostics
-    (filter |(peg/match ~(* (thru ".zig:") (some :d) ":" (some :d) ": error:") $)
+    (filter #(peg/match `(* (thru ".zig:") (some :d) ":" (some :d) ": error:") $)
             (string/split "\n" output)))
   (cond
     (not (empty? diagnostics))
@@ -483,7 +483,7 @@
         (print "the build then fails downstream, which is why `repr` and `host`")
         (print "are columns: a layout can be `extern` for a reason no compiler")
         (print "checks. The first failing step:")
-        (each line (take 6 (filter |(string/find "error:" $) (string/split "\n" output)))
+        (each line (take 6 (filter #(string/find "error:" $) (string/split "\n" output)))
           (print "  " (string/trim line)))
         (os/exit 0))))
 
@@ -511,11 +511,11 @@
               (eprint "EVIDENCE    " n "  "
                       (if (empty? (was :tags)) "(none)" (was :tags)) " -> "
                       (if (empty? (is :tags)) "(none)" (is :tags))))))
-      # **Disappearance is a failure.** A required fixed layout changed from
-      # `extern` to an ordinary one simply leaves the population, and this used
-      # to pass. `residue` is the one class that may go quietly: a row with no
-      # evidence is `extern` only because the C implementation's was, which is
-      # the definition of removable.
+      ; **Disappearance is a failure.** A required fixed layout changed from
+      ; `extern` to an ordinary one simply leaves the population, and this used
+      ; to pass. `residue` is the one class that may go quietly: a row with no
+      ; evidence is `extern` only because the C implementation's was, which is
+      ; the definition of removable.
       (each n (sort (keys old))
         (unless (get new n)
           (def was (get old n))

@@ -17,7 +17,7 @@ and runs it against each wasm32-wasi binary it produces, it compiles
 | `completion/` | shell completions for the `wattle` command          |
 | `editor/`     | editor support: a Tree-sitter grammar, Neovim files |
 
-`common.janet` is the module the Janet scripts share. It finds the repository
+`common.wattle` is the module the scripts share. It finds the repository
 root as the directory above its own, so it stays at this level.
 `STYLE_GUIDE.md` holds the rules for comments and documentation prose.
 
@@ -38,23 +38,23 @@ invocation, including one with an unrecognised argument, regenerates the file.
 
 | script             | inventory                               | must be empty |
 | ------------------ | --------------------------------------- | ------------- |
-| `layouts.janet`    | `extern` layouts and their evidence     | —             |
-| `seam.janet`       | `c.janet_*` names and their publisher   | see below     |
-| `counters.janet`   | signed counters that index a container  | `e`           |
-| `optionals.janet`  | `.?` whose null the function also tests | `tested`      |
-| `callconv.janet`   | `src/` definitions with `callconv(.c)`  | `residue`     |
-| `orphans.janet`    | `pub` declarations nothing references   | `orphan`      |
-| `references.janet` | comment identifiers no code declares    | `unresolved`  |
-| `docblocks.janet`  | `///` blocks not on their declaration   | `stranded`    |
-| `gates.janet`      | symbols a configuration does not export | —             |
-| `bench-arms.janet` | whether a corpus's two arms agree       | —             |
+| `layouts.wattle`    | `extern` layouts and their evidence     | —             |
+| `seam.wattle`       | `c.janet_*` names and their publisher   | see below     |
+| `counters.wattle`   | signed counters that index a container  | `e`           |
+| `optionals.wattle`  | `.?` whose null the function also tests | `tested`      |
+| `callconv.wattle`   | `src/` definitions with `callconv(.c)`  | `residue`     |
+| `orphans.wattle`    | `pub` declarations nothing references   | `orphan`      |
+| `references.wattle` | comment identifiers no code declares    | `unresolved`  |
+| `docblocks.wattle`  | `///` blocks not on their declaration   | `stranded`    |
+| `gates.wattle`      | symbols a configuration does not export | —             |
+| `bench-arms.wattle` | whether a corpus's two arms agree       | —             |
 
-The file is named after the script, except that `gates.janet` writes
+The file is named after the script, except that `gates.wattle` writes
 `gated.txt`; it builds every configuration it compares and takes about two
-minutes. `seam.janet` reports a name no mechanism publishes, and any
+minutes. `seam.wattle` reports a name no mechanism publishes, and any
 `extern fn janet*` declared outside `host/cabi.zig`, as a finding.
-`optionals.janet` counts a bare `orelse unreachable` as well as `.?`.
-`references.janet`'s `c-era` class is a bounded backlog. Each `.txt` file's
+`optionals.wattle` counts a bare `orelse unreachable` as well as `.?`.
+`references.wattle`'s `c-era` class is a bounded backlog. Each `.txt` file's
 header defines its classes.
 
 Rows print `file:line`. `layouts`, `callconv`, `orphans` and `references`
@@ -66,13 +66,13 @@ compare rows by file and name, so a line number that has moved does not fail
 | script                 | reports                                             |
 | ---------------------- | --------------------------------------------------- |
 | `chronology.sh`        | migration citations, bad `-D` options, dead paths   |
-| `swallowed.janet`      | raises reported across the C ABI and never consumed |
-| `comments.janet`       | comment text for reading against `STYLE_GUIDE.md`   |
-| `image-diff.janet`     | core image size, host paths, and bytes vs a copy    |
-| `image-semantic.janet` | two images compared by meaning, not source position |
+| `swallowed.wattle`      | raises reported across the C ABI and never consumed |
+| `comments.wattle`       | comment text for reading against `STYLE_GUIDE.md`   |
+| `image-diff.wattle`     | core image size, host paths, and bytes vs a copy    |
+| `image-semantic.wattle` | two images compared by meaning, not source position |
 | `wasm_imports.zig`     | wasm imports from outside `wasi_snapshot_preview1`  |
 
-`chronology.sh` and `swallowed.janet` are silent on a clean tree.
+`chronology.sh` and `swallowed.wattle` are silent on a clean tree.
 `chronology.sh` looks for migration citations and `-D` options `build.zig` does
 not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and,
 across the whole tree including the top-level documents and `res/`, for the
@@ -81,12 +81,12 @@ alternation rather than a derived one: its scope is the whole tree, but it is
 silent on any path retired since the list was written, and it is not the
 general question of whether a named file exists.
 
-`comments.janet` extracts every Zig comment and Markdown paragraph to one file
+`comments.wattle` extracts every Zig comment and Markdown paragraph to one file
 per source under `zig-out/comments` and gates nothing.
 
-`image-diff.janet` counts the absolute host paths the image embeds, which must
+`image-diff.wattle` counts the absolute host paths the image embeds, which must
 be zero; `--save FILE` on one host and `--against FILE` on another compare its
-bytes. `image-semantic.janet` compares each binding's value, docstring and
+bytes. `image-semantic.wattle` compares each binding's value, docstring and
 bytecode with `:source-map` ignored, so a change that moves an nfunction's
 registration line changes the bytes and not this comparison. `zig build` runs
 `wasm_imports.zig` on wasm targets.
@@ -97,19 +97,19 @@ registration line changes the bytes and not this comparison. `zig build` runs
 | -------------- | ----------------------------------------------------- |
 | `contract.sh`  | one or more contracts, one process each               |
 | `leaks.sh`     | the leak check over every contract, or the named ones |
-| `matrix.janet` | the acceptance matrix                                 |
-| `mutate.janet` | the mutation sweep                                    |
+| `matrix.wattle` | the acceptance matrix                                 |
+| `mutate.wattle` | the mutation sweep                                    |
 
 `contract.sh` and `leaks.sh` run the driver in `zig-out` and do not build it.
 `leaks.sh` is macOS only; its expectations are in the script, so a difference
 is a non-zero exit.
 
-`matrix.janet` covers configurations, optimize modes and cross-compiles. Set
+`matrix.wattle` covers configurations, optimize modes and cross-compiles. Set
 `contracts-default` at its head to the change's own contracts.
 [`acceptance-matrix.md`](testing/acceptance-matrix.md) has the operational
 detail.
 
-`mutate.janet --src <file>` is repeatable and sweeps the sources in order under
+`mutate.wattle --src <file>` is repeatable and sweeps the sources in order under
 one warm-up and one log; `--all` sweeps every source under `src/` and takes
 about thirty hours. A bare invocation prints its usage. An interrupted sweep
 leaves its current mutant in the working tree. Read
@@ -170,7 +170,7 @@ difference that small. An isolated benchmark of the one function and
 `otool -tV` on both binaries can.
 
 Every corpus has two arms, a `.janet` for the C Janet binary and a `.wattle`
-for ours, and `res/check/bench-arms.janet` derives that the two are the same
+for ours, and `res/check/bench-arms.wattle` derives that the two are the same
 program. The corpora are beside the scripts: `interpreter/` is the general
 workload, `value/` is the value-access workload, `collections/` reads a
 collection's elements, `maps/` measures small persistent maps, `vectors/`
@@ -181,12 +181,11 @@ touches rather than the newest.
 
 ## repo
 
-Chores, run occasionally and by hand: `tm_lang_gen.janet` emits the TextMate
-grammar, `removecr.janet` strips carriage returns,
-`janet-to-wattle.janet` rewrites Janet source as Wattle source, and
-`version.janet` sets the version for a release or returns it to `DEVEL`.
+Chores, run occasionally and by hand: `removecr.wattle` strips carriage
+returns, `janet-to-wattle.wattle` rewrites Janet source as Wattle source, and
+`version.wattle` sets the version for a release or returns it to `DEVEL`.
 
-`version.janet 0.1.0` and `version.janet DEVEL` are steps of `RELEASING.md`.
+`version.wattle 0.1.0` and `version.wattle DEVEL` are steps of `RELEASING.md`.
 Each form sets the version in `build.zig` and the man page sources and
 regenerates the man pages with the `predoc` on the PATH. A release number also
 sets `build.zig.zon`, the banner in `README.md` and the heading of the
@@ -194,16 +193,19 @@ Unreleased section of `CHANGELOG.md`. The script computes every file's new
 text before it writes any, and stops where a file does not have exactly one
 line to set.
 
-**The instruments here stay Janet.** They run on whatever `janet` is on the
-PATH, never on the build under test, and nothing here is loaded by Wattle, so
-the parser swap does not reach them. `bench/`'s corpora are the exception: each
-has a `.wattle` arm the wattle binary runs, beside the `.janet` arm C Janet
-runs.
+**The instruments run on the installed wattle.** Every script under `res/`
+is a Wattle program that runs on whatever `wattle` is on the PATH, never on
+the build under test: `mutate.wattle` breaks the runtime on purpose, and a
+driver that ran on the mutant would score itself. A script that uses a
+language feature the installed wattle does not have needs a newer install
+first. `bench/`'s corpora are the exception: each has a `.wattle` arm the
+build under test runs, beside the `.janet` arm C Janet runs.
 
-`janet-to-wattle.janet FILE.janet ...` writes the `.wattle` file beside each
+`janet-to-wattle.wattle FILE.janet ...` writes the `.wattle` file beside each
 and reports every site it changed in a way a reader should look at; `--dry-run`
-reports without writing, and the exit status is non-zero where a site had no
-Wattle spelling at all. It substitutes one lexical form at a time and copies
+reports without writing, `--keep-lines` copies a string that spans lines
+through as written rather than joining it, and the exit status is non-zero
+where a site had no Wattle spelling at all. It substitutes one lexical form at a time and copies
 everything else through, so its output diffs against its input line for line.
 It converts syntax and not meaning: a `.janet` path inside a string, and a
 macro that builds code as `['if ...]`, are untouched. `notes/LANGUAGE.md` says

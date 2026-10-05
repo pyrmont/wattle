@@ -8,7 +8,7 @@ Between releases the version in `build.zig` is `DEVEL`, and a build reports
 tracked file differs from that commit. A release commit sets the version to the
 release's number. `src/README.md` describes the version label.
 
-The commands below use `0.1.0` as the example version. They need `janet` and
+The commands below use `0.1.0` as the example version. They need `wattle` and
 `predoc` on the PATH.
 
 ## 1. Check the development branch
@@ -34,7 +34,7 @@ minor-level one. Edit the section until it describes the release.
 Pass the version without its `v` prefix to the version script:
 
 ```console
-$ janet res/repo/version.janet 0.1.0
+$ wattle res/repo/version.wattle 0.1.0
 ```
 
 The script sets the version in `build.zig`, `build.zig.zon`, the two man page
@@ -92,7 +92,7 @@ publish it.
 After publishing the release, return the version to `DEVEL`:
 
 ```console
-$ janet res/repo/version.janet DEVEL
+$ wattle res/repo/version.wattle DEVEL
 ```
 
 This sets `build.zig` and the man page sources to `DEVEL`, regenerates the man
