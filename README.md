@@ -283,7 +283,7 @@ A REPL is launched when the binary is invoked with no arguments.
 
 ```
 $ wattle
-Wattle 0.1.0 macos/aarch64/zig - '(doc)' for help
+Wattle 0.1.1 macos/aarch64/zig - '(doc)' for help
 repl:1:> (+ 1 2 3)
 6
 repl:2:> (print "Hello, World!")

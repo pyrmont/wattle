@@ -6,7 +6,7 @@ const std = @import("std");
 /// build reports from it, and `Config.version` is that label: `env.zig`
 /// publishes it as `wattle/version` and `fingerprint.zig` reports it to a
 /// module loader.
-const version = "DEVEL";
+const version = "0.1.1";
 const build_name = "zig";
 
 /// The Janet suites, and the configuration each one needs.
