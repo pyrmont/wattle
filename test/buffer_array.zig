@@ -581,6 +581,9 @@ fn reallocZeroReturnsABlock() bool {
     const p = utils.malloc(16);
     expect(p != null);
     const q = utils.realloc(p, 0);
+    // An optimizing build removes an allocation that is only freed and treats
+    // it as having succeeded, which makes the check below always false.
+    std.mem.doNotOptimizeAway(q);
     if (q == null) return false;
     utils.free(q);
     return true;
