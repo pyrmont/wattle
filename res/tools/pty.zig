@@ -27,7 +27,8 @@
 //!   the cursor after the screen, as `@row,column` counted from 0.
 //!
 //! - `-x` waits for the command to exit, up to the `-t` limit and before the
-//!   pty is closed, and prints two lines after the output. The first is
+//!   pty is closed, and reads what the command writes until it exits. It
+//!   prints two lines after the output. The first is
 //!   `@exit N` with the exit status, `@signal N` when a signal ended the
 //!   command, or `@running`. The second is `@modes` followed by whichever of
 //!   `echo` and `icanon` are set on the terminal, read from the master.
@@ -37,7 +38,8 @@
 //! Without `-s`, the output is every byte the command wrote after the `-w`
 //! marker was found, escape sequences included. Reading ends after the
 //! command has been quiet for the `-q` period, because a pty master reports
-//! the command's exit as `EIO` rather than as end of file.
+//! the command's exit as `EIO` rather than as end of file. With `-x`, reading
+//! goes on until the command exits or the `-t` limit passes.
 //!
 //! With `-s`, every byte the command wrote is applied to a model of a
 //! terminal, and the rows are printed, each with its trailing blanks removed
@@ -374,7 +376,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     send(master, pending.items);
     _ = try pump(master, &capture, null, options);
     var report: ?[]const u8 = null;
-    if (options.exit) report = try exitReport(arena.allocator(), child, master, options.limit);
+    if (options.exit) report = try exitReport(arena.allocator(), child, master, &capture, options.limit);
     stop(child, master, options.limit);
     try emit(&capture, start, options, report);
     return 0;
@@ -456,8 +458,11 @@ fn emit(capture: *Capture, start: usize, options: Options, report: ?[]const u8) 
 /// lines `-x` prints.
 ///
 /// The pty is still open, so the command's exit is its own and not the
-/// hang-up that closing the master causes.
-fn exitReport(arena: std.mem.Allocator, child: std.c.pid_t, master: c_int, limit: i64) ![]const u8 {
+/// hang-up that closing the master causes. What the command writes while it
+/// is waited on is read into `capture`. A command that sets its modes with
+/// `TCSADRAIN` waits until the master has read its output, so a wait that
+/// did not read would wait for the limit.
+fn exitReport(arena: std.mem.Allocator, child: std.c.pid_t, master: c_int, capture: *Capture, limit: i64) ![]const u8 {
     var status: c_int = 0;
     var exited = false;
     const started = now();
@@ -466,8 +471,13 @@ fn exitReport(arena: std.mem.Allocator, child: std.c.pid_t, master: c_int, limit
             exited = true;
             break;
         }
-        const pause: std.c.timespec = .{ .sec = 0, .nsec = 10_000_000 };
-        _ = std.c.nanosleep(&pause, null);
+        if (!try readReady(master, capture, 10)) {
+            const pause: std.c.timespec = .{ .sec = 0, .nsec = 10_000_000 };
+            _ = std.c.nanosleep(&pause, null);
+        }
+    }
+    if (exited) {
+        while (try readReady(master, capture, 0)) {}
     }
     var out: std.ArrayList(u8) = .empty;
     const word: u32 = @bitCast(status);
@@ -607,6 +617,21 @@ fn pump(master: c_int, capture: *Capture, text: ?[]const u8, options: Options) !
         try capture.bytes.appendSlice(allocator, chunk[0..@intCast(count)]);
         last = now();
     }
+}
+
+/// Reads once from `master` into `capture` when it is readable within
+/// `timeout` milliseconds, and returns whether bytes were read.
+///
+/// The result is false when the master is not readable in that time, and
+/// when the read reports end of input or an error.
+fn readReady(master: c_int, capture: *Capture, timeout: c_int) !bool {
+    var fds = [1]std.c.pollfd{.{ .fd = master, .events = std.c.POLL.IN, .revents = 0 }};
+    if (std.c.poll(&fds, 1, timeout) <= 0) return false;
+    var chunk: [4096]u8 = undefined;
+    const count = std.c.read(master, &chunk, chunk.len);
+    if (count <= 0) return false;
+    try capture.bytes.appendSlice(allocator, chunk[0..@intCast(count)]);
+    return true;
 }
 
 /// Writes all of `bytes` to `master`.
