@@ -1,7 +1,10 @@
 # Wattle
 
+[![Latest Release][release-icon]][release-page]
 [![Test Status][icon]][status]
 
+[release-icon]: https://img.shields.io/github/v/release/pyrmont/wattle
+[release-page]: https://github.com/pyrmont/wattle/releases/latest
 [icon]: https://github.com/pyrmont/wattle/actions/workflows/test.yml/badge.svg
 [status]: https://github.com/pyrmont/wattle/actions?query=workflow%3ATest
 
