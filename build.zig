@@ -95,6 +95,10 @@ const BuildOptions = struct {
     sanitize_thread: bool,
     single_threaded: bool,
     omit_frame_pointer: ?bool,
+    /// Whether the client executable omits debug information and the static
+    /// symbol table. The dynamic symbol table stays, so a native module still
+    /// resolves into the client.
+    strip: bool,
     nanbox: ?bool,
     nanbox_pointer_shift: ?i32,
     /// Null takes `staticExecutable`'s answer: off for a static executable,
@@ -743,6 +747,7 @@ pub fn build(b: *std.Build) void {
         client_module.addImport("constants", g.constants);
         client_module.addImport("config", g.config);
     }
+    if (options.strip) client_module.strip = true;
     const client = selectBackend(b.addExecutable(.{ .name = "wattle", .root_module = client_module }));
     applyLinkage(client, options, target);
     if (target.result.os.tag != .windows and !wasm) client.rdynamic = true;
@@ -2239,6 +2244,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .sanitize_thread = b.option(bool, "sanitize-thread", "Build with ThreadSanitizer, for the threaded-abstract and event-loop paths") orelse false,
         .single_threaded = b.option(bool, "single-threaded", "Build without thread-local VM state") orelse false,
         .omit_frame_pointer = b.option(bool, "omit-frame-pointer", "Omit the frame pointer: unset omits it in ReleaseFast and keeps it in Debug, ReleaseSafe and ReleaseSmall, true omits it in every mode, false keeps it in every mode"),
+        .strip = b.option(bool, "strip", "Strip debug information and the static symbol table from the wattle executable. The symbols a native module resolves against stay") orelse false,
         .nanbox = b.option(bool, "nanbox", "Use the NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),
         .nanbox_pointer_shift = pointer_shift,
         .dynamic_modules = b.option(bool, "dynamic-modules", "Enable dynamic native modules: unset enables them except on WASI and under -Dlinkage=static on a musl target"),

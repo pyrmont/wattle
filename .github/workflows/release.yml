@@ -56,7 +56,7 @@ jobs:
           set -eu
           args="-Doptimize=ReleaseFast -p wattle-${{ inputs.version }}"
           if [ -n "${{ matrix.target }}" ]; then
-            args="$args -Dtarget=${{ matrix.target }} -Dcpu=baseline"
+            args="$args -Dtarget=${{ matrix.target }} -Dcpu=baseline -Dstrip=true"
           fi
           zig build $args
           cp LICENSE README.md CHANGELOG.md "wattle-${{ inputs.version }}/"
