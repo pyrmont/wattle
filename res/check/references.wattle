@@ -133,8 +133,8 @@
   landing in the runtime's own population as a name for a header that exists."""
   [text]
   (def out ![])
-  (def suffixes {"zig" true "h" true "c" true "janet" true "md" true
-                 "txt" true "sh" true})
+  (def suffixes {"zig" true "h" true "c" true "janet" true "wattle" true
+                 "md" true "txt" true "sh" true})
   (def lines (string/split "\n" text))
   (for i 0 (length lines)
     (def line (lines i))

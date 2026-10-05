@@ -78,9 +78,11 @@
 (def compiler-fixed
   {"Aapcs64ReturnGeneral" true "Aapcs64ReturnPointer" true
    "Aapcs64ReturnSse" true "AssembleResult" true
-   "Binding" true "BuildConfig" true "ByteView" true
-   "DictView" true "GenericMessage" true "FuncEnvRef" true
-   "GCData" true "GCObject" true "Range" true
+   "Binding" true "BuildConfig" true "ByteView" true "Chunk" true
+   "Dictionary" true "Indexed" true
+   "GenericMessage" true "FuncEnvRef" true
+   "GCData" true "GCObject" true "NResult" true "OptResult" true
+   "PtrResult" true "Range" true "SizeResult" true
    ; `Value` is the one comptime-selected declaration in the list, and it was
    ; invisible until the strip learned to reach an arm head. `repr.Value` is a
    ; parameter and a return type across the C ABI in every representation, so

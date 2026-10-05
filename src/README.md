@@ -357,8 +357,7 @@ part of a dynamically loaded module rather than of the runtime.
 ### External declarations
 
 `host/cabi.zig` has the runtime's `extern` declarations, for libc and the host,
-with no Janet name among them. `res/check/seam.wattle --check` fails if an
-`extern fn janet*` appears anywhere in `src/`.
+with no Janet name among them.
 
 ### Host structures
 

@@ -252,10 +252,11 @@
 ; Phase 12's rule 26: source is not a string. Within one increment a script
 ; edited a comment, a user-visible docstring inside a string literal, and
 ; matched `c.janet_vm` inside `c.janet_vm_alloc` -- three instances of the
-; same bug, and the compiler could only see the third. `seam.wattle` had
-; already learned to strip comments, because rule 6 cost it a count; the rule
-; says the stripper belongs here rather than in the one tool that learned it,
-; so that the next tool reaches for it instead of re-deriving it.
+; same bug, and the compiler could only see the third. `seam.janet`, since
+; retired, had already learned to strip comments, because rule 6 cost it a
+; count; the rule says the stripper belongs here rather than in the one tool
+; that learned it, so that the next tool reaches for it instead of re-deriving
+; it.
 
 (defn code-spans
   "The `[start end)` ranges of `line` that are Zig code.
@@ -317,7 +318,7 @@
   `@import` path is prose or a path rather than a use of the declaration, and
   counting one hides a dead declaration behind its own mention.
 
-  Moved here from `seam.wattle` for rule 26, unchanged in what it counts --
+  Moved here from `seam.janet`, since retired, for rule 26, unchanged in what it counts --
   verified line by line over the runtime source and `test/` before the swap.
   That tool counted a reference inside a comment as a call until rule 6, and
   the check that says the stripper works is that a comment-only reference

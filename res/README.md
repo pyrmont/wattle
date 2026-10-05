@@ -36,11 +36,9 @@ Each inventory writes a `.txt` file beside its script. `--check` compares the
 tree against the checked-in file and exits non-zero on a difference. Any other
 invocation, including one with an unrecognised argument, regenerates the file.
 
-| script             | inventory                               | must be empty |
-| ------------------ | --------------------------------------- | ------------- |
+| script              | inventory                               | must be empty |
+| ------------------- | --------------------------------------- | ------------- |
 | `layouts.wattle`    | `extern` layouts and their evidence     | —             |
-| `seam.wattle`       | `c.janet_*` names and their publisher   | see below     |
-| `counters.wattle`   | signed counters that index a container  | `e`           |
 | `optionals.wattle`  | `.?` whose null the function also tests | `tested`      |
 | `callconv.wattle`   | `src/` definitions with `callconv(.c)`  | `residue`     |
 | `orphans.wattle`    | `pub` declarations nothing references   | `orphan`      |
@@ -50,10 +48,9 @@ invocation, including one with an unrecognised argument, regenerates the file.
 | `bench-arms.wattle` | whether a corpus's two arms agree       | —             |
 
 The file is named after the script, except that `gates.wattle` writes
-`gated.txt`; it builds every configuration it compares and takes about two
-minutes. `seam.wattle` reports a name no mechanism publishes, and any
-`extern fn janet*` declared outside `host/cabi.zig`, as a finding.
-`optionals.wattle` counts a bare `orelse unreachable` as well as `.?`.
+`gated.txt`; it builds every configuration it compares, from an empty cache
+each time, and takes four to six minutes. `optionals.wattle` counts a bare
+`orelse unreachable` as well as `.?`.
 `references.wattle`'s `c-era` class is a bounded backlog. Each `.txt` file's
 header defines its classes.
 
@@ -181,8 +178,8 @@ touches rather than the newest.
 
 ## repo
 
-Chores, run occasionally and by hand: `removecr.wattle` strips carriage
-returns, `janet-to-wattle.wattle` rewrites Janet source as Wattle source, and
+Chores, run occasionally and by hand: `janet-to-wattle.wattle` rewrites Janet
+source as Wattle source, and
 `version.wattle` sets the version for a release or returns it to `DEVEL`.
 
 `version.wattle 0.1.0` and `version.wattle DEVEL` are steps of `RELEASING.md`.

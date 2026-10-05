@@ -22,9 +22,7 @@
 ; Three shapes spell `callconv(.c)` and only one of them is a definition:
 ;
 ;   extern fn janet_x(...) callconv(.c) T;    a *declaration* of something
-;                                             outside. `cabi.zig` owns these
-;                                             and `seam.wattle` polices where
-;                                             they may appear.
+;                                             outside. `cabi.zig` owns these.
 ;   ?*const fn (...) callconv(.c) T           a function-pointer *type*. It is
 ;                                             what creates an erased slot
 ;                                             rather than what fills one, and
