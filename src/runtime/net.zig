@@ -1,7 +1,7 @@
 //! The `net/` module: sockets, and the addresses they bind and connect to.
 //!
 //! One name, because Janet publishes one module, with `net/abi.zig` beside it
-//! for the host translation.
+//! for the host declarations.
 //!
 //! `host` is imported here as `platform`, because `host` is a hostname in this
 //! file and that is the better claim on the name.
@@ -46,9 +46,9 @@ const vm_lifecycle = @import("vm/lifecycle.zig");
 const vm_state = @import("vm/state.zig");
 const wrap = @import("value/helpers/wrap.zig");
 
-/// `net/abi.zig`'s translation, and the two names this file takes from it
-/// besides.
-const h = net_abi.h;
+/// `net/abi.zig`'s host declarations, and the two names this file takes from
+/// it besides.
+const sys = net_abi.sys;
 
 const JSock = net_abi.JSock;
 
@@ -62,7 +62,7 @@ const windows = net_abi.windows;
 /// name is the whole definition, and the payload is what `soGetName` reads: a
 /// `sockaddr` allocated at the length the platform reported, which is the
 /// header-plus-trailing-bytes shape an abstract's payload can take.
-pub const addressType = abstract_type.define(h.struct_sockaddr, .{
+pub const addressType = abstract_type.define(sys.struct_sockaddr, .{
     .name = "core/socket-address",
 });
 
@@ -94,28 +94,28 @@ const net_stream_methods = [_]method_type.Method{
 
 /// The three `shutdown(2)` directions, under the names each platform spells
 /// them with.
-const shutdown_r: c_int = if (windows) h.SD_RECEIVE else h.SHUT_RD;
+const shutdown_r: c_int = if (windows) sys.SD_RECEIVE else sys.SHUT_RD;
 
-const shutdown_rw: c_int = if (windows) h.SD_BOTH else h.SHUT_RDWR;
+const shutdown_rw: c_int = if (windows) sys.SD_BOTH else sys.SHUT_RDWR;
 
-const shutdown_w: c_int = if (windows) h.SD_SEND else h.SHUT_WR;
+const shutdown_w: c_int = if (windows) sys.SD_SEND else sys.SHUT_WR;
 
 /// The socket-option table, with no null terminator: a slice has its own
 /// length.
 const sockopt_list: []const SockOpt = blk: {
     var acc: []const SockOpt = &[_]SockOpt{
-        .{ .name = "so-broadcast", .level = h.SOL_SOCKET, .optname = h.SO_BROADCAST, .kind = .boolean },
-        .{ .name = "so-reuseaddr", .level = h.SOL_SOCKET, .optname = h.SO_REUSEADDR, .kind = .boolean },
-        .{ .name = "so-keepalive", .level = h.SOL_SOCKET, .optname = h.SO_KEEPALIVE, .kind = .boolean },
-        .{ .name = "ip-multicast-ttl", .level = h.IPPROTO_IP, .optname = h.IP_MULTICAST_TTL, .kind = .number },
-        .{ .name = "ip-add-membership", .level = h.IPPROTO_IP, .optname = h.IP_ADD_MEMBERSHIP, .kind = .special },
-        .{ .name = "ip-drop-membership", .level = h.IPPROTO_IP, .optname = h.IP_DROP_MEMBERSHIP, .kind = .special },
+        .{ .name = "so-broadcast", .level = sys.SOL_SOCKET, .optname = sys.SO_BROADCAST, .kind = .boolean },
+        .{ .name = "so-reuseaddr", .level = sys.SOL_SOCKET, .optname = sys.SO_REUSEADDR, .kind = .boolean },
+        .{ .name = "so-keepalive", .level = sys.SOL_SOCKET, .optname = sys.SO_KEEPALIVE, .kind = .boolean },
+        .{ .name = "ip-multicast-ttl", .level = sys.IPPROTO_IP, .optname = sys.IP_MULTICAST_TTL, .kind = .number },
+        .{ .name = "ip-add-membership", .level = sys.IPPROTO_IP, .optname = sys.IP_ADD_MEMBERSHIP, .kind = .special },
+        .{ .name = "ip-drop-membership", .level = sys.IPPROTO_IP, .optname = sys.IP_DROP_MEMBERSHIP, .kind = .special },
     };
     if (has_ipv6) acc = acc ++ [_]SockOpt{
-        .{ .name = "ipv6-join-group", .level = h.IPPROTO_IPV6, .optname = h.IPV6_JOIN_GROUP, .kind = .special },
-        .{ .name = "ipv6-leave-group", .level = h.IPPROTO_IPV6, .optname = h.IPV6_LEAVE_GROUP, .kind = .special },
-        .{ .name = "ipv6-multicast-hops", .level = h.IPPROTO_IPV6, .optname = h.IPV6_MULTICAST_HOPS, .kind = .number },
-        .{ .name = "ipv6-unicast-hops", .level = h.IPPROTO_IPV6, .optname = h.IPV6_UNICAST_HOPS, .kind = .number },
+        .{ .name = "ipv6-join-group", .level = sys.IPPROTO_IPV6, .optname = sys.IPV6_JOIN_GROUP, .kind = .special },
+        .{ .name = "ipv6-leave-group", .level = sys.IPPROTO_IPV6, .optname = sys.IPV6_LEAVE_GROUP, .kind = .special },
+        .{ .name = "ipv6-multicast-hops", .level = sys.IPPROTO_IPV6, .optname = sys.IPV6_MULTICAST_HOPS, .kind = .number },
+        .{ .name = "ipv6-unicast-hops", .level = sys.IPPROTO_IPV6, .optname = sys.IPV6_UNICAST_HOPS, .kind = .number },
     };
     break :blk acc;
 };
@@ -159,7 +159,7 @@ pub const AddrInfo = struct {
     /// The `getaddrinfo` chain, or null for a unix domain address. It may also
     /// be null after a *successful* lookup that matched nothing, which is what
     /// `net/address` raises "no data for given address" on.
-    ai: ?*h.struct_addrinfo = null,
+    ai: ?*sys.struct_addrinfo = null,
     /// The `utils.calloc`ed unix domain address, or null.
     un: ?*net_abi.SockAddrUn = null,
     /// The address length `bind` and `connect` are given. That is the real
@@ -178,7 +178,7 @@ pub const AddrInfo = struct {
         if (self.un) |p| {
             utils.free(p);
         } else {
-            h.freeaddrinfo(self.ai);
+            net_abi.freeAddrInfo(self.ai);
         }
     }
 };
@@ -214,8 +214,8 @@ const NetStateConnect = struct {
 const OptValue = extern union {
     v_uchar: u8,
     v_int: c_int,
-    v_mreq: h.struct_ip_mreq,
-    v_mreq6: h.struct_ipv6_mreq,
+    v_mreq: sys.struct_ip_mreq,
+    v_mreq6: sys.struct_ipv6_mreq,
 };
 
 /// One row of the socket-option table. `kind` is a `repr.Tag`, and
@@ -235,13 +235,13 @@ const SockOpt = struct {
 /// The address family a keyword names. An unrecognised keyword gives back
 /// `AF_UNSPEC` rather than raising, which is what a program sees.
 pub fn addressFamily(x: repr.Value) c_int {
-    if (repr.checkType(x, repr.Tag.nil)) return h.AF_UNSPEC;
-    if (args_core.keyeq(x, "ipv4")) return h.AF_INET;
-    if (args_core.keyeq(x, "ipv6")) return h.AF_INET6;
+    if (repr.checkType(x, repr.Tag.nil)) return sys.AF_UNSPEC;
+    if (args_core.keyeq(x, "ipv4")) return sys.AF_INET;
+    if (args_core.keyeq(x, "ipv6")) return sys.AF_INET6;
     if (!windows) {
-        if (args_core.keyeq(x, "unix")) return h.AF_UNIX;
+        if (args_core.keyeq(x, "unix")) return sys.AF_UNIX;
     }
-    return h.AF_UNSPEC;
+    return sys.AF_UNSPEC;
 }
 
 /// Aborts unless `cond`, naming this file's own position.
@@ -301,15 +301,15 @@ pub fn nfunSockaddr(argv: []repr.Value) raise.Error!repr.Value {
         // Select all.
         const arr = arrays.new(10);
         var iter = info.ai;
-        while (iter) |node| : (iter = node.ai_next) {
-            try arrays.push(arr, addressAbstract(node.ai_addr, @intCast(node.ai_addrlen)));
+        while (iter) |node| : (iter = node.next) {
+            try arrays.push(arr, addressAbstract(node.addr, @intCast(node.addrlen)));
         }
         return wrap.fromArray(arr);
     }
 
     // Select first.
     const first = info.ai orelse return raise.panic("no data for given address");
-    return addressAbstract(first.ai_addr, @intCast(first.ai_addrlen));
+    return addressAbstract(first.addr, @intCast(first.addrlen));
 }
 
 /// Resolves the host and port arguments at `offset`. Needs
@@ -327,20 +327,20 @@ pub fn getAddrInfo(
             const saddr: *net_abi.SockAddrUn = @ptrCast(@alignCast(
                 utils.calloc(1, @sizeOf(net_abi.SockAddrUn)) orelse outOfMemory(@src()),
             ));
-            saddr.sun_family = h.AF_UNIX;
-            // A copy into `sun_path` that truncates and always terminates.
-            const room = saddr.sun_path.len - 1;
+            saddr.family = sys.AF_UNIX;
+            // A copy into `path` that truncates and always terminates.
+            const room = saddr.path.len - 1;
             const taken = @min(room, std.mem.len(path));
-            @memcpy(saddr.sun_path[0..taken], path[0..taken]);
-            saddr.sun_path[taken] = 0;
+            @memcpy(saddr.path[0..taken], path[0..taken]);
+            saddr.path[taken] = 0;
             var size: SockLen = @sizeOf(net_abi.SockAddrUn);
             if (builtin.target.os.tag == .linux) {
                 // An abstract address: the name starts at a NUL, and the
                 // length is exactly what was written rather than the whole
                 // structure.
                 if (path[0] == '@') {
-                    saddr.sun_path[0] = 0;
-                    size = @intCast(@offsetOf(net_abi.SockAddrUn, "sun_path") +
+                    saddr.path[0] = 0;
+                    size = @intCast(@offsetOf(net_abi.SockAddrUn, "path") +
                         @as(usize, strings.head(path).length));
                 }
             }
@@ -355,12 +355,12 @@ pub fn getAddrInfo(
     else
         try args_core.optCString(argv, offset + 1, null);
 
-    var ai: ?*h.struct_addrinfo = null;
-    var hints = std.mem.zeroes(h.struct_addrinfo);
-    hints.ai_family = h.AF_UNSPEC;
-    hints.ai_socktype = socktype;
-    hints.ai_flags = if (passive) h.AI_PASSIVE else 0;
-    const status = h.getaddrinfo(host, port, &hints, &ai);
+    var ai: ?*sys.struct_addrinfo = null;
+    var hints = std.mem.zeroes(sys.struct_addrinfo);
+    hints.family = sys.AF_UNSPEC;
+    hints.socktype = socktype;
+    hints.flags = .{ .PASSIVE = passive };
+    const status = net_abi.getaddrinfo(host, port, &hints, &ai);
     if (status != 0) {
         return pp_format.panicf("could not get address info: %s", .{net_abi.gaiStrerror(status)});
     }
@@ -446,7 +446,7 @@ pub fn libNet(env: *tables.Table) void {
 /// The Winsock teardown that pairs with `netInit`.
 pub fn netDeinit() void {
     if (windows) {
-        _ = h.WSACleanup();
+        _ = sys.WSACleanup();
     }
 }
 
@@ -454,9 +454,9 @@ pub fn netDeinit() void {
 /// `ConnectEx` pointer, which is per-VM rather than per-process.
 pub fn netInit() void {
     if (windows) {
-        var wsa_data: h.WSADATA = undefined;
+        var wsa_data: sys.WSADATA = undefined;
         // `MAKEWORD(2, 2)`, which is a macro and does not survive translation.
-        assert(@src(), h.WSAStartup(0x0202, &wsa_data) == 0, "could not start winsock");
+        assert(@src(), sys.WSAStartup(0x0202, &wsa_data) == 0, "could not start winsock");
         vm_state.current().ev.backend.connect_ex_loaded = false;
         vm_state.current().ev.backend.connect_ex = null;
     }
@@ -485,49 +485,49 @@ pub fn outOfMemory(comptime where: std.lang.SourceLocation) noreturn {
 /// `struct sockaddr_un` on Windows, and a `switch` prong cannot be compiled
 /// out the way a nested comptime `if` body can.
 pub fn soGetName(sa_any: ?*const anyopaque) raise.Error!repr.Value {
-    const sa: *const h.struct_sockaddr = @ptrCast(@alignCast(sa_any));
+    const sa: *const sys.struct_sockaddr = @ptrCast(@alignCast(sa_any));
     var buffer: [net_abi.sa_addrstrlen]u8 = undefined;
-    const family: c_int = sa.sa_family;
+    const family: c_int = sa.family;
 
-    if (family == h.AF_INET) {
-        const sai: *const h.struct_sockaddr_in = @ptrCast(@alignCast(sa_any));
-        if (net_abi.inetNtop(h.AF_INET, &sai.sin_addr, &buffer, buffer.len) == null) {
+    if (family == sys.AF_INET) {
+        const sai: *const sys.struct_sockaddr_in = @ptrCast(@alignCast(sa_any));
+        if (net_abi.inetNtop(sys.AF_INET, &sai.addr, &buffer, buffer.len) == null) {
             return raise.panic("unable to decode ipv4 host address");
         }
         var pair = [2]repr.Value{
             value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
-            wrap.fromInteger(net_abi.ntohs(sai.sin_port)),
+            wrap.fromInteger(net_abi.ntohs(sai.port)),
         };
         return wrap.fromVector(vectors.fromSlice(&pair));
     }
 
     if (has_ipv6) {
-        if (family == h.AF_INET6) {
+        if (family == sys.AF_INET6) {
             const sai6: *const net_abi.SockAddrIn6 = @ptrCast(@alignCast(sa_any));
-            if (net_abi.inetNtop(h.AF_INET6, &sai6.sin6_addr, &buffer, buffer.len) == null) {
+            if (net_abi.inetNtop(sys.AF_INET6, &sai6.addr, &buffer, buffer.len) == null) {
                 return raise.panic("unable to decode ipv6 host address");
             }
             var pair = [2]repr.Value{
                 value.fromBytes(std.mem.sliceTo(&buffer, 0), .string),
-                wrap.fromInteger(net_abi.ntohs(sai6.sin6_port)),
+                wrap.fromInteger(net_abi.ntohs(sai6.port)),
             };
             return wrap.fromVector(vectors.fromSlice(&pair));
         }
     }
 
     if (!windows) {
-        if (family == h.AF_UNIX) {
+        if (family == sys.AF_UNIX) {
             const sun: *const net_abi.SockAddrUn = @ptrCast(@alignCast(sa_any));
             var pathname: repr.Value = undefined;
-            if (sun.sun_path[0] == 0) {
+            if (sun.path[0] == 0) {
                 // An abstract address: the leading NUL shows as '@', and the
                 // whole fixed-size path is copied because the name behind it
                 // is not NUL-terminated.
-                @memcpy(buffer[0..sun.sun_path.len], &sun.sun_path);
+                @memcpy(buffer[0..sun.path.len], &sun.path);
                 buffer[0] = '@';
                 pathname = value.fromBytes(std.mem.sliceTo(&buffer, 0), .string);
             } else {
-                pathname = value.fromBytes(std.mem.sliceTo(&sun.sun_path, 0), .string);
+                pathname = value.fromBytes(std.mem.sliceTo(&sun.path, 0), .string);
             }
             return wrap.fromVector(vectors.fromSlice(@as(*const [1]repr.Value, &pathname)));
         }
@@ -554,10 +554,10 @@ pub fn socketType(argv: []repr.Value, n: usize) raise.Error!c_int {
             if (utils.cstrcmp(wanted, "datagram") != 0) {
                 return pp_format.panicf("expected socket type as :stream or :datagram, got %v", .{argv[n]});
             }
-            return h.SOCK_DGRAM;
+            return sys.SOCK_DGRAM;
         }
     }
-    return h.SOCK_STREAM;
+    return sys.SOCK_STREAM;
 }
 
 // ==========================================================================
@@ -573,7 +573,7 @@ fn acceptPosix(op: *ev_stream.Operation, state: *NetStateAccept, event: ev_loop.
     if (event != constants.AsyncEvent.init and event != constants.AsyncEvent.read) return;
     const stream: *ev_stream.Stream = op.stream;
     const connfd: JSock = if (builtin.target.os.tag == .linux)
-        net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
+        net_abi.accept4(sockOf(stream), null, null, sys.SOCK_CLOEXEC)
     else
         // An accepted socket does not take the listener's close-on-exec, so
         // `sockNoBlock` below sets it.
@@ -610,11 +610,11 @@ fn acceptWindows(op: *ev_stream.Operation, state: *NetStateAccept, event: ev_loo
     const lsock = sockOf(state.lstream.?);
     if (net_abi.setSockOpt(
         sockOf(astream),
-        h.SOL_SOCKET,
-        h.SO_UPDATE_ACCEPT_CONTEXT,
+        sys.SOL_SOCKET,
+        sys.SO_UPDATE_ACCEPT_CONTEXT,
         &lsock,
         @sizeOf(JSock),
-    ) != h.NO_ERROR) {
+    ) != sys.NO_ERROR) {
         try ev_loop.cancel(op.fiber, value.fromBytes("failed to accept connection", .string));
         ev_loop.asyncEnd(op);
         return;
@@ -659,15 +659,15 @@ fn addressAbstract(from: ?*const anyopaque, len: usize) repr.Value {
 /// `nfunConnect` calls this on Windows, where `ConnectEx` requires a bound
 /// socket. This function cannot raise.
 fn bindWildcard(sock: JSock, family: c_int) bool {
-    if (family == h.AF_INET) {
-        var sin = std.mem.zeroes(h.struct_sockaddr_in);
-        sin.sin_family = @intCast(family);
-        return net_abi.bind(sock, @ptrCast(&sin), @sizeOf(h.struct_sockaddr_in)) == 0;
+    if (family == sys.AF_INET) {
+        var sin = std.mem.zeroes(sys.struct_sockaddr_in);
+        sin.family = @intCast(family);
+        return net_abi.bind(sock, @ptrCast(&sin), @sizeOf(sys.struct_sockaddr_in)) == 0;
     }
     if (has_ipv6) {
-        if (family == h.AF_INET6) {
+        if (family == sys.AF_INET6) {
             var sin6 = std.mem.zeroes(net_abi.SockAddrIn6);
-            sin6.sin6_family = @intCast(family);
+            sin6.family = @intCast(family);
             return net_abi.bind(sock, @ptrCast(&sin6), @sizeOf(net_abi.SockAddrIn6)) == 0;
         }
     }
@@ -738,17 +738,17 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     var addrlen: SockLen = info.size;
 
     // Check if we're binding address.
-    var binding: ?*h.struct_addrinfo = null;
-    defer if (binding) |b| h.freeaddrinfo(b);
+    var binding: ?*sys.struct_addrinfo = null;
+    defer net_abi.freeAddrInfo(binding);
     if (bindhost != null) {
         if (info.isUnix()) {
             return raise.panic("bindhost not supported for unix domain sockets");
         }
-        var hints = std.mem.zeroes(h.struct_addrinfo);
-        hints.ai_family = h.AF_UNSPEC;
-        hints.ai_socktype = socktype;
-        hints.ai_flags = 0;
-        const status = h.getaddrinfo(bindhost, bindport, &hints, &binding);
+        var hints = std.mem.zeroes(sys.struct_addrinfo);
+        hints.family = sys.AF_UNSPEC;
+        hints.socktype = socktype;
+        hints.flags = .{};
+        const status = net_abi.getaddrinfo(bindhost, bindport, &hints, &binding);
         if (status != 0) {
             return pp_format.panicf(
                 "could not get address info for bindhost: %s",
@@ -759,12 +759,12 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
 
     // Create socket.
     var sock: JSock = net_abi.sock_default;
-    var sa: ?*const h.struct_sockaddr = null;
+    var sa: ?*const sys.struct_sockaddr = null;
     var is_unix_socket = false;
     if (!windows) {
         if (info.un) |un| {
             is_unix_socket = true;
-            sock = h.socket(h.AF_UNIX, socktype | net_abi.sock_flags, 0);
+            sock = sys.socket(sys.AF_UNIX, socktype | net_abi.sock_flags, 0);
             if (!net_abi.sockValid(sock)) {
                 const v = ev_stream.evLasterr();
                 return pp_format.panicf("could not create socket: %V", .{v});
@@ -774,11 +774,11 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     }
     if (!is_unix_socket) {
         var rp = info.ai;
-        while (rp) |node| : (rp = node.ai_next) {
-            sock = openSocket(node.ai_family, node.ai_socktype, node.ai_protocol);
+        while (rp) |node| : (rp = node.next) {
+            sock = openSocket(node.family, node.socktype, node.protocol);
             if (net_abi.sockValid(sock)) {
-                sa = node.ai_addr;
-                addrlen = @intCast(node.ai_addrlen);
+                sa = node.addr;
+                addrlen = @intCast(node.addrlen);
                 break;
             }
         }
@@ -792,8 +792,8 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     if (binding != null) {
         var did_bind = false;
         var rp = binding;
-        while (rp) |node| : (rp = node.ai_next) {
-            if (net_abi.bind(sock, node.ai_addr, @intCast(node.ai_addrlen)) == 0) {
+        while (rp) |node| : (rp = node.next) {
+            if (net_abi.bind(sock, node.addr, @intCast(node.addrlen)) == 0) {
                 did_bind = true;
                 break;
             }
@@ -803,12 +803,12 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
             net_abi.sockClose(sock);
             return pp_format.panicf("could not bind outgoing address: %V", .{v});
         }
-    } else if (windows and socktype == h.SOCK_STREAM) {
+    } else if (windows and socktype == sys.SOCK_STREAM) {
         // `ConnectEx` below requires a bound socket and reports `WSAEINVAL`
         // for one that is not bound. `connect` binds the socket as part of
         // connecting, so no other platform reaches this. Port 0 leaves the
         // port to the host.
-        if (!bindWildcard(sock, sa.?.sa_family)) {
+        if (!bindWildcard(sock, sa.?.family)) {
             const v = ev_stream.evLasterr();
             net_abi.sockClose(sock);
             return pp_format.panicf("could not bind socket before connect: %V", .{v});
@@ -816,14 +816,14 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     }
 
     // Wrap the socket in the stream abstract type.
-    const udp_flag: u32 = if (socktype == h.SOCK_DGRAM) stream_udpserver else 0;
+    const udp_flag: u32 = if (socktype == sys.SOCK_DGRAM) stream_udpserver else 0;
     const stream = try makeStream(sock, stream_readable | stream_writable | udp_flag);
 
     // Connect to socket.
     var status: c_int = undefined;
     var err: c_int = 0;
     if (windows) {
-        if (socktype == h.SOCK_STREAM) {
+        if (socktype == sys.SOCK_STREAM) {
             if (lazyGetConnectEx(sock)) |connect_ex| {
                 // Prefer ConnectEx as it works well with overlapped IO.
                 sockNoBlock(sock);
@@ -836,7 +836,7 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
                 // The loop cannot dequeue a completion before this fiber
                 // suspends, which `schedConnect` below is what does.
                 const success = connect_ex(sock, sa, @intCast(addrlen), null, 0, null, @ptrCast(&state.overlapped.as));
-                if (success == 0 and h.WSAGetLastError() != h.ERROR_IO_PENDING) {
+                if (success == 0 and sys.WSAGetLastError() != sys.ERROR_IO_PENDING) {
                     utils.free(state);
                     const lasterr = ev_stream.evLasterr();
                     return pp_format.panicf("could not connect socket (ConnectEx): %V", .{lasterr});
@@ -845,8 +845,8 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
             }
         }
         // Default to blocking connect if ConnectEx not available.
-        status = h.WSAConnect(sock, sa, @intCast(addrlen), null, null, null, null);
-        err = h.WSAGetLastError();
+        status = sys.WSAConnect(sock, sa, @intCast(addrlen), null, null, null, null);
+        err = sys.WSAGetLastError();
         // Set up the socket for non-blocking IO after connecting on windows.
         sockNoBlock(sock);
     } else {
@@ -864,8 +864,8 @@ fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
         return wrap.fromAbstract(stream);
     }
 
-    const failed = if (windows) status == h.SOCKET_ERROR else status == -1;
-    const would_block = if (windows) h.WSAEWOULDBLOCK else h.EINPROGRESS;
+    const failed = if (windows) status == sys.SOCKET_ERROR else status == -1;
+    const would_block = if (windows) sys.WSAEWOULDBLOCK else sys.EINPROGRESS;
     if (failed and err != would_block) {
         // The stream owns the handle from `makeStream` onwards, so this
         // closes it through the stream. Closing the number by hand leaves a
@@ -888,9 +888,9 @@ fn nfunFlush(argv: []repr.Value) raise.Error!repr.Value {
     // Toggle the no-delay flag, which pushes whatever Nagle's algorithm was
     // sitting on and then leaves the socket as it found it.
     var flag: c_int = 1;
-    _ = net_abi.setSockOpt(sockOf(stream), h.IPPROTO_TCP, h.TCP_NODELAY, &flag, @sizeOf(c_int));
+    _ = net_abi.setSockOpt(sockOf(stream), sys.IPPROTO_TCP, sys.TCP_NODELAY, &flag, @sizeOf(c_int));
     flag = 0;
-    _ = net_abi.setSockOpt(sockOf(stream), h.IPPROTO_TCP, h.TCP_NODELAY, &flag, @sizeOf(c_int));
+    _ = net_abi.setSockOpt(sockOf(stream), sys.IPPROTO_TCP, sys.TCP_NODELAY, &flag, @sizeOf(c_int));
     return argv[0];
 }
 
@@ -910,7 +910,7 @@ fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     if (!windows) {
         if (info.un) |un| {
             bound = true;
-            sfd = h.socket(h.AF_UNIX, socktype | net_abi.sock_flags, 0);
+            sfd = sys.socket(sys.AF_UNIX, socktype | net_abi.sock_flags, 0);
             if (!net_abi.sockValid(sfd)) {
                 return pp_format.panicf("could not create socket: %V", .{ev_stream.evLasterr()});
             }
@@ -925,26 +925,26 @@ fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     if (!bound) {
         // Check all addrinfos in a loop for the first that we can bind to.
         var rp = info.ai;
-        while (rp) |node| : (rp = node.ai_next) {
-            sfd = openSocket(node.ai_family, node.ai_socktype, node.ai_protocol);
+        while (rp) |node| : (rp = node.next) {
+            sfd = openSocket(node.family, node.socktype, node.protocol);
             if (!net_abi.sockValid(sfd)) continue;
             if (serverifySocket(sfd, reuse, reuse) != null) {
                 net_abi.sockClose(sfd);
                 continue;
             }
-            if (net_abi.bind(sfd, node.ai_addr, @intCast(node.ai_addrlen)) == 0) break;
+            if (net_abi.bind(sfd, node.addr, @intCast(node.addrlen)) == 0) break;
             net_abi.sockClose(sfd);
         }
         if (rp == null) return raise.panic("could not bind to any sockets");
     }
 
-    if (socktype == h.SOCK_DGRAM) {
+    if (socktype == sys.SOCK_DGRAM) {
         // Datagram server (UDP).
         return wrap.fromAbstract(try makeStream(sfd, stream_udpserver | stream_readable));
     }
 
     // Stream server (TCP).
-    if (h.listen(sfd, 1024) != 0) {
+    if (sys.listen(sfd, 1024) != 0) {
         net_abi.sockClose(sfd);
         return pp_format.panicf("could not listen on file descriptor: %V", .{ev_stream.evLasterr()});
     }
@@ -1024,7 +1024,7 @@ fn nfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
         },
         .number => {
             const v_int = try args_core.getInteger(argv, 2);
-            if (net_abi.multicast_ttl_char and st.optname == h.IP_MULTICAST_TTL) {
+            if (net_abi.multicast_ttl_char and st.optname == sys.IP_MULTICAST_TTL) {
                 val.v_uchar = @truncate(@as(u32, @bitCast(v_int)));
                 optlen = @sizeOf(u8);
             } else {
@@ -1036,22 +1036,22 @@ fn nfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
             // The level as well as the number, because a platform may number
             // an IPv6 option the same as an IPv4 one: macOS gives
             // `IPV6_JOIN_GROUP` the number of `IP_ADD_MEMBERSHIP`.
-            if (st.level == h.IPPROTO_IP and
-                (st.optname == h.IP_ADD_MEMBERSHIP or st.optname == h.IP_DROP_MEMBERSHIP))
+            if (st.level == sys.IPPROTO_IP and
+                (st.optname == sys.IP_ADD_MEMBERSHIP or st.optname == sys.IP_DROP_MEMBERSHIP))
             {
                 const address = try args_core.getCString(argv, 2);
-                val.v_mreq = std.mem.zeroes(h.struct_ip_mreq);
-                net_abi.inAddrBits(&val.v_mreq.imr_interface).* = net_abi.htonl(h.INADDR_ANY);
-                _ = h.inet_pton(h.AF_INET, address, net_abi.inAddrBits(&val.v_mreq.imr_multiaddr));
-                optlen = @sizeOf(h.struct_ip_mreq);
-            } else if (has_ipv6 and st.level == h.IPPROTO_IPV6 and
-                (st.optname == h.IPV6_JOIN_GROUP or st.optname == h.IPV6_LEAVE_GROUP))
+                val.v_mreq = std.mem.zeroes(sys.struct_ip_mreq);
+                val.v_mreq.imr_interface = net_abi.htonl(sys.INADDR_ANY);
+                _ = sys.inet_pton(sys.AF_INET, address, &val.v_mreq.imr_multiaddr);
+                optlen = @sizeOf(sys.struct_ip_mreq);
+            } else if (has_ipv6 and st.level == sys.IPPROTO_IPV6 and
+                (st.optname == sys.IPV6_JOIN_GROUP or st.optname == sys.IPV6_LEAVE_GROUP))
             {
                 const address = try args_core.getCString(argv, 2);
-                val.v_mreq6 = std.mem.zeroes(h.struct_ipv6_mreq);
+                val.v_mreq6 = std.mem.zeroes(sys.struct_ipv6_mreq);
                 val.v_mreq6.ipv6mr_interface = 0;
-                _ = h.inet_pton(h.AF_INET6, address, &val.v_mreq6.ipv6mr_multiaddr);
-                optlen = @sizeOf(h.struct_ipv6_mreq);
+                _ = sys.inet_pton(sys.AF_INET6, address, &val.v_mreq6.ipv6mr_multiaddr);
+                optlen = @sizeOf(sys.struct_ipv6_mreq);
             } else {
                 return raise.panic("invalid socket option type");
             }
@@ -1091,9 +1091,9 @@ fn nfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     }
     var status: c_int = undefined;
     if (windows) {
-        status = h.shutdown(sockOf(stream), shutdown_type);
+        status = sys.shutdown(sockOf(stream), shutdown_type);
     } else {
-        status = c.retryIntr(h.shutdown, .{ sockOf(stream), shutdown_type });
+        status = c.retryIntr(sys.shutdown, .{ sockOf(stream), shutdown_type });
     }
     if (status != 0) {
         return pp_format.panicf("could not shutdown socket: %V", .{ev_stream.evLasterr()});
@@ -1109,24 +1109,24 @@ fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
 
     // Create socket.
     var sfd: JSock = net_abi.sock_default;
-    var ai: ?*h.struct_addrinfo = null;
-    var hints = std.mem.zeroes(h.struct_addrinfo);
-    hints.ai_family = h.AF_UNSPEC;
-    hints.ai_socktype = socktype;
+    var ai: ?*sys.struct_addrinfo = null;
+    var hints = std.mem.zeroes(sys.struct_addrinfo);
+    hints.family = sys.AF_UNSPEC;
+    hints.socktype = socktype;
     // Explicitly prevent name resolution where the platform can say so.
-    hints.ai_flags = if (@hasDecl(h, "AI_NUMERICSERV")) h.AI_NUMERICSERV else 0;
-    if (argv.len >= 2) hints.ai_family = addressFamily(argv[1]);
-    const status = h.getaddrinfo(null, "0", &hints, &ai);
+    hints.flags = .{ .NUMERICSERV = true };
+    if (argv.len >= 2) hints.family = addressFamily(argv[1]);
+    const status = net_abi.getaddrinfo(null, "0", &hints, &ai);
     if (status != 0) {
         return pp_format.panicf("could not get address info: %s", .{net_abi.gaiStrerror(status)});
     }
 
     var rp = ai;
-    while (rp) |node| : (rp = node.ai_next) {
-        sfd = openSocket(node.ai_family, node.ai_socktype, node.ai_protocol);
+    while (rp) |node| : (rp = node.next) {
+        sfd = openSocket(node.family, node.socktype, node.protocol);
         if (net_abi.sockValid(sfd)) break;
     }
-    h.freeaddrinfo(ai);
+    net_abi.freeAddrInfo(ai);
 
     if (!net_abi.sockValid(sfd)) {
         const v = ev_stream.evLasterr();
@@ -1134,7 +1134,7 @@ fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     }
 
     // Wrap the socket in the stream abstract type.
-    const udp_flag: u32 = if (socktype == h.SOCK_DGRAM) stream_udpserver else 0;
+    const udp_flag: u32 = if (socktype == sys.SOCK_DGRAM) stream_udpserver else 0;
     const stream = try makeStream(sfd, stream_readable | stream_writable | udp_flag);
 
     // Set up the socket for non-blocking IO.
@@ -1166,8 +1166,8 @@ fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Error!repr.Value 
     try args_core.fixarity(argv, 1);
     const js: *ev_stream.Stream = try args_core.getAbstract(ev_stream.Stream, argv, 0, &ev_stream.streamType);
     if (js.flags & stream_closed != 0) return raise.panic("stream closed");
-    var ss = std.mem.zeroes(h.struct_sockaddr_storage);
-    var slen: SockLen = @sizeOf(h.struct_sockaddr_storage);
+    var ss = std.mem.zeroes(sys.struct_sockaddr_storage);
+    var slen: SockLen = @sizeOf(sys.struct_sockaddr_storage);
     const call = if (peer) net_abi.getpeername else net_abi.getsockname;
     if (call(sockOf(js), @ptrCast(&ss), &slen) != 0) {
         const what = if (peer) "peername" else "localname";
@@ -1176,7 +1176,7 @@ fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Error!repr.Value 
             .{ argv[0], ev_stream.evLasterr() },
         );
     }
-    assert(@src(), slen <= @sizeOf(h.struct_sockaddr_storage), "socket address truncated");
+    assert(@src(), slen <= @sizeOf(sys.struct_sockaddr_storage), "socket address truncated");
     return soGetName(&ss);
 }
 
@@ -1192,18 +1192,18 @@ fn getStream(argv: []const repr.Value, n: usize) raise.Error!*ev_stream.Stream {
 
 /// `ConnectEx` is not exported by any import library and has to be asked for
 /// by GUID, once per VM.
-fn lazyGetConnectEx(sock: JSock) h.LPFN_CONNECTEX {
+fn lazyGetConnectEx(sock: JSock) sys.LPFN_CONNECTEX {
     if (vm_state.current().ev.backend.connect_ex_loaded) return @ptrCast(@alignCast(vm_state.current().ev.backend.connect_ex));
     var guid = net_abi.wsaid_connectex;
-    var connect_ex_ptr: h.LPFN_CONNECTEX = null;
-    var byte_len: h.DWORD = 0;
-    const success = h.WSAIoctl(
+    var connect_ex_ptr: sys.LPFN_CONNECTEX = null;
+    var byte_len: sys.DWORD = 0;
+    const success = sys.WSAIoctl(
         sock,
-        h.SIO_GET_EXTENSION_FUNCTION_POINTER,
+        sys.SIO_GET_EXTENSION_FUNCTION_POINTER,
         @ptrCast(&guid),
-        @sizeOf(h.GUID),
+        @sizeOf(sys.GUID),
         @ptrCast(&connect_ex_ptr),
-        @sizeOf(h.LPFN_CONNECTEX),
+        @sizeOf(sys.LPFN_CONNECTEX),
         &byte_len,
         null,
         null,
@@ -1317,7 +1317,7 @@ fn net_callback_connect(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) rai
                 // The option takes no value, so the length is zero and the
                 // pointer is not read.
                 const unused: c_int = 0;
-                _ = net_abi.setSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_UPDATE_CONNECT_CONTEXT, &unused, 0);
+                _ = net_abi.setSockOpt(sockOf(stream), sys.SOL_SOCKET, sys.SO_UPDATE_CONNECT_CONTEXT, &unused, 0);
                 ev_loop.schedule(op.fiber, wrap.fromAbstract(stream));
             },
             else => {
@@ -1334,7 +1334,7 @@ fn net_callback_connect(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) rai
 
     var res: c_int = 0;
     var size: SockLen = @sizeOf(c_int);
-    if (net_abi.getSockOpt(sockOf(stream), h.SOL_SOCKET, h.SO_ERROR, &res, &size) == 0) {
+    if (net_abi.getSockOpt(sockOf(stream), sys.SOL_SOCKET, sys.SO_ERROR, &res, &size) == 0) {
         if (res == 0) {
             ev_loop.schedule(op.fiber, wrap.fromAbstract(stream));
         } else {
@@ -1353,9 +1353,9 @@ fn net_callback_connect(op: *ev_stream.Operation, event: ev_loop.AsyncEvent) rai
 /// goes through the completion port.
 fn openSocket(family: c_int, socktype: c_int, protocol: c_int) JSock {
     if (windows) {
-        return h.WSASocketW(family, socktype, protocol, null, 0, h.WSA_FLAG_OVERLAPPED);
+        return sys.WSASocketW(family, socktype, protocol, null, 0, sys.WSA_FLAG_OVERLAPPED);
     }
-    return h.socket(family, socktype | net_abi.sock_flags, protocol);
+    return sys.socket(family, socktype | net_abi.sock_flags, protocol);
 }
 
 /// Puts the calling fiber to sleep on an incoming connection.
@@ -1388,9 +1388,9 @@ fn schedAcceptImpl(state: *NetStateAccept, op: ?*ev_stream.Operation, err: *repr
     // An `AF_INET6` socket on Windows is dual-mode unless set otherwise, so
     // it accepts a connection from either family. An `AF_INET` one cannot be
     // the accepting socket for an IPv6 listener.
-    const family = if (has_ipv6) h.AF_INET6 else h.AF_INET;
-    const asock = h.WSASocketW(family, h.SOCK_STREAM, h.IPPROTO_TCP, null, 0, h.WSA_FLAG_OVERLAPPED);
-    if (asock == h.INVALID_SOCKET) {
+    const family = if (has_ipv6) sys.AF_INET6 else sys.AF_INET;
+    const asock = sys.WSASocketW(family, sys.SOCK_STREAM, sys.IPPROTO_TCP, null, 0, sys.WSA_FLAG_OVERLAPPED);
+    if (asock == sys.INVALID_SOCKET) {
         err.* = ev_stream.evLasterr();
         return true;
     }
@@ -1398,10 +1398,10 @@ fn schedAcceptImpl(state: *NetStateAccept, op: ?*ev_stream.Operation, err: *repr
     // is for a failure `ev/stream.zig`'s `evLasterr` describes, and a refused
     // registration already has its own message.
     state.astream = try makeStream(asock, stream_readable | stream_writable);
-    const socksize: h.DWORD = @sizeOf(h.SOCKADDR_STORAGE) + 16;
+    const socksize: sys.DWORD = @sizeOf(sys.struct_sockaddr_storage) + 16;
     state.overlapped.op = op;
-    if (h.AcceptEx(lsock, asock, &state.buf, 0, socksize, socksize, null, @ptrCast(&state.overlapped.as)) == 0 and
-        h.WSAGetLastError() != h.WSA_IO_PENDING)
+    if (sys.AcceptEx(lsock, asock, &state.buf, 0, socksize, socksize, null, @ptrCast(&state.overlapped.as)) == 0 and
+        sys.WSAGetLastError() != sys.WSA_IO_PENDING)
     {
         err.* = ev_stream.evLasterr();
         return true;
@@ -1425,13 +1425,13 @@ fn schedConnect(stream: *ev_stream.Stream, state: ?*anyopaque) raise.Error {
 fn serverifySocket(sfd: JSock, reuse_addr: bool, reuse_port: bool) ?[*:0]const u8 {
     const enable: c_int = 1;
     if (reuse_addr) {
-        if (net_abi.setSockOpt(sfd, h.SOL_SOCKET, h.SO_REUSEADDR, &enable, @sizeOf(c_int)) < 0) {
+        if (net_abi.setSockOpt(sfd, sys.SOL_SOCKET, sys.SO_REUSEADDR, &enable, @sizeOf(c_int)) < 0) {
             return "setsockopt(SO_REUSEADDR) failed";
         }
     }
     if (reuse_port) {
         if (net_abi.has_reuseport) {
-            if (net_abi.setSockOpt(sfd, h.SOL_SOCKET, h.SO_REUSEPORT, &enable, @sizeOf(c_int)) < 0) {
+            if (net_abi.setSockOpt(sfd, sys.SOL_SOCKET, sys.SO_REUSEPORT, &enable, @sizeOf(c_int)) < 0) {
                 return "setsockopt(SO_REUSEPORT) failed";
             }
         }
@@ -1448,17 +1448,17 @@ fn serverifySocket(sfd: JSock, reuse_addr: bool, reuse_port: bool) ?[*:0]const u
 /// reported here and shows up later as a would-block that never arrives.
 fn sockNoBlock(s: JSock) void {
     if (windows) {
-        var arg: h.u_long = 1;
-        _ = h.ioctlsocket(s, net_abi.fionbio, &arg);
+        var arg: sys.u_long = 1;
+        _ = sys.ioctlsocket(s, net_abi.fionbio, &arg);
     } else {
-        _ = h.fcntl(s, h.F_SETFL, h.fcntl(s, h.F_GETFL, @as(c_int, 0)) | h.O_NONBLOCK);
+        _ = sys.fcntl(s, sys.F_SETFL, sys.fcntl(s, sys.F_GETFL, @as(c_int, 0)) | sys.O_NONBLOCK);
         // Close-on-exec is a descriptor flag, which `F_SETFD` sets. A socket
         // made with `SOCK_CLOEXEC` has it already, and one from a plain
         // `accept` does not, so it is set for every socket.
-        _ = h.fcntl(s, h.F_SETFD, h.FD_CLOEXEC);
-        if (@hasDecl(h, "SO_NOSIGPIPE")) {
+        _ = sys.fcntl(s, sys.F_SETFD, @as(c_int, sys.FD_CLOEXEC));
+        if (net_abi.has_so_nosigpipe) {
             const enable: c_int = 1;
-            _ = net_abi.setSockOpt(s, h.SOL_SOCKET, h.SO_NOSIGPIPE, &enable, @sizeOf(c_int));
+            _ = net_abi.setSockOpt(s, sys.SOL_SOCKET, sys.SO_NOSIGPIPE, &enable, @sizeOf(c_int));
         }
     }
 }

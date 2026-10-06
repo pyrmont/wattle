@@ -687,7 +687,6 @@ pub const VmBackend = if (builtin.target.os.tag == .windows)
     }
 else if (config.ev_epoll)
     struct {
-        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
         selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
         epoll: c_int = 0,
         timerfd: c_int = 0,
@@ -695,14 +694,12 @@ else if (config.ev_epoll)
     }
 else if (config.ev_kqueue)
     struct {
-        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
         selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
         kq: c_int = 0,
         timer_enabled: bool = false,
     }
 else
     struct {
-        new_thread_attr: host.pthread_attr_t = std.mem.zeroes(host.pthread_attr_t),
         selfpipe: [2]host.Handle = std.mem.zeroes([2]host.Handle),
         streams: ?[*]*stream_mod.Stream = null,
         stream_count: usize = 0,

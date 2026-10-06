@@ -120,8 +120,9 @@ Three 32-bit targets are reachable, and glibc is too. The paragraph below said
 one and none, and it was wrong for two phases. The cause was our own include
 path: a `features.h` of ours sat on the `-I` path, `-I` beats the system search
 path, and it therefore satisfied `#include <features.h>` in every libc header
-that used it. (It is `src/host/wattle_features.h` now, and the rename is what
-closes the hazard.) glibc's own `features.h` is what defines `__GLIBC_USE`, so
+that used it. (It became `src/host/wattle_features.h`, and the rename is what
+closed the hazard; the tree has since stopped translating headers and the
+file is gone.) glibc's own `features.h` is what defines `__GLIBC_USE`, so
 `#if __GLIBC_USE (IEC_60559_BFP_EXT)` became `0 (...)` and the translation
 failed 6,662 times. musl's 32-bit headers lost their own feature macros the
 same way, and the `__REDIR` declarations named below were the symptom rather
@@ -208,8 +209,6 @@ Debug and in ReleaseSmall, in CI. `riscv32-linux-musl`, `x86-linux-musl` and
   turns off the event loop, networking and the FFI, so the epoll and socket
   arms in `runtime/ev/stream.zig` and `runtime/net.zig` are analysed at 32
   bits only by a 32-bit Linux build.
-- musl's own 32-bit headers are translated only there, which is what the
-  translate-c failure above was about.
 
 ### Reporting the ABI disagreement upstream
 

@@ -54,8 +54,9 @@ const vm_lifecycle = @import("vm/lifecycle.zig");
 const wrap = @import("value/helpers/wrap.zig");
 const vectors = @import("value/vectors.zig");
 
-/// `os/abi.zig`'s translation, which is where the `LC_*` constants come from.
-const h = oa.h;
+/// `os/abi.zig`'s host declarations, which is where the `LC_*` constants come
+/// from.
+const sys = oa.sys;
 
 // ==========================================================================
 // Constants
@@ -106,12 +107,12 @@ const hundred_ns_per_second: i64 = 10000000;
 /// The six locale categories `os/setlocale` names. `LC_*` are host constants,
 /// so the keyword list is portable and the numbers come from `<locale.h>`.
 const locale_categories = [_]struct { name: [:0]const u8, value: c_int }{
-    .{ .name = "all", .value = h.LC_ALL },
-    .{ .name = "collate", .value = h.LC_COLLATE },
-    .{ .name = "ctype", .value = h.LC_CTYPE },
-    .{ .name = "monetary", .value = h.LC_MONETARY },
-    .{ .name = "numeric", .value = h.LC_NUMERIC },
-    .{ .name = "time", .value = h.LC_TIME },
+    .{ .name = "all", .value = sys.LC_ALL },
+    .{ .name = "collate", .value = sys.LC_COLLATE },
+    .{ .name = "ctype", .value = sys.LC_CTYPE },
+    .{ .name = "monetary", .value = sys.LC_MONETARY },
+    .{ .name = "numeric", .value = sys.LC_NUMERIC },
+    .{ .name = "time", .value = sys.LC_TIME },
 };
 
 /// Whether this build registers `os/setlocale`.
@@ -300,11 +301,8 @@ pub fn gettime(source: i32) ?TimeParts {
 /// The Zig kernel reports seconds and nanoseconds separately, and something
 /// has to put them into a `timespec`.
 ///
-/// A translated `struct timespec` cannot be named from Zig, since musl
-/// declares its padding as a bitfield and `translate-c` demotes any structure
-/// with one to an opaque type. `std.timespec` can, being Zig's own declaration
-/// of the same layout, and it is what this file already uses for
-/// `clock_gettime` and `nanosleep`.
+/// `std.timespec` is Zig's declaration of the layout, and it is what this file
+/// already uses for `clock_gettime` and `nanosleep`.
 ///
 /// `enum JanetTimeSource` crosses as `c_uint`, which is what clang gives an
 /// enumeration whose enumerators are all non-negative. `test/os_time.zig`
@@ -661,7 +659,7 @@ fn nfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"locale"}));
     try args_core.arity(argv, 0, 2);
     const locale_name = try args_core.optCString(argv, 0, null);
-    var category: c_int = h.LC_ALL;
+    var category: c_int = sys.LC_ALL;
     if (argv.len > 1 and !repr.checkType(argv[1], repr.Tag.nil)) {
         category = for (locale_categories) |entry| {
             if (args_core.keyeq(argv[1], entry.name.ptr)) break entry.value;

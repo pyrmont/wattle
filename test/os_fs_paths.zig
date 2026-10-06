@@ -58,14 +58,11 @@ const harness = @import("harness.zig");
 /// The runtime's own stat reader, reached by *import* rather than by symbol.
 ///
 /// This is the first contract in the tree that needs to be inside the
-/// compilation for something other than a raise. `sys/stat.h` is deliberately
-/// outside the host translations, for which `os/abi.h` records the reason, so
-/// a contract
-/// linking `libwattle.a` would have to translate `struct stat` a second time
-/// and read `st_ino`, `st_nlink` and `st_mtimespec` out of its own copy.
-/// Inside the
-/// compilation there is no second copy: `host_stat.statRead` is the same
-/// reader `os/stat` uses, and `Field` is the same index.
+/// compilation for something other than a raise. A contract linking
+/// `libwattle.a` would have to declare `struct stat` a second time, for each
+/// platform, and read `st_ino`, `st_nlink` and the times out of its own copy.
+/// Inside the compilation there is no second copy: `host_stat.statRead` is the
+/// same reader `os/stat` uses, and `Field` is the same index.
 ///
 /// Using it to observe `fs.touch` and `fs.hardLink` is not circular.
 /// Reading metadata and writing it are different kernels; what would be

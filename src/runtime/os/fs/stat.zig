@@ -43,13 +43,11 @@ const value = @import("../../value.zig");
 const vm_lifecycle = @import("../../vm/lifecycle.zig");
 const wrap = @import("../../value/helpers/wrap.zig");
 
-/// `os/abi.zig`'s translation, which is where `mode_t` below comes from.
-const h = oa.h;
+/// `os/abi.zig`'s host declarations, which is where `mode_t` below comes from.
+const sys = oa.sys;
 
-/// Reading a `struct stat` is `host_stat.zig`'s, for the reason its header
-/// gives: musl's translates to `opaque {}`, so the route is `statx` on Linux,
-/// whose structure Zig defines itself, and the translation on macOS and mingw,
-/// which have `struct stat` complete.
+/// Reading a `struct stat` is `host_stat.zig`'s, which declares the structure
+/// for each platform and says which route each takes.
 const statRead = host_stat.statRead;
 
 // ==========================================================================
@@ -121,7 +119,7 @@ const windows = builtin.target.os.tag == .windows;
 ///
 /// `jmode_t` is `mode_t` on POSIX and `unsigned short` on Windows; both are
 /// scalars, so nothing here depends on a host layout.
-pub const jmode_t = if (windows) c_ushort else h.mode_t;
+pub const jmode_t = if (windows) c_ushort else sys.mode_t;
 
 // ==========================================================================
 // Types

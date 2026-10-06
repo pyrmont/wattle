@@ -11,10 +11,7 @@
 //! The host calls at the foot are declared here rather than translated, on the
 //! tree's standing rule: each takes primitive parameters or a type `host.zig`
 //! already supplies, so no host layout is at stake and no further translation
-//! is needed. `pthread_t` and `pthread_attr_t` are `host.zig`'s, which takes
-//! them from libc because `Timeout` embeds a `pthread_t` and because
-//! `ev/backend.zig`'s `VmBackend`, which `vm/state.zig`'s `Vm` embeds, has a
-//! `pthread_attr_t` in three of its four arms.
+//! is needed. `pthread_t` is `host.zig`'s, because `Timeout` embeds one.
 
 // ==========================================================================
 // Standard library imports
@@ -87,9 +84,6 @@ else
 /// reports.
 pub const INFINITE: u32 = 0xFFFFFFFF;
 const WAIT_TIMEOUT: u32 = 0x102;
-
-/// `PTHREAD_CREATE_DETACHED` is 2 on glibc, on musl and on Darwin.
-const PTHREAD_CREATE_DETACHED: c_int = 2;
 
 /// The signal the Android arm asks a deadline worker to exit with, since
 /// `pthread_cancel` does not exist there.
@@ -357,7 +351,7 @@ pub const Timeout = if (builtin.target.os.tag == .windows) struct {
     sched_id: u32 = 0,
     is_error: bool = false,
     has_worker: bool = false,
-    worker: host.pthread_t = std.mem.zeroes(host.pthread_t),
+    worker: ?host.pthread_t = null,
 };
 
 // ==========================================================================
@@ -604,7 +598,6 @@ pub fn evDeinitCommon() void {
     tables.deinit(&sched.threaded_abstracts);
     tables.deinit(&sched.active_tasks);
     tables.deinit(&sched.signal_handlers);
-    if (!windows) _ = c.pthread_attr_destroy(&sched.backend.new_thread_attr);
 }
 
 /// Ends every stream operation before VM teardown frees the collector heap.
@@ -683,10 +676,6 @@ pub fn evInitCommon() void {
     _ = tables.initRaw(&sched.active_tasks, 0);
     _ = tables.initRaw(&sched.signal_handlers, 0);
     math.rngSeed(&sched.ev_rng, 0);
-    if (!windows) {
-        _ = c.pthread_attr_init(&sched.backend.new_thread_attr);
-        _ = c.pthread_attr_setdetachstate(&sched.backend.new_thread_attr, PTHREAD_CREATE_DETACHED);
-    }
 }
 
 /// Marks every fiber and value the scheduler refers to.
@@ -1171,7 +1160,7 @@ pub fn sleepAwait(sec: f64) raise.Error {
         .sched_id = fiber.sched_id,
         .is_error = false,
         .has_worker = false,
-        .worker = std.mem.zeroes(@FieldType(Timeout, "worker")),
+        .worker = null,
     });
     return awaitEvent();
 }
@@ -1222,11 +1211,14 @@ pub fn threadedCall(
     } else {
         init.write_pipe = sched.backend.selfpipe[1];
         var waiter_thread: host.pthread_t = undefined;
-        const err = c.pthread_create(&waiter_thread, &sched.backend.new_thread_attr, threadBodyPosix, init);
+        const err = c.pthread_create(&waiter_thread, null, threadBodyPosix, init);
         if (err != 0) {
             utils.free(init);
             return pp_format.panicf("%s", .{utils.strerrorSafe(err)});
         }
+        // Nothing joins the waiter, so it releases its own resources when it
+        // returns.
+        _ = c.pthread_detach(waiter_thread);
     }
 
     // Increment ev refcount so we don't quit while waiting for a subprocess.
@@ -1300,7 +1292,7 @@ fn addFiberTimeout(sec: f64, is_error: bool) void {
         .sched_id = fiber.sched_id,
         .is_error = is_error,
         .has_worker = false,
-        .worker = std.mem.zeroes(@FieldType(Timeout, "worker")),
+        .worker = null,
     });
 }
 
@@ -1340,7 +1332,7 @@ fn nfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
         .is_error = false,
         .sched_id = tocancel.?.sched_id,
         .has_worker = false,
-        .worker = std.mem.zeroes(@FieldType(Timeout, "worker")),
+        .worker = null,
     };
     if (use_interrupt) {
         if (!has_interrupt) {
@@ -1791,19 +1783,19 @@ fn handleTimeoutWorker(to: Timeout, cancel_it: bool) void {
     if (!to.has_worker) return;
     if (windows) {
         if (cancel_it and to.worker_event != null) _ = c.SetEvent(to.worker_event);
-        _ = c.WaitForSingleObject(to.worker, INFINITE);
-        _ = c.CloseHandle(to.worker);
+        _ = c.WaitForSingleObject(to.worker.?, INFINITE);
+        _ = c.CloseHandle(to.worker.?);
         if (to.worker_event != null) _ = c.CloseHandle(to.worker_event);
     } else {
         if (cancel_it) {
             if (android) {
-                assert(@src(), c.pthread_kill(to.worker, SIGUSR1) == 0, "pthread_kill");
+                assert(@src(), c.pthread_kill(to.worker.?, SIGUSR1) == 0, "pthread_kill");
             } else {
-                assert(@src(), c.pthread_cancel(to.worker) == 0, "pthread_cancel");
+                assert(@src(), c.pthread_cancel(to.worker.?) == 0, "pthread_cancel");
             }
         }
         var res: ?*anyopaque = null;
-        assert(@src(), c.pthread_join(to.worker, &res) == 0, "pthread_join");
+        assert(@src(), c.pthread_join(to.worker.?, &res) == 0, "pthread_join");
     }
 }
 

@@ -12,11 +12,19 @@ change must pass before it is accepted.
 
 ## Overview
 
-`src/` is 113 `.zig` files and three hand-written headers. There is no C
+`src/` is 113 `.zig` files and no C source or header. There is no C
 implementation to select and no upstream Janet C to call. Any C that a Zig
-file reaches is libc's, through one of six translations of host headers that
-`build.zig` produces with the translate-c package. "No C in the tree" and "no
-libc" are different claims, and only the first is a goal.
+file reaches is libc's. "No C in the tree" and "no libc" are different claims,
+and only the first is a goal. The runtime links libc because macOS reaches the
+kernel only through `libSystem` and because native modules are loaded with
+`dlopen`.
+
+A host declaration is written in Zig. A type, a constant or a function of the
+host comes from Zig's standard library (`std.c`, `std.posix`, `std.os.linux`
+or `std.os.windows`) where the standard library declares it, and is written in
+Zig beside its callers where it does not. The runtime builds for macOS, Linux
+with glibc or musl, Windows with mingw, WASI and FreeBSD. A branch for any
+other platform is removed rather than ported.
 
 The rules that apply across the tree, each covered in its own section below:
 
@@ -102,8 +110,7 @@ source, a module of its own that the runtime and the line editor both import.
 
 `src/api/` is what a module author reads: `abstract_type.zig`, `abi.zig`,
 `constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and `repr.zig`.
-`src/host/` is `host.zig`, `cabi.zig` and `wattle_features.h`, which each of the
-three host-header translations includes first.
+`src/host/` is `host.zig` and `cabi.zig`.
 
 The directories state the boundary but do not enforce it. Both package roots sit
 at `src/`, so a relative import can cross between directories, and several do
@@ -133,7 +140,7 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 | `os/`            | 4     | the host interface                                  |
 | `os/fs/`         | 3     | the file-system interface                           |
 | `ev/`            | 5     | `backend`, `stream`, `channel`, `dispatch`, `locks` |
-| `net/`           | 1     | the host-header translation                         |
+| `net/`           | 1     | the host declarations                               |
 | `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`              |
 | `pp/`            | 2     | `format`, `pretty`                                  |
 
@@ -149,7 +156,8 @@ functions, abstracts, integer types, vectors, maps and sets, and transients. `va
 In `vm/`, `entry.zig` is the interpreter's entry points, `lifecycle.zig` is
 init and teardown, and `state.zig` is the `Vm` type, its storage and its
 accessor. `os/` and `os/fs/` are split where the platform differs.
-`os/abi.zig` and `net/abi.zig` are the two host-header translations.
+`os/abi.zig` and `net/abi.zig` declare, in Zig, the host interfaces of the
+`os/` and `net/` subsystems.
 
 The Windows process CPU clock may read zero. If `GetProcessTimes` fails,
 `os.gettime` returns null and `os.gettimeAbi` returns -1. The failed call's
@@ -188,23 +196,14 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
   `wattleModule` gives an author's package this module, so the runtime and an
   author's `.so` use the same types.
 - `constants` imports `config`, and `repr` for the tag.
-- `host` is the six shapes the host determines: `FILE`, the descriptor, the
-  three pthread types and Windows' critical section. The pthread types come
-  from libc, because `std.c` declares glibc's `pthread_attr_t`, musl's is a
-  different size, and `Vm` embeds it. `host` is a module rather than a file of
-  `root` because `cabi` names the same six shapes, and `cabi` cannot import a
-  file of `root`. Every Wattle aggregate is declared with the operations on it
+- `host` is the three shapes the host determines: `FILE`, the descriptor and
+  the thread handle, each from `std`. `host` is a module rather than a file
+  of `root` because `cabi` names the same three shapes, and `cabi` cannot
+  import a file of `root`. Every Wattle aggregate is declared with the operations on it
   instead (`tables.Table`, `fibers.Fiber`, `functions.FuncDef`,
   `ev_stream.Stream`).
 - `cabi` is the external declarations. It imports `config`, `host`, `repr` and
-  `constants`, and the translation of `<stdio.h>`.
-- The six `c_*` modules are the translations of host headers, which
-  `build.zig`'s `translateHostHeaders` produces once per graph with the
-  translate-c package. `host` imports `c_pthread`, `cabi` imports `c_stdio`,
-  and `root` imports `c_locks`, `c_stat`, `c_os` and `c_net`.
-  A translation that translate-c cannot produce for a target, and that no
-  file analysed for it imports, is not made: `<pthread.h>` on Windows, and
-  `<pthread.h>` and `net/abi.h` on wasm.
+  `constants`.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only
   reader.
 - `lexicon` is the lexical tables of source: the whitespace and symbol bytes,
@@ -213,7 +212,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
   from the runtime. A compilation with both in it has one `lexicon`, because
   a file may belong to only one module in a compilation.
 - `root` is the runtime. Everything else is a file of it, including
-  `api/raise.zig`, `runtime/corefn.zig` and the three host-header translations.
+  `api/raise.zig`, `runtime/corefn.zig`, `os/abi.zig` and `net/abi.zig`.
 
 `build.zig` builds this graph six times: for the runtime, for the bootstrap
 generator on the host, with `test/contracts.zig` as the root, with
@@ -358,14 +357,12 @@ with no Janet name among them.
 
 ### Host structures
 
-`os/abi.h` and `net/abi.h` each include `wattle_features.h`
-first, and each is used by a single subsystem. They exist because what they
-declare depends on the host's headers and cannot be written in Zig without
-guessing. `build.zig` translates each with the translate-c package, which
-`build.zig.zon` names as a dependency, and the subsystem's `abi.zig` imports
-the result as a module. The translation records every header it reads, so an
-edit to one of these headers, or to a header one of them includes, translates
-it again and recompiles the modules that import it.
+`os/abi.zig` and `net/abi.zig` declare the host structures, constants and
+functions their subsystems use, under the C names, in a namespace each calls
+`sys`. Each declaration is `std`'s where `std` has the platform's value or
+layout, and written in the file where it does not, which is the rule the
+[Overview](#overview) states. Each file is used by a single subsystem, so a
+host type does not cross a subsystem boundary.
 
 ## Configuration
 

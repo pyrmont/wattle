@@ -222,4 +222,91 @@
 (assert (= :ok race-result) "ev/select over a threaded channel does not hang")
 (assert (= race-n (length race-got)) "ev/select over a threaded channel loses no items")
 
+; Locks. `ev/lock` is recursive: the thread that holds it may take it again,
+; and must release it as many times. A lock that was not recursive would hang
+; here rather than fail.
+(do
+  (def lock (ev/lock))
+  (ev/acquire-lock lock)
+  (ev/acquire-lock lock)
+  (ev/release-lock lock)
+  (ev/release-lock lock)
+  (ev/with-lock lock (ev/with-lock lock nil))
+  (assert true "ev/lock is recursive"))
+
+; Releasing a lock the calling thread does not hold raises, whether nobody
+; holds it or another thread does.
+(assert-error "cannot release lock" (ev/release-lock (ev/lock)))
+(do
+  (def lock (ev/lock))
+  (def result (ev/thread-chan 1))
+  (ev/acquire-lock lock)
+  (ev/do-thread (ev/give result (protect (ev/release-lock lock))))
+  (def [ok message] (ev/take result))
+  (ev/release-lock lock)
+  (assert (and (not ok) (= message "cannot release lock"))
+          "ev/release-lock raises in a thread that does not hold the lock"))
+
+; Mutual exclusion across threads. Each worker logs :in and :out around a
+; sleep while it holds the lock, so the log alternates exactly when no two
+; workers hold the lock at once.
+(defn- lock-log [n acquire release]
+  (def log (ev/thread-chan (* 2 n)))
+  (def done (ev/thread-chan n))
+  (repeat n
+    (ev/thread (fn []
+                 (acquire)
+                 (ev/give log :in)
+                 (ev/sleep 0.01)
+                 (ev/give log :out)
+                 (release)
+                 (ev/give done true))
+               nil :i))
+  (repeat n (ev/take done))
+  (seq [_ :range [0 (* 2 n)]] (ev/take log)))
+(defn- alternates? [entries]
+  (var ok true)
+  (for i 0 (length entries)
+    (unless (= (get entries i) (if (even? i) :in :out)) (set ok false)))
+  ok)
+(do
+  (def lock (ev/lock))
+  (assert (alternates? (lock-log 4 (fn [] (ev/acquire-lock lock)) (fn [] (ev/release-lock lock))))
+          "ev/lock excludes other threads"))
+(do
+  (def rw (ev/rwlock))
+  (assert (alternates? (lock-log 4 (fn [] (ev/acquire-wlock rw)) (fn [] (ev/release-wlock rw))))
+          "ev/rwlock excludes other writers"))
+
+; A writer waits for every reader, and a reader for a writer: a writer that
+; takes the lock while a reader holds it logs :write between the reader's :in
+; and :out, which the order below rules out.
+(do
+  (def rw (ev/rwlock))
+  (def log (ev/thread-chan 4))
+  (def done (ev/thread-chan 1))
+  (ev/acquire-rlock rw)
+  (ev/thread (fn []
+               (ev/acquire-wlock rw)
+               (ev/give log :write)
+               (ev/release-wlock rw)
+               (ev/give done true))
+             nil :i)
+  (ev/give log :in)
+  (ev/sleep 0.05)
+  (ev/give log :out)
+  (ev/release-rlock rw)
+  (ev/take done)
+  (assert (deep= ![:in :out :write] (seq [_ :range [0 3]] (ev/take log)))
+          "ev/rwlock makes a writer wait for a reader"))
+
+; Releasing a reader/writer lock that is not held does nothing.
+(do
+  (def rw (ev/rwlock))
+  (ev/release-rlock rw)
+  (ev/release-wlock rw)
+  (ev/acquire-wlock rw)
+  (ev/release-wlock rw)
+  (assert true "ev/rwlock tolerates a release it does not hold"))
+
 (end-suite)

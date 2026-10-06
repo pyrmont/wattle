@@ -1,12 +1,7 @@
 .{
     .name = .wattle,
     .version = "0.1.1",
-    .dependencies = .{
-        .translate_c = .{
-            .url = "git+https://codeberg.org/ziglang/translate-c?ref=2.0.0#0da7a16c3235b935b82421646076e0657cda21f6",
-            .hash = "translate_c-2.0.0-Q_BUWltOBwA0229IE8wwSxxGzOxyRso3hvcb1nN8oJX_",
-        },
-    },
+    .dependencies = .{},
     .fingerprint = 0x4082841cbfa0dabd,
     .minimum_zig_version = "0.17.0",
     .paths = .{

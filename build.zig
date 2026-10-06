@@ -1,5 +1,4 @@
 const std = @import("std");
-const Translator = @import("translate_c").Translator;
 
 /// Wattle's version: the number of a release, or `DEVEL` between releases.
 ///
@@ -84,11 +83,9 @@ const test_suites = &[_]Suite{
 };
 
 // **This file compiles no C and holds no C flags.** Neither `src/` nor `test/`
-// contains a `.c`. What remains of C in this tree is three hand-written headers
-// -- `src/host/wattle_features.h` and the two host translations under
-// `src/runtime` -- and
-// libc itself, which is deliberate: "no C in the tree" and "no libc" are
-// different claims, and only the first is a goal.
+// contains a `.c` or a `.h`. What remains of C is libc itself, which is
+// deliberate: "no C in the tree" and "no libc" are different claims, and only
+// the first is a goal.
 
 const BuildOptions = struct {
     install_tests: bool,
@@ -497,9 +494,8 @@ const web_support = "src/client/web/wasi.js";
 
 /// The machine the image generator runs on, with the CPU model pinned.
 ///
-/// The generator translates system headers, and a translated structure's size
-/// depends on the CPU model. Starting from the host's own query keeps the
-/// version and pins the model.
+/// Starting from the host's own query keeps the OS version and pins the CPU
+/// model.
 fn bootHost(b: *std.Build) std.Build.ResolvedTarget {
     var query = b.graph.host.query;
     query.cpu_model = .baseline;
@@ -662,16 +658,8 @@ pub fn build(b: *std.Build) void {
     // `test/README.md`, and has never been run on a 32-bit target, whose
     // binaries are deliberately not executed.
     //
-    // The *OS version* is kept rather than dropped, and the reason is not
-    // cosmetic. Naming the arch, the OS tag and the ABI without a
-    // version resolves to `aarch64-macos-none`, and the SDK's availability
-    // macros then expand differently: `<spawn.h>` drags in the mach headers,
-    // translate-c demotes `mach_msg_type_descriptor_t` to an opaque type
-    // because it holds a bitfield, and the `_Static_assert` on that
-    // structure's size fails the translation. Only a subsystem that
-    // translates a system header notices, and this is the first one that
-    // does. Starting from the host's own query keeps the version and still
-    // pins the CPU model, which is what this is for.
+    // The OS version is the host's own, which starting from the host's query
+    // keeps.
     const boot_host = bootHost(b);
     const image_source = coreImage(b, options, target, boot_host);
 
@@ -963,11 +951,6 @@ pub fn build(b: *std.Build) void {
         "module-load-wrong-api",
     );
     installModuleTest(b, options, config, wrong_api_module);
-
-    // The two host translations -- `os/abi.h` and `net/abi.h` -- have no
-    // oracle and need none: each keeps what it declares inside one subsystem,
-    // and every name it publishes has a Zig caller that fails to compile when
-    // the translation stops providing it.
 
     const run_step = b.step("run", "Run Wattle");
     const run_client = b.addRunArtifact(client);
@@ -2950,78 +2933,6 @@ const RuntimeGraph = struct {
     lexicon: *std.Build.Module,
 };
 
-/// The host headers translated for one graph, one module each.
-///
-/// `translateHostHeaders` returns this type and `makeRuntimeGraph` reads it.
-/// A field is null on a target where translate-c cannot read the header and
-/// no file analysed for that target imports it: `<pthread.h>` on Windows, and
-/// `<pthread.h>` and `net/abi.h` on wasm.
-const HostHeaders = struct {
-    locks: ?*std.Build.Module,
-    net: ?*std.Build.Module,
-    os: *std.Build.Module,
-    pthread: ?*std.Build.Module,
-    stat: *std.Build.Module,
-    stdio: *std.Build.Module,
-};
-
-/// Returns the module translate-c produces from `header` for `target`, named
-/// `name`.
-///
-/// `header` is read with `src/runtime` and `src/host` on the include path, the
-/// directories of the three hand-written headers.
-fn translateHeader(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.lang.Optimize,
-    options: BuildOptions,
-    name: []const u8,
-    header: std.Build.LazyPath,
-) *std.Build.Module {
-    const translator: Translator = .init(b.dependency("translate_c", .{}), .{
-        .name = name,
-        .c_source_file = header,
-        .target = target,
-        .optimize = optimize,
-    });
-    translator.addIncludePath(b.path("src/runtime"));
-    translator.addIncludePath(b.path("src/host"));
-    // The runtime is linked into a shared library, and ELF shared objects
-    // require position-independent code.
-    translator.mod.pic = true;
-    applyFramePointer(translator.mod, options, optimize);
-    return translator.mod;
-}
-
-/// Returns the translations of the six host headers for `target`.
-///
-/// The two subsystem headers are translated from their files under
-/// `src/runtime`. The four libc headers are reached through a one-line
-/// header written into the cache, so that the tree's hand-written headers stay
-/// the three it has.
-fn translateHostHeaders(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.lang.Optimize,
-    options: BuildOptions,
-) HostHeaders {
-    const windows = target.result.os.tag == .windows;
-    const wasm = target.result.cpu.arch.isWasm();
-    const headers = b.addWriteFiles();
-    const locks = headers.add("wattle_locks.h", "#include \"wattle_features.h\"\n#include <pthread.h>\n");
-    const pthread = headers.add("wattle_pthread.h", "#include <pthread.h>\n");
-    const stat = headers.add("wattle_stat.h", "#include \"wattle_features.h\"\n#include <sys/stat.h>\n");
-    const stdio = headers.add("wattle_stdio.h", "#include <stdio.h>\n");
-    return .{
-        .locks = if (windows or wasm) null else translateHeader(b, target, optimize, options, "c_locks", locks),
-        .net = if (wasm) null else translateHeader(b, target, optimize, options, "c_net", b.path("src/runtime/net/abi.h")),
-        .os = translateHeader(b, target, optimize, options, "c_os", b.path("src/runtime/os/abi.h")),
-        .pthread = if (windows or wasm) null else translateHeader(b, target, optimize, options, "c_pthread", pthread),
-        .stat = translateHeader(b, target, optimize, options, "c_stat", stat),
-        .stdio = translateHeader(b, target, optimize, options, "c_stdio", stdio),
-    };
-}
-
 /// Builds the graph for one configuration.
 ///
 /// `cfg` is what the graph is compiled under: `resolveConfig` for `-Dtarget`,
@@ -3038,16 +2949,9 @@ fn makeRuntimeGraph(
     const sel = zigSelection(cfg);
     if (!sel.any()) return null;
 
-    // What the build set, as comptime constants rather than as macros a
-    // translation is asked about. Created first because the subsystems select
-    // the value representation and the event-loop backend from it.
-    //
-    // **One owner per type.** Two translations of the same header produce
-    // distinct, incompatible types -- a `pthread_attr_t` from one is not the
-    // one the other holds. `translateHostHeaders` makes one translation of
-    // each header per graph, and the modules that import it share it. `host.zig` is that single owner for the
-    // pthread types and it is Zig, which is the stronger form of the same
-    // rule. The two host translations under `os/` and `net/` each keep what they declare inside one subsystem for the same reason.
+    // What the build set, as comptime constants. Created first because the
+    // subsystems select the value representation and the event-loop backend
+    // from it.
     const config_module = makeConfigModule(b, cfg);
     applyFramePointer(config_module, options, optimize);
 
@@ -3076,25 +2980,18 @@ fn makeRuntimeGraph(
     applyFramePointer(abi_module, options, optimize);
     abi_module.addImport("repr", repr_module);
 
-    // The shapes the host determines -- `FILE`, the descriptor, the pthread
-    // types and Windows' critical section. Still a module rather than a file of
-    // `root` because `cabi` names the same six and cannot import a file of
-    // `root`; its import list is `std` and `builtin` and nothing else.
+    // The shapes the host determines -- `FILE`, the descriptor and the thread
+    // handle. Still a module rather than a file of `root` because `cabi` names
+    // them and cannot import a file of `root`; its import list is `std` and
+    // `builtin` and nothing else.
     const host_module = b.createModule(.{
         .root_source_file = b.path("src/host/host.zig"),
         .target = target,
         .optimize = optimize,
         .pic = true,
     });
-    // `host.zig` takes the pthread types from libc: `std.c` carries glibc's
-    // `pthread_attr_t` and musl's is a different size, which `Vm` embeds.
     host_module.link_libc = true;
     applyFramePointer(host_module, options, optimize);
-
-    // The host headers, each translated once for this graph. A module that
-    // imports a translation is given it by name below.
-    const headers = translateHostHeaders(b, target, optimize, options);
-    if (headers.pthread) |translation| host_module.addImport("c_pthread", translation);
 
     // The constants, opcodes and flags, owned by Zig. Its own module because
     // the bootstrap, the client and the runtime all spell them.
@@ -3122,7 +3019,6 @@ fn makeRuntimeGraph(
         .pic = true,
     });
     configureCModule(cabi_module, target, options, cfg);
-    cabi_module.addImport("c_stdio", headers.stdio);
     cabi_module.addImport("config", config_module);
     cabi_module.addImport("host", host_module);
     cabi_module.addImport("repr", repr_module);
@@ -3138,10 +3034,6 @@ fn makeRuntimeGraph(
         .pic = true,
     });
     configureCModule(module, target, options, cfg);
-    if (headers.locks) |translation| module.addImport("c_locks", translation);
-    if (headers.net) |translation| module.addImport("c_net", translation);
-    module.addImport("c_os", headers.os);
-    module.addImport("c_stat", headers.stat);
     module.addImport("cabi", cabi_module);
     module.addImport("host", host_module);
     module.addImport("abi", abi_module);
@@ -3177,21 +3069,15 @@ fn makeRuntimeGraph(
     // calls it cannot make by import go through `interface.rt` instead. It
     // carries both arms and picks at comptime on `config.native_module`.
 
-    // **The two host-header files are not modules.** `os/abi.zig` and
-    // `net/abi.zig` each sit beside the hand-written `.h` whose translation
-    // they import, and are reached by path from inside the subsystem that owns
-    // them -- two importers for `net`, six for `os`, all within the subtree. A module name buys nothing
-    // once the file sits where its callers are. The translation itself is a
-    // module, because translate-c produces it as a build step:
-    // `translateHostHeaders` makes `c_os` and `c_net`, and the subsystems
-    // module imports them by name.
+    // **`os/abi.zig` and `net/abi.zig` are not modules.** Each is reached by
+    // path from inside the subsystem that owns it -- two importers for `net`,
+    // six for `os`, all within the subtree. A module name buys nothing once the
+    // file sits where its callers are.
     //
     // A path import inherits the importing module's settings, so the
     // subsystems module's `.pic` covers the two files -- **checked on
     // `x86_64-linux-gnu` rather than inferred**, since that is where getting
-    // it wrong fails, and it fails at link rather than at compile. A
-    // translation module inherits nothing, so `translateHeader` sets `.pic` on
-    // each.
+    // it wrong fails, and it fails at link rather than at compile.
 
     const module_config = makeConfigModule(b, blk: {
         var module_cfg = cfg;

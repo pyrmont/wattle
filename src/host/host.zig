@@ -1,23 +1,18 @@
 //! The shapes the host decides, which every compilation must spell the same
 //! way.
 //!
-//! A descriptor, a `FILE`, a pthread handle and its attributes, a mutex: none
-//! of these is Janet's, and none can be derived. What each is is fixed by the
-//! platform and its libc, so what matters is that every file naming such a
-//! shape names this declaration. Two spellings of `pthread_attr_t` in one
-//! program is a silent offset mismatch rather than a compile error.
+//! A descriptor, a `FILE`, a pthread handle: none of these is Janet's, and
+//! none can be derived. What each is is fixed by the platform and its libc, so
+//! what matters is that every file naming such a shape names this
+//! declaration.
 //!
 //! `build.zig` roots a module at this file, so `host` is a module rather than
-//! a file of the runtime. `cabi.zig` is a module for the same reason: its
-//! translation of `<stdio.h>` is an import `build.zig` provides, and a file of
-//! `root` cannot be imported by it.
+//! a file of the runtime. `cabi.zig` is a module too, because the client, the
+//! contract driver and the test executables import it as well as `root`.
 //!
 //! This file is an authoritative Zig source, and so are `api/constants.zig`
-//! and `api/repr.zig`. Nothing translates a Janet header into any of the
-//! three. Reaching libc through a translation of its headers is deliberate:
-//! "no C in the tree" and "no libc" are different claims and only the first is
-//! a goal, and what matters is that a size comes from the platform rather than
-//! from a table kept by hand.
+//! and `api/repr.zig`. Each shape here comes from `std`, as
+//! `src/README.md`'s Overview requires of a host declaration.
 //!
 //! Only the host's own shapes are here. Every value and runtime type lives
 //! with the file that owns what is done to it: `value/fibers.zig`'s `Fiber`,
@@ -40,38 +35,13 @@ const builtin = @import("builtin");
 /// and `runtime/io.zig` names it and reads no field of it.
 pub const FILE = std.c.FILE;
 
-/// The pthread types, from libc rather than from `std.c`.
-///
-/// `std.c` declares glibc's `pthread_attr_t`, and musl's has a different
-/// size, so `std.c`'s is wrong on a musl target and correct on macOS.
-/// `runtime/ev/backend.zig`'s `VmBackend` embeds a `pthread_attr_t` in
-/// three of its four arms, and `vm/state.zig`'s `Vm` has a `VmBackend`, so
-/// taking `std.c`'s would move every field after `new_thread_attr` on every
-/// Linux target. The size has to come from the platform rather than from a
-/// table kept by hand.
-///
-/// Nothing crosses a translation boundary by value. `cabi.zig` declares
-/// `pthread_attr_init` and its neighbours, each taking a pointer, so these
-/// three types are storage and an address and nothing more.
-pub const pthread_attr_t = libc.pthread_attr_t;
-pub const pthread_mutex_t = libc.pthread_mutex_t;
-pub const pthread_t = libc.pthread_t;
+/// A thread handle: `std.c.pthread_t`, and a Windows thread `HANDLE`, which
+/// `runtime/ev.zig`'s deadline worker keeps in the same field.
+pub const pthread_t = if (builtin.target.os.tag == .windows) ?*anyopaque else std.c.pthread_t;
 
 // ==========================================================================
 // Types
 // ==========================================================================
-
-/// Windows' mutex, which `runtime/ev/channel.zig` selects instead of a
-/// `pthread_mutex_t`, and `void` off Windows where that selection is
-/// comptime-false.
-///
-/// It comes from `std.os.windows` rather than from a translation, because there
-/// is one Windows ABI: the per-libc difference that makes `std.c`'s
-/// `pthread_attr_t` wrong has no analogue here.
-pub const CRITICAL_SECTION = if (builtin.target.os.tag == .windows)
-    std.os.windows.CRITICAL_SECTION
-else
-    void;
 
 /// A file or socket descriptor. Windows gives back a `HANDLE`, so the type is
 /// a pointer there and a `c_int` everywhere else.

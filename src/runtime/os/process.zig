@@ -24,7 +24,7 @@
 //! `nfunSpawn`, `nfunSigaction` and `nfunPipe`.
 //!
 //! The kernels at the foot are reached by import rather than by symbol, and
-//! the host calls below them are the ones whose signatures name `h.pid_t`,
+//! the host calls below them are the ones whose signatures name `sys.pid_t`,
 //! which this file aliases, so they stay with the alias rather than moving to
 //! `cabi.zig`.
 
@@ -73,9 +73,9 @@ const vm_state = @import("../vm/state.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 const vectors = @import("../value/vectors.zig");
 
-/// `os/abi.zig`'s translation, which is where `pid_t`, the spawn file actions
-/// and the signal types come from.
-const h = oa.h;
+/// `os/abi.zig`'s host declarations, which is where `pid_t`, the spawn file
+/// actions and the signal types come from.
+const sys = oa.sys;
 
 // ==========================================================================
 // Constants
@@ -189,14 +189,13 @@ const signal_number_names = [_][:0]const u8{
 const signal_numbers: [signal_number_names.len]i32 = blk: {
     var table: [signal_number_names.len]i32 = undefined;
     for (signal_number_names, 0..) |name, i| {
-        table[i] = if (@hasDecl(h, name)) @field(h, name) else -1;
+        table[i] = sys.signalNumber(name) orelse -1;
     }
     break :blk table;
 };
 
-/// Whether `posix_spawn_file_actions_addchdir` exists. `os/abi.h` enumerates
-/// the systems, because the extension follows no standard and the enumeration
-/// belongs beside the other predefine tests.
+/// Whether `posix_spawn_file_actions_addchdir` exists. `os/abi.zig` lists the
+/// platforms, because the extension follows no standard.
 const spawn_chdir = oa.spawn_chdir;
 
 /// The three `ev_stream.Stream` flags this file reads.
@@ -264,7 +263,7 @@ const ExecuteMode = enum { execute, spawn, exec };
 /// return code, and the three stdio abstracts this process kept.
 const Proc = struct {
     flags: c_int,
-    handles: if (windows) struct { p: host.Handle, t: host.Handle } else struct { pid: h.pid_t },
+    handles: if (windows) struct { p: host.Handle, t: host.Handle } else struct { pid: sys.pid_t },
     return_code: c_int,
     in: ?*Stdio,
     out: ?*Stdio,
@@ -630,7 +629,7 @@ pub fn signalIndex(key: [*]const u8, len: usize) i32 {
 /// exit; that is preserved here.
 pub fn wait(pid: i64, val: *i32) i32 {
     var status: c_int = 0;
-    _ = c.retryIntr(c.waitpid, .{ @as(h.pid_t, @intCast(pid)), &status, @as(c_int, 0) });
+    _ = c.retryIntr(c.waitpid, .{ @as(sys.pid_t, @intCast(pid)), &status, @as(c_int, 0) });
 
     const bits: u32 = @bitCast(status);
     if (std.c.W.IFEXITED(bits)) {
@@ -805,7 +804,7 @@ fn nfunProcKill(argv: []repr.Value) raise.Error!repr.Value {
     } else {
         var signal: c_int = -1;
         if (argv.len == 3) signal = try getSignalKw(argv, 2);
-        const status = sendSignal(proc.pid(), if (signal == -1) h.SIGKILL else signal);
+        const status = sendSignal(proc.pid(), if (signal == -1) sys.SIGKILL else signal);
         if (status != 0) return raise.panic(@ptrCast(utils.strerrorSafe(c.errno())));
     }
     // Having killed it, wait on it, but only if asked.
@@ -879,23 +878,23 @@ fn nfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
     // `sigemptyset` the mask the handler runs under would be whatever was on
     // the stack. The unblock set below already writes the same pair in the
     // right order.
-    var mask: h.sigset_t = undefined;
+    var mask: sys.sigset_t = undefined;
     _ = oa.sigemptyset(&mask);
     _ = oa.sigaddset(&mask, sig);
-    var action: h.struct_sigaction = std.mem.zeroes(h.struct_sigaction);
-    action.sa_flags |= h.SA_RESTART;
+    var action: sys.struct_sigaction = std.mem.zeroes(sys.struct_sigaction);
+    action.flags |= sys.SA_RESTART;
     if (can_interrupt) {
         if (constants.vm_has_interrupt == 0) return raise.panic("interpreter interrupt not enabled");
         setHandler(&action, &Trampolines.interrupting);
     } else {
         setHandler(&action, &Trampolines.plain);
     }
-    action.sa_mask = mask;
+    action.mask = mask;
     _ = c.retryIntr(oa.sigaction, .{ sig, &action, null });
-    var set: h.sigset_t = undefined;
+    var set: sys.sigset_t = undefined;
     _ = oa.sigemptyset(&set);
     _ = oa.sigaddset(&set, sig);
-    _ = oa.sigprocmask(h.SIG_UNBLOCK, &set, null);
+    _ = oa.sigprocmask(sys.SIG_UNBLOCK, &set, null);
     return wrap.fromNil();
 }
 
@@ -1161,14 +1160,14 @@ fn getStdioForHandle(handle: host.Handle, orig: ?*anyopaque, iswrite: bool) rais
             }
             const new_handle = c.dup(handle);
             if (new_handle < 0) return null;
-            _ = c.fcntl(new_handle, h.F_SETFD, h.FD_CLOEXEC);
+            _ = c.fcntl(new_handle, sys.F_SETFD, @as(c_int, sys.FD_CLOEXEC));
             return try ev_stream.makeStream(new_handle, flags, null);
         }
         return @ptrCast(@alignCast(p));
     } else {
         if (orig) |p| return @ptrCast(@alignCast(p));
         if (windows) {
-            const fd = c._open_osfhandle(@bitCast(@intFromPtr(handle)), if (iswrite) h._O_WRONLY else h._O_RDONLY);
+            const fd = c._open_osfhandle(@bitCast(@intFromPtr(handle)), if (iswrite) sys._O_WRONLY else sys._O_RDONLY);
             if (fd == -1) return null;
             const f = c._fdopen(fd, if (iswrite) "w" else "r") orelse {
                 _ = c._close(fd);
@@ -1198,16 +1197,16 @@ fn makePipes(reverse: bool) ?struct { keep: host.Handle, give: host.Handle } {
         if (ev_stream.makePipe(&handles, if (reverse) 2 else 1) != 0) return null;
         if (reverse) std.mem.swap(host.Handle, &handles[0], &handles[1]);
         if (windows) {
-            if (c.SetHandleInformation(handles[0], h.HANDLE_FLAG_INHERIT, 0) == 0) return null;
+            if (c.SetHandleInformation(handles[0], sys.HANDLE_FLAG_INHERIT, 0) == 0) return null;
         }
     } else if (windows) {
-        var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
-        sa_attr.nLength = @sizeOf(h.SECURITY_ATTRIBUTES);
-        sa_attr.bInheritHandle = 1;
+        var sa_attr: sys.SECURITY_ATTRIBUTES = std.mem.zeroes(sys.SECURITY_ATTRIBUTES);
+        sa_attr.nLength = @sizeOf(sys.SECURITY_ATTRIBUTES);
+        sa_attr.bInheritHandle = .TRUE;
         if (oa.CreatePipe(&handles[0], &handles[1], &sa_attr, 0) == 0) return null;
         if (reverse) std.mem.swap(host.Handle, &handles[0], &handles[1]);
         // Do not inherit the side of the pipe this process owns.
-        if (c.SetHandleInformation(handles[0], h.HANDLE_FLAG_INHERIT, 0) == 0) return null;
+        if (c.SetHandleInformation(handles[0], sys.HANDLE_FLAG_INHERIT, 0) == 0) return null;
     } else {
         if (makePipe(&handles) != 0) return null;
         if (reverse) std.mem.swap(host.Handle, &handles[0], &handles[1]);
@@ -1250,7 +1249,7 @@ fn procGc(proc: *Proc, _: usize) void {
     } else {
         if (proc.flags & (proc_waited | proc_allow_zombie) == 0) {
             // Kill and wait, so that the child does not become a zombie.
-            _ = sendSignal(proc.pid(), h.SIGKILL);
+            _ = sendSignal(proc.pid(), sys.SIGKILL);
             if (proc.flags & proc_waiting == 0) reap(proc.pid());
         }
     }
@@ -1355,44 +1354,12 @@ fn procWait(proc: *Proc) raise.Error!repr.Value {
 /// `raise` is the name this file imports the error mechanism under.
 const raiseSignal = @extern(*const fn (c_int) callconv(.c) c_int, .{ .name = "raise" });
 
-/// Installs a handler into a `struct sigaction`, whichever of the three
-/// spellings this platform's header uses.
+/// Installs a handler into a `struct sigaction`.
 ///
-/// POSIX says `sa_handler` may be a macro over a union member, and every libc
-/// takes it up differently. The translation renders what the header says, so
-/// the field path is:
-///
-/// | libc | path |
-/// | --- | --- |
-/// | macOS | `__sigaction_u.__sa_handler` |
-/// | musl | `__sa_handler.sa_handler` |
-/// | glibc | `__sigaction_handler.sa_handler` |
-///
-/// Only the host's spelling was needed to compile on the host, so the
-/// cross-compiles are what found this. The lookup is written out rather than
-/// guessed at by position, so that a fourth spelling fails to compile here
-/// instead of writing into the wrong member.
-inline fn setHandler(action: *h.struct_sigaction, f: *const fn (c_int) callconv(.c) void) void {
-    const outer_names = .{ "sa_handler", "__sigaction_u", "__sa_handler", "__sigaction_handler" };
-    const inner_names = .{ "__sa_handler", "sa_handler" };
-    const outer = comptime blk: {
-        for (outer_names) |name| {
-            if (@hasField(h.struct_sigaction, name)) break :blk name;
-        }
-        @compileError("struct sigaction has no handler field this knows about");
-    };
-    const Outer = @FieldType(h.struct_sigaction, outer);
-    if (@typeInfo(Outer) == .@"union") {
-        const inner = comptime blk: {
-            for (inner_names) |name| {
-                if (@hasField(Outer, name)) break :blk name;
-            }
-            @compileError("struct sigaction's handler union has no member this knows about");
-        };
-        @field(@field(action, outer), inner) = @ptrCast(f);
-    } else {
-        @field(action, outer) = @ptrCast(f);
-    }
+/// `std.c.Sigaction` names the handler union `handler` on every platform,
+/// where each libc spells `sa_handler` as a macro over a member of its own.
+inline fn setHandler(action: *sys.struct_sigaction, f: *const fn (c_int) callconv(.c) void) void {
+    action.handler = .{ .handler = @ptrCast(f) };
 }
 
 /// The `os/shell` body, which runs on a worker thread.
@@ -1420,10 +1387,10 @@ fn signalCallback(msg: ev_loop.GenericMessage) callconv(.c) void {
     if (!repr.checkType(handlerv, repr.Tag.function)) {
         // No handler is installed for it: unblock this signal and re-raise,
         // so that another thread or the default disposition can take it.
-        var set: h.sigset_t = undefined;
+        var set: sys.sigset_t = undefined;
         _ = oa.sigemptyset(&set);
         _ = oa.sigaddset(&set, sig);
-        _ = oa.sigprocmask(h.SIG_BLOCK, &set, null);
+        _ = oa.sigprocmask(sys.SIG_BLOCK, &set, null);
         _ = raiseSignal(sig);
         return;
     }
@@ -1468,13 +1435,13 @@ fn spawnPosix(
         // so a `%p` here renders the pointer's bits as a denormal double.
         return pp_format.panicf("%s: %s", .{
             cargv[0].?,
-            utils.strerrorSafe(if (c.errno() != 0) c.errno() else h.ENOENT),
+            utils.strerrorSafe(if (c.errno() != 0) c.errno() else sys.ENOENT),
         });
     }
 
     if (no_spawn) return raise.panic("subprocess creation not supported in this build");
 
-    var actions: h.posix_spawn_file_actions_t = undefined;
+    var actions: sys.posix_spawn_file_actions_t = undefined;
     _ = oa.posix_spawn_file_actions_init(&actions);
     if (spawn_chdir) {
         if (chdir_path) |path| {
@@ -1513,7 +1480,7 @@ fn spawnPosix(
         _ = oa.posix_spawn_file_actions_adddup2(&actions, 1, 2);
     }
 
-    var pid: h.pid_t = undefined;
+    var pid: sys.pid_t = undefined;
     const environment: ?[*]?[*:0]u8 = if (use_environ) oa.getEnviron() else @ptrCast(envp);
     const status = if (flagAt(flags, 1))
         oa.posix_spawnp(&pid, child_argv[0].?, &actions, null, cargv, environment)
@@ -1553,12 +1520,12 @@ fn spawnWindows(
     chdir_path: ?[*:0]const u8,
 ) raise.Error!*Proc {
     _ = argv;
-    var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
-    var process_info: h.PROCESS_INFORMATION = std.mem.zeroes(h.PROCESS_INFORMATION);
-    var startup_info: h.STARTUPINFOA = std.mem.zeroes(h.STARTUPINFOA);
-    startup_info.cb = @sizeOf(h.STARTUPINFOA);
-    startup_info.dwFlags |= h.STARTF_USESTDHANDLES;
-    sa_attr.nLength = @sizeOf(h.SECURITY_ATTRIBUTES);
+    var sa_attr: sys.SECURITY_ATTRIBUTES = std.mem.zeroes(sys.SECURITY_ATTRIBUTES);
+    var process_info: sys.PROCESS_INFORMATION = std.mem.zeroes(sys.PROCESS_INFORMATION);
+    var startup_info: sys.STARTUPINFOA = std.mem.zeroes(sys.STARTUPINFOA);
+    startup_info.cb = @sizeOf(sys.STARTUPINFOA);
+    startup_info.dwFlags |= sys.STARTF_USESTDHANDLES;
+    sa_attr.nLength = @sizeOf(sys.SECURITY_ATTRIBUTES);
 
     const buf = try execEscape(exargs);
     if (buf.count > 8191) {
@@ -1620,10 +1587,10 @@ fn spawnWindows(
         var msgbuf: [256]u8 = undefined;
         msgbuf[0] = 0;
         _ = c.FormatMessageA(
-            h.FORMAT_MESSAGE_FROM_SYSTEM | h.FORMAT_MESSAGE_IGNORE_INSERTS,
+            sys.FORMAT_MESSAGE_FROM_SYSTEM | sys.FORMAT_MESSAGE_IGNORE_INSERTS,
             null,
             cp_error_code,
-            h.MAKELANGID(h.LANG_NEUTRAL, h.SUBLANG_DEFAULT),
+            sys.MAKELANGID(sys.LANG_NEUTRAL, sys.SUBLANG_DEFAULT),
             &msgbuf,
             msgbuf.len,
             null,

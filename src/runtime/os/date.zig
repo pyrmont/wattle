@@ -1,13 +1,10 @@
 //! `os/date`, `os/strftime` and `os/mktime`: the broken-down calendar.
 //!
-//! `struct tm` has a layout only the platform header fixes, so it stays
-//! libc's, reached through `os/abi.h`. It translates completely on all five of
-//! this project's targets, which is what makes the calendar movable where
-//! `struct stat`, in `os/fs/host_stat.zig`, is not.
+//! `struct tm` is libc's, and `os/abi.zig` declares it for each layout the
+//! runtime's platforms have.
 //!
 //! A `struct tm` never crosses a boundary here. It is filled and read inside
-//! one nfunction and dies with it, which is the property that makes the
-//! translation safe to use rather than the translation succeeding.
+//! one nfunction and dies with it.
 //!
 //! `localtime` and `gmtime` have a reentrant form on POSIX (`_r`, taking the
 //! caller's structure) and a Microsoft form (`_s`, with the arguments the
@@ -45,9 +42,9 @@ const utils = @import("../utils.zig");
 const value = @import("../value.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
-/// `os/abi.zig`'s translation, which is where `struct tm` and `time_t` come
-/// from.
-const h = oa.h;
+/// `os/abi.zig`'s host declarations, which is where `struct tm` and `time_t`
+/// come from.
+const sys = oa.sys;
 
 // ==========================================================================
 // Constants
@@ -129,7 +126,7 @@ pub fn entries() []const corefn.Entry {
 /// `(os/date [time [local]])`.
 fn nfunDate(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
-    var t_info: h.struct_tm = undefined;
+    var t_info: sys.struct_tm = undefined;
     try timeToTm(argv, 0, &t_info);
     const fields = [_]repr.Value{
         value.fromBytes("seconds", .keyword),   wrap.fromNumber(@floatFromInt(t_info.tm_sec)),
@@ -149,7 +146,7 @@ fn nfunDate(argv: []repr.Value) raise.Error!repr.Value {
 fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     // Zeroed whole, so that no field is left as whatever the frame had.
-    var t_info: h.struct_tm = std.mem.zeroes(h.struct_tm);
+    var t_info: sys.struct_tm = std.mem.zeroes(sys.struct_tm);
 
     if (!args_core.checkdictionary(argv[0])) {
         return args_core.panicDictionary(argv[0], 0, repr.TagSet.none);
@@ -163,7 +160,7 @@ fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     t_info.tm_year = @intCast(try entryGetInt(argv[0], "year") - 1900);
     t_info.tm_isdst = try entryGetDst(argv[0]);
 
-    var t: h.time_t = undefined;
+    var t: sys.time_t = undefined;
     if (argv.len >= 2 and repr.truthy(argv[1])) {
         // POSIX requires `mktime` to act as though `tzset` had been called,
         // so on those hosts a `TZ` set since start-up is already in effect.
@@ -179,7 +176,7 @@ fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
         t = if (windows) oa._mkgmtime(&t_info) else oa.timegm(&t_info);
     }
 
-    if (t == @as(h.time_t, -1)) return pp_format.panicf("%s", .{utils.strerrorSafe(c.errno())});
+    if (t == @as(sys.time_t, -1)) return pp_format.panicf("%s", .{utils.strerrorSafe(c.errno())});
     return wrap.fromNumber(@floatFromInt(t));
 }
 
@@ -196,7 +193,7 @@ fn nfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
             return pp_format.panicf("invalid conversion specifier '%%%c'", .{@as(c_int, fmt[i])});
         }
     }
-    var t_info: h.struct_tm = undefined;
+    var t_info: sys.struct_tm = undefined;
     try timeToTm(argv, 1, &t_info);
     var buf: [time_fmt_size]u8 = undefined;
     // The result is deliberately discarded: `strftime` gives back 0 both for
@@ -263,8 +260,8 @@ fn entryGetInt(entry: repr.Value, comptime field: [:0]const u8) raise.Error!time
 /// regardless would report whatever the conversion left behind, and on a host
 /// whose `_r` functions return without writing it, the stack. The Windows and
 /// Plan 9 entry points report the same failure as a nonzero return.
-fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Error!void {
-    var t: h.time_t = undefined;
+fn timeToTm(argv: []const repr.Value, n: usize, out: *sys.struct_tm) raise.Error!void {
+    var t: sys.time_t = undefined;
     if (argv.len > n and !repr.checkType(argv[n], repr.Tag.nil)) {
         t = @intCast(try args_core.getInteger64(argv, n));
     } else {
@@ -291,6 +288,6 @@ fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Error!v
 // ==========================================================================
 
 comptime {
-    if (windows and @sizeOf(h.time_t) != 8)
+    if (windows and @sizeOf(sys.time_t) != 8)
         @compileError("this build's time_t is not 64 bits; _localtime64_s is the wrong entry point");
 }

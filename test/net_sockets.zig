@@ -39,13 +39,11 @@
 //!
 //! A refusal is a value: this calls the nfunction and reads the error.
 //!
-//! The address structures come from `std.posix` rather than from the host
-//! headers. Building a `sockaddr_in` from the same translation the subject
-//! reads would make the two descriptions one. `std`'s are written per platform
-//! and independently, so the bytes this file lays down and the bytes the
-//! decoder reads come from two different descriptions and a disagreement is a
-//! failure rather than a silence. It also keeps the contract module free of a
-//! fourth translation of the socket headers.
+//! The socket addresses are laid down byte by byte from the table under
+//! Constants, which is written from each platform's socket ABI. `net.zig`
+//! reads `std`'s address structures, so building the bytes from `std` as well
+//! would make the subject and the oracle one description. With two, a
+//! disagreement is a failure rather than a silence.
 
 // ==========================================================================
 // Standard library imports
@@ -69,7 +67,6 @@ const gc_alloc = @import("subsystems").gc_alloc;
 const harness = @import("harness.zig");
 const method_type = @import("subsystems").method_type;
 const net_addr = subsystems.net;
-const posix = std.posix;
 const pp_describe = @import("subsystems").pp_describe;
 const raise = @import("subsystems").raise;
 const repr = @import("repr");
@@ -108,6 +105,24 @@ const net_bindings = [_][*:0]const u8{
 
 var raises_seen: u32 = 0;
 const windows = builtin.target.os.tag == .windows;
+
+/// Whether the platform's socket addresses open with a length byte and a
+/// one-byte family, as macOS and FreeBSD do, rather than a two-byte family.
+const bsd_layout = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .freebsd;
+
+/// The address families, as each platform numbers them. `AF_UNSPEC` is 0,
+/// `AF_UNIX` 1 and `AF_INET` 2 everywhere, and `AF_INET6` is not.
+const af_unix: u16 = 1;
+const af_inet: u16 = 2;
+const af_inet6: u16 = switch (builtin.target.os.tag) {
+    .linux => 10,
+    .windows => 23,
+    .freebsd => 28,
+    else => 30,
+};
+
+/// The length of `sun_path`: 108 bytes on Linux, and 104 on macOS and FreeBSD.
+const sun_path_len: usize = if (bsd_layout) 104 else 108;
 
 // ==========================================================================
 // Cases
@@ -165,11 +180,6 @@ fn addressOf(bytes: []const u8) repr.Value {
     return wrap.fromAbstract(abst);
 }
 
-fn asBytes(val: anytype) []const u8 {
-    const bytes: [*]const u8 = @ptrCast(val);
-    return bytes[0..@sizeOf(@TypeOf(val.*))];
-}
-
 fn unpack(address: repr.Value) repr.Value {
     var argv = [_]repr.Value{address};
     return callCore("net/address-unpack", &argv);
@@ -203,25 +213,45 @@ fn pathLength(val: repr.Value) usize {
     return @intCast(strings.head(wrap.toString(t[0])).length);
 }
 
-/// An `AF_INET` address, laid out by `std.posix` and parsed by `std.Io.net`.
-/// Zeroed first, because macOS's
-/// `sin_len` is zero there too, and the decoder does not read it.
-fn ip4(text: []const u8, port: u16) posix.sockaddr.in {
-    const parsed = std.Io.net.Ip4Address.parse(text, port) catch unreachable;
-    var sin = std.mem.zeroes(posix.sockaddr.in);
-    sin.family = posix.AF.INET;
-    sin.port = std.mem.nativeToBig(u16, port);
-    sin.addr = @bitCast(parsed.bytes);
-    return sin;
+/// Writes the family at the head of a socket address. The length byte that
+/// macOS and FreeBSD put first stays zero, and the decoder does not read it.
+fn putFamily(bytes: []u8, family: u16) void {
+    if (bsd_layout) {
+        bytes[1] = @intCast(family);
+    } else {
+        std.mem.writeInt(u16, bytes[0..2], family, builtin.target.cpu.arch.endian());
+    }
 }
 
-fn ip6(text: []const u8, port: u16) posix.sockaddr.in6 {
+/// An `AF_INET` address: the family, the port in network order at offset 2,
+/// and the four address bytes at offset 4, in 16 bytes. The text is parsed by
+/// `std.Io.net`.
+fn ip4(text: []const u8, port: u16) [16]u8 {
+    const parsed = std.Io.net.Ip4Address.parse(text, port) catch unreachable;
+    var bytes = std.mem.zeroes([16]u8);
+    putFamily(&bytes, af_inet);
+    std.mem.writeInt(u16, bytes[2..4], port, .big);
+    @memcpy(bytes[4..8], &parsed.bytes);
+    return bytes;
+}
+
+/// An `AF_INET6` address: the family, the port in network order at offset 2,
+/// the flow label at 4, and the sixteen address bytes at 8, in 28 bytes.
+fn ip6(text: []const u8, port: u16) [28]u8 {
     const parsed = std.Io.net.Ip6Address.parse(text, port) catch unreachable;
-    var sin6 = std.mem.zeroes(posix.sockaddr.in6);
-    sin6.family = posix.AF.INET6;
-    sin6.port = std.mem.nativeToBig(u16, port);
-    sin6.addr = parsed.bytes;
-    return sin6;
+    var bytes = std.mem.zeroes([28]u8);
+    putFamily(&bytes, af_inet6);
+    std.mem.writeInt(u16, bytes[2..4], port, .big);
+    @memcpy(bytes[8..24], &parsed.bytes);
+    return bytes;
+}
+
+/// An `AF_UNIX` address with an empty path: the family, then `sun_path` at
+/// offset 2.
+fn unixAddress() [2 + sun_path_len]u8 {
+    var bytes = std.mem.zeroes([2 + sun_path_len]u8);
+    putFamily(&bytes, af_unix);
+    return bytes;
 }
 
 fn theRegistration() void {
@@ -233,27 +263,27 @@ fn theRegistration() void {
 fn theIpv4Decoding() void {
     {
         var sin = ip4("1.2.3.4", 8080);
-        expect(tupleIs2(unpack(addressOf(asBytes(&sin))), "1.2.3.4", 8080));
+        expect(tupleIs2(unpack(addressOf(&sin)), "1.2.3.4", 8080));
     }
 
     // Port 0 and the wildcard address, which is what an unbound socket reports
     // and what `net/localname` returns before a bind.
     {
         var sin = ip4("0.0.0.0", 0);
-        expect(tupleIs2(unpack(addressOf(asBytes(&sin))), "0.0.0.0", 0));
+        expect(tupleIs2(unpack(addressOf(&sin)), "0.0.0.0", 0));
     }
 
     // The port is unsigned on the wire: 65535 must not come back negative.
     {
         var sin = ip4("255.255.255.255", 65535);
-        expect(tupleIs2(unpack(addressOf(asBytes(&sin))), "255.255.255.255", 65535));
+        expect(tupleIs2(unpack(addressOf(&sin)), "255.255.255.255", 65535));
     }
 }
 
 fn theIpv6Decoding() void {
     {
         var sin6 = ip6("::1", 443);
-        expect(tupleIs2(unpack(addressOf(asBytes(&sin6))), "::1", 443));
+        expect(tupleIs2(unpack(addressOf(&sin6)), "::1", 443));
     }
 
     // The longest textual form there is, which is what sizes the decode
@@ -261,17 +291,16 @@ fn theIpv6Decoding() void {
     {
         const text = "2001:db8:85a3:8d3:1319:8a2e:370:7348";
         var sin6 = ip6(text, 1);
-        expect(tupleIs2(unpack(addressOf(asBytes(&sin6))), text, 1));
+        expect(tupleIs2(unpack(addressOf(&sin6)), text, 1));
     }
 }
 
 fn theUnixDecoding() void {
     const path = "/tmp/wattle-contract.sock";
     {
-        var sun = std.mem.zeroes(posix.sockaddr.un);
-        sun.family = posix.AF.UNIX;
-        @memcpy(sun.path[0..path.len], path);
-        expect(tupleIs1(unpack(addressOf(asBytes(&sun))), path));
+        var sun = unixAddress();
+        @memcpy(sun[2 .. 2 + path.len], path);
+        expect(tupleIs1(unpack(addressOf(&sun)), path));
     }
 
     // Linux's abstract namespace: the name starts at a NUL, and the decoder
@@ -280,29 +309,25 @@ fn theUnixDecoding() void {
     // address can be built and read back anywhere, which is the point of
     // building it by hand.
     {
-        var sun = std.mem.zeroes(posix.sockaddr.un);
-        sun.family = posix.AF.UNIX;
+        var sun = unixAddress();
         const name = "abstract-name";
-        sun.path[0] = 0;
-        @memcpy(sun.path[1 .. 1 + name.len], name);
-        expect(tupleIs1(unpack(addressOf(asBytes(&sun))), "@abstract-name"));
+        @memcpy(sun[3 .. 3 + name.len], name);
+        expect(tupleIs1(unpack(addressOf(&sun)), "@abstract-name"));
     }
 
     // A path that fills `sun_path` exactly, with no room for a terminator. The
     // decoder must stop at the end of the field rather than run past it.
     {
-        var sun = std.mem.zeroes(posix.sockaddr.un);
-        sun.family = posix.AF.UNIX;
-        @memset(sun.path[0 .. sun.path.len - 1], 'x');
-        expect(pathLength(unpack(addressOf(asBytes(&sun)))) == sun.path.len - 1);
+        var sun = unixAddress();
+        @memset(sun[2 .. 2 + sun_path_len - 1], 'x');
+        expect(pathLength(unpack(addressOf(&sun))) == sun_path_len - 1);
     }
 }
 
 fn theUnknownFamily() void {
     // `AF_UNSPEC` is what a zeroed address reports, and nothing decodes it.
-    var storage = std.mem.zeroes(posix.sockaddr.storage);
-    storage.family = posix.AF.UNSPEC;
-    var argv = [_]repr.Value{addressOf(asBytes(&storage))};
+    const storage = std.mem.zeroes([128]u8);
+    var argv = [_]repr.Value{addressOf(&storage)};
     expectRaise("net/address-unpack", &argv, "unknown address family");
 }
 
@@ -365,7 +390,7 @@ fn theUnixAddressLookup() void {
         @memset(big[0 .. big.len - 1], 'a');
         argv[1] = value.fromBytes(std.mem.sliceTo(&big, 0), .string);
         const got = unpack(callCore("net/address", argv[0..2]));
-        expect(pathLength(got) == @typeInfo(@FieldType(posix.sockaddr.un, "path")).array.len - 1);
+        expect(pathLength(got) == sun_path_len - 1);
     }
 
     // `multi` on a unix path is the one-element array branch.

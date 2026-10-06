@@ -15,13 +15,9 @@
 //! `entries()` stays in this file because `os.zig` slices it three ways, and
 //! that order is upstream Janet's `os/` registration order.
 //!
-//! Every platform test here goes through `builtin.target.os.tag`, never
-//! through a translated macro. Aro, the translate-c front end, predefined
-//! `__unix__`, `unix` and `__unix` for `x86_64-windows-gnu` on top of `_WIN32`
-//! in Zig 0.16, so a header whose own chain tested Unix first reported POSIX in
-//! the translation and Windows in the compilation of the same header for the
-//! same target. The first assertion at the foot of this file is what would
-//! catch a regression.
+//! Every platform test here goes through `builtin.target.os.tag`. The first
+//! assertion at the foot of this file checks that the file's `windows` agrees
+//! with it.
 //!
 //! The host calls at the foot are the ones whose signatures name a type this
 //! subsystem owns, so they stay with the type rather than moving to
@@ -55,9 +51,9 @@ const value = @import("../value.zig");
 const vm_lifecycle = @import("../vm/lifecycle.zig");
 const wrap = @import("../value/helpers/wrap.zig");
 
-/// `os/abi.zig`'s translation, which is where the Windows enumeration's
+/// `os/abi.zig`'s host declarations, which is where the Windows enumeration's
 /// `_finddata_t` comes from.
-const h = oa.h;
+const sys = oa.sys;
 
 // ==========================================================================
 // Constants
@@ -396,8 +392,8 @@ fn nfunChmod(argv: []repr.Value) raise.Error!repr.Value {
 /// `(os/cwd)`.
 fn nfunCwd(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 0);
-    var buf: [h.FILENAME_MAX]u8 = undefined;
-    if (hostGetcwd(&buf, h.FILENAME_MAX) != 0) {
+    var buf: [sys.FILENAME_MAX]u8 = undefined;
+    if (hostGetcwd(&buf, sys.FILENAME_MAX) != 0) {
         return raise.panic("could not get current directory");
     }
     return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
@@ -438,7 +434,7 @@ fn nfunMkdir(argv: []repr.Value) raise.Error!repr.Value {
     const path = try args_core.getCString(argv, 0);
     const res = hostMkdir(@ptrCast(path));
     if (res == 0) return wrap.fromTrue();
-    if (c.errno() == h.EEXIST) return wrap.fromFalse();
+    if (c.errno() == sys.EEXIST) return wrap.fromFalse();
     return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
 }
 
@@ -586,12 +582,11 @@ fn dirNext(handle: *anyopaque) DirRead {
 /// at the end of the stream or on a failure.
 ///
 /// `std.c` types a WASI `readdir` result as `*void`, so on WASI the entry is
-/// read through `os/abi.h`'s `struct dirent`.
+/// read through `os/abi.zig`'s `struct dirent`.
 inline fn readEntryName(handle: *anyopaque) ?[*:0]const u8 {
     if (builtin.target.os.tag == .wasi) {
-        const entry = h.readdir(@ptrCast(handle));
-        if (entry == null) return null;
-        return @ptrCast(h.wattle_dirent_name(entry));
+        const entry = sys.readdir(handle) orelse return null;
+        return sys.direntName(entry);
     } else {
         const entry = std.c.readdir(@ptrCast(handle)) orelse return null;
         return @ptrCast(&entry.name);
@@ -619,16 +614,14 @@ fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
     dirClose(dfd);
 }
 
-/// The Windows enumeration, written here rather than left in C: `_finddata_t`
-/// translates completely on mingw, which the design note for a separate paths
-/// file had assumed it would not.
+/// The Windows enumeration, over mingw's `_findfirst` and `_finddata_t`.
 fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
-    var afile: h._finddata_t = undefined;
-    var pattern: [h.MAX_PATH + 1]u8 = undefined;
+    var afile: sys._finddata_t = undefined;
+    var pattern: [sys.MAX_PATH + 1]u8 = undefined;
     const dirlen = std.mem.len(@as([*:0]const u8, @ptrCast(dir)));
     if (dirlen > pattern.len - 3) return pp_format.panicf("path too long: %s", .{dir});
     _ = std.mem.printSentinel(&pattern, "{s}/*", .{@as([*:0]const u8, @ptrCast(dir))}, 0) catch unreachable;
-    const res = h._findfirst(&pattern, &afile);
+    const res = sys._findfirst(&pattern, &afile);
     if (res == -1) return raise.panicv(value.fromBytes(std.mem.span(utils.strerrorSafe(c.errno())), .string));
     while (true) {
         const name: [*:0]const u8 = @ptrCast(&afile.name);
@@ -637,9 +630,9 @@ fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
         {
             try arrays.push(paths, value.fromBytes(std.mem.span(name), .string));
         }
-        if (h._findnext(res, &afile) == -1) break;
+        if (sys._findnext(res, &afile) == -1) break;
     }
-    _ = h._findclose(res);
+    _ = sys._findclose(res);
 }
 
 /// Whether a directory entry is "." or "..", matching neither a longer name
@@ -681,7 +674,7 @@ inline fn symlinkOrLink(old: [*:0]const u8, new: [*:0]const u8) i32 {
 
 comptime {
     if ((builtin.target.os.tag == .windows) and !windows)
-        @compileError("platform tests must not read a translated platform macro");
+        @compileError("platform tests must read builtin.target.os.tag");
 }
 
 comptime {

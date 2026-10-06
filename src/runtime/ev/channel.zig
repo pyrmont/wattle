@@ -2,12 +2,9 @@
 //! lock that makes a threaded channel safe, and the ten `ev/` nfunctions over
 //! them.
 //!
-//! This file owns the channel's layout. Its last member is a
-//! `pthread_mutex_t` or a `CRITICAL_SECTION`, `host.zig`'s in both arms, which
-//! is where every host type in this tree comes from, so this file needs no
-//! translation of its own. `Channel` is the only declaration of that layout,
-//! and `unwrap` below is the one cast from the abstract's payload pointer to
-//! it.
+//! This file owns the channel's layout. Its last member is `ev/locks.zig`'s
+//! `Mutex`. `Channel` is the only declaration of that layout, and `unwrap`
+//! below is the one cast from the abstract's payload pointer to it.
 
 // ==========================================================================
 // Standard library imports
@@ -30,7 +27,6 @@ const ev = @import("../ev.zig");
 const fibers = @import("../value/fibers.zig");
 const gc_alloc = @import("../gc.zig");
 const gc_mark = @import("../gc/mark.zig");
-const host = @import("host");
 const marsh = @import("../marsh.zig");
 const math = @import("../math.zig");
 const method_type = @import("../method_type.zig");
@@ -85,15 +81,12 @@ pub const channelType = abstract_type.define(Channel, .{
     .gcperthread = chanatGCPerThread,
 });
 
-/// Whether this target's channel lock is a `CRITICAL_SECTION`.
-const windows = ev.windows;
-
 // ==========================================================================
 // Aliased types
 // ==========================================================================
 
-/// The channel's lock, which is `host.zig`'s mutex either way.
-const Lock = if (windows) host.CRITICAL_SECTION else host.pthread_mutex_t;
+/// The channel's lock.
+const Lock = os_locks.Mutex;
 
 // ==========================================================================
 // Types

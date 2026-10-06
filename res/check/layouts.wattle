@@ -257,22 +257,22 @@
     (def name (d :name))
     (def tags !{})
     (when (get foreign name) (put! tags "host" true))
-    ; The two host-header translations are the `abi.zig` files inside the
-    ; runtime -- `os/` and `net/`. `api/abi.zig` is the module
-    ; boundary and is not one of them, so the suffix alone is not the test.
+    ; The host declarations are the `abi.zig` files inside the runtime --
+    ; `os/` and `net/`. `api/abi.zig` is the module boundary and is not one of
+    ; them, so the suffix alone is not the test.
     (when (and (string/has-prefix? "runtime/" (d :file))
                (string/has-suffix? "/abi.zig" (d :file)))
       (put! tags "host" true))
     (when (get compiler-fixed name) (put! tags "abi" true))
-    ; A layout with a member typed out of the file's translation is the
-    ; platform's whatever its own name is: `net.zig`'s `OptValue` holds a
-    ; `struct_ip_mreq` and its bytes go to `setsockopt`.
+    ; A layout with a member typed out of the file's host declarations (`h.`,
+    ; `c.` or `sys.`) is the platform's whatever its own name is: `net.zig`'s
+    ; `OptValue` holds a `struct_ip_mreq` and its bytes go to `setsockopt`.
     (let [text (get texts (string "src/" (d :file)) "")
           at (string/find (string "const " name " = extern") text)]
       (when at
         (def close (or (string/find "\n};" text at) (length text)))
         (def body (string/slice text at close))
-        (when (peg/match `(* (thru (* ":" :s* (+ "h." "c."))) (thru -1)) body)
+        (when (peg/match `(* (thru (* ":" :s* (+ "h." "c." "sys."))) (thru -1)) body)
           (put! tags "host" true))))
     (each [path text] texts
       (each i (word-hits text name)

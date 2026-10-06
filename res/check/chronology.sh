@@ -66,11 +66,9 @@
 # outright -- a file in that directory writes `@import("types.zig")` for its
 # own neighbour, with no path to distinguish it by.
 #
-# **`translate-c` is not chronology.** The two host headers -- `os/abi.h` and
-# `net/abi.h` -- are read by translate-c on every build, and
-# the comments explaining what it does and does not carry across are the reason
-# each hand-written declaration beside them exists. The pattern does not name
-# it.
+# **`translate-c` is not chronology.** A comment that says what translate-c
+# does or does not carry across gives the reason a hand-written declaration
+# exists. The pattern does not name it.
 #
 # **The retired file names are live under `test/`.** The contracts really are
 # `io_core.zig`, `os_stat.zig` and their kin, so a

@@ -1,35 +1,18 @@
-//! `stat`, `lstat` and `fstat`, and the one place in this port where a
-//! translation of the host headers does not serve.
+//! `stat`, `lstat` and `fstat`, and the structure each fills, per platform.
 //!
-//! Host structures stay libc's, reached through the translations `build.zig`
-//! produces. `struct stat` is the
-//! single measured exception: musl declares `struct timespec` with a bitfield,
-//! zero-width padding written as
-//! `int :8*(sizeof(time_t)-sizeof(long))*(__BYTE_ORDER==4321)`, and
-//! `translate-c` demotes any record with a bitfield in it to `opaque {}`.
-//! `struct stat` embeds three timespecs, so it is demoted in turn and Zig can
-//! neither size it nor place one on the stack. macOS and mingw translate it
-//! completely, which is what makes the gap easy to miss.
-//!
-//! What replaces it, per platform:
+//! `os/stat` reports fifteen fields, and no one declaration of `struct stat`
+//! serves every platform the runtime builds for:
 //!
 //! | platform | route |
 //! | --- | --- |
-//! | macOS, mingw | the translated `struct stat`, which is complete |
-//! | Linux | `statx`, whose structure Zig defines itself |
-//! | FreeBSD | `std.c.Stat`, which has every field `os/stat` reads |
+//! | macOS, FreeBSD, WASI | `std.c.Stat` |
+//! | Linux | `statx`, whose structure `std.os.linux.Statx` declares |
+//! | mingw | `struct _stat64` and `_stat64`, declared here |
 //!
-//! FreeBSD reads `std.c.Stat` rather than the translation. `<sys/stat.h>`
-//! includes `<sys/time.h>` when `__BSD_VISIBLE` is set, as `wattle_features.h`
-//! sets it, and the translate-c of Zig 0.16 could not translate the inline
-//! function `bintime_shift` in `<sys/time.h>`. The translate-c package at
-//! 2.0.0 translates it.
-//!
-//! Zig's standard library supplies no substitute: `std.posix.Stat` is `void`
-//! on Linux and Windows, 0.17 has no `std.posix.fstat`, `fstatat` or
-//! `std.os.linux.Stat`, and `std.Io.File.Stat` has nine fields where `os/stat`
-//! reports fifteen. What it does supply on Linux is `std.os.linux.Statx`,
-//! which has every field `os/stat` needs.
+//! `std.c.Stat` is `void` on Linux, and `std.os.linux` declares no `Stat` and
+//! no `fstatat`, so the Linux arm calls `statx`. `std.Io.File.Stat` has nine
+//! fields where `os/stat` reports fifteen. `std.c` declares no `lstat`, so the
+//! three calls are declared here by symbol for every platform but mingw.
 //!
 //! One field is reconstructed rather than copied: `statx` reports the device as
 //! a major and a minor rather than as a `dev_t`, so `dev` and `rdev` are
@@ -48,16 +31,6 @@ const builtin = @import("builtin");
 
 const c = @import("cabi");
 
-/// A translation of `<sys/stat.h>` alone, and one of six in the tree beside
-/// `os/abi.h`, `net/abi.h`, `ev/locks.zig`, `host.zig` and `cabi.zig`. A translation is right when nothing it declares crosses a
-/// subsystem boundary, and nothing does: `struct stat` never leaves this file,
-/// and what does leave is a mode word and an array of doubles.
-///
-/// `build.zig` translates it for every target. On musl `struct stat` is
-/// `opaque {}`, which is harmless because the Linux arm never names `sys`, and
-/// neither does the FreeBSD arm.
-const sys = @import("c_stat");
-
 // ==========================================================================
 // Constants
 // ==========================================================================
@@ -67,9 +40,8 @@ const sys = @import("c_stat");
 const S_IFDIR: u32 = 0o040000;
 const S_IFMT: u32 = 0o170000;
 
-/// `fstat`, `lstat` and `stat`, declared here so that each takes this file's
-/// `Stat`. The declarations in `std.c` take `std.c.Stat`, which on macOS is a
-/// second description of the structure rather than the translated one.
+/// `fstat`, `lstat` and `stat`, declared by symbol because `std.c` declares no
+/// `lstat`. Each takes this file's `Stat`.
 const c_fstat: *const fn (c_int, *Stat) callconv(.c) c_int =
     @extern(*const fn (c_int, *Stat) callconv(.c) c_int, .{ .name = fstat_name });
 
@@ -78,6 +50,9 @@ const c_lstat: *const fn ([*:0]const u8, *Stat) callconv(.c) c_int =
 
 const c_stat: *const fn ([*:0]const u8, *Stat) callconv(.c) c_int =
     @extern(*const fn ([*:0]const u8, *Stat) callconv(.c) c_int, .{ .name = stat_name });
+
+/// mingw's `_stat64`, the CRT's call that fills `struct _stat64`.
+extern "c" fn _stat64(path: [*:0]const u8, buf: *WinStat64) c_int;
 
 /// Whether this target is the Darwin architecture whose plain `stat` symbol is
 /// the pre-widening structure.
@@ -91,8 +66,8 @@ const darwin_inode64 = switch (builtin.target.os.tag) {
     else => false,
 };
 
-/// The three symbol names, which is where `darwin_inode64` is spent. Windows
-/// takes the translated declaration instead and names none of them.
+/// The three symbol names, which is where `darwin_inode64` is spent. mingw
+/// takes `_stat64` instead and names none of them.
 const fstat_name = if (darwin_inode64) "fstat$INODE64" else "fstat";
 
 const lstat_name = if (darwin_inode64) "lstat$INODE64" else "lstat";
@@ -109,27 +84,9 @@ const freebsd = builtin.target.os.tag == .freebsd;
 // Aliased types
 // ==========================================================================
 
-/// mingw and Darwin both translate this completely; only musl does not, and
-/// the Linux arm never names it.
-///
-/// **Windows names `struct _stat64` rather than `struct stat`, and the reason
-/// is a rename this import cannot see.** mingw picks both the layout and the
-/// symbol from `_FILE_OFFSET_BITS`, which `wattle_features.h` sets to 64: the
-/// struct gets a 64-bit `off_t`, and `stat` is declared
-/// `__MINGW_ASM_CALL(stat64)` to match. translate-c does not carry an assembler
-/// label across, so a call to `sys.stat` emits the plain `stat` symbol, which
-/// fills the 48-byte `_stat64i32` layout instead. The mode word is at the same
-/// offset in both and survives; `st_size` does not, and reads the access time.
-/// Naming `_stat64` and `struct _stat64` pairs a symbol with the layout it
-/// actually fills, neither of them renamed.
-///
-/// FreeBSD names `std.c.Stat`, so `sys` is not referenced there.
-const Stat = if (windows)
-    sys.struct__stat64
-else if (freebsd)
-    std.c.Stat
-else
-    sys.struct_stat;
+/// The structure the stat calls fill: mingw's `struct _stat64`, and
+/// `std.c.Stat` elsewhere. The Linux arm never names it.
+const Stat = if (windows) WinStat64 else std.c.Stat;
 
 // ==========================================================================
 // Types
@@ -155,6 +112,27 @@ pub const Field = enum(usize) {
     changed,
 
     pub const count = @typeInfo(Field).@"enum".field_names.len;
+};
+
+/// mingw's `struct _stat64`, which `_stat64` fills: 64-bit size and times, a
+/// sixteen-bit `st_ino`, and no `st_blocks` or `st_blksize`.
+///
+/// It is `_stat64` and not `stat` because mingw picks the layout and the
+/// symbol together. Under `_FILE_OFFSET_BITS=64` its `stat` is an assembler
+/// label onto `stat64`, and the plain `stat` symbol fills the 48-byte
+/// `_stat64i32`, whose `st_size` is at the offset of `_stat64`'s access time.
+const WinStat64 = extern struct {
+    st_dev: c_uint,
+    st_ino: c_ushort,
+    st_mode: c_ushort,
+    st_nlink: c_short,
+    st_uid: c_short,
+    st_gid: c_short,
+    st_rdev: c_uint,
+    st_size: c_longlong,
+    st_atime: c_longlong,
+    st_mtime: c_longlong,
+    st_ctime: c_longlong,
 };
 
 // ==========================================================================
@@ -189,7 +167,7 @@ pub fn descriptorIsDirectory(fd: c_int) ?bool {
     }
     var st: Stat = std.mem.zeroes(Stat);
     if (c_fstat(fd, &st) < 0) return null;
-    return (@as(u32, @intCast(if (freebsd) st.mode else st.st_mode)) & S_IFMT) == S_IFDIR;
+    return (@as(u32, @intCast(st.mode)) & S_IFMT) == S_IFDIR;
 }
 
 /// Stats a path and copies out the mode word and one double per numeric field.
@@ -197,10 +175,10 @@ pub fn descriptorIsDirectory(fd: c_int) ?bool {
 pub fn statRead(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     return if (linux)
         readStatx(path, do_lstat, mode, numbers)
-    else if (freebsd)
-        readStdStat(path, do_lstat, mode, numbers)
+    else if (windows)
+        readWinStat(path, mode, numbers)
     else
-        readCStat(path, do_lstat, mode, numbers);
+        readStdStat(path, do_lstat, mode, numbers);
 }
 
 // ==========================================================================
@@ -229,24 +207,14 @@ inline fn put(numbers: [*]f64, field: Field, value: f64) void {
     numbers[@backingInt(field)] = value;
 }
 
-/// The macOS and Windows arm, over `struct stat`.
-fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
-    var st: Stat = undefined;
-    // Windows has no `lstat`, so `do_lstat` is ignored there and a symlink is
-    // followed. It takes the translated declaration rather than the `@extern`
-    // below, and names the variant itself: mingw's `stat` is an assembler
-    // label onto another symbol, which this import does not carry across.
-    // `Stat` above has the whole of it.
-    const res = if (windows)
-        sys._stat64(path, &st)
-    else if (do_lstat)
-        c_lstat(path, &st)
-    else
-        c_stat(path, &st);
-    if (res == -1) return -1;
+/// The mingw arm, over `struct _stat64`. Windows has no `lstat`, so a
+/// symlink is followed whatever the caller asked for.
+fn readWinStat(path: [*:0]const u8, mode: *u32, numbers: [*]f64) i32 {
+    var st: WinStat64 = undefined;
+    if (_stat64(path, &st) == -1) return -1;
 
     zeroAll(numbers);
-    mode.* = @intCast(st.st_mode);
+    mode.* = st.st_mode;
     put(numbers, .dev, @floatFromInt(st.st_dev));
     // Windows writes a zero here. Its `_ino_t` is sixteen bits and its
     // filesystems do not fill the field, so the identity a POSIX caller reads
@@ -258,35 +226,17 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
     put(numbers, .nlink, @floatFromInt(st.st_nlink));
     put(numbers, .rdev, @floatFromInt(st.st_rdev));
     put(numbers, .size, @floatFromInt(st.st_size));
-    // Darwin spells the three times as `st_atimespec`, and POSIX as `st_atim`;
-    // each reaches `st_atime` through a macro, which translate-c does not
-    // bring across. Windows has the plain `time_t` fields. Seconds either way,
-    // which is all `os/stat` reports.
-    if (windows) {
-        put(numbers, .accessed, @floatFromInt(st.st_atime));
-        put(numbers, .modified, @floatFromInt(st.st_mtime));
-        put(numbers, .changed, @floatFromInt(st.st_ctime));
-    } else if (builtin.target.os.tag.isDarwin()) {
-        put(numbers, .accessed, @floatFromInt(st.st_atimespec.tv_sec));
-        put(numbers, .modified, @floatFromInt(st.st_mtimespec.tv_sec));
-        put(numbers, .changed, @floatFromInt(st.st_ctimespec.tv_sec));
-    } else {
-        put(numbers, .accessed, @floatFromInt(st.st_atim.tv_sec));
-        put(numbers, .modified, @floatFromInt(st.st_mtim.tv_sec));
-        put(numbers, .changed, @floatFromInt(st.st_ctim.tv_sec));
-    }
-    // Two of the fifteen are never written on Windows, and that is what the
-    // zeroing above is for: a descriptor's unwritten fields are part of what a
-    // caller reads, and nothing about the type says so.
-    if (!windows) {
-        put(numbers, .blocks, @floatFromInt(st.st_blocks));
-        put(numbers, .blocksize, @floatFromInt(st.st_blksize));
-    }
+    put(numbers, .accessed, @floatFromInt(st.st_atime));
+    put(numbers, .modified, @floatFromInt(st.st_mtime));
+    put(numbers, .changed, @floatFromInt(st.st_ctime));
+    // `blocks` and `blocksize` are never written on Windows, and that is what
+    // the zeroing above is for: a descriptor's unwritten fields are part of
+    // what a caller reads, and nothing about the type says so.
     return 0;
 }
 
-/// The FreeBSD arm, over `std.c.Stat`. The fields are those `readCStat` copies
-/// on a POSIX target, under the names `std` gives them.
+/// The macOS, FreeBSD and WASI arm, over `std.c.Stat`. Darwin names the times
+/// `atimespec` and the others `atim`, and `atime` returns either.
 fn readStdStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     var st: Stat = undefined;
     const res = if (do_lstat) c_lstat(path, &st) else c_stat(path, &st);
@@ -301,9 +251,9 @@ fn readStdStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64)
     put(numbers, .nlink, @floatFromInt(st.nlink));
     put(numbers, .rdev, @floatFromInt(st.rdev));
     put(numbers, .size, @floatFromInt(st.size));
-    put(numbers, .accessed, @floatFromInt(st.atim.sec));
-    put(numbers, .modified, @floatFromInt(st.mtim.sec));
-    put(numbers, .changed, @floatFromInt(st.ctim.sec));
+    put(numbers, .accessed, @floatFromInt(st.atime().sec));
+    put(numbers, .modified, @floatFromInt(st.mtime().sec));
+    put(numbers, .changed, @floatFromInt(st.ctime().sec));
     put(numbers, .blocks, @floatFromInt(st.blocks));
     put(numbers, .blocksize, @floatFromInt(st.blksize));
     return 0;
@@ -351,7 +301,12 @@ inline fn zeroAll(numbers: [*]f64) void {
 // Tests
 // ==========================================================================
 
-// `std.c.Stat` is the size of FreeBSD 12's `struct stat`, 224 bytes.
+// `std.c.Stat` is the size of FreeBSD 12's `struct stat`, 224 bytes, and
+// x86-64 mingw's `struct _stat64` is 56 bytes with the size at offset 24.
 comptime {
     if (freebsd) std.debug.assert(@sizeOf(Stat) == 224);
+    if (windows and builtin.target.cpu.arch == .x86_64) {
+        std.debug.assert(@sizeOf(WinStat64) == 56);
+        std.debug.assert(@offsetOf(WinStat64, "st_size") == 24);
+    }
 }

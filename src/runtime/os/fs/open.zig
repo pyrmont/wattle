@@ -34,9 +34,9 @@ const stat = @import("stat.zig");
 const vm_lifecycle = @import("../../vm/lifecycle.zig");
 const wrap = @import("../../value/helpers/wrap.zig");
 
-/// `os/abi.zig`'s translation, which is where every `h.`-qualified constant
-/// below comes from.
-const h = oa.h;
+/// `os/abi.zig`'s host declarations, which is where every `sys.`-qualified
+/// constant below comes from.
+const sys = oa.sys;
 
 // ==========================================================================
 // Constants
@@ -93,10 +93,10 @@ pub fn nfunOpen(argv: []repr.Value) raise.Error!repr.Value {
     var fd: host.Handle = undefined;
     if (windows) {
         const w = try openWindows(opt_flags, &scan);
-        var sa_attr: h.SECURITY_ATTRIBUTES = std.mem.zeroes(h.SECURITY_ATTRIBUTES);
-        sa_attr.nLength = @sizeOf(h.SECURITY_ATTRIBUTES);
-        if (w.inherited_handle) sa_attr.bInheritHandle = 1;
-        fd = h.CreateFileA(
+        var sa_attr: sys.SECURITY_ATTRIBUTES = std.mem.zeroes(sys.SECURITY_ATTRIBUTES);
+        sa_attr.nLength = @sizeOf(sys.SECURITY_ATTRIBUTES);
+        if (w.inherited_handle) sa_attr.bInheritHandle = .TRUE;
+        fd = sys.CreateFileA(
             path,
             w.desired_access,
             w.share_mode,
@@ -105,7 +105,7 @@ pub fn nfunOpen(argv: []repr.Value) raise.Error!repr.Value {
             w.file_flags | w.file_attributes,
             null,
         );
-        if (fd == h.INVALID_HANDLE_VALUE) return raise.panicv(ev_stream.evLasterr());
+        if (fd == sys.INVALID_HANDLE_VALUE) return raise.panicv(ev_stream.evLasterr());
     } else {
         const open_flags = try openPosix(opt_flags, &scan);
         fd = c.retryIntr(c.open, .{ @as([*:0]const u8, @ptrCast(path)), open_flags, mode });
@@ -123,7 +123,7 @@ pub fn nfunOpen(argv: []repr.Value) raise.Error!repr.Value {
 /// permission each letter implies as it is reached.
 fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!c_int {
     // Closed on exec, as every descriptor the runtime opens is.
-    var open_flags: c_int = h.O_NONBLOCK | h.O_CLOEXEC;
+    var open_flags: c_int = sys.O_NONBLOCK | sys.O_CLOEXEC;
     var read_flag = false;
     var write_flag = false;
     var i: usize = 0;
@@ -140,19 +140,19 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!c_int {
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'c' => {
-                open_flags |= h.O_CREAT;
+                open_flags |= sys.O_CREAT;
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
-            'e' => open_flags |= h.O_EXCL,
+            'e' => open_flags |= sys.O_EXCL,
             't' => {
-                open_flags |= h.O_TRUNC;
+                open_flags |= sys.O_TRUNC;
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
-            'x' => open_flags |= h.O_SYNC,
-            'C' => open_flags |= h.O_NOCTTY,
-            'a' => open_flags |= h.O_APPEND,
+            'x' => open_flags |= sys.O_SYNC,
+            'C' => open_flags |= sys.O_NOCTTY,
+            'a' => open_flags |= sys.O_APPEND,
             'N' => {
-                open_flags &= ~@as(c_int, h.O_NONBLOCK);
+                open_flags &= ~@as(c_int, sys.O_NONBLOCK);
                 scan.disable_stream_mode = true;
             },
             else => {},
@@ -161,11 +161,11 @@ fn openPosix(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!c_int {
     // A three-way fixup, and its last arm is one a caller depends on: neither
     // flag and both flags alike give `O_RDWR`.
     if (read_flag and !write_flag) {
-        open_flags |= h.O_RDONLY;
+        open_flags |= sys.O_RDONLY;
     } else if (write_flag and !read_flag) {
-        open_flags |= h.O_WRONLY;
+        open_flags |= sys.O_WRONLY;
     } else {
-        open_flags |= h.O_RDWR;
+        open_flags |= sys.O_RDWR;
     }
     return open_flags;
 }
@@ -178,23 +178,23 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!WindowsOpe
     const o_creat: u32 = 1;
     const o_excl: u32 = 2;
     const o_trunc: u32 = 4;
-    var w: WindowsOpen = .{ .file_flags = h.FILE_FLAG_OVERLAPPED };
+    var w: WindowsOpen = .{ .file_flags = sys.FILE_FLAG_OVERLAPPED };
     var creat_unix: u32 = 0;
     var i: usize = 0;
     while (opt_flags[i] != 0) : (i += 1) {
         switch (opt_flags[i]) {
             'r' => {
-                w.desired_access |= h.GENERIC_READ;
+                w.desired_access |= sys.GENERIC_READ;
                 scan.stream_flags |= stream_readable;
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
             },
             'w' => {
-                w.desired_access |= h.GENERIC_WRITE;
+                w.desired_access |= sys.GENERIC_WRITE;
                 scan.stream_flags |= stream_writable;
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
             'a' => {
-                w.desired_access |= h.FILE_APPEND_DATA;
+                w.desired_access |= sys.FILE_APPEND_DATA;
                 scan.stream_flags |= stream_writable;
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
@@ -207,18 +207,18 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!WindowsOpe
                 creat_unix |= o_trunc;
                 try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
             },
-            'D' => w.share_mode |= h.FILE_SHARE_DELETE,
-            'R' => w.share_mode |= h.FILE_SHARE_READ,
-            'W' => w.share_mode |= h.FILE_SHARE_WRITE,
-            'H' => w.file_attributes |= h.FILE_ATTRIBUTE_HIDDEN,
-            'O' => w.file_attributes |= h.FILE_ATTRIBUTE_READONLY,
-            'F' => w.file_attributes |= h.FILE_ATTRIBUTE_OFFLINE,
-            'T' => w.file_attributes |= h.FILE_ATTRIBUTE_TEMPORARY,
-            'd' => w.file_flags |= h.FILE_FLAG_DELETE_ON_CLOSE,
-            'b' => w.file_flags |= h.FILE_FLAG_NO_BUFFERING,
+            'D' => w.share_mode |= sys.FILE_SHARE_DELETE,
+            'R' => w.share_mode |= sys.FILE_SHARE_READ,
+            'W' => w.share_mode |= sys.FILE_SHARE_WRITE,
+            'H' => w.file_attributes |= sys.FILE_ATTRIBUTE_HIDDEN,
+            'O' => w.file_attributes |= sys.FILE_ATTRIBUTE_READONLY,
+            'F' => w.file_attributes |= sys.FILE_ATTRIBUTE_OFFLINE,
+            'T' => w.file_attributes |= sys.FILE_ATTRIBUTE_TEMPORARY,
+            'd' => w.file_flags |= sys.FILE_FLAG_DELETE_ON_CLOSE,
+            'b' => w.file_flags |= sys.FILE_FLAG_NO_BUFFERING,
             'I' => w.inherited_handle = true,
             'V' => {
-                w.file_flags &= ~@as(u32, h.FILE_FLAG_OVERLAPPED);
+                w.file_flags &= ~@as(u32, sys.FILE_FLAG_OVERLAPPED);
                 scan.disable_stream_mode = true;
             },
             else => {},
@@ -232,17 +232,17 @@ fn openWindows(opt_flags: [*:0]const u8, scan: *OpenScan) raise.Error!WindowsOpe
     // than its end. Dropping the generic right leaves exactly the access
     // `O_WRONLY | O_APPEND` grants, which is what `:a` is documented to mean
     // here. A reader keeps `GENERIC_READ`, which `'r'` sets separately.
-    if (w.desired_access & h.FILE_APPEND_DATA != 0) {
-        w.desired_access &= ~@as(u32, h.GENERIC_WRITE);
+    if (w.desired_access & sys.FILE_APPEND_DATA != 0) {
+        w.desired_access &= ~@as(u32, sys.GENERIC_WRITE);
     }
     w.creation_disp = switch (creat_unix) {
-        0 => h.OPEN_EXISTING,
-        o_creat => h.OPEN_ALWAYS,
-        o_creat + o_excl => h.CREATE_NEW,
-        o_creat + o_trunc => h.CREATE_ALWAYS,
-        o_trunc => h.TRUNCATE_EXISTING,
+        0 => sys.OPEN_EXISTING,
+        o_creat => sys.OPEN_ALWAYS,
+        o_creat + o_excl => sys.CREATE_NEW,
+        o_creat + o_trunc => sys.CREATE_ALWAYS,
+        o_trunc => sys.TRUNCATE_EXISTING,
         else => return raise.panic("invalid creation flags"),
     };
-    if (w.file_attributes == 0) w.file_attributes = h.FILE_ATTRIBUTE_NORMAL;
+    if (w.file_attributes == 0) w.file_attributes = sys.FILE_ATTRIBUTE_NORMAL;
     return w;
 }

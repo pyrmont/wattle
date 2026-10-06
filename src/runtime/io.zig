@@ -15,13 +15,10 @@
 //! type in one program is a silent mismatch rather than a compile error.
 //!
 //! `struct stat` is the structure this file does not read. `file/open` rejects
-//! a directory by `fstat`ing the descriptor it just opened, `std.fstat` is `{}`
-//! on Linux and `std.Stat` has no Linux arm, and the two ways a Zig frame
-//! could get one anyway are both refused elsewhere in this tree: a second
-//! translation of `<sys/stat.h>` is the duplicate translation the
-//! single-translation rule prevents, and a hand-written layout per platform is
-//! guesswork. So the test lives in `os/fs/host_stat.zig`, beside the other
-//! reader of a host stat structure, and this file imports it.
+//! a directory by `fstat`ing the descriptor it just opened, and the structure
+//! that call fills differs by platform. So the test lives in
+//! `os/fs/host_stat.zig`, which declares that structure for each platform, and
+//! this file imports it.
 //!
 //! The sixteen stream kernels are ordinary Zig functions. Each wraps one libc
 //! call, so that an nfunction deals in a `?*FILE` and the Windows arm of a call

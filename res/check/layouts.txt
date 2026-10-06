@@ -12,7 +12,7 @@
 # stripping `extern` from all of them builds once those are restored, and
 # the binary then aborts in the bootstrap.  See this tool's header.
 #
-# layouts  70
+# layouts  81
 # residue  5
 #
 # columns: class  name  file:line  evidence
@@ -27,19 +27,19 @@ fixed    Binding                      runtime/registry.zig:69            abi
 fixed    BuildConfig                  api/abi.zig:198                    abi
 fixed    ByteView                     api/abi.zig:220                    abi,field
 fixed    Chunk                        api/abi.zig:234                    abi,field
-fixed    ConsoleScreenBufferInfo      host/cabi.zig:101                  host
+fixed    ConsoleScreenBufferInfo      host/cabi.zig:96                   host
 fixed    Dictionary                   api/abi.zig:323                    abi,field
-fixed    FILETIME                     host/cabi.zig:110                  host
+fixed    FILETIME                     host/cabi.zig:105                  host
 fixed    Fiber                        runtime/value/fibers.zig:138       field
 residue  FramePc                      runtime/vm/state.zig:102           
 fixed    FuncEnvRef                   runtime/value/functions.zig:211    abi,repr
 fixed    Function                     runtime/value/functions.zig:223    field,repr
 fixed    GCData                       api/abi.zig:373                    abi,field,repr
 fixed    GCObject                     api/abi.zig:398                    abi,field,repr
-fixed    GenericMessage               runtime/ev.zig:168                 abi,field,repr
+fixed    GenericMessage               runtime/ev.zig:162                 abi,field,repr
 fixed    Head                         runtime/value/maps.zig:277         repr
 fixed    Head                         runtime/value/vectors.zig:183      repr
-fixed    ITimerSpec                   host/cabi.zig:117                  abi,host
+fixed    ITimerSpec                   host/cabi.zig:112                  abi,host
 fixed    Indexed                      api/abi.zig:414                    abi,field
 residue  Inner                        runtime/value/vectors.zig:192      
 fixed    JittedFn                     runtime/ffi/call.zig:198           host,repr
@@ -52,17 +52,19 @@ fixed    NResult                      api/abi.zig:246                    abi
 fixed    Nanbox32Payload              api/repr.zig:155                   field,repr
 fixed    Nanbox32Tagged               api/repr.zig:161                   field
 fixed    Node                         runtime/value/maps.zig:287         field,repr
-fixed    OVERLAPPED                   host/cabi.zig:125                  field,host
+fixed    OVERLAPPED                   host/cabi.zig:120                  field,host
 fixed    OptResult                    api/abi.zig:256                    abi
 fixed    OptValue                     runtime/net.zig:214                host
 fixed    Overlapped                   runtime/ev/stream.zig:212          field,host,repr
+fixed    PROCESS_INFORMATION          runtime/os/abi.zig:263             host
 fixed    PtrResult                    api/abi.zig:273                    abi
 fixed    Range                        api/abi.zig:464                    abi,field
 fixed    Reg                          api/abi.zig:476                    abi,field
 fixed    Runtime                      api/interface.zig:190              abi
+fixed    STARTUPINFOA                 runtime/os/abi.zig:271             host
 fixed    ScratchBlock                 runtime/gc.zig:215                 repr
-fixed    SecurityAttributes           host/cabi.zig:134                  host
-fixed    SelfPipeEvent                runtime/ev.zig:306                 repr
+fixed    SecurityAttributes           host/cabi.zig:129                  host
+fixed    SelfPipeEvent                runtime/ev.zig:300                 repr
 residue  Signature                    runtime/ffi/types.zig:272          
 fixed    SignedHead                   runtime/value/strings.zig:841      repr
 fixed    SignedHead                   runtime/value/tuples.zig:304       repr
@@ -76,14 +78,23 @@ fixed    Sysv64IntSseReturn           runtime/ffi/call.zig:209           host
 fixed    Sysv64SseIntReturn           runtime/ffi/call.zig:211           host
 fixed    Sysv64SseReturn              runtime/ffi/call.zig:213           host
 fixed    TaggedPayload                api/repr.zig:271                   field,repr
-fixed    ThreadInit                   runtime/ev.zig:325                 repr
+fixed    ThreadInit                   runtime/ev.zig:319                 repr
 fixed    Tree                         runtime/value/maps.zig:335         field,repr
 fixed    TupleHead                    runtime/value/tuples.zig:76        repr
 fixed    Type                         runtime/ffi/types.zig:333          field
 fixed    TypeNode                     runtime/ffi/classify.zig:150       repr
 fixed    Value                        api/repr.zig:284                   abi,field,repr
 fixed    Vector                       runtime/value/vectors.zig:232      field
-fixed    WSABUF                       host/cabi.zig:142                  host
-fixed    pthread_attr_t               host/host.zig:89                   abi,host
-fixed    pthread_mutex_t              host/host.zig:91                   host
-fixed    utimbuf                      host/cabi.zig:148                  abi,host
+fixed    WSABUF                       host/cabi.zig:137                  host
+fixed    WSADATA                      runtime/net/abi.zig:276            host
+fixed    WinAddrInfo                  runtime/net/abi.zig:288            field,host
+fixed    WinStat64                    runtime/os/fs/host_stat.zig:124    repr
+fixed    _finddata_t                  runtime/os/abi.zig:294             host
+fixed    posix_spawn_file_actions_t   runtime/os/abi.zig:199             abi,host
+fixed    pthread_attr_t               host/host.zig:59                   host
+fixed    pthread_mutex_t              host/host.zig:61                   host
+fixed    struct_dirent                runtime/os/abi.zig:208             host,repr
+fixed    struct_ip_mreq               runtime/net/abi.zig:250            field,host
+fixed    struct_ipv6_mreq             runtime/net/abi.zig:257            field,host
+fixed    struct_tm                    runtime/os/abi.zig:114             abi,host
+fixed    utimbuf                      host/cabi.zig:143                  abi,host

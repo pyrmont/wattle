@@ -281,8 +281,16 @@
   ; The scalar equality increment added `value_order`, which asserts equality
   ; for every tag and the traversal stack's reset, and which has no fixture
   ; two concurrent entries share.
-  ["value_alloc" "fiber_core" "marsh" "gc_alloc" "gc_mark" "gc_sweep"
-   "signal_core" "registry" "core_env" "vm_run" "value_order"])
+  ;
+  ; The move off translated host headers replaced these with the contracts
+  ; over the host layer it rewrote: the socket layer and its address bytes
+  ; (`net_sockets`), the event loop's kernels and the channel lock
+  ; (`ev_core`), the platform tests, the clocks, the environment and the
+  ; permission words (`os_platform`, `os_time`, `os_environ`,
+  ; `os_permissions`), and the binding surface (`registry`, `core_env`).
+  ; `os_stat` owns a working-directory fixture and cannot be named.
+  ["net_sockets" "ev_core" "os_platform" "os_time" "os_environ"
+   "os_permissions" "registry" "core_env"])
 
 ; Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 ; `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty

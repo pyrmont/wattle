@@ -6,11 +6,11 @@
 //! Nothing of Janet's is declared here, and no Janet type is re-exported: a
 //! type is imported from the file that owns it, by the file that names it.
 //!
-//! `build.zig` roots a module at this file, because its translation of
-//! `<stdio.h>` is an import `build.zig` provides and a file of `root` cannot
-//! be imported by it. Every
-//! declaration is here because a runtime or client file calls it, and which
-//! file that is is a grep away.
+//! `build.zig` roots a module at this file, because the client, the contract
+//! driver and the test executables import it as well as `root`, and a file of
+//! `root` cannot be imported by another module. Every declaration is here
+//! because a runtime or client file calls it, and which file that is is a
+//! grep away.
 //!
 //! The eight crossings this file once declared went with the module symbol
 //! boundary. A native module reaches the runtime
@@ -42,21 +42,21 @@ const builtin = @import("builtin");
 
 const host = @import("host");
 
-/// libc's own `<stdio.h>`, for the two constants below, as `build.zig`
-/// translates it for the target.
-///
-/// Reaching libc through a translation of its headers is deliberate: "no C in
-/// the tree" and "no libc" are different claims, and only the first is a goal.
-const libc = @import("c_stdio");
-
 // ==========================================================================
 // Constants
 // ==========================================================================
 
-/// The two stdio constants that are libc's rather than Janet's, each taken
-/// from `<stdio.h>` so that it is the platform's own.
-pub const BUFSIZ = libc.BUFSIZ;
-pub const EOF = libc.EOF;
+/// `BUFSIZ` from `<stdio.h>`: 8192 in glibc, 512 in mingw, and 1024 in
+/// macOS, musl, wasi-libc and FreeBSD.
+pub const BUFSIZ = if (builtin.target.os.tag == .windows)
+    512
+else if (builtin.target.isGnuLibC())
+    8192
+else
+    1024;
+
+/// `EOF` from `<stdio.h>`, which is -1 in every libc the runtime builds for.
+pub const EOF = -1;
 
 /// The standard stream handles, under the several names a libc exports them
 /// by. `runtime/stdio.zig` is the only reader and names the pair its platform
@@ -75,11 +75,6 @@ pub const eintr: c_int = @backingInt(std.c.E.INTR);
 // ==========================================================================
 // Aliased types
 // ==========================================================================
-
-/// `CRITICAL_SECTION` and `SRWLOCK`, which `runtime/ev/locks.zig` allocates by
-/// size. Both are `void` off Windows.
-pub const CriticalSection = if (builtin.target.os.tag == .windows) std.os.windows.CRITICAL_SECTION else void;
-pub const SrwLock = if (builtin.target.os.tag == .windows) ?*anyopaque else void;
 
 /// `struct epoll_event`, which the epoll backend passes by pointer. `void` off
 /// Linux.
@@ -154,10 +149,6 @@ pub const utimbuf = extern struct {
 // Public functions
 // ==========================================================================
 
-pub extern fn AcquireSRWLockExclusive(lock: *SrwLock) callconv(.winapi) void;
-
-pub extern fn AcquireSRWLockShared(lock: *SrwLock) callconv(.winapi) void;
-
 pub extern "kernel32" fn CancelIoEx(h: ?*anyopaque, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
 
 pub extern "kernel32" fn CloseHandle(h: ?*anyopaque) callconv(.winapi) c_int;
@@ -181,11 +172,7 @@ pub extern "kernel32" fn CreateThread(
     id: ?*u32,
 ) callconv(.winapi) ?*anyopaque;
 
-pub extern fn DeleteCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
-
 pub extern "kernel32" fn DuplicateHandle(src_proc: ?*anyopaque, src: ?*anyopaque, dst_proc: ?*anyopaque, dst: *?*anyopaque, access: u32, inherit: c_int, options: u32) callconv(.winapi) c_int;
-
-pub extern fn EnterCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
 
 /// From `psapi`, which `build.zig` links for Windows.
 pub extern "psapi" fn EnumProcessModules(
@@ -239,12 +226,6 @@ pub extern "kernel32" fn GetSystemTimeAsFileTime(*FILETIME) callconv(.winapi) vo
 
 pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 
-pub extern fn InitializeCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
-
-pub extern fn InitializeSRWLock(lock: *SrwLock) callconv(.winapi) void;
-
-pub extern fn LeaveCriticalSection(cs: *CriticalSection) callconv(.winapi) void;
-
 pub extern "kernel32" fn LoadLibraryA(name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
 
 pub extern "kernel32" fn PostQueuedCompletionStatus(
@@ -259,10 +240,6 @@ pub extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) c_int;
 pub extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) c_int;
 
 pub extern "kernel32" fn ReadFile(h: ?*anyopaque, buf: [*]u8, count: u32, read_out: ?*u32, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
-
-pub extern fn ReleaseSRWLockExclusive(lock: *SrwLock) callconv(.winapi) void;
-
-pub extern fn ReleaseSRWLockShared(lock: *SrwLock) callconv(.winapi) void;
 
 pub extern "kernel32" fn ResumeThread(h: ?*anyopaque) callconv(.winapi) u32;
 
@@ -518,20 +495,16 @@ pub extern fn pipe(fds: *[2]c_int) callconv(.c) c_int;
 
 pub extern fn pow(f64, f64) f64;
 
-pub extern fn pthread_attr_destroy(attr: *host.pthread_attr_t) callconv(.c) c_int;
-
-pub extern fn pthread_attr_init(attr: *host.pthread_attr_t) callconv(.c) c_int;
-
-pub extern fn pthread_attr_setdetachstate(attr: *host.pthread_attr_t, state: c_int) callconv(.c) c_int;
-
 pub extern fn pthread_cancel(thread: host.pthread_t) callconv(.c) c_int;
 
 pub extern fn pthread_create(
     thread: *host.pthread_t,
-    attr: ?*const host.pthread_attr_t,
+    attr: ?*const anyopaque,
     start: *const fn (?*anyopaque) callconv(.c) ?*anyopaque,
     arg: ?*anyopaque,
 ) callconv(.c) c_int;
+
+pub extern fn pthread_detach(thread: host.pthread_t) callconv(.c) c_int;
 
 pub extern fn pthread_exit(val: ?*anyopaque) callconv(.c) noreturn;
 
