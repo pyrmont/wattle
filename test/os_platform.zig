@@ -7,10 +7,9 @@
 //! `os_platform.zig` derives its results from `builtin`, so asserting them
 //! against `builtin` again would prove nothing. A preprocessor's view is not
 //! the second opinion either: a macro derived from a compiler's own predefines
-//! is unreliable through a translation, since Aro predefined `__unix__` for
-//! `x86_64-windows-gnu` in Zig 0.16, so a header's *translation* can say POSIX
-//! where its *compilation* says Windows. The standing rule is to test the
-//! platform with `builtin.target.os.tag`.
+//! differs between front ends, so one front end can say POSIX for a target
+//! where another says Windows. The standing rule is to test the platform with
+//! `builtin.target.os.tag`.
 //!
 //! Two oracles are used instead.
 //!

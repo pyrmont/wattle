@@ -852,24 +852,9 @@ fn sixThenPair(d0: f64, d1: f64, d2: f64, d3: f64, d4: f64, d5: f64, p: Pair) ca
 
 /// Where the AMD64 ABI puts a pair that finds one vector register left: the
 /// seven doubles in the first seven, the last unused, and the pair's halves in
-/// the first two stack words. The parameters spell that out rather than take a
-/// `Pair`, because Zig 0.16 lowers a `Pair` in this position as its first half
-/// in the last vector register and its second on the stack, where a C
-/// compiler reads both from the stack.
-fn sevenThenPairOnTheStack(
-    d0: f64,
-    d1: f64,
-    d2: f64,
-    d3: f64,
-    d4: f64,
-    d5: f64,
-    d6: f64,
-    unused: f64,
-    a: f64,
-    b: f64,
-) callconv(.c) f64 {
-    _ = unused;
-    return d0 + d1 * 2 + d2 * 3 + d3 * 4 + d4 * 5 + d5 * 6 + d6 * 7 + a * 8 + b * 9;
+/// the first two stack words.
+fn sevenThenPair(d0: f64, d1: f64, d2: f64, d3: f64, d4: f64, d5: f64, d6: f64, p: Pair) callconv(.c) f64 {
+    return d0 + d1 * 2 + d2 * 3 + d3 * 4 + d4 * 5 + d5 * 6 + d6 * 7 + p.a * 8 + p.b * 9;
 }
 
 /// Behind six doubles the pair takes the last two vector registers, and
@@ -899,7 +884,7 @@ fn aVectorPairWithOneRegisterLeft() void {
     // 1 + 4 + ... + 36 is 91, and 7 * 7 + 8 * 8 is 113.
     expect(wrap.toNumber(six) == 91 + 113);
 
-    args[0] = wrap.fromPointer(@ptrCast(@constCast(&sevenThenPairOnTheStack)));
+    args[0] = wrap.fromPointer(@ptrCast(@constCast(&sevenThenPair)));
     args[1] = parts[1];
     args[8] = wrap.fromNumber(7);
     args[9] = parts[3];
