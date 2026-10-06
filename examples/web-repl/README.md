@@ -150,7 +150,8 @@ or `path`, and checks that:
   ReleaseFast build imports 26 functions, and a Debug or ReleaseSafe build
   imports 32. `res/check/wasm_imports.zig`, which also checks `wattle.wasm`,
   makes the same check when the binary is built;
-- the exports are the four functions, `_initialize` and `memory`;
+- the exports are the four functions, `_initialize`, `memory` and
+  `__stack_pointer`;
 - `(+ 1 2)` prints `3`, and `(def x 40)` followed by `(+ x 2)` prints `42`;
 - `print` and `eprint` write to standard output and standard error;
 - `(error "boom")` and an unclosed form return 1 with the error on standard

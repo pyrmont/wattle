@@ -25,7 +25,7 @@ function fail(message) {
 
 const module = new WebAssembly.Module(readFileSync(wasmPath));
 const exports = WebAssembly.Module.exports(module).map(({ name }) => name).sort();
-const expectedExports = ["_initialize", "memory", "wattle_web_alloc", "wattle_web_free", "wattle_web_init", "wattle_web_run_image"];
+const expectedExports = ["__stack_pointer", "_initialize", "memory", "wattle_web_alloc", "wattle_web_free", "wattle_web_init", "wattle_web_run_image"];
 if (exports.join() !== expectedExports.join()) fail(`exports: [${exports.join(", ")}]`);
 console.log(`ok exports (${exports.length})`);
 

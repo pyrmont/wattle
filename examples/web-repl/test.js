@@ -44,7 +44,7 @@ if (unused.length > 0) fail(`imports: wasi.js provides [${unused.join(", ")}], w
 console.log(`ok imports (${needed.length} of ${provided.length} provided)`);
 
 const exports = WebAssembly.Module.exports(module).map(({ name }) => name).sort();
-const expectedExports = ["_initialize", "memory", "wattle_web_alloc", "wattle_web_eval", "wattle_web_free", "wattle_web_init"];
+const expectedExports = ["__stack_pointer", "_initialize", "memory", "wattle_web_alloc", "wattle_web_eval", "wattle_web_free", "wattle_web_init"];
 if (exports.join() !== expectedExports.join()) fail(`exports: [${exports.join(", ")}]`);
 console.log(`ok exports (${exports.length})`);
 
