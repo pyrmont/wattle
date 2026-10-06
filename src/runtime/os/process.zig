@@ -1106,6 +1106,43 @@ fn getJStream(argv: []repr.Value, n: usize, orig: *?*anyopaque) raise.Error!host
     return pp_format.panicf("expected file|stream, got %v", .{argv[n]});
 }
 
+/// Returns the handle a Windows child is given for one of its standard
+/// streams where `orig` is a stream from `os/open`, or null where `handle` is
+/// given as it is.
+///
+/// `handle` is the stream's handle. The result is a handle this process owns
+/// and closes after `CreateProcessA`, and the stream's own handle is
+/// unchanged. A character device such as `NUL` is reopened without
+/// `FILE_FLAG_OVERLAPPED`, because a child's C runtime writes without an
+/// `OVERLAPPED` structure and that write fails on an overlapped device. The
+/// reopen asks for the access the stream's flags name, and a stream opened
+/// with `V` has no flags, so it is duplicated like any other handle. In both
+/// cases the result is inheritable.
+///
+/// This function returns null if `orig` is not a stream or if the host refuses
+/// both the reopen and the duplicate. This function cannot raise.
+fn childStdioHandle(handle: host.Handle, orig: ?*anyopaque) ?host.Handle {
+    if (!has_ev) return null;
+    const p = orig orelse return null;
+    if (abi.abstractHead(p).type != &ev_stream.streamType) return null;
+    const stream: *ev_stream.Stream = @ptrCast(@alignCast(p));
+    var rights: u32 = 0;
+    if (stream.flags & stream_readable != 0) rights |= sys.GENERIC_READ;
+    if (stream.flags & stream_writable != 0) rights |= sys.GENERIC_WRITE;
+    if (rights != 0 and c.GetFileType(handle) == sys.FILE_TYPE_CHAR) {
+        const share = sys.FILE_SHARE_READ | sys.FILE_SHARE_WRITE | sys.FILE_SHARE_DELETE;
+        const reopened = c.ReOpenFile(handle, rights, share, 0);
+        if (reopened != null and reopened != sys.INVALID_HANDLE_VALUE) {
+            if (c.SetHandleInformation(reopened, sys.HANDLE_FLAG_INHERIT, sys.HANDLE_FLAG_INHERIT) != 0) return reopened;
+            _ = c.CloseHandle(reopened);
+        }
+    }
+    const self = c.GetCurrentProcess();
+    var copy: host.Handle = undefined;
+    if (c.DuplicateHandle(self, handle, self, &copy, 0, 1, sys.DUPLICATE_SAME_ACCESS) == 0) return null;
+    return copy;
+}
+
 /// The signal a keyword names. A keyword the name list does not have and one
 /// this platform's headers left out are both "undefined signal", which is what
 /// the `#ifdef`-gated C table produced by omitting the entry.
@@ -1536,24 +1573,28 @@ fn spawnWindows(
     }
     const path: [*:0]const u8 = @ptrCast(wrap.toString(exargs[0]));
 
+    const given_in = childStdioHandle(r.new_in, r.orig_in);
+    const given_out = childStdioHandle(r.new_out, r.orig_out);
+    const given_err = childStdioHandle(r.new_err, r.orig_err);
+
     startup_info.hStdInput = if (isHandle(r.pipe_in))
         r.pipe_in
     else if (isHandle(r.new_in))
-        r.new_in
+        given_in orelse r.new_in
     else
         @ptrFromInt(@as(usize, @bitCast(c._get_osfhandle(c._fileno(stdio.in())))));
 
     startup_info.hStdOutput = if (isHandle(r.pipe_out))
         r.pipe_out
     else if (isHandle(r.new_out))
-        r.new_out
+        given_out orelse r.new_out
     else
         @ptrFromInt(@as(usize, @bitCast(c._get_osfhandle(c._fileno(stdio.out())))));
 
     startup_info.hStdError = if (isHandle(r.pipe_err))
         r.pipe_err
     else if (isHandle(r.new_err))
-        r.new_err
+        given_err orelse r.new_err
     else if (r.stderr_is_stdout)
         startup_info.hStdOutput
     else
@@ -1580,6 +1621,9 @@ fn spawnWindows(
     if (isHandle(r.pipe_in)) _ = c.CloseHandle(r.pipe_in);
     if (isHandle(r.pipe_out)) _ = c.CloseHandle(r.pipe_out);
     if (isHandle(r.pipe_err)) _ = c.CloseHandle(r.pipe_err);
+    if (given_in) |h| _ = c.CloseHandle(h);
+    if (given_out) |h| _ = c.CloseHandle(h);
+    if (given_err) |h| _ = c.CloseHandle(h);
 
     cleanupEnv(envp, null);
 

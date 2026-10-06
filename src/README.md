@@ -674,6 +674,16 @@ These constraints are invisible when building only for the development host.
   tested this way, because `zig build test` runs what it builds and cannot run a
   binary for another target.
 
+- On Windows, `os/execute` and `os/spawn` give a child a copy of the handle of
+  a stream from `os/open`, not the handle itself. `os/open` opens its handles
+  with `FILE_FLAG_OVERLAPPED`, and a child's C runtime writes to its standard
+  streams without an `OVERLAPPED` structure. That write fails on a character
+  device such as `NUL`. `spawnWindows` reopens a character device without the
+  flag and duplicates any other handle, and makes the copy inheritable. It
+  closes the copy after `CreateProcessA`, and the stream's own handle is
+  unchanged. A `core/file` handle and a pipe made by `:pipe` are passed as
+  they are.
+
 Two limitations qualify any result. A musl build links dynamically by default
 and loads native modules on a machine with the musl loader, but CI's musl jobs
 build with `-Dlinkage=static`, and musl's static `dlopen` is a stub that always

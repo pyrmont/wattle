@@ -209,6 +209,23 @@
                                     "-e"
                                     "(print :foo) (eprint :bar)"]
                                    :px
+                                   {:out dn :err dn}))))
+
+  ; os/open is part of the event loop, absent without JANET_EV.
+  (compwhen (dyn 'os/open)
+    ; os/execute IO redirection to a stream opened without overlapped I/O
+    (assert-no-error "IO redirection without overlapped I/O"
+                     (defn devnull []
+                       (def os (os/which))
+                       (def path (if (= os :windows)
+                                   "NUL"
+                                   "/dev/null"))
+                       (os/open path (if (= os :windows) :wVI :wW)))
+                     (with [dn (devnull)]
+                       (os/execute [|run wattle
+                                    "-e"
+                                    "(print :foo) (eprint :bar)"]
+                                   :px
                                    {:out dn :err dn})))))
 
 (assert-error "os/realpath errors when path does not exist"

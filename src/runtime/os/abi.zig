@@ -225,6 +225,7 @@ pub const sys = struct {
 
     pub const CREATE_ALWAYS = 2;
     pub const CREATE_NEW = 1;
+    pub const DUPLICATE_SAME_ACCESS = 0x00000002;
     pub const FILE_APPEND_DATA = 0x0004;
     pub const FILE_ATTRIBUTE_HIDDEN = 0x0002;
     pub const FILE_ATTRIBUTE_NORMAL = 0x0080;
@@ -237,6 +238,7 @@ pub const sys = struct {
     pub const FILE_SHARE_DELETE = 0x00000004;
     pub const FILE_SHARE_READ = 0x00000001;
     pub const FILE_SHARE_WRITE = 0x00000002;
+    pub const FILE_TYPE_CHAR = 0x0002;
     pub const FORMAT_MESSAGE_FROM_SYSTEM = 0x00001000;
     pub const FORMAT_MESSAGE_IGNORE_INSERTS = 0x00000200;
     pub const GENERIC_READ = 0x80000000;

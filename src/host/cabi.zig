@@ -210,6 +210,8 @@ pub extern fn GetExitCodeProcess(handle: host.Handle, code: *u32) callconv(.c) c
 
 pub extern fn GetFileAttributesA(name: [*:0]const u8) callconv(.c) u32;
 
+pub extern "kernel32" fn GetFileType(h: ?*anyopaque) callconv(.winapi) u32;
+
 pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
 
 pub extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(.winapi) ?*anyopaque;
@@ -240,6 +242,8 @@ pub extern "kernel32" fn QueryPerformanceCounter(*i64) callconv(.winapi) c_int;
 pub extern "kernel32" fn QueryPerformanceFrequency(*i64) callconv(.winapi) c_int;
 
 pub extern "kernel32" fn ReadFile(h: ?*anyopaque, buf: [*]u8, count: u32, read_out: ?*u32, ov: ?*OVERLAPPED) callconv(.winapi) c_int;
+
+pub extern "kernel32" fn ReOpenFile(h: ?*anyopaque, access: u32, share: u32, flags: u32) callconv(.winapi) ?*anyopaque;
 
 pub extern "kernel32" fn ResumeThread(h: ?*anyopaque) callconv(.winapi) u32;
 
