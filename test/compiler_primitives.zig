@@ -90,7 +90,7 @@ fn theDefaultFormOptions() void {
     expect(options.compiler == &compiler);
     expect(std.meta.eql(options.flags, primitives.FormFlags{}));
     expect(@as(u32, @bitCast(options.hint.flags)) ==
-        (@as(u32, 1) << @intFromEnum(repr.Tag.nil)) | 0x10000);
+        (@as(u32, 1) << @backingInt(repr.Tag.nil)) | 0x10000);
     expect(harness.isType(options.hint.constant, repr.Tag.nil));
 }
 
@@ -99,7 +99,7 @@ fn theDefaultFormOptions() void {
 fn aConstantSlotRemembersItsType() void {
     const slot = primitives.cslot(wrap.fromTrue());
     expect(@as(u32, @bitCast(slot.flags)) ==
-        (@as(u32, 1) << @intFromEnum(repr.Tag.boolean)) | 0x10000);
+        (@as(u32, 1) << @backingInt(repr.Tag.boolean)) | 0x10000);
     expect(slot.index == -1);
     expect(slot.envindex == -1);
     expect(wrap.toBoolean(slot.constant));

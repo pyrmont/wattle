@@ -19,23 +19,6 @@
 
 #include "wattle_features.h"
 
- /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
-  * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
-  * of this file and a compilation of the same target disagree about the
-  * predefine unless it is cleared. That produced a `JanetHandle` of `int`
-  * rather than `void *` on `x86_64-windows-gnu`, from a platform chain that
-  * tested Unix before Windows.
-  *
-  * Every system header included below is read by `translate-c` and compiled by
-  * clang, and this guard is what makes those two agree. The platform chains in
-  * this file put their Windows arm first as well, which is belt to this
-  * braces -- the two corrections are independent and both are cheap. */
-#if defined(_WIN32) || defined(WIN32)
-#undef __unix__
-#undef unix
-#undef __unix
-#endif
-
  /* The platform chain, tested against the predefines directly, with the
   * Windows arm first. */
 
@@ -65,11 +48,10 @@
  * Zig because a `#define` with no value does not survive translation, which is
  * the reason `net/abi.h` restates three flags of its own.
  *
- * Windows leads, where `filewatch.c` led with Linux, for the reason the
- * include block above gives: this chain has to answer the same on a mingw
- * translation as on a mingw compilation, and Aro predefines the Unix names
- * there too. The three arms are mutually exclusive on every real target, so
- * the reordering changes nothing else. */
+ * Windows leads, where `filewatch.c` led with Linux, so that the chain gives
+ * the same answer for a mingw target whether or not a front end predefines
+ * the Unix names there, as Aro did in Zig 0.16. The three arms are mutually
+ * exclusive on every real target, so the reordering changes nothing else. */
 #define WATTLE_WATCH_NONE 0
 #define WATTLE_WATCH_INOTIFY 1
 #define WATTLE_WATCH_WINDOWS 2

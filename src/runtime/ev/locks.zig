@@ -38,18 +38,16 @@ const raise = @import("../../api/raise.zig");
 /// A translation is right when nothing it declares crosses a subsystem
 /// boundary, and nothing does. Every caller passes an opaque mutex pointer;
 /// the `pthread_*` types stay inside this file. The Windows arm is an empty
-/// struct, because that platform's four calls are `kernel32`'s.
-const sys = if (windows) struct {} else @cImport({
-    @cInclude("wattle_features.h");
-    @cInclude("pthread.h");
-});
+/// struct, because that platform's four calls are `kernel32`'s, and
+/// `build.zig` does not translate `<pthread.h>` for Windows.
+const sys = if (windows) struct {} else @import("c_locks");
 
 // ==========================================================================
 // Constants
 // ==========================================================================
 
 /// Whether this target takes the `kernel32` arm of each call below.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Public functions

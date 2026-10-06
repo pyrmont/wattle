@@ -5,7 +5,7 @@
 //! This file owns the channel's layout. Its last member is a
 //! `pthread_mutex_t` or a `CRITICAL_SECTION`, `host.zig`'s in both arms, which
 //! is where every host type in this tree comes from, so this file needs no
-//! `@cImport` of its own. `Channel` is the only declaration of that layout,
+//! translation of its own. `Channel` is the only declaration of that layout,
 //! and `unwrap` below is the one cast from the abstract's payload pointer to
 //! it.
 
@@ -366,7 +366,7 @@ fn nfunClose(argv: []repr.Value) raise.Error!repr.Value {
                     ev.evPostEvent(target, threadChanCallback, .{
                         .fiber = writer.fiber,
                         .argp = chan,
-                        .tag = @intFromEnum(Mode.close),
+                        .tag = @backingInt(Mode.close),
                         .argi = @bitCast(writer.sched_id),
                         .argj = wrap.fromNil(),
                     });
@@ -391,7 +391,7 @@ fn nfunClose(argv: []repr.Value) raise.Error!repr.Value {
                     ev.evPostEvent(target, threadChanCallback, .{
                         .fiber = reader.fiber,
                         .argp = chan,
-                        .tag = @intFromEnum(Mode.close),
+                        .tag = @backingInt(Mode.close),
                         .argi = @bitCast(reader.sched_id),
                         .argj = wrap.fromNil(),
                     });
@@ -694,7 +694,7 @@ fn popWithLock(chan: *Channel, item: *repr.Value, is_choice: Caller) raise.Error
         if (is_threaded) {
             if (writer.thread) |target| {
                 ev.evPostEvent(target, threadChanCallback, .{
-                    .tag = @intFromEnum(writer.mode),
+                    .tag = @backingInt(writer.mode),
                     .fiber = writer.fiber,
                     .argi = @bitCast(writer.sched_id),
                     .argp = chan,
@@ -759,7 +759,7 @@ fn pushWithLock(chan: *Channel, x_in: repr.Value, mode: Caller) raise.Error!bool
         if (is_threaded) {
             if (reader.thread) |target| {
                 ev.evPostEvent(target, threadChanCallback, .{
-                    .tag = @intFromEnum(reader.mode),
+                    .tag = @backingInt(reader.mode),
                     .fiber = reader.fiber,
                     .argi = @bitCast(reader.sched_id),
                     .argp = chan,
@@ -822,7 +822,7 @@ fn removeStale(fq: *ev.Queue(Pending)) void {
 fn threadChanCallback(msg: ev.GenericMessage) callconv(.c) void {
     const sched_id: u32 = @bitCast(msg.argi);
     const fiber = msg.fiber.?;
-    const mode: Mode = @enumFromInt(msg.tag);
+    const mode: Mode = @fromBackingInt(@intCast(msg.tag));
     const chan = unwrap(msg.argp);
     var x = msg.argj;
     // The sender rooted the fiber when it queued the entry, and this is the
@@ -855,7 +855,7 @@ fn threadChanCallback(msg: ev.GenericMessage) callconv(.c) void {
             while (chan.read_pending.pop(&reader) == 0) {
                 const target = reader.thread orelse continue;
                 ev.evPostEvent(target, threadChanCallback, .{
-                    .tag = @intFromEnum(reader.mode),
+                    .tag = @backingInt(reader.mode),
                     .fiber = reader.fiber,
                     .argi = @bitCast(reader.sched_id),
                     .argp = chan,
@@ -876,7 +876,7 @@ fn threadChanCallback(msg: ev.GenericMessage) callconv(.c) void {
             while (chan.write_pending.pop(&writer) == 0) {
                 const target = writer.thread orelse continue;
                 ev.evPostEvent(target, threadChanCallback, .{
-                    .tag = @intFromEnum(writer.mode),
+                    .tag = @backingInt(writer.mode),
                     .fiber = writer.fiber,
                     .argi = @bitCast(writer.sched_id),
                     .argp = chan,

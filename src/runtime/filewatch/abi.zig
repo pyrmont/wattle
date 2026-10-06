@@ -16,9 +16,9 @@
 //! raises, because a comptime-false branch is never analysed. The other
 //! direction is a missing declaration, which is a compile error naming its own
 //! site. So the loud direction is left to the compiler and the silent one is
-//! asserted. Reordering the chain, where Windows leads because Aro predefines
-//! the Unix names for mingw too, is exactly the kind of edit whose mistake
-//! compiles.
+//! asserted. Reordering the chain, where Windows leads because Aro predefined
+//! the Unix names for mingw in Zig 0.16, is exactly the kind of edit whose
+//! mistake compiles.
 
 // ==========================================================================
 // Standard library imports
@@ -31,11 +31,10 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
-/// The translation itself. Every `h.`-qualified name below is one of its
+/// The translation itself, which `build.zig` produces from `filewatch/abi.h`
+/// for the target. Every `h.`-qualified name below is one of its
 /// declarations.
-pub const h = @cImport({
-    @cInclude("filewatch/abi.h");
-});
+pub const h = @import("c_filewatch");
 
 // ==========================================================================
 // Constants
@@ -45,7 +44,7 @@ pub const h = @cImport({
 /// `filewatch.c`'s exactly, `none` included: a platform with no backend gets
 /// an implementation whose every entry point raises "filewatch not supported
 /// on this platform".
-pub const backend: Backend = switch (builtin.os.tag) {
+pub const backend: Backend = switch (builtin.target.os.tag) {
     .windows => .windows,
     .linux => .inotify,
     .macos, .ios, .tvos, .watchos, .visionos => .kqueue,

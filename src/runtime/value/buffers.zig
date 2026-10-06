@@ -76,7 +76,7 @@ const wrap = @import("helpers/wrap.zig");
 
 /// Whether the host is big-endian, decided at compile time.
 /// `shouldReverseBytes` compares a caller's keyword against it.
-const big_endian = (builtin.cpu.arch.endian() == .big);
+const big_endian = (builtin.target.cpu.arch.endian() == .big);
 
 /// Bit 0 of the GC header's per-type field: this buffer's payload is memory
 /// the runtime did not allocate, so every growth path and `deinit` leave the
@@ -787,7 +787,7 @@ fn pushBytesAliasSafe(buffer: *Buffer, view_in: abi.ByteView) raise.Error!void {
 /// The argument getters have already rejected anything that does not fit, so
 /// the byte order is all that is left.
 fn pushScalar(comptime T: type, buffer: *Buffer, data: T, reverse: bool) raise.Error!void {
-    var bytes: [@sizeOf(T)]u8 = @bitCast(data);
+    var bytes = std.mem.toBytes(data);
     if (reverse) std.mem.reverse(u8, &bytes);
     try pushBytes(buffer, &bytes);
 }

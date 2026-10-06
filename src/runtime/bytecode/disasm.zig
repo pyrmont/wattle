@@ -111,7 +111,7 @@ pub fn asmDecodeInstruction(instruction: u32) repr.Value {
 
 /// The whole disassembly, as a struct of every field.
 pub fn disasm(definition: *functions.FuncDef) repr.Value {
-    return disassembleFieldExport(definition, @intFromEnum(Field.all));
+    return disassembleFieldExport(definition, @backingInt(Field.all));
 }
 
 /// One field of `definition`, by `Field`.
@@ -142,7 +142,7 @@ pub fn disassembleField(definition: *functions.FuncDef, field: Field) repr.Value
 pub fn disassembleFieldExport(definition: *functions.FuncDef, field_value: c_int) repr.Value {
     const gc_lock = gc_alloc.gclock(vm_state.current());
     defer gc_alloc.gcunlock(vm_state.current(), gc_lock);
-    return disassembleField(definition, @enumFromInt(field_value));
+    return disassembleField(definition, @fromBackingInt(@intCast(field_value)));
 }
 
 // ==========================================================================

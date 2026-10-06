@@ -1126,8 +1126,8 @@ fn noConventionReusesARegister() void {
         ffi_classify.allocSysv64(&result, &ret, &args);
         expect(result.error_kind == alloc_ok);
 
-        var int_used = [_]bool{false} ** 6;
-        var fp_used = [_]bool{false} ** 8;
+        var int_used: [6]bool = @splat(false);
+        var fp_used: [8]bool = @splat(false);
         var stack_words: u32 = 0;
         for (args) |arg| {
             switch (arg.spec) {
@@ -1199,8 +1199,8 @@ fn aapcs64NeverReusesARegister() void {
             ffi_classify.allocAapcs64(&result, &ret, &args, apple, aapcs64_max_ret);
             expect(result.error_kind == alloc_ok);
 
-            var general_used = [_]bool{false} ** 8;
-            var fp_used = [_]bool{false} ** 8;
+            var general_used: [8]bool = @splat(false);
+            var fp_used: [8]bool = @splat(false);
             for (args) |arg| {
                 const words: u32 = @max(1, @as(u32, @intCast((arg.size + 7) / 8)));
                 switch (arg.spec) {

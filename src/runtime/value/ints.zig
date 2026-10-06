@@ -56,7 +56,7 @@ const wrap = @import("helpers/wrap.zig");
 
 /// Whether the host is big-endian, decided at compile time. `nfunToBytes`
 /// compares a caller's keyword against it.
-const big_endian = (builtin.cpu.arch.endian() == .big);
+const big_endian = (builtin.target.cpu.arch.endian() == .big);
 
 /// The ends of the contiguous integer range of a double, matching
 /// `constants.intmax_double`. Past them a double cannot tell

@@ -537,7 +537,7 @@ fn theMarshalling() raise.Error!void {
     // A marshalled closeable file owns a descriptor of its own, which takes a
     // `dup`. WASI has none, so there the callback raises and the round trip
     // below has nothing to make.
-    if (builtin.os.tag == .wasi) {
+    if (builtin.target.os.tag == .wasi) {
         buffer.count = 0;
         expectRaise(
             marshalled,
@@ -579,7 +579,7 @@ fn theMarshalling() raise.Error!void {
 fn theMarshalledBufferSize() raise.Error!void {
     // The round trip needs a marshalled closeable file, which WASI cannot
     // make; `theMarshalling` is where that is pinned.
-    if (builtin.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .wasi) return;
 
     const stream = io_core.open(scratch, "wb").?;
     const jf = io_core.makejfile(@ptrCast(@alignCast(stream)), constants.file_write);
@@ -616,7 +616,7 @@ fn theUnreopenableDescriptor() raise.Error!void {
     // is open, so the reopened file comes back usable and this path has
     // nothing to report. Measured under wasmtime: the copy came back with the
     // flags it was marshalled with and a stream of its own.
-    if (builtin.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .wasi) return;
 
     const stream = io_core.open(scratch, "wb").?;
     const jf = io_core.makejfile(
@@ -788,7 +788,7 @@ fn theCoreFunctions() void {
     // count, which leaves both without the instrument for the same reason.
     // The refusal itself is asserted above in every configuration; what is
     // gated is the leak check behind it.
-    if (!config.reduced_os and builtin.os.tag != .wasi and builtin.os.tag != .windows) {
+    if (!config.reduced_os and builtin.target.os.tag != .wasi and builtin.target.os.tag != .windows) {
         doString(env,
             \\(defn nfds [] (length (os/dir "/dev/fd")))
             \\(def before (nfds))

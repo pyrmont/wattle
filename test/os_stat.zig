@@ -124,7 +124,7 @@ fn cleanPaths() void {
 /// scope makes Windows a build target rather than a tested one, so the arm is
 /// dropped rather than written and never run.
 fn theModeNames() void {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.target.os.tag == .windows) return;
     const S = std.c.S;
 
     expect(modeNameIs(S.IFREG | 0o644, "file"));
@@ -134,7 +134,7 @@ fn theModeNames() void {
     expect(modeNameIs(0o777, "other"));
 
     // Plan 9 has none of these four.
-    if (!(builtin.os.tag == .plan9)) {
+    if (!(builtin.target.os.tag == .plan9)) {
         expect(modeNameIs(S.IFIFO | 0o644, "fifo"));
         expect(modeNameIs(S.IFBLK | 0o644, "block"));
         expect(modeNameIs(S.IFSOCK | 0o644, "socket"));
@@ -147,7 +147,7 @@ fn theModeNames() void {
 /// there and the exhaustive sweep below would be wrong rather than merely
 /// unavailable.
 fn thePermissionBits() void {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.target.os.tag == .windows) return;
     const S = std.c.S;
 
     // Type bits and the setuid/setgid/sticky field are dropped.
@@ -226,7 +226,7 @@ fn theCoreFunctions() void {
     );
 
     // Unix only: the CRT has three permission bits rather than nine.
-    if (builtin.os.tag != .windows and builtin.os.tag != .wasi) eval(
+    if (builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) eval(
         \\(def st (os/stat "wattle-os-stat-4d71/file"))
         \\(assert (= 8r640 (st :int-permissions)))
         \\(assert (= "rw-r-----" (st :permissions)))
@@ -235,7 +235,7 @@ fn theCoreFunctions() void {
     // WASI has no permission bits: `os/chmod` changes nothing there, and the
     // file description `wasi_snapshot_preview1` reports carries none, so every
     // bit reads as clear.
-    if (builtin.os.tag == .wasi) eval(
+    if (builtin.target.os.tag == .wasi) eval(
         \\(def st (os/stat "wattle-os-stat-4d71/file"))
         \\(assert (= 0 (st :int-permissions)))
         \\(assert (= "---------" (st :permissions)))
@@ -268,7 +268,7 @@ fn theCoreFunctions() void {
     // has a symlink to make: `os/symlink` is registered on Windows and Plan 9
     // and refuses there, which `os/link`'s own documentation states. Both
     // conditions are needed, and `os/lstat` has nothing to report besides.
-    if (config.symlinks and builtin.os.tag != .windows and builtin.os.tag != .plan9) {
+    if (config.symlinks and builtin.target.os.tag != .windows and builtin.target.os.tag != .plan9) {
         // `os/lstat` reports the link, `os/stat` its target.
         eval(
             \\(os/symlink "file" "wattle-os-stat-4d71/link")
@@ -283,7 +283,7 @@ fn theCoreFunctions() void {
 /// directory, false for a file, and false where `fstat` cannot be asked, which
 /// a descriptor closed under the stream arranges.
 fn theDirectoryTest() void {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.target.os.tag == .windows) return;
     const dir = c.fopen(work_dir, "r").?;
     expect(host_stat.isDirectory(dir));
     _ = c.fclose(dir);

@@ -63,7 +63,7 @@ const gnuStrerrorR: GnuStrerrorR = @ptrCast(&c.strerror_r);
 /// `arc4random` arrived on macOS at 10.7, which every version this project
 /// supports is past, so the test is by family rather than by version.
 /// wasi-libc has it, and WASI has no `/dev/urandom` to fall back to.
-const has_arc4random = switch (builtin.os.tag) {
+const has_arc4random = switch (builtin.target.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly, .wasi => true,
     else => false,
 };
@@ -159,7 +159,7 @@ pub const typeNames: [16][:0]const u8 = .{
 };
 
 /// Whether this target is Windows.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -192,7 +192,7 @@ const GnuStrerrorR = *const fn (c_int, [*]u8, usize) callconv(.c) [*]u8;
 pub fn View(comptime Self: type, comptime T: type) type {
     const info = @typeInfo(Self);
     if (info != .pointer) @compileError("a fixed-layout accessor takes a pointer receiver");
-    return if (info.pointer.is_const) []const T else []T;
+    return if (info.pointer.attrs.@"const") []const T else []T;
 }
 
 // ==========================================================================
@@ -514,7 +514,7 @@ pub fn strerrorSafe(e: c_int) [*:0]const u8 {
 /// request above it aborts. `resize` can promise an in-place result only where
 /// the block is not growing, because `realloc` may move.
 fn allocatorAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
-    if (@intFromEnum(alignment) > @intFromEnum(max_malloc_align))
+    if (@backingInt(alignment) > @backingInt(max_malloc_align))
         fatal.fatal("allocation alignment exceeds what malloc guarantees");
     return @ptrCast(malloc(len));
 }

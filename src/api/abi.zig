@@ -84,7 +84,7 @@ pub const abstract_payload = @offsetOf(AbstractHead, "_data");
 // ==========================================================================
 
 /// The width of a refcount.
-pub const AtomicInt = if (builtin.os.tag == .windows) c_long else i32;
+pub const AtomicInt = if (builtin.target.os.tag == .windows) c_long else i32;
 
 // ==========================================================================
 // Types
@@ -533,7 +533,7 @@ pub const Signal = enum(c_uint) {
     /// `c_uint`. A number above `user9` converts to `user9`. This function
     /// cannot raise.
     pub fn fromWire(raw: c_uint) Signal {
-        return if (raw > @intFromEnum(Signal.user9)) .user9 else @enumFromInt(raw);
+        return if (raw > @backingInt(Signal.user9)) .user9 else @fromBackingInt(@intCast(raw));
     }
 };
 
@@ -584,15 +584,15 @@ comptime {
         .{ .user4, 8 },  .{ .user5, 9 },    .{ .user6, 10 }, .{ .user7, 11 },
         .{ .user8, 12 }, .{ .user9, 13 },   .{ .new, 14 },   .{ .alive, 15 },
     };
-    std.debug.assert(expected_status.len == @typeInfo(FiberStatus).@"enum".fields.len);
-    for (expected_status) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
+    std.debug.assert(expected_status.len == @typeInfo(FiberStatus).@"enum".field_names.len);
+    for (expected_status) |row| std.debug.assert(@backingInt(row[0]) == row[1]);
     // Every `Signal` value is also a `FiberStatus` value. The claim is about
     // values rather than names: `ok` is `dead` at 0 and `yield` is `pending`
     // at 3.
-    for (@typeInfo(Signal).@"enum".fields) |f| {
+    for (@typeInfo(Signal).@"enum".field_values) |signal_value| {
         var found = false;
-        for (@typeInfo(FiberStatus).@"enum".fields) |g| {
-            if (f.value == g.value) found = true;
+        for (@typeInfo(FiberStatus).@"enum".field_values) |status_value| {
+            if (signal_value == status_value) found = true;
         }
         std.debug.assert(found);
     }
@@ -629,8 +629,8 @@ comptime {
         .{ .user4, 8 },  .{ .user5, 9 },    .{ .user6, 10 }, .{ .user7, 11 },
         .{ .user8, 12 }, .{ .user9, 13 },
     };
-    std.debug.assert(expected_signal.len == @typeInfo(Signal).@"enum".fields.len);
-    for (expected_signal) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
+    std.debug.assert(expected_signal.len == @typeInfo(Signal).@"enum".field_names.len);
+    for (expected_signal) |row| std.debug.assert(@backingInt(row[0]) == row[1]);
     std.debug.assert(Signal.interrupt == .user8);
     std.debug.assert(Signal.event == .user9);
 }

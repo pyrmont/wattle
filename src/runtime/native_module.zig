@@ -34,7 +34,7 @@ const wattle = @import("wattle");
 /// The gate `abandoned`'s thread waits at, so that the test decides when the
 /// post happens rather than a sleep deciding it.
 ///
-/// A spin rather than a semaphore, because `std.Thread` in Zig 0.16 has
+/// A spin rather than a semaphore, because `std.Thread` in Zig 0.17 has
 /// neither: the blocking primitives live under `std.Io` and take an `Io`
 /// instance a module has no reason to build. The wait is milliseconds long and
 /// happens once in the test, and `yield` is what keeps it from being a busy
@@ -677,7 +677,7 @@ fn markup(argv: []wattle.Value) wattle.Error!wattle.Value {
     }
 
     var out: [256]u8 = undefined;
-    const text = std.fmt.bufPrintZ(&out, "<{d}>{s}</{d}>", .{ flags, input, flags }) catch
+    const text = std.mem.printSentinel(&out, "<{d}>{s}</{d}>", .{ flags, input, flags }, 0) catch
         return wattle.panic("rendered output does not fit");
     return wattle.cstring(text);
 }
@@ -950,15 +950,15 @@ fn viewed(argv: []wattle.Value) wattle.Error!wattle.Value {
     var out: [64]u8 = undefined;
     const text = blk: {
         if (wattle.bytesView(v)) |bytes| {
-            break :blk std.fmt.bufPrintZ(&out, "bytes {d}", .{bytes.len});
+            break :blk std.mem.printSentinel(&out, "bytes {d}", .{bytes.len}, 0);
         }
         if (try wattle.toIndexed(v)) |items| {
-            break :blk std.fmt.bufPrintZ(&out, "indexed {d}", .{items.len});
+            break :blk std.mem.printSentinel(&out, "indexed {d}", .{items.len}, 0);
         }
         if (try wattle.toDictionary(v)) |dict| {
-            break :blk std.fmt.bufPrintZ(&out, "dictionary {d}", .{dict.count});
+            break :blk std.mem.printSentinel(&out, "dictionary {d}", .{dict.count}, 0);
         }
-        break :blk std.fmt.bufPrintZ(&out, "none", .{});
+        break :blk std.mem.printSentinel(&out, "none", .{}, 0);
     } catch return wattle.panic("the description does not fit");
     return wattle.cstring(text);
 }

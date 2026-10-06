@@ -45,7 +45,7 @@
 //! and independently, so the bytes this file lays down and the bytes the
 //! decoder reads come from two different descriptions and a disagreement is a
 //! failure rather than a silence. It also keeps the contract module free of a
-//! fourth `@cImport` of the socket headers.
+//! fourth translation of the socket headers.
 
 // ==========================================================================
 // Standard library imports
@@ -107,7 +107,7 @@ const net_bindings = [_][*:0]const u8{
 };
 
 var raises_seen: u32 = 0;
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Cases

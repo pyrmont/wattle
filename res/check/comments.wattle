@@ -44,7 +44,7 @@
 
 (def skip-dirs
   "Directory names no walk descends into."
-  {".git" true ".zig-cache" true "zig-out" true "port" true "notes" true})
+  #{".git" ".zig-cache" "zig-out" "zig-pkg" "port" "notes"})
 
 (defn- readmes-under
   "Every `README.md` at or below `dir`, sorted, repository-relative."

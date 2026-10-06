@@ -216,18 +216,18 @@ pub fn check(comptime T: type, comptime spec: anytype) void {
         @compileError("define takes a struct literal of callbacks, not " ++
             @typeName(Given));
     }
-    for (info.@"struct".fields) |f| {
-        if (comptime std.mem.eql(u8, f.name, "name")) continue;
-        if (comptime std.mem.eql(u8, f.name, "contents")) continue;
+    for (info.@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "name")) continue;
+        if (comptime std.mem.eql(u8, name, "contents")) continue;
         comptime var known = false;
         inline for (slots) |s| {
-            if (comptime std.mem.eql(u8, f.name, s)) known = true;
+            if (comptime std.mem.eql(u8, name, s)) known = true;
         }
         if (!known) {
             @compileError("abstract type '" ++ spec.name ++ "' has no callback named '" ++
-                f.name ++ "'. The callbacks are: " ++ slotList());
+                name ++ "'. The callbacks are: " ++ slotList());
         }
-        checkSlot(T, spec.name, f.name, @TypeOf(@field(spec, f.name)));
+        checkSlot(T, spec.name, name, @TypeOf(@field(spec, name)));
     }
     if (sets(spec, "chunk") and !sets(spec, "length")) {
         @compileError("abstract type '" ++ spec.name ++ "', callback 'chunk': a type with " ++
@@ -326,8 +326,8 @@ fn checkSlot(comptime T: type, comptime name: []const u8, comptime slot: []const
     }
 
     // The first parameter must be the payload type.
-    if (fn_info.params.len > 0 and !std.mem.eql(u8, slot, "unmarshal")) {
-        if (fn_info.params[0].type) |P0| {
+    if (fn_info.param_types.len > 0 and !std.mem.eql(u8, slot, "unmarshal")) {
+        if (fn_info.param_types[0]) |P0| {
             const ok = P0 == *T or P0 == *const T;
             if (!ok) {
                 @compileError(where ++ "the first parameter must be `*" ++ @typeName(T) ++

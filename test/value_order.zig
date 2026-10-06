@@ -751,7 +751,7 @@ fn collidingKeywords(capacity: u32, target: usize, names: [][16:0]u8) void {
     var found: usize = 0;
     var i: usize = 0;
     while (i < 100000 and found < names.len) : (i += 1) {
-        const name = std.fmt.bufPrintZ(&names[found], "k{d}", .{i}) catch unreachable;
+        const name = std.mem.printSentinel(&names[found], "k{d}", .{i}, 0) catch unreachable;
         if (idealIndex(capacity, kw(name.ptr)) == target) found += 1;
     }
     expect(found == names.len);
@@ -809,9 +809,9 @@ fn theOrderAcrossTypes() void {
         num(0.0), wrap.fromNil(), wrap.fromFalse(),
         str("s"), sym("s"),       kw("s"),
     };
-    expect(@intFromEnum(repr.Tag.number) < @intFromEnum(repr.Tag.nil));
-    expect(@intFromEnum(repr.Tag.nil) < @intFromEnum(repr.Tag.boolean));
-    expect(@intFromEnum(repr.Tag.boolean) < @intFromEnum(repr.Tag.string));
+    expect(@backingInt(repr.Tag.number) < @backingInt(repr.Tag.nil));
+    expect(@backingInt(repr.Tag.nil) < @backingInt(repr.Tag.boolean));
+    expect(@backingInt(repr.Tag.boolean) < @backingInt(repr.Tag.string));
     for (ordered, 0..) |left, i| {
         for (ordered, 0..) |right, j| {
             if (i == j) continue;

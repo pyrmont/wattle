@@ -1257,10 +1257,10 @@ pub inline fn number(x: f64) Value {
 pub fn panicFormat(comptime fmt: []const u8, args: anytype) Error {
     const len = std.fmt.count(fmt, args);
     var stack: [256]u8 = undefined;
-    if (len < stack.len) return panic(std.fmt.bufPrintZ(&stack, fmt, args) catch unreachable);
+    if (len < stack.len) return panic(std.mem.printSentinel(&stack, fmt, args, 0) catch unreachable);
     const heap = alloc(u8, len + 1) orelse return panic("out of memory building a refusal");
     defer free(heap);
-    return panic(std.fmt.bufPrintZ(heap, fmt, args) catch unreachable);
+    return panic(std.mem.printSentinel(heap, fmt, args, 0) catch unreachable);
 }
 
 /// Calls `f` with `args` on a fresh fiber and returns rather than raises.
@@ -1724,7 +1724,7 @@ fn checkNFunction(comptime name: []const u8, comptime Given: type) void {
         },
         else => @compileError(where ++ "this is not a function. " ++ wanted),
     };
-    if (fn_info.params.len != 1 or fn_info.params[0].type != []Value) {
+    if (fn_info.param_types.len != 1 or fn_info.param_types[0] != []Value) {
         @compileError(where ++ "it takes its arguments as one `[]Value` slice, not " ++
             "a count and a pointer. " ++ wanted);
     }

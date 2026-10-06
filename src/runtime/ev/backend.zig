@@ -85,7 +85,7 @@ const Epoll = struct {
     const TFD_CLOEXEC: c_int = EPOLL_CLOEXEC;
     const TFD_NONBLOCK: c_int = @intCast(@as(u32, @bitCast(linux.TFD{ .NONBLOCK = true })));
     const TFD_TIMER_ABSTIME: c_int = 1;
-    const CLOCK_MONOTONIC: c_int = @intFromEnum(linux.CLOCK.MONOTONIC);
+    const CLOCK_MONOTONIC: c_int = @backingInt(linux.CLOCK.MONOTONIC);
 
     const max_events = 64;
 
@@ -159,7 +159,7 @@ const Epoll = struct {
     fn unregister(s: *stream_mod.Stream) raise.Error!void {
         if (s.flags & @as(u32, @intCast(constants.stream_nodups)) != 0) return;
         const status = c.retryIntr(c.epoll_ctl, .{ vm_state.current().ev.backend.epoll, EPOLL_CTL_DEL, s.handle, null });
-        if (status == -1 and c.errno() != @intFromEnum(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
+        if (status == -1 and c.errno() != @backingInt(std.c.E.NOENT)) return raise.panicv(stream_mod.evLasterr());
         s.flags |= @intCast(constants.stream_unregistered);
     }
 
@@ -674,7 +674,7 @@ const SelfPipe = struct {
 /// `new_thread_attr` and `selfpipe` are in three of the four rather than in
 /// `VmEv`: they are what a POSIX backend needs to start a thread and to wake
 /// itself, and Windows does neither that way.
-pub const VmBackend = if (builtin.os.tag == .windows)
+pub const VmBackend = if (builtin.target.os.tag == .windows)
     struct {
         // A Windows `HANDLE` is an opaque token rather than the address of
         // anything, and the values the kernel hands back are small and
@@ -828,7 +828,7 @@ comptime {
     // out differently per backend. If the two ever disagreed, every field this
     // file names would be at the wrong offset. Assert the agreement rather
     // than hope for it.
-    if (windows != (builtin.os.tag == .windows)) {
+    if (windows != (builtin.target.os.tag == .windows)) {
         @compileError("ev_backend: the translation and the build disagree about Windows");
     }
     if (!windows and config.ev_epoll and config.ev_kqueue) {

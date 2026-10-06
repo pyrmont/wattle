@@ -582,8 +582,8 @@ fn traceChain(fiber: *fibers.Fiber, state: *TraceState) raise.Error!void {
         const status = fibers.status(fiber);
         try eprintf("%s%s: %s\n", .{
             if (state.prefix != null) state.prefix else @as([*]const u8, ""),
-            utils.statusNames[@intFromEnum(status)],
-            if (state.error_text != null) state.error_text else utils.statusNames[@intFromEnum(status)],
+            utils.statusNames[@backingInt(status)],
+            if (state.error_text != null) state.error_text else utils.statusNames[@backingInt(status)],
         });
         state.wrote_error = true;
     }

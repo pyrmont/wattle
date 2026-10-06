@@ -1033,7 +1033,7 @@ fn theFrameIsScratchOnlyPastTheInlineSize() void {
 /// four doubles need 72 words of stack: two fill the vector registers and
 /// eighteen follow at 32 bytes each. The ceiling is the top rung, 128.
 fn aSignatureOf72StackWordsIsDescribed() void {
-    if (!supports("aapcs64") or !builtin.os.tag.isDarwin()) return;
+    if (!supports("aapcs64") or !builtin.target.os.tag.isDarwin()) return;
     const sigv = eval("(ffi/signature :aapcs64 :void |(array/new-filled 20 [:double :double :double :double]))");
     const sig: *ffi_types.Signature = @ptrCast(@alignCast(wrap.toAbstract(sigv)));
     expect(sig.arg_stack_words == 72);

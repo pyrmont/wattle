@@ -185,13 +185,13 @@ const reduced_os = config.reduced_os;
 const scratch_def = if (windows)
     \\(def scratch (string (or (os/getenv "TEMP") (os/getenv "TMP") ".")
     \\                    "/wattle-os-surface-contract"))
-else if (builtin.os.tag == .wasi)
+else if (builtin.target.os.tag == .wasi)
     \\(def scratch "wattle-os-surface-contract")
 else
     \\(def scratch "/tmp/wattle-os-surface-contract")
 ;
 
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 /// The `(os/setenv "TZ" ...)` the DST assertions run under, which has to name
 /// a zone the *host's* `tzset` can parse or the slot is not observable.
@@ -411,7 +411,7 @@ fn theStatRead() void {
         // is zeroed, not because anything wrote them.
         expect(numbers[Field.blocks] == 0.0);
         expect(numbers[Field.blocksize] == 0.0);
-    } else if (builtin.os.tag == .wasi) {
+    } else if (builtin.target.os.tag == .wasi) {
         // WASI has both slots and fills neither: the file description
         // `wasi_snapshot_preview1` reports carries no block count and no block
         // size, so the reader copies the zeroes wasi-libc left there.
@@ -1256,7 +1256,7 @@ extern fn raise(sig: c_int) callconv(.c) c_int;
 /// `std.c.SIG` is an enum on some targets and a plain integer on others.
 fn signalNumber(number: anytype) c_int {
     return switch (@typeInfo(@TypeOf(number))) {
-        .@"enum" => @intCast(@intFromEnum(number)),
+        .@"enum" => @intCast(@backingInt(number)),
         else => @intCast(number),
     };
 }

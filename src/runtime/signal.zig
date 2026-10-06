@@ -121,17 +121,17 @@ pub const SignalSet = packed struct(u14) {
 
     /// Whether this set traps `s`.
     pub inline fn has(self: SignalSet, s: abi.Signal) bool {
-        return (self.bits() >> @intCast(@intFromEnum(s))) & 1 != 0;
+        return (self.bits() >> @intCast(@backingInt(s))) & 1 != 0;
     }
 
     pub inline fn with(self: SignalSet, s: abi.Signal) SignalSet {
-        return fromBits(self.bits() | (@as(u14, 1) << @intCast(@intFromEnum(s))));
+        return fromBits(self.bits() | (@as(u14, 1) << @intCast(@backingInt(s))));
     }
 
     /// The comptime set constructor, so a mask reads as the signals in it.
     pub fn of(comptime signals: []const abi.Signal) SignalSet {
         comptime var m: u14 = 0;
-        inline for (signals) |sig| m |= @as(u14, 1) << @intCast(@intFromEnum(sig));
+        inline for (signals) |sig| m |= @as(u14, 1) << @intCast(@backingInt(sig));
         return comptime fromBits(m);
     }
 };
@@ -239,7 +239,7 @@ pub fn signalInject(fiber: *fibers.Fiber, sig: abi.Signal) void {
     // is `vm.zig`'s reason for reading it back with `@enumFromInt`. `own` is
     // six bits and `@truncate` is what stops a signal number too wide for them
     // from trapping a safe build.
-    child.gc.flags.own = @truncate(@intFromEnum(sig));
+    child.gc.flags.own = @truncate(@backingInt(sig));
     child.flags.resume_signal = true;
 }
 
@@ -297,7 +297,7 @@ pub fn signalRecord(sig: abi.Signal, message: repr.Value) void {
     var payload = message;
     if (plan == .coerce) {
         payload = wrap.fromString(raise.total(
-            pp_format.formatc("%v coerced from %s to error", .{ message, utils.signalNames[@intFromEnum(sig)] }),
+            pp_format.formatc("%v coerced from %s to error", .{ message, utils.signalNames[@backingInt(sig)] }),
             "a coerced signal's message",
         ));
     }
@@ -328,7 +328,7 @@ pub fn topLevelSignal(msg: [*]const u8) noreturn {
     // that ending the message never reaches the file and the run reads as a
     // silent exit.
     _ = c.fflush(stdio.out());
-    if (builtin.os.tag == .wasi) {
+    if (builtin.target.os.tag == .wasi) {
         c.exit(1);
     } else {
         if (!vm_state.current().sandbox_flags.intersects(vm_lifecycle.Sandbox.of(&.{"exit"}))) {
@@ -377,8 +377,8 @@ pub fn tryInit(state: *vm_state.TryState) void {
 comptime {
     // Every member's bit is its signal number, which is what makes `has` a
     // shift rather than a switch.
-    for (@typeInfo(SignalSet).@"struct".fields, 0..) |f, i| {
-        if (!std.mem.eql(u8, f.name, @typeInfo(abi.Signal).@"enum".fields[i].name))
-            @compileError("SignalSet and abi.Signal disagree at bit " ++ f.name);
+    for (@typeInfo(SignalSet).@"struct".field_names, 0..) |name, i| {
+        if (!std.mem.eql(u8, name, @typeInfo(abi.Signal).@"enum".field_names[i]))
+            @compileError("SignalSet and abi.Signal disagree at bit " ++ name);
     }
 }

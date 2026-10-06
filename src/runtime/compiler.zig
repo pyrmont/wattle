@@ -1543,7 +1543,7 @@ inline fn wrapNil() repr.Value {
 // They go into `c->lints` when the caller asked for them and are dropped
 // otherwise.
 //
-// It is not variadic. A variadic definition is out of reach anyway: Zig 0.16
+// It is not variadic. A variadic definition is out of reach anyway: Zig 0.17
 // cannot name a `va_list` on `aarch64-linux`. Nothing outside the compiler
 // front end calls this, so its argument list is an ordinary Zig tuple that the
 // compiler counts and type-checks.

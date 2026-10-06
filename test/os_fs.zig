@@ -94,7 +94,7 @@ fn theKernels(original: [:0]const u8) void {
     // for the same location.
     std.c._errno().* = 0;
     expect(fs.hostMkdir(direct_dir) == -1);
-    expect(std.c._errno().* == @intFromEnum(std.c.E.EXIST));
+    expect(std.c._errno().* == @backingInt(std.c.E.EXIST));
 
     // `chdir` moves, `getcwd` reports where.
     var inside: [path_max]u8 = undefined;

@@ -280,7 +280,7 @@ fn report(contract: Contract) void {
 fn pauseForLeakCheck() void {
     // `leaks` is a macOS tool, and WASI has neither `kill` nor a signal to
     // send.
-    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .wasi) return;
     if (std.c.getenv("WATTLE_CONTRACT_PAUSE") == null) return;
     _ = std.c.kill(std.c.getpid(), std.c.SIG.STOP);
 }

@@ -264,7 +264,7 @@
                (string/has-suffix? "/abi.zig" (d :file)))
       (put! tags "host" true))
     (when (get compiler-fixed name) (put! tags "abi" true))
-    ; A layout with a member typed out of the file's `@cImport` is the
+    ; A layout with a member typed out of the file's translation is the
     ; platform's whatever its own name is: `net.zig`'s `OptValue` holds a
     ; `struct_ip_mreq` and its bytes go to `setsockopt`.
     (let [text (get texts (string "src/" (d :file)) "")

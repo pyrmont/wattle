@@ -75,11 +75,11 @@ const CREATE_SUSPENDED: u32 = 0x4;
 
 /// The `errno` values this file tests, taken from `std.c` so that each is the
 /// platform's own.
-pub const EAGAIN: c_int = @intFromEnum(std.c.E.AGAIN);
-pub const EPERM: c_int = @intFromEnum(std.c.E.PERM);
-pub const EPIPE: c_int = @intFromEnum(std.c.E.PIPE);
+pub const EAGAIN: c_int = @backingInt(std.c.E.AGAIN);
+pub const EPERM: c_int = @backingInt(std.c.E.PERM);
+pub const EPIPE: c_int = @backingInt(std.c.E.PIPE);
 pub const EWOULDBLOCK: c_int = if (@hasField(std.c.E, "WOULDBLOCK"))
-    @intFromEnum(@field(std.c.E, "WOULDBLOCK"))
+    @backingInt(@field(std.c.E, "WOULDBLOCK"))
 else
     EAGAIN;
 
@@ -96,7 +96,7 @@ const PTHREAD_CREATE_DETACHED: c_int = 2;
 const SIGUSR1: c_int = 30;
 
 /// Whether this target is Android, whose arm is recorded rather than written.
-pub const android = builtin.abi.isAndroid();
+pub const android = builtin.target.abi.isAndroid();
 
 /// Whether this build has the interrupt, which decides whether `loop1` polls
 /// for one.
@@ -141,7 +141,7 @@ pub const rwlockType = abstract_type.define(anyopaque, .{
 const thread_supervisor_flag: u32 = 0x100;
 
 /// Whether this target takes the completion-port arms below.
-pub const windows = builtin.os.tag == .windows;
+pub const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -341,7 +341,7 @@ const ThreadedTimeout = struct {
 ///
 /// The waiter thread is two `HANDLE`s on Windows and one `pthread_t`
 /// elsewhere, so this is 48 bytes there and 40 here.
-pub const Timeout = if (builtin.os.tag == .windows) struct {
+pub const Timeout = if (builtin.target.os.tag == .windows) struct {
     when: Timestamp = 0,
     fiber: ?*fibers.Fiber = null,
     curr_fiber: ?*fibers.Fiber = null,
@@ -393,7 +393,7 @@ pub fn addtimeoutNil(sec: f64) void {
 }
 
 /// Aborts with the caller's `@src()` unless `cond`.
-pub inline fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
+pub inline fn assert(comptime where: std.lang.SourceLocation, cond: bool, comptime message: []const u8) void {
     if (!cond) exitWith(where, message);
 }
 
@@ -748,7 +748,7 @@ pub fn evPostEvent(
 
 /// Aborts, naming this file's own position. Not overridable: an embedder's own
 /// exit hook is a preprocessor facility with nothing behind it here.
-pub fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []const u8) noreturn {
+pub fn exitWith(comptime where: std.lang.SourceLocation, comptime message: []const u8) noreturn {
     const line = std.fmt.comptimePrint(
         "wattle abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
@@ -1044,7 +1044,7 @@ pub fn loop1() raise.Error!?*fibers.Fiber {
         } else if (sig == .ok or task.fiber.flags.traps.has(sig)) {
             const chan = channel.unwrap(sv);
             const event = channel.makeSupervisorEvent(
-                utils.signalNames[@intFromEnum(sig)],
+                utils.signalNames[@backingInt(sig)],
                 task.fiber,
                 chan.is_threaded,
             );
@@ -1107,7 +1107,7 @@ pub const makeStreamExt = stream.makeStreamExt;
 
 /// Reports where the allocation failed and ends the process. The caller's
 /// `@src()` is what names the site.
-pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
+pub fn outOfMemory(comptime where: std.lang.SourceLocation) noreturn {
     const line = std.fmt.comptimePrint(
         "{s}:{d} - wattle out of memory\n",
         .{ where.file, where.line },

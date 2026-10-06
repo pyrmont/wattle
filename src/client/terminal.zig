@@ -48,7 +48,7 @@ const c = @import("cabi");
 // ==========================================================================
 
 /// Whether this target is Windows, which has the console arm.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 /// The descriptors the POSIX arm reads and draws on.
 const input_fd: c_int = 0;
@@ -176,8 +176,8 @@ pub fn read(bytes: []u8) error{WouldBlock}!usize {
         const count = c.read(input_fd, bytes.ptr, bytes.len);
         if (count >= 0) return @intCast(count);
         const errno = c.errno();
-        if (errno == @intFromEnum(std.c.E.INTR)) continue;
-        if (errno == @intFromEnum(std.c.E.AGAIN)) return error.WouldBlock;
+        if (errno == @backingInt(std.c.E.INTR)) continue;
+        if (errno == @backingInt(std.c.E.AGAIN)) return error.WouldBlock;
         return 0;
     }
 }
@@ -199,7 +199,7 @@ pub fn write(bytes: []const u8) void {
         }
         const count = c.write(output_fd, rest.ptr, rest.len);
         if (count < 0) {
-            if (c.errno() == @intFromEnum(std.c.E.INTR)) continue;
+            if (c.errno() == @backingInt(std.c.E.INTR)) continue;
             return;
         }
         rest = rest[@intCast(count)..];
@@ -230,8 +230,8 @@ fn enterPosix() bool {
     raw.lflag.ICANON = false;
     raw.lflag.IEXTEN = false;
     raw.lflag.ISIG = false;
-    raw.cc[@intFromEnum(std.c.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.c.V.TIME)] = 0;
+    raw.cc[@backingInt(std.c.V.MIN)] = 1;
+    raw.cc[@backingInt(std.c.V.TIME)] = 0;
     if (std.c.tcsetattr(input_fd, .DRAIN, &raw) != 0) return false;
     saved = .{ .termios = original };
     return true;

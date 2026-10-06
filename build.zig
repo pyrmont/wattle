@@ -1,4 +1,5 @@
 const std = @import("std");
+const Translator = @import("translate_c").Translator;
 
 /// Wattle's version: the number of a release, or `DEVEL` between releases.
 ///
@@ -105,7 +106,7 @@ const BuildOptions = struct {
     /// on otherwise.
     dynamic_modules: ?bool,
     /// Null is dynamic. `executableLinkage` resolves it per target.
-    linkage: ?std.builtin.LinkMode,
+    linkage: ?std.lang.LinkMode,
     docstrings: bool,
     sourcemaps: bool,
     /// Whether the runtime has the parser and the compiler. No `-D` flag sets
@@ -220,8 +221,8 @@ const Selection = struct {
     /// them. Only a build selecting a single unnamed subsystem failed to link,
     /// which is exactly what a differential test does.
     fn any(self: Selection) bool {
-        inline for (@typeInfo(Selection).@"struct".fields) |field| {
-            if (@field(self, field.name)) return true;
+        inline for (@typeInfo(Selection).@"struct".field_names) |name| {
+            if (@field(self, name)) return true;
         }
         return false;
     }
@@ -261,7 +262,7 @@ const Selection = struct {
 pub fn wattleModule(
     dep: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) *std.Build.Module {
     const b = dep.builder;
     // **`b.option` may be declared only once per builder.** A dependent
@@ -319,7 +320,7 @@ pub fn wattleModule(
         .target = target,
         .optimize = optimize,
     });
-    configureCModule(b, wattle_module, target, opts, cfg);
+    configureCModule(wattle_module, target, opts, cfg);
     wattle_module.addImport("abi", abi_module);
     wattle_module.addImport("repr", repr_module);
     wattle_module.addImport("constants", constants_module);
@@ -347,7 +348,7 @@ pub const ExecutableOptions = struct {
     natives: []const ExecutableNative = &.{},
     /// The target and mode `dep` was instantiated with.
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 };
 
 /// A Janet program, its native modules and the runtime, as one executable.
@@ -358,7 +359,7 @@ pub const ExecutableOptions = struct {
 /// ```zig
 /// const exe = wattle.wattleExecutable(
 ///     b.dependency("wattle", .{ .target = target, .optimize = optimize }),
-///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug }),
+///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .debug }),
 ///     .{ .name = "hello", .source = b.path("main.wattle"), .target = target, .optimize = optimize,
 ///        .natives = &.{.{ .name = "greet", .root = b.path("greet.zig") }} },
 /// );
@@ -402,7 +403,7 @@ pub const WebOptions = struct {
     /// The program: a Wattle file that defines `main`.
     source: std.Build.LazyPath,
     /// The mode the runtime is built in.
-    optimize: std.builtin.OptimizeMode = .ReleaseSmall,
+    optimize: std.lang.Optimize = .small,
 };
 
 /// What a page needs to run a Wattle program, from `wattleWeb`.
@@ -439,7 +440,7 @@ pub const Web = struct {
 ///
 /// ```zig
 /// const web = wattle.wattleWeb(
-///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = false, .sourcemaps = false }),
+///     b.dependency("wattle", .{ .target = b.graph.host, .optimize = .debug, .docstrings = false, .sourcemaps = false }),
 ///     .{ .name = "hello", .source = b.path("main.wattle") },
 /// );
 /// web.install(b);
@@ -470,22 +471,22 @@ pub fn wattleWeb(host: *std.Build.Dependency, opts: WebOptions) Web {
     const make_image = b.addRunArtifact(host_side.client);
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
     make_image.addArgs(&.{ "build", "img" });
-    make_image.addFileArg(opts.source);
-    const image = make_image.addOutputFileArg(b.fmt("{s}.wimage", .{opts.name}));
+    make_image.addFileArg2(opts.source, .{});
+    const image = make_image.addOutputFileArg2(b.fmt("{s}.wimage", .{opts.name}), .{});
 
     const pack_module = b.createModule(.{
         .root_source_file = b.path("src/client/web/pack.zig"),
         .target = b.graph.host,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
-    const pack = selectBackend(b.addExecutable(.{ .name = "wattle-web-pack", .root_module = pack_module }));
+    const pack = b.addExecutable(.{ .name = "wattle-web-pack", .root_module = pack_module });
     const run_pack = b.addRunArtifact(pack);
     run_pack.setName(b.fmt("pack ({s})", .{opts.name}));
     run_pack.addArg(opts.name);
-    run_pack.addFileArg(runtime.getEmittedBin());
-    run_pack.addFileArg(image);
-    run_pack.addFileArg(b.path(web_support));
-    const files = run_pack.addOutputDirectoryArg("web");
+    run_pack.addFileArg2(runtime.getEmittedBin(), .{});
+    run_pack.addFileArg2(image, .{});
+    run_pack.addFileArg2(b.path(web_support), .{});
+    const files = run_pack.addOutputDirectoryArg2("web", .{});
     return .{
         .name = b.dupe(opts.name),
         .runtime = runtime,
@@ -534,7 +535,7 @@ fn bootHost(b: *std.Build) std.Build.ResolvedTarget {
 fn webRuntime(
     b: *std.Build,
     options: BuildOptions,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     boot_host: std.Build.ResolvedTarget,
     image_only: bool,
 ) ?*std.Build.Step.Compile {
@@ -555,12 +556,12 @@ fn webRuntime(
         .target = web_target,
         .optimize = optimize,
     });
-    configureCModule(b, web_module, web_target, web_options, web_config);
+    configureCModule(web_module, web_target, web_options, web_config);
     web_module.addImport("subsystems", g.subsystems);
     web_module.addImport("config", g.config);
     web_module.addImport("abi", g.abi);
     web_module.addImport("repr", g.repr);
-    const web = selectBackend(b.addExecutable(.{ .name = "wattle-web", .root_module = web_module }));
+    const web = b.addExecutable(.{ .name = "wattle-web", .root_module = web_module });
     web.wasi_exec_model = .reactor;
     // `_initialize` is wasi-libc's `crt1-reactor.o`, and the root has no `main`
     // for the standard library to wrap in an entry point.
@@ -583,7 +584,7 @@ const Built = struct {
     options: BuildOptions,
     config: Config,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     graph: ?RuntimeGraph,
     /// The `wattle` client, which makes an executable's image on the host.
     client: *std.Build.Step.Compile,
@@ -687,16 +688,16 @@ pub fn build(b: *std.Build) void {
     // Now the runtime object, which embeds what the generator just produced.
     const runtime_graph = makeRuntimeGraph(b, target, optimize, options, config, image_source);
     const zig_runtime = if (runtime_graph) |g|
-        selectBackend(b.addObject(.{ .name = "wattle-runtime", .root_module = g.subsystems }))
+        b.addObject(.{ .name = "wattle-runtime", .root_module = g.subsystems })
     else
         null;
 
     const static_module = makeRuntimeModule(b, target, optimize, options, config, zig_runtime);
-    const static_library = selectBackend(b.addLibrary(.{
+    const static_library = b.addLibrary(.{
         .name = "wattle",
         .linkage = .static,
         .root_module = static_module,
-    }));
+    });
     // **No header is installed, and the gap is deliberate.** What a native
     // module reaches is `api/interface.zig`'s `Runtime`, whose field types are
     // the signatures and which the compiler checks `capi.zig`'s initializer
@@ -707,11 +708,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(static_library);
 
     const shared_module = makeRuntimeModule(b, target, optimize, options, config, zig_runtime);
-    const shared_library = selectBackend(b.addLibrary(.{
+    const shared_library = b.addLibrary(.{
         .name = "wattle",
         .linkage = .dynamic,
         .root_module = shared_module,
-    }));
+    });
     // A ThreadSanitizer build produces test binaries, not distributable
     // artifacts, and it cannot produce this one: TSan gives its thread-locals
     // the initial-exec model, and `ld.lld` rejects the resulting
@@ -734,7 +735,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    configureCModule(b, client_module, target, options, config);
+    configureCModule(client_module, target, options, config);
     const client_lexicon = if (runtime_graph) |g| g.lexicon else lexiconModule(b, target, optimize);
     client_module.addImport("lexicon", client_lexicon);
     client_module.addImport("lineedit", lineeditModule(b, target, optimize, client_lexicon));
@@ -748,7 +749,7 @@ pub fn build(b: *std.Build) void {
         client_module.addImport("config", g.config);
     }
     if (options.strip) client_module.strip = true;
-    const client = selectBackend(b.addExecutable(.{ .name = "wattle", .root_module = client_module }));
+    const client = b.addExecutable(.{ .name = "wattle", .root_module = client_module });
     applyLinkage(client, options, target);
     if (target.result.os.tag != .windows and !wasm) client.rdynamic = true;
     // **A native module resolves into the client, and the client must keep the
@@ -809,7 +810,7 @@ pub fn build(b: *std.Build) void {
             bb: *std.Build,
             g: ?RuntimeGraph,
             t: std.Build.ResolvedTarget,
-            o: std.builtin.OptimizeMode,
+            o: std.lang.Optimize,
             opts: BuildOptions,
             cfg: Config,
             root: []const u8,
@@ -909,7 +910,7 @@ pub fn build(b: *std.Build) void {
             bb: *std.Build,
             g: ?RuntimeGraph,
             t: std.Build.ResolvedTarget,
-            o: std.builtin.OptimizeMode,
+            o: std.lang.Optimize,
             opts: BuildOptions,
             root: []const u8,
             name: []const u8,
@@ -925,11 +926,11 @@ pub fn build(b: *std.Build) void {
                 mod.addImport("config", graph.config);
                 mod.addImport("constants", graph.constants);
             }
-            const lib = selectBackend(bb.addLibrary(.{
+            const lib = bb.addLibrary(.{
                 .name = name,
                 .linkage = .dynamic,
                 .root_module = mod,
-            }));
+            });
             lib.linker_allow_shlib_undefined = true;
             return lib;
         }
@@ -974,7 +975,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run Wattle");
     const run_client = b.addRunArtifact(client);
     run_client.setCwd(b.path("."));
-    if (b.args) |args| run_client.addArgs(args);
+    run_client.addPassthruArgs();
     run_step.dependOn(&run_client.step);
 
     // An alias of `test/contracts`, kept because documents cite the name.
@@ -1010,7 +1011,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        configureCModule(b, module, target, options, config);
+        configureCModule(module, target, options, config);
         module.addImport("cabi", graph.cabi);
         module.addImport("config", graph.config);
         module.addImport("options", graph.selection);
@@ -1021,7 +1022,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("subsystems", graph.subsystems);
         module.addImport("lexicon", graph.lexicon);
         module.addImport("lineedit", lineeditModule(b, target, optimize, graph.lexicon));
-        const exe = selectBackend(b.addExecutable(.{ .name = "wattle-contract-test", .root_module = module }));
+        const exe = b.addExecutable(.{ .name = "wattle-contract-test", .root_module = module });
         applyLinkage(exe, options, target);
         // A contract may load the native-module fixture, and a contract that
         // registers an nfunction the runtime later names needs its own symbols
@@ -1166,7 +1167,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        configureCModule(b, wattle_module, target, options, config);
+        configureCModule(wattle_module, target, options, config);
         wattle_module.addImport("abi", graph.abi);
         wattle_module.addImport("repr", graph.repr);
         wattle_module.addImport("cabi", graph.cabi);
@@ -1182,7 +1183,7 @@ pub fn build(b: *std.Build) void {
             module.addImport("wattle", wattle_module);
             module.addImport("host", graph.host);
             module.addImport("repr", graph.repr);
-            const obj = selectBackend(b.addObject(.{ .name = "module-errors", .root_module = module }));
+            const obj = b.addObject(.{ .name = "module-errors", .root_module = module });
             obj.expect_errors = .{ .contains = case.phrase };
             module_errors_step.dependOn(&obj.step);
         }
@@ -1237,7 +1238,9 @@ pub fn build(b: *std.Build) void {
             "Build examples/native-consumer with `wattle build exe` from its info.edn and run it",
         );
         const build_exe = b.addRunArtifact(client);
-        build_exe.addArgs(&.{ "-p", b.getInstallPath(.prefix, ""), "build", "exe" });
+        build_exe.addArg("-p");
+        build_exe.addDirectoryArg2(b.graph.path(.install_prefix, ""), .{});
+        build_exe.addArgs(&.{ "build", "exe" });
         build_exe.setCwd(b.path("examples/native-consumer"));
         build_exe.setName("wattle build exe (examples/native-consumer)");
         build_exe.expectExitCode(0);
@@ -1247,7 +1250,7 @@ pub fn build(b: *std.Build) void {
         build_exe.step.dependOn(b.getInstallStep());
 
         const exe_name = if (target.result.os.tag == .windows) "hello-info.exe" else "hello-info";
-        const run_built = b.addSystemCommand(&.{b.pathJoin(&.{ b.build_root.path orelse ".", "examples/native-consumer/zig-out/bin", exe_name })});
+        const run_built = b.addSystemCommand(&.{b.pathJoin(&.{ b.root.root_dir.path orelse ".", "examples/native-consumer/zig-out/bin", exe_name })});
         run_built.expectStdOutEqual(b.fmt("consumer/greeting{s}", .{streamEol(b)}));
         run_built.expectExitCode(0);
         run_built.has_side_effects = true;
@@ -1276,7 +1279,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         });
-        configureCModule(b, module, target, options, config);
+        configureCModule(module, target, options, config);
         module.addImport("cabi", graph.cabi);
         module.addImport("config", graph.config);
         module.addImport("options", graph.selection);
@@ -1285,7 +1288,7 @@ pub fn build(b: *std.Build) void {
         module.addImport("repr", graph.repr);
         module.addImport("constants", graph.constants);
         module.addImport("subsystems", graph.subsystems);
-        const exe = selectBackend(b.addTest(.{ .name = "wattle-fuzz-test", .root_module = module }));
+        const exe = b.addTest(.{ .name = "wattle-fuzz-test", .root_module = module });
         applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         if (wasm) wasm_binaries.append(b.allocator, exe) catch @panic("OOM");
@@ -1315,7 +1318,7 @@ pub fn build(b: *std.Build) void {
     // has no runtime under it.
     const runtime_tests_step = b.step("test/runtime", "Run the in-file `test` blocks in the runtime");
     if (makeRuntimeGraph(b, target, optimize, options, config, image_source)) |graph| {
-        const exe = selectBackend(b.addTest(.{ .name = "wattle-runtime-test", .root_module = graph.subsystems }));
+        const exe = b.addTest(.{ .name = "wattle-runtime-test", .root_module = graph.subsystems });
         applyLinkage(exe, options, target);
         if (target.result.os.tag != .windows and !wasm) exe.rdynamic = true;
         installTest(b, options, exe);
@@ -1328,7 +1331,7 @@ pub fn build(b: *std.Build) void {
         // for a suite reporting `0 of 0`. Run bare, the default test runner
         // prints "All N tests passed." on every `zig build test`.
         const run = std.Build.Step.Run.create(b, "run wattle-runtime-test");
-        run.addArtifactArg(exe);
+        run.addArtifactArg2(exe, .{});
         run.setCwd(b.path("."));
         runtime_tests_step.dependOn(&run.step);
     }
@@ -1341,12 +1344,12 @@ pub fn build(b: *std.Build) void {
     var pty_tool: ?*std.Build.Step.Compile = null;
     if (!wasm) {
         const lineedit_module = lineeditModule(b, target, optimize, lexiconModule(b, target, optimize));
-        const lineedit_tests = selectBackend(b.addTest(.{ .name = "wattle-lineedit-test", .root_module = lineedit_module }));
+        const lineedit_tests = b.addTest(.{ .name = "wattle-lineedit-test", .root_module = lineedit_module });
         installTest(b, options, lineedit_tests);
         // Run bare for the same reason as `wattle-runtime-test`: the default
         // runner then prints its count.
         const run = std.Build.Step.Run.create(b, "run wattle-lineedit-test");
-        run.addArtifactArg(lineedit_tests);
+        run.addArtifactArg2(lineedit_tests, .{});
         lineedit_tests_step.dependOn(&run.step);
 
         const layout_module = b.createModule(.{
@@ -1355,7 +1358,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         layout_module.addImport("lineedit", lineedit_module);
-        const layout_tool = selectBackend(b.addExecutable(.{ .name = "wattle-layout", .root_module = layout_module }));
+        const layout_tool = b.addExecutable(.{ .name = "wattle-layout", .root_module = layout_module });
         installTest(b, options, layout_tool);
 
         // The pseudo-terminal harness `test/suite-lineedit.wattle` drives the
@@ -1368,7 +1371,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .link_libc = true,
             });
-            const tool = selectBackend(b.addExecutable(.{ .name = "wattle-pty", .root_module = pty_module }));
+            const tool = b.addExecutable(.{ .name = "wattle-pty", .root_module = pty_module });
             installTest(b, options, tool);
             pty_tool = tool;
         }
@@ -1401,14 +1404,14 @@ pub fn build(b: *std.Build) void {
     const checker_module = b.createModule(.{
         .root_source_file = b.path("res/check/wasm_imports.zig"),
         .target = b.graph.host,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
-    applyFramePointer(checker_module, options, .Debug);
-    const checker = selectBackend(b.addExecutable(.{ .name = "wasm-imports", .root_module = checker_module }));
+    applyFramePointer(checker_module, options, .debug);
+    const checker = b.addExecutable(.{ .name = "wasm-imports", .root_module = checker_module });
     const checkImports = struct {
         fn add(bb: *std.Build, tool: *std.Build.Step.Compile, binary: *std.Build.Step.Compile) *std.Build.Step {
             const run_checker = bb.addRunArtifact(tool);
-            run_checker.addFileArg(binary.getEmittedBin());
+            run_checker.addFileArg2(binary.getEmittedBin(), .{});
             return &run_checker.step;
         }
     }.add;
@@ -1431,8 +1434,8 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(consumer_step);
     examples_step.dependOn(web_step);
     {
-        const web_optimize: std.builtin.OptimizeMode =
-            if (b.user_input_options.contains("optimize") or b.release_mode != .off) optimize else .ReleaseSmall;
+        const web_optimize: std.lang.Optimize =
+            if (b.user_input_options.contains("optimize") or b.graph.release_mode != .off) optimize else .small;
         if (webRuntime(b, options, web_optimize, boot_host, options.wasm_image)) |web| {
             const web_dir: std.Build.InstallDir = .{ .custom = "web-repl" };
             const install_web = b.addInstallArtifact(web, .{ .dest_dir = .{ .override = web_dir } });
@@ -1469,7 +1472,7 @@ pub fn build(b: *std.Build) void {
         const run_native_test = b.addRunArtifact(client);
         run_native_test.setCwd(b.path("."));
         run_native_test.addArg("test/zig-native.wattle");
-        run_native_test.addFileArg(native_module.getEmittedBin());
+        run_native_test.addFileArg2(native_module.getEmittedBin(), .{});
         for (zig_side) |step| run_native_test.step.dependOn(step);
         test_step.dependOn(&run_native_test.step);
 
@@ -1480,7 +1483,7 @@ pub fn build(b: *std.Build) void {
         const run_numarray = b.addRunArtifact(client);
         run_numarray.setCwd(b.path("."));
         run_numarray.addArg("examples/native-abstract/test/numarray.wattle");
-        run_numarray.addFileArg(numarray_module.getEmittedBin());
+        run_numarray.addFileArg2(numarray_module.getEmittedBin(), .{});
         for (zig_side) |step| run_numarray.step.dependOn(step);
         test_step.dependOn(&run_numarray.step);
 
@@ -1488,7 +1491,7 @@ pub fn build(b: *std.Build) void {
         const run_url = b.addRunArtifact(client);
         run_url.setCwd(b.path("."));
         run_url.addArg("examples/native-function/test/url.wattle");
-        run_url.addFileArg(url_module.getEmittedBin());
+        run_url.addFileArg2(url_module.getEmittedBin(), .{});
         for (zig_side) |step| run_url.step.dependOn(step);
         test_step.dependOn(&run_url.step);
 
@@ -1498,7 +1501,7 @@ pub fn build(b: *std.Build) void {
         const run_digest = b.addRunArtifact(client);
         run_digest.setCwd(b.path("."));
         run_digest.addArg("examples/native-events/test/digest.wattle");
-        run_digest.addFileArg(digest_module.getEmittedBin());
+        run_digest.addFileArg2(digest_module.getEmittedBin(), .{});
         for (zig_side) |step| run_digest.step.dependOn(step);
         test_step.dependOn(&run_digest.step);
 
@@ -1506,9 +1509,9 @@ pub fn build(b: *std.Build) void {
         const run_refused = b.addRunArtifact(client);
         run_refused.setCwd(b.path("."));
         run_refused.addArg("test/zig-native-refused.wattle");
-        run_refused.addFileArg(wrong_bits_module.getEmittedBin());
-        run_refused.addFileArg(wrong_zig_module.getEmittedBin());
-        run_refused.addFileArg(wrong_api_module.getEmittedBin());
+        run_refused.addFileArg2(wrong_bits_module.getEmittedBin(), .{});
+        run_refused.addFileArg2(wrong_zig_module.getEmittedBin(), .{});
+        run_refused.addFileArg2(wrong_api_module.getEmittedBin(), .{});
         for (zig_side) |step| run_refused.step.dependOn(step);
         test_step.dependOn(&run_refused.step);
 
@@ -1541,7 +1544,7 @@ pub fn build(b: *std.Build) void {
             run_suite.setCwd(b.path("."));
             run_suite.addArg(suite.path);
             if (suite.pty and config.lineedit) {
-                if (pty_tool) |tool| run_suite.addArtifactArg(tool);
+                if (pty_tool) |tool| run_suite.addArtifactArg2(tool, .{});
             }
             for (suites_after) |step| run_suite.step.dependOn(step);
             test_step.dependOn(&run_suite.step);
@@ -1556,7 +1559,7 @@ pub fn build(b: *std.Build) void {
 /// with `lineedit` false references none of it. `lexicon` is the `lexicon`
 /// module of the runtime graph it is compiled with, or one of its own where
 /// there is no graph.
-fn lineeditModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, lexicon: *std.Build.Module) *std.Build.Module {
+fn lineeditModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, lexicon: *std.Build.Module) *std.Build.Module {
     const module = b.createModule(.{
         .root_source_file = b.path("src/client/lineedit.zig"),
         .target = target,
@@ -1567,7 +1570,7 @@ fn lineeditModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
 }
 
 /// The lexical tables of source, rooted at `src/lexicon.zig`.
-fn lexiconModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+fn lexiconModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("src/lexicon.zig"),
         .target = target,
@@ -1583,7 +1586,7 @@ fn nativeCompile(
     b: *std.Build,
     graph: ?RuntimeGraph,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     options: BuildOptions,
     cfg: Config,
     root: std.Build.LazyPath,
@@ -1595,13 +1598,13 @@ fn nativeCompile(
         .target = target,
         .optimize = optimize,
     });
-    configureCModule(b, wattle_module, target, options, cfg);
+    configureCModule(wattle_module, target, options, cfg);
     const mod = b.createModule(.{
         .root_source_file = root,
         .target = target,
         .optimize = optimize,
     });
-    configureCModule(b, mod, target, options, cfg);
+    configureCModule(mod, target, options, cfg);
     if (graph) |g| {
         wattle_module.addImport("abi", g.abi);
         wattle_module.addImport("repr", g.repr);
@@ -1621,12 +1624,12 @@ fn nativeCompile(
         }
         mod.addImport("wattle", wattle_module);
     }
-    if (static_name) |_| return selectBackend(b.addObject(.{ .name = name, .root_module = mod }));
-    const lib = selectBackend(b.addLibrary(.{
+    if (static_name) |_| return b.addObject(.{ .name = name, .root_module = mod });
+    const lib = b.addLibrary(.{
         .name = name,
         .linkage = .dynamic,
         .root_module = mod,
-    }));
+    });
     lib.linker_allow_shlib_undefined = true;
     return lib;
 }
@@ -1643,9 +1646,9 @@ fn coreImage(
     const boot_module = b.createModule(.{
         .root_source_file = b.path("src/boot/boot.zig"),
         .target = boot_host,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
-    configureCModule(b, boot_module, boot_host, options, boot_config);
+    configureCModule(boot_module, boot_host, options, boot_config);
     // The bootstrap compiler is a build-time tool that runs on the host, not a
     // thing under test, and it is built for the host even when -Dtarget names
     // something else. ThreadSanitizer is dropped from it for that reason and
@@ -1668,7 +1671,7 @@ fn coreImage(
     // `bootstrap = true`, because `corefn.zig` reads that to select which
     // registration shape to emit and the two halves of one build must not
     // disagree about it.
-    const boot_graph = makeRuntimeGraph(b, boot_host, .Debug, options, boot_config, null);
+    const boot_graph = makeRuntimeGraph(b, boot_host, .debug, options, boot_config, null);
     if (boot_graph) |g| {
         boot_module.addImport("subsystems", g.subsystems);
         boot_module.addImport("config", g.config);
@@ -1676,7 +1679,7 @@ fn coreImage(
         boot_module.addImport("repr", g.repr);
         boot_module.addImport("constants", g.constants);
     }
-    const boot = selectBackend(b.addExecutable(.{ .name = "wattle-boot", .root_module = boot_module }));
+    const boot = b.addExecutable(.{ .name = "wattle-boot", .root_module = boot_module });
 
     // The generator writes the image to a path it is handed rather than to
     // stdout. The output is a marshalled byte stream, and a byte stream through
@@ -1685,7 +1688,7 @@ fn coreImage(
     generate_image.setCwd(b.path("."));
     generate_image.addArg(".");
     generate_image.addArg("image-out");
-    const image = generate_image.addOutputFileArg("wattle-image.bin");
+    const image = generate_image.addOutputFileArg2("wattle-image.bin", .{});
     generate_image.addFileInput(b.path("src/boot/boot.wattle"));
     generate_image.addFileInput(b.path("src/gum/args.wattle"));
     return image;
@@ -1708,14 +1711,14 @@ fn hostBuilt(
     var cfg = bootConfig(options, target, host);
     cfg.bootstrap = false;
     cfg.dynamic_modules = true;
-    const graph = makeRuntimeGraph(b, host, .Debug, options, cfg, image_source) orelse
+    const graph = makeRuntimeGraph(b, host, .debug, options, cfg, image_source) orelse
         @panic("wattleExecutable: a configuration that selects no subsystem has no runtime to link");
     const module = b.createModule(.{
         .root_source_file = b.path("src/client/cli.zig"),
         .target = host,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
-    configureCModule(b, module, host, options, cfg);
+    configureCModule(module, host, options, cfg);
     module.addImport("subsystems", graph.subsystems);
     module.addImport("host", graph.host);
     module.addImport("abi", graph.abi);
@@ -1724,8 +1727,8 @@ fn hostBuilt(
     module.addImport("config", graph.config);
     module.addImport("cabi", graph.cabi);
     module.addImport("lexicon", graph.lexicon);
-    module.addImport("lineedit", lineeditModule(b, host, .Debug, graph.lexicon));
-    const client = selectBackend(b.addExecutable(.{ .name = "wattle-host", .root_module = module }));
+    module.addImport("lineedit", lineeditModule(b, host, .debug, graph.lexicon));
+    const client = b.addExecutable(.{ .name = "wattle-host", .root_module = module });
     // The two settings `build()` gives the client, for the reason given there:
     // a native module resolves into the client's symbol table.
     client.rdynamic = true;
@@ -1737,7 +1740,7 @@ fn hostBuilt(
         .options = options,
         .config = cfg,
         .target = host,
-        .optimize = .Debug,
+        .optimize = .debug,
         .graph = graph,
         .client = client,
     };
@@ -1757,7 +1760,7 @@ fn buildExecutable(
         .target = target_side.target,
         .optimize = target_side.optimize,
     });
-    configureCModule(b, module, target_side.target, target_side.options, target_side.config);
+    configureCModule(module, target_side.target, target_side.options, target_side.config);
     const graph = target_side.graph.?;
     module.addImport("subsystems", graph.subsystems);
     module.addImport("host", graph.host);
@@ -1842,15 +1845,15 @@ fn buildExecutable(
     const make_image = hb.addRunArtifact(host_side.client);
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
     make_image.addArgs(&.{ "build", "img", "-l" });
-    make_image.addFileArg(preload_files.add("preload.wattle", preload.items));
-    make_image.addFileArg(opts.source);
-    const image = make_image.addOutputFileArg(b.fmt("{s}.wimage", .{opts.name}));
+    make_image.addFileArg2(preload_files.add("preload.wattle", preload.items), .{});
+    make_image.addFileArg2(opts.source, .{});
+    const image = make_image.addOutputFileArg2(b.fmt("{s}.wimage", .{opts.name}), .{});
 
     module.addAnonymousImport("executable_image", .{ .root_source_file = image });
     module.addAnonymousImport("executable_natives", .{
         .root_source_file = b.addWriteFiles().add("natives.zig", table.items),
     });
-    const exe = selectBackend(b.addExecutable(.{ .name = opts.name, .root_module = module }));
+    const exe = b.addExecutable(.{ .name = opts.name, .root_module = module });
     applyLinkage(exe, target_side.options, target_side.target);
     return exe;
 }
@@ -1858,7 +1861,10 @@ fn buildExecutable(
 /// Installs every entry of `src/` under `<dir>/src`.
 fn installSource(b: *std.Build, dir: std.Build.InstallDir) void {
     const io = b.graph.io;
-    var src = b.build_root.handle.openDir(io, "src", .{ .iterate = true }) catch |err| {
+    // The configure cache reruns this function only when `src/` gains, loses
+    // or renames an entry.
+    b.dependOnDirectoryContents(b.path("src"));
+    var src = b.root.root_dir.handle.openDir(io, "src", .{ .iterate = true }) catch |err| {
         std.debug.panic("build.zig: cannot open src/: {t}", .{err});
     };
     defer src.close(io);
@@ -1878,7 +1884,8 @@ fn installSource(b: *std.Build, dir: std.Build.InstallDir) void {
 /// package a consumer fetches or the copy installed under `share/wattle`, which
 /// do not.
 fn hasTests(b: *std.Build) bool {
-    b.build_root.handle.access(b.graph.io, "test", .{}) catch return false;
+    b.dependOnDirectoryContents(b.path("."));
+    b.root.root_dir.handle.access(b.graph.io, "test", .{}) catch return false;
     return true;
 }
 
@@ -1903,7 +1910,10 @@ fn checkAliasesUsed(b: *std.Build) void {
 
 fn checkAliasesIn(b: *std.Build, path: []const u8) void {
     const io = b.graph.io;
-    var dir = b.build_root.handle.openDir(io, path, .{ .iterate = true }) catch |err| {
+    // The directory and each file read below are configure dependencies, so a
+    // new, removed or edited file reruns the check.
+    b.dependOnDirectoryContents(b.path(path));
+    var dir = b.root.root_dir.handle.openDir(io, path, .{ .iterate = true }) catch |err| {
         std.debug.panic("build.zig: cannot open {s}/: {t}", .{ path, err });
     };
     defer dir.close(io);
@@ -1920,7 +1930,8 @@ fn checkAliasesIn(b: *std.Build, path: []const u8) void {
 }
 
 fn checkAliasesInFile(b: *std.Build, path: []const u8) void {
-    const text = b.build_root.handle.readFileAlloc(
+    b.dependOnFileContents(b.path(path));
+    const text = b.root.root_dir.handle.readFileAlloc(
         b.graph.io,
         path,
         b.allocator,
@@ -2051,14 +2062,18 @@ fn checkContractsListed(b: *std.Build) void {
     const exempt = [_][]const u8{ "contracts.zig", "harness.zig", "fuzz.zig", "expect.zig" };
 
     const io = b.graph.io;
-    const driver = b.build_root.handle.readFileAlloc(
+    // The driver's text and the entries of `test/` are configure dependencies,
+    // so adding a contract or editing the driver reruns the check.
+    b.dependOnFileContents(b.path("test/contracts.zig"));
+    b.dependOnDirectoryContents(b.path("test"));
+    const driver = b.root.root_dir.handle.readFileAlloc(
         io,
         "test/contracts.zig",
         b.allocator,
         std.Io.Limit.limited(1 << 20),
     ) catch |err| std.debug.panic("build.zig: cannot read test/contracts.zig: {t}", .{err});
 
-    var dir = b.build_root.handle.openDir(io, "test", .{ .iterate = true }) catch |err| {
+    var dir = b.root.root_dir.handle.openDir(io, "test", .{ .iterate = true }) catch |err| {
         std.debug.panic("build.zig: cannot open test/: {t}", .{err});
     };
     defer dir.close(io);
@@ -2248,7 +2263,7 @@ fn readOptions(b: *std.Build) BuildOptions {
         .nanbox = b.option(bool, "nanbox", "Use the NaN-boxed value representation: unset takes the target's default, true forces NaN boxing on any target, false selects the tagged layout"),
         .nanbox_pointer_shift = pointer_shift,
         .dynamic_modules = b.option(bool, "dynamic-modules", "Enable dynamic native modules: unset enables them except on WASI and under -Dlinkage=static on a musl target"),
-        .linkage = b.option(std.builtin.LinkMode, "linkage", "Link the executables dynamically (the default) or statically. A dynamic musl executable needs /lib/ld-musl-<arch>.so.1 at run time; a static one loads no native module"),
+        .linkage = b.option(std.lang.LinkMode, "linkage", "Link the executables dynamically (the default) or statically. A dynamic musl executable needs /lib/ld-musl-<arch>.so.1 at run time; a static one loads no native module"),
         .docstrings = b.option(bool, "docstrings", "Include documentation strings") orelse true,
         .sourcemaps = b.option(bool, "sourcemaps", "Include source maps") orelse true,
         .wasm_image = b.option(bool, "wasm-image", "Build examples/web-repl as a runtime that loads an image: no parser, compiler, docstrings or source maps, and an entry point that runs an image") orelse false,
@@ -2303,14 +2318,20 @@ fn readOptions(b: *std.Build) BuildOptions {
 /// the commit, and `--match=NONE` excludes every tag, so a tagged commit still
 /// gives a hash. A build root without `.git`, or a `git` that fails, gives
 /// `DEVEL` alone.
+///
+/// In a build root with `.git`, this function poisons the configure cache, so
+/// every build reruns `build.zig`. The output of `git describe --dirty` depends
+/// on every tracked file, which the cache cannot track.
 fn versionLabel(b: *std.Build) []const u8 {
     if (!std.mem.eql(u8, version, "DEVEL")) return version;
-    b.build_root.handle.access(b.graph.io, ".git", .{}) catch return version;
+    b.dependOnDirectoryContents(b.path("."));
+    b.root.root_dir.handle.access(b.graph.io, ".git", .{}) catch return version;
+    b.graph.poisonCache();
     var code: u8 = undefined;
     const argv = [_][]const u8{
         "git",
         "-C",
-        b.build_root.path orelse ".",
+        b.root.root_dir.path orelse ".",
         "describe",
         "--always",
         "--dirty",
@@ -2440,8 +2461,8 @@ const Config = struct {
     ///     this build has no `-D` for, so they are pinned on.
     ///
     /// `JANET_PLAN9` was the fourth and is the one that improves by moving: it
-    /// becomes `builtin.os.tag == .plan9` at the call site, false for every
-    /// target built here and correct for the one it names.
+    /// becomes `builtin.target.os.tag == .plan9` at the call site, false for
+    /// every target built here and correct for the one it names.
     spawn: bool = true,
     symlinks: bool = true,
     locales: bool = true,
@@ -2455,7 +2476,7 @@ const Config = struct {
     /// configuration could compile. `-Dfiber-stack-shuffle=true` is in the
     /// acceptance matrix as a build entry for that reason.
     ///
-    /// Not wired to `builtin.mode == .Debug`: that would reallocate the fiber
+    /// Not wired to `builtin.mode == .debug`: that would reallocate the fiber
     /// stack on every frame push in every Debug build, which is not what a
     /// Debug build is for.
     debug: bool = false,
@@ -2616,7 +2637,7 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
 
 /// The link mode for the executables on `target`, or null for Zig's default.
 /// Zig links musl statically unless told otherwise, so musl gets `.dynamic`.
-fn executableLinkage(options: BuildOptions, target: std.Build.ResolvedTarget) ?std.builtin.LinkMode {
+fn executableLinkage(options: BuildOptions, target: std.Build.ResolvedTarget) ?std.lang.LinkMode {
     if (target.result.cpu.arch.isWasm()) return null;
     if (options.linkage) |mode| return mode;
     return if (target.result.isMuslLibC()) .dynamic else null;
@@ -2682,8 +2703,9 @@ fn bootConfig(
 /// announces it.
 fn makeConfigModule(b: *std.Build, cfg: Config) *std.Build.Module {
     const step = b.addOptions();
-    inline for (@typeInfo(Config).@"struct".fields) |field| {
-        step.addOption(field.type, field.name, @field(cfg, field.name));
+    const info = @typeInfo(Config).@"struct";
+    inline for (info.field_names, info.field_types) |name, T| {
+        step.addOption(T, name, @field(cfg, name));
     }
     return step.createModule();
 }
@@ -2691,31 +2713,24 @@ fn makeConfigModule(b: *std.Build, cfg: Config) *std.Build.Module {
 fn makeCModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     options: BuildOptions,
     cfg: Config,
 ) *std.Build.Module {
     const module = b.createModule(.{ .target = target, .optimize = optimize });
-    configureCModule(b, module, target, options, cfg);
+    configureCModule(module, target, options, cfg);
     return module;
 }
 
 fn configureCModule(
-    b: *std.Build,
     module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     options: BuildOptions,
     cfg: Config,
 ) void {
-    // Two include paths, one per tier that holds a header: the three subsystem
-    // translations `os/abi.h`, `net/abi.h` and `filewatch/abi.h` are runtime
-    // files, and the `wattle_features.h` all three of them open with is the
-    // host's.
-    module.addIncludePath(b.path("src/runtime"));
-    module.addIncludePath(b.path("src/host"));
     module.linkSystemLibrary("c", .{});
     applySanitizers(module, options);
-    applyFramePointer(module, options, module.optimize orelse .Debug);
+    applyFramePointer(module, options, module.optimize orelse .debug);
     linkPlatformLibraries(module, target.result.os.tag, cfg.single_threaded);
 }
 
@@ -2746,9 +2761,9 @@ fn configureCModule(
 /// of magnitude, and the paths it covers -- the threaded-abstract refcount and
 /// the event loop -- are exercised by two contracts rather than by all of them.
 fn applySanitizers(module: *std.Build.Module, options: BuildOptions) void {
-    module.sanitize_c = switch (module.optimize orelse .Debug) {
-        .Debug, .ReleaseSafe => .full,
-        .ReleaseFast, .ReleaseSmall => .off,
+    module.sanitize_c = switch (module.optimize orelse .debug) {
+        .debug, .safe => .full,
+        .fast, .small => .off,
     };
     if (options.sanitize_thread) module.sanitize_thread = true;
 }
@@ -2767,37 +2782,15 @@ fn applySanitizers(module: *std.Build.Module, options: BuildOptions) void {
 fn applyFramePointer(
     module: *std.Build.Module,
     options: BuildOptions,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) void {
-    module.omit_frame_pointer = options.omit_frame_pointer orelse (optimize == .ReleaseFast);
-}
-
-/// Returns `compile` after selecting the LLVM backend for it where its root
-/// module targets x86-64 in Debug.
-///
-/// Debug on x86-64 defaults to Zig's self-hosted backend, and Zig 0.16.0's
-/// reads the second stack-passed `f64` parameter of a `callconv(.c)` function
-/// from `xmm0` rather than from its stack slot. A Zig built with assertions
-/// aborts compiling the same function instead. `sevenThenPairOnTheStack` in
-/// `test/ffi_core.zig`, compiled on its own, reproduces it. Reported as Zig
-/// issue #36038 on Codeberg and fixed on master by #36136, after 0.16.0.
-/// Every other target and optimize mode already uses LLVM, so the setting
-/// changes nothing there.
-///
-/// Remove this once the Zig version the build requires carries the fix.
-fn selectBackend(compile: *std.Build.Step.Compile) *std.Build.Step.Compile {
-    const module = compile.root_module;
-    const target = module.resolved_target orelse return compile;
-    if (target.result.cpu.arch == .x86_64 and (module.optimize orelse .Debug) == .Debug) {
-        compile.use_llvm = true;
-    }
-    return compile;
+    module.omit_frame_pointer = options.omit_frame_pointer orelse (optimize == .fast);
 }
 
 fn makeRuntimeModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     options: BuildOptions,
     cfg: Config,
     zig_runtime: ?*std.Build.Step.Compile,
@@ -2972,6 +2965,80 @@ const RuntimeGraph = struct {
     lexicon: *std.Build.Module,
 };
 
+/// The host headers translated for one graph, one module each.
+///
+/// `translateHostHeaders` returns this type and `makeRuntimeGraph` reads it.
+/// A field is null on a target where translate-c cannot read the header and
+/// no file analysed for that target imports it: `<pthread.h>` on Windows, and
+/// `<pthread.h>` and `net/abi.h` on wasm.
+const HostHeaders = struct {
+    filewatch: *std.Build.Module,
+    locks: ?*std.Build.Module,
+    net: ?*std.Build.Module,
+    os: *std.Build.Module,
+    pthread: ?*std.Build.Module,
+    stat: *std.Build.Module,
+    stdio: *std.Build.Module,
+};
+
+/// Returns the module translate-c produces from `header` for `target`, named
+/// `name`.
+///
+/// `header` is read with `src/runtime` and `src/host` on the include path, the
+/// directories of the four hand-written headers.
+fn translateHeader(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    options: BuildOptions,
+    name: []const u8,
+    header: std.Build.LazyPath,
+) *std.Build.Module {
+    const translator: Translator = .init(b.dependency("translate_c", .{}), .{
+        .name = name,
+        .c_source_file = header,
+        .target = target,
+        .optimize = optimize,
+    });
+    translator.addIncludePath(b.path("src/runtime"));
+    translator.addIncludePath(b.path("src/host"));
+    // The runtime is linked into a shared library, and ELF shared objects
+    // require position-independent code.
+    translator.mod.pic = true;
+    applyFramePointer(translator.mod, options, optimize);
+    return translator.mod;
+}
+
+/// Returns the translations of the seven host headers for `target`.
+///
+/// The three subsystem headers are translated from their files under
+/// `src/runtime`. The four libc headers are reached through a one-line
+/// header written into the cache, so that the tree's hand-written headers stay
+/// the four it has.
+fn translateHostHeaders(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    options: BuildOptions,
+) HostHeaders {
+    const windows = target.result.os.tag == .windows;
+    const wasm = target.result.cpu.arch.isWasm();
+    const headers = b.addWriteFiles();
+    const locks = headers.add("wattle_locks.h", "#include \"wattle_features.h\"\n#include <pthread.h>\n");
+    const pthread = headers.add("wattle_pthread.h", "#include <pthread.h>\n");
+    const stat = headers.add("wattle_stat.h", "#include \"wattle_features.h\"\n#include <sys/stat.h>\n");
+    const stdio = headers.add("wattle_stdio.h", "#include <stdio.h>\n");
+    return .{
+        .filewatch = translateHeader(b, target, optimize, options, "c_filewatch", b.path("src/runtime/filewatch/abi.h")),
+        .locks = if (windows or wasm) null else translateHeader(b, target, optimize, options, "c_locks", locks),
+        .net = if (wasm) null else translateHeader(b, target, optimize, options, "c_net", b.path("src/runtime/net/abi.h")),
+        .os = translateHeader(b, target, optimize, options, "c_os", b.path("src/runtime/os/abi.h")),
+        .pthread = if (windows or wasm) null else translateHeader(b, target, optimize, options, "c_pthread", pthread),
+        .stat = translateHeader(b, target, optimize, options, "c_stat", stat),
+        .stdio = translateHeader(b, target, optimize, options, "c_stdio", stdio),
+    };
+}
+
 /// Builds the graph for one configuration.
 ///
 /// `cfg` is what the graph is compiled under: `resolveConfig` for `-Dtarget`,
@@ -2980,7 +3047,7 @@ const RuntimeGraph = struct {
 fn makeRuntimeGraph(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     options: BuildOptions,
     cfg: Config,
     image_source: ?std.Build.LazyPath,
@@ -2989,12 +3056,13 @@ fn makeRuntimeGraph(
     if (!sel.any()) return null;
 
     // What the build set, as comptime constants rather than as macros a
-    // `@cImport` is asked about. Created first because the subsystems select
+    // translation is asked about. Created first because the subsystems select
     // the value representation and the event-loop backend from it.
     //
-    // **One owner per type.** Two `@cImport` blocks over the same header
-    // produce distinct, incompatible types -- a `pthread_attr_t` from one is
-    // not the one the other holds. `host.zig` is that single owner for the
+    // **One owner per type.** Two translations of the same header produce
+    // distinct, incompatible types -- a `pthread_attr_t` from one is not the
+    // one the other holds. `translateHostHeaders` makes one translation of
+    // each header per graph, and the modules that import it share it. `host.zig` is that single owner for the
     // pthread types and it is Zig, which is the stronger form of the same
     // rule. The three host translations under `os/`, `net/` and `filewatch/`
     // each keep what they declare inside one subsystem for the same reason.
@@ -3041,6 +3109,11 @@ fn makeRuntimeGraph(
     host_module.link_libc = true;
     applyFramePointer(host_module, options, optimize);
 
+    // The host headers, each translated once for this graph. A module that
+    // imports a translation is given it by name below.
+    const headers = translateHostHeaders(b, target, optimize, options);
+    if (headers.pthread) |translation| host_module.addImport("c_pthread", translation);
+
     // The constants, opcodes and flags, owned by Zig. Its own module because
     // the bootstrap, the client and the runtime all spell them.
     const constants_module = b.createModule(.{
@@ -3066,7 +3139,8 @@ fn makeRuntimeGraph(
         .optimize = optimize,
         .pic = true,
     });
-    configureCModule(b, cabi_module, target, options, cfg);
+    configureCModule(cabi_module, target, options, cfg);
+    cabi_module.addImport("c_stdio", headers.stdio);
     cabi_module.addImport("config", config_module);
     cabi_module.addImport("host", host_module);
     cabi_module.addImport("repr", repr_module);
@@ -3081,7 +3155,12 @@ fn makeRuntimeGraph(
         // position independent, so omitting this only fails on ELF targets.
         .pic = true,
     });
-    configureCModule(b, module, target, options, cfg);
+    configureCModule(module, target, options, cfg);
+    module.addImport("c_filewatch", headers.filewatch);
+    if (headers.locks) |translation| module.addImport("c_locks", translation);
+    if (headers.net) |translation| module.addImport("c_net", translation);
+    module.addImport("c_os", headers.os);
+    module.addImport("c_stat", headers.stat);
     module.addImport("cabi", cabi_module);
     module.addImport("host", host_module);
     module.addImport("abi", abi_module);
@@ -3117,17 +3196,22 @@ fn makeRuntimeGraph(
     // calls it cannot make by import go through `interface.rt` instead. It
     // carries both arms and picks at comptime on `config.native_module`.
 
-    // **The three host translations are not modules.** `os/abi.zig`,
+    // **The three host-header files are not modules.** `os/abi.zig`,
     // `net/abi.zig` and `filewatch/abi.zig` each sit beside the hand-written
-    // `.h` they translate and are reached by path from inside the subsystem
-    // that owns them -- one importer for `filewatch`, two for `net`, six for
-    // `os`, all within the subtree. A module name buys nothing once the file
-    // sits where its callers are.
+    // `.h` whose translation they import, and are reached by path from inside
+    // the subsystem that owns them -- one importer for `filewatch`, two for
+    // `net`, six for `os`, all within the subtree. A module name buys nothing
+    // once the file sits where its callers are. The translation itself is a
+    // module, because translate-c produces it as a build step:
+    // `translateHostHeaders` makes `c_os`, `c_net` and `c_filewatch`, and the
+    // subsystems module imports them by name.
     //
     // A path import inherits the importing module's settings, so the
-    // subsystems module's `.pic` covers them -- **checked on
+    // subsystems module's `.pic` covers the three files -- **checked on
     // `x86_64-linux-gnu` rather than inferred**, since that is where getting
-    // it wrong fails, and it fails at link rather than at compile.
+    // it wrong fails, and it fails at link rather than at compile. A
+    // translation module inherits nothing, so `translateHeader` sets `.pic` on
+    // each.
 
     const module_config = makeConfigModule(b, blk: {
         var module_cfg = cfg;
@@ -3158,8 +3242,8 @@ fn makeRuntimeGraph(
 /// nothing announces it.
 fn makeSelectionModule(b: *std.Build, sel: Selection) *std.Build.Module {
     const step = b.addOptions();
-    inline for (@typeInfo(Selection).@"struct".fields) |field| {
-        step.addOption(bool, field.name, @field(sel, field.name));
+    inline for (@typeInfo(Selection).@"struct".field_names) |name| {
+        step.addOption(bool, name, @field(sel, name));
     }
     return step.createModule();
 }

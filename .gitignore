@@ -1,6 +1,7 @@
 # Zig
 .zig-cache
 zig-out
+zig-pkg
 
 # The cross-build prefix the Linux recipe in test/README.md installs into
 /xbuild

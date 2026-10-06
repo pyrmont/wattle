@@ -397,6 +397,14 @@
   (and (any? (map #(string/has-prefix? (string $ "/") path) src-dirs))
        (not (outside-runtime-root path))))
 
+(def- build-dirs
+  """The directories `zig build` writes, which `zig-files` does not enter.
+
+  `zig-pkg` is where `zig build` keeps a copy of each package a project
+  depends on, so an example built with its own `zig build` has a copy of the
+  translate-c package and Aro under it. None of the three is source."""
+  #{".zig-cache" "zig-out" "zig-pkg"})
+
 (defn zig-files
   "Every `.zig` file under `dir`, sorted, as repository-relative paths."
   [dir]
@@ -405,7 +413,7 @@
     (each entry (sort (os/dir d))
       (def path (string d "/" entry))
       (case (os/stat path :mode)
-        :directory (walk path)
+        :directory (unless (get build-dirs entry) (walk path))
         :file (when (string/has-suffix? ".zig" entry) (array/push! out path)))))
   (walk dir)
   out)

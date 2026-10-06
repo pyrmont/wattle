@@ -335,30 +335,31 @@ comptime {
     // either one in a field's signature is a shape the two compilations would
     // agree on only by accident. Both are compile errors in an `extern fn`,
     // and a function pointer type is not checked that way.
-    for (@typeInfo(Runtime).@"struct".fields) |field| {
-        if (std.mem.eql(u8, field.name, "size")) {
-            if (field.type != usize) @compileError("`size` must be a `usize`");
+    const info = @typeInfo(Runtime).@"struct";
+    for (info.field_names, info.field_types) |name, F| {
+        if (std.mem.eql(u8, name, "size")) {
+            if (F != usize) @compileError("`size` must be a `usize`");
             continue;
         }
-        const p = switch (@typeInfo(field.type)) {
+        const p = switch (@typeInfo(F)) {
             .pointer => |p| p,
-            else => @compileError("`" ++ field.name ++ "` is not a function pointer"),
+            else => @compileError("`" ++ name ++ "` is not a function pointer"),
         };
-        if (p.size != .one or !p.is_const) @compileError(
-            "`" ++ field.name ++ "` must be a `*const fn (...)`",
+        if (p.size != .one or !p.attrs.@"const") @compileError(
+            "`" ++ name ++ "` must be a `*const fn (...)`",
         );
         const f = switch (@typeInfo(p.child)) {
             .@"fn" => |f| f,
-            else => @compileError("`" ++ field.name ++ "` does not point at a function"),
+            else => @compileError("`" ++ name ++ "` does not point at a function"),
         };
-        if (!std.meta.eql(f.calling_convention, std.builtin.CallingConvention.c)) @compileError(
-            "`" ++ field.name ++ "` is not `callconv(.c)`",
+        if (!std.meta.eql(f.attrs.@"callconv", std.lang.CallingConvention.c)) @compileError(
+            "`" ++ name ++ "` is not `callconv(.c)`",
         );
-        assertCrossable(field.name, f.return_type orelse
-            @compileError("`" ++ field.name ++ "` has a generic return"));
-        for (f.params) |param| {
-            assertCrossable(field.name, param.type orelse
-                @compileError("`" ++ field.name ++ "` has a generic parameter"));
+        assertCrossable(name, f.return_type orelse
+            @compileError("`" ++ name ++ "` has a generic return"));
+        for (f.param_types) |param| {
+            assertCrossable(name, param orelse
+                @compileError("`" ++ name ++ "` has a generic parameter"));
         }
     }
 }

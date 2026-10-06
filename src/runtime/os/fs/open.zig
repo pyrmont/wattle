@@ -49,7 +49,7 @@ const stream_writable: u32 = 0x400;
 
 /// Whether this target takes the `CreateFileA` arm rather than the `open`
 /// one.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Types

@@ -216,7 +216,7 @@ pub const wait_unknown: i32 = 3;
 
 /// Whether this target takes the `CreateProcess` arm rather than the
 /// `posix_spawn` one.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -638,11 +638,11 @@ pub fn wait(pid: i64, val: *i32) i32 {
         return wait_exited;
     }
     if (std.c.W.IFSTOPPED(bits)) {
-        val.* = @intCast(@intFromEnum(std.c.W.STOPSIG(bits)));
+        val.* = @intCast(@backingInt(std.c.W.STOPSIG(bits)));
         return wait_stopped;
     }
     if (std.c.W.IFSIGNALED(bits)) {
-        val.* = @intCast(@intFromEnum(std.c.W.TERMSIG(bits)));
+        val.* = @intCast(@backingInt(std.c.W.TERMSIG(bits)));
         return wait_signaled;
     }
     val.* = status;
@@ -1629,7 +1629,7 @@ fn spawnWindows(
             null,
         );
         if (msgbuf[0] == 0) {
-            _ = std.fmt.bufPrintZ(&msgbuf, "{d}", .{cp_error_code}) catch unreachable;
+            _ = std.mem.printSentinel(&msgbuf, "{d}", .{cp_error_code}, 0) catch unreachable;
         }
         // The system message ends in a newline; cut the line short at it.
         var i: usize = 0;

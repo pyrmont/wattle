@@ -137,7 +137,7 @@ pub fn beginThreaded(v: *vm_state.Vm, atype: *const abi.AbstractType, size: usiz
     )));
 
     v.gc.next_collection +%= size +% abi.abstract_payload;
-    header.gc.flags = .{ .type = @intFromEnum(gc_alloc.MemoryType.threaded_abstract) };
+    header.gc.flags = .{ .type = @backingInt(gc_alloc.MemoryType.threaded_abstract) };
     // Clear the union before storing the refcount into it: the address
     // sanitizers read the whole word, so a partial write is an uninitialised
     // read.
@@ -238,7 +238,7 @@ pub fn threaded(atype: *const abi.AbstractType, size: usize) *anyopaque {
 /// `head` is the header and `mtype` the type. The or is over `flags.type`, the
 /// type's own byte, rather than over the whole word.
 inline fn gcSetType(head: *abi.AbstractHead, mtype: gc_alloc.MemoryType) void {
-    head.gc.flags.type |= @intFromEnum(mtype);
+    head.gc.flags.type |= @backingInt(mtype);
 }
 
 /// Returns a threaded abstract's refcount field.

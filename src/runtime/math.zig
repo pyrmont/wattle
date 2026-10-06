@@ -42,7 +42,7 @@ const vectors = @import("value/vectors.zig");
 
 /// Whether this target is Plan 9, where libm is missing nine of the functions
 /// `libMath` otherwise registers.
-const plan9 = (builtin.os.tag == .plan9);
+const plan9 = (builtin.target.os.tag == .plan9);
 
 /// The abstract type `math/rng` returns.
 ///

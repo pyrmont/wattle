@@ -128,7 +128,7 @@ pub const RegisterAllocator = struct {
     /// `temporary_base` is used instead, and that is what chunk 7 is born half
     /// full for.
     pub fn allocateTemp(self: *RegisterAllocator, temporary: constants.RegisterTemp) u8 {
-        const temporary_index: u5 = @intFromEnum(temporary);
+        const temporary_index: u5 = @backingInt(temporary);
         const temporary_mask = @as(i32, 1) << temporary_index;
         if (self.regtemps & temporary_mask != 0) {
             fatal.fatal("regtemp already allocated");
@@ -137,7 +137,7 @@ pub const RegisterAllocator = struct {
         const old_max = self.max;
         var register = self.allocate();
         if (register > 0xff) {
-            register = temporary_base + @as(u32, @intFromEnum(temporary));
+            register = temporary_base + @as(u32, @backingInt(temporary));
             self.max = @max(register, old_max);
         }
         return @intCast(register);
@@ -150,7 +150,7 @@ pub const RegisterAllocator = struct {
         register: u32,
         temporary: constants.RegisterTemp,
     ) void {
-        const temporary_index: u5 = @intFromEnum(temporary);
+        const temporary_index: u5 = @backingInt(temporary);
         self.regtemps &= ~(@as(i32, 1) << temporary_index);
         if (register < temporary_base) self.free(register);
     }

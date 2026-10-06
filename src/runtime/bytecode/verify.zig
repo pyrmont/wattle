@@ -36,7 +36,7 @@ const functions = @import("../value/functions.zig");
 /// is missed or written twice.
 pub const instructions: [constants.Opcode.count]constants.InstructionType = build: {
     var table: [constants.Opcode.count]constants.InstructionType = undefined;
-    var filled = [_]bool{false} ** constants.Opcode.count;
+    var filled: [constants.Opcode.count]bool = @splat(false);
     for (rows) |row| {
         if (filled[row.op.number()]) {
             @compileError("instructions: opcode listed twice");
@@ -173,7 +173,7 @@ pub const Verdict = enum(u8) {
 
     /// This verdict's number, which is what the message renders.
     pub inline fn number(self: Verdict) u8 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

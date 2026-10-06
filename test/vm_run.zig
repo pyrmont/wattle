@@ -121,7 +121,7 @@ fn eval(source: [*:0]const u8) repr.Value {
 /// yield, so `vm_entry.continueFiber` reports the signal instead.
 fn raised(source: []const u8) repr.Value {
     var buffer: [2048]u8 = undefined;
-    const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
+    const wrapped = std.mem.printSentinel(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}, 0) catch unreachable;
     const fiberv = eval(wrapped);
     const resumed = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
     if (resumed.signal != abi.Signal.@"error") {
@@ -165,8 +165,8 @@ fn expectErrorAny(source: []const u8, messages: []const [*:0]const u8) void {
 fn expectEqual(source: []const u8, expected: []const u8) void {
     var buffer: [2048]u8 = undefined;
     var wanted: [2048]u8 = undefined;
-    const got = eval(std.fmt.bufPrintZ(&buffer, "(string/format \"%p\" (do {s}))", .{source}) catch unreachable);
-    const want = eval(std.fmt.bufPrintZ(&wanted, "(string/format \"%p\" (do {s}))", .{expected}) catch unreachable);
+    const got = eval(std.mem.printSentinel(&buffer, "(string/format \"%p\" (do {s}))", .{source}, 0) catch unreachable);
+    const want = eval(std.mem.printSentinel(&wanted, "(string/format \"%p\" (do {s}))", .{expected}, 0) catch unreachable);
     if (!harness.equals(got, want)) {
         std.debug.print("source:   {s}\n", .{source});
         std.debug.print("expected: {s}\n", .{wrap.toString(want)});

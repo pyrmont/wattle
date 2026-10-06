@@ -30,23 +30,6 @@
 
 #include "wattle_features.h"
 
- /* Aro -- the `translate-c` front end in Zig 0.16 -- predefines `__unix__`,
-  * `unix` and `__unix` for the mingw targets and clang does not, so a `@cImport`
-  * of this file and a compilation of the same target disagree about the
-  * predefine unless it is cleared. That produced a `JanetHandle` of `int`
-  * rather than `void *` on `x86_64-windows-gnu`, from a platform chain that
-  * tested Unix before Windows.
-  *
-  * Every system header included below is read by `translate-c` and compiled by
-  * clang, and this guard is what makes those two agree. The platform chains in
-  * this file put their Windows arm first as well, which is belt to this
-  * braces -- the two corrections are independent and both are cheap. */
-#if defined(_WIN32) || defined(WIN32)
-#undef __unix__
-#undef unix
-#undef __unix
-#endif
-
 #include <errno.h>
 #include <string.h>
 

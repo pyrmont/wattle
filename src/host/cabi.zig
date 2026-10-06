@@ -6,8 +6,9 @@
 //! Nothing of Janet's is declared here, and no Janet type is re-exported: a
 //! type is imported from the file that owns it, by the file that names it.
 //!
-//! `build.zig` roots a module at this file, because its `@cImport` needs the C
-//! include path and a file of `root` cannot be imported by it. Every
+//! `build.zig` roots a module at this file, because its translation of
+//! `<stdio.h>` is an import `build.zig` provides and a file of `root` cannot
+//! be imported by it. Every
 //! declaration is here because a runtime or client file calls it, and which
 //! file that is is a grep away.
 //!
@@ -41,13 +42,12 @@ const builtin = @import("builtin");
 
 const host = @import("host");
 
-/// libc's own `<stdio.h>`, for the two constants below.
+/// libc's own `<stdio.h>`, for the two constants below, as `build.zig`
+/// translates it for the target.
 ///
-/// Reaching libc through `@cImport` is deliberate: "no C in the tree" and "no
-/// libc" are different claims, and only the first is a goal.
-const libc = @cImport({
-    @cInclude("stdio.h");
-});
+/// Reaching libc through a translation of its headers is deliberate: "no C in
+/// the tree" and "no libc" are different claims, and only the first is a goal.
+const libc = @import("c_stdio");
 
 // ==========================================================================
 // Constants
@@ -70,7 +70,7 @@ pub extern var stdout: ?*host.FILE;
 
 /// `EINTR`, spelled once. Spelled in more than one place it is a chance for
 /// two of them to mean different numbers on a target nobody built.
-pub const eintr: c_int = @intFromEnum(std.c.E.INTR);
+pub const eintr: c_int = @backingInt(std.c.E.INTR);
 
 // ==========================================================================
 // Aliased types
@@ -78,19 +78,19 @@ pub const eintr: c_int = @intFromEnum(std.c.E.INTR);
 
 /// `CRITICAL_SECTION` and `SRWLOCK`, which `runtime/ev/locks.zig` allocates by
 /// size. Both are `void` off Windows.
-pub const CriticalSection = if (builtin.os.tag == .windows) std.os.windows.CRITICAL_SECTION else void;
-pub const SrwLock = if (builtin.os.tag == .windows) ?*anyopaque else void;
+pub const CriticalSection = if (builtin.target.os.tag == .windows) std.os.windows.CRITICAL_SECTION else void;
+pub const SrwLock = if (builtin.target.os.tag == .windows) ?*anyopaque else void;
 
 /// `struct epoll_event`, which the epoll backend passes by pointer. `void` off
 /// Linux.
-pub const EpollEvent = if (builtin.os.tag == .linux) std.os.linux.epoll_event else void;
+pub const EpollEvent = if (builtin.target.os.tag == .linux) std.os.linux.epoll_event else void;
 
 /// `time_t`, which mingw widens to 64 bits whatever the pointer width is.
-pub const TimeT = if (builtin.os.tag == .windows) i64 else std.c.time_t;
+pub const TimeT = if (builtin.target.os.tag == .windows) i64 else std.c.time_t;
 
 /// `pid_t`. Windows has no such thing, so the process subsystem uses a
 /// `c_int` there and never passes it to a host call.
-pub const pid_t = if (builtin.os.tag == .windows) c_int else std.c.pid_t;
+pub const pid_t = if (builtin.target.os.tag == .windows) c_int else std.c.pid_t;
 
 // ==========================================================================
 // Types

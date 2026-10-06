@@ -111,7 +111,7 @@ const WSA_IO_PENDING: c_int = 997;
 const FD_CLOEXEC: c_int = 1;
 const F_SETFD: c_int = 2;
 const F_SETFL: c_int = 4;
-const O_NONBLOCK: c_int = if (builtin.os.tag == .linux) 0o4000 else 0x0004;
+const O_NONBLOCK: c_int = if (builtin.target.os.tag == .linux) 0o4000 else 0x0004;
 const O_RDONLY: c_int = 0;
 const O_RDWR: c_int = 2;
 const O_WRONLY: c_int = 1;
@@ -424,7 +424,7 @@ pub fn evLasterr() repr.Value {
             null,
         );
         if (msgbuf[0] == 0) {
-            _ = std.fmt.bufPrintZ(&msgbuf, "{d}", .{code}) catch {};
+            _ = std.mem.printSentinel(&msgbuf, "{d}", .{code}, 0) catch {};
         }
         // The message ends in CRLF; keep only the first line.
         var i: usize = 0;
@@ -464,10 +464,10 @@ pub fn makePipe(handles: *[2]host.Handle, mode: c_int) c_int {
             return 0;
         }
         var name_buf: [MAX_PATH]u8 = undefined;
-        const name = std.fmt.bufPrintZ(&name_buf, "\\\\.\\Pipe\\WattlePipeFile.{x:0>8}.{x:0>8}", .{
+        const name = std.mem.printSentinel(&name_buf, "\\\\.\\Pipe\\WattlePipeFile.{x:0>8}.{x:0>8}", .{
             c.GetCurrentProcessId(),
             nextPipeSerial(),
-        }) catch return -1;
+        }, 0) catch return -1;
 
         // The server handle goes to the subprocess.
         const shandle = c.CreateNamedPipeA(

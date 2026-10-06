@@ -768,7 +768,7 @@ fn testHint(token: []const u8) ?[]const u8 {
 /// The names `testGather` completes from, not in order. The three that begin
 /// `zz` and `yy` are longer than a buffer holds after a few keys, so
 /// replacing a token with one of them allocates.
-const test_names = [_][]const u8{ "mapcat", "map", "max", "string/find", "zz" ++ "z" ** 300, "yya" ++ "y" ** 300, "yyb" ++ "y" ** 300 };
+const test_names = [_][]const u8{ "mapcat", "map", "max", "string/find", "zz" ++ @as([300]u8, @splat('z')), "yya" ++ @as([300]u8, @splat('y')), "yyb" ++ @as([300]u8, @splat('y')) };
 
 /// A source that completes from `test_names` and hints `map`.
 const completing: Source = .{ .symbol = &testSymbol, .gather = &testGather, .hint = &testHint };

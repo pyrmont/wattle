@@ -284,10 +284,10 @@ pub fn gcallocBytes(mtype: MemoryType, size: usize) *abi.GCObject {
 
     const mem: *abi.GCObject = @ptrCast(@alignCast(utils.rawAlloc(size)));
 
-    mem.flags = .{ .type = @intFromEnum(mtype) };
+    mem.flags = .{ .type = @backingInt(mtype) };
 
     g.next_collection +%= size;
-    if (@intFromEnum(mtype) < @intFromEnum(first_weak_type)) {
+    if (@backingInt(mtype) < @backingInt(first_weak_type)) {
         mem.data.next = g.blocks;
         g.blocks = mem;
     } else {
@@ -413,7 +413,7 @@ pub fn gcunrootall(root: repr.Value) bool {
 
 /// The block's type, read out of the low byte of the header's flag word.
 pub inline fn memoryTypeOf(self: *const abi.GCObject) MemoryType {
-    return @enumFromInt(self.flags.type);
+    return @fromBackingInt(@intCast(self.flags.type));
 }
 
 /// Releases the root set and returns it to what `rootsInit` starts from.
@@ -605,11 +605,12 @@ inline fn mem2scratch(mem: ?*anyopaque) *ScratchBlock {
 fn payloadOffset(comptime Head: type) usize {
     comptime {
         var found: ?usize = null;
-        for (@typeInfo(Head).@"struct".fields) |f| {
-            const info = @typeInfo(f.type);
+        const head = @typeInfo(Head).@"struct";
+        for (head.field_names, head.field_types) |name, F| {
+            const info = @typeInfo(F);
             if (info != .array or info.array.len != 0) continue;
             if (found != null) @compileError(@typeName(Head) ++ " has more than one flexible member");
-            found = @offsetOf(Head, f.name);
+            found = @offsetOf(Head, name);
         }
         return found orelse @compileError(@typeName(Head) ++ " has no flexible member");
     }
@@ -618,7 +619,7 @@ fn payloadOffset(comptime Head: type) usize {
 /// `scratch_heap`'s allocation entry point. It aborts on an alignment above
 /// `max_scratch_align`.
 fn scratchAllocatorAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
-    if (@intFromEnum(alignment) > @intFromEnum(max_scratch_align))
+    if (@backingInt(alignment) > @backingInt(max_scratch_align))
         fatal.fatal("allocation alignment exceeds what smalloc guarantees");
     return @ptrCast(@alignCast(smalloc(len)));
 }
@@ -669,9 +670,9 @@ comptime {
         .{ .set_node, 18 },     .{ .table_weakk, 19 },       .{ .table_weakv, 20 },
         .{ .table_weakkv, 21 }, .{ .array_weak, 22 },
     };
-    std.debug.assert(expected_memory.len == @typeInfo(MemoryType).@"enum".fields.len);
-    for (expected_memory) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
+    std.debug.assert(expected_memory.len == @typeInfo(MemoryType).@"enum".field_names.len);
+    for (expected_memory) |row| std.debug.assert(@backingInt(row[0]) == row[1]);
     // The stored field is eight bits wide and the reachable mark is the first
     // bit above it, so a type can never collide with a flag.
-    for (@typeInfo(MemoryType).@"enum".fields) |f| std.debug.assert(f.value <= 0xFF);
+    for (@typeInfo(MemoryType).@"enum".field_values) |value| std.debug.assert(value <= 0xFF);
 }

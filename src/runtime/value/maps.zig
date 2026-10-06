@@ -1537,7 +1537,7 @@ fn sortByHash(placed: []Placed, scratch: []Placed, level: u32) void {
     }
     // Every digit has been read, so the entries share a hash.
     if (level > 6) return;
-    var tally = [_]u32{0} ** 32;
+    var tally: [32]u32 = @splat(0);
     for (placed) |p| tally[sortDigit(p.hash, level)] += 1;
     var starts: [32]u32 = undefined;
     var total: u32 = 0;

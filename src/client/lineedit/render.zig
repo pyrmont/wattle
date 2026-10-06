@@ -711,7 +711,7 @@ test "draw: a frame with no height limit draws every row" {
 }
 
 test "draw: a window draws no more rows than the height and includes the cursor's row" {
-    const buffers = [_][]const u8{ tall, "a\nb\nc\nd\ne\nf", "度度度度度度度度度度", "abcdefgh" ** 5 };
+    const buffers = [_][]const u8{ tall, "a\nb\nc\nd\ne\nf", "度度度度度度度度度度", "abcdefghabcdefghabcdefghabcdefghabcdefgh" };
     for (buffers) |buffer| {
         for ([_]usize{ 1, 2, 3, 5 }) |height| {
             var previous: usize = 0;
@@ -867,7 +867,7 @@ test "draw: each class is drawn in its style, and the style is reset before the 
 
 test "draw: the style is reset before a wrap and a newline and written again after" {
     const S = highlight.Class;
-    const string = [_]S{.string} ** 9;
+    const string: [9]S = @splat(.string);
     try expectFrame("\r\x1b[J> \x1b[0;35m\"abcde\x1b[0m\r\n\x1b[0;35mfgh\x1b[0m", .{ .climb = 1, .top = 0 }, 0, .{
         .prompt = "> ",
         .buffer = "\"abcdefgh",
@@ -913,7 +913,7 @@ test "draw: a terminal with 16 colours draws a comment and a constant in them" {
 }
 
 test "draw: a window whose first row begins inside a string draws the string's style" {
-    const string = [_]highlight.Class{.string} ** 16;
+    const string: [16]highlight.Class = @splat(.string);
     try expectFrame("\r\x1b[J\x1b[0;35mno\x1b[0m", .{ .climb = 0, .top = 2 }, 0, .{
         .prompt = "> ",
         .buffer = "\"abcdefghijklmno",

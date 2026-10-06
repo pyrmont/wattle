@@ -245,7 +245,7 @@ pub fn addressFamily(x: repr.Value) c_int {
 }
 
 /// Aborts unless `cond`, naming this file's own position.
-pub fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
+pub fn assert(comptime where: std.lang.SourceLocation, cond: bool, comptime message: []const u8) void {
     if (cond) return;
     const line = std.fmt.comptimePrint(
         "wattle abort at {s}:{d}: {s}\n",
@@ -334,7 +334,7 @@ pub fn getAddrInfo(
             @memcpy(saddr.sun_path[0..taken], path[0..taken]);
             saddr.sun_path[taken] = 0;
             var size: SockLen = @sizeOf(net_abi.SockAddrUn);
-            if (builtin.os.tag == .linux) {
+            if (builtin.target.os.tag == .linux) {
                 // An abstract address: the name starts at a NUL, and the
                 // length is exactly what was written rather than the whole
                 // structure.
@@ -464,7 +464,7 @@ pub fn netInit() void {
 
 /// Reports where the allocation failed and ends the process, naming the
 /// caller's `@src()`.
-pub fn outOfMemory(comptime where: std.builtin.SourceLocation) noreturn {
+pub fn outOfMemory(comptime where: std.lang.SourceLocation) noreturn {
     const line = std.fmt.comptimePrint(
         "{s}:{d} - wattle out of memory\n",
         .{ where.file, where.line },
@@ -572,7 +572,7 @@ pub fn socketType(argv: []repr.Value, n: usize) raise.Error!c_int {
 fn acceptPosix(op: *ev_stream.Operation, state: *NetStateAccept, event: ev_loop.AsyncEvent) raise.Error!void {
     if (event != constants.AsyncEvent.init and event != constants.AsyncEvent.read) return;
     const stream: *ev_stream.Stream = op.stream;
-    const connfd: JSock = if (builtin.os.tag == .linux)
+    const connfd: JSock = if (builtin.target.os.tag == .linux)
         net_abi.accept4(sockOf(stream), null, null, h.SOCK_CLOEXEC)
     else
         // An accepted socket does not take the listener's close-on-exec, so

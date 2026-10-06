@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.16.0
+  ZIG_VERSION: 0.17.0
 
 # Every job carries a `timeout-minutes`. The default is 360, and a suite that
 # deadlocks rather than failing holds the runner for all of it: a fiber parked

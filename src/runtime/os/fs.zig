@@ -15,12 +15,13 @@
 //! `entries()` stays in this file because `os.zig` slices it three ways, and
 //! that order is upstream Janet's `os/` registration order.
 //!
-//! Every platform test here goes through `builtin.os.tag`, never through a
-//! translated macro. Aro, the translate-c front end, predefines `__unix__`,
-//! `unix` and `__unix` for `x86_64-windows-gnu` on top of `_WIN32`, so a
-//! header whose own chain tests Unix first reports POSIX in the translation
-//! and Windows in the compilation of the same header for the same target. The
-//! first assertion at the foot of this file is what would catch a regression.
+//! Every platform test here goes through `builtin.target.os.tag`, never
+//! through a translated macro. Aro, the translate-c front end, predefined
+//! `__unix__`, `unix` and `__unix` for `x86_64-windows-gnu` on top of `_WIN32`
+//! in Zig 0.16, so a header whose own chain tested Unix first reported POSIX in
+//! the translation and Windows in the compilation of the same header for the
+//! same target. The first assertion at the foot of this file is what would
+//! catch a regression.
 //!
 //! The host calls at the foot are the ones whose signatures name a type this
 //! subsystem owns, so they stay with the type rather than moving to
@@ -77,7 +78,7 @@ pub const no_symlinks = !config.symlinks;
 pub const no_umask = !config.umask;
 
 /// Whether this target takes the Windows arm of the calls below.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -279,12 +280,12 @@ pub fn hardLink(oldpath: [*:0]const u8, newpath: [*:0]const u8) i32 {
 
 /// `chdir`.
 pub fn hostChdir(path: [*:0]const u8) i32 {
-    return if (builtin.os.tag == .windows) c._chdir(path) else c.chdir(path);
+    return if (builtin.target.os.tag == .windows) c._chdir(path) else c.chdir(path);
 }
 
 /// `getcwd`, into the caller's buffer.
 pub fn hostGetcwd(buffer: [*]u8, size: i32) i32 {
-    const result = if (builtin.os.tag == .windows)
+    const result = if (builtin.target.os.tag == .windows)
         c._getcwd(buffer, size)
     else
         c.getcwd(buffer, @intCast(size));
@@ -293,7 +294,7 @@ pub fn hostGetcwd(buffer: [*]u8, size: i32) i32 {
 
 /// `mkdir`, with the mode argument Windows does not take.
 pub fn hostMkdir(path: [*:0]const u8) i32 {
-    if (builtin.os.tag == .windows) return c._mkdir(path);
+    if (builtin.target.os.tag == .windows) return c._mkdir(path);
     return c.mkdir(path, 0o775);
 }
 
@@ -309,7 +310,7 @@ pub fn hostRename(old_path: [*:0]const u8, new_path: [*:0]const u8) i32 {
 
 /// `rmdir`.
 pub fn hostRmdir(path: [*:0]const u8) i32 {
-    return if (builtin.os.tag == .windows) c._rmdir(path) else c.rmdir(path);
+    return if (builtin.target.os.tag == .windows) c._rmdir(path) else c.rmdir(path);
 }
 
 /// Reads a link target into the caller's buffer, returning its length or -1.
@@ -386,7 +387,7 @@ fn nfunChmod(argv: []repr.Value) raise.Error!repr.Value {
     // WASI has no permission bits to set. The call succeeds and changes
     // nothing there, as Windows's `_chmod` ignores the bits it cannot
     // represent.
-    if (builtin.os.tag == .wasi) return wrap.fromNil();
+    if (builtin.target.os.tag == .wasi) return wrap.fromNil();
     const res = if (windows) c._chmod(@ptrCast(path), mode) else oa.chmod(@ptrCast(path), mode);
     if (res == -1) return pp_format.panicf("%s: %s", .{ utils.strerrorSafe(c.errno()), path });
     return wrap.fromNil();
@@ -587,7 +588,7 @@ fn dirNext(handle: *anyopaque) DirRead {
 /// `std.c` types a WASI `readdir` result as `*void`, so on WASI the entry is
 /// read through `os/abi.h`'s `struct dirent`.
 inline fn readEntryName(handle: *anyopaque) ?[*:0]const u8 {
-    if (builtin.os.tag == .wasi) {
+    if (builtin.target.os.tag == .wasi) {
         const entry = h.readdir(@ptrCast(handle));
         if (entry == null) return null;
         return @ptrCast(h.wattle_dirent_name(entry));
@@ -626,7 +627,7 @@ fn dirWindows(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
     var pattern: [h.MAX_PATH + 1]u8 = undefined;
     const dirlen = std.mem.len(@as([*:0]const u8, @ptrCast(dir)));
     if (dirlen > pattern.len - 3) return pp_format.panicf("path too long: %s", .{dir});
-    _ = std.fmt.bufPrintZ(&pattern, "{s}/*", .{@as([*:0]const u8, @ptrCast(dir))}) catch unreachable;
+    _ = std.mem.printSentinel(&pattern, "{s}/*", .{@as([*:0]const u8, @ptrCast(dir))}, 0) catch unreachable;
     const res = h._findfirst(&pattern, &afile);
     if (res == -1) return raise.panicv(value.fromBytes(std.mem.span(utils.strerrorSafe(c.errno())), .string));
     while (true) {
@@ -679,7 +680,7 @@ inline fn symlinkOrLink(old: [*:0]const u8, new: [*:0]const u8) i32 {
 // ==========================================================================
 
 comptime {
-    if ((builtin.os.tag == .windows) and !windows)
+    if ((builtin.target.os.tag == .windows) and !windows)
         @compileError("platform tests must not read a translated platform macro");
 }
 

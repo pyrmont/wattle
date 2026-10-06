@@ -195,8 +195,8 @@ const sandbox_options = [_]SandboxOption{
 
 /// Whether this target is Windows, which separates path segments differently
 /// and has no `dlopen`.
-const windows = builtin.os.tag == .windows;
-const macos = builtin.os.tag == .macos;
+const windows = builtin.target.os.tag == .windows;
+const macos = builtin.target.os.tag == .macos;
 
 // ==========================================================================
 // Types
@@ -495,13 +495,13 @@ pub fn loopFiber(fiber: *fibers.Fiber) raise.Error!c_int {
     if (has_ev) {
         ev_loop.schedule(fiber, wrap.fromNil());
         try ev_loop.loop();
-        return @intCast(@intFromEnum(fibers.status(fiber)));
+        return @intCast(@backingInt(fibers.status(fiber)));
     }
     const resumed = vm_entry.continueFiber(fiber, wrap.fromNil());
     if (resumed.signal != abi.Signal.ok and resumed.signal != abi.Signal.event) {
         try trace_frames.stacktraceExt(fiber, resumed.value, "");
     }
-    return @intCast(@intFromEnum(resumed.signal));
+    return @intCast(@backingInt(resumed.signal));
 }
 
 /// `native` for a caller with no error channel.
@@ -1054,12 +1054,12 @@ fn nfunSignal(argv: []repr.Value) raise.Error!repr.Value {
         if (s < 0 or s > 7) {
             return pp_format.panicf("expected user signal between 0 and 7, got %d", .{s});
         }
-        return raise.signal(@enumFromInt(@intFromEnum(abi.Signal.user0) + @as(c_uint, @intCast(s))), payload);
+        return raise.signal(@fromBackingInt(@intCast(@backingInt(abi.Signal.user0) + @as(c_uint, @intCast(s)))), payload);
     }
     const kw = try args_core.getKeyword(argv, 0);
     for (utils.signalNames, 0..) |signal_name, i| {
         if (utils.cstrcmp(kw, signal_name) == 0) {
-            return raise.signal(@enumFromInt(i), payload);
+            return raise.signal(@fromBackingInt(@intCast(i)), payload);
         }
     }
     return pp_format.panicf("unknown signal %v", .{argv[0]});
@@ -1146,7 +1146,7 @@ fn nfunType(argv: []repr.Value) raise.Error!repr.Value {
     }
     // A keyword has the symbol tag, and is told apart by its kind.
     if (wrap.isKeyword(argv[0])) return value.fromBytes("keyword", .keyword);
-    return value.fromBytes(utils.typeNames[@intFromEnum(t)], .keyword);
+    return value.fromBytes(utils.typeNames[@backingInt(t)], .keyword);
 }
 
 /// `(untrace f)`.

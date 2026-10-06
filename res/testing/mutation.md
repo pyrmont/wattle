@@ -249,21 +249,23 @@ with an invariant at the nearest boundary, before you start hunting.**
 
 Phase 10 Part 12 added the sharper case, and it is about the *translation*
 rather than a declaration. **A `JANET_*` macro derived from the compiler's own
-predefines is not reliable through `@cImport`.** Aro predefines `__unix__` for
+predefines is not reliable through a translation.** Aro predefined `__unix__` for
 `x86_64-windows-gnu` and `janet.h` tests its Unix chain before its Windows
 one, so the translation of that header for that target says `JANET_POSIX`
 where the *compilation* of it says `JANET_WINDOWS` -- and `JanetHandle`, which
 is `void *` on one and `int` on the other, follows it. Test the platform with
-`builtin.os.tag`; read the build's own answer out of `@import("config")`.
+`builtin.target.os.tag`; read the build's own answer out of `@import("config")`.
 
 That header is gone with `janet.h` at Phase 12 increment 5f, and the hazard is
 not: the three host headers still `#include` system headers that read the same
-predefines, and clang does not set them where Aro does. All three carry the
-`#undef __unix__` correction, in the same words. **The general form is worth
-more than the instance: a `@cImport` and a compilation of the same target are
-two front ends, and anything one predefines and the other does not is a silent
+predefines. Each cleared the Unix names with an `#undef __unix__` correction
+while Aro predefined them, in Zig 0.16. The translate-c package at 2.0.0 does
+not, and its translations of the three headers are identical with and without
+the correction, so the correction is gone. **The general form is worth more
+than the instance: a translation and a compilation of the same target are two
+front ends, and anything one predefines and the other does not is a silent
 disagreement about every header below it.** Ordering a platform chain's Windows
-arm first is a second defence and not a substitute.
+arm first is the defence that remains.
 
 **A `Janet` in a C local is not a root, and a contract is where that matters.**
 The collector scans the VM and the fiber stacks, and an nfunction's arguments

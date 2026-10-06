@@ -1136,7 +1136,7 @@ pub fn libFilewatch(env: *tables.Table) void {
 // ==========================================================================
 
 /// Aborts with the caller's `@src()` unless `cond`.
-fn assert(comptime where: std.builtin.SourceLocation, cond: bool, comptime message: []const u8) void {
+fn assert(comptime where: std.lang.SourceLocation, cond: bool, comptime message: []const u8) void {
     if (cond) return;
     const line = std.fmt.comptimePrint(
         "wattle abort at {s}:{d}: {s}\n",

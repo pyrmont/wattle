@@ -12,8 +12,8 @@
 //! once at compile time and each conversion indexes the tuple. A conversion
 //! given the wrong type or the wrong width is then a compile error at the
 //! call site, where a variadic would read whatever the caller happened to
-//! push. A variadic is also not available to fall back on: Zig 0.16 cannot
-//! name a `va_list` on `aarch64-linux`, where `std.builtin.VaList` is a
+//! push. A variadic is also not available to fall back on: Zig 0.17 cannot
+//! name a `va_list` on `aarch64-linux`, where `std.lang.VaList` is a
 //! `@compileError("disabled due to miscompilations")` under the LLVM backend.
 //!
 //! `formatTuple` and `bufferFormat` look like the same function and are not.
@@ -363,7 +363,7 @@ pub fn formatTuple(
         for (ops) |op| {
             if (op == .conversion) wanted += 1;
         }
-        const given = @typeInfo(@TypeOf(args)).@"struct".fields.len;
+        const given = @typeInfo(@TypeOf(args)).@"struct".field_names.len;
         if (wanted != given) @compileError(std.fmt.comptimePrint(
             "format \"{s}\" has {d} conversions and was given {d} arguments",
             .{ format, wanted, given },
@@ -500,7 +500,7 @@ fn compileFormat(comptime format: []const u8) []const Op {
 fn comptimeScan(comptime format: []const u8, comptime start: usize) Specifier {
     comptime {
         var spec = Specifier{
-            .form = [_]u8{0} ** max_format,
+            .form = @splat(0),
             .width = .{ 0, 0, 0 },
             .precision = .{ 0, 0, 0 },
             .at = start,
@@ -641,7 +641,7 @@ fn tagNames(bits: u16, names: *[type_names_max][]const u8) usize {
         if (bits >> @intCast(i) & 1 == 0) continue;
         names[count] = utils.typeNames[i];
         count += 1;
-        if (i == @intFromEnum(repr.Tag.symbol)) {
+        if (i == @backingInt(repr.Tag.symbol)) {
             names[count] = "keyword";
             count += 1;
         }
@@ -804,5 +804,5 @@ fn typestr(x: repr.Value) []const u8 {
     const t = repr.typeOf(x);
     if (t == .abstract) return abi.abstractHead(wrap.toAbstract(x)).type.name;
     if (wrap.isKeyword(x)) return "keyword";
-    return utils.typeNames[@intFromEnum(t)];
+    return utils.typeNames[@backingInt(t)];
 }

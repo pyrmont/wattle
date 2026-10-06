@@ -100,11 +100,11 @@ pub fn main(init: std.process.Init) !u8 {
     const support = try cwd.readFileAlloc(init.io, args[4], arena, .unlimited);
 
     const hash = hashed(&.{ wasm, image, support });
-    const wasm_name = try std.fmt.allocPrint(arena, "wattle-{s}.wasm", .{hash});
-    const image_name = try std.fmt.allocPrint(arena, "{s}-{s}.wimage", .{ name, hash });
-    const support_name = try std.fmt.allocPrint(arena, "wasi-{s}.js", .{hash});
-    const loader_name = try std.fmt.allocPrint(arena, "{s}.js", .{name});
-    const loader_text = try std.fmt.allocPrint(arena, loader, .{ wasm_name, image_name, support_name });
+    const wasm_name = try arena.print("wattle-{s}.wasm", .{hash});
+    const image_name = try arena.print("{s}-{s}.wimage", .{ name, hash });
+    const support_name = try arena.print("wasi-{s}.js", .{hash});
+    const loader_name = try arena.print("{s}.js", .{name});
+    const loader_text = try arena.print(loader, .{ wasm_name, image_name, support_name });
 
     try out.writeFile(init.io, .{ .sub_path = wasm_name, .data = wasm });
     try out.writeFile(init.io, .{ .sub_path = image_name, .data = image });

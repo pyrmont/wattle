@@ -125,7 +125,7 @@ pub fn def(
     env: *tables.Table,
     comptime name: [:0]const u8,
     value: repr.Value,
-    comptime where: std.builtin.SourceLocation,
+    comptime where: std.lang.SourceLocation,
     comptime doc: [:0]const u8,
 ) void {
     if (bootstrap) {
@@ -188,7 +188,7 @@ pub fn installTerminated(env: *tables.Table, entries: [*]const Entry) void {
 pub fn reg(
     comptime name: [:0]const u8,
     comptime nfun: anytype,
-    comptime where: std.builtin.SourceLocation,
+    comptime where: std.lang.SourceLocation,
     comptime usage: [:0]const u8,
     comptime doc: [:0]const u8,
 ) Entry {
@@ -210,7 +210,7 @@ pub fn reg(
 ///
 /// `where` is the caller's `@src()`. A path that climbs out of the module is a
 /// compile error, because `source_root` no longer reconstructs it.
-inline fn sourcePath(comptime where: std.builtin.SourceLocation) [:0]const u8 {
+inline fn sourcePath(comptime where: std.lang.SourceLocation) [:0]const u8 {
     if (comptime std.mem.startsWith(u8, where.file, "..")) {
         @compileError("corefn: @src().file escapes the module ('" ++ where.file ++
             "'), so source_root no longer reconstructs its path");

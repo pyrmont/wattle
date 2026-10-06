@@ -135,7 +135,7 @@ fn expectAbsent(built: repr.Value, key: [*:0]const u8) void {
 /// catches the error itself.
 fn expectSandboxRefusal(source: []const u8) void {
     var buffer: [512]u8 = undefined;
-    const wrapped = std.fmt.bufPrintZ(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}) catch unreachable;
+    const wrapped = std.mem.printSentinel(&buffer, "(fiber/new (fn [] {s}) :ye)", .{source}, 0) catch unreachable;
     const fiberv = eval(wrapped);
     const resumed = vm_entry.continueFiber(wrap.toFiber(fiberv), wrap.fromNil());
     expect(resumed.signal == abi.Signal.@"error");

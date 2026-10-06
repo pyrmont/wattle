@@ -148,7 +148,7 @@ fn aNewBlockGoesOnTheNormalHeap() void {
     expect(nextOf(block) == previous);
     expect(typeOf(block) == gc_alloc.MemoryType.array);
     // The whole word, not only the type byte: a fresh block has no flags set.
-    expect(harness.gcBits(block.flags) == @intFromEnum(gc_alloc.MemoryType.array));
+    expect(harness.gcBits(block.flags) == @backingInt(gc_alloc.MemoryType.array));
     expect(!isReachable(block));
     expect(harness.vm().gc.block_count == count + 1);
     expect(harness.vm().gc.next_collection == next + size);

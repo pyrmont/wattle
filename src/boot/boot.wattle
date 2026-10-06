@@ -5783,12 +5783,12 @@
     (case kind
       :exe
       (buffer/push! b
-        "    const docstrings = optimize == .Debug;\n"
+        "    const docstrings = optimize == .debug;\n"
         "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize, .docstrings = docstrings });\n"
-        "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = docstrings });\n")
+        "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .debug, .docstrings = docstrings });\n")
       :web
       (buffer/push! b
-        "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .Debug, .docstrings = false, .sourcemaps = false });\n")
+        "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .debug, .docstrings = false, .sourcemaps = false });\n")
       (buffer/push! b
         "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize });\n"))
     (var i 0)

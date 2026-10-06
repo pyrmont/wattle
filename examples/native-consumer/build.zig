@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
     lib.linker_allow_shlib_undefined = true;
     b.installArtifact(lib);
 
-    const host = b.dependency("wattle", .{ .target = b.graph.host, .optimize = .Debug });
+    const host = b.dependency("wattle", .{ .target = b.graph.host, .optimize = .debug });
     const exe = wattle.wattleExecutable(dep, host, .{
         .name = "hello",
         .source = b.path("main.wattle"),

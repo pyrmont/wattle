@@ -57,7 +57,7 @@ const statRead = host_stat.statRead;
 // ==========================================================================
 
 /// How many fields `os/stat` reports.
-pub const field_count = @typeInfo(Field).@"enum".fields.len;
+pub const field_count = @typeInfo(Field).@"enum".field_names.len;
 
 /// The `os/stat` field registry, in the order the C implementation inserts
 /// them into the result table. The index of a name is the field identifier the
@@ -111,7 +111,7 @@ const w_iread: u32 = 0o000400;
 const w_iwrite: u32 = 0o000200;
 
 /// Whether this target takes the CRT's mode bits rather than POSIX's.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -321,7 +321,7 @@ pub fn statField(field: Field, mode: u32, numbers: *const [field_count]f64) repr
         .permissions => makePermstring(
             hostPermToUnix(@bitCast(hostDecodePermissions(mode))),
         ),
-        else => wrap.fromNumber(numbers[@intCast(@intFromEnum(field))]),
+        else => wrap.fromNumber(numbers[@intCast(@backingInt(field))]),
     };
 }
 
@@ -353,7 +353,7 @@ pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Error!repr.Value {
     if (key) |k| {
         const field = fieldLookup(k, strings.head(k).length);
         if (field < 0) return pp_format.panicf("unexpected keyword %v", .{wrap.fromKeyword(k)});
-        return statField(@enumFromInt(field), mode, &numbers);
+        return statField(@fromBackingInt(@intCast(field)), mode, &numbers);
     }
     // The count walked is `field_names`'s rather than `field_count`, so that
     // the two cannot silently disagree.
@@ -362,7 +362,7 @@ pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Error!repr.Value {
         tables.put(
             tab.?,
             value.fromBytes(std.mem.span(fieldName(@intCast(field)).?), .keyword),
-            statField(@enumFromInt(field), mode, &numbers),
+            statField(@fromBackingInt(@intCast(field)), mode, &numbers),
         );
     }
     return wrap.fromTable(tab.?);

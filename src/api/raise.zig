@@ -197,7 +197,7 @@ pub fn panic(message: [*:0]const u8) Error {
 pub fn panicking(comptime f: anytype) type {
     const info = @typeInfo(@TypeOf(f)).@"fn";
     const P = @typeInfo(info.return_type.?).error_union.payload;
-    const p = info.params;
+    const p = info.param_types;
     return switch (p.len) {
         0 => struct {
             pub fn abi() callconv(.c) P {
@@ -205,27 +205,27 @@ pub fn panicking(comptime f: anytype) type {
             }
         },
         1 => struct {
-            pub fn abi(a: p[0].type.?) callconv(.c) P {
+            pub fn abi(a: p[0].?) callconv(.c) P {
                 return f(a) catch reportToAbi(P);
             }
         },
         2 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?) callconv(.c) P {
+            pub fn abi(a: p[0].?, b: p[1].?) callconv(.c) P {
                 return f(a, b) catch reportToAbi(P);
             }
         },
         3 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?) callconv(.c) P {
+            pub fn abi(a: p[0].?, b: p[1].?, d: p[2].?) callconv(.c) P {
                 return f(a, b, d) catch reportToAbi(P);
             }
         },
         4 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?) callconv(.c) P {
+            pub fn abi(a: p[0].?, b: p[1].?, d: p[2].?, e: p[3].?) callconv(.c) P {
                 return f(a, b, d, e) catch reportToAbi(P);
             }
         },
         5 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, e: p[3].type.?, g: p[4].type.?) callconv(.c) P {
+            pub fn abi(a: p[0].?, b: p[1].?, d: p[2].?, e: p[3].?, g: p[4].?) callconv(.c) P {
                 return f(a, b, d, e, g) catch reportToAbi(P);
             }
         },
@@ -245,9 +245,9 @@ pub fn panicking(comptime f: anytype) type {
 pub fn panickingArgv(comptime f: anytype) type {
     const info = @typeInfo(@TypeOf(f)).@"fn";
     const P = @typeInfo(info.return_type.?).error_union.payload;
-    const p = info.params;
-    const S = @typeInfo(p[p.len - 1].type.?).pointer;
-    const Ptr = if (S.is_const) [*]const S.child else [*]S.child;
+    const p = info.param_types;
+    const S = @typeInfo(p[p.len - 1].?).pointer;
+    const Ptr = if (S.attrs.@"const") [*]const S.child else [*]S.child;
     return switch (p.len) {
         1 => struct {
             pub fn abi(argc: i32, argv: Ptr) callconv(.c) P {
@@ -255,12 +255,12 @@ pub fn panickingArgv(comptime f: anytype) type {
             }
         },
         2 => struct {
-            pub fn abi(a: p[0].type.?, argc: i32, argv: Ptr) callconv(.c) P {
+            pub fn abi(a: p[0].?, argc: i32, argv: Ptr) callconv(.c) P {
                 return f(a, argv[0..@intCast(argc)]) catch reportToAbi(P);
             }
         },
         4 => struct {
-            pub fn abi(a: p[0].type.?, b: p[1].type.?, d: p[2].type.?, argc: i32, argv: Ptr) callconv(.c) P {
+            pub fn abi(a: p[0].?, b: p[1].?, d: p[2].?, argc: i32, argv: Ptr) callconv(.c) P {
                 return f(a, b, d, argv[0..@intCast(argc)]) catch reportToAbi(P);
             }
         },
@@ -336,7 +336,7 @@ pub fn signal(sig: abi.Signal, message: repr.Value) Error {
         // The table's field takes the wire width, because a C caller may pass
         // any `c_uint`. The caller here holds a member, so the conversion goes
         // the other way and the clamp on the far side does nothing.
-        interface.rt.signal_record(@intFromEnum(sig), message);
+        interface.rt.signal_record(@backingInt(sig), message);
     } else {
         signal_impl.signalRecord(sig, message);
     }

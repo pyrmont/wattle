@@ -139,7 +139,7 @@ pub fn compare(x_in: repr.Value, y_in: repr.Value) i32 {
     while (true) {
         const tx = repr.typeOf(x);
         const ty = repr.typeOf(y);
-        if (tx != ty) return if (@intFromEnum(tx) < @intFromEnum(ty)) -1 else 1;
+        if (tx != ty) return if (@backingInt(tx) < @backingInt(ty)) -1 else 1;
         switch (tx) {
             repr.Tag.nil => {},
             repr.Tag.boolean => {

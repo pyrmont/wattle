@@ -380,7 +380,7 @@ pub fn nfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
             // The allocator reports an oversized return as well, but a
             // program sees it raised before any argument is decoded, so the
             // check stays here.
-            if (ret_slot.spec == @intFromEnum(Spec.aapcs64_general_ref) and
+            if (ret_slot.spec == @backingInt(Spec.aapcs64_general_ref) and
                 ret_slot.size > aapcs64_return_size)
             {
                 return raise.panic("return value bigger than supported");
@@ -393,7 +393,7 @@ pub fn nfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
                 &alloc,
                 &ret_slot,
                 slots[0..arg_count],
-                builtin.os.tag.isDarwin(),
+                builtin.target.os.tag.isDarwin(),
                 aapcs64_return_size,
             );
             try checkAlloc(&alloc);
@@ -460,7 +460,7 @@ fn VariantType(comptime regs: []const type, comptime nstack: usize, comptime Ret
     for (regs, 0..) |t, i| params[i] = t;
     for (0..nstack) |i| params[regs.len + i] = u64;
     const frozen = params;
-    const attrs = [_]std.builtin.Type.Fn.Param.Attributes{.{}} ** n;
+    const attrs: [n]std.lang.Type.Fn.ParamAttributes = @splat(.{});
     return @Fn(&frozen, &attrs, Ret, .{ .@"callconv" = .c });
 }
 
@@ -477,9 +477,9 @@ fn applySlots(
     ret_slot: *const ArgSlot,
     slots: [*]const ArgSlot,
 ) void {
-    sig_ret.spec = @enumFromInt(ret_slot.spec);
+    sig_ret.spec = @fromBackingInt(@intCast(ret_slot.spec));
     for (mappings[0..arg_count], slots[0..arg_count]) |*mapping, slot| {
-        mapping.spec = @enumFromInt(slot.spec);
+        mapping.spec = @fromBackingInt(@intCast(slot.spec));
         mapping.offset = slot.offset;
         mapping.offset2 = slot.offset2;
     }
@@ -791,7 +791,7 @@ fn classify(cc: Cc, ty: Type) Spec {
     else
         ffi_classify.classifySysv64(nodes[0..count]);
     if (heap) gc_alloc.sfree(nodes);
-    return @enumFromInt(spec);
+    return @fromBackingInt(@intCast(spec));
 }
 
 /// The mirror of the scatter above, for a returned HFA.
@@ -926,7 +926,7 @@ fn returnScratch(ty: Type) [*]u8 {
 fn serializeType(nodes: [*]TypeNode, at: u32, ty: Type, offset: u32) u32 {
     const node = &nodes[at];
     node.size = ffi_types.typeSize(ty);
-    node.prim = @intFromEnum(ty.prim);
+    node.prim = @backingInt(ty.prim);
     node.offset = offset;
     node.array_count = ty.array_count;
     if (ty.prim != .@"struct") {
@@ -951,8 +951,8 @@ fn serializeType(nodes: [*]TypeNode, at: u32, ty: Type, offset: u32) u32 {
 fn slotOf(ty: Type, spec: Spec) ArgSlot {
     return .{
         .size = ffi_types.typeSize(ty),
-        .prim = @intFromEnum(ty.prim),
-        .spec = @intFromEnum(spec),
+        .prim = @backingInt(ty.prim),
+        .spec = @backingInt(spec),
         .alignment = @intCast(ffi_types.typeAlign(ty)),
         .offset = 0,
         .offset2 = 0,

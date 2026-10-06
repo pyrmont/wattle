@@ -6,8 +6,8 @@
 //! `struct stat`, in `os/fs/host_stat.zig`, is not.
 //!
 //! A `struct tm` never crosses a boundary here. It is filled and read inside
-//! one nfunction and dies with it, which is the property that made the
-//! `@cImport` safe rather than the translation succeeding.
+//! one nfunction and dies with it, which is the property that makes the
+//! translation safe to use rather than the translation succeeding.
 //!
 //! `localtime` and `gmtime` have a reentrant form on POSIX (`_r`, taking the
 //! caller's structure) and a Microsoft form (`_s`, with the arguments the
@@ -54,7 +54,7 @@ const h = oa.h;
 // ==========================================================================
 
 /// Whether this platform has no UTC `mktime`: Solaris but not illumos. Zig
-/// 0.16 has no Solaris target at all (`std.Target.Os.Tag` has `illumos` and
+/// 0.17 has no Solaris target at all (`std.Target.Os.Tag` has `illumos` and
 /// nothing else in that family), so the condition cannot be true for anything
 /// this project can build, and saying so is more honest than a `builtin` test
 /// that reads as if it might fire.
@@ -70,7 +70,7 @@ const valid_specifiers = "aAbBcdHIjmMpSUwWxXyYZ%";
 
 /// Whether this target takes the Microsoft `_s` entry points rather than the
 /// POSIX `_r` ones.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -277,7 +277,7 @@ fn timeToTm(argv: []const repr.Value, n: usize, out: *h.struct_tm) raise.Error!v
             break :blk oa._localtime64_s(out, &t) == 0;
         }
         // WASI has no time zones and no `tzset`; local time is UTC there.
-        if (builtin.os.tag != .wasi) c.tzset();
+        if (builtin.target.os.tag != .wasi) c.tzset();
         break :blk oa.localtime_r(&t, out) != null;
     } else blk: {
         if (windows) break :blk oa._gmtime64_s(out, &t) == 0;

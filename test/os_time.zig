@@ -81,7 +81,7 @@ const Source = enum(c_int) {
 /// `std.c.time_t` is `void` on Windows, which has no `std.c` libc. mingw-w64
 /// declares `{ __int64 tv_sec; long tv_nsec; }`, and the Windows arm restates
 /// that.
-const TimeSpec = if (builtin.os.tag == .windows) extern struct {
+const TimeSpec = if (builtin.target.os.tag == .windows) extern struct {
     seconds: i64,
     nanoseconds: c_long,
 } else extern struct {
@@ -101,7 +101,7 @@ fn read(source: Source) TimeSpec {
     // a claim: if the two ever disagreed on size or offsets, the fields read
     // below would be wrong.
     var spec: TimeSpec align(@alignOf(os.Timespec)) = undefined;
-    expect(os.gettimeAbi(@ptrCast(&spec), @bitCast(@intFromEnum(source))) == 0);
+    expect(os.gettimeAbi(@ptrCast(&spec), @bitCast(@backingInt(source))) == 0);
     // Normalised: the nanosecond field is a remainder, not a free-running
     // count, so a nanosecond field at or above a second would show up here.
     expect(spec.nanoseconds >= 0);
@@ -153,7 +153,7 @@ fn theCputimeClockAccumulates() void {
     }
     expect(sink > 0);
 
-    if (builtin.os.tag == .windows and seconds(after) <= seconds(before)) {
+    if (builtin.target.os.tag == .windows and seconds(after) <= seconds(before)) {
         var creation: c.FILETIME = .{ .low = 0, .high = 0 };
         var exit_time: c.FILETIME = .{ .low = 0, .high = 0 };
         var kernel: c.FILETIME = .{ .low = 0, .high = 0 };

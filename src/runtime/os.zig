@@ -63,7 +63,7 @@ const h = oa.h;
 
 /// The architecture name `os/arch` reports, derived from the target unless the
 /// build overrode it.
-const arch_name = switch (builtin.cpu.arch) {
+const arch_name = switch (builtin.target.cpu.arch) {
     .wasm32, .wasm64 => "wasm",
     .x86_64 => "x64",
     .x86 => "x86",
@@ -122,7 +122,7 @@ const no_processes = !config.processes;
 
 /// The operating system name `os/which` reports, derived from the target
 /// unless the build overrode it.
-const os_name = switch (builtin.os.tag) {
+const os_name = switch (builtin.target.os.tag) {
     // One name for the platform, where Janet reported the ABI as well and
     // answered `mingw` on a gnu build. `os/which` names an operating system;
     // which C library reached it is a different question, and this tree
@@ -159,11 +159,11 @@ const source_realtime: i32 = 0;
 
 /// Whether this target takes the Windows arm of the clocks, the environment
 /// and the sleep.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 /// Whether the target has `TIOCGWINSZ`, which `os/term-size` asks a terminal
 /// with. A target without it reports no size.
-const has_winsize = switch (builtin.os.tag) {
+const has_winsize = switch (builtin.target.os.tag) {
     .linux, .macos, .ios, .freebsd, .netbsd, .openbsd, .dragonfly, .illumos => true,
     else => false,
 };
@@ -236,7 +236,7 @@ pub fn environSeparator(entry: [*:0]const u8) i32 {
 /// and reaches its default. POSIX keeps the two apart, which is what
 /// `unsetenv` is for. `test/os_surface.zig` asserts each platform's rule.
 pub fn environSet(name: [*:0]const u8, val: ?[*:0]const u8) i32 {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         return c._putenv_s(name, val orelse "");
     }
     return if (val) |bytes| c.setenv(name, bytes, 1) else c.unsetenv(name);
@@ -373,14 +373,14 @@ pub fn osCompiler() [*:0]const u8 {
 /// implementation would return the caller's fallback value. Linux keeps the C
 /// path's zero result where querying affinity fails.
 pub fn osCpuCount() i32 {
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .illumos => {
-            const count = std.c.sysconf(@intFromEnum(std.c._SC.NPROCESSORS_CONF));
+            const count = std.c.sysconf(@backingInt(std.c._SC.NPROCESSORS_CONF));
             return if (count < 0) -1 else @intCast(count);
         },
         .windows, .linux, .freebsd, .netbsd, .openbsd, .dragonfly => {
             const count = std.Thread.getCpuCount() catch
-                return if (builtin.os.tag == .linux) 0 else -1;
+                return if (builtin.target.os.tag == .linux) 0 else -1;
             return std.math.cast(i32, count) orelse std.math.maxInt(i32);
         },
         else => return -1,

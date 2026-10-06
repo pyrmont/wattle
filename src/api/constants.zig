@@ -394,11 +394,11 @@ pub const Opcode = enum(u8) {
     pub const count: usize = 78;
 
     pub inline fn fromWord(word: u32) Opcode {
-        return @enumFromInt(@as(u8, @truncate(word)));
+        return @fromBackingInt(@intCast(@as(u8, @truncate(word))));
     }
 
     pub inline fn number(self: Opcode) u8 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 
@@ -475,11 +475,11 @@ pub const PegRule = enum(u32) {
     pub const count: u32 = 39;
 
     pub inline fn fromWord(word: u32) PegRule {
-        return @enumFromInt(word);
+        return @fromBackingInt(@intCast(word));
     }
 
     pub inline fn number(self: PegRule) u32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 
@@ -527,9 +527,9 @@ comptime {
         .{ .less_than_equal, 72 },      .{ .next, 73 },                           .{ .not_equals, 74 },             .{ .not_equals_immediate, 75 },
         .{ .cancel, 76 },               .{ .jump_if_not_arity, 77 },
     };
-    std.debug.assert(expected_opcode.len == @typeInfo(Opcode).@"enum".fields.len);
-    for (expected_opcode) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
-    std.debug.assert(Opcode.count == @intFromEnum(Opcode.jump_if_not_arity) + 1);
+    std.debug.assert(expected_opcode.len == @typeInfo(Opcode).@"enum".field_names.len);
+    for (expected_opcode) |row| std.debug.assert(@backingInt(row[0]) == row[1]);
+    std.debug.assert(Opcode.count == @backingInt(Opcode.jump_if_not_arity) + 1);
 }
 
 comptime {
@@ -548,7 +548,7 @@ comptime {
         .{ .sub, 32 },       .{ .til, 33 },         .{ .split, 34 },     .{ .nth, 35 },
         .{ .only_tags, 36 }, .{ .matchsplice, 37 }, .{ .debug, 38 },
     };
-    std.debug.assert(expected_peg_rule.len == @typeInfo(PegRule).@"enum".fields.len);
-    for (expected_peg_rule) |row| std.debug.assert(@intFromEnum(row[0]) == row[1]);
-    std.debug.assert(PegRule.count == @intFromEnum(PegRule.debug) + 1);
+    std.debug.assert(expected_peg_rule.len == @typeInfo(PegRule).@"enum".field_names.len);
+    for (expected_peg_rule) |row| std.debug.assert(@backingInt(row[0]) == row[1]);
+    std.debug.assert(PegRule.count == @backingInt(PegRule.debug) + 1);
 }

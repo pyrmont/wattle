@@ -122,7 +122,7 @@ fn control(r: rune.Rune) bool {
 test "draw: every zero-width rune after a base is drawn in its cell" {
     // Eight combining marks after one base, more than a fixed-size cell of
     // sixteen bytes would take.
-    const marks = "\u{301}" ** 8;
+    const marks = "\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try draw(std.testing.allocator, .{ .columns = 4, .prompt = 0, .marker = 0 }, "e" ++ marks ++ "x", &out.writer);

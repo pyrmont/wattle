@@ -59,7 +59,7 @@ const wrap = @import("subsystems").value.wrap;
 
 /// The hosts whose `cryptorand` draws from `arc4random_buf`, written out here
 /// rather than read from `utils.zig`, which keeps its own copy private.
-const bsd = switch (builtin.os.tag) {
+const bsd = switch (builtin.target.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .netbsd, .openbsd, .dragonfly => true,
     else => false,
 };

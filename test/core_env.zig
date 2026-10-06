@@ -322,11 +322,11 @@ fn loopFiberReportsAStatus() raise.Error!void {
     errReset();
     expect(try doString("(fiber/new (fn [] 42))", "contract", &out) == 0);
     expect(harness.isType(out, repr.Tag.fiber));
-    expect(try core_env.loopFiber(wrap.toFiber(out)) == @intFromEnum(fibers.FiberStatus.dead));
+    expect(try core_env.loopFiber(wrap.toFiber(out)) == @backingInt(fibers.FiberStatus.dead));
 
     expect(try doString("(fiber/new (fn [] (error :in-fiber)))", "contract", &out) == 0);
     errReset();
-    expect(try core_env.loopFiber(wrap.toFiber(out)) == @intFromEnum(fibers.FiberStatus.@"error"));
+    expect(try core_env.loopFiber(wrap.toFiber(out)) == @backingInt(fibers.FiberStatus.@"error"));
 }
 
 /// The image is `@embedFile`d, and this unmarshals it against the same length
@@ -490,13 +490,13 @@ fn getlineReadsALineThroughTheDyn() raise.Error!void {
         // needs is a stream opened for writing, and the mode is what makes
         // every read of it fail.
         const write_only_path = "wattle-core-env-write-only";
-        const write_only = switch (builtin.os.tag) {
+        const write_only = switch (builtin.target.os.tag) {
             .wasi => c.fopen(write_only_path, "w"),
             .windows => c.fopen("NUL", "w"),
             else => c.fopen("/dev/null", "w"),
         };
         expect(write_only != null);
-        if (builtin.os.tag == .wasi) expect(c.unlink(write_only_path) == 0);
+        if (builtin.target.os.tag == .wasi) expect(c.unlink(write_only_path) == 0);
         const write_only_handle = io_core.makefile(write_only, constants.file_write);
         gc_alloc.gcroot(write_only_handle);
         tables.put(test_env, value.fromBytes("in", .keyword), write_only_handle);

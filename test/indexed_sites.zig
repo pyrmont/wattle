@@ -269,7 +269,7 @@ fn joinAndSelectReadAnIndexedAbstract() void {
     const has_select = harness.coreOptional("ev/select") != null;
 
     var buffer: [2048]u8 = undefined;
-    const source = std.fmt.bufPrintZ(&buffer,
+    const source = std.mem.printSentinel(&buffer,
         \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\(defn- refusal [f & a] (let [r (protect (f |a))] (get r 1)))
@@ -293,7 +293,7 @@ fn joinAndSelectReadAnIndexedAbstract() void {
         \\       (= "xyzw" (string/join held)))
         \\{s}
         \\failures
-    , .{if (has_select) select else ""}) catch unreachable;
+    , .{if (has_select) select else ""}, 0) catch unreachable;
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
     expect(harness.isType(out, repr.Tag.array));
     const failed = wrap.toArray(out);
@@ -354,13 +354,13 @@ fn theGatheringSitesReadAnIndexedAbstract() void {
     if (!has_ffi and !has_execute) return;
 
     var buffer: [2048]u8 = undefined;
-    const source = std.fmt.bufPrintZ(&buffer,
+    const source = std.mem.printSentinel(&buffer,
         \\(def failures ![])
         \\(defn- check [label ok] (unless ok (array/push! failures label)))
         \\{[ffi]s}
         \\{[exec]s}
         \\failures
-    , .{ .ffi = if (has_ffi) ffi else "", .exec = if (has_execute) execute else "" }) catch unreachable;
+    , .{ .ffi = if (has_ffi) ffi else "", .exec = if (has_execute) execute else "" }, 0) catch unreachable;
 
     expect(core_env.dostring(env, source, "indexed-sites-test", &out) == 0);
     expect(harness.isType(out, repr.Tag.array));

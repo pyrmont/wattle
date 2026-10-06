@@ -288,7 +288,7 @@ pub fn prettyBuffer(
 /// and always on Windows. An unset or other `TERM` has 16. The environment is
 /// read at each call.
 pub fn extendedColor() bool {
-    return builtin.os.tag == .windows or envContains("TERM", "256color") or envSet("COLORTERM");
+    return builtin.target.os.tag == .windows or envContains("TERM", "256color") or envSet("COLORTERM");
 }
 
 // ==========================================================================
@@ -311,7 +311,7 @@ fn envContains(name: [*:0]const u8, needle: []const u8) bool {
 fn typeColor(tag: repr.Tag) [*:0]const u8 {
     return switch (tag) {
         .nil, .boolean => if (extendedColor()) constant_color_extended else constant_color_basic,
-        else => type_colors[@intFromEnum(tag)],
+        else => type_colors[@backingInt(tag)],
     };
 }
 

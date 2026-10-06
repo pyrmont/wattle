@@ -1,7 +1,8 @@
-//! `stat`, `lstat` and `fstat`, and the one place in this port where
-//! `@cImport` does not serve.
+//! `stat`, `lstat` and `fstat`, and the one place in this port where a
+//! translation of the host headers does not serve.
 //!
-//! Host structures stay libc's, reached with `@cImport`. `struct stat` is the
+//! Host structures stay libc's, reached through the translations `build.zig`
+//! produces. `struct stat` is the
 //! single measured exception: musl declares `struct timespec` with a bitfield,
 //! zero-width padding written as
 //! `int :8*(sizeof(time_t)-sizeof(long))*(__BYTE_ORDER==4321)`, and
@@ -14,17 +15,18 @@
 //!
 //! | platform | route |
 //! | --- | --- |
-//! | macOS, mingw | `@cImport`'s `struct stat`, which translates completely |
+//! | macOS, mingw | the translated `struct stat`, which is complete |
 //! | Linux | `statx`, whose structure Zig defines itself |
 //! | FreeBSD | `std.c.Stat`, which has every field `os/stat` reads |
 //!
-//! FreeBSD does not translate `<sys/stat.h>`. That header includes
-//! `<sys/time.h>` when `__BSD_VISIBLE` is set, as `wattle_features.h` sets it,
-//! and `translate-c` cannot translate the inline function `bintime_shift` in
-//! `<sys/time.h>`.
+//! FreeBSD reads `std.c.Stat` rather than the translation. `<sys/stat.h>`
+//! includes `<sys/time.h>` when `__BSD_VISIBLE` is set, as `wattle_features.h`
+//! sets it, and the translate-c of Zig 0.16 could not translate the inline
+//! function `bintime_shift` in `<sys/time.h>`. The translate-c package at
+//! 2.0.0 translates it.
 //!
 //! Zig's standard library supplies no substitute: `std.posix.Stat` is `void`
-//! on Linux and Windows, 0.16 has no `std.posix.fstat`, `fstatat` or
+//! on Linux and Windows, 0.17 has no `std.posix.fstat`, `fstatat` or
 //! `std.os.linux.Stat`, and `std.Io.File.Stat` has nine fields where `os/stat`
 //! reports fifteen. What it does supply on Linux is `std.os.linux.Statx`,
 //! which has every field `os/stat` needs.
@@ -52,13 +54,10 @@ const c = @import("cabi");
 /// subsystem boundary, and nothing does: `struct stat` never leaves this file,
 /// and what does leave is a mode word and an array of doubles.
 ///
-/// It is translated on every target but FreeBSD, including the musl ones where
-/// the result is `opaque {}`. That is harmless because the Linux arm never
-/// names it, and a comptime-false branch is not analysed.
-const sys = @cImport({
-    @cInclude("wattle_features.h");
-    @cInclude("sys/stat.h");
-});
+/// `build.zig` translates it for every target. On musl `struct stat` is
+/// `opaque {}`, which is harmless because the Linux arm never names `sys`, and
+/// neither does the FreeBSD arm.
+const sys = @import("c_stat");
 
 // ==========================================================================
 // Constants
@@ -69,10 +68,9 @@ const sys = @cImport({
 const S_IFDIR: u32 = 0o040000;
 const S_IFMT: u32 = 0o170000;
 
-/// `fstat`, `lstat` and `stat`, declared rather than taken from `std.c`, which
-/// has no `stat` for `aarch64-macos` in 0.16: `std.stat` resolves to
-/// `private.stat`, and that member does not exist for this architecture. The
-/// symbol does.
+/// `fstat`, `lstat` and `stat`, declared here so that each takes this file's
+/// `Stat`. The declarations in `std.c` take `std.c.Stat`, which on macOS is a
+/// second description of the structure rather than the translated one.
 const c_fstat: *const fn (c_int, *Stat) callconv(.c) c_int =
     @extern(*const fn (c_int, *Stat) callconv(.c) c_int, .{ .name = fstat_name });
 
@@ -89,8 +87,8 @@ const c_stat: *const fn ([*:0]const u8, *Stat) callconv(.c) c_int =
 /// structure and the wide one is `$INODE64`; arm64 has no such history, so
 /// there the plain names are the wide structure. That is the same table
 /// `std.c` has.
-const darwin_inode64 = switch (builtin.os.tag) {
-    .macos, .ios, .tvos, .watchos, .visionos, .driverkit => builtin.cpu.arch == .x86_64,
+const darwin_inode64 = switch (builtin.target.os.tag) {
+    .macos, .ios, .tvos, .watchos, .visionos, .driverkit => builtin.target.cpu.arch == .x86_64,
     else => false,
 };
 
@@ -104,9 +102,9 @@ const stat_name = if (darwin_inode64) "stat$INODE64" else "stat";
 
 /// Whether this target takes the `statx` arm, and whether it takes the arm
 /// with no `lstat` at all.
-const linux = builtin.os.tag == .linux;
-const windows = builtin.os.tag == .windows;
-const freebsd = builtin.os.tag == .freebsd;
+const linux = builtin.target.os.tag == .linux;
+const windows = builtin.target.os.tag == .windows;
+const freebsd = builtin.target.os.tag == .freebsd;
 
 // ==========================================================================
 // Aliased types
@@ -119,7 +117,7 @@ const freebsd = builtin.os.tag == .freebsd;
 /// is a rename this import cannot see.** mingw picks both the layout and the
 /// symbol from `_FILE_OFFSET_BITS`, which `wattle_features.h` sets to 64: the
 /// struct gets a 64-bit `off_t`, and `stat` is declared
-/// `__MINGW_ASM_CALL(stat64)` to match. `@cImport` does not carry an assembler
+/// `__MINGW_ASM_CALL(stat64)` to match. translate-c does not carry an assembler
 /// label across, so a call to `sys.stat` emits the plain `stat` symbol, which
 /// fills the 48-byte `_stat64i32` layout instead. The mode word is at the same
 /// offset in both and survives; `st_size` does not, and reads the access time.
@@ -157,7 +155,7 @@ pub const Field = enum(usize) {
     modified,
     changed,
 
-    pub const count = @typeInfo(Field).@"enum".fields.len;
+    pub const count = @typeInfo(Field).@"enum".field_names.len;
 };
 
 // ==========================================================================
@@ -175,7 +173,7 @@ pub const Field = enum(usize) {
 /// coming back `false` is what says the question could not be asked. Both arms
 /// do the same thing.
 pub fn isDirectory(file: ?*anyopaque) bool {
-    if (windows or builtin.os.tag == .plan9) return false;
+    if (windows or builtin.target.os.tag == .plan9) return false;
     return descriptorIsDirectory(c.fileno(file)) orelse false;
 }
 
@@ -230,7 +228,7 @@ fn encodeDev(major: u32, minor: u32) u64 {
 
 /// Writes one field of the numbers array by name.
 inline fn put(numbers: [*]f64, field: Field, value: f64) void {
-    numbers[@intFromEnum(field)] = value;
+    numbers[@backingInt(field)] = value;
 }
 
 /// The macOS and Windows arm, over `struct stat`.
@@ -270,7 +268,7 @@ fn readCStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
         put(numbers, .accessed, @floatFromInt(st.st_atime));
         put(numbers, .modified, @floatFromInt(st.st_mtime));
         put(numbers, .changed, @floatFromInt(st.st_ctime));
-    } else if (builtin.os.tag.isDarwin()) {
+    } else if (builtin.target.os.tag.isDarwin()) {
         put(numbers, .accessed, @floatFromInt(st.st_atimespec.tv_sec));
         put(numbers, .modified, @floatFromInt(st.st_mtimespec.tv_sec));
         put(numbers, .changed, @floatFromInt(st.st_ctimespec.tv_sec));

@@ -7,10 +7,10 @@
 //! `os_platform.zig` derives its results from `builtin`, so asserting them
 //! against `builtin` again would prove nothing. A preprocessor's view is not
 //! the second opinion either: a macro derived from a compiler's own predefines
-//! is unreliable through `@cImport`, since Aro predefines `__unix__` for
-//! `x86_64-windows-gnu`, so a header's *translation* can say POSIX where its
-//! *compilation* says Windows. The standing rule is to test the platform with
-//! `builtin.os.tag`.
+//! is unreliable through a translation, since Aro predefined `__unix__` for
+//! `x86_64-windows-gnu` in Zig 0.16, so a header's *translation* can say POSIX
+//! where its *compilation* says Windows. The standing rule is to test the
+//! platform with `builtin.target.os.tag`.
 //!
 //! Two oracles are used instead.
 //!
@@ -65,13 +65,13 @@ fn cstr(pointer: [*:0]const u8) []const u8 {
 /// What the running kernel calls itself, or null where `uname` is not
 /// available or not informative.
 fn unameSysname(buffer: *std.c.utsname) ?[]const u8 {
-    if (builtin.os.tag == .windows) return null;
+    if (builtin.target.os.tag == .windows) return null;
     if (std.c.uname(buffer) != 0) return null;
     return std.mem.sliceTo(&buffer.sysname, 0);
 }
 
 fn unameMachine(buffer: *std.c.utsname) ?[]const u8 {
-    if (builtin.os.tag == .windows) return null;
+    if (builtin.target.os.tag == .windows) return null;
     if (std.c.uname(buffer) != 0) return null;
     return std.mem.sliceTo(&buffer.machine, 0);
 }

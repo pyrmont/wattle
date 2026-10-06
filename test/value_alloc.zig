@@ -179,7 +179,7 @@ fn assertNewborn(fiber: *fibers.Fiber, expect_stacktop: i32) void {
     // whose layout it is checking.
     expect((@as(u32, @bitCast(fiber.flags)) & ~@as(u32, 0x3F0000)) ==
         (1 << 3) | (1 << 25) | (1 << 26));
-    expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
+    expect(statusOf(fiber) == @backingInt(fibers.FiberStatus.new));
     if (with_ev) {
         expect(fiber.sched_id == 0);
         expect(fiber.ev_op == null);
@@ -201,7 +201,7 @@ fn dirty(fiber: *fibers.Fiber, child: *fibers.Fiber, env: *tables.Table) void {
     fiber.flags = .{
         .traps = .of(&.{.@"error"}),
         .did_raise = true,
-        .status = @intFromEnum(fibers.FiberStatus.alive),
+        .status = @backingInt(fibers.FiberStatus.alive),
     };
     if (with_ev) {
         fiber.sched_id = 29;
@@ -282,7 +282,7 @@ fn argumentsLandAboveTheFrame(binary: *functions.Function, nullary: *functions.F
     for (0..3) |i| {
         fiber.data.?[@intCast(frame_size + @as(i32, @intCast(i)))] = harness.wrapInteger(-1);
     }
-    const three_nils = [_]repr.Value{wrap.fromNil()} ** 3;
+    const three_nils: [3]repr.Value = @splat(wrap.fromNil());
     if (fibers.reset(fiber, binary, &three_nils)) |_| expect(false) else |_| {}
     expect(fiber.stacktop == frame_size + 3);
     for (0..3) |i| {
@@ -343,7 +343,7 @@ fn aFiberIsReadyToRun(binary: *functions.Function) void {
     expect(flags.argc == 2);
     flags.argc = 0;
     expect(@as(i32, @bitCast(flags)) == constants.stackframe_entrance);
-    expect(statusOf(fiber) == @intFromEnum(fibers.FiberStatus.new));
+    expect(statusOf(fiber) == @backingInt(fibers.FiberStatus.new));
     if (with_ev) expect(fiber.supervisor_channel == null);
 }
 
@@ -613,7 +613,7 @@ pub fn run() void {
     aThunkChargesItsBlock();
     thunksAreDistinct();
     // Windows has no `fork`, and neither does WASI, which runs one process.
-    if (builtin.os.tag != .windows and builtin.os.tag != .wasi) aThunkRefusesUpvalues();
+    if (builtin.target.os.tag != .windows and builtin.target.os.tag != .wasi) aThunkRefusesUpvalues();
 
     aDelayedThunkReturnsItsValue();
 

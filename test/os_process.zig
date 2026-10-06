@@ -51,7 +51,7 @@ const vm_lifecycle = @import("subsystems").lifecycle;
 // Constants
 // ==========================================================================
 
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Types
@@ -69,7 +69,7 @@ const posix = struct {
     /// so a signal number is narrowed once here rather than at each site.
     fn signal(number: anytype) c_int {
         return switch (@typeInfo(@TypeOf(number))) {
-            .@"enum" => @intCast(@intFromEnum(number)),
+            .@"enum" => @intCast(@backingInt(number)),
             else => @intCast(number),
         };
     }

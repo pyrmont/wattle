@@ -26,11 +26,9 @@ const builtin = @import("builtin");
 
 const host = @import("host");
 
-/// The translation itself. Every `h.`-qualified type below is one of its
-/// declarations.
-pub const h = @cImport({
-    @cInclude("os/abi.h");
-});
+/// The translation itself, which `build.zig` produces from `os/abi.h` for the
+/// target. Every `h.`-qualified type below is one of its declarations.
+pub const h = @import("c_os");
 
 // ==========================================================================
 // Constants
@@ -54,7 +52,7 @@ pub const spawn_chdir_np = h.WATTLE_SPAWN_CHDIR_NP != 0;
 
 /// `mode_t`, which POSIX gets from this translation and Windows spells as an
 /// `unsigned short`. `os/fs/stat.zig` re-exports it as `jmode_t`.
-pub const jmode_t = if (builtin.os.tag == .windows) c_ushort else h.mode_t;
+pub const jmode_t = if (builtin.target.os.tag == .windows) c_ushort else h.mode_t;
 
 // ==========================================================================
 // Types
@@ -213,7 +211,7 @@ extern fn __p__environ() callconv(.c) *EnvironVector;
 /// The address of the environment vector, whichever of the three spellings
 /// this platform has.
 inline fn environPtr() *EnvironVector {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .macos, .ios, .tvos, .watchos, .visionos => _NSGetEnviron(),
         // mingw's `_environ` is a macro over `__p__environ()`, and only the
         // accessor is a symbol its import library exports.

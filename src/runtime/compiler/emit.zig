@@ -486,7 +486,7 @@ fn loadFromConstantPool(compiler: *compiler_primitives.Compiler, val: repr.Value
 /// temporary where it does not already fit in eight bits.
 fn makeNearSource(compiler: *compiler_primitives.Compiler, source_value: u16) u8 {
     if (source_value <= 0xff) return @intCast(source_value);
-    const near_source: u8 = 0xf0 + @as(u8, @intFromEnum(constants.RegisterTemp.t5));
+    const near_source: u8 = 0xf0 + @as(u8, @backingInt(constants.RegisterTemp.t5));
     emitInstruction(compiler, opcode(constants.Opcode.move_near) |
         (@as(u32, near_source) << 8) |
         (@as(u32, source_value) << 16));

@@ -166,7 +166,7 @@ if you are in the REPL to show bound symbols.
 ## Building
 
 Wattle is built with [Zig][]. The version is pinned in
-`.zigversion` and is currently **0.16.0**.
+`.zigversion` and is currently **0.17.0**.
 
 ```sh
 git clone https://github.com/pyrmont/wattle

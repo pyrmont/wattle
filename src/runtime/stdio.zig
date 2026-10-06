@@ -44,7 +44,7 @@ const host = @import("host");
 // ==========================================================================
 
 /// Whether this target's libc names the streams the Darwin and BSD way.
-const darwin_or_bsd = switch (builtin.os.tag) {
+const darwin_or_bsd = switch (builtin.target.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos, .driverkit => true,
     .freebsd, .netbsd, .openbsd, .dragonfly => true,
     else => false,
@@ -64,7 +64,7 @@ pub const out = impl.out;
 ///
 /// Each arm declares `in`, `out` and `err` over the symbols that platform
 /// actually exports, so the three constants above are one load either way.
-const impl = if (builtin.os.tag == .windows) struct {
+const impl = if (builtin.target.os.tag == .windows) struct {
     // The UCRT has no exported `c.stdin`. The macro calls this and indexes the
     // `_iob` table, so the index is the interface.
     pub fn in() *host.FILE {

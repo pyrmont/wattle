@@ -793,7 +793,7 @@ fn nfunFiberSetmaxstack(argv: []repr.Value) raise.Error!repr.Value {
 fn nfunFiberStatus(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const fiber = try args_core.getFiber(argv, 0);
-    return value.fromBytes(std.mem.span(utils.statusNames[@intFromEnum(statusOf(fiber))]), .keyword);
+    return value.fromBytes(std.mem.span(utils.statusNames[@backingInt(statusOf(fiber))]), .keyword);
 }
 
 /// The slot at `index` in `fiber`'s stack.
@@ -1089,7 +1089,7 @@ fn resetState(fiber: *Fiber) void {
 
 /// Writes a fiber's status into its flag word.
 inline fn setStatus(fiber: *Fiber, to: FiberStatus) void {
-    fiber.flags.status = @intCast(@intFromEnum(to));
+    fiber.flags.status = @intCast(@backingInt(to));
 }
 
 /// Where `arr` starts within `fiber`'s stack, or null where it is elsewhere.
@@ -1113,13 +1113,13 @@ fn stackOffset(fiber: *const Fiber, arr: []const repr.Value) ?usize {
 /// is in this tree, and `marsh.zig` validates the one value that arrives from
 /// outside it.
 inline fn statusOf(f: *Fiber) FiberStatus {
-    return @enumFromInt(f.flags.status);
+    return @fromBackingInt(@intCast(f.flags.status));
 }
 
 /// The `n`th user signal, for the digits `0` through `9` in a fiber's flag
 /// string.
 inline fn userSignal(n: u8) abi.Signal {
-    return @enumFromInt(@intFromEnum(abi.Signal.user0) + @as(c_uint, n));
+    return @fromBackingInt(@intCast(@backingInt(abi.Signal.user0) + @as(c_uint, n)));
 }
 
 // ==========================================================================
@@ -1131,7 +1131,7 @@ inline fn userSignal(n: u8) abi.Signal {
 comptime {
     // The stored width, which is the fiber flag word's and not the enum's.
     const stored = std.math.maxInt(@FieldType(FiberFlags, "status"));
-    for (@typeInfo(FiberStatus).@"enum".fields) |f| {
-        std.debug.assert(f.value <= stored);
+    for (@typeInfo(FiberStatus).@"enum".field_values) |member| {
+        std.debug.assert(member <= stored);
     }
 }

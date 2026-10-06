@@ -91,7 +91,7 @@ var child_saw_main_blocks: usize = 0;
 /// Windows is cross-compiled and never executed here, so its path is left out
 /// rather than written blind, on the same condition and for the same reason as
 /// `test/fiber_core.zig`.
-const has_threads = options.ev and builtin.os.tag != .windows;
+const has_threads = options.ev and builtin.target.os.tag != .windows;
 var parent_finalized: i32 = 0;
 var shared_abstract: ?*anyopaque = null;
 const stress_rounds = 2000;

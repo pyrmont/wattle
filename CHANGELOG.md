@@ -5,6 +5,11 @@ since the most recent release are under Unreleased.
 
 ## Unreleased
 
+- Require Zig 0.17.0. A native module must be built with the same Zig
+  version as the runtime, so a module built with 0.16.0 no longer loads.
+- Translate the host C headers with the translate-c package, which
+  `build.zig.zon` now lists as a dependency, in place of `@cImport`.
+
 ## 0.1.1 (2026-10-05)
 
 - Strip debug information from the Linux release builds. On aarch64 the

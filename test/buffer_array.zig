@@ -566,7 +566,7 @@ fn arrayChargesGcPressure() void {
     expect(harness.vm().gc.next_collection == charge + @sizeOf(arrays.Array));
 
     // `arrays.newFrom` allocates a payload and charges nothing for it.
-    var elements = [_]repr.Value{wrap.fromNil()} ** 4;
+    var elements: [4]repr.Value = @splat(wrap.fromNil());
     charge = harness.vm().gc.next_collection;
     const n = arrays.newFrom(&elements);
     expect(n.capacity == 4);
@@ -642,7 +642,7 @@ fn theCeilings() !void {
     expect(full.count == 1);
     expect(harness.raised(buffers.extra, .{ &full, ceiling }).?.says("buffer overflow"));
 
-    if (comptime builtin.os.tag != .windows and @sizeOf(usize) >= 8) {
+    if (comptime builtin.target.os.tag != .windows and @sizeOf(usize) >= 8) {
         try theReservedCeilings();
     }
 }

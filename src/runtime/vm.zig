@@ -737,7 +737,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
     // injected 14 through 63 would build an out-of-domain value of an
     // exhaustive enum right here.
     if (fiber.flags.resume_signal) {
-        const sig: abi.Signal = @enumFromInt(fiber.gc.flags.own);
+        const sig: abi.Signal = @fromBackingInt(@intCast(fiber.gc.flags.own));
         fiber.gc.flags.own = 0;
         fiber.flags = fiber.flags.withoutResumeStateAndSignal();
         self.vm.return_reg.?.* = in;
@@ -771,7 +771,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
     // With a breakpoint set, bit 7 is kept out of the masked value, so the
     // instruction lands on no arm and the `_ =>` arm below raises `debug`.
     const breakpoint_mask: u32 = if (fiber.flags.breakpoint) 0x7F else 0xFF;
-    const first_opcode: constants.Opcode = @enumFromInt(@as(u8, @intCast(self.pc[0] & breakpoint_mask)));
+    const first_opcode: constants.Opcode = @fromBackingInt(@intCast(@as(u8, @intCast(self.pc[0] & breakpoint_mask))));
 
     fiber.flags = fiber.flags.withoutResumeState();
 
@@ -1355,16 +1355,16 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             if (try self.assertType(fv, repr.Tag.fiber)) |s| return s;
             const f = wrap.toFiber(fv);
             const sub_status = fibers.status(f);
-            if (@intFromEnum(sub_status) > @intFromEnum(fibers.FiberStatus.user9)) {
+            if (@backingInt(sub_status) > @backingInt(fibers.FiberStatus.user9)) {
                 self.commit();
                 return try self.raisef("cannot propagate from fiber with status :%s", .{
-                    utils.statusNames[@intFromEnum(sub_status)],
+                    utils.statusNames[@backingInt(sub_status)],
                 });
             }
             fiber.child = f;
             // Guarded above to be one of the fourteen the two vocabularies
             // share.
-            return self.ret(@enumFromInt(@intFromEnum(sub_status)), self.stack[fB(self.pc)]);
+            return self.ret(@fromBackingInt(@intCast(@backingInt(sub_status))), self.stack[fB(self.pc)]);
         },
 
         .cancel => {

@@ -39,7 +39,7 @@
 //! ## Reading the layout
 //!
 //! The three-way `#ifdef` chain is unavailable, because a `JANET_*` macro
-//! derived from the compiler's predefines is unreliable through `@cImport`:
+//! derived from the compiler's predefines is unreliable through a translation:
 //! the front end and the compilation can disagree about a predefine. The
 //! layout is read off the shape of the translated `Janet` instead, which is
 //! what `value_wrap.zig` and `value_order.zig` both do.
@@ -147,14 +147,14 @@ fn pointerB() ?*anyopaque {
 }
 
 fn typeAt(index: usize) repr.Tag {
-    return @enumFromInt(index);
+    return @fromBackingInt(@intCast(index));
 }
 
 /// A tag as an array index. The corpus below is one value per tag in tag
 /// order, so `values[at(.string)]` is the string one; the tag is an enum, and
 /// an enum is deliberately not an integer.
 fn at(t: repr.Tag) usize {
-    return @intFromEnum(t);
+    return @backingInt(t);
 }
 
 /// One value of each type, in tag order, so the matrix below can be written as
@@ -421,7 +421,7 @@ fn checkTypes() void {
     var values: [repr.tag_count]repr.Value = undefined;
     buildOneOfEach(&values);
     for (values, 0..) |value, i| {
-        const tag: repr.Tag = @enumFromInt(i);
+        const tag: repr.Tag = @fromBackingInt(@intCast(i));
         const set = repr.TagSet.one(tag);
         expect(repr.checkTypes(value, set));
         expect(!repr.checkTypes(value, repr.TagSet.fromBits(~set.bits())));
@@ -474,9 +474,9 @@ fn theTwoSpellingsAgree() void {
 /// each layout's helpers exist only in that layout's build.
 fn exactLayoutNanbox64() void {
     const p = pointerA();
-    const nil_tag: u64 = (@as(u64, @intFromEnum(repr.Tag.nil)) | 0x1FFF0) << 47;
-    const bool_tag: u64 = (@as(u64, @intFromEnum(repr.Tag.boolean)) | 0x1FFF0) << 47;
-    const array_tag: u64 = (@as(u64, @intFromEnum(repr.Tag.array)) | 0x1FFF0) << 47;
+    const nil_tag: u64 = (@as(u64, @backingInt(repr.Tag.nil)) | 0x1FFF0) << 47;
+    const bool_tag: u64 = (@as(u64, @backingInt(repr.Tag.boolean)) | 0x1FFF0) << 47;
+    const array_tag: u64 = (@as(u64, @backingInt(repr.Tag.array)) | 0x1FFF0) << 47;
 
     // The three immediate values are a tag with a one-bit payload.
     expect(harness.u64Of(wrap.abi.fromNil()) == (nil_tag | 1));
@@ -511,14 +511,14 @@ fn exactLayoutNanbox32() void {
 
     // Every non-number tag is stored raw in the high word, below the offset
     // that biases a double's exponent out of the way.
-    expect(wrap.abi.fromNil().tagged.type == @as(u32, @intFromEnum(repr.Tag.nil)));
+    expect(wrap.abi.fromNil().tagged.type == @as(u32, @backingInt(repr.Tag.nil)));
     expect(wrap.abi.fromNil().tagged.payload.integer == 0);
-    expect(wrap.abi.fromTrue().tagged.type == @as(u32, @intFromEnum(repr.Tag.boolean)));
+    expect(wrap.abi.fromTrue().tagged.type == @as(u32, @backingInt(repr.Tag.boolean)));
     expect(wrap.abi.fromTrue().tagged.payload.integer == 1);
     expect(wrap.abi.fromFalse().tagged.payload.integer == 0);
-    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).tagged.type == @as(u32, @intFromEnum(repr.Tag.array)));
+    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).tagged.type == @as(u32, @backingInt(repr.Tag.array)));
     expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).tagged.payload.pointer == p);
-    expect(@as(u32, @intFromEnum(repr.Tag.pointer)) < @as(u32, repr.double_offset));
+    expect(@as(u32, @backingInt(repr.Tag.pointer)) < @as(u32, repr.double_offset));
 
     // A double is biased by `repr.double_offset` in its high word, which is
     // what keeps every number above every tag.
@@ -526,9 +526,9 @@ fn exactLayoutNanbox32() void {
     expect(harness.u64Of(wrap.fromNumber(1.5)) == bits +% (@as(u64, repr.double_offset) << 32));
     expect(wrap.toNumber(wrap.fromNumber(1.5)) == 1.5);
 
-    expect(wrap.nanbox32FromTagI(@as(u32, @intFromEnum(repr.Tag.boolean)), 1).tagged.payload.integer == 1);
-    expect(wrap.nanbox32FromTagP(@as(u32, @intFromEnum(repr.Tag.array)), p).tagged.payload.pointer == p);
-    expect(wrap.nanbox32FromTagP(@as(u32, @intFromEnum(repr.Tag.array)), p).tagged.type == @as(u32, @intFromEnum(repr.Tag.array)));
+    expect(wrap.nanbox32FromTagI(@as(u32, @backingInt(repr.Tag.boolean)), 1).tagged.payload.integer == 1);
+    expect(wrap.nanbox32FromTagP(@as(u32, @backingInt(repr.Tag.array)), p).tagged.payload.pointer == p);
+    expect(wrap.nanbox32FromTagP(@as(u32, @backingInt(repr.Tag.array)), p).tagged.type == @as(u32, @backingInt(repr.Tag.array)));
 
     const canonical: u64 = @bitCast(wrap.toNumber(wrap.fromNumberSafe(std.math.nan(f64))));
     expect((canonical & 0x000FFFFFFFFFFFFF) == 0x0008000000000000);
@@ -541,12 +541,12 @@ fn exactLayoutTagged() void {
     // the narrower member is written, which is what the `as.u64 = 0` in
     // `repr.zig`'s wrappers is for. The only way to see it is through a member
     // narrower than the union.
-    expect(wrap.abi.fromNil().type == @intFromEnum(repr.Tag.nil));
+    expect(wrap.abi.fromNil().type == @backingInt(repr.Tag.nil));
     expect(harness.u64Of(wrap.abi.fromNil()) == 0);
-    expect(wrap.abi.fromTrue().type == @intFromEnum(repr.Tag.boolean));
+    expect(wrap.abi.fromTrue().type == @backingInt(repr.Tag.boolean));
     expect(harness.u64Of(wrap.abi.fromTrue()) == 1);
     expect(harness.u64Of(wrap.abi.fromFalse()) == 0);
-    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).type == @intFromEnum(repr.Tag.array));
+    expect(wrap.abi.fromArray(@ptrCast(@alignCast(p))).type == @backingInt(repr.Tag.array));
     expect(harness.u64Of(wrap.abi.fromArray(@ptrCast(@alignCast(p)))) == @as(u64, @intFromPtr(p)));
     expect(harness.u64Of(wrap.abi.fromPointer(null)) == 0);
 

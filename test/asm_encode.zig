@@ -69,14 +69,14 @@ fn assemble(source: [*:0]const u8) bytecode.AssembleResult {
 /// Assemble, and assert it was refused with exactly this message.
 fn refused(source: [*:0]const u8, message: [*:0]const u8) void {
     const result = assemble(source);
-    expect(@intFromEnum(result.status) == 1);
+    expect(@backingInt(result.status) == 1);
     expect(result.@"error" != null);
     expect(harness.stringIs(result.@"error".?, message));
 }
 
 fn accepted(source: [*:0]const u8) *functions.FuncDef {
     const result = assemble(source);
-    expect(@intFromEnum(result.status) == 0);
+    expect(@backingInt(result.status) == 0);
     expect(result.@"error" == null);
     return result.funcdef.?;
 }

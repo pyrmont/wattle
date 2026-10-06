@@ -107,7 +107,7 @@ pub fn bufferTest() void {
 /// A failed check panics. This returns without checking anything on plan9,
 /// which has no `atof` to compare against.
 pub fn numberTest() void {
-    if (builtin.os.tag == .plan9) return;
+    if (builtin.target.os.tag == .plan9) return;
     inline for (.{
         "1.0",                                "1",
         "2.1",                                "1e10",

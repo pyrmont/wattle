@@ -73,7 +73,7 @@ const has_ev = constants.vm_has_ev != 0;
 /// Signals run from OK to USER9; INTERRUPT and EVENT are aliases of USER8 and
 /// USER9 rather than values of their own, so counting the enumeration would
 /// overcount.
-const signal_count: c_int = @intFromEnum(abi.Signal.user9) + 1;
+const signal_count: c_int = @backingInt(abi.Signal.user9) + 1;
 var test_env: *tables.Table = undefined;
 
 // ==========================================================================
@@ -223,7 +223,7 @@ fn thePlanWithoutCoercion() void {
 
     var s: c_int = 0;
     while (s < signal_count) : (s += 1) {
-        const sig: abi.Signal = @enumFromInt(@as(c_uint, @intCast(s)));
+        const sig: abi.Signal = @fromBackingInt(@intCast(@as(c_uint, @intCast(s))));
         const decision = signal_core.signalPlan(sig);
         expect(decision.plan == signal_core.Plan.raise);
         expect(decision.signal == sig);
@@ -253,9 +253,9 @@ fn thePlanCoerces() void {
     expect(error_decision.plan == signal_core.Plan.raise);
     expect(error_decision.signal == abi.Signal.@"error");
 
-    var s: c_int = @intFromEnum(abi.Signal.debug);
+    var s: c_int = @backingInt(abi.Signal.debug);
     while (s < signal_count) : (s += 1) {
-        const decision = signal_core.signalPlan(@enumFromInt(@as(c_uint, @intCast(s))));
+        const decision = signal_core.signalPlan(@fromBackingInt(@intCast(@as(c_uint, @intCast(s)))));
         expect(decision.plan == signal_core.Plan.coerce);
         expect(decision.signal == abi.Signal.@"error");
     }
@@ -559,7 +559,7 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
 
     expect(grandchild.flags.resume_signal);
     expect((harness.gcBits(grandchild.gc.flags) & constants.fiber_status_mask) >> constants.fiber_status_offset ==
-        @intFromEnum(abi.Signal.user3));
+        @backingInt(abi.Signal.user3));
 
     // The fiber's real status lives in `flags` and is untouched.
     expect(fibers.status(grandchild) == fibers.FiberStatus.new);
@@ -576,7 +576,7 @@ fn injectionReachesTheInnermostFiber(nothing: *functions.Function) void {
     signal_core.signalInject(grandchild, abi.Signal.user1);
     expect(grandchild.flags.resume_signal);
     expect((harness.gcBits(grandchild.gc.flags) & constants.fiber_status_mask) >> constants.fiber_status_offset ==
-        @intFromEnum(abi.Signal.user1));
+        @backingInt(abi.Signal.user1));
 
     grandchild.gc.flags = @bitCast(harness.gcBits(grandchild.gc.flags) & ~@as(u32, constants.fiber_status_mask));
     grandchild.flags.resume_signal = false;
@@ -648,8 +648,8 @@ fn anOutOfDomainSignalClamps(yielder: *functions.Function) void {
     expect(abi.Signal.fromWire(std.math.maxInt(c_uint)) == abi.Signal.user9);
 
     // A member converts to itself, so an internal caller pays nothing.
-    inline for (@typeInfo(abi.Signal).@"enum".fields) |f| {
-        expect(abi.Signal.fromWire(f.value) == @as(abi.Signal, @enumFromInt(f.value)));
+    inline for (@typeInfo(abi.Signal).@"enum".field_values) |member| {
+        expect(abi.Signal.fromWire(member) == @as(abi.Signal, @fromBackingInt(member)));
     }
 }
 

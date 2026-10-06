@@ -129,7 +129,7 @@ const seek_end: c_int = 2;
 
 /// Whether this build waits on the loop for input, through the stream feed.
 /// Windows reads with the blocking feed whether or not the loop is compiled.
-const stream_feed = config.ev and builtin.os.tag != .windows;
+const stream_feed = config.ev and builtin.target.os.tag != .windows;
 
 /// The session every line is edited in, created at the first `read`.
 var session: ?lineedit.session.Session = null;
@@ -413,7 +413,7 @@ fn hint(token: []const u8) ?[]const u8 {
     }
     const name: []const u8 = switch (repr.typeOf(bound)) {
         .abstract => abi.abstractHead(wrap.toAbstract(bound)).type.name,
-        else => if (wrap.isKeyword(bound)) "keyword" else utils.typeNames[@intFromEnum(repr.typeOf(bound))],
+        else => if (wrap.isKeyword(bound)) "keyword" else utils.typeNames[@backingInt(repr.typeOf(bound))],
     };
     return std.fmt.bufPrint(&type_hint, ":{s}", .{name}) catch null;
 }

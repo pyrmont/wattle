@@ -120,7 +120,7 @@ fn evaluate(source: [*:0]const u8) repr.Value {
 
 fn compiled(pattern: []const u8) *peg.Peg {
     var source: [1024]u8 = undefined;
-    const written = std.fmt.bufPrintZ(&source, "(peg/compile {s})", .{pattern}) catch
+    const written = std.mem.printSentinel(&source, "(peg/compile {s})", .{pattern}, 0) catch
         @panic("pattern too long");
     const val = evaluate(written.ptr);
     expect(args_core.checkabstract(val, &peg.pegType) != null);

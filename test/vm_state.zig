@@ -57,7 +57,7 @@ var child_vm: ?*vm_state.Vm = null;
 /// there is nothing here to check. Windows is cross-compiled and never
 /// executed, so its path is left out rather than written blind, on the same
 /// condition and for the same reason as `test/fiber_core.zig`.
-const has_threads = constants.vm_thread_local != 0 and builtin.os.tag != .windows;
+const has_threads = constants.vm_thread_local != 0 and builtin.target.os.tag != .windows;
 
 var main_vm: *vm_state.Vm = undefined;
 
@@ -161,7 +161,7 @@ fn saveSpansTheStructure() void {
     // `@ptrFromInt` that cannot satisfy its alignment. The value is a witness
     // rather than an address, so any distinguishable one does.
     vm().traversal.base = @ptrFromInt(0x5550);
-    if (comptime builtin.os.tag != .windows) {
+    if (comptime builtin.target.os.tag != .windows) {
         vm().strerror_buf[0] = 'z';
         vm().strerror_buf[vm().strerror_buf.len - 1] = 'q';
     }
@@ -172,7 +172,7 @@ fn saveSpansTheStructure() void {
     }
     // Whichever of the four event-loop backends this build has, its last
     // field is the furthest into the structure a save has to reach.
-    if (comptime config.ev and builtin.os.tag == .windows) {
+    if (comptime config.ev and builtin.target.os.tag == .windows) {
         vm().ev.backend.connect_ex_loaded = true;
     } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
         vm().ev.backend.timer_enabled = true;
@@ -189,7 +189,7 @@ fn saveSpansTheStructure() void {
     expect(vm().roots.capacity == 0x3333);
     expect(vm().sandbox_flags.bits() == 0x4444);
     expect(@intFromPtr(vm().traversal.base) == 0x5550);
-    if (comptime builtin.os.tag != .windows) {
+    if (comptime builtin.target.os.tag != .windows) {
         expect(vm().strerror_buf[0] == 'z');
         expect(vm().strerror_buf[vm().strerror_buf.len - 1] == 'q');
     }
@@ -198,7 +198,7 @@ fn saveSpansTheStructure() void {
         expect(vm().ev.spawn.capacity == 0x7777);
         expect(vm().ev.active_tasks.capacity == 0x8888);
     }
-    if (comptime config.ev and builtin.os.tag == .windows) {
+    if (comptime config.ev and builtin.target.os.tag == .windows) {
         expect(vm().ev.backend.connect_ex_loaded == true);
     } else if (comptime config.ev and (config.ev_epoll or config.ev_kqueue)) {
         expect(vm().ev.backend.timer_enabled == true);
@@ -252,9 +252,9 @@ fn interruptCounter() void {
 /// scalars and for the fixed layouts whose padding *is* their ABI.
 fn isFresh(state: *const vm_state.Vm) bool {
     const fresh = vm_state.Vm{};
-    inline for (@typeInfo(vm_state.Vm).@"struct".fields) |f| {
-        const a = std.mem.asBytes(&@field(state, f.name));
-        const b = std.mem.asBytes(&@field(fresh, f.name));
+    inline for (@typeInfo(vm_state.Vm).@"struct".field_names) |name| {
+        const a = std.mem.asBytes(&@field(state, name));
+        const b = std.mem.asBytes(&@field(fresh, name));
         if (!std.mem.eql(u8, a, b)) return false;
     }
     return true;

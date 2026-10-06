@@ -68,7 +68,7 @@ const frame_size: i32 = constants.frame_size;
 /// Windows is cross-compiled and never executed here, so its path is left out
 /// rather than written blind, on the same condition, and the same reason, as
 /// `test/gc_stress.zig`.
-const has_threads = options.ev and builtin.os.tag != .windows;
+const has_threads = options.ev and builtin.target.os.tag != .windows;
 var test_env: *tables.Table = undefined;
 
 // ==========================================================================
@@ -89,7 +89,7 @@ fn currentFrame(fiber: *fibers.Fiber) *vm_state.StackFrame {
 }
 
 fn setStatus(fiber: *fibers.Fiber, status: fibers.FiberStatus) void {
-    fiber.flags.status = @intCast(@intFromEnum(status));
+    fiber.flags.status = @intCast(@backingInt(status));
 }
 
 fn slot(fiber: *fibers.Fiber, index: i32) repr.Value {
@@ -861,8 +861,8 @@ fn statusAndResumability(add: *functions.Function) void {
 
     // Every member of the vocabulary, which an exhaustive walk over the enum
     // states rather than a numeric range that has to be kept in step with it.
-    inline for (@typeInfo(fibers.FiberStatus).@"enum".fields) |field| {
-        const status: fibers.FiberStatus = @enumFromInt(field.value);
+    inline for (@typeInfo(fibers.FiberStatus).@"enum".field_values) |member| {
+        const status: fibers.FiberStatus = @fromBackingInt(member);
         // The oracle, listed member by member. An `else` here would make the
         // contract agree with the subject about any status neither of them had
         // thought about, which is the disagreement worth catching.
@@ -928,7 +928,7 @@ fn body() raise.Error!void {
     try anExactFitDoesNotGrow(add);
     try aTailCallAtTheCapacityGrowsForItsTail(add, rest);
     try aRunFromTheFirstSlotSurvivesTheGrowth(add);
-    if (comptime builtin.os.tag != .windows and @sizeOf(usize) >= 8) {
+    if (comptime builtin.target.os.tag != .windows and @sizeOf(usize) >= 8) {
         try theReservedPushCeilings();
         try growthAtHalfTheCeilingDoubles();
     }

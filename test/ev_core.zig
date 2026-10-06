@@ -218,7 +218,7 @@ fn theQueueCarriesLargeItems() void {
         var item = std.mem.zeroes(Big);
         item.a = i;
         item.b = -i;
-        _ = std.fmt.bufPrintZ(&item.tag, "item-{d}", .{i}) catch unreachable;
+        _ = std.mem.printSentinel(&item.tag, "item-{d}", .{i}, 0) catch unreachable;
         expect(q.push(item) == 0);
     }
     i = 0;
@@ -228,7 +228,7 @@ fn theQueueCarriesLargeItems() void {
         expect(out.a == i);
         expect(out.b == -i);
         var expected: [24]u8 = undefined;
-        const text = std.fmt.bufPrintZ(&expected, "item-{d}", .{i}) catch unreachable;
+        const text = std.mem.printSentinel(&expected, "item-{d}", .{i}, 0) catch unreachable;
         expect(std.mem.eql(u8, text, std.mem.sliceTo(&out.tag, 0)));
     }
 }

@@ -506,8 +506,8 @@ test "classify: strings, raw strings and escapes" {
     // An ordinary string takes a newline as a byte, and the unclosed one is
     // not an error at the end of the buffer.
     try expectClasses("\"a\nb\"", "sssss");
-    try expectClasses("\"a\nb", "s" ** 4);
-    try expectClasses("\"ab\ncd", "s" ** 6);
+    try expectClasses("\"a\nb", "ssss");
+    try expectClasses("\"ab\ncd", "ssssss");
     try expectClasses("\"\"\"a\"b\"\"\"c", "sssssssss.");
     // A run longer than the opening run closes the string and opens another.
     try expectClasses("\"\"\"a\"\"\"\"", "ssssssss");

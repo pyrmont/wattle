@@ -14,7 +14,7 @@
 //!
 //! ## The VM layout
 //!
-//! Nothing compares this layout against anything. No host `@cImport` names it,
+//! Nothing compares this layout against anything. No host translation names it,
 //! and the only reads of its representation are `@sizeOf` in `vmAlloc` and the
 //! `std.mem.zeroes` and `isFresh` pair in `test/vm_state.zig`, neither of
 //! which depends on where the compiler puts the padding: `isFresh` compares
@@ -68,7 +68,7 @@ const is_thread_local = constants.vm_thread_local != 0;
 /// `strerror_r`'s scratch. Windows has no such field, and a zero-length array
 /// is how a configuration drops one out of a struct without a second
 /// declaration of everything around it.
-const strerror_buf_len = if (builtin.os.tag == .windows) 0 else 256;
+const strerror_buf_len = if (builtin.target.os.tag == .windows) 0 else 256;
 
 // ==========================================================================
 // Types
@@ -185,7 +185,7 @@ else
 /// declaration, and the address of a thread-local is not comptime-known, so
 /// `@export` is not available either.
 ///
-/// It is not exported. Zig 0.16 refuses to export a variable of an
+/// It is not exported. Zig 0.17 refuses to export a variable of an
 /// automatic-layout type at all, and `Vm` has automatic layout. Nor would a
 /// symbol be safe to add: `build.zig` gives `cli.zig` and `boot.zig` `types`,
 /// `constants` and `cabi` alone and links the runtime as an object, so
@@ -330,7 +330,7 @@ pub fn localVm() *Vm {
 /// the fetch and this helper is dead weight.
 pub inline fn pinned() *Vm {
     const p = current();
-    if (comptime !builtin.os.tag.isDarwin()) return p;
+    if (comptime !builtin.target.os.tag.isDarwin()) return p;
     return asm (""
         : [ret] "=r" (-> *Vm),
         : [in] "0" (p),

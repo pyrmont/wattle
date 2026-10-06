@@ -282,7 +282,7 @@ pub const vector = struct {
 /// It is scaffolding. A contract that has stopped needing it can drop the
 /// call, and the failure it was added for is the thing to fix.
 pub inline fn announce(comptime contract: []const u8, name: []const u8) void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
     std.debug.print("{s}: {s}\n", .{ contract, name });
 }
 
@@ -457,7 +457,7 @@ pub inline fn gcSetBits(flags: *boundary.GCFlags, bits: anytype) void {
 /// collect.
 pub fn inFiber(environment: *tables.Table, source: []const u8) void {
     var buffer: [16384]u8 = undefined;
-    const wrapped = std.fmt.bufPrintZ(&buffer, "(fn [] {s})", .{source}) catch
+    const wrapped = std.mem.printSentinel(&buffer, "(fn [] {s})", .{source}, 0) catch
         @panic("harness.inFiber: source does not fit");
 
     var val = wrap.fromNil();

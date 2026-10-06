@@ -33,11 +33,9 @@ const builtin = @import("builtin");
 
 const config = @import("config");
 
-/// The translation itself. Every `h.`-qualified name below is one of its
-/// declarations.
-pub const h = @cImport({
-    @cInclude("net/abi.h");
-});
+/// The translation itself, which `build.zig` produces from `net/abi.h` for the
+/// target. Every `h.`-qualified name below is one of its declarations.
+pub const h = @import("c_net");
 
 // ==========================================================================
 // Constants
@@ -127,10 +125,10 @@ pub const sock_flags: c_int = if (windows or !@hasDecl(h, "SOCK_CLOEXEC")) 0 els
 /// musl, the BSDs and macOS declare the plain pointer, so the cause is
 /// glibc's alone. Found by the first native glibc build this project
 /// attempted, which got as far as these five call sites.
-const transparent_sockaddr = builtin.os.tag == .linux and builtin.abi.isGnu();
+const transparent_sockaddr = builtin.target.os.tag == .linux and builtin.target.abi.isGnu();
 
 /// Whether this target takes the Winsock arm of each call below.
-pub const windows = builtin.os.tag == .windows;
+pub const windows = builtin.target.os.tag == .windows;
 
 /// `WSAID_CONNECTEX`, the one declaration in `mswsock.h` that does not survive
 /// translation: it is a brace initializer, and translate-c renders those as

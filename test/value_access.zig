@@ -260,7 +260,7 @@ fn nextVisitsEveryTableKeyOnce() !void {
     const n = 64;
     for (0..n) |i| tables.put(t, intv(@intCast(i)), intv(@intCast(i * 100)));
 
-    var seen = [_]bool{false} ** n;
+    var seen: [n]bool = @splat(false);
     var count: usize = 0;
     var k = try access.next(wrap.fromTable(t), wrap.fromNil());
     while (!isNil(k)) : (k = try access.next(wrap.fromTable(t), k)) {
@@ -302,7 +302,7 @@ fn nextVisitsEveryMapKeyOnce() !void {
     }
     const s = wrap.fromMap(maps.build(.map, &entries));
 
-    var seen = [_]bool{false} ** 20;
+    var seen: [20]bool = @splat(false);
     var count: usize = 0;
     var k = try access.next(s, wrap.fromNil());
     while (!isNil(k)) : (k = try access.next(s, k)) {

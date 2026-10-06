@@ -52,8 +52,8 @@
 //!
 //! The backend is derived from Zig's target rather than from the subject.
 //! Asking the subject which backend it compiled would be circular, so this
-//! file reads `builtin.os.tag` instead and lets the two disagree if they ever
-//! do.
+//! file reads `builtin.target.os.tag` instead and lets the two disagree if
+//! they ever do.
 
 // ==========================================================================
 // Standard library imports
@@ -96,7 +96,7 @@ const wrap = @import("subsystems").value.wrap;
 /// Which vocabulary this target's backend uses, and the word it puts in
 /// "unknown %s flag". Null where the host has no backend at all, in which case
 /// every entry point raises before a flag is ever looked at.
-const backend: ?struct { platform: Platform, word: []const u8 } = switch (builtin.os.tag) {
+const backend: ?struct { platform: Platform, word: []const u8 } = switch (builtin.target.os.tag) {
     .linux => .{ .platform = .linux, .word = "linux" },
     .windows => .{ .platform = .windows, .word = "windows filewatch" },
     .macos, .freebsd, .netbsd, .openbsd, .dragonfly => .{ .platform = .kqueue, .word = "bsd" },
@@ -115,7 +115,7 @@ const filewatch_bindings = [_][*:0]const u8{
 
 const probe_dir = "/tmp/wattle-filewatch-contract";
 var raises_seen: u32 = 0;
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Aliased types
@@ -241,14 +241,14 @@ fn theReadFailureEndsTheWatch(chan: repr.Value) void {
     // The backend is chosen at compile time, not from `platform`: a runtime
     // switch analyses both arms, and each names a callback that compiles on
     // one host only.
-    const callback = if (builtin.os.tag == .linux)
+    const callback = if (builtin.target.os.tag == .linux)
         &filewatch_core.inotify.callbackRead
     else
         &filewatch_core.kqueue.callbackRead;
 
     // The state each backend hands its callback, allocated as `listen`
     // allocates it: `asyncRelease` frees it, so it is the runtime's.
-    const state: ?*anyopaque = if (builtin.os.tag == .linux) blk: {
+    const state: ?*anyopaque = if (builtin.target.os.tag == .linux) blk: {
         const cell: *?*anyopaque = @ptrCast(@alignCast(utils.malloc(@sizeOf(?*anyopaque))));
         cell.* = wrap.toAbstract(watcher);
         break :blk @ptrCast(cell);
@@ -267,7 +267,7 @@ fn theReadFailureEndsTheWatch(chan: repr.Value) void {
     // `init`, so its failure waits for the `read` this dispatches.
     ev_loop.asyncStartFiber(fiber, s, constants.AsyncMode.reading, callback, state) catch
         @panic("filewatch_core: starting the operation raised");
-    if (builtin.os.tag != .linux) {
+    if (builtin.target.os.tag != .linux) {
         expect(fiber.ev_op != null);
         // It raises nothing: the arm reports and ends the watch.
         expect(harness.raised(callback, .{ fiber.ev_op.?, constants.AsyncEvent.read }) == null);
@@ -485,7 +485,7 @@ fn theLifecycle(chan: repr.Value) void {
     var new_argv = [_]repr.Value{chan};
     const dir = value.fromBytes(probe_dir, .string);
 
-    // `std.posix` has neither of these in 0.16 and nothing in the tree
+    // `std.posix` has neither of these in 0.17 and nothing in the tree
     // translates <sys/stat.h>, so they are the libc entry points by name. An
     // existing directory is fine; anything else fails the `add` below.
     _ = std.c.rmdir(probe_dir);
@@ -527,7 +527,7 @@ fn theLifecycle(chan: repr.Value) void {
     // repeats only a call that failed, so a stale `errno` changes nothing.
     {
         var argv = [_]repr.Value{ watcher, dir };
-        std.c._errno().* = @intFromEnum(std.posix.E.INTR);
+        std.c._errno().* = @backingInt(std.posix.E.INTR);
         expect(order.equals(callCore("filewatch/remove", &argv), watcher));
     }
 

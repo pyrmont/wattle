@@ -157,7 +157,7 @@ fn theRefusalsAreNumbered() void {
 fn everyRowIsAShape() void {
     var op: i32 = 0;
     while (op < constants.Opcode.count) : (op += 1) {
-        const shape = @intFromEnum(verify.instructions[@intCast(op)]);
+        const shape = @backingInt(verify.instructions[@intCast(op)]);
         expect(shape <= 14);
     }
 }

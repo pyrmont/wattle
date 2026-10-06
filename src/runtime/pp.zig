@@ -31,6 +31,12 @@
 //! must consume.
 
 // ==========================================================================
+// Standard library imports
+// ==========================================================================
+
+const std = @import("std");
+
+// ==========================================================================
 // Project imports
 // ==========================================================================
 
@@ -263,7 +269,7 @@ fn escapeStringB(buffer: *buffers.Buffer, str: strings.String) raise.Error!void 
 /// unregistered nfunction, a function with no name, and everything with no
 /// case of its own.
 fn genericDescriptionB(buffer: *buffers.Buffer, x: repr.Value) raise.Error!void {
-    try stringDescriptionB(buffer, utils.typeNames[@intFromEnum(repr.typeOf(x))], wrap.toPointer(x));
+    try stringDescriptionB(buffer, utils.typeNames[@backingInt(repr.typeOf(x))], wrap.toPointer(x));
 }
 
 /// One hex digit, from the shared alphabet.
@@ -322,7 +328,7 @@ fn shortEscape(byte: u8) ?*const [2]u8 {
 /// bytes so that the whole thing fits the `bufsize` reservation.
 fn stringDescriptionB(buffer: *buffers.Buffer, title: []const u8, pointer: ?*const anyopaque) raise.Error!void {
     try buffers.ensure(buffer, buffer.count + bufsize, 2);
-    const bytes: [@sizeOf(?*const anyopaque)]u8 = @bitCast(@intFromPtr(pointer));
+    const bytes: [@sizeOf(?*const anyopaque)]u8 = std.mem.toBytes(@intFromPtr(pointer));
     var at = buffer.data.? + @as(usize, @intCast(buffer.count));
 
     at[0] = '<';
@@ -338,10 +344,9 @@ fn stringDescriptionB(buffer: *buffers.Buffer, title: []const u8, pointer: ?*con
     at += 3;
 
     // The C reads the pointer back through a `uint8_t[sizeof(void *)]` union
-    // member, which is memory order; `@bitCast` of the address gives the same
-    // bytes. Printing walks down from the most significant of the six.
-    // The address is read back as bytes with `@bitCast`, which is memory
-    // order. Printing walks down from the most significant of the six.
+    // member, which is memory order, and `std.mem.toBytes` of the address gives
+    // the same bytes. Printing walks down from the most significant of the
+    // six.
     var byte_index = pointsize;
     while (byte_index > 0) : (byte_index -= 1) {
         const byte = bytes[byte_index - 1];

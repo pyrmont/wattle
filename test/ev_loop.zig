@@ -106,7 +106,7 @@ const probe_methods = [_]method_type.Method{
     .{ .name = null, .nfun = null },
 };
 
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Types
@@ -750,12 +750,12 @@ fn thePipeModes() void {
 fn theLastError() void {
     // `evLasterr` reads errno and renders it, with no side effect of its own
     // the same errno gives the same string twice.
-    std.c._errno().* = @intFromEnum(std.posix.E.BADF);
+    std.c._errno().* = @backingInt(std.posix.E.BADF);
     const first = stream.evLasterr();
     const second = stream.evLasterr();
     expect(harness.isType(first, repr.Tag.string));
     expect(order.equals(first, second));
-    std.c._errno().* = @intFromEnum(std.posix.E.INVAL);
+    std.c._errno().* = @backingInt(std.posix.E.INVAL);
     expect(!order.equals(first, stream.evLasterr()));
 }
 

@@ -61,7 +61,7 @@ var error_clib_buf: [256]u8 = @splat(0);
 const has_dynamic_modules = config.dynamic_modules;
 
 /// Whether this target uses the Win32 loader below.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Types

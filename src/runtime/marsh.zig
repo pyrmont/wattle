@@ -72,7 +72,7 @@ const wrap = @import("value/helpers/wrap.zig");
 
 /// Whether a `f64`'s bytes come out of memory the other way round from the
 /// stream, which is little endian.
-const big_endian = (builtin.cpu.arch.endian() == .big);
+const big_endian = (builtin.target.cpu.arch.endian() == .big);
 
 /// The three flag bits that live in the marshalled stream rather than in any
 /// runtime structure. The first two are bits 29 and 30 of
@@ -170,11 +170,11 @@ pub const Lead = enum(u8) {
     _,
 
     pub inline fn byte(self: Lead) u8 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     pub inline fn fromByte(b: u8) Lead {
-        return @enumFromInt(b);
+        return @fromBackingInt(@intCast(b));
     }
 };
 
@@ -718,7 +718,7 @@ fn marshalOne(st: *MarshalState, x: repr.Value, flags: c_int) raise.Error!void {
 
     switch (vtype) {
         repr.Tag.number => {
-            var bytes: [8]u8 = @bitCast(wrap.toNumber(x));
+            var bytes = std.mem.toBytes(wrap.toNumber(x));
             if (big_endian) std.mem.reverse(u8, &bytes);
             try pushByte(st, Lead.real.byte());
             try pushBytes(st, &bytes);
@@ -1383,7 +1383,7 @@ fn unmarshalOne(
             var bytes: [8]u8 = undefined;
             @memcpy(&bytes, data[1..9]);
             if (big_endian) std.mem.reverse(u8, &bytes);
-            out = wrap.fromNumberSafe(@bitCast(bytes));
+            out = wrap.fromNumberSafe(std.mem.bytesToValue(f64, &bytes));
             scratch_vector.push(&st.lookup, out);
             return .{ .value = out, .next = data + 9 };
         },
@@ -2035,7 +2035,7 @@ fn unmarshalOneFiber(
     // an image may name none of them, and this validates the stored number
     // rather than the enum.
     const stored = fiber.flags.status;
-    if (stored > @intFromEnum(fibers.FiberStatus.alive)) {
+    if (stored > @backingInt(fibers.FiberStatus.alive)) {
         return raise.panic("invalid fiber status");
     }
 

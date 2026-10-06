@@ -621,7 +621,7 @@ pub const Keyvals = struct {
 fn IndexAbi(comptime f: anytype) type {
     const info = @typeInfo(@TypeOf(f)).@"fn";
     const P = @typeInfo(info.return_type.?).error_union.payload;
-    return switch (info.params.len) {
+    return switch (info.param_types.len) {
         2 => struct {
             pub fn abi(argv: [*]const repr.Value, n: i32) callconv(.c) P {
                 vm_state.requireVmThread();
@@ -629,7 +629,7 @@ fn IndexAbi(comptime f: anytype) type {
             }
         },
         3 => struct {
-            pub fn abi(argv: [*]const repr.Value, n: i32, third: info.params[2].type.?) callconv(.c) P {
+            pub fn abi(argv: [*]const repr.Value, n: i32, third: info.param_types[2].?) callconv(.c) P {
                 vm_state.requireVmThread();
                 return f(argv[0..@intCast(n + 1)], @intCast(n), third) catch raise.reportToAbi(P);
             }

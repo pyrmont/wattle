@@ -238,19 +238,19 @@ pub const TagSet = packed struct(u16) {
     pub const callable = of(&.{ .function, .nfunction, .abstract }).with(lengthable);
 
     pub fn one(t: Tag) TagSet {
-        return fromBits(@as(u16, 1) << @intFromEnum(t));
+        return fromBits(@as(u16, 1) << @backingInt(t));
     }
 
     /// Builds a set from a list of tags at comptime, so a set reads as the
     /// tags in it rather than as an or-chain of sixteen names.
     pub fn of(comptime tags: []const Tag) TagSet {
         comptime var m: u16 = 0;
-        inline for (tags) |t| m |= @as(u16, 1) << @intFromEnum(t);
+        inline for (tags) |t| m |= @as(u16, 1) << @backingInt(t);
         return comptime fromBits(m);
     }
 
     pub fn has(self: TagSet, t: Tag) bool {
-        return (self.bits() >> @intFromEnum(t)) & 1 != 0;
+        return (self.bits() >> @backingInt(t)) & 1 != 0;
     }
 
     pub fn with(self: TagSet, other: TagSet) TagSet {
@@ -330,16 +330,16 @@ pub const nanbox32 = struct {
     }
 
     inline fn wrapPointer(p: ?*anyopaque, comptime t: Tag) Value {
-        return fromTagP(@intFromEnum(t), p);
+        return fromTagP(@backingInt(t), p);
     }
 
     inline fn wrapCPointer(p: ?*const anyopaque, comptime t: Tag) Value {
-        return fromTagP(@intFromEnum(t), @constCast(p));
+        return fromTagP(@backingInt(t), @constCast(p));
     }
 
     inline fn typeOf(x: Value) Tag {
         return if (x.tagged.type < bias)
-            @enumFromInt(x.tagged.type)
+            @fromBackingInt(@intCast(x.tagged.type))
         else
             .number;
     }
@@ -348,12 +348,12 @@ pub const nanbox32 = struct {
         return if (t == .number)
             x.tagged.type >= bias
         else
-            x.tagged.type == @as(u32, @intFromEnum(t));
+            x.tagged.type == @as(u32, @backingInt(t));
     }
 
     inline fn truthy(x: Value) bool {
-        return x.tagged.type != @intFromEnum(Tag.nil) and
-            (x.tagged.type != @intFromEnum(Tag.boolean) or (x.tagged.payload.integer & 0x1) != 0);
+        return x.tagged.type != @backingInt(Tag.nil) and
+            (x.tagged.type != @backingInt(Tag.boolean) or (x.tagged.payload.integer & 0x1) != 0);
     }
 
     inline fn unwrapBoolean(x: Value) bool {
@@ -388,11 +388,11 @@ pub const nanbox32 = struct {
     }
 
     inline fn wrapNil() Value {
-        return fromTagI(@intFromEnum(Tag.nil), 0);
+        return fromTagI(@backingInt(Tag.nil), 0);
     }
 
     inline fn wrapBoolean(b: bool) Value {
-        return fromTagI(@intFromEnum(Tag.boolean), @intFromBool(b));
+        return fromTagI(@backingInt(Tag.boolean), @intFromBool(b));
     }
 };
 
@@ -405,7 +405,7 @@ pub const nanbox32 = struct {
 pub const nanbox64 = struct {
     /// The tag word in the high bits of a value of type `t`.
     inline fn tag(t: Tag) u64 {
-        return (@as(u64, @intFromEnum(t)) | 0x1FFF0) << 47;
+        return (@as(u64, @backingInt(t)) | 0x1FFF0) << 47;
     }
 
     pub inline fn fromBits(word: u64) Value {
@@ -469,13 +469,13 @@ pub const nanbox64 = struct {
 
     inline fn typeOf(x: Value) Tag {
         return if (std.math.isNan(x.number))
-            @enumFromInt((x.u64 >> 47) & 0xF)
+            @fromBackingInt(@intCast((x.u64 >> 47) & 0xF))
         else
             .number;
     }
 
     inline fn isNumber(x: Value) bool {
-        return !std.math.isNan(x.number) or ((x.u64 >> 47) & 0xF) == @intFromEnum(Tag.number);
+        return !std.math.isNan(x.number) or ((x.u64 >> 47) & 0xF) == @backingInt(Tag.number);
     }
 
     inline fn checkType(x: Value, t: Tag) bool {
@@ -530,7 +530,7 @@ pub const tagged = struct {
     /// than follow it.
     inline fn wrapPointer(p: ?*anyopaque, comptime t: Tag) Value {
         var y: Value = undefined;
-        y.type = @intFromEnum(t);
+        y.type = @backingInt(t);
         y.as.u64 = 0;
         y.as.pointer = p;
         return y;
@@ -538,23 +538,23 @@ pub const tagged = struct {
 
     inline fn wrapCPointer(p: ?*const anyopaque, comptime t: Tag) Value {
         var y: Value = undefined;
-        y.type = @intFromEnum(t);
+        y.type = @backingInt(t);
         y.as.u64 = 0;
         y.as.cpointer = p;
         return y;
     }
 
     inline fn typeOf(x: Value) Tag {
-        return @enumFromInt(x.type);
+        return @fromBackingInt(@intCast(x.type));
     }
 
     inline fn checkType(x: Value, t: Tag) bool {
-        return x.type == @intFromEnum(t);
+        return x.type == @backingInt(t);
     }
 
     inline fn truthy(x: Value) bool {
-        return x.type != @intFromEnum(Tag.nil) and
-            (x.type != @intFromEnum(Tag.boolean) or (x.as.u64 & 0x1) != 0);
+        return x.type != @backingInt(Tag.nil) and
+            (x.type != @backingInt(Tag.boolean) or (x.as.u64 & 0x1) != 0);
     }
 
     inline fn unwrapBoolean(x: Value) bool {
@@ -567,7 +567,7 @@ pub const tagged = struct {
 
     inline fn wrapNumber(d: f64) Value {
         var y: Value = undefined;
-        y.type = @intFromEnum(Tag.number);
+        y.type = @backingInt(Tag.number);
         y.as.u64 = 0;
         y.as.number = d;
         return y;
@@ -585,14 +585,14 @@ pub const tagged = struct {
 
     inline fn wrapNil() Value {
         var y: Value = undefined;
-        y.type = @intFromEnum(Tag.nil);
+        y.type = @backingInt(Tag.nil);
         y.as.u64 = 0;
         return y;
     }
 
     inline fn wrapBoolean(b: bool) Value {
         var y: Value = undefined;
-        y.type = @intFromEnum(Tag.boolean);
+        y.type = @backingInt(Tag.boolean);
         y.as.u64 = @intFromBool(b);
         return y;
     }
@@ -628,10 +628,10 @@ comptime {
         .{ Tag.pointer, 15 },
     };
     for (expected) |pair| {
-        if (@intFromEnum(pair[0]) != pair[1])
+        if (@backingInt(pair[0]) != pair[1])
             @compileError("tag " ++ @tagName(pair[0]) ++ " has moved");
     }
-    if (@typeInfo(Tag).@"enum".fields.len != tag_count)
+    if (@typeInfo(Tag).@"enum".field_names.len != tag_count)
         @compileError("Tag has grown a member; the tag has four bits, so " ++
             "there is no room for a seventeenth");
 }
@@ -665,7 +665,7 @@ comptime {
     // A named bit is its own field, so the struct and the shift agree only
     // if the two declaration orders do.
     for (0..tag_count) |i| {
-        const t: Tag = @enumFromInt(i);
+        const t: Tag = @fromBackingInt(@intCast(i));
         std.debug.assert(TagSet.one(t).has(t));
         std.debug.assert(!TagSet.none.has(t));
         std.debug.assert(TagSet.all.has(t));
@@ -689,13 +689,13 @@ comptime {
         .{ tagged, [_][]const u8{} },
     };
     for (allowed) |entry| {
-        for (@typeInfo(entry[0]).@"struct".decls) |decl| {
+        for (@typeInfo(entry[0]).@"struct".decl_names) |decl_name| {
             var ok = false;
             for (entry[1]) |name| {
-                if (std.mem.eql(u8, decl.name, name)) ok = true;
+                if (std.mem.eql(u8, decl_name, name)) ok = true;
             }
             if (!ok) @compileError(
-                "`repr." ++ @typeName(entry[0]) ++ "." ++ decl.name ++
+                "`repr." ++ @typeName(entry[0]) ++ "." ++ decl_name ++
                     "` is public, which gives one operation two public spellings. " ++
                     "Reach it through `repr` instead, or add it to the allowlist here " ++
                     "with the reason a named arm is what the caller wants.",

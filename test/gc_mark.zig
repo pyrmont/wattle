@@ -637,7 +637,7 @@ fn treeNodesDoNotSpendTheGuard() void {
     expect(valueReachable(element));
 }
 
-/// `func->envs[i]`, which `@cImport` cannot spell: `envs` is a flexible array
+/// `func->envs[i]`, which translate-c cannot spell: `envs` is a flexible array
 /// member. `theHeadOffsets` is what makes this arithmetic safe to write.
 fn funcEnv(function: *functions.Function, index: usize) *functions.FuncEnv {
     const base = @intFromPtr(function) + @sizeOf(functions.Function);

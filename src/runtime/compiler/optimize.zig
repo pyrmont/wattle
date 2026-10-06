@@ -434,7 +434,7 @@ fn doApply(options: compiler_primitives.FormOptions, args: []const compiler_prim
 fn doDebug(options: compiler_primitives.FormOptions, args: []const compiler_primitives.Slot) compiler_primitives.Slot {
     const target = compiler_primitives.gettarget(options);
     const source = if (argumentCount(args) == 1) args[0] else nilSlot();
-    _ = emit_core.emitSsu(options.compiler, constants.Opcode.signal, target, source, @intFromEnum(abi.Signal.debug), 1);
+    _ = emit_core.emitSsu(options.compiler, constants.Opcode.signal, target, source, @backingInt(abi.Signal.debug), 1);
     return target;
 }
 
@@ -730,7 +730,7 @@ fn opReduce(
 /// masked off here as it is in `runVm`, so this gives the operation the
 /// optimizer is reasoning about rather than whether a debugger stopped on it.
 fn opcodeOf(instruction: u32) constants.Opcode {
-    return @enumFromInt(@as(u8, @intCast(instruction & 0x7f)));
+    return @fromBackingInt(@intCast(@as(u8, @intCast(instruction & 0x7f))));
 }
 
 /// A signed instruction field, as an arithmetic right shift of the word

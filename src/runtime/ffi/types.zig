@@ -37,7 +37,7 @@ const wrap = @import("../value/helpers/wrap.zig");
 // Constants
 // ==========================================================================
 
-pub const aapcs64_enabled = !windows and builtin.cpu.arch == .aarch64;
+pub const aapcs64_enabled = !windows and builtin.target.cpu.arch == .aarch64;
 
 /// The calling conventions that have a name of their own. `default` is not
 /// here: it resolves to whichever convention the build enables, which is a
@@ -126,10 +126,10 @@ pub const struct_at = abstract_type.define(Struct, .{
     .gcmark = &structMark,
 });
 
-pub const sysv64_enabled = !windows and builtin.cpu.arch == .x86_64;
-pub const win64_enabled = windows and builtin.cpu.arch == .x86_64;
+pub const sysv64_enabled = !windows and builtin.target.cpu.arch == .x86_64;
+pub const win64_enabled = windows and builtin.target.cpu.arch == .x86_64;
 
-pub const windows = builtin.os.tag == .windows;
+pub const windows = builtin.target.os.tag == .windows;
 
 // ==========================================================================
 // Types
@@ -423,17 +423,17 @@ pub fn ccEnabled(cc: Cc) bool {
 pub fn decodeCc(name: [*:0]const u8) raise.Error!Cc {
     if (0 == utils.cstrcmp(name, "default")) return default_cc;
     const cc = lookupCc(keywordBytes(name));
-    if (cc < 0 or !ccEnabled(@enumFromInt(@as(u32, @intCast(cc))))) {
+    if (cc < 0 or !ccEnabled(@fromBackingInt(@intCast(@as(u32, @intCast(cc)))))) {
         return pp_format.panicf("unknown calling convention %s", .{name});
     }
-    return @enumFromInt(@as(u32, @intCast(cc)));
+    return @fromBackingInt(@intCast(@as(u32, @intCast(cc))));
 }
 
 /// `decode_ffi_prim`.
 pub fn decodePrim(name: [*]const u8) raise.Error!Prim {
     const prim = lookupPrim(keywordBytes(name));
     if (prim < 0) return pp_format.panicf("unknown machine type %s", .{name});
-    return @enumFromInt(@as(u32, @intCast(prim)));
+    return @fromBackingInt(@intCast(@as(u32, @intCast(prim))));
 }
 
 /// `decode_ffi_type`.
@@ -485,14 +485,14 @@ pub fn decodeType(x: repr.Value) raise.Error!Type {
 /// at all.
 pub fn lookupCc(name: []const u8) i32 {
     for (cc_names) |entry| {
-        if (std.mem.eql(u8, name, entry[0])) return @intFromEnum(entry[1]);
+        if (std.mem.eql(u8, name, entry[0])) return @backingInt(entry[1]);
     }
     return -1;
 }
 
 pub fn lookupPrim(name: []const u8) i32 {
     for (prim_names) |entry| {
-        if (std.mem.eql(u8, name, entry[0])) return @intFromEnum(entry[1]);
+        if (std.mem.eql(u8, name, entry[0])) return @backingInt(entry[1]);
     }
     return -1;
 }

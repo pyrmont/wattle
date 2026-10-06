@@ -51,9 +51,11 @@
 # rather than repairing it. `res/testing/acceptance-matrix.md` and
 # `res/testing/mutation.md` are exactly that, and they stay out.
 #
-# Both questions skip `.zig-cache` and `zig-out`. `examples/native-consumer` builds
-# a cache of its own inside the tree, and a compiler cache is full of `std`
-# file names that match either pattern.
+# Both questions skip `.zig-cache`, `zig-out` and `zig-pkg`.
+# `examples/native-consumer` builds a cache of its own inside the tree, and a
+# compiler cache is full of `std` file names that match either pattern.
+# `zig-pkg` is where that build keeps a copy of each package it depends on,
+# which is not this tree's source.
 #
 # ## Five exclusions, and they are the whole of the difficulty
 #
@@ -104,7 +106,7 @@ status=0
 # ------------------------------------------------- chronology, shipped source
 
 if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|src/core/|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
-    --exclude-dir=.zig-cache --exclude-dir=zig-out \
+    --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
     src test examples build.zig |
   grep -vE '^[^:]+:[0-9]+:.*(test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig|filewatch_flags\.zig|filewatch_core\.zig)'
 then
@@ -115,7 +117,7 @@ fi
 # ------------------------------- a name for a thing that does not exist, anywhere
 
 if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md|src/zig' \
-    --exclude-dir=.zig-cache --exclude-dir=zig-out \
+    --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
     src test examples build.zig res AGENTS.md README.md \
     2>/dev/null |
   grep -vE '\.zig-cache|ffi_types\.zig|^src/runtime/ffi/|^res/check/chronology\.sh' |
@@ -136,12 +138,12 @@ live_options=$(
 )
 
 # `awk` reads the set from the environment: `-v` does not take a newline, and
-# `-e` rather than `--` because `--` would end option parsing before the two
+# `-e` rather than `--` because `--` would end option parsing before the three
 # `--exclude-dir`s.
 export live_options
 
 retired_options=$(
-  grep -rnE --exclude-dir=.zig-cache --exclude-dir=zig-out \
+  grep -rnE --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
       -e '-D[a-z0-9]' \
       src test examples build.zig |
   grep -vE 'does not exist|There is no' |

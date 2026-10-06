@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !u8 {
     if (changeDirectory(arguments[1].ptr) != 0)
         fail("Could not change to directory {s}\n", .{arguments[1]});
 
-    // Zig 0.16 routes file access through an `Io`, which `std.process.Init`
+    // Zig routes file access through an `Io`, which `std.process.Init`
     // provides. `cli.zig` takes the same `Io` and passes it to `interop.zig`.
     const source = std.Io.Dir.cwd().readFileAlloc(
         init.io,
@@ -121,7 +121,7 @@ extern fn chdir(path: [*:0]const u8) callconv(.c) c_int;
 /// `path` is the directory. The result is the C function's, which is 0 on
 /// success.
 fn changeDirectory(path: [*:0]const u8) c_int {
-    return if (builtin.os.tag == .windows) _chdir(path) else chdir(path);
+    return if (builtin.target.os.tag == .windows) _chdir(path) else chdir(path);
 }
 
 /// The C library's exit.

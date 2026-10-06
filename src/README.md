@@ -14,8 +14,9 @@ change must pass before it is accepted.
 
 `src/` is 111 `.zig` files and four hand-written headers. There is no C
 implementation to select and no upstream Janet C to call. Any C that a Zig
-file reaches is libc's, through one of seven `@cImport` blocks. "No C in the
-tree" and "no libc" are different claims, and only the first is a goal.
+file reaches is libc's, through one of seven translations of host headers that
+`build.zig` produces with the translate-c package. "No C in the tree" and "no
+libc" are different claims, and only the first is a goal.
 
 The rules that apply across the tree, each covered in its own section below:
 
@@ -198,7 +199,14 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
   instead (`tables.Table`, `fibers.Fiber`, `functions.FuncDef`,
   `ev_stream.Stream`).
 - `cabi` is the external declarations. It imports `config`, `host`, `repr` and
-  `constants`.
+  `constants`, and the translation of `<stdio.h>`.
+- The seven `c_*` modules are the translations of host headers, which
+  `build.zig`'s `translateHostHeaders` produces once per graph with the
+  translate-c package. `host` imports `c_pthread`, `cabi` imports `c_stdio`,
+  and `root` imports `c_locks`, `c_stat`, `c_os`, `c_net` and `c_filewatch`.
+  A translation that translate-c cannot produce for a target, and that no
+  file analysed for it imports, is not made: `<pthread.h>` on Windows, and
+  `<pthread.h>` and `net/abi.h` on wasm.
 - `options` is the `Selection` as comptime booleans, and `root.zig` is its only
   reader.
 - `lexicon` is the lexical tables of source: the whitespace and symbol bytes,
@@ -364,9 +372,11 @@ with no Janet name among them.
 `os/abi.h`, `net/abi.h` and `filewatch/abi.h` each include `wattle_features.h`
 first, and each is used by a single subsystem. They exist because what they
 declare depends on the host's headers and cannot be written in Zig without
-guessing. After changing a header, clear `.zig-cache` before trusting the
-result. Zig may otherwise reuse an object built against the old layout and
-produce a silent offset mismatch.
+guessing. `build.zig` translates each with the translate-c package, which
+`build.zig.zon` names as a dependency, and the subsystem's `abi.zig` imports
+the result as a module. The translation records every header it reads, so an
+edit to one of these headers, or to a header one of them includes, translates
+it again and recompiles the modules that import it.
 
 ## Configuration
 
@@ -432,6 +442,13 @@ next release is chosen when it is cut, from what `CHANGELOG.md` lists.
 fetched package or the copy installed under `share/wattle`, gives `DEVEL`
 alone. The label is a `Config` field, so a commit, or a tree that becomes
 dirty or clean, rebuilds the runtime and the image.
+
+`zig build` caches what `build.zig` configures and reruns `build.zig` only
+when a file or directory it declared has changed. The output of
+`git describe --dirty` depends on every tracked file, so in a build root with
+`.git` `versionLabel` turns the cache off and every build reruns `build.zig`.
+In a build root without `.git` the cache applies, and the checks `build.zig`
+makes of `src/` and `test/` declare what they read.
 
 The label is used in messages and is never compared. A native module loads
 where its configuration bits, Zig version and `api` fingerprint equal the

@@ -18,7 +18,7 @@
 //! a directory by `fstat`ing the descriptor it just opened, `std.fstat` is `{}`
 //! on Linux and `std.Stat` has no Linux arm, and the two ways a Zig frame
 //! could get one anyway are both refused elsewhere in this tree: a second
-//! `@cImport` over `<sys/stat.h>` is the duplicate translation the
+//! translation of `<sys/stat.h>` is the duplicate translation the
 //! single-translation rule prevents, and a hand-written layout per platform is
 //! guesswork. So the test lives in `os/fs/host_stat.zig`, beside the other
 //! reader of a host stat structure, and this file imports it.
@@ -145,7 +145,7 @@ const mode_buf_len: usize = 12;
 /// `c.fopen` needs no close-on-exec fixup; both branches are unreachable from
 /// Zig, because Plan 9 is not one of this project's targets, and are recorded
 /// rather than written. `math.zig` reads its own gate the same way.
-const plan9 = (builtin.os.tag == .plan9);
+const plan9 = (builtin.target.os.tag == .plan9);
 
 /// `SEEK_SET`, `SEEK_CUR` and `SEEK_END` are 0, 1 and 2 on every platform
 /// Janet builds for, but they are host constants, so the boundary takes the
@@ -161,7 +161,7 @@ const whence_names = [_][:0]const u8{ "cur", "set", "end" };
 
 /// Whether this target is Windows, which spells four of the calls below
 /// differently.
-const windows = builtin.os.tag == .windows;
+const windows = builtin.target.os.tag == .windows;
 
 /// The function writes to standard output and standard error are passed to
 /// in place of the stream, or null for none. `divert` sets it.
@@ -551,7 +551,7 @@ pub fn tell(file: ?*FILE) i64 {
 /// because a WASI program sees only the directories its host maps in, and
 /// `wasmtime run --dir .` maps in that one.
 pub fn temp() ?*FILE {
-    if (builtin.os.tag == .wasi) {
+    if (builtin.target.os.tag == .wasi) {
         const digits = "0123456789abcdefghijklmnopqrstuvwxyz";
         var name = "wattle-tmp-XXXXXXXX".*;
         const suffix = name.len - 8;
@@ -935,7 +935,7 @@ fn cstrequal(key: [*]const u8, len: usize, other: [:0]const u8) bool {
 /// is assembled at compile time and written with `c.fwrite` rather than handed
 /// to `fprintf`, because `fprintf` takes the translated `FILE *` and this file
 /// deliberately does not name that type.
-fn exitWith(comptime where: std.builtin.SourceLocation, comptime message: []const u8) noreturn {
+fn exitWith(comptime where: std.lang.SourceLocation, comptime message: []const u8) noreturn {
     const line = std.fmt.comptimePrint(
         "wattle abort at {s}:{d}: {s}\n",
         .{ where.file, where.line, message },
@@ -963,11 +963,11 @@ fn fileMarshal(iof: *File, m: *abi.Marshal) raise.Error!void {
         return raise.panic("cannot marshal file in safe mode");
     }
     const borrowed = iof.flags & file_not_closeable != 0;
-    if (builtin.os.tag == .wasi and !borrowed) {
+    if (builtin.target.os.tag == .wasi and !borrowed) {
         return raise.panic("cannot marshal a closeable file on WASI");
     }
     marsh.marshalAbstract(m, iof);
-    const fno: c_int = if (builtin.os.tag == .wasi)
+    const fno: c_int = if (builtin.target.os.tag == .wasi)
         c.fileno(streamOf(iof))
     else if (windows)
         (if (borrowed) c._fileno(streamOf(iof)) else c._dup(c._fileno(streamOf(iof))))

@@ -604,7 +604,7 @@ pub fn putIndex(ds: repr.Value, index: i32, val: repr.Value) raise.Error!void {
 /// the one copy of that message, and it names a keyword by its kind rather
 /// than by its tag.
 fn badKey(ds: repr.Value, key: repr.Value, max: i32) raise.Error {
-    const name = if (wrap.isKeyword(ds)) "keyword" else utils.typeNames[@intFromEnum(repr.typeOf(ds))];
+    const name = if (wrap.isKeyword(ds)) "keyword" else utils.typeNames[@backingInt(repr.typeOf(ds))];
     return pp_format.panicf("expected integer key for %s in range [0, %d), got %v", .{ name.ptr, @as(c_int, max), key });
 }
 

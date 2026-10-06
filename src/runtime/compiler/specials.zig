@@ -1157,7 +1157,7 @@ fn specialFnClauses(
     const compiler = options.compiler;
     var clauses: scratch_vector.Vector(FunctionClause) = .empty;
     defer scratch_vector.free(&clauses);
-    var counts = [_]bool{false} ** 33;
+    var counts: [33]bool = @splat(false);
     var minimum_arity: i32 = std_max_i32;
     var maximum_fixed: i32 = -1;
     var fixed_count: usize = 0;

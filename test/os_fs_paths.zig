@@ -91,14 +91,14 @@ const other = "wattle-os-paths-direct-6b1d/second";
 const public_dir = "wattle-os-paths-public-4f70";
 const soft = "wattle-os-paths-direct-6b1d/soft";
 const sub = "wattle-os-paths-direct-6b1d/inner";
-const unix = builtin.os.tag != .windows;
+const unix = builtin.target.os.tag != .windows;
 
 /// Whether the platform has the link family, rather than merely the bindings.
 ///
 /// `config.symlinks` says `os/link` and `os/symlink` are registered. They are
 /// registered on Windows and Plan 9 too and refuse there, which `os/link`'s
 /// own documentation states, so a block that calls one needs both conditions.
-const links = config.symlinks and builtin.os.tag != .windows and builtin.os.tag != .plan9;
+const links = config.symlinks and builtin.target.os.tag != .windows and builtin.target.os.tag != .plan9;
 
 // ==========================================================================
 // Aliased types
@@ -128,7 +128,7 @@ const Metadata = struct {
     numbers: [Field.count]f64,
 
     fn get(self: *const Metadata, field: Field) f64 {
-        return self.numbers[@intFromEnum(field)];
+        return self.numbers[@backingInt(field)];
     }
 };
 
@@ -236,7 +236,7 @@ fn theDirectories() void {
     // A missing directory reports through errno.
     setErrno(0);
     expect(fs.dirOpen(missing) == null);
-    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(errnoValue() == @backingInt(std.c.E.NOENT));
 
     // So does a path that exists but is not a directory. Which error is the
     // host's choice, so only the failure is pinned.
@@ -266,11 +266,11 @@ fn theLinks() void {
 
     setErrno(0);
     expect(fs.hardLink(file, hard) == -1);
-    expect(errnoValue() == @intFromEnum(std.c.E.EXIST));
+    expect(errnoValue() == @backingInt(std.c.E.EXIST));
 
     setErrno(0);
     expect(fs.hardLink(missing, soft) == -1);
-    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(errnoValue() == @backingInt(std.c.E.NOENT));
 
     expect(fs.hostRemove(hard) == 0);
 
@@ -295,11 +295,11 @@ fn theLinks() void {
     // Reading something that is not a link fails.
     setErrno(0);
     expect(fs.readLink(file, &buffer, buffer.len) == -1);
-    expect(errnoValue() == @intFromEnum(std.c.E.INVAL));
+    expect(errnoValue() == @backingInt(std.c.E.INVAL));
 
     setErrno(0);
     expect(fs.symbolicLink("first", soft) == -1);
-    expect(errnoValue() == @intFromEnum(std.c.E.EXIST));
+    expect(errnoValue() == @backingInt(std.c.E.EXIST));
 
     expect(fs.hostRemove(soft) == 0);
 }
@@ -324,7 +324,7 @@ fn theTimestamps() void {
     // it can hold as a file time. The saturation is what this asserts either
     // way -- the call returns rather than trapping on the conversion.
     const saturated = fs.touch(file, true, 0x1p63, 0x1p63);
-    const refuses_saturated = builtin.os.tag == .wasi or builtin.os.tag == .windows;
+    const refuses_saturated = builtin.target.os.tag == .wasi or builtin.target.os.tag == .windows;
     expect(if (refuses_saturated) saturated == -1 else saturated == 0);
 
     // With no times the host supplies the current one.
@@ -334,7 +334,7 @@ fn theTimestamps() void {
 
     setErrno(0);
     expect(fs.touch(missing, true, 1000000000.0, 1000000000.0) == -1);
-    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(errnoValue() == @backingInt(std.c.E.NOENT));
 }
 
 fn theRealpath() void {
@@ -359,7 +359,7 @@ fn theRealpath() void {
     // the public function checks separately, so this stays Unix-only.
     setErrno(0);
     expect(fs.canonicalPath(missing) == null);
-    expect(errnoValue() == @intFromEnum(std.c.E.NOENT));
+    expect(errnoValue() == @backingInt(std.c.E.NOENT));
 }
 
 fn theCoreFunctions() void {
@@ -398,7 +398,7 @@ fn theCoreFunctions() void {
 
         // macOS stores an empty target, where Linux refuses one, and it reads
         // back as the empty string: a length of zero is not a failure.
-        if (builtin.os.tag == .macos) eval(
+        if (builtin.target.os.tag == .macos) eval(
             \\(os/symlink "" "wattle-os-paths-public-4f70/empty")
             \\(assert (= "" (os/readlink "wattle-os-paths-public-4f70/empty")))
             \\(os/rm "wattle-os-paths-public-4f70/empty")

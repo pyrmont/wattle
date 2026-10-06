@@ -414,11 +414,11 @@ fn lookupReclaimsATombstone() void {
 
     var i: u32 = 0;
     outer: while (i < 20000) : (i += 1) {
-        first = std.fmt.bufPrintZ(&first_buffer, "collide-a-{d}", .{i}) catch unreachable;
+        first = std.mem.printSentinel(&first_buffer, "collide-a-{d}", .{i}, 0) catch unreachable;
         const target = idealIndex(first);
         var j: u32 = 0;
         while (j < 400) : (j += 1) {
-            second = std.fmt.bufPrintZ(&second_buffer, "collide-b-{d}-{d}", .{ i, j }) catch unreachable;
+            second = std.mem.printSentinel(&second_buffer, "collide-b-{d}-{d}", .{ i, j }, 0) catch unreachable;
             if (idealIndex(second) == target) {
                 found = true;
                 break :outer;
@@ -464,7 +464,7 @@ fn cacheResizesAndKeepsIdentity() void {
 
     // Keep them alive across the resize by rooting them.
     for (&kept, 0..) |*slot, i| {
-        const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "resize-probe-{d}", .{i}, 0) catch unreachable;
         slot.* = symbols.csymbol(text.ptr);
         gc_alloc.gcroot(wrap.fromSymbol(slot.*));
     }
@@ -477,7 +477,7 @@ fn cacheResizesAndKeepsIdentity() void {
     // Force enough puts to cross the load factor and rehash.
     const capacity_before = harness.vm().symcache.capacity;
     for (0..1200) |n| {
-        const text = std.fmt.bufPrintZ(&name, "resize-filler-{d}", .{n}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "resize-filler-{d}", .{n}, 0) catch unreachable;
         gc_alloc.gcroot(wrap.fromSymbol(symbols.csymbol(text.ptr)));
     }
     expect(harness.vm().symcache.capacity > capacity_before);
@@ -485,7 +485,7 @@ fn cacheResizesAndKeepsIdentity() void {
     // Every survivor is still interned, at the address it always had.
     i = 1;
     while (i < 400) : (i += 2) {
-        const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "resize-probe-{d}", .{i}, 0) catch unreachable;
         expect(symbols.csymbol(text.ptr) == kept[i]);
         expect(inCache(kept[i]));
     }
@@ -493,7 +493,7 @@ fn cacheResizesAndKeepsIdentity() void {
     // Every deleted one interns fresh rather than coming back.
     i = 0;
     while (i < 400) : (i += 2) {
-        const text = std.fmt.bufPrintZ(&name, "resize-probe-{d}", .{i}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "resize-probe-{d}", .{i}, 0) catch unreachable;
         expect(symbols.csymbol(text.ptr) != kept[i]);
     }
 
@@ -512,7 +512,7 @@ fn tombstonesForceARehash() void {
     var name: [40]u8 = undefined;
 
     for (0..200000) |i| {
-        const text = std.fmt.bufPrintZ(&name, "churn-symbol-{d}", .{i}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "churn-symbol-{d}", .{i}, 0) catch unreachable;
         const s = symbols.csymbol(text.ptr);
 
         if (harness.vm().symcache.deleted > high_water) high_water = harness.vm().symcache.deleted;
@@ -537,7 +537,7 @@ fn cacheGrowsPastHalf() void {
     var name: [40]u8 = undefined;
     var n: usize = 0;
     while ((cache.count + cache.deleted) * 2 != cache.capacity) : (n += 1) {
-        const text = std.fmt.bufPrintZ(&name, "half-probe-{d}", .{n}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "half-probe-{d}", .{n}, 0) catch unreachable;
         _ = symbols.csymbol(text.ptr);
     }
 
@@ -657,7 +657,7 @@ fn collectedSymbolLeavesTheCache() void {
 
     var name: [40]u8 = undefined;
     for (0..50) |i| {
-        const text = std.fmt.bufPrintZ(&name, "doomed-symbol-{d}", .{i}) catch unreachable;
+        const text = std.mem.printSentinel(&name, "doomed-symbol-{d}", .{i}, 0) catch unreachable;
         _ = symbols.csymbol(text.ptr);
     }
     expect(harness.vm().symcache.count == before + 50);

@@ -185,7 +185,7 @@ pub fn call(fun: *functions.Function, argv: []const repr.Value) raise.Error!repr
             }
         }
         if (signal != abi.Signal.@"error") {
-            v.return_reg.?.* = wrap.fromString(try pp_format.formatc("%v coerced from %s to error", .{ v.return_reg.?.*, utils.signalNames[@intFromEnum(signal)] }));
+            v.return_reg.?.* = wrap.fromString(try pp_format.formatc("%v coerced from %s to error", .{ v.return_reg.?.*, utils.signalNames[@backingInt(signal)] }));
         }
         return raise.panicv(v.return_reg.?.*);
     }
@@ -339,7 +339,7 @@ pub fn checkCanResume(vm: *vm_state.Vm, fiber: *fibers.Fiber, is_cancel: bool) ?
         // scope. Only `%s` of a static name is rendered, so nothing
         // user-supplied runs here.
         const str = raise.total(
-            pp_format.formatc("cannot resume fiber with status :%s", .{utils.statusNames[@intFromEnum(old_status)]}),
+            pp_format.formatc("cannot resume fiber with status :%s", .{utils.statusNames[@backingInt(old_status)]}),
             "a fiber-resume refusal's message",
         );
         return .{ .signal = abi.Signal.@"error", .value = wrap.fromString(str) };
@@ -409,7 +409,7 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
             // The two vocabularies share their first fourteen values, which is
             // what `signal.zig`'s comptime block asserts and what this line
             // depends on.
-            setStatus(fiber, @enumFromInt(@intFromEnum(sig)));
+            setStatus(fiber, @fromBackingInt(@intCast(@backingInt(sig))));
             fiber.last_value = child.last_value;
             return .{ .signal = sig, .value = in };
         }
@@ -480,7 +480,7 @@ pub fn continueNoCheck(vm: *vm_state.Vm, fiber: *fibers.Fiber, in_init: repr.Val
 
     // Restore.
     if (vm.root_fiber == fiber) vm.root_fiber = null;
-    setStatus(fiber, @enumFromInt(@intFromEnum(sig)));
+    setStatus(fiber, @fromBackingInt(@intCast(@backingInt(sig))));
     signal_core.restore(&tstate);
     if (fiber_rooted) _ = gc_alloc.gcunroot(wrap.fromFiber(fiber));
     fiber.last_value = tstate.payload;
@@ -549,7 +549,7 @@ pub fn step(fiber: *fibers.Fiber, in: repr.Value, out: *repr.Value) raise.Error!
         status == fibers.FiberStatus.dead or
         status == fibers.FiberStatus.@"error")
     {
-        return pp_format.panicf("cannot step fiber with status :%s", .{utils.statusNames[@intFromEnum(status)]});
+        return pp_format.panicf("cannot step fiber with status :%s", .{utils.statusNames[@backingInt(status)]});
     }
 
     // Get PC for setting breakpoints.
@@ -623,7 +623,7 @@ inline fn fiberFrame(fiber: *fibers.Fiber) *vm_state.StackFrame {
 
 /// Clears the status bits, then writes the new status into them.
 inline fn setStatus(fiber: *fibers.Fiber, status: fibers.FiberStatus) void {
-    fiber.flags.status = @intCast(@intFromEnum(status));
+    fiber.flags.status = @intCast(@backingInt(status));
 }
 
 /// The placeholder a dirty stack's guard frame stores.

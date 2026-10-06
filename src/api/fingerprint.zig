@@ -200,18 +200,21 @@ fn digest(comptime text: []const u8) u64 {
     return std.hash.Wyhash.hash(0, text);
 }
 
-/// The offset of `field` within `T`, in bits for a packed container and in
-/// bytes for any other.
+/// The offset of the field `name` within `T`, in bits for a packed container
+/// and in bytes for any other.
+///
+/// `attrs` is the field's entry in `field_attrs`.
 ///
 /// A comptime field occupies no storage and has no offset, and is reported as
 /// zero.
 fn fieldOffset(
     comptime T: type,
-    comptime layout: std.builtin.Type.ContainerLayout,
-    comptime field: std.builtin.Type.StructField,
+    comptime layout: std.lang.Type.ContainerLayout,
+    comptime name: []const u8,
+    comptime attrs: std.lang.Type.Struct.FieldAttributes,
 ) usize {
-    if (field.is_comptime) return 0;
-    return if (layout == .@"packed") @bitOffsetOf(T, field.name) else @offsetOf(T, field.name);
+    if (attrs.@"comptime") return 0;
+    return if (layout == .@"packed") @bitOffsetOf(T, name) else @offsetOf(T, name);
 }
 
 /// A sentinel value as the description spells it.
@@ -234,9 +237,9 @@ fn sentinelText(comptime child: type, comptime sentinel_ptr: ?*const anyopaque) 
 /// before they reach the description.
 fn sortedErrors(comptime T: type) []const []const u8 {
     comptime {
-        const errors = @typeInfo(T).error_set.?;
+        const errors = @typeInfo(T).error_set.error_names.?;
         var names: [errors.len][]const u8 = undefined;
-        for (errors, 0..) |e, i| names[i] = e.name;
+        for (errors, 0..) |name, i| names[i] = name;
         if (names.len > 1) for (1..names.len) |i| {
             var j = i;
             while (j > 0 and std.mem.lessThan(u8, names[j], names[j - 1])) : (j -= 1) {
@@ -285,25 +288,25 @@ fn typeDesc(comptime T: type, comptime path: []const type) []const u8 {
             }) ++ typeDesc(a.child, inner) ++ ")",
             .pointer => |p| std.fmt.comptimePrint("ptr({s},{},{},{},{?d},{s},", .{
                 @tagName(p.size),
-                p.is_const,
-                p.is_volatile,
-                p.is_allowzero,
-                p.alignment,
+                p.attrs.@"const",
+                p.attrs.@"volatile",
+                p.attrs.@"allowzero",
+                p.attrs.@"align",
                 sentinelText(p.child, p.sentinel_ptr),
             }) ++ typeDesc(p.child, inner) ++ ")",
             .error_union => |eu| "eu(" ++ typeDesc(eu.error_set, inner) ++ "," ++
                 typeDesc(eu.payload, inner) ++ ")",
-            .error_set => |maybe| blk: {
-                if (maybe == null) break :blk "anyerror";
+            .error_set => |set| blk: {
+                if (set.error_names == null) break :blk "anyerror";
                 var text: []const u8 = "errorset{";
                 for (sortedErrors(T)) |name| text = text ++ name ++ ";";
                 break :blk text ++ "}";
             },
             .@"enum" => |e| blk: {
                 var text: []const u8 = "enum(" ++ typeDesc(e.tag_type, inner) ++
-                    std.fmt.comptimePrint(",{}){{", .{e.is_exhaustive});
-                for (e.fields) |f| text = text ++
-                    std.fmt.comptimePrint("{s}={d};", .{ f.name, f.value });
+                    std.fmt.comptimePrint(",{}){{", .{e.mode == .exhaustive});
+                for (e.field_names, e.field_values) |name, value| text = text ++
+                    std.fmt.comptimePrint("{s}={d};", .{ name, value });
                 break :blk text ++ "}";
             },
             .@"struct" => |s| blk: {
@@ -314,13 +317,15 @@ fn typeDesc(comptime T: type, comptime path: []const type) []const u8 {
                     s.is_tuple,
                 });
                 if (s.backing_integer) |B| text = text ++ "backing=" ++ typeDesc(B, inner) ++ ";";
-                for (s.fields) |f| text = text ++ f.name ++ ":" ++ typeDesc(f.type, inner) ++
-                    std.fmt.comptimePrint("@{d}:{?d}:{}:{};", .{
-                        fieldOffset(T, s.layout, f),
-                        f.alignment,
-                        f.is_comptime,
-                        f.default_value_ptr != null,
-                    });
+                for (s.field_names, s.field_types, s.field_attrs) |name, F, attrs| {
+                    text = text ++ name ++ ":" ++ typeDesc(F, inner) ++
+                        std.fmt.comptimePrint("@{d}:{?d}:{}:{};", .{
+                            fieldOffset(T, s.layout, name, attrs),
+                            attrs.@"align",
+                            attrs.@"comptime",
+                            attrs.default_value_ptr != null,
+                        });
+                }
                 break :blk text ++ "}";
             },
             .@"union" => |u| blk: {
@@ -330,19 +335,21 @@ fn typeDesc(comptime T: type, comptime path: []const type) []const u8 {
                     @alignOf(T),
                 });
                 if (u.tag_type) |Tag| text = text ++ "tag=" ++ typeDesc(Tag, inner) ++ ";";
-                for (u.fields) |f| text = text ++ f.name ++ ":" ++ typeDesc(f.type, inner) ++
-                    std.fmt.comptimePrint(":{?d};", .{f.alignment});
+                for (u.field_names, u.field_types, u.field_attrs) |name, F, attrs| {
+                    text = text ++ name ++ ":" ++ typeDesc(F, inner) ++
+                        std.fmt.comptimePrint(":{?d};", .{attrs.@"align"});
+                }
                 break :blk text ++ "}";
             },
             .@"fn" => |f| blk: {
                 var text: []const u8 = std.fmt.comptimePrint("fn({s},{},{})(", .{
-                    @tagName(f.calling_convention),
+                    @tagName(f.attrs.@"callconv"),
                     f.is_generic,
-                    f.is_var_args,
+                    f.attrs.varargs,
                 });
-                for (f.params) |p| {
-                    text = text ++ (if (p.type) |P| typeDesc(P, inner) else "generic") ++
-                        std.fmt.comptimePrint(":{};", .{p.is_noalias});
+                for (f.param_types, f.param_attrs) |maybe_type, attrs| {
+                    text = text ++ (if (maybe_type) |P| typeDesc(P, inner) else "generic") ++
+                        std.fmt.comptimePrint(":{};", .{attrs.@"noalias"});
                 }
                 break :blk text ++ ")->" ++
                     (if (f.return_type) |R| typeDesc(R, inner) else "generic");
@@ -357,7 +364,7 @@ fn typeDesc(comptime T: type, comptime path: []const type) []const u8 {
                         "Add the type to `fingerprint.capabilities` with a label of its own.",
                 );
             },
-            .frame, .@"anyframe" => @compileError(
+            .frame, .@"anyframe", .spirv => @compileError(
                 "a frame cannot appear on the module boundary and has no description",
             ),
         };

@@ -63,7 +63,7 @@ const host = struct {
     extern var environ: ?[*]?[*:0]u8;
 
     fn vector() *?[*]?[*:0]u8 {
-        return if (builtin.os.tag == .macos) _NSGetEnviron() else &environ;
+        return if (builtin.target.os.tag == .macos) _NSGetEnviron() else &environ;
     }
 };
 
@@ -95,7 +95,7 @@ fn theHostOperations() void {
     // answers are pinned rather than the case being skipped on Windows, which
     // would leave the behaviour most easily changed by accident unpinned.
     expect(os.environSet(test_name, "") == 0);
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         expect(os.environGet(test_name) == null);
     } else {
         const empty = os.environGet(test_name).?;
@@ -127,7 +127,7 @@ fn theCoreFunctions() !void {
     expect(harness.stringIs(wrap.toString(found), "public-value"));
 
     // `os/environ` is absent on Plan 9, where there is no `environ` to walk.
-    if (!(builtin.os.tag == .plan9)) {
+    if (!(builtin.target.os.tag == .plan9)) {
         const environ = harness.core("os/environ");
         const snapshot = wrap.toTable(try environ.call(&.{}));
         const captured = tables.get(snapshot, args[0]);
@@ -153,7 +153,7 @@ fn theCoreFunctions() !void {
 /// The host's `setenv` refuses an empty name, so the vector is swapped for the
 /// length of the call.
 fn anEntryWithAnEmptyName() !void {
-    if (builtin.os.tag == .windows or builtin.os.tag == .plan9) return;
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .plan9) return;
     var entries = [_]?[*:0]u8{ @constCast("=x"), @constCast("A=1"), null };
     const slot = host.vector();
     const saved = slot.*;
