@@ -18,7 +18,6 @@
 #   no-assembler     -Dassembler=false
 #   no-int-types     -Dint-types=false
 #   no-ffi           -Dffi=false
-#   no-filewatch     -Dfilewatch=false
 #   reduced-os       -Dreduced-os=true
 #   single-threaded  -Dsingle-threaded=true
 #   no-processes     -Dprocesses=false

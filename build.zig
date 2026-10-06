@@ -52,7 +52,6 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-ev.wattle", .needs_os = true },
     .{ .path = "test/suite-ev2.wattle", .needs_os = true },
     .{ .path = "test/suite-ffi.wattle" },
-    .{ .path = "test/suite-filewatch.wattle", .needs_os = true },
     .{ .path = "test/suite-gum.wattle" },
     .{ .path = "test/suite-gum-copy.wattle", .needs_os = true, .needs_processes = true },
     .{ .path = "test/suite-gumtest.wattle" },
@@ -85,8 +84,8 @@ const test_suites = &[_]Suite{
 };
 
 // **This file compiles no C and holds no C flags.** Neither `src/` nor `test/`
-// contains a `.c`. What remains of C in this tree is four hand-written headers
-// -- `src/host/wattle_features.h` and the three host translations under
+// contains a `.c`. What remains of C in this tree is three hand-written headers
+// -- `src/host/wattle_features.h` and the two host translations under
 // `src/runtime` -- and
 // libc itself, which is deliberate: "no C in the tree" and "no libc" are
 // different claims, and only the first is a goal.
@@ -132,7 +131,6 @@ const BuildOptions = struct {
     interpreter_interrupt: bool,
     ffi: bool,
     ffi_jit: bool,
-    filewatch: bool,
     cryptorand: bool,
     lineedit: bool,
     recursion_guard: ?i32,
@@ -181,7 +179,6 @@ const Selection = struct {
     ev: bool,
     net: bool,
     ffi_zig: bool,
-    filewatch: bool,
     args: bool,
     gc_alloc: bool,
     gc_mark: bool,
@@ -967,10 +964,10 @@ pub fn build(b: *std.Build) void {
     );
     installModuleTest(b, options, config, wrong_api_module);
 
-    // The three host translations -- `os/abi.h`, `net/abi.h`, `filewatch/abi.h`
-    // -- have no oracle and need none: each keeps what it declares inside one
-    // subsystem, and every name it publishes has a Zig caller that fails to
-    // compile when the translation stops providing it.
+    // The two host translations -- `os/abi.h` and `net/abi.h` -- have no
+    // oracle and need none: each keeps what it declares inside one subsystem,
+    // and every name it publishes has a Zig caller that fails to compile when
+    // the translation stops providing it.
 
     const run_step = b.step("run", "Run Wattle");
     const run_client = b.addRunArtifact(client);
@@ -1303,7 +1300,7 @@ pub fn build(b: *std.Build) void {
     //
     // A contract is `pub fn run() void` and is called by the driver; a `test`
     // block is called by nothing, so until this step existed the forty-odd of
-    // them in `io.zig`, `filewatch.zig`, `ffi/` and `os/` were compiled by no
+    // them in `io.zig`, `ffi/` and `os/` were compiled by no
     // configuration at all and were free to rot. They root at `root.zig`, which
     // is the file that names every subsystem this configuration compiles, so
     // the set of tests that run is the set of files that build -- a `test` in a
@@ -2283,7 +2280,6 @@ fn readOptions(b: *std.Build) BuildOptions {
         .interpreter_interrupt = b.option(bool, "interpreter-interrupt", "Enable interpreter interrupts") orelse true,
         .ffi = b.option(bool, "ffi", "Enable FFI") orelse true,
         .ffi_jit = b.option(bool, "ffi-jit", "Enable the FFI JIT") orelse true,
-        .filewatch = b.option(bool, "filewatch", "Enable file watching") orelse true,
         .cryptorand = b.option(bool, "cryptorand", "Enable cryptographic random bytes") orelse true,
         .lineedit = b.option(bool, "lineedit", "Enable the REPL's line editor: off selects the plain line reader") orelse true,
         .recursion_guard = b.option(i32, "recursion-guard", "Native recursion guard (default 1024, or 512 on wasm)"),
@@ -2405,7 +2401,6 @@ const Config = struct {
     net: bool,
     ffi: bool,
     ffi_jit: bool,
-    filewatch: bool,
     cryptorand: bool,
     reduced_os: bool,
     processes: bool,
@@ -2575,7 +2570,6 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         .ffi = ffi,
         // `#ifdef JANET_FFI` / `#ifndef JANET_NO_FFI_JIT`
         .ffi_jit = ffi and options.ffi_jit,
-        .filewatch = options.filewatch,
         .cryptorand = options.cryptorand,
         .lineedit = options.lineedit and !wasm_target,
         .reduced_os = options.reduced_os,
@@ -2848,7 +2842,6 @@ fn zigSelection(cfg: Config) Selection {
         .ev = cfg.ev,
         .net = cfg.net,
         .ffi_zig = cfg.ffi,
-        .filewatch = hasFilewatch(cfg),
         .args = true,
         .gc_alloc = true,
         .gc_mark = true,
@@ -2886,14 +2879,6 @@ fn hasGettime(cfg: Config) bool {
 /// under the same two conditions.
 fn hasProcesses(cfg: Config) bool {
     return !cfg.reduced_os and cfg.processes;
-}
-
-/// The file watcher needs the event loop, as the socket layer does, but
-/// `Config.filewatch` is the option alone, so the loop is folded in here. It
-/// compiles all three backends' keyword vocabularies on every target, but
-/// there is nothing to compile them for when the watcher itself is absent.
-fn hasFilewatch(cfg: Config) bool {
-    return cfg.ev and cfg.filewatch;
 }
 
 /// The runtime's module graph: every subsystem this configuration answers in
@@ -2972,7 +2957,6 @@ const RuntimeGraph = struct {
 /// no file analysed for that target imports it: `<pthread.h>` on Windows, and
 /// `<pthread.h>` and `net/abi.h` on wasm.
 const HostHeaders = struct {
-    filewatch: *std.Build.Module,
     locks: ?*std.Build.Module,
     net: ?*std.Build.Module,
     os: *std.Build.Module,
@@ -2985,7 +2969,7 @@ const HostHeaders = struct {
 /// `name`.
 ///
 /// `header` is read with `src/runtime` and `src/host` on the include path, the
-/// directories of the four hand-written headers.
+/// directories of the three hand-written headers.
 fn translateHeader(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -3009,12 +2993,12 @@ fn translateHeader(
     return translator.mod;
 }
 
-/// Returns the translations of the seven host headers for `target`.
+/// Returns the translations of the six host headers for `target`.
 ///
-/// The three subsystem headers are translated from their files under
+/// The two subsystem headers are translated from their files under
 /// `src/runtime`. The four libc headers are reached through a one-line
 /// header written into the cache, so that the tree's hand-written headers stay
-/// the four it has.
+/// the three it has.
 fn translateHostHeaders(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -3029,7 +3013,6 @@ fn translateHostHeaders(
     const stat = headers.add("wattle_stat.h", "#include \"wattle_features.h\"\n#include <sys/stat.h>\n");
     const stdio = headers.add("wattle_stdio.h", "#include <stdio.h>\n");
     return .{
-        .filewatch = translateHeader(b, target, optimize, options, "c_filewatch", b.path("src/runtime/filewatch/abi.h")),
         .locks = if (windows or wasm) null else translateHeader(b, target, optimize, options, "c_locks", locks),
         .net = if (wasm) null else translateHeader(b, target, optimize, options, "c_net", b.path("src/runtime/net/abi.h")),
         .os = translateHeader(b, target, optimize, options, "c_os", b.path("src/runtime/os/abi.h")),
@@ -3064,8 +3047,7 @@ fn makeRuntimeGraph(
     // one the other holds. `translateHostHeaders` makes one translation of
     // each header per graph, and the modules that import it share it. `host.zig` is that single owner for the
     // pthread types and it is Zig, which is the stronger form of the same
-    // rule. The three host translations under `os/`, `net/` and `filewatch/`
-    // each keep what they declare inside one subsystem for the same reason.
+    // rule. The two host translations under `os/` and `net/` each keep what they declare inside one subsystem for the same reason.
     const config_module = makeConfigModule(b, cfg);
     applyFramePointer(config_module, options, optimize);
 
@@ -3156,7 +3138,6 @@ fn makeRuntimeGraph(
         .pic = true,
     });
     configureCModule(module, target, options, cfg);
-    module.addImport("c_filewatch", headers.filewatch);
     if (headers.locks) |translation| module.addImport("c_locks", translation);
     if (headers.net) |translation| module.addImport("c_net", translation);
     module.addImport("c_os", headers.os);
@@ -3196,18 +3177,17 @@ fn makeRuntimeGraph(
     // calls it cannot make by import go through `interface.rt` instead. It
     // carries both arms and picks at comptime on `config.native_module`.
 
-    // **The three host-header files are not modules.** `os/abi.zig`,
-    // `net/abi.zig` and `filewatch/abi.zig` each sit beside the hand-written
-    // `.h` whose translation they import, and are reached by path from inside
-    // the subsystem that owns them -- one importer for `filewatch`, two for
-    // `net`, six for `os`, all within the subtree. A module name buys nothing
+    // **The two host-header files are not modules.** `os/abi.zig` and
+    // `net/abi.zig` each sit beside the hand-written `.h` whose translation
+    // they import, and are reached by path from inside the subsystem that owns
+    // them -- two importers for `net`, six for `os`, all within the subtree. A module name buys nothing
     // once the file sits where its callers are. The translation itself is a
     // module, because translate-c produces it as a build step:
-    // `translateHostHeaders` makes `c_os`, `c_net` and `c_filewatch`, and the
-    // subsystems module imports them by name.
+    // `translateHostHeaders` makes `c_os` and `c_net`, and the subsystems
+    // module imports them by name.
     //
     // A path import inherits the importing module's settings, so the
-    // subsystems module's `.pic` covers the three files -- **checked on
+    // subsystems module's `.pic` covers the two files -- **checked on
     // `x86_64-linux-gnu` rather than inferred**, since that is where getting
     // it wrong fails, and it fails at link rather than at compile. A
     // translation module inherits nothing, so `translateHeader` sets `.pic` on

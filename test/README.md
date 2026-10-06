@@ -205,10 +205,9 @@ Debug and in ReleaseSmall, in CI. `riscv32-linux-musl`, `x86-linux-musl` and
   pointer-hash else-branch in the comparison layer. All three were correct, and
   nobody knew.
 - The Linux host layer at a four-byte pointer is theirs alone. A WASI build
-  turns off the event loop, networking, the FFI and the file watcher, so the
-  epoll, socket and inotify arms in `runtime/ev/stream.zig`, `runtime/net.zig`
-  and `runtime/filewatch.zig` are analysed at 32 bits only by a 32-bit Linux
-  build.
+  turns off the event loop, networking and the FFI, so the epoll and socket
+  arms in `runtime/ev/stream.zig` and `runtime/net.zig` are analysed at 32
+  bits only by a 32-bit Linux build.
 - musl's own 32-bit headers are translated only there, which is what the
   translate-c failure above was about.
 
@@ -263,7 +262,7 @@ identical to a test that passed.
 | Linux x86-64 musl    | cross-compile, emulated container | Tagged representation only, and each contract is run by name, because `peg` ends the process under emulation. `peg`, `vm_run` and `ffi_core` fail there, and `suite-peg` with them. An `x86_64-macos` build with the same representation passes all four under Rosetta. The cause is not established without x86-64 hardware |
 | Windows x86-64       | native                            | `zig build test` runs every suite and every contract on `windows-latest`, `suite-ev` at 892 of 892. Two blocks in that suite are guarded off Windows: an overlapped send to a loopback peer does not park, so neither block's parked socket write happens. `x86_64-windows-gnu` remains a build-only matrix entry |
 | Linux riscv32 musl   | cross-compile                     | Builds only, with `x86-linux-musl` and `arm-linux-musleabihf`. Those three compile the 32-bit NaN-boxing and pointer-width branches against musl's 32-bit headers, and the Linux host layer at a four-byte pointer. `wasm32-wasi` is the 32-bit target that runs |
-| wasm32-wasi          | cross-compile, wasmtime           | `zig build test` runs every suite and the 59 contracts this configuration registers, in Debug and in ReleaseSmall, in CI. 32-bit NaN-boxed layout, single-threaded, no event loop; networking, the FFI, the file watcher and processes are off with it, which is what leaves nine contracts unregistered. The fork cases in `value_alloc` and `os_surface` are skipped by their own guards |
+| wasm32-wasi          | cross-compile, wasmtime           | `zig build test` runs every suite and the 59 contracts this configuration registers, in Debug and in ReleaseSmall, in CI. 32-bit NaN-boxed layout, single-threaded, no event loop; networking, the FFI and processes are off with it, which is what leaves seven contracts unregistered. The fork cases in `value_alloc` and `os_surface` are skipped by their own guards |
 | Linux glibc, x86-64 and aarch64 | cross-compile, native container | Builds and runs: the driver at exit 0 with no argument and 68 of 68 by name, all 49 in-file tests, 36 of 36 suites with the same assertion skipped as musl. The no-argument abort in `malloc_consolidate` this row had for two phases was diagnosed and fixed: a contract called into the runtime after its deinit, and glibc's allocator is the check that detected it. CI runs `zig build test` on x86-64 glibc natively |
 
 ### The assertion skipped on Linux
@@ -284,16 +283,6 @@ libcs behave alike. In `debian:trixie`, glibc 2.41 and a static musl build both
 returned 0 from `setvbuf(f, NULL, _IOFBF, size)` for every size up to
 `SIZE_MAX`, and the buffer in place stayed at 4,096 and 1,024 bytes. musl's
 `setvbuf.c` uses a buffer only when one is passed.
-
-`suite-filewatch.wattle` was listed here too, failing six assertions of 79 on
-Linux. Those failures were the suite's, not inotify's or the container's. The
-probe watcher shared its channel with the event subtests. Removing its watch
-queued an `:ignored` event, the next `filewatch/listen` posted it to the
-channel, and the first Linux subtest read it in place of `:create`, leaving
-every later read one event behind. The probe watcher has its own channel since
-the fix at `:118`, and the suite passes 79 of 79. In the container, the runtime
-matched C Janet event for event, C Janet failed the same six assertions, and
-inotify never merges `:create` and `:close-write`, which differ in mask.
 
 ## Line endings
 

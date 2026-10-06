@@ -314,8 +314,8 @@ pub fn arrayPush(array: *arrays.Array, val: repr.Value) void {
 /// This is the `argc`/`argv` split, which a contract otherwise spells at every
 /// call from an array it already has.
 ///
-/// It is here rather than in each contract because `net_sockets` and
-/// `filewatch_core` drive their whole surface this way. Use it with `try`
+/// It is here rather than in each contract because `net_sockets` drives its
+/// whole surface this way. Use it with `try`
 /// where the value is what the case is about, and `coreRaised` where the
 /// refusal is.
 pub fn callCore(name: [*:0]const u8, argv: []repr.Value) raise.Error!repr.Value {

@@ -12,9 +12,9 @@ change must pass before it is accepted.
 
 ## Overview
 
-`src/` is 111 `.zig` files and four hand-written headers. There is no C
+`src/` is 113 `.zig` files and three hand-written headers. There is no C
 implementation to select and no upstream Janet C to call. Any C that a Zig
-file reaches is libc's, through one of seven translations of host headers that
+file reaches is libc's, through one of six translations of host headers that
 `build.zig` produces with the translate-c package. "No C in the tree" and "no
 libc" are different claims, and only the first is a goal.
 
@@ -134,7 +134,6 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 | `os/fs/`         | 3     | the file-system interface                           |
 | `ev/`            | 5     | `backend`, `stream`, `channel`, `dispatch`, `locks` |
 | `net/`           | 1     | the host-header translation                         |
-| `filewatch/`     | 1     | the host-header translation                         |
 | `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`              |
 | `pp/`            | 2     | `format`, `pretty`                                  |
 
@@ -150,8 +149,7 @@ functions, abstracts, integer types, vectors, maps and sets, and transients. `va
 In `vm/`, `entry.zig` is the interpreter's entry points, `lifecycle.zig` is
 init and teardown, and `state.zig` is the `Vm` type, its storage and its
 accessor. `os/` and `os/fs/` are split where the platform differs.
-`os/abi.zig`, `net/abi.zig` and `filewatch/abi.zig` are the three host-header
-translations.
+`os/abi.zig` and `net/abi.zig` are the two host-header translations.
 
 The Windows process CPU clock may read zero. If `GetProcessTimes` fails,
 `os.gettime` returns null and `os.gettimeAbi` returns -1. The failed call's
@@ -200,10 +198,10 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
   `ev_stream.Stream`).
 - `cabi` is the external declarations. It imports `config`, `host`, `repr` and
   `constants`, and the translation of `<stdio.h>`.
-- The seven `c_*` modules are the translations of host headers, which
+- The six `c_*` modules are the translations of host headers, which
   `build.zig`'s `translateHostHeaders` produces once per graph with the
   translate-c package. `host` imports `c_pthread`, `cabi` imports `c_stdio`,
-  and `root` imports `c_locks`, `c_stat`, `c_os`, `c_net` and `c_filewatch`.
+  and `root` imports `c_locks`, `c_stat`, `c_os` and `c_net`.
   A translation that translate-c cannot produce for a target, and that no
   file analysed for it imports, is not made: `<pthread.h>` on Windows, and
   `<pthread.h>` and `net/abi.h` on wasm.
@@ -264,15 +262,6 @@ failure a program caught cannot name the next failure of that turn. The
 callback is its address: an operation carries a function pointer, including
 one a native module supplied, and the runtime has no table of names to look
 it up in.
-
-A failure a callback cannot raise is scheduled instead. `ev.cancel` refuses a
-fiber the loop has never scheduled, `root` being set only by
-`ev.scheduleGeneral`, and a file watcher's fiber is one: `filewatch.zig` builds
-it and hands it to `asyncStartFiber` without scheduling it.
-`ev.scheduleSignal` with the `error` signal reaches the same resume without
-that precondition. The three filewatch backends report a failed read that way
-and end the watch, so a watcher that dies is something a program learns about
-rather than a channel that goes quiet.
 
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
 An nfunction is written as a Zig function: `raise.NFunction` takes `[]Value`
@@ -369,7 +358,7 @@ with no Janet name among them.
 
 ### Host structures
 
-`os/abi.h`, `net/abi.h` and `filewatch/abi.h` each include `wattle_features.h`
+`os/abi.h` and `net/abi.h` each include `wattle_features.h`
 first, and each is used by a single subsystem. They exist because what they
 declare depends on the host's headers and cannot be written in Zig without
 guessing. `build.zig` translates each with the translate-c package, which
@@ -593,9 +582,9 @@ checks that the two match. Then add the author-side wrapper to `module.zig`.
 
 `zig build test` passes with each of these feature flags turned off on its own:
 `-Dint-types=false`, `-Dassembler=false`, `-Dpeg=false`, `-Dnet=false`,
-`-Dev=false`, `-Dprocesses=false`, `-Dfilewatch=false`, `-Dffi=false`,
-`-Ddocstrings=false`, `-Dsourcemaps=false`, `-Dumask=false`, `-Drealpath=false`,
-`-Dcryptorand=false` and `-Ddynamic-modules=false`.
+`-Dev=false`, `-Dprocesses=false`, `-Dffi=false`, `-Ddocstrings=false`,
+`-Dsourcemaps=false`, `-Dumask=false`, `-Drealpath=false`, `-Dcryptorand=false`
+and `-Ddynamic-modules=false`.
 
 A suite guards a missing feature in one of two ways, and the wrong choice fails
 without an error.

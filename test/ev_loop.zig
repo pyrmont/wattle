@@ -1268,26 +1268,12 @@ fn theCancelOfANonTask() void {
     expect(!try_(channel.channelTake(sup, &event)));
 }
 
-/// An error delivered to a fiber the loop has never seen, which is what a
-/// watcher's failure is.
+/// An error delivered to a fiber the loop has never scheduled.
 ///
-/// `filewatch.zig` builds its watch fiber with `fibers.new` and hands it to
-/// `asyncStartFiber` without scheduling it, so `root` is never set and the
-/// case above refuses it. `scheduleSignal` decides what `cancel` would have
-/// decided -- a resume with the `error` signal -- and takes no such
-/// precondition.
-///
-/// Scheduling rather than raising is the point. A raise from a callback now
-/// reaches the scope the loop entry opened, so it ends the whole loop
-/// invocation and every other watch and task with it; one watch's read
-/// failing is not grounds for that.
-///
-/// The supervisor is what makes the delivery a value rather than a line on
-/// stderr. Only the Windows watch fiber has one, `startListening` copying the
-/// root fiber's, so on the other two backends a watch failure is the stack
-/// trace the loop prints. The channel is attached here to read what is
-/// delivered. `test/filewatch_core.zig`'s `theReadFailureEndsTheWatch` drives
-/// a backend arm into this.
+/// A fiber made by `fibers.new` and never scheduled has no `root`, so the case
+/// above refuses to cancel it. `scheduleSignal` resumes it with the `error`
+/// signal, the resume `cancel` makes, and has no such precondition. The
+/// supervisor channel attached here receives the `:error` event.
 fn theErrorScheduledOnANonTask() void {
     const fiberv = doString("(fiber/new (fn [] 1) :e)");
     gc_alloc.gcroot(fiberv);

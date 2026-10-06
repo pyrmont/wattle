@@ -48,9 +48,8 @@ const builtin = @import("builtin");
 
 const c = @import("cabi");
 
-/// A translation of `<sys/stat.h>` alone, and one of seven in the tree beside
-/// `os/abi.h`, `net/abi.h`, `filewatch/abi.h`, `ev/locks.zig`, `host.zig` and
-/// `cabi.zig`. A translation is right when nothing it declares crosses a
+/// A translation of `<sys/stat.h>` alone, and one of six in the tree beside
+/// `os/abi.h`, `net/abi.h`, `ev/locks.zig`, `host.zig` and `cabi.zig`. A translation is right when nothing it declares crosses a
 /// subsystem boundary, and nothing does: `struct stat` never leaves this file,
 /// and what does leave is a mode word and an array of doubles.
 ///
@@ -178,9 +177,8 @@ pub fn isDirectory(file: ?*anyopaque) bool {
 }
 
 /// Whether an open descriptor is a directory, or null where the call failed.
-/// `isDirectory` asks it of a stream's descriptor, and `filewatch.zig`'s
-/// kqueue backend of each watched descriptor an event names, skipping an event
-/// it cannot ask about. Windows and Plan 9 do not call it.
+/// `isDirectory` asks it of a stream's descriptor. Windows and Plan 9 do not
+/// call it.
 pub fn descriptorIsDirectory(fd: c_int) ?bool {
     if (linux) {
         const l = std.os.linux;

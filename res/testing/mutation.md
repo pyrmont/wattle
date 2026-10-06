@@ -191,10 +191,10 @@ the only thing that finds either, and the fix is a restatement in Zig with a
 `comptime` assertion on `@offsetOf` to keep it honest -- `src/runtime/net/abi.zig`
 has both.
 
-That file is one of the tree's three *host* translations, with `os/abi.h` and
-`filewatch/abi.h`. The rule for adding one is in `os/abi.h` and has not
-changed: a further translation is right when nothing it declares crosses a
-subsystem boundary, and wrong when it does. `abi.zig`, the shared translation
+That file is one of the tree's two *host* translations, with `os/abi.h`. The
+rule for adding one is in `os/abi.h` and has not changed: a further
+translation is right when nothing it declares crosses a subsystem boundary,
+and wrong when it does. `abi.zig`, the shared translation
 of Janet's own headers those three were measured against, went with `janet.h`
 at Phase 12 increment 5f.
 

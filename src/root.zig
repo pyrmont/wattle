@@ -54,7 +54,6 @@ pub const ffi_call = @import("runtime/ffi/call.zig");
 pub const ffi_classify = @import("runtime/ffi/classify.zig");
 pub const ffi_marshal = @import("runtime/ffi/marshal.zig");
 pub const ffi_types = @import("runtime/ffi/types.zig");
-pub const filewatch = @import("runtime/filewatch.zig");
 pub const fingerprint = @import("api/fingerprint.zig");
 pub const fs = @import("runtime/os/fs.zig");
 pub const gc_alloc = @import("runtime/gc.zig");
@@ -137,7 +136,6 @@ comptime {
         _ = @import("runtime/ffi/types.zig");
         _ = @import("runtime/ffi/classify.zig");
     }
-    if (options.filewatch) _ = @import("runtime/filewatch.zig");
 
     // The value layer and the collector.
     if (options.args) _ = @import("runtime/args.zig");

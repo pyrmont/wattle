@@ -52,7 +52,6 @@ const ev_loop = @import("ev.zig");
 const fatal = @import("fatal.zig");
 const ffi = @import("ffi.zig");
 const fibers = @import("value/fibers.zig");
-const filewatch = @import("filewatch.zig");
 const fingerprint = @import("../api/fingerprint.zig");
 const functions = @import("value/functions.zig");
 const gc_alloc = @import("gc.zig");
@@ -106,7 +105,6 @@ const bits64 = config.bits64;
 const has_assembler = config.assembler;
 const has_ev = config.ev;
 const has_ffi = config.ffi;
-const has_filewatch = config.filewatch;
 const has_int_types = config.int_types;
 const has_net = config.net;
 const has_peg = config.peg;
@@ -1494,10 +1492,7 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
     if (has_peg) try peg.libPeg(env);
     if (has_assembler) try asm_core.libAsm(env);
     if (has_int_types) try inttypes.libInttypes(env);
-    if (has_ev) {
-        try ev_loop.libEv(env);
-        if (has_filewatch) filewatch.libFilewatch(env);
-    }
+    if (has_ev) try ev_loop.libEv(env);
     if (has_net) net.libNet(env);
     if (has_ffi) ffi.libFfi(env);
 }

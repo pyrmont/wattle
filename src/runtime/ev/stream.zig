@@ -198,9 +198,8 @@ pub const write_mode_write: c_int = 0;
 /// An `OVERLAPPED`, the transfer count beside it, and the operation the
 /// transfer belongs to.
 ///
-/// This is the only declaration of the shape in the tree. `net.zig` and
-/// `filewatch.zig` embed this one, each as the first member of a state they
-/// hand to a Windows call, so the cast `ev/backend.zig`'s `Iocp.loop1` makes
+/// This is the only declaration of the shape in the tree. `net.zig` embeds
+/// this one as the first member of a state it hands to a Windows call, so the cast `ev/backend.zig`'s `Iocp.loop1` makes
 /// on a completion is to the type the state was built from.
 ///
 /// `op` is what that function matches a completion by. A stream holds every
@@ -220,8 +219,8 @@ pub const Overlapped = extern struct {
 ///
 /// `ev.zig`'s `asyncStartFiber` allocates an operation and links it into
 /// `stream`'s list for its direction; `asyncRelease` unlinks and frees it
-/// along with `state`. The callbacks in this file, in `net.zig` and in
-/// `filewatch.zig` take one, and `ev.zig`'s `asyncEnd` and `asyncInFlight`
+/// along with `state`. The callbacks in this file and in `net.zig` take one,
+/// and `ev.zig`'s `asyncEnd` and `asyncInFlight`
 /// take one.
 ///
 /// `next` is the link in the stream's list and `reading` says which list.

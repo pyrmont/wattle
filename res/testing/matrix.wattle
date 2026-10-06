@@ -48,9 +48,9 @@
 ; `wattle-os-fs-public-91af` at once, which is exactly the shared-fixture
 ; problem the suites lock exists for, one layer down.
 ;
-; The same rule one directory out: `os_surface` and `filewatch_core` write
-; nothing to the working tree but each owns a fixture under `/tmp`, which two
-; entries would collide on just as surely. That is rule 53 rather than rule 9.
+; The same rule one directory out: `os_surface` writes nothing to the working
+; tree but owns a fixture under `/tmp`, which two entries would collide on just
+; as surely. That is rule 53 rather than rule 9.
 ;
 ; Part 24 is the gate, so this line stopped being an increment's own; every part
 (def contracts-default
@@ -80,8 +80,8 @@
   ;
   ; (`io_core` and `os_fs` cannot be named: each creates files in the working
   ; directory, which two concurrent `contracts` entries share, and `os_surface`
-  ; and `filewatch_core` each own a `/tmp` fixture for the same reason. The
-  ; suites cover them in every `full` entry instead.)
+  ; owns a `/tmp` fixture for the same reason. The suites cover them in every
+  ; `full` entry instead.)
   ;
   ; Phase 15 Part 1 replaced these with its own: the constructors and the three
   ; heads (`value_alloc`, `buffer_array`, `tables`, `string_symbol`,
@@ -562,11 +562,6 @@
     ; so both are passed unconditionally rather than derived from the host.
     (job "full" "poll backend" ["-Dkqueue=false" "-Depoll=false"])
     (job "full" "no ffi" ["-Dffi=false"])
-    ; The watcher is selected as `cfg.ev and cfg.filewatch`, so neither of the
-    ; watcher's contracts is compiled here. This entry is `full`, so it
-    ; runs the whole Zig driver rather than the contract list by name and
-    ; needs no skip; the single-threaded entry below is where that bites.
-    (job "full" "no filewatch" ["-Dfilewatch=false"])
     (job "contracts" "no net" ["-Dnet=false"] ["net_sockets"])
 
     ; `-Dpeg=false` leaves the tree without `Peg` or `janet_peg_type`,
@@ -590,7 +585,7 @@
     ; include one, and it had to learn that the skip the comment names
     ; was never actually passed.
     (job "contracts" "single threaded" ["-Dsingle-threaded=true"]
-         ["ev_core" "ev_loop" "net_sockets" "filewatch_flags" "filewatch_core"])
+         ["ev_core" "ev_loop" "net_sockets"])
     ; `build.zig` sets `.os_fs = !options.reduced_os`, so the skip list has to
     ; name all four contracts `test/contracts.zig` gates on `options.os_fs`.
     ; It named only `os_stat` until increment 8b picked `os_fs` as a subject

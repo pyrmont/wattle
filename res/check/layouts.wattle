@@ -257,8 +257,8 @@
     (def name (d :name))
     (def tags !{})
     (when (get foreign name) (put! tags "host" true))
-    ; The three host-header translations are the `abi.zig` files inside the
-    ; runtime -- `os/`, `net/`, `filewatch/`. `api/abi.zig` is the module
+    ; The two host-header translations are the `abi.zig` files inside the
+    ; runtime -- `os/` and `net/`. `api/abi.zig` is the module
     ; boundary and is not one of them, so the suffix alone is not the test.
     (when (and (string/has-prefix? "runtime/" (d :file))
                (string/has-suffix? "/abi.zig" (d :file)))

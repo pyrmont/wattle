@@ -2,8 +2,7 @@
 //!
 //! An event callback is the function the loop calls when a stream becomes
 //! readable, a write completes, a fiber is cancelled or the collector marks.
-//! The callbacks are in `stream.zig`, `net.zig` and `filewatch.zig`, and
-//! every one of them can raise: a short read raises, a closed stream raises, a
+//! The callbacks are in `stream.zig` and `net.zig`, and every one of them can raise: a short read raises, a closed stream raises, a
 //! failed accept raises.
 //!
 //! Typing `EVCallback` as raising is what makes the `try` at each dispatch

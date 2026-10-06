@@ -66,14 +66,14 @@
 # outright -- a file in that directory writes `@import("types.zig")` for its
 # own neighbour, with no path to distinguish it by.
 #
-# **`translate-c` is not chronology.** The three host headers -- `os/abi.h`,
-# `net/abi.h`, `filewatch/abi.h` -- are read by translate-c on every build, and
+# **`translate-c` is not chronology.** The two host headers -- `os/abi.h` and
+# `net/abi.h` -- are read by translate-c on every build, and
 # the comments explaining what it does and does not carry across are the reason
 # each hand-written declaration beside them exists. The pattern does not name
 # it.
 #
 # **The retired file names are live under `test/`.** The contracts really are
-# `io_core.zig`, `filewatch_flags.zig`, `os_stat.zig` and their kin, so a
+# `io_core.zig`, `os_stat.zig` and their kin, so a
 # source file naming one is naming a file that exists. The second `grep` drops
 # those, and only those: a bare `io_core.zig` with no `test/` in front of it is
 # still a finding.
@@ -108,7 +108,7 @@ status=0
 if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|src/core/|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
     --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
     src test examples build.zig |
-  grep -vE '^[^:]+:[0-9]+:.*(test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig|filewatch_flags\.zig|filewatch_core\.zig)'
+  grep -vE '^[^:]+:[0-9]+:.*(test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig)'
 then
   echo "chronology.sh: the lines above cite the migration rather than the code." >&2
   status=1

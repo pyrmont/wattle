@@ -161,12 +161,8 @@ const contracts: []const Contract = blk: {
     if (options.os_process) list = with(list, "os_process", @import("os_process.zig"));
     list = with(list, "io_core", @import("io_core.zig"));
     list = with(list, "os_surface", @import("os_surface.zig"));
-    // The event loop's kernels and the file watcher's vocabularies: both are
-    // conditioned on `Config.ev` in `build.zig`, and `filewatch_flags` needs
-    // the file watcher as well.
+    // The event loop's kernels, conditioned on `Config.ev` in `build.zig`.
     if (options.ev) list = with(list, "ev_core", @import("ev_core.zig"));
-    if (options.filewatch) list = with(list, "filewatch_flags", @import("filewatch_flags.zig"));
-    if (options.filewatch) list = with(list, "filewatch_core", @import("filewatch_core.zig"));
     if (options.net) list = with(list, "net_sockets", @import("net_sockets.zig"));
     // `ev_loop`'s pipe fixture needs `os/pipe`, which reduced-os does not
     // register. The event-loop configurations that publish the OS still run

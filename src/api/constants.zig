@@ -181,8 +181,7 @@ pub const stackframe_tailcall = @as(c_int, 1);
 pub const stackframe_entrance = @as(c_int, 2);
 
 /// A stream's flags, as single bits in ascending order.
-/// `src/runtime/ev/stream.zig`, `src/runtime/net.zig` and
-/// `src/runtime/filewatch.zig` read them.
+/// `src/runtime/ev/stream.zig` and `src/runtime/net.zig` read them.
 pub const stream_closed = @as(c_int, 0x1);
 pub const stream_socket = @as(c_int, 0x2);
 pub const stream_unregistered = @as(c_int, 0x4);
