@@ -608,6 +608,10 @@
     (job "full" "reduced os" ["-Dreduced-os=true"]
          ["os_fs" "os_stat" "os_fs_paths" "os_permissions"
           "os_environ" "os_time" "os_process"])
+    ; `-Dprocesses=false` runs its suites, because a suite that names
+    ; `os/spawn` unguarded compiles wherever the build has processes. As a
+    ; build-only entry it missed `suite-ev`'s unguarded `:x` cases.
+    (job "full" "no processes" ["-Dprocesses=false"])
     (job "contracts" "tagged values" ["-Dnanbox=false"])
     (job "full" "nanbox pointer shift 2" ["-Dnanbox-pointer-shift=2"])
 
@@ -659,7 +663,6 @@
     (job "build" "no ipv6" ["-Dipv6=false"])
     (job "build" "no cryptorand" ["-Dcryptorand=false"])
     (job "build" "no interpreter interrupt" ["-Dinterpreter-interrupt=false"])
-    (job "build" "no processes" ["-Dprocesses=false"])
     (job "build" "no umask" ["-Dumask=false"])
     (job "build" "no realpath" ["-Drealpath=false"])
 

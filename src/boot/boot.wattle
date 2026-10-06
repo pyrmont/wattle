@@ -6098,6 +6098,14 @@
   (eprint |parts)
   (os/exit 1))
 
+(def- cli-no-spawn
+  """
+  How a command that runs a process names what this build lacks. A reduced-OS
+  build has neither `os/spawn` nor `os/stat`, and a build without processes,
+  which WASI always is, keeps `os/stat`.
+  """
+  (compif (dyn 'os/stat) "without processes" "with reduced os"))
+
 (defn- cli-exists?
   """
   Checks whether path names anything, a pipe or a device as well as a file, so
@@ -6174,6 +6182,34 @@
       (array/push! out (string/format "(setdyn *%s* %q)" key (get opts key)))))
   (string/join " " out))
 
+(defn- cli-test-run
+  """
+  Runs args as a process and returns [status out err], its exit code and the
+  text it wrote to stdout and to stderr.
+
+  With the event loop the two streams are pipes read together, so neither
+  fills while the other is read. Without it they are files in the temporary
+  directory, read after the process exits and then removed.
+  """
+  [args]
+  (compif (not (dyn 'os/spawn))
+    (cli-fail "test is not supported " cli-no-spawn)
+    (compif (dyn 'ev/gather)
+      (do
+        (def p (os/spawn args :p {:out :pipe :err :pipe}))
+        (def [out err] (ev/gather (ev/read (p :out) :all) (ev/read (p :err) :all)))
+        [(os/proc-wait p) (string (or out "")) (string (or err ""))])
+      (do
+        (def dir (or (os/getenv "TMPDIR") (os/getenv "TEMP") (os/getenv "TMP") "/tmp"))
+        (def base (string dir "/wattle-test-" (os/getpid)))
+        (def paths [(string base ".out") (string base ".err")])
+        (def files (map #(file/open $ :wb) paths))
+        (def status (os/proc-wait (os/spawn args :p {:out (get files 0) :err (get files 1)})))
+        (each f files (file/close f))
+        (def texts (map #(string (slurp $)) paths))
+        (each path paths (os/rm path))
+        [status |texts]))))
+
 (defn- cli-test
   """
   Runs each test file in ./test in its own process, prints a line for each with
@@ -6181,7 +6217,7 @@
   a file failed or none was run.
   """
   [opts]
-  (compif (and (dyn 'os/spawn) (dyn 'os/dir) (dyn 'os/stat) (dyn 'ev/gather))
+  (compif (and (dyn 'os/spawn) (dyn 'os/dir) (dyn 'os/stat))
     (do
       (when (and (get opts "file") (get opts "no-file"))
         (cli-fail "cannot use both --file and --no-file"))
@@ -6252,12 +6288,8 @@
       (var last-failed? false)
       (each path files
         (when (and bail? (not (empty? failed))) (break))
-        (def p (os/spawn [exe |prefix "run" |(if (empty? setup) [] ["-e" setup]) path]
-                         :p {:out :pipe :err :pipe}))
-        (def [out err] (ev/gather (ev/read (p :out) :all) (ev/read (p :err) :all)))
-        (def status (os/proc-wait p))
-        (def out (string (or out "")))
-        (def err (string (or err "")))
+        (def [status out err]
+          (cli-test-run [exe |prefix "run" |(if (empty? setup) [] ["-e" setup]) path]))
         (def result (result-of out))
         (def counts
           (if result
@@ -6289,7 +6321,7 @@
       (unless (empty? failed)
         (each path failed (print "  " (shown path)))
         (os/exit 1)))
-    (cli-fail "test is not supported with reduced os")))
+    (cli-fail "test is not supported " cli-no-spawn)))
 
 (defn- cli-check [opts params]
   (when (has-key? opts "lint-warn") (setdyn *lint-warn* (get opts "lint-warn")))
@@ -6332,7 +6364,7 @@
   on a failure that is not zig's own.
   """
   [kind cmd]
-  (compif (and (dyn 'os/spawn) (dyn 'ev/read))
+  (compif (dyn 'os/spawn)
     (do
       (def opts (get cmd :opts))
       (def mode (get cli-release-modes (get opts "release" (if (= kind :web) "small" "safe"))))
@@ -6356,8 +6388,12 @@
       (unless (fexists zon-path)
         (cli-fail "the Wattle package is not at " srcpath ": " zon-path " does not exist"))
       (def [zig-ok _]
+        ; A build without the event loop gives `os/spawn` a file for each pipe
+        ; rather than a stream, and `file/read` reads it.
         (protect (let [p (os/spawn ["zig" "version"] :p {:out :pipe})
-                       out (ev/read (p :out) :all)]
+                       out (compif (dyn 'ev/read)
+                             (ev/read (p :out) :all)
+                             (file/read (p :out) :all))]
                    (os/proc-wait p)
                    (string/trim out))))
       (unless zig-ok (cli-fail "zig was not found on the PATH, and wattle build needs it"))
@@ -6374,7 +6410,7 @@
       (def status (os/execute args :p))
       (unless (zero? status) (os/exit status))
       (print "built " kind " in " dir "/zig-out"))
-    (cli-fail "build " kind " is not supported with reduced os")))
+    (cli-fail "build " kind " is not supported " cli-no-spawn)))
 
 (defn- cli-build [build]
   (def sub (get build :sub))

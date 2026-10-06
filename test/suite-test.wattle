@@ -54,9 +54,9 @@
 
   (assert (= 0 (wattle-in-fixture "check" ["script.wattle"])) "check compiles a script")
 
-  ; `wattle test` runs each file through os/spawn and ev/gather, which a build
-  ; without the event loop lacks.
-  (compwhen (and (dyn 'os/spawn) (dyn 'ev/gather))
+  ; `wattle test` runs each file through os/spawn, with the event loop where
+  ; the build has one and through temporary files where it does not.
+  (compwhen (dyn 'os/spawn)
     (assert (= 1 (check)) "a failing test file fails the run")
     (assert (= 0 (check "-f" "a.wattle")) "--file runs only that file")
     (assert (= 1 (check "-f" "nested/b.wattle")) "--file matches a path below ./test")
@@ -71,7 +71,21 @@
     (assert (= 0 (check "--seed" "1" "-f" "a.wattle")) "--seed sets the seed")
     (assert (= 1 (check "--seed" "1")) "a seed does not hide a failing file")
     (assert (= 1 (check "--seed" "not-a-number")) "--seed takes an integer")
-    (assert (= 1 (check "-b")) "--bail fails the run on a failing file"))
+    (assert (= 1 (check "-b")) "--bail fails the run on a failing file")
+
+    ; A failing file's stdout and stderr are both shown. The file is written
+    ; last, so that it changes no case above.
+    (write "test/c.wattle"
+           """
+           (print "c-out-marker")
+           (eprint "c-err-marker")
+           (os/exit 1)
+           """)
+    (spit (string root "/log") "")
+    (assert (= 1 (check "-f" "c.wattle")) "a file that exits 1 fails the run")
+    (def shown (slurp (string root "/log")))
+    (assert (string/find "c-out-marker" shown) "a failing file's stdout is shown")
+    (assert (string/find "c-err-marker" shown) "a failing file's stderr is shown"))
 
   (rmrf root))
 

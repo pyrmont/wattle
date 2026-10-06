@@ -603,13 +603,11 @@ feature, it exits immediately after `start-suite` with `(compwhen (not (dyn
 'some/binding)) (end-suite) (os/exit 0))`. This works because Wattle compiles
 and runs a file one top-level form at a time.
 
-`-Dreduced-os=true` is a known gap and is deliberately not guarded. It leaves
-only `os/exit`, `os/which`, `os/arch` and `os/compiler`, which breaks
-`test/helper.wattle` itself, so every suite fails before reaching its own code.
-Guarding it would mean skipping `suite-os` entirely along with much of
-`suite-ev` and `suite-pkg`, and the run would pass while testing much less
-than it appears to. Revisit it only with a plan for what the suites should
-still assert.
+`-Dreduced-os=true` registers only `os/exit`, `os/which`, `os/arch` and
+`os/compiler`. A suite that needs more of `os/` throughout is marked
+`needs_os` in `build.zig`'s suite list and is not scheduled in that
+configuration. A suite that needs an `os/` binding in one region guards the
+region with `compwhen`, as `suite-pp.wattle` does around `os/setenv`.
 
 ## Image-only builds
 

@@ -291,8 +291,10 @@
 ; The build of an :exe artifact is not captured, so its output reaches the
 ; command line as it is written. The prefix of this suite holds no source of the
 ; runtime, so the build fails, and the command line prints what the build wrote
-; and then the failure of the build.
-(compwhen (dyn 'os/execute)
+; and then the failure of the build. `wattle build exe` needs `os/spawn`, and
+; the command line runs on the same build as this suite, so the case is compiled
+; where both bindings exist.
+(compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
   (do
     (make-info-pkg "{:name \"exe-pkg\" :artifacts [{:type :exe :name \"x\" :entry \"x.wattle\"}]}")
     (def [status text] (run-cli "pkg" "install" info-dir))

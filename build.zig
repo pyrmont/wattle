@@ -1363,7 +1363,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(runtime_tests_step);
     test_step.dependOn(lineedit_tests_step);
     test_step.dependOn(module_errors_step);
-    addCliChecks(b, test_step, client, config.version);
+    addCliChecks(b, test_step, client, config.version, config.reduced_os, config.processes);
 
     // **A wasm binary that links can still be refused by its host.** Zig turns
     // an unresolved `extern fn` into an import from the module `env` rather
@@ -2106,6 +2106,8 @@ fn addCliChecks(
     test_step: *std.Build.Step,
     zig_client: *std.Build.Step.Compile,
     label: []const u8,
+    reduced_os: bool,
+    processes: bool,
 ) void {
     const clients = [_]*std.Build.Step.Compile{zig_client};
     for (clients) |client| {
@@ -2189,10 +2191,32 @@ fn addCliChecks(
         const pkg_missing = b.addRunArtifact(client);
         // The prefix is given because the environment of a run may set none, and
         // the check for a prefix comes before the check for a package script.
+        // A reduced-OS build refuses every `pkg` command before either check.
         pkg_missing.addArgs(&.{ "-p", "no-such-prefix", "pkg", "install" });
         pkg_missing.expectExitCode(1);
-        pkg_missing.expectStdErrMatch("package must contain pkg.wattle, pkg/init.wattle or an info.edn");
+        pkg_missing.expectStdErrMatch(if (reduced_os)
+            "pkg install is not supported with reduced os"
+        else
+            "package must contain pkg.wattle, pkg/init.wattle or an info.edn");
         test_step.dependOn(&pkg_missing.step);
+
+        // A build without `os/spawn` refuses the two commands that run a
+        // process, and the message names what the build lacks: reduced OS,
+        // which has no `os/stat` either, or processes alone.
+        if (reduced_os or !processes) {
+            const lacks = if (reduced_os) "with reduced os" else "without processes";
+            const test_refused = b.addRunArtifact(client);
+            test_refused.addArgs(&.{"test"});
+            test_refused.expectExitCode(1);
+            test_refused.expectStdErrEqual(b.fmt("test is not supported {s}{s}", .{ lacks, streamEol(b) }));
+            test_step.dependOn(&test_refused.step);
+
+            const build_refused = b.addRunArtifact(client);
+            build_refused.addArgs(&.{ "build", "exe" });
+            build_refused.expectExitCode(1);
+            build_refused.expectStdErrEqual(b.fmt("build exe is not supported {s}{s}", .{ lacks, streamEol(b) }));
+            test_step.dependOn(&build_refused.step);
+        }
 
         const pkg_help = b.addRunArtifact(client);
         pkg_help.addArgs(&.{ "help", "pkg", "uninstall" });

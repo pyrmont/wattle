@@ -17,6 +17,9 @@ since the most recent release are under Unreleased.
   raises on Windows, as it already did elsewhere.
 - Remove the file watcher: the `filewatch/*` functions, the
   `filewatch/watcher` type and the `-Dfilewatch` build option.
+- `wattle build` and `wattle test` run without the event loop. A build
+  without processes refuses them with "is not supported without
+  processes", and a reduced-OS build with "is not supported with reduced os".
 
 ## 0.1.1 (2026-10-05)
 

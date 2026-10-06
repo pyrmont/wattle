@@ -309,29 +309,33 @@
 (assert (= "![\e[32m1\e[0m \e[35m\"a\"\e[0m]" (string/format "%P" ![1 "a"]))
         "%P wraps each value in its own colour")
 (assert (= "!{}" (string/format "%p" !{})) "an empty dictionary needs no break at all")
-(os/setenv "TERM" "xterm-256color")
-(os/setenv "COLORTERM" "")
-(assert (= "\e[38;5;208mnil\e[0m \e[38;5;208mtrue\e[0m" (string/format "%P %P" nil true))
-        "%P draws nil and a boolean in orange on a terminal with 256 colours")
-(os/setenv "COLORTERM" "truecolor")
-(os/setenv "TERM" "xterm")
-(assert (= "\e[38;5;208mnil\e[0m" (string/format "%P" nil))
-        "COLORTERM alone gives the 256 colours")
-(os/setenv "COLORTERM" "")
-; Windows has 256 colours whatever the environment says, so it has no 16-colour
-; case to draw.
-(if (= :windows (os/which))
+; The colour depth comes from TERM and COLORTERM, which these cases set.
+; `-Dreduced-os=true` registers no `os/setenv`, so the region is compiled only
+; where the binding exists.
+(compwhen (dyn 'os/setenv)
+  (os/setenv "TERM" "xterm-256color")
+  (os/setenv "COLORTERM" "")
+  (assert (= "\e[38;5;208mnil\e[0m \e[38;5;208mtrue\e[0m" (string/format "%P %P" nil true))
+          "%P draws nil and a boolean in orange on a terminal with 256 colours")
+  (os/setenv "COLORTERM" "truecolor")
+  (os/setenv "TERM" "xterm")
   (assert (= "\e[38;5;208mnil\e[0m" (string/format "%P" nil))
-          "%P draws nil in orange on Windows whatever TERM and COLORTERM say")
-  (assert (= "\e[95mnil\e[0m \e[95mfalse\e[0m" (string/format "%P %P" nil false))
-          "%P draws nil and a boolean in bright magenta on a terminal with 16 colours"))
-(os/setenv "TERM" "xterm-256color")
-(let [v (vec (map (fn [_] nil) (range 19)))
-      plain (string/format "%p" v)
-      coloured (string/format "%P" v)
-      stripped (string/replace-all "\e[0m" "" (string/replace-all "\e[38;5;208m" "" coloured))]
-  (assert (= plain stripped)
-          "%P lays a collection out as %p does when its escapes are 256-colour"))
+          "COLORTERM alone gives the 256 colours")
+  (os/setenv "COLORTERM" "")
+  ; Windows has 256 colours whatever the environment says, so it has no
+  ; 16-colour case to draw.
+  (if (= :windows (os/which))
+    (assert (= "\e[38;5;208mnil\e[0m" (string/format "%P" nil))
+            "%P draws nil in orange on Windows whatever TERM and COLORTERM say")
+    (assert (= "\e[95mnil\e[0m \e[95mfalse\e[0m" (string/format "%P %P" nil false))
+            "%P draws nil and a boolean in bright magenta on a terminal with 16 colours"))
+  (os/setenv "TERM" "xterm-256color")
+  (let [v (vec (map (fn [_] nil) (range 19)))
+        plain (string/format "%p" v)
+        coloured (string/format "%P" v)
+        stripped (string/replace-all "\e[0m" "" (string/replace-all "\e[38;5;208m" "" coloured))]
+    (assert (= plain stripped)
+            "%P lays a collection out as %p does when its escapes are 256-colour")))
 
 ; This asserted that a buffer formatted into itself "reads its old contents",
 ; which was never true of `%v` -- it read the live buffer, and the case passed

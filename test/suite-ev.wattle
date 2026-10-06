@@ -1555,15 +1555,16 @@
 
 ;; A process that exits non-zero under :x is reported as 'command failed', not
 ;; as a cancellation of a fiber the loop did not own.
-(defn exec-slurp [& args]
-  (with [proc (os/spawn args :xp {:out :pipe})]
-    (let [[out] (ev/gather
-                  (ev/read (proc :out) :all)
-                  (os/proc-wait proc))]
-      (if out (string/trimr out) ""))))
-(def [exec-ok exec-msg] (protect (exec-slurp |run wattle "-e" "(os/exit 1)")))
-(assert (not exec-ok) "os/spawn :x 1")
-(assert (not (string/has-prefix? "cannot cancel" exec-msg)) "os/spawn :x 2")
-(assert (string/has-prefix? "command failed" exec-msg) "os/spawn :x 3")
+(compwhen (dyn 'os/spawn)
+  (defn exec-slurp [& args]
+    (with [proc (os/spawn args :xp {:out :pipe})]
+      (let [[out] (ev/gather
+                    (ev/read (proc :out) :all)
+                    (os/proc-wait proc))]
+        (if out (string/trimr out) ""))))
+  (def [exec-ok exec-msg] (protect (exec-slurp |run wattle "-e" "(os/exit 1)")))
+  (assert (not exec-ok) "os/spawn :x 1")
+  (assert (not (string/has-prefix? "cannot cancel" exec-msg)) "os/spawn :x 2")
+  (assert (string/has-prefix? "command failed" exec-msg) "os/spawn :x 3"))
 
 (end-suite)
