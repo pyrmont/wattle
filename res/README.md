@@ -1,11 +1,10 @@
 # Resources
 
-The development instruments, and the shell completions. Every instrument is run
-by hand, with three exceptions: `zig build` compiles `check/wasm_imports.zig`
-and runs it against each wasm32-wasi binary it produces, it compiles
-`tools/layout.zig` into `<prefix>/test`, and it compiles `tools/pty.zig` into
-`<prefix>/test`, which `zig build test` runs through
-`test/suite-lineedit.wattle`.
+Development scripts, tools, benchmarks, shell completions and editor support.
+Tools are run manually with three exceptions. `zig build` compiles and runs
+`check/wasm_imports.zig` against each wasm32-wasi binary it produces. It also
+compiles `tools/layout.zig` and `tools/pty.zig` into `<prefix>/test`.
+`zig build test` runs the latter through `test/suite-lineedit.wattle`.
 
 | directory     | contents                                            |
 | ------------- | --------------------------------------------------- |
@@ -17,18 +16,18 @@ and runs it against each wasm32-wasi binary it produces, it compiles
 | `completion/` | shell completions for the `wattle` command          |
 | `editor/`     | editor support: a Tree-sitter grammar, Neovim files |
 
-`common.wattle` is the module the scripts share. It finds the repository
-root as the directory above its own, so it stays at this level.
-`STYLE_GUIDE.md` holds the rules for comments and documentation prose.
+Scripts share `common.wattle`, which locates the repository root as its parent
+directory. It must remain at this level. `STYLE_GUIDE.md` describes comment and
+documentation style.
 
-Each script's header records why the script has its shape and what it cannot
-see. Read the header before running or changing a script.
+Each script's header describes its design and limitations. Read it before
+running or changing the script.
 
-A path spelled inside a script is a string, so a script naming a file that has
-moved fails only when it is next run. When a change moves or deletes a file,
-grep `res/` for the name and update the scripts in the same change.
+File paths in scripts are checked only when the scripts run. When moving or
+deleting a file, search `res/` for its name and update affected scripts in the
+same change.
 
-## check
+## Checks
 
 ### Inventories
 
@@ -47,16 +46,15 @@ invocation, including one with an unrecognised argument, regenerates the file.
 | `gates.wattle`      | symbols a configuration does not export | —             |
 | `bench-arms.wattle` | whether a corpus's two arms agree       | —             |
 
-The file is named after the script, except that `gates.wattle` writes
-`gated.txt`; it builds every configuration it compares, from an empty cache
-each time, and takes four to six minutes. `optionals.wattle` counts a bare
-`orelse unreachable` as well as `.?`.
-`references.wattle`'s `c-era` class is a bounded backlog. Each `.txt` file's
-header defines its classes.
+Inventory files use the script's name, except for `gates.wattle`, which writes
+`gated.txt`. That script builds each configuration from an empty cache and takes
+four to six minutes. `optionals.wattle` counts a bare `orelse unreachable` as
+well as `.?`. `references.wattle`'s `c-era` class is a bounded backlog. Each
+`.txt` file's header defines its classes.
 
-Rows print `file:line`. `layouts`, `callconv`, `orphans` and `references`
-compare rows by file and name, so a line number that has moved does not fail
-`--check`; regenerate to refresh it.
+Inventory rows include `file:line`. `layouts`, `callconv`, `orphans` and
+`references` compare rows by file and name, so a line number that has moved does
+not fail `--check`; regenerate to refresh it.
 
 ### Reports
 
@@ -72,23 +70,22 @@ compare rows by file and name, so a line number that has moved does not fail
 `chronology.sh` and `swallowed.wattle` are silent on a clean tree.
 `chronology.sh` looks for migration citations and `-D` options `build.zig` does
 not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and,
-across the whole tree including the top-level documents and `res/`, for the
-four retired names its header lists. That third question is a fixed
-alternation rather than a derived one: its scope is the whole tree, but it is
-silent on any path retired since the list was written, and it is not the
-general question of whether a named file exists.
+across the whole tree including the top-level documents and `res/`, for the four
+retired names listed in its header. The retired-name check uses a fixed pattern.
+It does not detect other retired paths or check whether every referenced file
+exists.
 
 `comments.wattle` extracts every Zig comment and Markdown paragraph to one file
-per source under `zig-out/comments` and gates nothing.
+per source under `zig-out/comments`. It enforces no checks.
 
 `image-diff.wattle` counts the absolute host paths the image embeds, which must
 be zero; `--save FILE` on one host and `--against FILE` on another compare its
 bytes. `image-semantic.wattle` compares each binding's value, docstring and
-bytecode with `:source-map` ignored, so a change that moves an nfunction's
-registration line changes the bytes and not this comparison. `zig build` runs
+bytecode, ignoring `:source-map`. Moving an nfunction's registration line
+changes image bytes without changing the semantic comparison. `zig build` runs
 `wasm_imports.zig` on wasm targets.
 
-## testing
+## Testing
 
 | script         | what it runs                                          |
 | -------------- | ----------------------------------------------------- |
@@ -98,112 +95,110 @@ registration line changes the bytes and not this comparison. `zig build` runs
 | `mutate.wattle` | the mutation sweep                                    |
 
 `contract.sh` and `leaks.sh` run the driver in `zig-out` and do not build it.
-`leaks.sh` is macOS only; its expectations are in the script, so a difference
-is a non-zero exit.
+`leaks.sh` is macOS only; its expectations are in the script, so a difference is
+a non-zero exit.
 
-`matrix.wattle` covers configurations, optimize modes and cross-compiles. Set
-`contracts-default` at its head to the change's own contracts.
-[`acceptance-matrix.md`](testing/acceptance-matrix.md) has the operational
-detail.
+`matrix.wattle` checks configurations, optimize modes and cross builds. Set
+`contracts-default` at the start of the script to the contracts affected by the
+change. [`acceptance-matrix.md`](testing/acceptance-matrix.md) has the
+operational detail.
 
-`mutate.wattle --src <file>` is repeatable and sweeps the sources in order under
-one warm-up and one log; `--all` sweeps every source under `src/` and takes
-about thirty hours. A bare invocation prints its usage. An interrupted sweep
-leaves its current mutant in the working tree. Read
+`mutate.wattle --src <file>` runs a repeatable mutation sweep in source order,
+using one warm-up and one log. `--all` sweeps every source under `src/` and
+takes about thirty hours. A bare invocation prints its usage. An interrupted
+sweep leaves its current mutant in the working tree. Read
 [`mutation.md`](testing/mutation.md) first.
 
-## tools
+## Tools
 
 `layout.zig` is installed by `-Dinstall-tests=true` as
-`<prefix>/test/wattle-layout` on every target but wasm. It reads a buffer on standard input and prints the line editor's layout
-of it as a picture, one bracketed row per terminal row, placed by
-`layout.position` alone:
+`<prefix>/test/wattle-layout` on every target except wasm. It reads a buffer
+from standard input and prints the editor's layout as bracketed terminal rows.
+Placement uses only `layout.position`:
 
 ```sh
 printf '(defn f [x]\n  (+ x 1))\n' | zig-out/test/wattle-layout -w 20 -p 9 -o 11
 ```
 
-It imports the `lineedit` module rather than a copy of it, so it runs the code
-the editor runs, without a terminal and without the runtime. Its header has the
-flags and the output format. The layout's `test` blocks use the same picture,
-through `picture.draw`.
+It imports the editor's `lineedit` module and runs without a terminal or
+runtime. Its header documents the flags and output format. The layout's `test`
+blocks use the same display format through `picture.draw`.
 
 `pty.zig` is installed by `-Dinstall-tests=true` as `<prefix>/test/wattle-pty`
-on every target but wasm and Windows. It runs a command behind a pseudo-terminal, types at it, and prints
-the bytes the command wrote, or with `-s` the screen those bytes draw:
+on every target except wasm and Windows. It runs a command in a pseudo-terminal,
+sends input and prints the command's output bytes. With `-s`, it prints the
+resulting screen:
 
 ```sh
 zig-out/test/wattle-pty -s -w 'repl:1:> ' -i '(+ 1 2)\r' -- zig-out/bin/wattle -q -C
 ```
 
-Input waits for text in the output, with `-w` and with `\m{text}` inside the
-input, rather than for a duration, because an editor that has not yet set raw
-mode discards what it is sent. The screen is a model of a terminal written for
-the harness, and it does not import the `lineedit` module, so a case compares
-the editor against a separate account of what its bytes draw. Its header has
-the flags, the input escapes and what the model applies.
+Input synchronises on output text using `-w` or `\m{text}` within the input.
+Fixed delays are insufficient because input sent before raw mode is enabled can
+be discarded. The harness uses an independent terminal model without importing
+`lineedit`, allowing tests to check the editor's output independently. Its
+header documents the flags, input escapes and supported terminal operations.
 
-## bench
+## Benchmarks
 
-`layout.sh` runs one binary over a corpus across N stack layouts and reports the
-minimum per workload. `yardstick.sh` is what produces the ratio against C
-Janet: it drives `layout.sh` once per arm and divides, comparing the name
-columns before dividing anything, so a corpus whose two arms report different
-workloads is caught rather than silently aligned.
+`layout.sh` runs a binary over a corpus across N stack layouts and reports the
+minimum time per workload. `yardstick.sh` runs `layout.sh` for Wattle and C
+Janet and computes their ratio. It checks workload names before dividing to
+reject corpora with mismatched workloads.
 
 The goal is to run within 10% of the C implementation. Running `layout.sh` over
 this tree's binary and over a C Janet binary measures that goal, and running it
 over two builds of this tree measures a change. A change that touches an
-interpreter or value hot path is measured before it is accepted. Read the header
-before reading a result: it names the control workload, the size a difference
-needs before it counts, and why the first round of a session is discarded.
+interpreter or value hot path requires measurement before acceptance. The script
+header documents the control workload, significance threshold and reason for
+discarding the first round of a session. Read it before interpreting results.
 
-Rewriting a loop on a hot path counts as such a change, even when the rewrite is
-a compile-time no-op. A Zig `for` over a sub-slice with a pointer capture keeps
-both the element pointer and the counter live, so each iteration has three
-induction updates where an index loop has two; converting `runtime/value.zig`'s
-hash probe that way cost 1–4% on `methods`. The corpus cannot resolve a
-difference that small. An isolated benchmark of the one function and
-`otool -tV` on both binaries can.
+Hot-path loop rewrites require measurement even when expected to compile
+identically. A Zig `for` over a sub-slice with a pointer capture keeps both the
+element pointer and the counter live, so each iteration has three induction
+updates where an index loop has two; converting `runtime/value.zig`'s hash probe
+that way cost 1–4% on `methods`. The corpus cannot resolve that difference. Use
+an isolated function benchmark and compare `otool -tV` output from both
+binaries.
 
-Every corpus has two arms, a `.janet` for the C Janet binary and a `.wattle`
-for ours, and `res/check/bench-arms.wattle` derives that the two are the same
+Every corpus has two arms, a `.janet` for the C Janet binary and a `.wattle` for
+Wattle. `res/check/bench-arms.wattle` checks that both implement the same
 program. The corpora are beside the scripts: `interpreter/` is the general
 workload, `value/` is the value-access workload, `collections/` reads a
 collection's elements, `maps/` measures small persistent maps, `vectors/`
 measures persistent vectors against tuples and arrays, and `hashbench/` is a
-hash workload from upstream. A corpus is written for the increment that needed
-it and says so in its header, so reach for the one whose subject the change
-touches rather than the newest.
+hash workload from upstream. Each corpus header records the increment for which
+it was written. Choose the corpus relevant to the code being changed.
 
-## repo
+## Repository scripts
 
-Chores, run occasionally and by hand: `janet-to-wattle.wattle` rewrites Janet
-source as Wattle source, and
-`version.wattle` sets the version for a release or returns it to `DEVEL`.
+These scripts run manually. `janet-to-wattle.wattle` converts Janet source to
+Wattle syntax. `version.wattle` sets a release version or restores `DEVEL`.
 
 `version.wattle 0.1.0` and `version.wattle DEVEL` are steps of `RELEASING.md`.
 Each form sets the version in `build.zig` and the man page sources and
 regenerates the man pages with the `predoc` on the PATH. A release number also
 sets `build.zig.zon`, the banner in `README.md` and the heading of the
-Unreleased section of `CHANGELOG.md`. The script computes every file's new
-text before it writes any, and stops where a file does not have exactly one
-line to set.
+Unreleased section of `CHANGELOG.md`. The script computes every file's new text
+before it writes any, and stops where a file does not have exactly one line to
+set.
 
-**The instruments run on the installed wattle.** Every script under `res/`
-is a Wattle program that runs on whatever `wattle` is on the PATH, never on
-the build under test: `mutate.wattle` breaks the runtime on purpose, and a
-driver that ran on the mutant would score itself. A script that uses a
-language feature the installed wattle does not have needs a newer install
-first. `bench/`'s corpora are the exception: each has a `.wattle` arm the
-build under test runs, beside the `.janet` arm C Janet runs.
+### Script runtime
 
-`janet-to-wattle.wattle FILE.janet ...` writes the `.wattle` file beside each
-and reports every site it changed in a way a reader should look at; `--dry-run`
-reports without writing, `--keep-lines` copies a string that spans lines
-through as written rather than joining it, and the exit status is non-zero
-where a site had no Wattle spelling at all. It substitutes one lexical form at a time and copies
-everything else through, so its output diffs against its input line for line.
-It converts syntax and not meaning: a `.janet` path inside a string, and a
-macro that builds code as `['if ...]`, are untouched. `notes/LANGUAGE.md` says
-what it converts and what it leaves.
+Wattle scripts under `res/` use the installed `wattle` on `PATH`. They must run
+independently of the build under test because mutation testing modifies that
+build. Scripts using newer language features require an updated installation.
+Benchmark corpora are the exception: the build under test runs the `.wattle`
+program, and C Janet runs the corresponding `.janet` program.
+
+### Source conversion
+
+`janet-to-wattle.wattle FILE.janet ...` writes a `.wattle` file beside each
+input and reports changes requiring review. `--dry-run` reports without writing.
+`--keep-lines` preserves multiline strings instead of joining them. The command
+exits non-zero if a form has no Wattle equivalent.
+
+Conversion replaces individual lexical forms and copies other text unchanged,
+allowing a line-by-line diff. Conversion handles lexical syntax only.
+It leaves `.janet` paths inside strings and macros constructing code such as
+`['if ...]` unchanged.

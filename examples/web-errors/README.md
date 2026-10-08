@@ -49,7 +49,7 @@ null. The instance is not affected, so the next call runs in it.
 
 After a call with `error` set, the `run` that `load` returns starts a new
 instance for the next call. A trap also leaves no usable instance. The runtime
-is not fetched or compiled again, and anything the old instance held is gone.
+is not fetched or compiled again. State from the old instance is discarded.
 
-`fresh: true` starts a new instance for that call regardless of whether the
-last one was lost. The page's checkbox sets it.
+`fresh: true` starts a new instance for the current call even if the previous
+instance is usable. The page's checkbox controls this option.

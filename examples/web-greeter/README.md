@@ -1,11 +1,12 @@
 # web-greeter
 
-A program that a web page calls with a name and some text. It is the smallest
-use of `wattle build web`: input goes in as `args` and `stdin`, and output
-comes back as strings.
+A minimal `wattle build web` example. The page passes a name through `args` and
+text through `stdin`, then reads the program's output as strings.
 
 - `info.edn` declares one `:web` artifact whose `:entry` is `main.wattle`.
+
 - `main.wattle` defines `main`, which the page calls.
+
 - `index.html` is the page.
 
 ```sh
@@ -27,14 +28,14 @@ Open `http://localhost:8000/` to see the resulting page.
 | `wasi-<hash>.js`        | the WASI support the runtime imports    |
 | `greeter.js`            | an ES module that loads the other three |
 
-`<hash>` is the same in the three names. `greeter.js` keeps its name and
-fetches the other files from beside itself.
+The three hashed file names use the same `<hash>`. `greeter.js` has a fixed name
+and fetches the other files from the same directory.
 
 ## The server
 
-`examples/http-server.wattle` serves files over HTTP and is used here but any
-static file server does the same job, provided it sends a JavaScript type for
-`.js` files (a browser refuses an ES module without one).
+`examples/http-server.wattle` serves the example over HTTP. Any static file
+server can be used if it sends a JavaScript content type for `.js` files.
+Browsers reject ES modules served with other content types.
 
 ## The runtime
 
@@ -42,9 +43,11 @@ The runtime is Wattle built for WebAssembly, as a WASI reactor that loads an
 image. It is the runtime of the `wattle` command with some parts left out:
 
 - The parser and the compiler. A program should not call `eval`, `parse` or
-  `run-context`. Doing so raises the error `this runtime has no compiler or
-  parser; it can only load an image`.
+  `run-context`. Doing so raises the error
+  `this runtime has no compiler or parser; it can only load an image`.
+
 - Docstrings and source maps.
+
 - The event loop, threads, FFI, networking, processes and dynamic modules.
 
 The runtime also has no file system, as the limitations below describe.
@@ -59,10 +62,10 @@ The program is an image containing the following function.
   (print "Hello, " name "! You wrote: " (file/read stdin :all)))
 ```
 
-`main` receives the strings in `args` via WASI as if being run from the command
-line. The first is the program's name, which the page supplies, so the page's input
-starts at the second. Standard input is the page's `stdin`, and it reports end of file after
-the last byte. `print` writes to standard output and `eprint` to standard
+`main` receives `args` through WASI, using command-line argument conventions.
+The page supplies the program name first and user input from the second
+argument. Standard input uses the page's `stdin` and reports end of file after
+the last byte. `print` writes to standard output; `eprint` writes to standard
 error.
 
 ## The page
@@ -77,8 +80,10 @@ const result = await run({ args: ["greeter", "Matilda"], stdin: "Some text" });
 returns `{ status, stdout, stderr, error }`:
 
 - `status` is 0 when `main` returns and 1 when it raises.
-- `stdout` and `stderr` hold everything the program wrote to each. They are
-  returned when `main` returns.
+
+- `stdout` and `stderr` contain the program's output on each stream, returned
+  when `main` returns.
+
 - `error` is always null in this program.
 
 `run` fetches and starts up the runtime on every call. A page that processes
@@ -91,11 +96,13 @@ normally.
 A program cannot:
 
 - wait for input. `stdin` is complete when `run` is called.
+
 - read or write files, or import a module at run time. There are no preopened
   directories, so `slurp`, `spit` and `import` raise.
+
 - sleep. `os/sleep` returns at once.
-- run beside the page. A call runs on the thread that calls `run` until `main`
-  returns, so a loop that does not end freezes the tab. Calling `run` from a
-  Web Worker keeps the page responsive while a call is running. It does not
-  stop a loop that does not end, which the page must do by terminating the
-  worker.
+
+- run independently of its calling thread. `run` executes on that thread until
+  `main` returns. An infinite loop blocks the tab's main thread. Calling `run`
+  from a Web Worker keeps the page responsive; to stop an infinite loop, the
+  page must terminate the worker.

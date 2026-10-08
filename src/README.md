@@ -1,62 +1,58 @@
 # The Zig runtime
 
-Wattle's runtime, written in Zig. This file is for a reader who is reading or
-changing the runtime: where things are, the rules the tree follows, and how to
-add to it.
+Wattle's runtime is written in Zig. This document describes its source layout,
+module dependencies, implementation rules and extension procedures.
 
-Two other documents cover the rest. [`module.zig`](module.zig) is the author
-package's root and documents what a native module sees: the interface, the
-abstract-type callbacks and which of them may raise.
-[`../test/README.md`](../test/README.md) has the test strategy and what a
-change must pass before it is accepted.
+[`module.zig`](module.zig) is the native module package's root. It documents
+the interface for module authors, including abstract-type callbacks and which
+callbacks may raise. [`../test/README.md`](../test/README.md) describes the test
+strategy and the checks required for a change.
 
 ## Overview
 
-`src/` is 113 `.zig` files and no C source or header. There is no C
-implementation to select and no upstream Janet C to call. Any C that a Zig
-file reaches is libc's. "No C in the tree" and "no libc" are different claims,
-and only the first is a goal. The runtime links libc because macOS reaches the
-kernel only through `libSystem` and because native modules are loaded with
-`dlopen`.
+`src/` contains 113 `.zig` files and no C source or header. The runtime has no
+alternative C implementation and calls no upstream Janet C code. Its C calls
+are to libc. The goal is to exclude C source from the tree; libc remains a
+dependency. macOS requires `libSystem` for kernel access, and native module
+loading uses `dlopen`.
 
-A host declaration is written in Zig. A type, a constant or a function of the
-host comes from Zig's standard library (`std.c`, `std.posix`, `std.os.linux`
-or `std.os.windows`) where the standard library declares it, and is written in
-Zig beside its callers where it does not. The runtime builds for macOS, Linux
-with glibc or musl, Windows with mingw, WASI and FreeBSD. A branch for any
-other platform is removed rather than ported.
+Host types, constants and functions use Zig's standard library declarations
+where available: `std.c`, `std.posix`, `std.os.linux` or `std.os.windows`.
+Declarations absent from the standard library are written in Zig beside their
+callers. The runtime supports macOS, Linux with glibc or musl, Windows with
+mingw, WASI and FreeBSD. Branches for other platforms are removed rather than
+ported.
 
-The rules that apply across the tree, each covered in its own section below:
+The following rules apply throughout the runtime:
 
-- Nothing jumps. A raise returns an error union, and `defer` and `errdefer` are
-  legal everywhere. See [Raising](#raising).
+- Raises return error unions. The runtime uses no non-local jumps, so `defer`
+  and `errdefer` are legal everywhere. See [Raising](#raising).
 
-- The runtime exports no `janet_*` symbol. A native module reaches the runtime
-  through a table of function pointers, and a file reaches its neighbours by
-  `@import`. See [Boundaries](#boundaries).
+- The runtime exports no `janet_*` symbols. Native modules call runtime
+  functions through a table of function pointers. Runtime files use `@import`
+  for internal dependencies. See [Boundaries](#boundaries).
 
-- Pointers state what is true, with one set of conventions and no exceptions
-  outside them: no `[*c]` outside the boundary, a counted byte range is a
-  slice, a pointer to a single object is `*T`, or `?*T` where absence is a state
-  the code tests, and a C string is `[*:0]const u8` only where the NUL is
-  demonstrably read.
+- Pointer types follow a fixed set of conventions. `[*c]` is restricted to
+  the C boundary. A counted byte range is a slice. A pointer to a single object
+  is `*T`, or `?*T` when the code tests for absence. A C string uses
+  `[*:0]const u8` only when the terminating NUL is read.
 
-- Configuration comes from the build. A file reads `options.<name>` or
-  `config`, and never reads its compilation settings out of a C translation.
-  See [Configuration](#configuration).
+- The build supplies configuration through `options.<name>` or `config`.
+  Compilation settings are never read from a C translation. See
+  [Configuration](#configuration).
 
 ## Source tree
 
-A directory states which compilation includes its files. This matters most to a
-module author: an author's `.so` compiles `src/api/` and the two root files, and
-must never reach `src/host/` or `src/runtime/`.
+Source files are grouped by compilation. A native module's `.so` compiles
+`src/api/` and the two root files. It must not compile `src/host/` or
+`src/runtime/`.
 
-| directory      | files | compiled by                             |
-| -------------- | ----- | --------------------------------------- |
-| `src/api/`     | 7     | a native module's `.so` and the runtime |
-| `src/host/`    | 2     | the runtime                             |
-| `src/runtime/` | 82    | the runtime, as a single compilation    |
-| `src/boot/`    | 2     | the image generator                     |
+| directory      | files | compiled by                              |
+| -------------- | ----- | ---------------------------------------- |
+| `src/api/`     | 7     | a native module's `.so` and the runtime  |
+| `src/host/`    | 2     | the runtime                              |
+| `src/runtime/` | 82    | the runtime, as a single compilation     |
+| `src/boot/`    | 2     | the image generator                      |
 | `src/client/`  | 18    | the `wattle`, executable and web clients |
 
 The counts are of `.zig` files. `src/host/` also has one header and
@@ -68,65 +64,67 @@ its own source tree. The one exception is `gum/args.wattle`, which the image
 generator evaluates so that `cli-main` in `boot/boot.wattle` can parse the
 `wattle` command line. See [`gum/README.md`](gum/README.md).
 
-Thirteen of the sixteen files in `src/client/` are the REPL's line editor.
-`src/client/lineedit.zig` and the ten files under `src/client/lineedit/` are a
-module named `lineedit`, which imports nothing from the runtime and never reads
-or writes the terminal: it takes the bytes a terminal sends and returns the
-bytes to draw. The client, the `test/lineedit` step, the contract driver and
-`res/tools/layout.zig` import it. `src/client/terminal.zig` is the terminal
-itself, raw mode and the reads and writes, for POSIX and the Windows console.
-`src/client/prompt.zig` connects the two to the runtime: `getline` reads through
-the editor when standard input and standard error are a terminal, and through
-the plain reader otherwise.
+Thirteen of the sixteen files in `src/client/` implement the REPL's line editor.
+The `lineedit` module consists of `src/client/lineedit.zig` and the ten files
+under `src/client/lineedit/`. It imports nothing from the runtime and performs
+no terminal I/O. It takes terminal input bytes and returns display bytes.
+The client, the `test/lineedit` step, the contract driver and
+`res/tools/layout.zig` import it.
 
-The line editor's classifier, `lineedit/highlight.zig`, gives each byte of a
-line the class it is drawn in, and is a second description of the grammar
-`runtime/parser.zig` reads. The two share the lexical tables in
-`src/lexicon.zig`. Each describes dispatch, the `!` lookahead, the run of
-quotes and the adjacency of a prefix on its own, so a change to that grammar
-in the parser is made in the classifier too. `test/highlight.zig` is the
-contract between them.
+`src/client/terminal.zig` implements raw mode and terminal I/O for POSIX and the
+Windows console. `src/client/prompt.zig` integrates the terminal and editor with
+the runtime. Its `getline` uses the editor when standard input and standard
+error are terminals, and the plain reader otherwise.
 
-`-Dlineedit`, on by default and off on wasm, selects the editor. It is
-independent of `-Dev`. With the event loop the editor waits on the loop for
-input, so other fibers run while a line is being edited; without the loop it
-reads with a blocking read. Windows reads with the blocking read whether or
-not the loop is compiled, because a console handle cannot be waited on through
-a completion port, so on Windows the loop does not run while a line is open.
+The line editor's classifier, `lineedit/highlight.zig`, assigns a display class
+to each byte. It implements the grammar separately from `runtime/parser.zig`.
+Both use the lexical tables in `src/lexicon.zig`, but independently implement
+dispatch, `!` lookahead, quote sequences and prefix adjacency. Grammar changes
+must be applied to both implementations. `test/highlight.zig` checks their
+results against each other.
 
-While a line is open, `runtime/io.zig`'s `divert` passes every `write` and
-`putChar` to standard output or standard error to the editor, which writes
-the output above the line and draws the line again beneath it. The diversion
-is thread-local and is removed when the line ends, so a build without the
-editor, and a moment with no line open, write to the streams directly.
+`-Dlineedit` selects the editor. It is enabled by default, disabled on wasm and
+independent of `-Dev`. With the event loop enabled, the editor waits for input
+through the loop so other fibers can run during editing. Without the loop,
+input reads block.
 
-Three files sit at `src/` itself. `src/root.zig` is the runtime's module root.
-It names every file the configuration compiles and reaches all three
-directories. `src/module.zig` is the root of the author package, and is the only
-name an author writes: a module imports `wattle` and nothing else. Zig limits a
-module's relative imports to the directory of its root file, so both roots sit
-above the directories they reach. `src/lexicon.zig` is the lexical tables of
-source, a module of its own that the runtime and the line editor both import.
+Windows always uses blocking reads because a completion port cannot wait on a
+console handle. The Windows event loop does not run while a line is open.
 
-`src/api/` is what a module author reads: `abstract_type.zig`, `abi.zig`,
-`constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and `repr.zig`.
-`src/host/` is `host.zig` and `cabi.zig`.
+While a line is open, `runtime/io.zig`'s `divert` redirects every `write` and
+`putChar` for standard output or standard error to the editor. The editor
+writes the output above the input line and redraws the line below it. The
+redirection is thread-local and ends when the line ends. Output goes directly
+to the streams when no line is open or the editor is disabled.
 
-The directories state the boundary but do not enforce it. Both package roots sit
-at `src/`, so a relative import can cross between directories, and several do
-by design: `api/raise.zig` names four runtime files for the branch that a module
-build does not take. `examples/native-consumer` enforces the boundary instead: it
-consumes the package by path, the way an outside author does. A
-compiler-enforced split would make `api` a build module with the runtime
-imported back into it by name. That is possible, and not what the tree does.
+Three files are directly under `src/`. `src/root.zig` is the runtime's module
+root. It specifies the files compiled for each configuration and imports from
+all three directories. `src/module.zig` is the native module package's root.
+Module authors import only `wattle`. Zig restricts relative imports to the
+module root's directory, so both roots are above the directories they import
+from. `src/lexicon.zig` defines the source lexical tables in a separate module
+imported by the runtime and the line editor.
+
+`src/api/` contains the interface files for module authors: `abstract_type.zig`,
+`abi.zig`, `constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and
+`repr.zig`.
+`src/host/` contains `host.zig` and `cabi.zig`.
+
+The directory layout does not enforce import restrictions. Both package roots
+are at `src/`, so relative imports can cross between directories.
+`api/raise.zig`, for example, imports four runtime files in a branch excluded
+from native module builds. `examples/native-consumer` checks the separation by
+consuming the package through a path dependency, as an external module would.
+Compiler enforcement would require a separate `api` build module with a named
+import of the runtime. The current build does not use that structure.
 
 ### Inside `src/runtime/`
 
-A file exists when it has a name Wattle publishes (a type, an nfunction family or
-a module), or because the platform differs. Everything else goes in the file
-its callers already name. Each function has one spelling. There is no facade
-layer: the file tree and the namespace are the same, so `value/tables.zig`'s
-`get` is `tables.get` and is not re-exported anywhere.
+Separate files define published types, nfunction families or modules, or
+contain platform-specific implementations. Other code belongs in the file
+already imported by its callers. Functions have one name and are not
+re-exported through a facade. The file layout determines the namespace: `get`
+in `value/tables.zig` is called as `tables.get`.
 
 | directory        | files | contents                                            |
 | ---------------- | ----- | --------------------------------------------------- |
@@ -144,20 +142,21 @@ layer: the file tree and the namespace are the same, so `value/tables.zig`'s
 | `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`              |
 | `pp/`            | 2     | `format`, `pretty`                                  |
 
-Every directory below `runtime/` is relative to it.
+Paths below `runtime/` in the table are relative to that directory.
 
-The files directly in `runtime/` are the parser, the PEG engine, the
-marshaller, the argument and arity layers, the environment, the pretty
-printer's entry point, `no_compiler`, the allocator (`gc.zig`), `capi.zig`, `edn`, `io`, `json`,
-`math`, `scan` and `signal`.
-`value/` has arrays, buffers, strings, symbols, tuples, tables, fibers,
-functions, abstracts, integer types, vectors, maps and sets, and transients. `value/helpers/` is `wrap`, `access` and `order`.
+Files directly in `runtime/` implement the parser, PEG engine, marshaller,
+argument and arity layers, environment and pretty-printer entry point. The
+directory also contains `no_compiler`, the allocator (`gc.zig`), `capi.zig`,
+`edn`, `io`, `json`, `math`, `scan` and `signal`.
 
-In `vm/`, `entry.zig` is the interpreter's entry points, `lifecycle.zig` is
-init and teardown, and `state.zig` is the `Vm` type, its storage and its
-accessor. `os/` and `os/fs/` are split where the platform differs.
-`os/abi.zig` and `net/abi.zig` declare, in Zig, the host interfaces of the
-`os/` and `net/` subsystems.
+`value/` implements arrays, buffers, strings, symbols, tuples, tables, fibers,
+functions, abstracts, integer types, vectors, maps, sets and transients.
+`value/helpers/` contains `wrap`, `access` and `order`.
+
+In `vm/`, `entry.zig` defines the interpreter entry points. `lifecycle.zig`
+implements initialisation and teardown. `state.zig` defines `Vm`, its storage
+and its accessor. Files in `os/` and `os/fs/` separate platform-specific code.
+`os/abi.zig` and `net/abi.zig` declare the subsystems' host interfaces in Zig.
 
 The Windows process CPU clock may read zero. If `GetProcessTimes` fails,
 `os.gettime` returns null and `os.gettimeAbi` returns -1. The failed call's
@@ -177,518 +176,552 @@ function's arity range.
 
 ## Module graph
 
-`build.zig` builds each of the following as a separate module. A module's
-import list is everything it can reach, so the compiler enforces the direction:
+`build.zig` creates the following modules. Each module can import only its
+listed dependencies, so the compiler enforces the dependency direction:
 
 ```
 config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  root
 ```
 
-- `config` is the build's settings, as comptime values. A module build gets a
-  second copy with `native_module` set.
-- `repr` is the value representation. It imports `config` and nothing else, so
-  a representation that reached allocation, tables, the `Vm` or the collector
-  would be a build error.
-- `abi` is what a separately compiled module and the runtime must agree on, and
-  nothing else: the abstract-type vtable, the registration and method rows, the
-  abstract head and the offset to recover it, the signal numbering, the build
-  config and the six capabilities. It imports only `repr`. `build.zig`'s
-  `wattleModule` gives an author's package this module, so the runtime and an
-  author's `.so` use the same types.
-- `constants` imports `config`, and `repr` for the tag.
-- `host` is the three shapes the host determines: `FILE`, the descriptor and
-  the thread handle, each from `std`. `host` is a module rather than a file
-  of `root` because `cabi` names the same three shapes, and `cabi` cannot
-  import a file of `root`. Every Wattle aggregate is declared with the operations on it
-  instead (`tables.Table`, `fibers.Fiber`, `functions.FuncDef`,
-  `ev_stream.Stream`).
-- `cabi` is the external declarations. It imports `config`, `host`, `repr` and
+- `config` defines build settings as comptime values. Native module builds use
+  a second copy with `native_module` set.
+
+- `repr` defines the value representation and imports only `config`.
+  Dependencies on allocation, tables, `Vm` or the collector would fail to
+  compile.
+
+- `abi` defines the types shared by the runtime and separately compiled native
+  modules: the abstract-type vtable, registration and method rows, abstract
+  head and its recovery offset, signal numbers, build configuration and six
+  capabilities. It imports only `repr`. `build.zig`'s `wattleModule` supplies
+  this module to native module packages so both compilations use the same types.
+
+- `constants` imports `config` and uses `repr` for the tag.
+
+- `host` defines three host-dependent types from `std`: `FILE`, the descriptor
+  and the thread handle. It is a separate module because `cabi` also uses these
+  types and cannot import a file from `root`. Wattle aggregate types are
+  declared beside their operations: `tables.Table`, `fibers.Fiber`,
+  `functions.FuncDef` and `ev_stream.Stream`.
+
+- `cabi` declares external functions. It imports `config`, `host`, `repr` and
   `constants`.
-- `options` is the `Selection` as comptime booleans, and `root.zig` is its only
-  reader.
-- `lexicon` is the lexical tables of source: the whitespace and symbol bytes,
-  the escapes, the hex digits and the UTF-8 check. It imports nothing. `root`
-  imports it, and so does the line editor's module, which may import nothing
-  from the runtime. A compilation with both in it has one `lexicon`, because
-  a file may belong to only one module in a compilation.
-- `root` is the runtime. Everything else is a file of it, including
-  `api/raise.zig`, `runtime/corefn.zig`, `os/abi.zig` and `net/abi.zig`.
 
-`build.zig` builds this graph six times: for the runtime, for the bootstrap
-generator on the host, with `test/contracts.zig` as the root, with
-`test/fuzz.zig` as the root, for the module-error fixtures, and as
-`wattle-runtime-test` rooted at `root.zig`. A cross build builds it a seventh
-time for `zig build examples/native-executable`: on the host, under the target's features, for the
-client that makes the image. Every build has the same modules, so a test root
-spells the same types and constants as the runtime.
+- `options` defines `Selection` as comptime booleans. Only `root.zig` reads it.
 
-A module boundary is not a compilation boundary. `raise.Error` is declared in
-the `raise` module, and a subsystem writes `raise.Error!Value` across the
-import; a declaration imported from another module is analysed the same as one
-imported from a file. Across a compilation boundary, the only link between two
-objects is a symbol. A call through a symbol needs a calling convention, which
-means C's, and Zig does not allow an error union in the C calling convention.
-For that reason the runtime is a single compilation.
+- `lexicon` defines the source lexical tables: whitespace and symbol bytes,
+  escapes, hex digits and the UTF-8 check. It imports nothing. Both `root` and
+  the line editor import it; the editor cannot import runtime code. A
+  compilation containing both uses one `lexicon` module because each file can
+  belong to only one module per compilation.
+
+- `root` contains the remaining runtime files, including `api/raise.zig`,
+  `runtime/corefn.zig`, `os/abi.zig` and `net/abi.zig`.
+
+`build.zig` compiles this graph six times: for the runtime, the host bootstrap
+generator, `test/contracts.zig`, `test/fuzz.zig`, the module-error fixtures and
+`wattle-runtime-test` rooted at `root.zig`. Cross builds compile it a seventh
+time for `zig build examples/native-executable`. That compilation produces a
+host client with the target's features to generate the image. All compilations
+use the same modules, so test roots use the runtime's types and constants.
+
+Imported declarations are analysed within the same compilation, whether
+imported from a module or a file. A subsystem can therefore use
+`raise.Error!Value` with the `Error` declaration from `raise`.
+
+Separately compiled objects link through symbols. Calls between those objects
+use the C calling convention, which does not support Zig error unions. The
+runtime uses a single compilation so internal calls can return error unions.
 
 ## Raising
 
-No configuration compiles a `setjmp`, `longjmp` or `jmp_buf`. A raise records
-its signal in `Vm`'s `pending_signal` and returns `error.Signal`. A
-protected scope is `signal.tryInit` and `signal.restore` with the call between
-them. `signal.tryInit` points `return_reg` at the scope's payload, which is what
-makes a raise catchable.
+No configuration uses `setjmp`, `longjmp` or `jmp_buf`. Raising records the
+signal in `Vm.pending_signal` and returns `error.Signal`. To establish a
+protected scope, call `signal.tryInit` before the protected call and
+`signal.restore` afterwards. `signal.tryInit` points `return_reg` at the
+scope's payload so the caller can catch the raise.
 
-Every loop entry runs under a protected scope or ends the process on a raise.
-The source environment and the Windows cancellation drain are unprotected
-entries. They write a host-stderr diagnostic and end the process when their
-loop raises. A caller with a scope receives the original signal and payload.
+Every event-loop entry runs under a protected scope or terminates the process
+on a raise. The source environment and Windows cancellation drain use
+unprotected entries. If their loop raises, they write a diagnostic to host
+standard error and terminate. A caller with a protected scope receives the
+original signal and payload.
 
-A single turn is the caller's to protect. `ev.loop1` returns `error.Signal`
-to the scope its caller opened and ends the process when there is none,
-rather than applying a policy of its own. A caller driving turns one at a
-time is an embedder, which can open a scope, so a missing one is a mistake
-to report and not a case to handle.
+The caller must establish a protected scope before calling `ev.loop1`.
+`ev.loop1` returns `error.Signal` to that scope, or terminates the process if
+no scope exists. An embedder running individual turns can establish a scope,
+so a missing scope is reported as a caller error.
 
-The diagnostic names the dispatch the turn was in. Every event a callback may
-raise from goes through `ev/dispatch.zig`'s `dispatch`, which records the
-callback, the event and the operation serial before the call and puts back the
-record it found when the call returns. So a raise leaves the record of the
-innermost dispatch that made it, and a failure outside a callback -- an
-expired timeout, a supervisor delivery, the `checkToClose` after a callback
-returned -- leaves none and is reported without one. A record lasts only as
-long as the raise: a fiber resume that ends on one clears it, so a dispatch
-failure a program caught cannot name the next failure of that turn. The
-callback is its address: an operation carries a function pointer, including
-one a native module supplied, and the runtime has no table of names to look
-it up in.
+The diagnostic identifies the dispatch in progress when the loop raised.
+Every callback event that may raise uses `ev/dispatch.zig`'s `dispatch`.
+Before calling the callback, `dispatch` records its pointer, event and operation
+serial. After a successful call, it restores the previous record. On a raise,
+the innermost dispatch record remains available for the diagnostic.
+
+Failures outside callbacks have no dispatch record. These include expired
+timeouts, supervisor deliveries and `checkToClose` calls after a callback
+returns. A fiber resume that ends on a raise clears the record, preventing a
+caught dispatch failure from being reported for a later failure in the same
+turn. Callbacks are identified by address because operations store function
+pointers, including native module pointers, and the runtime has no name table.
 
 A raising function returns `raise.Error!T`, which is `error{Signal}!T`.
-An nfunction is written as a Zig function: `raise.NFunction` takes `[]Value`
-and returns `raise.Error!Value`, so `argv[n]` is bounds-checked. What the
-runtime stores and calls is a `callconv(.c)` function of type `abi.NFunction`,
-which takes `argc` and `argv` and returns an `abi.NResult`: the value and a
-`raised` flag. `raise.stored` builds that function around an nfunction at
-compile time, and `raise.call` makes the call and returns `error.Signal` where
-`raised` is set. A registration row and a method table row hold the result of
-`raise.stored`, which a module author writes `wattle.nfunction`. A slice and an
-error union have no layout that holds across compilations, so the call from the
-runtime into a module's nfunction goes through the C convention. A runtime
-nfunction takes the same path, so the VM does not test which kind it is
-calling. An nfunction pointer cast into a slot without `raise.stored` compiles
-and crashes when called.
+Nfunctions use `raise.NFunction`, which takes `[]Value` and returns
+`raise.Error!Value`. Access through `argv[n]` is bounds-checked.
 
-An abstract type's eight raising callbacks (`get`, `put`, `next`, `length`,
-`call`, `tostring`, `marshal` and `unmarshal`) cross the same way. An author
-writes each over `*T` and returns an error union. `module.define` generates a
-`callconv(.c)` function that returns a flag for a raise, as a `bool` or in an
-`abi.NResult`, `abi.OptResult`, `abi.SizeResult` or `abi.PtrResult`. The
-runtime reads the flag with `raise.unwrap` at each call.
+The runtime stores and calls `abi.NFunction` pointers with `callconv(.c)`.
+These functions take `argc` and `argv` and return `abi.NResult`, containing a
+value and a `raised` flag. `raise.stored` generates the wrapper at compile
+time. `raise.call` calls it and returns `error.Signal` if `raised` is set.
+Registration and method rows store the result of `raise.stored`, exposed to
+module authors as `wattle.nfunction`.
 
-Its documented call shape uses nested square brackets for optional arguments:
-`(os/date [time [local]])` accepts zero, one or two arguments. The brackets
-are documentation notation, not Wattle vector literals.
+Slices and error unions have no stable layout across compilations, so calls
+into native module nfunctions use the C calling convention. Runtime nfunctions
+use the same wrappers, avoiding a VM check for the nfunction's origin. Casting
+an nfunction pointer into a slot without `raise.stored` compiles but crashes
+when called.
 
-A caller that can propagate the error writes `try`. A caller that cannot
-flattens it into a report, in one of four forms:
+An abstract type's eight raising callbacks use the same wrapper mechanism:
+`get`, `put`, `next`, `length`, `call`, `tostring`, `marshal` and `unmarshal`.
+These callbacks use `*T` for the abstract value and error unions for raises.
+`module.define` generates `callconv(.c)` wrappers that report raises through a
+`bool` or an `abi.NResult`, `abi.OptResult`, `abi.SizeResult` or
+`abi.PtrResult`.
+The runtime checks the flag with `raise.unwrap` at each call.
 
-| form                     | what it does                                   |
-| ------------------------ | ---------------------------------------------- |
-| `raise.toAbi(result)`    | the result, or a determinate zero if it raised |
-| `raise.report(Error)`    | report without a result                        |
-| `raise.reportToAbi`      | the same, at a `callconv(.c)` boundary         |
-| `raise.panicking(f).abi` | wrap a raising function as a C-ABI function    |
+Callers that can propagate errors use `try`. Callers that cannot propagate
+errors convert them to reports using one of four forms:
 
-`raise.total(result, site)` is not a flattening form. It aborts through
-`fatal`, and is for a raise that cannot happen and would leave the
-runtime inconsistent if it did.
+| form                     | what it does                                         |
+| ------------------------ | ---------------------------------------------------- |
+| `raise.toAbi(result)`    | the result, or a determinate zero if it raised       |
+| `raise.report(Error)`    | report without a result                              |
+| `raise.reportToAbi`      | report without a result at a `callconv(.c)` boundary |
+| `raise.panicking(f).abi` | wrap a raising function as a C-ABI function          |
 
-A report that nothing consumes aborts the process at the next protected scope,
-and the message names neither the cause nor the caller.
+`raise.total(result, site)` aborts through `fatal` if the result is an error.
+Use it for an unexpected raise that would leave the runtime inconsistent.
+
+An unconsumed report causes an abort at the next protected scope. The message
+identifies neither the cause nor the caller.
 `res/check/swallowed.wattle` lists every raising function that reaches a
 report through a C-ABI function, and prints "no raising caller reaches a report"
-on a clean tree. Run it for every change that touches a raise.
+on a clean tree. Run it for every change to raising code.
 
 ## Binding documentation
 
-A binding's entry table holds `:doc` and `:sigs`. `:doc` is the prose of the
-docstring. `:sigs` is a string of function signatures, one per line, such as
-`(f a)\n(f a b)`, and is absent for a binding that has none. `defn` fills both
-from its arity clauses and its docstring, and `corefn.reg` fills them from its
-`usage` and `doc` arguments. `doc` and the line editor's hint print `:sigs`
-first, then `:doc`. `-Ddocstrings=false` leaves out both keys.
+A binding's entry table stores documentation under `:doc` and `:sigs`.
+`:doc` contains the docstring prose. `:sigs` contains function signatures, one
+per line, such as `(f a)\n(f a b)`. It is absent for bindings without
+signatures.
+`defn` sets both from its arity clauses and docstring. `corefn.reg` sets them
+from its `usage` and `doc` arguments. `doc` and the line editor's hint print
+`:sigs` before `:doc`. `-Ddocstrings=false` omits both keys.
 
-`doc` formats `:doc` with the argument names read from `:sigs`: every token
-after the head of a line, leaving out `&`-words and keywords. A whole word in
-the prose equal to one of them is yellow, and a word written `^name` is a
-cross-reference to a binding and is shown as `name` in cyan. With colour off
-neither is marked, and the `^` is dropped. The line editor's hint drops the `^`
-and does not color arguments.
+Documented signatures use nested square brackets for optional arguments.
+For example, `(os/date [time [local]])` accepts zero, one or two arguments.
+These brackets indicate optional arguments; they are not Wattle vector
+literals.
+
+`doc` reads argument names from `:sigs`: every token after the first token on
+each line, excluding `&`-words and keywords. Matching whole words in the prose
+are displayed in yellow. A word written as `^name` refers to another binding
+and is displayed as `name` in cyan. With colour disabled, both use ordinary
+text and the `^` is omitted. The line editor's hint also omits the `^` and
+does not colour arguments.
 
 ## Boundaries
 
-Three things cross a boundary, and each is checked differently.
+Native module calls, external declarations and host structures have separate
+boundary checks.
 
 ### The module table
 
-Nothing in `src/` exports a `janet_*` symbol. `api/interface.zig`'s `Runtime` is
-an `extern struct` of 83 `callconv(.c)` function pointers, and both the runtime
-and a module compile that file. `runtime/capi.zig` has the 83 definitions, and
-its `table` fills the struct with them. `runtime/env.zig` passes the table's
-address to `_wattle_init`; `module.zig`'s shim stores it in `interface.rt`, and
-every call an author makes goes through that pointer. Each crossing is
-described once, and the compiler checks every field against the definition it
-names in the initializer.
+No file in `src/` exports a `janet_*` symbol. `api/interface.zig` defines
+`Runtime`, an `extern struct` of 83 `callconv(.c)` function pointers. Both the
+runtime and native modules compile this file. `runtime/capi.zig` defines the
+83 functions and initialises the struct in `table`.
 
-Every field has the same type as its definition. `nfuns_ext`, `def` and
-`buffer_push_bytes` take `abi.Env` or `abi.Render` and cast on their first line,
-as `runtime/marsh.zig`'s entry points take `abi.Marshal`.
+`runtime/env.zig` passes the table's address to `_wattle_init`. The shim in
+`module.zig` stores it in `interface.rt`, which module API calls use. Each
+_crossing_ is a field of the table specifying a runtime function callable by a
+native module. Its signature is declared once, and the compiler checks the
+initialising function against that field.
+
+Each field's type matches its function definition. `nfuns_ext`, `def` and
+`buffer_push_bytes` take `abi.Env` or `abi.Render` and cast the parameter on
+their first line. The entry points in `runtime/marsh.zig` similarly take
+`abi.Marshal`.
 
 `api/fingerprint.zig` hashes a description of every declaration the two
 compilations must agree on. `runtime/env.zig`'s `native` refuses a module whose
 fingerprint differs from the runtime's.
 
 The only exports in `src/` are `module.zig`'s pair of loader shims, which are
-part of a dynamically loaded module rather than of the runtime.
+compiled into dynamically loaded modules.
 
 ### External declarations
 
-`host/cabi.zig` has the runtime's `extern` declarations, for libc and the host,
-with no Janet name among them.
+`host/cabi.zig` contains the runtime's `extern` declarations for libc and the
+host. None has a Janet name.
 
 ### Host structures
 
-`os/abi.zig` and `net/abi.zig` declare the host structures, constants and
-functions their subsystems use, under the C names, in a namespace each calls
-`sys`. Each declaration is `std`'s where `std` has the platform's value or
-layout, and written in the file where it does not, which is the rule the
-[Overview](#overview) states. Each file is used by a single subsystem, so a
-host type does not cross a subsystem boundary.
+`os/abi.zig` and `net/abi.zig` declare their subsystems' host structures,
+constants and functions under their C names in a `sys` namespace. They use
+`std` declarations where the platform's value or layout is available, and
+local declarations otherwise, as described in [Overview](#overview). Each
+file is used by a single subsystem; host types do not cross subsystem
+boundaries.
 
 ## Configuration
 
-`build.zig` derives two things from the `-D` options. `resolveConfig()` returns
-`Config`, the comptime facts a file reads as `config.<name>`, and
-`zigSelection()` derives `Selection` from it: the per-file booleans `root.zig`
-gates on as `options.<name>`. Both come from a single expression per fact, so a
-file cannot be compiled under `Config` and left out of `Selection`.
+`build.zig` derives configuration from the `-D` options. `resolveConfig()`
+returns `Config`, read by source files as `config.<name>`. `zigSelection()`
+derives `Selection` from `Config`. Its booleans determine which files
+`root.zig` compiles, through `options.<name>`. Both use a single expression per
+setting, preventing inconsistent inclusion under `Config` and `Selection`.
 
-`*prefix*` is the root that three directories derive from: `<prefix>/lib/wattle`
+`*prefix*` specifies the root for three directories: `<prefix>/lib/wattle`
 for modules, `<prefix>/bin` for programs and `<prefix>/share/man` for man pages.
-A runtime starts with none, and `WATTLE_PREFIX` and `--prefix` each set it to
-one root; neither takes a list. With no prefix, every `:prefix:` module pattern
-is skipped and the pkg commands raise. An empty prefix, which `--prefix ""`
-gives, makes the first `:prefix:` lookup or pkg command raise. Both raise an
-error that names `WATTLE_PREFIX` and `--prefix`. The name is `prefix` in the
-flag, the dynamic binding and the module-path template, and `WATTLE_PREFIX`
-carries the project name. `wattle/libpath`,
-`wattle/binpath`, `wattle/manpath` and `wattle/srcpath` are functions of no
-arguments that return the four derived directories, `<prefix>/lib/wattle`,
-`<prefix>/bin`, `<prefix>/share/man` and `<prefix>/share/wattle`, and raise
-where the prefix is nil or empty. They are functions and not values because
-`*prefix*` changes while a program runs, and `:prefix:` expansion uses the same
-helper. The image holds no prefix. A binding cannot set nil, because a nil in a fiber's
-environment falls through to the root environment, so only a runtime that was
-given no prefix has it.
+The runtime starts without a prefix. `WATTLE_PREFIX` and `--prefix` each set a
+single root directory; neither accepts a list. The flag, dynamic binding and
+module-path template use the name `prefix`. The environment variable adds the
+project name as `WATTLE_PREFIX`.
 
-A comptime-false branch is never analysed. `if (has_ev) ev.x()` is therefore
-safe in a build with no event loop, and a branch the host does not select gets
-no type checking at all. A change to a platform branch is unchecked until
-something builds it:
+With no prefix, `:prefix:` module patterns are skipped and pkg commands raise.
+With an empty prefix, set by `--prefix ""`, the first `:prefix:` lookup or pkg
+command raises. Both error messages name `WATTLE_PREFIX` and `--prefix`.
+
+`wattle/libpath`, `wattle/binpath`, `wattle/manpath` and `wattle/srcpath` take
+no arguments and return four derived directories: `<prefix>/lib/wattle`,
+`<prefix>/bin`, `<prefix>/share/man` and `<prefix>/share/wattle`. They raise if
+the prefix is nil or empty. They are functions because `*prefix*` can change
+during execution. `:prefix:` expansion uses the same helper.
+
+The image contains no prefix. A binding cannot set the prefix to nil: a nil
+entry in a fiber's environment causes a lookup in the root environment. Only a
+runtime started without a prefix has a nil prefix.
+
+Comptime-false branches are not analysed or type-checked. A build without the
+event loop can therefore include `if (has_ev) ev.x()`. Changes to an unselected
+platform branch require a build for that platform:
 
 ```sh
 zig build -Dtarget=x86_64-linux-musl --cache-dir /tmp/xc -p /tmp/out
 ```
 
-An instrument must be gated the same way as its subject.
+Checks must use the same configuration conditions as the code they check.
 `res/check/gates.wattle --check` builds thirteen configurations and compares
-their symbol tables against `res/check/gated.txt`. The check exists because
-reading `root.zig` cannot settle which files a configuration compiles: its
-comptime block does not name every file, and its `pub const` block is lazy and
-compiles nothing by itself.
+their symbol tables against `res/check/gated.txt`. Reading `root.zig` alone
+does not establish which files are compiled. Its comptime block does not list
+every file, and declarations in its `pub const` block are analysed only when
+used.
 
-The same laziness determines which `test` blocks run. A `test` in a file that
-the comptime block names is compiled into `wattle-runtime-test`. A `test` in a
-file reached only through the `pub const` block, or only through another file's
-container-level `const`, is not collected. `os/fs/stat.zig` is named in the
-comptime block for that reason only.
+This analysis rule also determines which `test` blocks run. Tests in files
+listed in the comptime block are compiled into `wattle-runtime-test`. Tests
+in files imported only through the `pub const` block or another file's
+container-level `const` are not collected. `os/fs/stat.zig` is listed in the
+comptime block solely to include its tests.
 
 ## Versions
 
-A build has a _version label_, which `wattle/version`, `--version` and the
-REPL banner print. A release's label is its number, such as `0.1.0`. Any other
-build's label is `DEVEL-` and the abbreviated hash of the commit it was built
-from, with `-dirty` appended when a tracked file differs from that commit.
-Untracked files are not counted, so `AGENTS.md` and `.agents/` do not make a
-build dirty. A development build has no number, because the number of the
-next release is chosen when it is cut, from what `CHANGELOG.md` lists.
+A build's _version label_ is printed by `wattle/version`, `--version` and the
+REPL banner. Releases use their release number, such as `0.1.0`. Other builds
+use `DEVEL-` followed by the abbreviated commit hash. The suffix `-dirty` is
+appended when tracked files differ from that commit. Untracked files, including
+`AGENTS.md` and `.agents/`, do not affect the label. Development builds have no
+release number because the next number is chosen at release time from the
+changes listed in `CHANGELOG.md`.
 
-`build.zig`'s `version` is a release number or `DEVEL`, and
-`res/repo/version.wattle` sets it. Where it is `DEVEL`, `versionLabel` runs
-`git describe` in the build root. A build root with no `.git`, such as a
-fetched package or the copy installed under `share/wattle`, gives `DEVEL`
-alone. The label is a `Config` field, so a commit, or a tree that becomes
-dirty or clean, rebuilds the runtime and the image.
+`res/repo/version.wattle` sets `build.zig`'s `version` to a release number or
+`DEVEL`. For `DEVEL`, `versionLabel` runs `git describe` in the build root.
+Without `.git`, as in a fetched package or the copy installed under
+`share/wattle`, the label is `DEVEL` alone. The label is a `Config` field, so
+changing the commit or tracked files' dirty status rebuilds the runtime and
+image.
 
-`zig build` caches what `build.zig` configures and reruns `build.zig` only
-when a file or directory it declared has changed. The output of
-`git describe --dirty` depends on every tracked file, so in a build root with
-`.git` `versionLabel` turns the cache off and every build reruns `build.zig`.
-In a build root without `.git` the cache applies, and the checks `build.zig`
-makes of `src/` and `test/` declare what they read.
+Zig caches the configuration from `build.zig`. It reruns `build.zig` when a
+file or directory declared as an input changes. `git describe --dirty` depends
+on every tracked file, so `versionLabel` disables configuration caching when
+the build root contains `.git`. Every build then reruns `build.zig`. Without
+`.git`, caching remains enabled, and the build checks of `src/` and `test/`
+declare their inputs.
 
-The label is used in messages and is never compared. A native module loads
-where its configuration bits, Zig version and `api` fingerprint equal the
-runtime's. `abi.BuildConfig` includes the label so that a refusal names both
-builds. `build.zig.zon` requires a semantic version, and its `.version` is
-the most recent release's number, which `res/repo/version.wattle` sets with
-the label for a release. The static and shared libraries have no version in
-their file names.
+Version labels are used only in messages. Native module compatibility requires
+equal configuration bits, Zig versions and `api` fingerprints.
+`abi.BuildConfig` includes the label so an incompatibility error identifies
+both builds. `build.zig.zon` requires a semantic version; its `.version` is the
+most recent release number. For a release, `res/repo/version.wattle` sets that
+number along with the version label. Static and shared library file names have
+no version suffix.
 
 ## Installing packages
 
-`wattle pkg install [source [ref]]` installs a package from a _source_. The
-form of `source` selects the kind, in this order:
+`wattle pkg install [source [ref]]` installs a package. The _source_ argument
+specifies its location and is interpreted in this order:
 
-- An existing directory is installed as it stands.
-- A name ending in `.tar` or `.tar.gz` is a tarball. `curl` downloads it and
-  `tar` unpacks it.
-- Anything else is a Git repository. `git clone --depth 1` copies it.
+- An existing directory is installed from its current contents.
+- A name ending in `.tar` or `.tar.gz` specifies a tarball. `curl` downloads it
+  and `tar` unpacks it.
+- Any other name specifies a Git repository, copied with `git clone --depth 1`.
 
-With no `source`, the current directory is installed.
+Without `source`, the command installs the current directory.
 
-A package is built and installed by one of two means. If it contains
-`pkg.wattle` or `pkg/init.wattle`, the hooks of that script run and nothing
-else does. Otherwise its `info.edn` must declare `:artifacts` or `:man`. Each
-`:exe` artifact is built with `wattle build exe` in the package root, in its
-default release mode, `safe`, and the program `zig-out/bin/<name>` is added to
-`bin`. A package that needs another mode has a script. Each path in the `:man`
-vector is added to `share/man`. The section is the digit after the last `.` of
-the file name, so `man/predoc.1` goes to `man1`, and a name that does not end
-in `.` and a digit from 1 to 9 raises. A `:web` artifact is not installed. A
-`:lib` artifact is not installed either, and a package that declares one
-without a script raises. A package with neither a script nor `:artifacts` or
+Packages use either an installation script or declarative metadata. If
+`pkg.wattle` or `pkg/init.wattle` exists, installation runs only that script's
+hooks. Otherwise, `info.edn` must declare `:artifacts` or `:man`.
+
+Each `:exe` artifact is built by `wattle build exe` in the package root, using
+the default release mode, `safe`. The resulting `zig-out/bin/<name>` is
+installed in `bin`. Packages requiring another mode must use a script.
+Each path in the `:man` vector is installed in `share/man`. The section is the
+digit after the file name's last `.`: `man/predoc.1` is installed in `man1`.
+A file name without a final `.` and a digit from 1 to 9 causes an error.
+
+`:web` and `:lib` artifacts are not installed. Declaring a `:lib` artifact
+without a script causes an error. A package without a script, `:artifacts` or
 `:man` is not installed.
 
-`ref` is a branch or a tag. It is accepted only with a Git repository, and
-`pkg install` raises if it follows a directory or a tarball. `source` is read as
-written, so a `?query` is part of the name and a URL that ends in one is read as
-a Git repository.
+`ref` specifies a Git branch or tag. It is accepted only for Git repositories;
+using it with a directory or tarball raises an error. The source name is read
+literally. A trailing `?query` is part of the name, so a URL ending in a query
+is interpreted as a Git repository.
 
-A downloaded source is unpacked into a temporary directory under
-`<prefix>/lib/wattle`. The directory is removed after the install, whether or
-not it succeeds. If the unpacked tree has one top-level directory, that
-directory is the package root. The manifest records `source` and `ref` and does
-not record the temporary path. `pkg reinstall` and `pkg update` download a
-recorded source again. For a directory they install from the recorded directory.
+Downloaded sources are unpacked into a temporary directory under
+`<prefix>/lib/wattle`. The directory is removed after installation, including
+on failure. If the unpacked tree has a single top-level directory, that
+directory becomes the package root. The manifest records `source` and `ref`,
+but not the temporary path. `pkg reinstall` and `pkg update` download the
+recorded source again, or install from the recorded directory for local sources.
 
-`curl`, `tar` and `git` are found on `PATH`, and `pkg install` names the one
-that is missing. A tool that exits with a status other than 0 raises an error.
-Its message is the name and status of the tool, followed on the next line by
-what the tool wrote to standard error. The build of an `:exe` artifact is the
-exception. Its output is not captured, so that it appears as it is written and
-Zig can draw its progress on a terminal, and the message names `wattle build
-exe` and its status. The package script runs with the privileges of the caller,
-and no source is verified.
+`curl`, `tar` and `git` are located through `PATH`. If a required tool is
+missing, `pkg install` names it in the error. A non-zero exit status also
+raises an error. The message includes the tool's name and status, followed on
+the next line by its standard error output.
+
+Executable builds do not capture output, allowing immediate display and Zig's
+terminal progress reporting. Their error messages identify `wattle build exe`
+and its exit status. Package scripts run with the caller's privileges. Package
+sources are not verified.
 
 ## Build steps
 
-| step                | what it runs                                        |
-| ------------------- | --------------------------------------------------- |
-| `install`           | libraries, client, man page                         |
-| `fuzz`              | each fuzz target once over its corpus               |
-| `image`             | the core image, as `<prefix>/wattle-image.bin`       |
-| `run`               | the client                                          |
-| `module-errors`     | each wrong native module fails at its definition    |
+Run a step with `zig build <step>`. The default step is `install`, so
+`zig build` builds and installs the static and shared libraries and client.
+No header is installed.
 
-The tests are steps under `test/`, with `test` running them all:
+| step            | what it runs                                         |
+| --------------- | ---------------------------------------------------- |
+| `install`       | libraries, client, man page                          |
+| `fuzz`          | each fuzz target once over its corpus                |
+| `image`         | core image generation as `<prefix>/wattle-image.bin` |
+| `run`           | the client                                           |
+| `module-errors` | compilation failures for invalid native modules      |
 
-| step                | what it runs                                        |
-| ------------------- | --------------------------------------------------- |
-| `test`              | the full test run, described below                  |
-| `test/contracts`    | the 68 contracts, in a second runtime compilation   |
-| `test/subsystems`   | an alias of `test/contracts`                        |
-| `test/runtime`      | the in-file `test` blocks, rooted at `root.zig`     |
-| `test/lineedit`     | the line editor's in-file `test` blocks             |
+The `test` step runs all steps under `test/`:
 
-The examples have steps of their own, named under `examples/`:
+| step              | what it runs                                     |
+| ----------------- | ------------------------------------------------ |
+| `test`            | the full test run described below                |
+| `test/contracts`  | 68 contracts in a second runtime compilation     |
+| `test/subsystems` | an alias of `test/contracts`                     |
+| `test/runtime`    | in-file `test` blocks rooted at `root.zig`       |
+| `test/lineedit`   | the line editor's in-file `test` blocks          |
+
+Example build steps are under `examples/`:
 
 | step                         | what it builds                                                   |
 | ---------------------------- | ---------------------------------------------------------------- |
-| `examples`                   | the three below                                                  |
+| `examples`                   | all three examples below                                         |
 | `examples/native-executable` | `examples/native-executable` as `<prefix>/bin/native-executable` |
 | `examples/native-consumer`   | `examples/native-consumer`, a consumer outside the tree          |
 | `examples/web-repl`          | `examples/web-repl`, a WASI reactor, as `<prefix>/web-repl/`     |
 
-A step is run as `zig build <step>`, and `install` is the default, so
-`zig build` alone runs it. `install` builds the static and shared libraries.
-
-`zig build test` runs the contracts, both sets of in-file `test` blocks, the
-fuzz targets over their corpora, the module-error fixtures, the CLI checks and
-the 39 suites. On a native build it also runs `native-executable`.
+`zig build test` runs the contracts, both sets of in-file `test` blocks, fuzz
+corpora, module-error fixtures, CLI checks and 39 suites. Native builds also
+run `native-executable`.
 
 `test/runtime` and `test/lineedit` each print `All N tests passed.` Add
-`--fuzz` to `zig build fuzz` for a campaign. `native-executable` builds
-`examples/native-executable/main.wattle` with `examples/native-events` linked in.
+`--fuzz` to `zig build fuzz` for a fuzzing campaign. `native-executable` builds
+`examples/native-executable/main.wattle` with `examples/native-events`
+linked in.
 
-No header is installed.
+`-Dinstall-tests=true` installs the contract driver on every target except
+wasm, where the installed driver could not be run. The driver accepts a
+contract name or no argument to run all 68 contracts in a single process.
+The no-argument run is the only check that initialises and tears down the
+runtime 68 times consecutively. It also checks for failures in contracts
+outside the intended scope of a change. Run it without arguments before
+accepting a change.
 
-The contract driver is installed under `-Dinstall-tests=true` on every target
-but wasm, where none of its readers could run the file they would find. It takes a contract name, or no
-name to run all 68 in a single process. Running it with no name is the only
-thing in the tree that initialises and tears down the runtime 68 times in a
-row, and the only instrument that catches an edit breaking a contract the
-author was not thinking about. Run it with no argument before accepting a
-change.
+`build.zig` rejects two source conditions: an unlisted `test/*.zig` file and
+an unused file-scope `const`. Test files must be listed in `test/contracts.zig`
+or exempted in `checkContractsListed`'s `exempt` list.
 
-`build.zig` refuses to build on two hygiene failures: a `test/*.zig` that
-`test/contracts.zig` does not list and `checkContractsListed`'s `exempt` does
-not name, and a file-scope `const` that its own file never uses.
+## Extensions
 
-## Adding things
+Adding a subsystem, contract or native module crossing requires the following
+source and build changes.
 
-### A subsystem
+### Subsystems
 
-Write `src/runtime/<name>.zig`, or a file under the directory its family already
-has. Add a `Selection` field, set it in `zigSelection` gated on the feature
-flags it depends on, and name the file in `root.zig`'s comptime block under that
-field. A subsystem reached only through another subsystem is imported by that
-file instead and does not appear in the root. If it has `test` blocks, name it
-in the root anyway, for the reason given in [Configuration](#configuration). A
-crossing that a native module can make goes in `runtime/capi.zig` and
-`api/interface.zig` and nowhere else.
+Write `src/runtime/<name>.zig`, or add a file to the subsystem family's existing
+directory. Add a `Selection` field and set it in `zigSelection` using the
+required feature flags. List the file in `root.zig`'s comptime block under that
+condition.
 
-### A contract
+A subsystem used only by another subsystem is imported by that subsystem and
+omitted from the root. If the new subsystem has `test` blocks, list it in the
+root as well, as described in [Configuration](#configuration). Native module
+crossings are declared in `runtime/capi.zig` and `api/interface.zig` only.
 
-Write `test/<name>.zig` with `pub fn run() void`, and list it in
-`test/contracts.zig` under the same `options` condition that `build.zig` applies
-to its subject. A contract then exists exactly when its subject does. The build
-fails until the contract is listed.
+### Contracts
 
-A contract's oracle must be derived independently. A test written against new
-code and only ever run against it proves only that the code matches itself. For
-anything numeric or with a large input space, add a differential corpus.
+Write `test/<name>.zig` with `pub fn run() void`. List it in
+`test/contracts.zig` under the same `options` condition used by `build.zig` for
+the code under test. Both must be compiled under the same configurations.
+The build fails until the contract is listed.
 
-### A crossing
+Derive the contract's expected results independently of the implementation.
+Testing new code only against results derived from that code cannot establish
+correctness. For numeric operations or large input spaces, add a differential
+corpus.
 
-Append the field to `api/interface.zig`'s `Runtime` with the exact signature;
-do not insert it. Fill it in `runtime/capi.zig`'s `table`, either with an entry
-point declared in that file or with a subsystem's own C-ABI shim. The compiler
-checks that the two match. Then add the author-side wrapper to `module.zig`.
+### Crossings
+
+Append a field with the exact signature to `api/interface.zig`'s `Runtime`.
+Do not insert it among existing fields. Initialise it in `runtime/capi.zig`'s
+`table` with an entry point from that file or a subsystem's C-ABI shim. The
+compiler checks that the field and function types match. Add the module API
+wrapper to `module.zig`.
 
 ## Reduced builds
 
-`zig build test` passes with each of these feature flags turned off on its own:
+`zig build test` passes with each of these feature flags disabled individually:
 `-Dint-types=false`, `-Dassembler=false`, `-Dpeg=false`, `-Dnet=false`,
 `-Dev=false`, `-Dprocesses=false`, `-Dffi=false`, `-Ddocstrings=false`,
 `-Dsourcemaps=false`, `-Dumask=false`, `-Drealpath=false`, `-Dcryptorand=false`
 and `-Ddynamic-modules=false`.
 
-A suite guards a missing feature in one of two ways, and the wrong choice fails
-without an error.
+Suites must distinguish omitted bindings from bindings that raise when called.
+Using the wrong guard can leave tests unexecuted without reporting an error.
 
-A binding the build omits entirely is a compile error at its use site rather
-than a nil value at run time, so `(when-let [x maybe/missing] ...)` cannot guard
-it. It needs `compwhen`, which resolves at compile time.
+An omitted binding causes a compile error at its use site. It does not resolve
+to nil at run time, so `(when-let [x maybe/missing] ...)` cannot guard it.
+Use `compwhen`, which resolves at compile time.
 
-A binding that exists but raises when called needs an ordinary runtime `when`.
-`os/realpath`, `os/cryptorand` and `ffi/native` are registered whatever the
-build options are, and only their bodies fail, so `compwhen (dyn 'os/realpath)`
-sees a live binding and compiles the guarded code anyway.
+A binding that remains defined but raises when called requires a runtime
+`when`. `os/realpath`, `os/cryptorand` and `ffi/native` are registered under all
+build configurations; only their implementations fail. An expression such as
+`compwhen (dyn 'os/realpath)` finds the binding and compiles the guarded code
+even when the operation is unavailable.
 
-Guard regions rather than skipping a suite. A suite that does not run reports
-`0 of 0`, which looks the same as a pass. `suite-ev.wattle` guards its network
-and subprocess regions separately, so its channel, fiber and deadline tests
-still run in both reduced configurations. Where a whole suite depends on the
-feature, it exits immediately after `start-suite` with `(compwhen (not (dyn
-'some/binding)) (end-suite) (os/exit 0))`. This works because Wattle compiles
-and runs a file one top-level form at a time.
+Guard the regions that require a feature. Skipping a suite reports `0 of 0`,
+which appears to be a pass. `suite-ev.wattle` guards network and subprocess
+regions separately, allowing channel, fiber and deadline tests to run in both
+reduced configurations.
+
+If every test requires the feature, exit immediately after `start-suite`:
+
+```wattle
+(compwhen (not (dyn 'some/binding)) (end-suite) (os/exit 0))
+```
+
+Wattle compiles and runs each top-level form before compiling the next, so this
+exit prevents compilation of the remaining forms.
 
 `-Dreduced-os=true` registers only `os/exit`, `os/which`, `os/arch` and
-`os/compiler`. A suite that needs more of `os/` throughout is marked
-`needs_os` in `build.zig`'s suite list and is not scheduled in that
-configuration. A suite that needs an `os/` binding in one region guards the
-region with `compwhen`, as `suite-pp.wattle` does around `os/setenv`.
+`os/compiler`. A suite that requires other `os/` bindings throughout is marked
+`needs_os` in `build.zig` and is not scheduled in that configuration. A suite
+that requires an `os/` binding in a single region uses `compwhen` around that
+region. `suite-pp.wattle`, for example, guards `os/setenv` this way.
 
 ## Image-only builds
 
-`src/client/web.zig` is the root of the web reactor and `src/client/web/wasi.js`
-is the JavaScript that provides WASI to it. Both are under `src/` so that a
-package that depends on Wattle has them.
+`src/client/web.zig` is the web reactor's root. `src/client/web/wasi.js`
+provides its WASI implementation in JavaScript. Both are under `src/` so
+packages depending on Wattle can use them.
 
-`wattleWeb` in `build.zig` is the public entry point. It takes the dependency
+The public build entry point, `wattleWeb` in `build.zig`, takes a dependency
 instantiated for the build machine, a name and a source file. It builds the
-reactor for wasm32-wasi in the image-only configuration below and makes the
-image with that dependency's `wattle` client. It then runs
-`client/web/pack.zig` on the build machine, which copies the runtime, the image
-and `wasi.js` into one directory under names that share one hash of their
-contents, and writes a loader module that refers to them. The reactor's
-`wattle_web_run_image` takes the arguments as a buffer of NUL-terminated
-strings, and standard input is served by `wasi.js`; `web.zig` clears the end of
-file and the buffered input of the C stream before each call, so a loaded
-instance can read new input. The directory is
-returned as a `Web`. `wattle build web` writes a `build.zig` that calls
-`wattleWeb` for each `:web` artifact in `info.edn`, with `docstrings` and
-`sourcemaps` off in the host dependency so that the program's image has
-neither.
+reactor for wasm32-wasi using the image-only configuration below. The
+dependency's `wattle` client generates the image.
 
-`-Dwasm-image=true` applies to `zig build examples/web-repl` and to no other step.
-It builds the web reactor without `runtime/compiler.zig`,
-`runtime/compiler/` and `runtime/parser.zig`, and with `-Ddocstrings=false` and
-`-Dsourcemaps=false`. The reactor exports `wattle_web_run_image` in place of
-`wattle_web_eval`. It unmarshals an image made by `make-image` and calls the
-`main` the image defines, as `wattle -i` does. The step installs the binary and
-`wasi.js` and no page, because the page submits source.
+`wattleWeb` then runs `client/web/pack.zig` on the build machine. The packer
+copies the runtime, image and `wasi.js` into a directory. Their file names use
+a shared hash of their contents. It also writes a loader module referencing
+those files. `wattleWeb` returns the directory as a `Web`.
 
-The image generator keeps the compiler, because it compiles `boot.wattle`.
-`bootConfig` sets `Config.compiler`, so the core image has every binding,
-including the ones that need the compiler. The runtime has no implementation
-for `compile` or for the `parser/` functions. `runtime/no_compiler.zig`
-registers a stub under each of those names, so the image unmarshals, and a call
-to one raises an error. `eval`, `run-context`, `parse` and the other functions
-written in Wattle on top of them are in the image and raise when called.
-`env.zig`'s `dobytesImpl` prints the same message and returns the compile-error
-flag.
+The reactor's `wattle_web_run_image` takes arguments in a buffer of
+NUL-terminated strings. `wasi.js` provides standard input. Before each call,
+`web.zig` clears the C stream's end-of-file state and buffered input so an
+existing instance can read new input.
 
-A build with `Config.compiler` false is not a configuration the contract
-driver or the suites run in: both compile and run source.
+`wattle build web` generates a `build.zig` that calls `wattleWeb` for each
+`:web` artifact in `info.edn`. It disables `docstrings` and `sourcemaps` in the
+host dependency to omit both from the program's image.
+
+`-Dwasm-image=true` applies only to `zig build examples/web-repl`. It excludes
+`runtime/compiler.zig`, `runtime/compiler/` and `runtime/parser.zig` from the
+web reactor, and sets `-Ddocstrings=false` and `-Dsourcemaps=false`. The reactor
+exports `wattle_web_run_image` in place of `wattle_web_eval`. Like `wattle -i`,
+it unmarshals an image produced by `make-image` and calls the image's `main`.
+The step installs the binary and `wasi.js`. It omits the page because the page
+submits source for evaluation.
+
+The image generator includes the compiler to compile `boot.wattle`.
+`bootConfig` enables `Config.compiler`, so the core image includes every
+binding, including compiler-dependent bindings. The image-only runtime has no
+implementation of `compile` or the `parser/` functions.
+`runtime/no_compiler.zig` registers stubs for those names, allowing the image
+to unmarshal. Calling a stub raises an error. Functions built on those
+bindings, including `eval`, `run-context` and `parse`, remain in the image and
+raise when called. `env.zig`'s `dobytesImpl` prints the same error message and
+returns the compile-error flag.
+
+The contract driver and suites compile and run source. They cannot run with
+`Config.compiler` disabled.
 
 ## Cross-platform constraints
 
-These constraints are invisible when building only for the development host.
+Builds for the development host alone do not check the following constraints.
 
-- The runtime object is position independent. It is linked into the shared
-  library as well as the static library, and ELF shared objects require PIC.
-  `makeRuntimeGraph` sets `.pic = true`. Mach-O is always position independent,
-  so omitting the setting fails only on Linux, with tens of thousands of
-  relocation errors that do not name the cause.
+- The runtime object must be position independent. Both static and shared
+  libraries link it, and ELF shared objects require PIC. `makeRuntimeGraph`
+  sets `.pic = true`. Mach-O is always position independent, so omitting the
+  setting fails only on Linux. It produces tens of thousands of relocation
+  errors without identifying the missing setting.
 
-- The bootstrap pins a baseline CPU. `boot_host` keeps the host's architecture,
-  OS and ABI but sets `cpu_model = .baseline`. Native detection would make image
-  generation depend on the build machine, and an emulated or unusual host can
-  report a model the code generator rejects. The generator must run on the build
-  machine, so this is also what makes cross-compiling work.
+- The bootstrap uses a baseline CPU. `boot_host` preserves the host's
+  architecture, OS and ABI but sets `cpu_model = .baseline`. Native CPU
+  detection would make image generation depend on the build machine. An
+  emulated or unusual host can report a model rejected by the code generator.
+  The image generator must run on the build machine, including during cross
+  builds.
 
-- `-Dinstall-tests=true` installs the contract and fuzz drivers, the
-  runtime-test executable, the line-editor tools and the native-module and
-  module-load fixtures under `<prefix>/test`. A cross-compiled build is
-  tested this way, because `zig build test` runs what it builds and cannot run a
-  binary for another target.
+- `-Dinstall-tests=true` installs the contract and fuzz drivers, runtime-test
+  executable, line-editor tools, native-module fixtures and module-load
+  fixtures under `<prefix>/test`. These installed programs are used to test
+  cross builds. `zig build test` runs the programs it builds and cannot run
+  binaries for another target.
 
-- On Windows, `os/execute` and `os/spawn` give a child a copy of the handle of
-  a stream from `os/open`, not the handle itself. `os/open` opens its handles
-  with `FILE_FLAG_OVERLAPPED`, and a child's C runtime writes to its standard
-  streams without an `OVERLAPPED` structure. That write fails on a character
-  device such as `NUL`. `spawnWindows` reopens a character device without the
-  flag and duplicates any other handle, and makes the copy inheritable. It
-  closes the copy after `CreateProcessA`, and the stream's own handle is
-  unchanged. A `core/file` handle and a pipe made by `:pipe` are passed as
-  they are.
+- On Windows, `os/execute` and `os/spawn` pass child processes a copy of a
+  stream handle from `os/open`. `os/open` uses `FILE_FLAG_OVERLAPPED`, but a
+  child's C runtime writes to standard streams without an `OVERLAPPED`
+  structure.
+  Such writes fail on character devices such as `NUL`. `spawnWindows` reopens
+  character devices without the flag and duplicates other handles. It makes
+  the copy inheritable and closes it after `CreateProcessA`. The original
+  stream handle is unchanged. `core/file` handles and pipes created by `:pipe`
+  are passed directly.
 
-Two limitations qualify any result. A musl build links dynamically by default
-and loads native modules on a machine with the musl loader, but CI's musl jobs
-build with `-Dlinkage=static`, and musl's static `dlopen` is a stub that always
-fails, so CI does not run the native-module test on musl. Emulated x86-64
-cannot run a NaN-boxed build, because the NaN-boxed layout packs pointers into
-doubles and QEMU does not honour the address-space assumption that relies on.
-Use `-Dnanbox=false` there, and treat NaN-boxed x86-64 as untested until it
-runs on real hardware.
+A musl build links dynamically by default and can load native modules on a
+machine with the musl loader. CI uses `-Dlinkage=static` for musl, whose static
+`dlopen` always fails. The musl CI jobs therefore omit the native-module test.
+
+Emulated x86-64 cannot run NaN-boxed builds. The representation packs pointers
+into doubles and depends on an address-space assumption that QEMU does not
+honour. Use `-Dnanbox=false` under emulation. NaN-boxed x86-64 remains untested
+until run on real hardware.

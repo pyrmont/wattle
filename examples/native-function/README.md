@@ -1,16 +1,13 @@
 # native-function
 
-A native Wattle module written in Zig, and the worked example of the built-in
-types. A type crosses to a module author as a view or as a capability. This
-module is the view half and `examples/native-abstract` is the capability half.
+A native Wattle module written in Zig that demonstrates access to built-in
+types. The module API exposes types as views or capabilities. This example uses
+views; `examples/native-abstract` demonstrates capabilities by declaring an
+abstract type, allocating its payload and defining its callbacks.
 
-`examples/native-abstract` is the example of a module that owns something: it declares
-an abstract type, allocates a payload and fills in the type's slots. Most native
-modules are not that. A binding around a C library is usually a translator,
-taking arguments in, doing work in the library and returning a result. What it
-needs from the runtime is the ability to read what it was given.
-
-`url.zig` is the whole module, and it owns nothing:
+Bindings for C libraries commonly read arguments, call the library and return a
+result without managing a runtime resource. `url.zig` demonstrates that pattern
+and implements the entire module:
 
 ```clojure
 (import url)
@@ -21,20 +18,17 @@ needs from the runtime is the ability to read what it was given.
 (url/parse-query "a=1&b=2")           ; -> {:a "1" :b "2"}
 ```
 
-    zig build test
+`zig build test` builds the module and runs
+`examples/native-function/test/url.wattle` against it. The test uses `import*`
+to load the shared object. Its path is passed as an argument because the build
+places it in Zig's cache, outside `WATTLE_PREFIX`. After the import, the test
+uses the same calls as an installed module.
 
-builds it and runs `examples/native-function/test/url.wattle` against it. That file is an
-ordinary `import*` of the built shared object. The path is an argument only
-because `zig build` leaves the object in its cache rather than on `WATTLE_PREFIX`,
-and everything after the import is what someone who had installed the module
-would write.
+## Module interface
 
-## What it shows
+Three getters provide uniform access to groups of Wattle aggregate types.
 
-### The three getters
-
-Three getters cover every Wattle aggregate an argument can be, and each reads a
-group of types identically:
+### Getters
 
 | the getter | the types | what the module gets |
 | --- | --- | --- |
@@ -46,80 +40,73 @@ Each has a `Value` form beside it: `wattle.bytesView`, `wattle.toIndexed` and
 `wattle.toDictionary`, which return `null` where the getter would raise.
 
 `getIndexed` also reads an abstract whose contents are elements, and
-`getDictionary` one whose contents are pairs. A vector's elements, a map's
-pairs and an abstract's contents may be in more than one run, so `Indexed` is
-read with `next`, `get` or `nextChunk` rather than as a slice, and
+`getDictionary` reads an abstract whose contents are pairs. A vector's elements,
+a map's pairs and an abstract's contents may be in more than one run, so
+`Indexed` is read with `next`, `get` or `nextChunk` rather than as a slice, and
 `Dictionary` with `next` or `nextChunk`.
 
-### Construction as the getters run backwards
+### Construction
 
-A constructor takes exactly what the getter of the same type returns, so
-`wattle.string(try wattle.getBytes(argv, 0))` type-checks. `parse-query` is
-the worked instance. It reads the slice `getBytes` returns and builds a map
-out of slices of it, with no copy and no length recomputed on the module's
-side. The runtime interns its own copy, so the map outlives the argument. That
-symmetry is what a view-or-capability crossing implies, and it is the reason
-construction needed no new shared type.
+Constructors accept the types returned by the corresponding getters. For
+example, `wattle.string(try wattle.getBytes(argv, 0))` type-checks.
+`parse-query` builds a map from subslices of the bytes returned by `getBytes`.
+The module neither copies those bytes nor recomputes their lengths. The runtime
+interns its own copy, allowing the map to outlive the argument. Reusing getter
+result types avoids additional shared types for construction.
 
 `slug` calls `getBytes` and `getIndexed`, `query` calls `getDictionary`, `cut`
-takes a range, and `parse-query` builds a map. Nothing about a map or a table
-promises an order, so `query` returns in hash order and a caller that needs a
-stable string sorts the result. The test file sorts it rather than pinning one
-arrangement. The test file asserts each nfunction on more than one of the
-types its getter reads, because a getter reads them identically: a module
-written for a tuple works on an array or a vector with no change.
+takes a range, and `parse-query` builds a map. Maps and tables have no
+guaranteed iteration order. `query` returns hash order, so callers requiring a
+stable string must sort the result. The test sorts the output to avoid requiring
+a particular order. It checks each nfunction with multiple types accepted by its
+getter. The uniform interface allows code written for tuples to accept arrays or
+vectors unchanged.
 
-### The lifetime of what a getter returns
+### Result lifetimes
 
-What a getter returns is read, never stored. A string's, a symbol's and a
-keyword's bytes are stable while the value is reachable. A buffer's, an array's
-and a table's are not: they are `data[0..count]`, and a push or a put may move
-them. Every getter's doc comment says which of the two kinds it returns. The
-rule is to finish with what it returned inside the call that obtained it, and
-all three nfunctions do so.
+The module reads getter results without retaining them. String, symbol and
+keyword bytes remain stable while the value is reachable. Buffer, array and
+table storage is exposed as `data[0..count]` and can move on a push or put. Each
+getter documents its result's lifetime. The module must finish using a result
+within the call that obtained it; all three nfunctions follow this rule.
 
-### Where a refusal comes from
+### Errors
 
-The refusals come from two places. A wrong argument type is the runtime's to
-refuse, and it does, with the same message a C module got:
+The runtime rejects incorrect argument types with the same message used for C
+modules:
 
 ```
 (url/slug 3)
 ; bad slot #0, expected buffer, string, symbol or keyword, got 3
 ```
 
-An unknown option is not a type error, and the runtime has nothing to say about
-it. That refusal is the module's, through `wattle.panicFormat`:
+The module rejects unknown options through `wattle.panicFormat`:
 
 ```
 (url/slug "a b" [:bogus])
 ; unknown option :bogus
 ```
 
-### The option table as a `std.StaticStringMap`
+### Option lookup
 
-The C module this shape is taken from builds a `JanetTable` at first use, roots
-it with `janet_gcroot` so the collector cannot take it, and looks a keyword up
-in it with `janet_table_get`: a table, a root, one put per option and a get, all
-to map a name known at compile time to a value known at compile time. Zig has
-that map already, so this module asks the runtime for none of it and leaves the
-collector nothing to traverse.
+The original C module creates a `JanetTable` on first use, inserts each option,
+roots it with `janet_gcroot` and looks up keywords with `janet_table_get`. This
+module uses `std.StaticStringMap` because both option names and values are known
+at compile time. It requires no runtime table, GC root or collector traversal.
 
-### A getter's `Value` form
+### Value access
 
-Each getter has a `Value` form, and that is what reads a value with no slot of
-its own. `wattle.getBytes(argv, n)` takes an argument slot. A value pulled out of
-a dictionary entry is in no slot, so `wattle.bytesView(v)` takes the value and
-returns null rather than raising. `query` uses it, and the refusal that follows
-names the key the caller wrote instead of a slot number the caller cannot see.
+Each getter has a form accepting a `Value` directly. `wattle.getBytes(argv, n)`
+reads an argument slot; `wattle.bytesView(v)` reads any value and returns null
+on a type mismatch. `query` uses `bytesView` for dictionary entries, allowing
+its error message to identify the caller's key instead of an argument slot.
 
-Where the value is an argument slot, the getters need no help. They take any
-slice of values and an index into it, so `wattle.getNumber(chunk, i)` over a run
-`nextChunk` returned is already legal, and a tuple of numbers needs no second
-family of functions.
+Slot getters accept any value slice and an index. For example,
+`wattle.getNumber(chunk, i)` can read a chunk returned by `nextChunk`. Reading a
+tuple of numbers requires no additional getter family.
 
-## Building a module outside this repository
+## External builds
 
-The same way `numarray` does. `examples/native-abstract/README.md` has the
-`build.zig.zon` and `build.zig` an outside package needs, and `zig build
-examples/native-consumer` is the proof that it works.
+Use the `numarray` build procedure in `examples/native-abstract/README.md` for
+an external package's `build.zig.zon` and `build.zig`.
+`zig build examples/native-consumer` checks that build interface.

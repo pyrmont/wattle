@@ -1,16 +1,15 @@
 # native-events
 
-A native Wattle module written in Zig, and the worked example of scheduling
-work through the event loop.
+A native Wattle module written in Zig that demonstrates event-loop scheduling.
 
-`examples/native-abstract` is the example of a module that owns something, and
-`examples/native-function` is the example of a module that only reads. This module does
-work on a thread of its own and returns the result through the loop, and it
-owns that thread in an abstract value whose `gc` callback joins it. Every module
-that wraps a library with its own threads, its own poll or its own sockets has
-this shape.
+The module computes a hash on a worker thread and returns the result through the
+event loop. An abstract value manages the thread; its `gc` callback joins it.
+Modules wrapping libraries with their own threads, polling or sockets use this
+pattern. `examples/native-abstract` demonstrates resource management, and
+`examples/native-function` demonstrates argument access without resource
+management.
 
-`digest.zig` is the whole module, and it has one nfunction:
+`digest.zig` implements the module and defines one nfunction:
 
 ```clojure
 (import digest)
@@ -19,21 +18,18 @@ this shape.
 ; -> "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 ```
 
-    zig build test
+`zig build test` builds the module and runs
+`examples/native-events/test/digest.wattle` against it. The test loads the
+shared object with `import*`. Its path is passed as an argument because the
+build places it in Zig's cache, outside `WATTLE_PREFIX`. After the import, the
+test uses the same calls as an installed module.
 
-builds it and runs `examples/native-events/test/digest.wattle` against it. That file is
-an ordinary `import*` of the built shared object. The path is an argument only
-because `zig build` leaves the object in its cache rather than on `WATTLE_PREFIX`,
-and everything after the import is what someone who had installed the module
-would write.
+## Event-loop interface
 
-## What it shows
+Modules provide an event source and use the loop to resume fibers with results.
+Three operations support this interaction.
 
-### The three operations a module needs
-
-Everything the loop does is one sentence: when something happens, resume a fiber
-with a value. A module brings its own source of "something happens" and needs
-three operations to take part.
+### Operations
 
 | operation | what it does | where it may be called |
 | --- | --- | --- |
@@ -41,21 +37,19 @@ three operations to take part.
 | `wattle.post(loop, cb, ctx)` | asks the loop thread to run `cb(wake, ctx)` | any thread, including a thread that is not running Wattle |
 | `wattle.wake(w, fiber, value)` | puts the fiber back on the run queue | inside a posted callback |
 
-`wattle.loop()` and `wattle.rootFiber()` are what an nfunction reads before it
-suspends.
+Before suspending, the nfunction calls `wattle.loop()` and `wattle.rootFiber()`
+to obtain the loop and fiber.
 
-### The thread discipline in the types
+### Thread restrictions
 
-`Loop` and `Wake` are both `opaque {}` and both are the same pointer underneath.
-They are two types on purpose: a worker thread is given a `Loop` and
-`wattle.post` is the only function that takes a `Loop`, so resuming a fiber from
-a thread that is not running Wattle is unspellable rather than discouraged.
-`Wake` arrives as the posted callback's first parameter and is good for that
-call.
+`Loop` and `Wake` are distinct `opaque {}` types with the same underlying
+pointer. Worker threads receive a `Loop`, accepted only by `wattle.post`. They
+cannot use it to resume a fiber directly. The posted callback receives `Wake` as
+its first parameter, valid only during that call.
 
-### The order in the nfunction
+### Operation order
 
-The order in the nfunction is required.
+The nfunction must perform these operations in order.
 
 ```zig
 const bytes = try wattle.getBytes(argv, 0); // read
@@ -69,92 +63,94 @@ job.thread = try std.Thread.spawn(...);    // start the work
 return wattle.await();                      // then suspend
 ```
 
-### Starting the thread before the suspend
+### Thread startup
 
-Starting the thread before the suspend is not a race. The loop is
-single-threaded, so an event the worker posts before the nfunction has returned
-is not processed until the fiber has suspended. There is no window and nothing
-to synchronise.
+The thread starts before the fiber suspends. The loop is single-threaded and
+cannot process a posted event until the nfunction returns and the fiber
+suspends. This ordering requires no additional synchronisation.
 
-### What the worker thread may call
+### Worker calls
 
-The worker thread touches nothing in `wattle.*` but `wattle.post`. Every other
-function on the surface finds the runtime through a thread-local a worker thread
-does not have, and calling any of them from such a thread aborts with `called
-from a thread that is not running Wattle` rather than reading null state.
-`wattle.post` is safe because it takes the loop as an argument: it reads no
-thread-local, allocates nothing, and writes one fixed-size event into the loop's
-self-pipe.
+The worker thread calls only `wattle.post` from `wattle.*`. Other module API
+functions use thread-local runtime state, which is absent on worker threads.
+Calling them there aborts with
+`called from a thread that is not running Wattle`. `wattle.post` takes the loop
+explicitly, reads no thread-local state and allocates no memory. It writes a
+fixed-size event to the loop's self-pipe.
 
-### Rooting across the wait
+### GC roots
 
-Rooting is the module's, and the wait is a re-entry like any other. The fiber,
-the argument and the job's abstract value are all `Value`s the module keeps
-across a span in which Wattle code runs, so all three are `wattle.gcroot`ed before
-`wattle.await` and `wattle.gcunroot`ed in the callback. The slice the thread
-hashes points at the string's own storage, and the root is what keeps that
-storage there. The root on the job is what keeps the collector from finalizing
-it while the thread still writes into it.
+The module must root values retained while other Wattle code runs. It calls
+`wattle.gcroot` for the fiber, argument and job's abstract value before
+`wattle.await`, then `wattle.gcunroot` in the callback. The worker hashes a
+slice of the string's storage, so the argument root prevents that storage from
+being collected. The job root prevents finalisation while the worker writes its
+result.
 
-### A `false` from `wattle.wake`
+### Cancelled fibers
 
-A `false` from `wattle.wake` is a state to clean up after rather than a failure
-to report. `ev/cancel` may have moved the fiber on, or the fiber may have
-finished, and the runtime would have dropped the resume. The roots are the
-module's either way, so the callback unroots on both branches. A module that
-cleaned up only under the `true` branch would leak the cancelled case.
-`examples/native-events/test/digest.wattle` cancels a hash in flight for that reason.
+`wattle.wake` returns `false` if the resume is discarded, for example when
+`ev/cancel` has changed the fiber's state or the fiber has finished. The
+callback must remove the module's roots regardless of the return value. Removing
+them only when `wattle.wake` returns `true` would leak cancelled jobs.
+`examples/native-events/test/digest.wattle` checks cancellation during hashing.
 
-### Joining the thread
+### Thread cleanup
 
-A `*Loop` is valid until the runtime shuts down, and a `wattle.post` after that
-reads released state. Nothing signals the shutdown to a thread that is not
-running Wattle, so the thread cannot wait for it and stop. The join goes in a
-finalizer instead. The job is a `digest/hash` abstract value, and its `gc`
-callback joins the thread if the callback has not already. Teardown runs every
-finalizer before it releases the loop, so the join finishes while the `*Loop`
-is still valid. In normal operation the callback joins the thread that has just
-posted it, which takes as long as that thread takes to return from
-`wattle.post`, and the finalizer finds nothing to join. The cost is at exit: a
-hash in flight delays it until the hash is done.
+`*Loop` remains valid until runtime shutdown. Calling `wattle.post` afterwards
+would access released state. Worker threads receive no shutdown notification, so
+the module must join them before the loop is released.
 
-### The callback
+The job is a `digest/hash` abstract value. Its `gc` callback joins the thread
+unless the posted callback has already joined it. Teardown runs all finalizers
+before releasing the loop, so the join completes while `*Loop` is valid.
+Normally, the posted callback joins the worker after it posts the event. The
+join waits only for the worker to return from `wattle.post`; the finalizer has
+no remaining thread to join. At shutdown, an unfinished hash delays exit until
+hashing completes.
 
-The callback is short and cannot raise. It runs on the loop thread between two
-fibers. Its job is to build the value and wake, rather than to do work. Building
-a `Value` inside it is allowed. Allocating through the collector is fatal on
-failure rather than a raise, and no safe point runs between fibers there.
+### Callback execution
 
-### How long a getter's result stays valid
+The posted callback cannot raise. It runs on the loop thread between fibers to
+construct the result `Value` and wake the waiting fiber. Computation belongs on
+the worker thread. Collector allocation is allowed; allocation failure is fatal.
+No safe point runs during the callback.
 
-How long a getter's result stays valid is still the getter's rule. A string's,
-a symbol's and a keyword's bytes are stable while the value is reachable, and
-the root secures that stability. A buffer's bytes are `data[0..count]`, and a
-push from another fiber may move them, so hashing a buffer that another fiber
-can write to during the wait is the caller's to avoid. `examples/native-function` states
-the same rule, met here at the point where the wait makes it apply.
+### Result lifetimes
 
-## What the test asserts
+String, symbol and keyword bytes remain stable while their values are reachable.
+Rooting preserves that reachability. Buffer bytes are `data[0..count]`; a push
+from another fiber can move the storage. Callers must prevent mutation of a
+buffer during hashing. `examples/native-function` describes the same getter
+lifetime requirements.
 
-- the digest of two known inputs, and that a buffer and a string hash alike;
-- that four hashes under `ev/gather` overlap rather than serialise, timed
-  generously, showing the loop is not blocked;
-- that a fiber doing something else runs two hundred times underneath a hash;
-- that a hash cancelled with `ev/cancel` returns the cancellation, and that the
-  loop is healthy afterwards;
-- that `os/exit` with a hash in flight exits 0, run in a child process.
+## Tests
+
+The test checks:
+
+- Digests for two known inputs and equal results for a buffer and string.
+
+- Four concurrent hashes under `ev/gather`, with timing tolerance to check that
+  hashing does not block the loop.
+
+- Another fiber running two hundred times while a hash is computed.
+
+- A cancellation result from a hash cancelled through `ev/cancel`, followed by
+  successful loop operation.
+
+- Exit status 0 from a child calling `os/exit` during hashing.
 
 `test/zig-native.wattle` is where `wattle.wake`'s `false` branch is counted.
 
-## What is deliberately not offered
+## API scope
 
-The runtime's thread pool, its timers, its streams and async listeners, and its
-channels. A module brings its own thread and posts, as a C library with a loop
-of its own already does. Each of them waits on a decision that has not been
-taken.
+The module API does not expose the runtime's thread pool, timers, streams, async
+listeners or channels. Exposing these requires further design decisions. Modules
+provide their own threads and post results, including when wrapping a C library
+with its own loop.
 
-## Building a module outside this repository
+## External builds
 
-The same way `numarray` does. `examples/native-abstract/README.md` has the
-`build.zig.zon` and `build.zig` an outside package needs, and `zig build
-examples/native-consumer` is the proof that it works.
+Use the `numarray` build procedure in `examples/native-abstract/README.md` for
+an external package's `build.zig.zon` and `build.zig`.
+`zig build examples/native-consumer` checks that build interface.

@@ -1,7 +1,7 @@
 # web-counter
 
-A page that calls a program many times, keeping the state in the page. It shows
-how to use `load`. It builds on `examples/web-greeter`.
+A page that uses `load` to call a program repeatedly and stores state between
+calls. It extends `examples/web-greeter`.
 
 ```sh
 cd examples/web-counter
@@ -21,23 +21,23 @@ See the resulting page at `http://localhost:8000/`.
 ```
 
 `main` adds the number in `args` to the number on `stdin` and prints the sum.
-It starts from the top on every call and remembers nothing. The page keeps the
-total, passes it as `stdin` and replaces it with what `main` printed.
+Execution starts at `main` on every call, with no retained program state. The
+page stores the total, passes it as `stdin` and updates it from the output.
 
 ```js
 const result = await app.run({ args: ["counter", "10"], stdin: total });
 total = result.stdout.trim();
 ```
 
-A value other than a number goes in as a string in the same way, for example
-one value to a line. The program parses it, since the runtime has no `parse`.
-A program must not depend on the instance being reused. A trap, `os/exit` or
-`fresh: true` gives the next call a new one. `examples/web-errors` shows how
-these can be used.
+Other values can also be passed as strings, for example one value per line. The
+program must decode them without `parse`, which is unavailable in this runtime.
+Programs must not rely on instance reuse: traps and `os/exit` require a new
+instance on the next call, and `fresh: true` requests a new instance for the
+current call. `examples/web-errors` demonstrates these cases.
 
 ## `run` and `load`
 
-`counter.js` exports both. They differ in what each call costs.
+`counter.js` exports `run` and `load` with different startup costs.
 
 `run` fetches the runtime and the image, compiles the runtime, starts an
 instance and calls `main`, on every call. It suits a page that runs the program
@@ -49,9 +49,9 @@ import { run } from "./counter.js";
 const result = await run({ args: ["counter", "1"], stdin: "0" });
 ```
 
-`load` does the fetch and the compile once and returns an object with `run`.
-The first call to that `run` starts an instance and later calls use it. It
-suits a page that calls the program again, such as on each click.
+`load` fetches and compiles once, then returns an object with a `run` method.
+The first method call creates an instance; later calls reuse it. Use `load` for
+repeated execution, such as on each click.
 
 ```js
 import { load } from "./counter.js";
