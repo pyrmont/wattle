@@ -5325,12 +5325,8 @@
     (def path (os/realpath path))
     (def s (sep))
     ; Detect info file
-    (def infofile-src1 (string path s "pkg" s "info.edn"))
-    (def infofile-src2 (string path s "info.edn"))
-    (def infofile-src (cond
-                        (fexists infofile-src1) infofile-src1
-                        (fexists infofile-src2) infofile-src2))
-    (def info (-?> infofile-src slurp parse))
+    (def infofile-src (string path s "info.edn"))
+    (def info (when (fexists infofile-src) (parse (slurp infofile-src))))
     ; Check bscript
     (def bscript-src1 (string path s "pkg" s "init.wattle"))
     (def bscript-src2 (string path s "pkg.wattle"))
@@ -5351,9 +5347,9 @@
     ; Setup installed paths
     (pkg-mkdirs (pkg-dir))
     (os/mkdir (pkg-dir pkg-name))
-    ; Copy aliased infofile
-    (when (fexists infofile-src2)
-      (copyfile infofile-src2 (pkg-file pkg-name "info.edn")))
+    ; Copy infofile
+    (when info
+      (copyfile infofile-src (pkg-file pkg-name "info.edn")))
     ; Copy aliased bscript
     (when (fexists bscript-src2)
       (copyfile bscript-src2 (pkg-file pkg-name "init.wattle")))
@@ -6370,9 +6366,8 @@
       (def mode (get cli-release-modes (get opts "release" (if (= kind :web) "small" "safe"))))
       (unless mode (cli-fail "release must be safe, fast or small"))
       (def dir (os/realpath (os/cwd)))
-      (def info-path
-        (find fexists [(string dir "/pkg/info.edn") (string dir "/info.edn")]))
-      (unless info-path (cli-fail "no info.edn in " dir))
+      (def info-path (string dir "/info.edn"))
+      (unless (fexists info-path) (cli-fail "no info.edn in " dir))
       (def info (parse (slurp info-path)))
       (def gen (string dir "/" cli-zig-cache "/wattle-build"))
       (def [src-ok src] (protect (wattle/srcpath)))
