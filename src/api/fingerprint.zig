@@ -17,6 +17,10 @@
 //! writes. `abstract_payload` follows them, because a module subtracts it to
 //! reach an abstract's header.
 //!
+//! The description also includes `semantic_revision`. Increment it for an
+//! incompatible semantic change that leaves the described types unchanged.
+//! Ordinary bug fixes and internal changes do not require an increment.
+//!
 //! The configuration bits are not in it. `constants.current_config_bits`
 //! records the options a build was configured with, the loader compares that
 //! field on its own, and a refusal names whichever of the two differed. What
@@ -140,13 +144,7 @@ const covered = [_]struct { name: []const u8, type: type }{
 };
 
 /// The whole of what `api` hashes.
-const description: []const u8 = blk: {
-    @setEvalBranchQuota(40_000_000);
-    var text: []const u8 = "wattle-module-interface\n";
-    for (covered) |entry| text = text ++ entry.name ++ "=" ++ typeDesc(entry.type, &.{}) ++ "\n";
-    text = text ++ std.fmt.comptimePrint("abstract_payload={d}\n", .{abi.abstract_payload});
-    break :blk text;
-};
+const description: []const u8 = describeInterface(semantic_revision);
 
 /// The version label, NUL-padded to the width `abi.BuildConfig` gives it.
 const label: [64]u8 = blk: {
@@ -158,6 +156,9 @@ const label: [64]u8 = blk: {
     @memcpy(padded[0..text.len], text);
     break :blk padded;
 };
+
+/// The manually maintained revision of native interface semantics.
+const semantic_revision: u64 = 1;
 
 /// The compiler's version, NUL-padded to the width `abi.BuildConfig` gives it.
 ///
@@ -190,6 +191,18 @@ pub fn hex(v: u64) [16:0]u8 {
 // ==========================================================================
 // Private functions
 // ==========================================================================
+
+/// Describes the shared types and the semantic revision.
+///
+/// `revision` identifies native interface semantics with unchanged types.
+/// This function cannot raise.
+fn describeInterface(comptime revision: u64) []const u8 {
+    @setEvalBranchQuota(40_000_000);
+    comptime var text: []const u8 = "wattle-module-interface\n";
+    inline for (covered) |entry| text = text ++ entry.name ++ "=" ++ typeDesc(entry.type, &.{}) ++ "\n";
+    text = text ++ std.fmt.comptimePrint("abstract_payload={d}\n", .{abi.abstract_payload});
+    return text ++ std.fmt.comptimePrint("semantic_revision={d}\n", .{revision});
+}
 
 /// Hashes the description.
 ///
@@ -385,6 +398,18 @@ test "the hexadecimal spelling is sixteen digits and reads back" {
     try std.testing.expectEqual(@as(usize, 16), std.mem.len(@as([*:0]const u8, &spelled)));
     try std.testing.expectEqual(api, try std.fmt.parseInt(u64, &spelled, 16));
     try std.testing.expectEqualStrings("000000000000002a", &hex(42));
+}
+
+test "changing only the semantic revision changes the published fingerprint" {
+    const revised = comptime describeInterface(semantic_revision + 1);
+    const suffix = comptime std.fmt.comptimePrint("semantic_revision={d}\n", .{semantic_revision});
+    const prefix = description[0 .. description.len - suffix.len];
+    try std.testing.expectEqualStrings(suffix, description[prefix.len..]);
+    try std.testing.expectEqualStrings(
+        prefix ++ std.fmt.comptimePrint("semantic_revision={d}\n", .{semantic_revision + 1}),
+        revised,
+    );
+    try std.testing.expect(api != std.hash.Wyhash.hash(0, revised));
 }
 
 test "a field's name, type, order and width each change the fingerprint" {

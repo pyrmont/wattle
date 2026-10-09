@@ -346,6 +346,13 @@ their first line. The entry points in `runtime/marsh.zig` similarly take
 compilations must agree on. `runtime/env.zig`'s `native` refuses a module whose
 fingerprint differs from the runtime's.
 
+The description includes `api/fingerprint.zig`'s manually maintained
+`semantic_revision`. Increment it when native interface semantics change
+incompatibly without a change to the described types. Ordinary bug fixes and
+internal changes do not require an increment. The revision changes the
+fingerprint without changing `abi.BuildConfig` or the loader's comparison.
+A revision change requires recompiling native modules.
+
 The only exports in `src/` are `module.zig`'s pair of loader shims, which are
 compiled into dynamically loaded modules.
 
