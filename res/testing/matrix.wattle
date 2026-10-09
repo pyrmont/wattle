@@ -162,7 +162,7 @@
   ; here (`pp_describe`, `pp_pretty`, `pp_format`) along with the contract
   ; that raises from one (`vm_calls`). `abstract_core` is the vtable those
   ; slots sit in; `registry` is the abstract-type registry the phase
-  ; published; `gc_mark` is what the new `janet_mark` crossing publishes; and
+  ; published; `gc_mark` tests marking through the module interface; and
   ; `signal_core` is where a raise flattened through one of the eighteen new
   ; reporting shims would show as a wrong signal rather than a compile error.
   ; `core_env` says the registration surface still holds what it held. The
@@ -572,14 +572,8 @@
     (job "full" "no ffi" ["-Dffi=false"])
     (job "contracts" "no net" ["-Dnet=false"] ["net_sockets"])
 
-    ; `-Dpeg=false` leaves the tree without `Peg` or `janet_peg_type`,
-    ; so `test/peg.zig` cannot compile here -- the same shape as the ev
-    ; contracts under `-Dsingle-threaded=true`. Part 17e is the first
-    ; increment whose own contracts include `peg`, and it found this the
-    ; way the ev one was found: by failing. Phase 11 Part 14 moved the
-    ; contract to the Zig driver, where `test/contracts.zig` gates it on
-    ; `options.peg_engine`; the skip is still needed, because a name in the
-    ; contract list is run by name and this build has no `peg` to run.
+    ; `-Dpeg=false` omits the PEG subsystem. The driver does not register
+    ; `peg`, so by-name contract runs must skip it.
     (job "contracts" "no peg" ["-Dpeg=false"] ["peg"])
     ; There is no `AssembleResult` without the assembler.
     (job "contracts" "no assembler" ["-Dassembler=false"]
@@ -654,8 +648,8 @@
     ; `zig build -h`'s option list, not this file's job list -- the matrix
     ; samples what is worth *running*, which is a different question from what
     ; is worth *compiling*. A sweep of only what this file already named would
-    ; have transcribed `JANET_VM_HAS_INTERRUPT` as a constant, and a set of
-    ; `@hasDecl` probes went silently always-true in exactly the builds nothing
+    ; have transcribed the interpreter-interrupt predicate as a constant, and a
+    ; set of `@hasDecl` probes went silently always-true in builds nothing
     ; here compiled. Build-only, because what they check is that
     ; the configuration compiles at all.
     (job "build" "prf" ["-Dprf=true"])

@@ -24,9 +24,9 @@
 (setdyn *lint-warn* :none)
 
 ; This suite is the event loop's own tests, so nothing in it applies to a build
-; without JANET_EV. Leaving early matters for more than the compile errors: the
+; without the event loop. Leaving early matters for more than compile errors:
 ; subprocess tests below block forever when the event loop is absent, because
-; the parent waits on a pipe that is never serviced. Janet compiles and runs a
+; the parent waits on a pipe that is never serviced. Wattle compiles and runs a
 ; file one top-level form at a time, so nothing after this reaches the compiler.
 (compwhen (not (dyn 'ev/chan))
   (end-suite)
@@ -41,7 +41,7 @@
 ; Subprocess should inherit the "RUN" parameter for fancy testing
 (def run (filter next (string/split " " (os/getenv "SUBRUN" ""))))
 
-; os/spawn and os/execute are absent from a build without JANET_PROCESSES,
+; os/spawn and os/execute are absent from a build without process support,
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   (repeat 10
@@ -188,7 +188,7 @@
                                (error :oops)))
 (assert (= cancel-counter 2) "ev/gather 4.2")
 
-; net/* is absent from a build without JANET_NET, and an absent binding is a
+; net/* is absent from a build without networking, and an absent binding is a
 ; compile error rather than a runtime one.
 (compwhen (dyn 'net/server)
   ; Net testing
@@ -275,7 +275,7 @@
 (ev/sleep 0)
 (ev/cancel fiber "boop")
 
-; os/spawn and os/execute are absent from a build without JANET_PROCESSES,
+; os/spawn and os/execute are absent from a build without process support,
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   (assert (os/execute [|run wattle "-e" """(+ 1 2 3)"""] :xp) "os/execute self"))
@@ -360,7 +360,7 @@
 (ev/go #(ev/chan-close ch))
 (assert (= (ev/select [ch 1]) [:close ch]))
 
-; os/spawn and os/execute are absent from a build without JANET_PROCESSES,
+; os/spawn and os/execute are absent from a build without process support,
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   ; ev/gather check
@@ -397,7 +397,7 @@
 (ev/cancel f (gensym))
 (ev/take superv)
 
-; net/* is absent from a build without JANET_NET, and an absent binding is a
+; net/* is absent from a build without networking, and an absent binding is a
 ; compile error rather than a runtime one.
 (compwhen (dyn 'net/server)
   ; Chat server test
@@ -512,7 +512,7 @@
                 (pp :foo)))
 (ev/chan-close c)
 
-; net/* is absent from a build without JANET_NET, and an absent binding is a
+; net/* is absent from a build without networking, and an absent binding is a
 ; compile error rather than a runtime one.
 (compwhen (dyn 'net/server)
   ; soreuseport on unix domain sockets
@@ -549,7 +549,7 @@
 
 ; (print "running deadline tests...")
 
-; os/spawn and os/execute are absent from a build without JANET_PROCESSES,
+; os/spawn and os/execute are absent from a build without process support,
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   ; Cancel os/proc-wait with ev/deadline
@@ -594,7 +594,7 @@
        (~ev/deadline ~sec nil ~f true)
        (~resume ~f))))
 
-; ev/deadline's interrupt flag needs JANET_INTERPRETER_INTERRUPT, which a build
+; ev/deadline's interrupt flag needs interpreter interrupts, which a build
 ; can disable. Nothing disappears when it does — ev/deadline itself is still
 ; there — so there is no binding to test for, and the capability has to be
 ; asked for. Requesting it is refused before any timer thread starts, so the
@@ -632,7 +632,7 @@
                     (ev/deadline 0.01 nil f true)
                     (resume f)))))
 
-; os/spawn and os/execute are absent from a build without JANET_PROCESSES,
+; os/spawn and os/execute are absent from a build without process support,
 ; and an absent binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/spawn)
   ; Use :err :stdout
@@ -656,20 +656,14 @@
 (assert-error "bad thread" (ev/thread in))
 (assert-error "bad thread 2" (ev/thread (fn [x y] x) 1))
 
-; Channel operations refuse to suspend inside call_value, because the C frame
-; that called back into Janet cannot be unwound and resumed. ev/give, ev/take
-; and ev/select each check janet_vm.coerce_error to enforce that. Nothing else
-; in this suite reaches those checks: they need a callback invoked through
-; janet_call, and the reachable core paths are peg.c, util.c, io.c and ffi.c
-; rather than anything a plain function call goes through. A PEG function
-; capture is the cheapest of them.
+; Channel operations cannot suspend inside `vm/entry.zig`'s `call` because
+; the native callback frame cannot be resumed. `ev/give`, `ev/take` and
+; `ev/select` check `vm_state.current().coerce_error` before suspension.
+; A PEG function capture invokes the callback through this entry point.
 ;
-; These assert on the message, not merely that something was raised. If the
-; check is skipped, two of the three still raise -- but from janet_await, as a
-; coerced :await signal rather than as the guard -- and assert-error alone
-; cannot tell the two apart.
-; The whole region needs the matcher, since that is what supplies the
-; janet_call, so it is compiled out of a build without PEGs.
+; Check the message as well as the error. Without the guard, an attempted
+; suspension can still raise a coerced :await signal from `ev.awaitEvent`.
+; These cases require PEG support to invoke the callback.
 (compwhen (dyn 'peg/match)
  (do
   (defn in-call-value [f]
@@ -701,11 +695,9 @@
 ; notice. They are here rather than in a contract because each needs a *task*:
 ; a root fiber the scheduler owns.
 
-; `janet_ev_mark` is the only thing that keeps a queued task, a pending
-; timeout, or a channel's contents alive across a collection: a fiber sitting
-; in the spawn queue has no other root. Nothing above ever collects with the
-; scheduler non-empty, so every loop bound in `janet_ev_mark` and in
-; `janet_chanat_mark` was invisible.
+; `ev.evMark` marks queued tasks and pending timeouts during collection.
+; `ev/channel.zig`'s `chanatMark` marks channel contents. A fiber in the spawn
+; queue has no other root. These cases collect while the scheduler is nonempty.
 ; gc marks what the scheduler is holding
 (do
   (def done (ev/chan 64))
@@ -752,8 +744,8 @@
   (assert (ev/full c) "at the limit is full")
   (assert (= 2 (ev/count c)) "count agrees"))
 
-; `ev/rselect` shuffles its arguments with `janet_vm.ev_rng`, which
-; `janet_ev_init_common` seeds with a constant. So the permutation is fixed for
+; `ev/rselect` shuffles its arguments with `vm_state.current().ev.ev_rng`, which
+; `ev.evInitCommon` seeds with a constant. So the permutation is fixed for
 ; a given argument count, and the shuffle can be pinned rather than only
 ; smoke-tested. What this actually asserts is that *some* clause other than the
 ; first is preferred -- a shuffle that did nothing would always take clause 0.
@@ -899,8 +891,8 @@
   (loop [i :range [5 12]]
     (assert (= i (ev/take back)) (string "wrapped item " i " in order"))))
 
-; `janet_chanat_unmarshal` rejects a count above the limit and accepts one
-; equal to it, so the boundary needs both sides.
+; `ev/channel.zig`'s `chanatUnmarshal` rejects a count above the limit and
+; accepts one equal to it, so the boundary needs both sides.
 ; a channel unmarshals at its limit
 (do
   (def c (ev/chan 3))
@@ -911,7 +903,7 @@
 
 ; Closing a stream steps both of its listeners before it closes the handle:
 ; a blocked reader is resumed with nil and a blocked writer is cancelled. Above
-; this block only the reader arm is reached, and only through `net.c`.
+; this block only the reader arm is reached, through network operations.
 (do
   (def [r w] (os/pipe))
   (def out (ev/chan 8))
@@ -986,10 +978,8 @@
   (assert (= 1 (ev/count out)) "an expired sleep is honoured before an expired deadline")
   (assert (= :survived (ev/take out)) "and the sleeping task reaches its give"))
 
-; `ev/all-tasks` is checked above *before* the scheduler has run the task, so
-; only `janet_schedule_general`'s half of the bookkeeping was reached. Yielding
-; first means the task has actually been resumed and suspended, which is what
-; makes `janet_loop1`'s removal test observable.
+; Check `ev/all-tasks` after the scheduler resumes and suspends the task.
+; This tests task removal in `ev.loop1` after registration by `scheduleGeneral`.
 (do
   (def before (length (ev/all-tasks)))
   (def f (ev/go (fn [] (ev/sleep 0.05))))
@@ -1076,9 +1066,7 @@
     (assert found "a failing thread reports to its supervisor")
     (assert (= :error (first found)) "as an :error message")))
 
-; A threaded channel shared with a real thread is what drives
-; `janet_thread_chan_cb` and the per-thread cleanup that follows it. Nothing
-; above sends a value *between* threads through one.
+; Share a threaded channel with another thread to test callbacks and cleanup.
 (do
   (def to-child (ev/thread-chan 4))
   (def from-child (ev/thread-chan 4))

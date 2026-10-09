@@ -3,34 +3,15 @@
 //! `build.zig` builds this module and `examples/native-abstract/test/numarray.wattle`
 //! loads it. `zig build test` runs that test file.
 //!
-//! ## Differences with the C version
+//! ## Abstract callbacks
 //!
-//! This file is `numarray.c`, the sample that shipped with Janet, brought
-//! over to the interface `module.zig` documents. Two things
-//! the C original contains are absent from the Zig version.
+//! `wattle.define(NumArray, .{ ... })` generates the erased dispatch from
+//! callbacks written over `*NumArray`. Callback type errors are compile errors.
+//! `zig build module-errors` checks the diagnostics for invalid declarations.
 //!
-//! ### Type casting
-//!
-//! The C original opens every callback with a cast:
-//!
-//! ```c
-//! static int num_array_gc(void *p, size_t s) {
-//!     num_array *array = (num_array *)p;   /* nothing checks this */
-//! ```
-//!
-//! Nothing in the language or the runtime reports that cast as wrong.
-//! `wattle.define(NumArray, .{ ... })` takes the payload type once and
-//! generates the erased dispatch. A callback is written over `*NumArray`, so
-//! a mistake is a compile error at the callback's own definition. Break a
-//! callback on purpose and `zig build module-errors` shows what an author
-//! sees.
-//!
-//! ### Callback list
-//!
-//! C needs sixteen macros to let an author fill in the first few fields of a
-//! positional initializer without a warning. Zig's default field values are
-//! that mechanism. A declaration names the fields it sets, and a callback
-//! added later breaks nobody's source.
+//! A declaration names the callbacks it implements. Other callbacks use the
+//! defaults in `wattle.Spec`, so adding an optional callback requires no change
+//! to existing declarations.
 
 const wattle = @import("wattle");
 
@@ -84,10 +65,7 @@ fn numArrayGet(self: *NumArray, key: wattle.Value) wattle.Error!?wattle.Value {
 /// This function returns null if `i` is negative or if `i` is not below
 /// `self.size`.
 fn inRange(self: *const NumArray, i: i32) ?usize {
-    // The C original cast `i` to `size_t`, so -1 became a large unsigned
-    // index that the `>= size` test rejected. Checking the sign gives the
-    // same result without relying on wraparound; clamping with `@max(0, i)`
-    // would not, because `(a -1)` would read element zero.
+    // Reject negative indices before conversion to an unsigned index.
     if (i < 0) return null;
     const index: usize = @intCast(i);
     return if (index < self.size) index else null;
@@ -99,8 +77,7 @@ fn inRange(self: *const NumArray, i: i32) ?usize {
 /// `key` is an integer index and `value` is a number.
 ///
 /// This function raises if `key` is not an integer or `value` is not a
-/// number. A `key` that addresses no element is ignored rather than refused,
-/// which is the C original's behaviour.
+/// number. A `key` that addresses no element is ignored.
 fn numArrayPut(self: *NumArray, key: wattle.Value, value: wattle.Value) wattle.Error!void {
     const i = wattle.toInteger(key) orelse return wattle.panic("expected integer key");
     const x = wattle.toNumber(value) orelse return wattle.panic("expected number value");
@@ -193,8 +170,7 @@ const num_array_type = wattle.define(NumArray, .{
 /// if the count is negative, or if the allocation fails.
 fn new(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.fixarity(argv, 1);
-    // Refused rather than clamped to zero. The C original converted it to
-    // `size_t`, so `(numarray/new -1)` asked for more memory than exists.
+    // Reject a negative size before conversion to an unsigned count.
     const requested = try wattle.getInteger(argv, 0);
     if (requested < 0) return wattle.panic("expected a non-negative size");
     const size: usize = @intCast(requested);

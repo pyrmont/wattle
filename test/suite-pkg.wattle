@@ -24,9 +24,8 @@
 (assert true) ; smoke test
 
 ; This suite's setup resolves a real path and seeds from the system CSPRNG.
-; Both functions still exist without JANET_REALPATH and JANET_CRYPTORAND, and
-; only raise when called, so these are runtime checks rather than compwhen on
-; the bindings.
+; Both functions remain bound when realpath or cryptographic random support
+; is disabled. They raise when called, so capability checks run at runtime.
 (unless (and (first (protect (os/realpath ".")))
              (first (protect (os/cryptorand 1))))
   (end-suite)

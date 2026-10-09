@@ -9,9 +9,8 @@
 (def env !{})
 (native module-path env)
 
-; `nfuns` passes the prefix to the *registry*, for stack traces, and leaves
-; the binding unprefixed -- which is what the C original did too. An
-; `(import ...)` is what puts `numarray/` in front of it.
+; `nfuns` uses the prefix for stack traces and leaves bindings unprefixed.
+; `(import ...)` adds the `numarray/` prefix to bindings.
 (def new ((env 'new) :value))
 (def sum ((env 'sum) :value))
 
@@ -41,21 +40,17 @@
 
 (refuses (fn [] (put! a :nope 1)) "expected integer key")
 (refuses (fn [] (put! a 1 "x")) "expected number value")
-; A keyword that is not a method is not the callback's refusal: `get` answers
-; 0 and the *runtime* raises, exactly as the C original did.
+; For an unknown method, `get` returns null and the runtime raises.
 (def [ok err] (protect (a :not-a-method)))
 (assert (not ok) "an unknown method is a refusal")
 (assert (string/find "not found" err) (string "expected a lookup failure, got " err))
 
-; An index past the end is `get` answering 0, which the runtime turns into
-; the same lookup failure. The callback does not raise; it declines.
+; For an index past the end, `get` returns null and the runtime raises.
 (def [in-range err2] (protect (a 1000)))
 (assert (not in-range) "an index past the end is a lookup failure")
 (assert (string/find "not found" err2) (string "expected a lookup failure, got " err2))
 
-; A negative index is out of range rather than element zero. The C original
-; got this from `(size_t) -1` being enormous; here it is written out, and the
-; behaviour a program sees is the same.
+; A negative index is out of range.
 (def [neg-ok neg-err] (protect (a -1)))
 (assert (not neg-ok) "a negative index is a lookup failure")
 (assert (string/find "not found" neg-err)
@@ -65,8 +60,7 @@
 (put! a -1 999)
 (assert (= before (a 0)) "a negative put! writes nothing, and not element zero")
 
-; A negative size is refused. The C original asked for about 147 exabytes and
-; died in the out-of-memory exit; the module says what happened instead.
+; A negative size raises an error.
 (refuses (fn [] (new -1)) "expected a non-negative size")
 
 ; `tostring` renders through the `*Render` capability the runtime hands the

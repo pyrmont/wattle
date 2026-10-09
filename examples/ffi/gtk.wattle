@@ -1,7 +1,4 @@
-; :lazy true needed for jpm quickbin
-; lazily loads library on first function use
-; so the `main` function
-; can be marshalled.
+; Load the library on first use so `main` can be marshalled.
 (ffi/context "/usr/lib/libgtk-3.so" :lazy true)
 
 (ffi/defbind

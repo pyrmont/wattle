@@ -88,7 +88,8 @@
     (++ attempts))
   (not= attempts max-attempts))
 
-; os/cryptorand still exists without JANET_CRYPTORAND, but raises when called,
+; os/cryptorand still exists without cryptographic random support, but raises
+; when called,
 ; so this is a runtime check rather than a compwhen on the binding.
 (def has-cryptorand (first (protect (os/cryptorand 1))))
 
@@ -141,14 +142,14 @@
 (assert (= (os/perm-string 8r644) "rw-r--r--") "perm 9")
 
 ; Pipes
-; os/pipe is part of the event loop, absent without JANET_EV.
+; os/pipe is absent when the event loop is disabled.
 (compwhen (dyn 'os/pipe)
   (assert-no-error (os/pipe))
   (assert-no-error (os/pipe :RW))
   (assert-no-error (os/pipe :R))
   (assert-no-error (os/pipe :W)))
 
-; os/execute is absent from a build without JANET_PROCESSES, and an absent
+; os/execute is absent from a build without process support, and an absent
 ; binding is a compile error rather than a runtime one.
 (compwhen (dyn 'os/execute)
   ; os/execute with environment variables
@@ -177,7 +178,7 @@
                               (string/format "(os/exit %d)" i)] :p))
             (string "os/execute " i)))
 
-  ; os/open is part of the event loop, absent without JANET_EV.
+  ; os/open is absent when the event loop is disabled.
   (compwhen (dyn 'os/open)
     ; os/execute IO redirection
     (assert-no-error "IO redirection"
@@ -194,7 +195,7 @@
                                    :px
                                    {:out dn :err dn}))))
 
-  ; os/open is part of the event loop, absent without JANET_EV.
+  ; os/open is absent when the event loop is disabled.
   (compwhen (dyn 'os/open)
     ; os/execute IO redirection with more windows flags
     (assert-no-error "IO redirection more windows flags"
@@ -211,7 +212,7 @@
                                    :px
                                    {:out dn :err dn}))))
 
-  ; os/open is part of the event loop, absent without JANET_EV.
+  ; os/open is absent when the event loop is disabled.
   (compwhen (dyn 'os/open)
     ; os/execute IO redirection to a stream opened without overlapped I/O
     (assert-no-error "IO redirection without overlapped I/O"

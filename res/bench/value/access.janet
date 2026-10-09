@@ -3,7 +3,7 @@
 # 17c is the first sub-part to touch the interpreter's hot path. `JOP_IN`,
 # `JOP_GET`, `JOP_GET_INDEX`, `JOP_PUT`, `JOP_PUT_INDEX`, `JOP_LENGTH` and
 # `JOP_NEXT` reached the access layer through `scoped` — a wrapper that is a
-# direct call under the default and a `setjmp` scope under
+# direct call under the default and a scope using C's `setjmp` under
 # `-Dcall-trampoline` — and now call the Zig implementation with `try`.
 #
 # Two things could move. The call loses the C calling convention, and Part 1

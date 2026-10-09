@@ -632,9 +632,7 @@ fn getLinecolFromPosition(s: *PegState, position: i32) LineCol {
         s.linemap = mem;
     }
 
-    // Binary search for the line, with three departures from the classic
-    // shape, all of them the C original's and all of them load-bearing:
-    // a newline belongs to the line before it, the not-found case needs the
+    // A newline belongs to the line before it. Binary search finds the
     // greatest newline index below `position`, and `lo == 0` with a first
     // newline already past `position` means the first line.
     var hi = s.linemaplen;

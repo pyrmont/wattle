@@ -161,7 +161,7 @@ pub const FuncDef = struct {
 /// format. Those two are also the only places it becomes an `i32`, and each
 /// asserts the width at comptime beside the conversion.
 ///
-/// `tag` is not a bitfield: it is a `JANET_FUN_*` number, and
+/// `tag` identifies a core function, and
 /// `compiler/optimize.zig`'s `funopt` indexes its optimizer table with
 /// `tag - 1`.
 pub const FuncDefFlags = packed struct(u32) {

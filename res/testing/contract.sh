@@ -25,7 +25,7 @@
 #
 # **Several names here are several processes, and the driver's own several are
 # one.** Since Phase 11 Part 27 `wattle-contract-test a b c` runs the three
-# in a single process, sharing whatever one leaves in `janet_vm` for the next --
+# in a single process, sharing runtime state between contracts --
 # which is what made a sequence-dependent defect bisectable. This script keeps
 # one process per name deliberately: it is the iteration loop, and a contract
 # that fails here should fail on its own account rather than because of its

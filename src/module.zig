@@ -17,11 +17,10 @@
 //!
 //! ## How a module reaches the runtime
 //!
-//! A module links against nothing, and resolves no runtime symbols. The
-//! runtime exports no `janet_*` name at all. Instead `api/interface.zig`
-//! declares an `extern struct` of `callconv(.c)` function pointers. The loader
-//! passes a module this struct when it loads. A function in this file that
-//! needs the runtime calls through one of its fields.
+//! A module links against nothing and resolves no runtime symbols.
+//! `api/interface.zig` declares an `extern struct` of `callconv(.c)` function
+//! pointers. The loader passes this struct to the module at load time.
+//! A function in this file that needs the runtime calls through its fields.
 //!
 //! A value's tag and the three immediates, a number, `nil` and a boolean, are
 //! the exception. `api/repr.zig` is compiled into the module too, and the

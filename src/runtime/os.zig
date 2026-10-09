@@ -145,9 +145,8 @@ const os_name = switch (builtin.target.os.tag) {
     else => "posix",
 };
 
-/// Whether this is a Plan 9 build. There is no Zig target for it, so `os.c`'s
-/// Plan 9 arms are recorded rather than written.
-const plan9 = false; // No Zig target; `os.c`'s Plan 9 arms are recorded, not written.
+/// Whether this is a Plan 9 build. Zig has no Plan 9 target.
+const plan9 = false;
 
 /// Whether this build registers only the four nfunctions that need no host
 /// service.
@@ -321,10 +320,6 @@ pub fn gettimeAbi(spec: *Timespec, source: c_uint) c_int {
 /// Registers the `os/` family, which is four nfunctions in a reduced build and
 /// the whole table otherwise.
 pub fn libOs(env: *tables.Table) raise.Error!void {
-    // Upstream's `os/` registration opens with a Windows critical-section
-    // initialisation guarded by `JANET_THREADS`, which no build in this tree
-    // defines. It is recorded here rather than written: a branch no
-    // configuration compiles is a branch nothing checks.
     var table: [512]corefn.Entry = undefined;
     var n: usize = 0;
     const push = struct {
@@ -367,9 +362,8 @@ pub fn osCompiler() [*:0]const u8 {
     return compiler_name;
 }
 
-/// The same approximation families `os.c` uses, or -1 where that
-/// implementation would return the caller's fallback value. Linux keeps the C
-/// path's zero result where querying affinity fails.
+/// Returns the host CPU count, or -1 if the platform cannot provide it.
+/// On Linux, an affinity query failure returns zero.
 pub fn osCpuCount() i32 {
     switch (builtin.target.os.tag) {
         .illumos => {

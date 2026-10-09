@@ -80,8 +80,8 @@ pub const jmode_t = sys.mode_t;
 /// Three spellings, and the reason they are here rather than in one of the
 /// four subsystem files is that two of them need it: `os/environ` reads it and
 /// `os/posix-exec` assigns to it. macOS has no `environ` symbol a shared
-/// library may reference and supplies `_NSGetEnviron()` instead, which is what
-/// `os.c` spells as a macro; mingw spells `_environ` as a macro over
+/// library may reference and supplies `_NSGetEnviron()` instead.
+/// MinGW spells `_environ` as a macro over
 /// `__p__environ()` and exports only the accessor; everything else has the
 /// POSIX global.
 const EnvironVector = ?[*]?[*:0]u8;
@@ -385,18 +385,9 @@ pub extern fn gmtime_r(t: *const sys.time_t, out: *sys.struct_tm) callconv(.c) ?
 
 pub extern fn localtime_r(t: *const sys.time_t, out: *sys.struct_tm) callconv(.c) ?*sys.struct_tm;
 
-/// The environment lock and unlock.
+/// Marks the start of an environment access section. This function is a no-op.
 ///
-/// Both are empty in every build this tree can produce. Janet guards the real
-/// bodies, a `pthread_mutex_t` or a `CRITICAL_SECTION`, with `JANET_THREADS`,
-/// which no build in this tree defines. The guarded arms are recorded here
-/// rather than written: Zig does not analyse a comptime-false branch, so
-/// writing them out would produce something nothing checks.
-///
-/// They are kept as named no-ops rather than deleted because the places they
-/// are called from are what a future threaded build would need: `os/getenv`
-/// takes the lock across the copy of a borrowed `getenv` result, and
-/// `os/execute` takes it across the spawn.
+/// Call sites delimit the copy of a borrowed `getenv` result and process spawn.
 pub inline fn lockEnviron() void {}
 
 pub extern fn mktime(t: *sys.struct_tm) callconv(.c) sys.time_t;
@@ -459,7 +450,7 @@ pub inline fn unlockEnviron() void {}
 // Private functions
 // ==========================================================================
 
-/// The macOS accessor, which is what `os.c` spells as a macro.
+/// The macOS environment accessor.
 extern fn _NSGetEnviron() callconv(.c) *EnvironVector;
 
 /// The mingw accessor. Its `_environ` is a macro over this, and only this is a

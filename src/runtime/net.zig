@@ -1165,9 +1165,8 @@ fn nfunWrite(argv: []repr.Value) raise.Error!repr.Value {
     }
 }
 
-/// `(net/localname)` and `(net/peername)` are the same nfunction but for the
-/// host call and one word of the failure message. `net.c` writes them out
-/// twice; the duplication is not part of the behaviour.
+/// Returns a stream's local or peer address, selected by `peer`.
+/// Implements `(net/localname stream)` and `(net/peername stream)`.
 fn endpointName(argv: []repr.Value, comptime peer: bool) raise.Error!repr.Value {
     try args_core.fixarity(argv, 1);
     const js: *ev_stream.Stream = try args_core.getAbstract(ev_stream.Stream, argv, 0, &ev_stream.streamType);

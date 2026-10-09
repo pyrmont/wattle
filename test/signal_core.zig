@@ -468,8 +468,8 @@ fn theEntryPoints() void {
     expect(valued.signal == abi.Signal.@"error");
     expect(harness.equals(valued.payload, harness.wrapInteger(11)));
 
-    // A non-error signal reaches `pending_signal` unaltered, which is the
-    // field a Zig caller reads instead of the value a `setjmp` returned.
+    // A non-error signal reaches `pending_signal` unaltered. The caller reads
+    // that field after catching `error.Signal`.
     const yielded = harness.raised(signalWith, .{ abi.Signal.yield, value.fromBytes("suspended", .string) }).?;
     expect(yielded.signal == abi.Signal.yield);
     expect(yielded.says("suspended"));

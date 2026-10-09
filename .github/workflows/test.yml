@@ -249,8 +249,8 @@ jobs:
 
   # Build-only, and they are not a formality: Zig analyses only the comptime
   # branches it selects, so a 32-bit target is the only thing anywhere that
-  # type-checks the `JANET_NANBOX_32` and 32-bit paths. `test/README.md` has
-  # the reasoning.
+  # type-checks the 32-bit NaN-boxed representation and pointer-width branches.
+  # `test/README.md` has the reasoning.
   #
   # Each name says what its entry covers that no other does, and the
   # configuration counts as much as the target. The two musl entries and the

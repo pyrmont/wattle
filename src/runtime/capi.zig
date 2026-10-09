@@ -8,9 +8,8 @@
 //!
 //! Nothing here is exported. `table` at the foot of the file is one `extern
 //! struct` of function pointers; `env.zig` hands its address to `_wattle_init`
-//! and the module calls through it. No `janet_*` name reaches the symbol
-//! table, so a module cannot bind to the wrong copy of the runtime and a
-//! second copy cannot capture the first's crossings.
+//! and the module calls through it. This pointer selects the loading runtime
+//! even when the process contains several copies of the runtime.
 //!
 //! The initializer is the check. `interface.Runtime`'s field type is the
 //! shape, both compilations read it from that file, and the compiler

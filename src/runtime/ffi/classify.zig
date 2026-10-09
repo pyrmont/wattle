@@ -3,7 +3,7 @@
 //!
 //! It decides, for a given signature, which argument travels in which register
 //! and which spills to the stack, and stops where `ffi/call.zig` begins:
-//! nothing here touches a Janet value or a trampoline.
+//! nothing here touches a Wattle value or a trampoline.
 //!
 //! All three conventions are compiled and asserted on every target. Everything
 //! here is arithmetic over sizes, alignments and ordinals, and nothing about
@@ -49,8 +49,7 @@ const aapcs64_sse: u32 = 14;
 const aapcs64_stack: u32 = 16;
 const aapcs64_stack_ref: u32 = 17;
 
-/// Why a convention could not place a signature. `ffi.c` maps these back to the
-/// panics the C implementation raised in the same positions.
+/// Signature classification result codes. Zero indicates success.
 const err_none: u32 = 0;
 const err_return_too_big: u32 = 2;
 const err_unsupported_spec: u32 = 1;

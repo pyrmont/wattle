@@ -1,6 +1,5 @@
-//! `ffi.c`'s marshalling: a Janet value written into memory as a C value would
-//! appear there, and the same memory read back. It takes Janet values and can
-//! raise on every second line.
+//! Converts Wattle values to native memory representations and back.
+//! Conversion raises if a value does not match the FFI type.
 //!
 //! Misaligned access is written out. A `:pack`ed struct field lands wherever
 //! the previous field ended, so a `double` field can sit at an odd offset.
@@ -53,7 +52,7 @@ const Type = ffi_types.Type;
 // Public functions
 // ==========================================================================
 
-/// Every Janet type that can stand in for a C pointer.
+/// Every Wattle type that can stand in for a C pointer.
 pub fn getPointer(argv: []const repr.Value, n: usize) raise.Error!?*anyopaque {
     return switch (repr.typeOf(argv[n])) {
         repr.Tag.pointer,
@@ -144,7 +143,7 @@ pub fn readOne(from: [*]const u8, ty: Type, recur: c_int) raise.Error!repr.Value
     };
 }
 
-/// A Janet value, laid out as its FFI type says.
+/// A Wattle value, laid out as its FFI type says.
 ///
 /// The space and alignment available are assumed to be sufficient, which for
 /// alignment is the assumption the packed-field defect breaks.

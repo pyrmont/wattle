@@ -213,8 +213,7 @@ pub fn bytecodeRemoveNoops(definition: *functions.FuncDef) void {
 
 /// The optimizer for a funcdef's tag, or null where the tag names none.
 ///
-/// The tag is a `JANET_FUN_*` number and zero means an ordinary definition, so
-/// the table is indexed by `tag - 1`.
+/// A nonzero tag identifies a core function and indexes the table by `tag - 1`.
 pub fn funopt(flags: functions.FuncDefFlags) ?*const compiler_primitives.FunctionOptimizer {
     const tag = flags.tag;
     if (tag == 0) return null;

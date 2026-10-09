@@ -29,8 +29,7 @@
 (debug/unfbreak map 1)
 (map inc [1 2 3])
 
-; debug/fbreak range checking, which janet_debug_break does for both the
-; function form and the source form.
+; Both the function and source forms of debug/break check bytecode offsets.
 (defn breakable [x] (+ x 1))
 (assert-error "invalid bytecode offset" (debug/fbreak breakable 100000))
 (assert-error "invalid bytecode offset" (debug/fbreak breakable -1))
@@ -113,12 +112,10 @@
 (resume pushed)
 (assert (deep= ![1 2 3] (debug/arg-stack pushed)) "arg stack holds the pushed arguments")
 
-; The stack-trace printer, captured through the :err dynamic binding rather
-; than by reading stderr. This is what makes `janet_eprintf` -- a C variadic
-; Zig calls but cannot define -- observable from a suite.
+; Capture stack-trace output through the :err dynamic binding.
 ; `:err-color` is bound explicitly, and that is the point rather than tidiness.
 ; The printer wraps the whole trace in "\e[31m" and "\e[0m" when the binding is
-; truthy, and Janet's CLI turns it on when stderr is a terminal -- so without
+; truthy, and Wattle's CLI turns it on when stderr is a terminal -- so without
 ; this every prefix and suffix assertion below passes when the suite's output is
 ; redirected and fails when a person runs it in a shell, which is a thing only
 ; an interactive run notices.
@@ -203,8 +200,8 @@
 (assert (string/find "(tail call)" tail-trace) "a tail call is marked")
 (assert (not (string/find "(tail call)" cf-trace)) "an nfunction frame is not")
 
-; debug/break by source position, which is the only way `janet_debug_find` is
-; reached with a match. The form is built through a parser with an explicit
+; Test debug/break with a matching source position.
+; The form is built through a parser with an explicit
 ; source name so the position is known here rather than depending on this
 ; file's line numbering.
 (def brk-parser (parser/new))

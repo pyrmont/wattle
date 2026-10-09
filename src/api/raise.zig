@@ -1,4 +1,4 @@
-//! Raising a Janet signal by returning rather than by jumping.
+//! Raises Wattle signals through ordinary function returns rather than jumps.
 //!
 //! Every subsystem imports this file. It is shared rather than selected,
 //! because it declares no `export`: two subsystems can import it without a
@@ -182,7 +182,7 @@ pub fn panic(message: [*:0]const u8) Error {
 /// Builds the abi of a raise-capable function.
 ///
 /// `f` is that function. The result has one declaration, `abi`, which calls
-/// `f` and reports a returned error to the C caller rather than jumping:
+/// `f` and reports a returned error to the caller across the C ABI:
 ///
 /// ```zig
 /// pub const marshalAbi = raise.panicking(marshal).abi;
@@ -296,10 +296,9 @@ pub inline fn report(_: Error) void {
 
 /// Reports a raise to a C caller and returns a zeroed value of `T`.
 ///
-/// `T` is the abi's return type. The C callers are the variadic shells, and
-/// none can take a jump: catching a jump needs a `setjmp`, and this tree has
-/// none. So an abi records the raise and returns, and its caller tests
-/// `tookCRaise` on the next statement:
+/// `T` is the ABI's return type. The C ABI cannot propagate Zig error unions.
+/// This function records the raise and returns. The caller must check
+/// `tookCRaise` immediately afterwards:
 ///
 /// ```zig
 /// const value = interface.rt.call_value(f, p, n);

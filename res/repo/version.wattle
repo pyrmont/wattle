@@ -7,7 +7,7 @@
 ;
 ; The argument is `DEVEL` or a release number of the form MAJOR.MINOR.PATCH,
 ; without a `v`. Both forms set the `version` line of `build.zig` and the
-; `Version:` line of the two man page sources, then regenerate the man pages
+; `Version:` line of the man page sources, then regenerate the man pages
 ; with the `predoc` on the PATH.
 ;
 ; A release number also sets `build.zig.zon`'s `.version`, the version in the

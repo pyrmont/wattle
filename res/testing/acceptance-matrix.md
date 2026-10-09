@@ -56,10 +56,9 @@ increments in a row tripped over the same thing, in three different ways:
     `test/pp.c:1:1: error: CacheCheckFailed`, which names a missing file as
     though it had a compile error in it.
   - Part 17d then named `ev_core`, which `-Dsingle-threaded=true` cannot
-    compile, because that configuration has no event loop and `janet.h`
-    declares neither the channel API nor `JanetStream`.
+    compile, because that configuration has no event loop or channel API.
   - Part 17e named `peg`, which `-Dpeg=false` cannot compile, because
-    `janet_peg_type` does not exist there.
+    the PEG subsystem is absent.
 
 So, per increment: **check every name in `contracts-default` is a real `test/*.zig`**,
 and then ask of each reduced configuration whether the types that contract
@@ -67,7 +66,7 @@ names still exist there. When one does not, that is what `skip=` is for --
 `Job("contracts", "no peg", ["-Dpeg=false"], skip=("peg",))`.
 
 **A *suite* a configuration cannot load is `build.zig`'s to skip, not
-`skip=`'s.** `skip=` names contracts. A Janet suite resolves its bindings at
+`skip=`'s.** `skip=` names contracts. A Wattle suite resolves its bindings at
 compile time, so one naming a binding the build did not register refuses to
 load and takes the whole file with it — there is no per-case skip to reach for.
 `build.zig`'s `test_suites` list carries the condition instead: an entry marked
@@ -127,7 +126,7 @@ population of configurations is `zig build -h`'s option list -- 39 of
 them -- rather than this file's job list: the matrix samples what is worth
 *running*, which is a different question from what is worth *compiling*. Two
 bugs came from confusing them. A sweep of only what the matrix named would
-have transcribed `JANET_VM_HAS_INTERRUPT` as a constant, and a set of
+have transcribed the interpreter-interrupt predicate as a constant, and a set of
 `@hasDecl` probes went silently always-true in exactly the builds nothing here
 compiled. So the remaining reduced-feature options and the four cross-compiles
 are entries now, build-only, and the hand-rolled sweep that found both bugs

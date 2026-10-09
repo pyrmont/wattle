@@ -594,9 +594,9 @@ inline fn readEntryName(handle: *anyopaque) ?[*:0]const u8 {
     }
 }
 
-/// The POSIX enumeration, through an explicit iterator. The close-then-panic
-/// on a failed read is the C original's, and the errno is saved across the
-/// close because closing can overwrite it.
+/// Enumerates a POSIX directory through an explicit iterator.
+/// A failed read closes the directory before raising.
+/// The error number is saved before closing, which can overwrite it.
 fn dirPosix(dir: [*]const u8, paths: *arrays.Array) raise.Error!void {
     const dfd = dirOpen(@ptrCast(dir)) orelse {
         return pp_format.panicf("cannot open directory %s: %s", .{ dir, utils.strerrorSafe(c.errno()) });

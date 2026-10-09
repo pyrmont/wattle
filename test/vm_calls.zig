@@ -39,8 +39,8 @@
 //! are ordinary declarations and their `call`, `get` and `tostring` are
 //! written here rather than drawn from a pool.
 //!
-//! `loudTostring` raises from inside `fillString`, and the raise returns
-//! through the frame rather than jumping past it. There is no matching case
+//! `loudTostring` raises from inside `fillString`, which propagates the error
+//! through an ordinary function return. There is no matching case
 //! for a raising `hash`: `hash` is typed non-raising because comparisons must
 //! be total, so the callback has no way out.
 

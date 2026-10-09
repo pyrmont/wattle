@@ -14,10 +14,9 @@
 //! is what keeps them out of the symbol table; reaching them through it costs
 //! the arithmetic workload about as much again.
 //!
-//! There is no per-call `setjmp` scope around the loop. Its callees, the
-//! access layer, the callee layer, the fiber pushes, `order.zig`'s `equals`
-//! and `compare`, the three fills and the nfunction call, each return their
-//! raise, so there is nothing left for a scope to catch.
+//! Interpreter callees propagate raises through Zig error unions. The access
+//! and call layers, fiber pushes, comparisons, constructors and nfunction calls
+//! return errors to `runVm`, which propagates them to its caller.
 
 // ==========================================================================
 // Standard library imports
@@ -106,11 +105,7 @@ const Cmp = enum {
 
 /// `runVm`'s three registers plus the fiber they belong to.
 ///
-/// C declares `stack`, `pc` and `func` `register` and keeps the `setjmp` out
-/// of their frame so that stays true. Here they are fields of a structure
-/// whose address never reaches a call the optimiser cannot see through: every
-/// method is `inline`, and the only pointer handed to a C frame is the context
-/// `scoped` builds, which is a separate object with copies in it.
+/// The methods are inline so the optimiser can retain these fields in registers.
 const Interp = struct {
     fiber: *fibers.Fiber,
     stack: [*]repr.Value,
@@ -177,11 +172,9 @@ const Interp = struct {
         return sig;
     }
 
-    /// Returns the error out of `runVm` rather than jumping past its frame,
-    /// and sets `fibers.FiberFlags.did_raise` exactly as `signal.zig`'s
-    /// `signalv` does, both reaching `signalCommit` through `raise.signal`,
-    /// because the resume path reads that flag to pop a C frame and to turn a
-    /// raise at a tail call into an implicit return.
+    /// Records `sig` and `v` through `raise.signal` and returns `error.Signal`.
+    /// Recording sets `fibers.FiberFlags.did_raise`, which the resume path reads
+    /// to pop a native frame and handle a raise at a tail call.
     ///
     /// It does not commit. Each site keeps whatever commit it already had,
     /// because that is not uniform: `.call` commits before entering
@@ -189,10 +182,7 @@ const Interp = struct {
     /// commits to a frame it recomputes.
     inline fn raiseSignal(self: *Interp, sig: abi.Signal, v: repr.Value) raise.Error!abi.Signal {
         _ = self;
-        // Returned rather than jumped. `raise.signal` reaches the same
-        // `signalRecord` a jumping delivery would, so the plan, the
-        // coercion and the `did_raise` flag are unchanged; only the
-        // travel differs. `continueNoCheck` catches the error one frame up.
+        // `vm/entry.zig`'s `continueNoCheck` catches the propagated error.
         return raise.signal(sig, v);
     }
 

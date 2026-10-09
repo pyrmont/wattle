@@ -6,9 +6,8 @@
 //! `stacktraceExt` renders a whole fiber chain to `(dyn :err)`. `libDebug`
 //! installs the `debug/` nfunctions.
 //!
-//! The frame walk and the trace render are one file because the second cannot
-//! do its job without the first, and the `JANET_TRACE_*` constants below are
-//! what they agree on.
+//! Frame decoding and rendering share the name and location codes in
+//! `api/constants.zig`.
 
 // ==========================================================================
 // Standard library imports

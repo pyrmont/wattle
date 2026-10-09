@@ -164,9 +164,8 @@ const Selection = struct {
     scan: bool,
     math_core: bool,
     int_types_core: bool,
-    /// No `root.zig` import reads this one: `os.zig` guards the four
-    /// `janet_os_*env*` exports on it, so a reduced-OS build exports what it
-    /// always did. Same for `os_time`.
+    /// Selects environment operations within `os.zig`, without a separate
+    /// `root.zig` import. `os_time` likewise selects operations in that file.
     os_environ: bool,
     os_fs: bool,
     os_time: bool,
@@ -708,13 +707,8 @@ pub fn build(b: *std.Build) void {
     // object -- every contract links the static library.
     if (!options.sanitize_thread and !wasm) b.installArtifact(shared_library);
 
-    // **The client imports the runtime rather than linking it.** It was an
-    // embedder -- it took the object and reached `janet_init` and its
-    // neighbours through the symbol table -- and that ended when the C API
-    // did: there is no C API left to be an embedder of. The
-    // import is what lets `cli.zig` write `try` at a raise and hold a
-    // `raise.NFunction` rather than an `.auto`-convention pointer across a
-    // compilation boundary.
+    // Import the runtime so the client can propagate errors and use
+    // `raise.NFunction` directly across calls.
     const client_module = b.createModule(.{
         .root_source_file = b.path("src/client/cli.zig"),
         .target = target,
@@ -2366,13 +2360,7 @@ const ValueRepr = enum { nanbox_64, nanbox_32, tagged };
 /// such clause is written out below beside the field it sets, because the
 /// derivation is what a reader needs and `options.<name>` alone is not it.
 ///
-/// Four facts that were macros in Janet are *not* fields here --
-/// `JANET_32`/`JANET_64`, `JANET_BIG_ENDIAN`, `JANET_WINDOWS` and
-/// `JANET_PLAN9`. Those are properties of the target, which Janet's header
-/// recovered by testing a hand-maintained list of architecture macros with a
-/// fallback that *assumes big-endian* when it recognises nothing.
-/// `@import("builtin")` knows them exactly, so the call sites read `builtin`
-/// and the guesswork goes.
+/// Target endianness and operating system come from `builtin` at call sites.
 const Config = struct {
     /// Whether this compilation is the image generator rather than the
     /// runtime. `bootConfig` sets it. A core nfunction table carries docstrings
@@ -2453,18 +2441,7 @@ const Config = struct {
     os_name: ?[]const u8,
     arch_name: ?[]const u8,
 
-    /// Three predicates the runtime reads that **nothing in this tree ever
-    /// defines**, carried as constants so that the behaviour is unchanged.
-    /// A comptime-false condition means the branch behind it has never been
-    /// analysed, so each of these guards code no build has ever type-checked --
-    /// which is why the fourth stopped being one; see `debug` below.
-    ///
-    ///   - `spawn`/`symlinks`/`locales` are upstream configuration options
-    ///     this build has no `-D` for, so they are pinned on.
-    ///
-    /// `JANET_PLAN9` was the fourth and is the one that improves by moving: it
-    /// becomes `builtin.target.os.tag == .plan9` at the call site, false for
-    /// every target built here and correct for the one it names.
+    /// Features enabled in every build, with no corresponding `-D` options.
     spawn: bool = true,
     symlinks: bool = true,
     locales: bool = true,
@@ -2517,17 +2494,16 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
     // `-Dev=true` is necessary and not sufficient: a single-threaded build, an
     // Emscripten target and a WASI target each turn it off on their own.
     const ev = options.ev and !single_threaded and !emscripten and !wasi;
-    // `#ifndef JANET_NO_FFI` / `#if !defined(__EMSCRIPTEN__)`, and WASI.
+    // FFI is unavailable on Emscripten and WASI.
     const ffi = options.ffi and !emscripten and !wasi;
-    // `#if defined(JANET_LINUX) && !defined(JANET_EV_NO_EPOLL)`
+    // Epoll is a Linux backend.
     const ev_epoll = linux and options.epoll;
-    // the JANET_BSD and JANET_APPLE clauses, which define the same macro
+    // Kqueue is a BSD and Apple backend.
     const ev_kqueue = (bsd or apple) and options.kqueue;
 
-    // Which targets NaN-box when `-Dnanbox` is unset, the list C Janet
-    // carries: every 32-bit target, and the three 64-bit architectures whose
-    // user-space addresses fit in 47 bits. A NaN-boxed 64-bit value keeps a
-    // pointer in the low 47 bits of a double's payload, and the tag is ORed
+    // NaN boxing defaults to every 32-bit target and three 64-bit architectures
+    // whose user-space addresses fit in 47 bits. A NaN-boxed 64-bit value keeps
+    // a pointer in the low 47 bits of a double's payload, and the tag is ORed
     // over what sits above them by `nanbox64.fromPointer` in
     // `src/api/repr.zig`, so an architecture that uses those bits loses them
     // with no diagnostic: nothing checks a pointer's high bits, and
@@ -2570,12 +2546,11 @@ fn resolveConfig(options: BuildOptions, target: std.Build.ResolvedTarget) Config
         .int_types = options.int_types,
         .prf = options.prf,
         .ev = ev,
-        // `#if defined(JANET_EV) && !defined(JANET_NO_NET) && !defined(__EMSCRIPTEN__)`.
         // Every socket operation suspends on the loop, so the socket layer
         // needs it.
         .net = ev and options.net and !emscripten and !wasi,
         .ffi = ffi,
-        // `#ifdef JANET_FFI` / `#ifndef JANET_NO_FFI_JIT`
+        // The FFI JIT requires FFI support.
         .ffi_jit = ffi and options.ffi_jit,
         .cryptorand = options.cryptorand,
         .lineedit = options.lineedit and !wasm_target,
@@ -3028,10 +3003,8 @@ fn makeRuntimeGraph(
     applyFramePointer(constants_module, options, optimize);
     constants_module.addImport("config", config_module);
     repr_module.addImport("config", config_module);
-    // `constants` goes the other way: the tag is `repr.Tag`, so `constants.zig`
-    // reaches *up* for the `JANET_TFLAG_*` shifts and its whole import list is
-    // `config` and `repr` -- which is what makes "no allocation, tables, VM or
-    // GC in the constants" a build error.
+    // `constants.zig` uses `repr.Tag` to define tag sets. Its imports are
+    // restricted to `config` and `repr`, excluding runtime subsystems.
     constants_module.addImport("repr", repr_module);
     // What the runtime calls itself through, in Zig. A subsystem writes
     // `const c = @import("cabi");` and every module that has a `c` needs this

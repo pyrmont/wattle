@@ -214,7 +214,7 @@
 ; lookup, and a build without FFI has none -- so this arm is reached only where
 ; there is something to reach it with. The symbol is libc's, because the
 ; runtime publishes none: a native module reaches it through the table
-; `_wattle_init` is handed, so `nm` on the process finds no `janet_*` at all.
+; passed to `_wattle_init`.
 (def ffi-lookup (get-in (curenv) ['ffi/lookup :value]))
 (def ffi-native (get-in (curenv) ['ffi/native :value]))
 (when (and ffi-lookup ffi-native)
@@ -414,7 +414,7 @@
 ; ==========================================================================
 ;
 ; `call` raises on anything but a return and `pcall` reports; the pair below is
-; the same Janet code through both, which is the whole of the difference.
+; the same Wattle code through both, which is the whole of the difference.
 
 (def apply-fn (from-module 'apply))
 (def attempt (from-module 'attempt))
@@ -435,7 +435,8 @@
 (assert (deep= [:ok 7 :dead] (attempted (fn [a b] (+ a b)) 3 4))
         "pcall reports the return, and the fiber it ran on is spent")
 
-; `call` takes a function or an nfunction and refuses the other types Janet code
+; `call` takes a function or an nfunction and refuses the other types Wattle
+; code
 ; can call.
 (assert (= :number (apply-fn type 1)) "call runs an nfunction")
 (assert (= "expected function or nfunction, got :a" (refusal apply-fn :a {:a 1}))
@@ -578,7 +579,7 @@
         "loop() answers a capability exactly where the build has an event loop")
 
 ; **The exit keeps the rest of this file out of a no-loop build's *compiler*,
-; not only out of its run.** Janet compiles and runs one top-level form at a
+; not only out of its run.** Wattle compiles and runs one top-level form at a
 ; time, so a form after this one is never compiled and `ev/gather` below is not
 ; an unknown symbol there. A `when` around the section would not do: the body
 ; of one is compiled either way.

@@ -870,7 +870,7 @@
         "get-in with false value and default")
 
 ; Evaluate stream with `dofile`
-; os/pipe is part of the event loop, absent without JANET_EV.
+; os/pipe is absent when the event loop is disabled.
 (compwhen (dyn 'os/pipe)
   (def [r w] (os/pipe))
   (:write w "(setdyn :x 10)")

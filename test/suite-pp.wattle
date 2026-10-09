@@ -132,7 +132,7 @@
   ...} !{true !Foo{:bar [:keyword "string" !"buffer"] :baz 42}
          [:keyword "string" !"buffer"] <cycle 1>}}""")))
 
-; The (??) debug pattern is a peg feature, absent without JANET_PEG.
+; The (??) debug pattern is a peg feature, absent without PEG support.
 (compwhen (dyn 'peg/match)
   (def capture-buf !"")
   (with-dyns [*err* capture-buf]

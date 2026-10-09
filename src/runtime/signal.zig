@@ -3,7 +3,7 @@
 //! delivered, and the signal a scheduler injects into a fiber it is about to
 //! resume.
 //!
-//! Nothing here raises, and nothing here jumps. Both halves are load bearing.
+//! Signal recording is separate from error propagation through function returns.
 //!
 //! - Deciding and delivering are separate. `signalRecord` is the whole
 //!   decision: the null test on the return register, the coercion predicate,
@@ -18,10 +18,9 @@
 //!   handles it is Janet's exactly: a raise by the formatting happens after the
 //!   `sched_id` bump and before the return register is written.
 //!
-//! - A try scope is not a `setjmp`. There is no `setjmp` anywhere in this
-//!   runtime. `tryInit` points the return register at the scope's payload,
-//!   which is what decides a raise has somewhere to land, and the travel is an
-//!   ordinary Zig `return`.
+//! - `tryInit` points the return register at the protected scope's payload.
+//!   Raising writes the payload there and records the signal in `pending_signal`.
+//!   The caller receives `error.Signal` through ordinary function returns.
 
 // ==========================================================================
 // Standard library imports
@@ -140,7 +139,7 @@ pub const SignalSet = packed struct(u14) {
 // Public functions
 // ==========================================================================
 
-/// Records that a raise reached an abi, which returned rather than jumping.
+/// Records an unconsumed raise reported across the C ABI.
 ///
 /// `api/raise.zig` has the argument for why an abi returns.
 pub fn cRaiseRecord() void {
@@ -243,8 +242,8 @@ pub fn signalInject(fiber: *fibers.Fiber, sig: abi.Signal) void {
     child.flags.resume_signal = true;
 }
 
-/// Decides what raising `sig` means here, and performs every part of it that
-/// is not formatting or jumping.
+/// Selects the signal handling plan and updates the root fiber's scheduler ID
+/// when an event signal requires it.
 ///
 /// `sig` is the signal. The result names the signal to raise with, which
 /// differs from `sig` exactly when the scope coerces.

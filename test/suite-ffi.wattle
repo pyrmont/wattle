@@ -21,9 +21,9 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
-; Both mechanisms are needed here. Without JANET_FFI the bindings are absent,
+; Both mechanisms are needed here. Without FFI support the bindings are absent,
 ; which is a compile error, so the probe below must not be compiled at all.
-; With the FFI present but JANET_DYNAMIC_MODULES disabled the bindings exist and
+; With the FFI present but dynamic modules disabled the bindings exist and
 ; raise only when called, so the probe is what detects that.
 (var has-ffi
   (compif (dyn 'ffi/native)

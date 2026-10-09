@@ -61,8 +61,7 @@ const exp2_approx_limit: i64 = 1 << 48;
 /// of `ridiculous_length`.
 const max_literal_length = 0xffff;
 
-/// Rejects an absurd input outright rather than auditing every exponent for
-/// overflow, matching `JANET_NUMBER_LENGTH_RIDICULOUS`.
+/// The maximum numeric input length, bounding exponent processing.
 const ridiculous_length: i32 = 0xFFFF;
 
 // ==========================================================================

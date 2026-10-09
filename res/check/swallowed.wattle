@@ -1,81 +1,31 @@
 #!/usr/bin/env wattle
-; Find raising Zig functions that reach a raise through a C-ABI abi.
+; Finds raising Zig functions that call an ABI shim without consuming its
+; report.
 ;
-; A abi flattens a raise into a *report*: `janet_vm.c_raised` is set, the
-; caller gets a determinate blank value, and whoever opens the next protected
-; scope aborts with
+; A reporting shim converts a raise into an out-of-band report and returns a
+; blank value. A Zig caller that can propagate an error should use the raising
+; function or consume the report with `raise.crossing`.
 ;
-;     wattle abort: a raise was reported across the C ABI and never consumed
+; ## Shim detection
 ;
-; That is correct when the caller really is C, and a defect when the caller is a
-; Zig function that could have propagated the error itself.  The message names
-; neither the abi nor the file, and it surfaces arbitrarily far from the cause,
-; which is why every instance found so far was found by accident:
+; The scan detects functions that call `raise.reported`, `raise.report`,
+; `reportToAbi` or `raise.panicking`, and generated `.abi` aliases.
+; It also scans exported aliases in `runtime/capi.zig` when present.
 ;
-;   - Phase 11 Part 12, by a type that would not unify (`vm_calls.fillString`);
-;   - Part 13, by an `#ifdef` with no stated reason (`args_core`'s `Wide`);
-;   - Part 14, by writing a callback out in full (`peg`'s `pegMarshal`);
-;   - Part 15, by running this (`janet_stream`, `janet_loop`, `janet_get`, ...).
+; Calls are matched through `c.NAME`, bare names and comptime aliases.
+; A non-raising helper that reaches a reporting shim is added to the set.
+; This repeats until no further helpers are found.
 ;
-; `phase_11.md`'s rule 40 is the argument for enumerating the class instead.
+; ## Report consumption
 ;
-; ## What counts as an abi
+; `raise.crossing` can wrap the call or follow it on the next nonblank line.
+; The scan also recognises the retired `raise.declared` alias form.
 ;
-; Two constructions, and missing the second is what made Part 14's hand-rolled
-; version of this report seven sites instead of eleven:
+; ## Limitations
 ;
-;     export fn janet_x(...) callconv(.c) T { return raise.reported(xImpl(...)); }
-;
-;     const xAbi = raise.panicking(x).abi;   // `panicking` is `reportToAbi` too
-;     comptime { @export(&xAbi, .{ .name = "janet_x" }); }
-;
-; ## Why it is transitive
-;
-; A abi's caller need not be the raising function.  `net_sockets.makeStream`
-; was a *non-raising helper* around `janet_stream` with four raising callers,
-; and `vm_calls.methodToFun` was two levels down from `binopCall`.  So a
-; function that reaches an abi and cannot itself propagate is treated as an abi
-; in turn, to a fixpoint.
-;
-; ## Three spellings of the same call
-;
-; A abi is reached as `c.janet_x(...)` from another file, as a bare
-; `janet_x(...)` inside the file that defines it, and -- the one that hid
-; `inttypes.zig`'s `Box` for two parts -- through a **comptime alias**:
-;
-;     const unwrap = if (T == i64) janet_unwrap_s64 else janet_unwrap_u64;
-;     ...
-;     var acc: u64 = @bitCast(Box(T).unwrap(argv[0]));
-;
-; Nothing at that call site spells an abi, and `grep c.janet_unwrap_s64` reports
-; the file clean.  All three are matched.
-;
-; ## What consuming the report looks like
-;
-; Calling an abi from Zig is legitimate when the caller turns the report back
-; into an error, and there are three spellings of that:
-;
-;     try raise.crossing(janet_buffer_push_u8(buffer, byte));   // wrapping
-;     _ = c.janet_call(fun, 1, &args);
-;     _ = try raise.crossing({});                               // on the next line
-;
-; Both are recognised, and getting that wrong is most of the difference between
-; a report worth reading and a list of six sites of which five are fine.
-;
-; There was a third -- `const x = raise.declared(sym).call;`, the alias form,
-; which consumed the report once rather than at each call.  Phase 11 Part 26
-; deleted `raise.declared` along with its last users, the eleven stranded
-; `_extern.zig` shims and `dynlib.zig`'s four `util.c` symbols.  The spelling is
-; still matched below, at the cost of one `choice` and against the day something
-; reintroduces it.
-;
-; ## What it cannot see
-;
-; An indirect call.  A abi invoked through a stored function pointer -- an
-; `AbstractType` slot, a `JanetMethod` table -- is invisible here, and so is a
-; call from C.  It also cannot tell a *deliberate* flattening from a defect, and
-; `allow` is how such a site would be silenced with a reason -- it is empty, and
-; the note beside it says why the one candidate did not survive examination.
+; Indirect calls through stored function pointers and calls from C are not
+; detected. The scan cannot distinguish deliberate reporting from a defect.
+; An entry in `allow` requires a reason that the caller cannot propagate errors.
 
 (import ../common :as tools)
 
@@ -269,18 +219,7 @@
   ; A call to any of these flattens, unless the caller can propagate.
   ; Every name a caller can reach a flattening definition by.
   ;
-  ; Until Phase 13 increment 8e a runtime function that flattened a raise and
-  ; the C symbol `capi.zig` published it under were the same string, so one set
-  ; served both the `c.NAME(` call sites and the bare in-file ones. 8e gave the
-  ; runtime function a domain name and left the published spelling in the
-  ; manifest, and the two are now different: `c.janet_array_push(...)` reaches
-  ; `value/arrays.pushAbi`. Matching call sites against the Zig names alone
-  ; dropped seventeen callers out of `flat-local` at a stroke -- not because
-  ; they stopped reaching an abi, but because the tool stopped recognising the
-  ; name they reach it by.
-  ;
-  ; So the set is both: the Zig names, and every symbol `capi.zig` exports
-  ; whose target is one of them.
+  ; Include local Zig names and their exported aliases, when present.
   (def flattening (merge !{} abi-names))
   (let [capi (get sources "src/runtime/capi.zig" "")]
     (def target !{})                   ; capi entry point -> the impl name it calls
@@ -305,16 +244,8 @@
       (when m
         (def [ref sym] m)
         (def zig (cond
-                   ; **A generated getter's flattening half is `.abi`, and its
-                   ; last component says nothing.** `impl.args.GetString.abi`
-                   ; resolved to `abi`, which is in no set, so the exported
-                   ; symbol was never added to the flattening set at all --
-                   ; `janet_getstring` and its fifteen siblings among them. The
-                   ; `.abi` member *is* the convention: `raise.panicking(f).abi`
-                   ; and every `Get*`/`Opt*` generic name their flattening half
-                   ; that way and nothing else does. So the suffix is what
-                   ; classifies, and the name inside the generic (`IndexAbi`,
-                   ; `CountAbi`) never has to be reached.
+                   ; Generated getters expose their reporting shim as `.abi`.
+                   ; The suffix identifies these without resolving the generic.
                    (string/has-suffix? ".abi" ref) :generated
                    (string/find "." ref) (last (string/split "." ref))
                    (get target ref ref)))
@@ -375,7 +306,7 @@
           (string/find "try crossing(" line)
           nil
           ; `_ = try raise.crossing({});` on the next non-blank line, which
-          ; is how `pp_format.dynprintf` consumes `janet_call`'s.
+          ; consumes the report from the preceding call.
           (and (< (+ i 1) (length lines))
                (or (string/find "raise.crossing" (lines (+ i 1)))
                    (string/find "try crossing(" (lines (+ i 1)))))
@@ -389,7 +320,7 @@
     (var found nil)
     (eachk sym flattening
       (unless found
-        ; `c.janet_x(...)` from anywhere, or a bare `janet_x(...)` in the
+        ; `c.NAME(...)` from another file, or a bare `NAME(...)` in the
         ; file that defines it.
         (when (and (calls-c? body sym)
                    (not (consumed body (string "c." sym "("))))

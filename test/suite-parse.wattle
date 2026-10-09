@@ -40,7 +40,7 @@
         "long string with embedded quotes and backslashes")
 
 ; The reindent helper below uses peg/replace-all, which is absent from a
-; build without JANET_PEG, and an absent binding is a compile error rather
+; build without PEG support, and an absent binding is a compile error rather
 ; than a runtime one.
 (compwhen (dyn 'peg/replace-all)
   ;

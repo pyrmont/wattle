@@ -654,9 +654,8 @@ pub fn wait(pid: i64, val: *i32) i32 {
 
 /// Builds the environment block a child is given.
 ///
-/// The two blocks are built separately rather than unified: the POSIX block
-/// drops a key containing `=` or NUL and the Windows block does not, so
-/// `envKeyOk` is called only where the C original called it.
+/// The POSIX block excludes keys containing `=` or NUL, using `envKeyOk`.
+/// The Windows block includes these keys.
 fn buildEnv(argv: []repr.Value) raise.Error!EnvBlock {
     if (argv.len <= 2) return null;
     var dict = try args_core.getKeyvals(argv, 2);
@@ -1043,7 +1042,7 @@ fn execute(argv: []repr.Value, mode: ExecuteMode) raise.Error!repr.Value {
                 return pp_format.panicf(":cd argument not supported on this system - %s", .{chdir_path.?});
             }
         } else if (!repr.checkType(workdir, repr.Tag.nil)) {
-            // The misspelling in this message is the C original's.
+            // Preserve the published error message.
             return pp_format.panicf("expected string for :cd argumnet, got %v", .{workdir});
         }
     }
@@ -1337,13 +1336,10 @@ fn procNext(_: *Proc, key: repr.Value) raise.Error!repr.Value {
     return args_core.nextmethod(@ptrCast(&proc_methods), key);
 }
 
-/// Waits for the child, and gives back its exit code.
+/// Waits for the child and returns its exit code.
 ///
-/// Under the event loop nothing comes back, because `ev.awaitEvent` returns
-/// the raise that suspends the fiber; without it the wait happens inline and
-/// the exit code is the result. The C original spells that with two different
-/// return types behind one `#ifdef`; this returns an optional instead, and the
-/// two callers read it the same way.
+/// With the event loop enabled, `ev.awaitEvent` suspends the fiber until exit.
+/// Otherwise, this function waits synchronously.
 fn procWait(proc: *Proc) raise.Error!repr.Value {
     if (proc.flags & (proc_waited | proc_waiting) != 0) {
         return raise.panic("cannot wait twice on a process");
@@ -1379,11 +1375,7 @@ fn procWait(proc: *Proc) raise.Error!repr.Value {
             status = try procGetStatus(proc);
         }
         proc.return_code = status;
-        // The `:x` flag is honoured here too. Only the evented completion
-        // callback reads it in the C original, so a build without the event
-        // loop accepted the flag and did nothing with it, which leaves a
-        // caller relying on it for error handling with nothing. The message is
-        // the callback's, so the two configurations behave alike.
+        // The `:x` flag makes a nonzero exit status an error.
         if (status != 0 and proc.flags & proc_error_nonzero != 0) {
             return pp_format.panicf("command failed with non-zero exit code %d", .{status});
         }
@@ -1654,9 +1646,7 @@ fn spawnWindows(
                 break;
             }
         }
-        // The same mismatch in the other direction: the C original hands a
-        // `Janet` to `%s`, which pulls a `const char *`. Undefined, so the
-        // port passes the buffer this had already built.
+        // `%s` requires the message buffer as a byte pointer.
         return pp_format.panicf("failed to create process: %s", .{@as([*]const u8, @ptrCast(&msgbuf))});
     }
 

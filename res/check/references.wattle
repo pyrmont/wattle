@@ -55,10 +55,9 @@
 ;   - `camelCase` -- Zig's function convention and this runtime's. A camelCase
 ;     name in a comment is a claim about a declaration here.
 ;   - `janet_*` and `janetc_*` -- the C-era symbols, the second being the
-;     compiler's own family. The runtime declares none of them except the
-;     handful `capi.zig` still exports, so an unresolved one is a name for
-;     something the tree used to have. `janetc_*` is `snake_case` and was
-;     ungated with the rest of that shape until seven of them were found by
+;     compiler's own family. The runtime declares none of them. An unresolved
+;     name with either prefix refers to the retired C API. `janetc_*` is
+;     `snake_case` and was ungated with the rest of that shape until seven were
 ;     reading; the prefix is what separates them from the C fields and libc
 ;     functions a comment may legitimately name.
 ;

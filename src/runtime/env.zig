@@ -224,9 +224,7 @@ pub const ModuleConfig = ?*const fn (out: *abi.BuildConfig, size: usize) callcon
 /// `_wattle_init`: the environment to define into, and the table of every
 /// crossing the module may make.
 ///
-/// The table is a parameter rather than a set of symbols: the runtime exports
-/// no `janet_*` name and the module declares none, so the only thing a loaded
-/// `.so` has of this runtime is the pointer it is handed here.
+/// The table parameter selects the loading runtime without symbol lookup.
 pub const ModuleEntry = ?*const fn (*abi.Env, *const interface.Runtime) callconv(.c) void;
 
 /// One row of `sandbox_options`: the keyword, and the permissions it names.
@@ -328,7 +326,7 @@ pub fn coreLookupTable(replacements: ?*tables.Table) raise.Error!*tables.Table {
 
 /// Parses, compiles and runs `bytes`, one top-level form at a time.
 ///
-/// What comes back is a set of `JANET_DO_ERROR_*` flags rather than a signal,
+/// Returns a combination of `constants.do_error_*` flags,
 /// and diagnostics go to stderr: `vm/entry.zig`'s `continueFiber` gives back a
 /// `Resumed` and the compiler gives back a status, so the failures this
 /// function handles arrive as values already.

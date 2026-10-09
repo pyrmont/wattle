@@ -450,8 +450,8 @@ pub fn evLasterr() repr.Value {
 /// symbol.
 pub fn makePipe(handles: *[2]host.Handle, mode: c_int) c_int {
     if (windows) {
-        // The built-in CreatePipe does not support overlapped IO, so this
-        // lifts the Windows source and modifies it, exactly as `ev.c` does.
+        // CreatePipe does not support overlapped IO. Use named pipes when
+        // either side needs nonblocking operations.
         var sa_attr = std.mem.zeroes(c.SecurityAttributes);
         sa_attr.nLength = @sizeOf(c.SecurityAttributes);
         sa_attr.bInheritHandle = 1;

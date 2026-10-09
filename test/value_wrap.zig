@@ -1,5 +1,5 @@
 //! Behavioral contract for the value representation: everything
-//! `value_wrap.zig` defines.
+//! `value/helpers/wrap.zig` defines.
 //!
 //! This is the one contract in the tree whose *content* changes shape per
 //! target. The two NaN-boxed layouts and the tagged fallback are three
@@ -21,16 +21,15 @@
 //!
 //! Each constructor has two spellings: a `wrap.from*` function, which a Zig
 //! caller inlines, and the `callconv(.c)` body of the same name in
-//! `wrap.abi`, which the library exports. Asserting the two agree is
+//! `wrap.abi`. Asserting the two agree is
 //! `theTwoSpellingsAgree`'s job and only its. A `wrap.abi` constructor
 //! anywhere else below is a way of building a value and nothing more; reading
 //! one as half of a comparison would credit its case with a claim it does not
 //! make.
 //!
 //! The two sides of that comparison are the operation a caller gets inlined
-//! and the operation the library exports. They are not the same code path, so
-//! a disagreement between them would make the interpreter behave differently
-//! from the C API about the same value.
+//! and its C-convention wrapper. A disagreement would produce different values
+//! depending on the calling convention.
 //!
 //! It is a weaker channel than it looks: both spellings bottom out in `repr`,
 //! so it catches an operation wired to the wrong helper and nothing more. The
@@ -38,16 +37,9 @@
 //!
 //! ## Reading the layout
 //!
-//! The three-way `#ifdef` chain is unavailable, because a `JANET_*` macro
-//! derived from the compiler's predefines is unreliable through a translation:
-//! the front end and the compilation can disagree about a predefine. The
-//! layout is read off the shape of the translated `Janet` instead, which is
-//! what `value_wrap.zig` and `value_order.zig` both do.
-//!
-//! That the subject and the contract read the same source is not a weakening:
-//! neither side ever had an independent opinion about which layout this is.
-//! What each side computes *from* it is independent, and that is where the
-//! assertions are.
+//! The subject and this contract select the layout from `config.value_repr`.
+//! Expected bit patterns are computed independently from tag numbers and
+//! payload masks.
 
 // ==========================================================================
 // Standard library imports
@@ -109,7 +101,7 @@ const Layout = enum { nanbox64, nanbox32, tagged };
 
 /// Two values are the same value when their payload word and their type agree.
 /// `std.mem.eql` over the bytes would be wrong under the tagged layout, whose
-/// `Janet` is twelve bytes of content in a sixteen-byte structure: neither
+/// `repr.Value` includes padding: neither
 /// implementation writes the padding, and neither is required to.
 fn sameValue(a: repr.Value, b: repr.Value) bool {
     return harness.u64Of(a) == harness.u64Of(b) and repr.typeOf(a) == repr.typeOf(b);
@@ -383,7 +375,7 @@ fn booleansNormalize() void {
 }
 
 /// Exactly two values are false and everything else is true, including zero,
-/// the empty string and an empty array, which is where Janet's truthiness
+/// the empty string and an empty array, which is where Wattle's truthiness
 /// parts company with C's.
 fn truthiness() void {
     expect(!repr.truthy(wrap.abi.fromNil()));

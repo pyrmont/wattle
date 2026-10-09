@@ -241,7 +241,7 @@
 
 (assert-error "compile error" (eval-string "(+ a 5)"))
 
-; disasm and asm are absent from a build without JANET_ASSEMBLER, and an absent
+; disasm and asm are absent from a build without the assembler, and an absent
 ; binding is a compile error rather than a runtime one.
 (compwhen (dyn 'disasm)
   (assert (deep= (in (disasm (defn a [] (def x 10) x)) :symbolmap)

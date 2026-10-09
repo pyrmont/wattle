@@ -267,24 +267,20 @@ front ends, and anything one predefines and the other does not is a silent
 disagreement about every header below it.** Ordering a platform chain's Windows
 arm first is the defence that remains.
 
-**A `Janet` in a C local is not a root, and a contract is where that matters.**
-The collector scans the VM and the fiber stacks, and an nfunction's arguments
-are on one of those, so nothing written *in Janet* ever has to think about it.
-A contract holds its values in C locals, and any allocation between two calls
-can collect what the first one returned. Phase 10 Part 15 lost its contract's
-first run to this: a `filewatch/watcher` was collected, its `JanetStream`
-finalizer closed the kqueue, and the symptom arrived three calls later as
-"failed to listen: Bad file descriptor" -- nowhere near the allocation that
-caused it. `janet_gcroot` anything a contract keeps across a call that can
-allocate, and `janet_gcunroot` it at the end.
+**A value in a native local variable is not a collector root.**
+The collector scans the VM and the fiber stacks. A contract's local variables
+are outside those roots, so an allocation can collect a value between calls.
+Phase 10 Part 15 lost its C contract's first run to this: a `filewatch/watcher`
+was collected, its stream finalizer closed the kqueue, and the symptom arrived
+three calls later as "failed to listen: Bad file descriptor". Call
+`gc_alloc.gcroot` for values a contract retains across allocating calls, and
+`gc_alloc.gcunroot` when they are no longer needed.
 
-**A contract cannot see its selector.** The `WATTLE_*` macros go to the
-library module; `test/*.c` is a separate module that gets `JANET_BOOTSTRAP` and
-nothing else. `test/vm_lifecycle.c` has an `#ifdef WATTLE_DEBUG_FRAMES`
-region that no configuration has ever compiled, and its header comment claims
-the opposite. Until the build is fixed, a contract that needs to reach one
-implementation's symbol needs that symbol compiled under *both* arms --
-`wattle_os_stat_read` is the worked example -- or a runtime discriminator.
+**A contract must receive the configuration it tests.** The former C contract
+build supplied `JANET_BOOTSTRAP` but omitted the runtime's `WATTLE_*`
+selectors. The `WATTLE_DEBUG_FRAMES` region in `test/vm_lifecycle.c` was
+therefore unchecked. A contract needs the same configuration as its subject,
+or a runtime discriminator when it cannot access that configuration.
 
 **A sweep gets its own cache and prunes it after every mutant.** Every mutant is
 a distinct source *content*, so each deposits a fresh object set. Unbounded that

@@ -181,9 +181,8 @@ fn theThreeReadingsOfWhich() !void {
 /// the kernel has none. The fallback is the branch a suite cannot reach, since
 /// it only arises on a platform where the count is unavailable.
 fn theCpuCount() !void {
-    // Absent from a reduced-OS build, where `os.c` never registered it. Asked
-    // of the environment rather than read out of `options`, because what is
-    // missing is a registration and no `Selection` field names it.
+    // Query the environment because reduced-OS builds omit this binding
+    // without a separate `Selection` field for it.
     const cpuCount = harness.coreOptional("os/cpu-count") orelse return;
     const direct = os.osCpuCount();
     var fallback = [1]repr.Value{value.fromBytes("fallback", .keyword)};

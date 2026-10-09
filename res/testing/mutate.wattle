@@ -78,7 +78,7 @@
 ; ## The judge escalates, because most mutants die cheaply
 ;
 ; A default `zig build` does not reach every half of every subsystem.
-; `janet_native`'s success path is reached only by `test/zig-native.wattle`,
+; `env.native`'s success path is reached only by `test/zig-native.wattle`,
 ; which `build.zig` hangs off the *test* step: `test_step.dependOn` at the run
 ; artifact, not the install step. So a mutant is put through as little as will
 ; kill it:

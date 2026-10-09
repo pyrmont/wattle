@@ -3,9 +3,8 @@
 //! `Runtime` is that table, and `rt` is the module's pointer to it.
 //! `runtime/env.zig` passes `&capi.table` to `_wattle_init` at load,
 //! `module.entry`'s shim stores it in `rt`, and every call an author makes
-//! goes through it. The runtime exports no `janet_*` name and a module
-//! declares none, so there is no name for a linker to resolve and none for a
-//! second copy of the runtime to capture.
+//! goes through it. The pointer selects the runtime that loaded the module,
+//! even when the process contains several copies of the runtime.
 //!
 //! A _crossing_ is one field of `Runtime`: a function of the runtime that a
 //! module may call.
@@ -36,17 +35,10 @@
 //!
 //! ## How a crossing is named
 //!
-//! A field's name is the crossing's name with its symbol-table prefix
-//! dropped: `janet_*`, and the `zig_` that marked a name the retired header
-//! never had. A field is already qualified by `rt.`, so a prefix that kept
-//! these apart in one flat namespace buys nothing.
-//!
-//! The `new_` and `_value` marks stay. They say that a crossing does not share
-//! the shape of its namesake in the retired header: `new_` where it constructs
-//! and `_value` where it mutates. What a mark records is what crosses rather
-//! than how wide it is, so `getboolean` is unmarked and returns a `bool`
-//! where the header declared an `int`. Nothing links against these by C
-//! signature, so the Zig type is free to say the true thing.
+//! Field names are qualified by `rt.` and need no runtime prefix.
+//! The `new_` prefix identifies constructors. The `_value` suffix identifies
+//! operations that pass wrapped values, such as `call_value` and
+//! `array_push_value`. Each field's Zig signature specifies its calling shape.
 //!
 //! ## The guard
 //!
@@ -97,7 +89,7 @@ pub var rt: *const Runtime = undefined;
 // Aliased types
 // ==========================================================================
 
-/// A Janet value, as a field's signature spells it.
+/// A Wattle value, as a field's signature spells it.
 const Value = repr.Value;
 
 // ==========================================================================
@@ -182,7 +174,7 @@ const Value = repr.Value;
 /// `-Dev=false` arm, so a build without the loop raises at `current_loop`
 /// rather than reaching a null pointer. `post` is the one crossing callable
 /// from a thread with no VM, and the only one that does not check that its
-/// caller is running Janet; it reads no thread-local, because
+/// caller is running Wattle; it reads no thread-local, because
 /// `runtime/ev.zig`'s `evPostEvent` takes the target VM explicitly and an
 /// `*abi.Loop` is that pointer. `GenericMessage`, which the runtime moves the
 /// callback and the

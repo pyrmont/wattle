@@ -348,13 +348,12 @@ is a file rather than an example" was removed.
 
 **A `##` heading names a broad topic, its `###` headings name the
 instances, and the `##` opens with a paragraph that introduces them.**
-`numarray.zig`: "Differences with the C version" opens with the paragraph
-naming `numarray.c`, and "Type casting" and "Callback list" sit under it.
+`src/README.md`: "Boundaries" introduces "The module table", "External
+declarations" and "Host structures".
 
 **A heading is a short noun phrase.** Two or three words where they name the
-topic; a heading is not a description of its section. `numarray.zig`: "Type
-casting" replaced "The cast at the head of every callback", and "Callback
-list" replaced "The `JANET_ATEND_PUT` chain".
+topic; a heading is not a description of its section. `numarray.zig`:
+"Abstract callbacks" introduces the callback types and defaults.
 
 **A function, a test or a check is not an actor either.** The rule against
 personification covers every thing in the code. A function does not decide,

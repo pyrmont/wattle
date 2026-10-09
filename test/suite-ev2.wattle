@@ -21,16 +21,16 @@
 (import ./helper :prefix "" :exit true)
 (start-suite)
 
-; Nothing in this suite exists in a build without JANET_EV, and an absent
-; binding is a compile error rather than a runtime one. Janet compiles and runs
+; Nothing in this suite exists in a build without the event loop, and an absent
+; binding is a compile error rather than a runtime one. Wattle compiles and runs
 ; a file one top-level form at a time, so leaving here keeps the rest of the
 ; suite from reaching the compiler at all.
 (compwhen (not (dyn 'ev/thread-chan))
   (end-suite)
   (os/exit 0))
 
-; ev/deadline's interrupt flag needs JANET_INTERPRETER_INTERRUPT and is refused
-; without it. test/suite-ev.janet explains the probe; the tests below pass the
+; ev/deadline's interrupt flag needs interpreter interrupts and is refused
+; without it. test/suite-ev.wattle explains the probe; the tests below pass the
 ; flag, so they only apply where the capability exists.
 (var interrupt-available? false)
 (let [f (coro (ev/sleep 0.01))

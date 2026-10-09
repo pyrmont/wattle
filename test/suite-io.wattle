@@ -193,8 +193,7 @@
     (file/write f "a\nb"))
   (assert (= "a\nb" (string (slurp path))) "file/open does not translate a newline"))
 
-; A closed file reports itself differently to the two families, which is what
-; the C original did and is pinned here rather than smoothed over
+; `xprint` and `xprintf` report different errors for a closed file.
 (def closed (file/temp))
 (file/close closed)
 (assert-error-value "xprint to a closed file" "file is closed" (xprint closed "x"))
