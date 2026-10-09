@@ -109,7 +109,7 @@ pub fn libFfi(env: *tables.Table) void {
 // Private functions
 // ==========================================================================
 
-/// `(ffi/buffer-read type buffer [offset])`.
+/// `(ffi/read type bytes)` and `(ffi/read type bytes offset)`.
 fn nfunBufferRead(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 3);
@@ -125,7 +125,8 @@ fn nfunBufferRead(argv: []const repr.Value) raise.Error!repr.Value {
     return marshal.readOne(bytes.bytes.? + offset, ty, ffi_types.max_recur);
 }
 
-/// `(ffi/buffer-write type value [buffer [offset]])`.
+/// `(ffi/write type val)`, `(ffi/write type val buf)` and `(ffi/write type val
+/// buf i)`.
 fn nfunBufferWrite(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
@@ -215,7 +216,8 @@ fn nfunNativeLookup(argv: []const repr.Value) raise.Error!repr.Value {
     return wrap.fromPointer(val);
 }
 
-/// `(ffi/pointer-buffer pointer capacity [count [offset]])`.
+/// `(ffi/pointer-buffer pointer capacity)`, `(ffi/pointer-buffer pointer
+/// capacity count)` and `(ffi/pointer-buffer pointer capacity count offset)`.
 fn nfunPointerBuffer(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_use"}));
     try args_core.arity(argv, 2, 4);
@@ -255,7 +257,7 @@ fn nfunPointerNfunction(argv: []const repr.Value) raise.Error!repr.Value {
     );
 }
 
-/// `(ffi/native [path])`.
+/// `(ffi/native)` and `(ffi/native path)`.
 fn nfunRawNative(argv: []const repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"ffi_define"}));
     try args_core.arity(argv, 0, 1);

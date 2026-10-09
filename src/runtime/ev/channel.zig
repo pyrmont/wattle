@@ -435,7 +435,7 @@ fn nfunGive(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(ev/chan [capacity])`.
+/// `(ev/chan)` and `(ev/chan capacity)`.
 fn nfunNew(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);
@@ -444,7 +444,7 @@ fn nfunNew(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(chan);
 }
 
-/// `(ev/thread-chan [limit])`.
+/// `(ev/thread-chan)` and `(ev/thread-chan capacity)`.
 fn nfunNewThreaded(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const limit = try args_core.optNat(argv, 0, 0);

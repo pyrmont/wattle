@@ -271,7 +271,8 @@ pub fn nfunGetsockname(argv: []repr.Value) raise.Error!repr.Value {
     return endpointName(argv, false);
 }
 
-/// `(net/address host port [type])`.
+/// `(net/address host port)`, `(net/address host port type)` and `(net/address
+/// host port type multi)`.
 pub fn nfunSockaddr(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"})); // connect OR listen
     try args_core.arity(argv, 2, 4);
@@ -674,7 +675,7 @@ fn bindWildcard(sock: JSock, family: c_int) bool {
     return false;
 }
 
-/// `(net/accept stream [timeout])`.
+/// `(net/accept stream)` and `(net/accept stream timeout)`.
 fn nfunAccept(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
@@ -702,7 +703,8 @@ fn nfunAcceptLoop(argv: []repr.Value) raise.Error!repr.Value {
     return schedAccept(stream, fun);
 }
 
-/// `(net/chunk stream n [buf [timeout]])`.
+/// `(net/chunk stream n)`, `(net/chunk stream n buf)` and `(net/chunk stream n
+/// buf timeout)`.
 fn nfunChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
@@ -714,7 +716,9 @@ fn nfunChunk(argv: []repr.Value) raise.Error!repr.Value {
     return ev_stream.readGeneric(stream, buffer, n, true, ev_stream.read_mode_recv, net_abi.msg_nosignal);
 }
 
-/// `(net/connect host port [type [bindhost [bindport]]])`.
+/// `(net/connect host port)`, `(net/connect host port type)`, `(net/connect
+/// host port type bindhost)` and `(net/connect host port type bindhost
+/// bindport)`.
 fn nfunConnect(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_connect"}));
     try args_core.arity(argv, 2, 5);
@@ -894,7 +898,8 @@ fn nfunFlush(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(net/listen host port [type [no-reuse]])`.
+/// `(net/listen host port)`, `(net/listen host port type)` and `(net/listen
+/// host port type no-reuse)`.
 fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"net_listen"}));
     try args_core.arity(argv, 2, 4);
@@ -952,7 +957,8 @@ fn nfunListen(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(try makeStream(sfd, stream_acceptable));
 }
 
-/// `(net/read stream n [buf [timeout]])`.
+/// `(net/read stream n)`, `(net/read stream n buf)` and `(net/read stream n buf
+/// timeout)`.
 fn nfunRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const stream = try getStream(argv, 0);
@@ -969,7 +975,7 @@ fn nfunRead(argv: []repr.Value) raise.Error!repr.Value {
     }
 }
 
-/// `(net/recv-from stream n buf [timeout])`.
+/// `(net/recv-from stream n buf)` and `(net/recv-from stream n buf timeout)`.
 fn nfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
@@ -981,7 +987,7 @@ fn nfunRecvFrom(argv: []repr.Value) raise.Error!repr.Value {
     return ev_stream.readGeneric(stream, buffer, n, false, ev_stream.read_mode_recvfrom, net_abi.msg_nosignal);
 }
 
-/// `(net/send-to stream dest data [timeout])`.
+/// `(net/send-to stream dest val)` and `(net/send-to stream dest val timeout)`.
 fn nfunSendTo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 3, 4);
     const stream = try getStream(argv, 0);
@@ -1071,7 +1077,7 @@ fn nfunSetsockopt(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(net/shutdown stream [mode])`.
+/// `(net/shutdown stream)` and `(net/shutdown stream mode)`.
 fn nfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const stream = try getStream(argv, 0);
@@ -1101,7 +1107,7 @@ fn nfunShutdown(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(net/socket host port [type])`.
+/// `(net/socket)`, `(net/socket type)` and `(net/socket type address-family)`.
 fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
 
@@ -1143,7 +1149,7 @@ fn nfunSocket(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(stream);
 }
 
-/// `(net/write stream data [timeout])`.
+/// `(net/write stream val)` and `(net/write stream val timeout)`.
 fn nfunWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const stream = try getStream(argv, 0);

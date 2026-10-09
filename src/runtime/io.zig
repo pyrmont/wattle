@@ -693,7 +693,7 @@ fn nfunFflush(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(file/open path [mode [buffer-size]])`.
+/// `(file/open path)`, `(file/open path mode)` and `(file/open path mode n)`.
 ///
 /// The file is opened in binary mode on every platform. On Windows the `b`
 /// a mode keyword lacks is added before `fopen` sees it, so the `b` flag is
@@ -758,8 +758,8 @@ fn nfunFopen(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(file/read f what [buf])`, where `what` is `:all`, `:line` or a byte
-/// count.
+/// `(file/read file what)` and `(file/read file what buf)`, where `what` is
+/// `:all`, `:line` or a byte count.
 ///
 /// The readability test covers all three arms rather than the two that go
 /// through `readChunk`. `:line` reads with `getChar`, so a test living only in
@@ -809,7 +809,7 @@ fn nfunFread(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBuffer(buffer);
 }
 
-/// `(file/seek f whence [n])`.
+/// `(file/seek file whence)` and `(file/seek file whence n)`.
 fn nfunFseek(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const iof = try getFile(argv, 0);

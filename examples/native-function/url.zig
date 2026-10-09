@@ -122,7 +122,7 @@ fn append(out: []u8, n: *usize, bytes: []const u8) wattle.Error!void {
 }
 
 /// Returns `title` as a URL path segment. Implements
-/// `(url/slug title &opt opts)`.
+/// `(url/slug title)` and `(url/slug title opts)`.
 ///
 /// `argv` slot 0 is the title and slot 1 is an optional tuple of keyword
 /// options, which `readStyle` reads.
@@ -212,7 +212,7 @@ fn query(argv: []wattle.Value) wattle.Error!wattle.Value {
 }
 
 /// Returns a slice of `text`. Implements
-/// `(url/cut text &opt start end)`.
+/// `(url/cut text)`, `(url/cut text start)` and `(url/cut text start end)`.
 ///
 /// `argv` slot 0 is the text, slot 1 is the start index and slot 2 is the
 /// end index. Both indices are optional.
@@ -290,9 +290,9 @@ fn parseQuery(argv: []wattle.Value) wattle.Error!wattle.Value {
 /// typed as raising, because that is the one shape `wattle.entry` takes.
 fn defs(env: *wattle.Env) wattle.Error!void {
     wattle.nfuns(env, "url", &.{
-        wattle.reg("slug", &slug, "(url/slug title &opt opts)", "A title as a URL path segment."),
+        wattle.reg("slug", &slug, "(url/slug title)\n(url/slug title opts)", "A title as a URL path segment."),
         wattle.reg("query", &query, "(url/query params)", "A map or table as a query string."),
-        wattle.reg("cut", &cut, "(url/cut text &opt start end)", "A slice of a byte argument."),
+        wattle.reg("cut", &cut, "(url/cut text)\n(url/cut text start)\n(url/cut text start end)", "A slice of a byte argument."),
         wattle.reg("parse-query", &parseQuery, "(url/parse-query query)", "A query string back into a map."),
     });
 }

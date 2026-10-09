@@ -695,7 +695,7 @@ fn nfunDescribe(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(b.slice(), .string);
 }
 
-/// `(dyn key [default])`.
+/// `(dyn key)` and `(dyn key dflt)`.
 fn nfunDyn(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const env = vm_state.current().fiber.?.env;
@@ -816,7 +816,8 @@ fn nfunGensym(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromSymbol(symbols.gen());
 }
 
-/// `(getline [prompt [buf [env]]])`.
+/// `(getline)`, `(getline prompt)`, `(getline prompt buf)` and `(getline prompt
+/// buf env)`.
 fn nfunGetline(argv: []repr.Value) raise.Error!repr.Value {
     const in = io_core.dynfile("in", stdio.in());
     const out = io_core.dynfile("out", stdio.out());
@@ -897,7 +898,8 @@ fn nfunManpath(argv: []repr.Value) raise.Error!repr.Value {
     return derivedPath(man_dir);
 }
 
-/// `(memcmp a b [len [offset-a [offset-b]]])`.
+/// `(memcmp a b)`, `(memcmp a b len)`, `(memcmp a b len offset-a)` and `(memcmp
+/// a b len offset-a offset-b)`.
 fn nfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 5);
     const a = try args_core.getBytes(argv, 0);
@@ -923,7 +925,8 @@ fn nfunMemcmp(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromInteger(result);
 }
 
-/// `(native path [env])`: loads a `.so` and runs its `_wattle_init`.
+/// `(native path)` and `(native path env)`: loads a `.so` and runs its
+/// `_wattle_init`.
 fn nfunNative(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const argv0 = argv[0];
@@ -942,7 +945,7 @@ fn nfunNative(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTable(env);
 }
 
-/// `(range start [end [step]])`.
+/// `(range end)`, `(range start end)` and `(range start end step)`.
 fn nfunRange(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     var start: f64 = 0;
@@ -1011,7 +1014,7 @@ fn nfunSandbox(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(scan-number str [base])`.
+/// `(scan-number str)` and `(scan-number str base)`.
 fn nfunScanNumber(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -1037,8 +1040,8 @@ fn nfunSetdyn(argv: []repr.Value) raise.Error!repr.Value {
     return argv[1];
 }
 
-/// `(signal what [payload])`, where `what` is a user signal number or a
-/// keyword from `utils.signalNames`.
+/// `(signal what)` and `(signal what val)`, where `what` is a user signal
+/// number or a keyword from `utils.signalNames`.
 fn nfunSignal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const payload = if (argv.len == 2) argv[1] else wrap.fromNil();
@@ -1083,7 +1086,7 @@ fn vectorFromChunks(it: *args_core.Chunks, length: usize) raise.Error!*vectors.V
     return vectors.fromSlice(block);
 }
 
-/// `(slice x [start [end]])`.
+/// `(slice ind)`, `(slice ind start)` and `(slice ind start end)`.
 ///
 /// An indexed value gives a vector, which is Wattle's immutable sequence; a
 /// tuple is the call form and is what `tuple/slice` gives.
@@ -1416,13 +1419,13 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "start (default 0) up to but excluding end (default the length). A negative index counts " ++
             "from the end. Returns a vector for an indexed type and a string for a byte sequence. " ++
             "Raises if an index is out of range."),
-        corefn.reg("range", &nfunRange, @src(), "(range & args)", "Creates an array of values [start, end) with a given step. " ++
+        corefn.reg("range", &nfunRange, @src(), "(range end)\n(range start end)\n(range start end step)", "Creates an array of values [start, end) with a given step. " ++
             "With one argument, returns a range [0, end). With two arguments, returns " ++
             "a range [start, end). With three, the third is the step, which may be " ++
             "negative or fractional. Returns an empty array if the step does not move " ++
             "toward end. Raises if an argument is NaN, if the step is infinite or if " ++
             "the range would have too many elements."),
-        corefn.reg("signal", &nfunSignal, @src(), "(signal what val)", "Raises a signal with payload val. what can be an integer\n" ++
+        corefn.reg("signal", &nfunSignal, @src(), "(signal what)\n(signal what val)", "Raises a signal with payload val. what can be an integer\n" ++
             "from 0 through 7 indicating user(0-7), or one of:\n\n" ++
             "- :ok\n" ++
             "- :error\n" ++

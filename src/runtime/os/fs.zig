@@ -399,7 +399,7 @@ fn nfunCwd(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
 }
 
-/// `(os/dir path [array])`.
+/// `(os/dir path)` and `(os/dir path arr)`.
 fn nfunDir(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_read"}));
     try args_core.arity(argv, 1, 2);
@@ -409,7 +409,7 @@ fn nfunDir(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromArray(paths);
 }
 
-/// `(os/link oldpath newpath [symlink])`.
+/// `(os/link oldpath newpath)` and `(os/link oldpath newpath symlink)`.
 fn nfunLink(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 2, 3);
@@ -533,7 +533,8 @@ fn nfunSymlink(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(os/touch path [actime [modtime]])`.
+/// `(os/touch path)`, `(os/touch path actime)` and `(os/touch path actime
+/// modtime)`.
 fn nfunTouch(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"fs_write"}));
     try args_core.arity(argv, 1, 3);

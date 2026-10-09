@@ -521,8 +521,8 @@ inline fn eprintf(comptime format: [:0]const u8, args: anytype) raise.Error!void
     return pp_format.dynprintf("err", stdio.err(), format, args);
 }
 
-/// `(debug/fbreak fun [pc])`'s arguments, resolved to a location. The
-/// offset is not range-checked here; `debugBreak` does it.
+/// `(debug/fbreak f)` and `(debug/fbreak f pc)`'s arguments, resolved to a
+/// location. The offset is not range-checked here; `debugBreak` does it.
 fn findByFunction(argv: []repr.Value) raise.Error!Breakpoint {
     try args_core.arity(argv, 1, 2);
     const function = try args_core.getFunction(argv, 0);

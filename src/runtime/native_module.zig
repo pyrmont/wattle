@@ -338,7 +338,8 @@ fn classify(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.cstring(name);
 }
 
-/// `(cut bytes [start [end]])`: a slice of a byte argument.
+/// `(cut bytes)`, `(cut bytes start)` and `(cut bytes start end)`: a slice of a
+/// byte argument.
 ///
 /// The length handed to `getRange` is the slice's own, so the negative index,
 /// the absent slot and the clamp are the ones every core builtin taking a
@@ -375,16 +376,16 @@ fn defs(env: *wattle.Env) wattle.Error!void {
             "(identity x)",
             "Round-trip a Wattle value through a dynamically loaded Zig module.",
         ),
-        wattle.reg("keep", &keep, "(keep x [rank])", "An abstract holding x, with every callback set."),
+        wattle.reg("keep", &keep, "(keep x)\n(keep x rank)", "An abstract holding x, with every callback set."),
         wattle.reg("kept", &kept, "(kept keeper)", "The value a keeper holds."),
         wattle.reg("rank", &rank, "(rank keeper)", "The rank compare and hash are computed from."),
         wattle.reg("mark-count", &markCount, "(mark-count)", "How many times gcmark has been reached."),
         wattle.reg("finalized-count", &finalizedCount, "(finalized-count)", "How many keepers have been finalized."),
         wattle.reg("unsafe-seen", &unsafeSeen, "(unsafe-seen)", "How many marshal callbacks saw the unsafe flag."),
         wattle.reg("greeting", &greeting, "(greeting)", "A string built by the module."),
-        wattle.reg("markup", &markup, "(markup bytes [opts [strict]])", "A byte argument and a tuple of keyword options."),
+        wattle.reg("markup", &markup, "(markup bytes)\n(markup bytes opts)\n(markup bytes opts strict)", "A byte argument and a tuple of keyword options."),
         wattle.reg("tally", &tally, "(tally dict)", "The sum of a struct's or a table's numeric values."),
-        wattle.reg("cut", &cut, "(cut bytes [start [end]])", "A slice of a byte argument."),
+        wattle.reg("cut", &cut, "(cut bytes)\n(cut bytes start)\n(cut bytes start end)", "A slice of a byte argument."),
         wattle.reg("wrap", &wrap, "(wrap bytes width)", "The first width bytes."),
         wattle.reg("classify", &classify, "(classify x)", "The name of a value's type."),
         wattle.reg("named", &named, "(named x)", "The name of a string, a symbol or a keyword."),
@@ -451,7 +452,7 @@ fn invoke(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.mcall(name, argv[1..]);
 }
 
-/// `(keep x [rank])`: a new keeper.
+/// `(keep x)` and `(keep x rank)`: a new keeper.
 fn keep(argv: []wattle.Value) wattle.Error!wattle.Value {
     try wattle.arity(argv, 1, 2);
     const given = if (argv.len == 2) try wattle.getInteger(argv, 1) else 0;
@@ -648,7 +649,8 @@ fn markCount(argv: []wattle.Value) wattle.Error!wattle.Value {
     return wattle.number(@floatFromInt(marks));
 }
 
-/// `(markup bytes [opts [strict]])`: markable's shape.
+/// `(markup bytes)`, `(markup bytes opts)` and `(markup bytes opts strict)`:
+/// markable's shape.
 ///
 /// Four steps, and every one of them was unreachable from a module before the
 /// getters this file exercises existed: reading the byte argument, reading the

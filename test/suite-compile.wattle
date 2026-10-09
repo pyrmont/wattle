@@ -219,7 +219,7 @@
   ([a _b] a))
 (assert (= "<function arity-optional> called with 0 arguments, expected 1 to 2"
            (errof '(arity-optional)))
-        "an optional parameter has a range")
+        "arity clauses define an argument-count range")
 (assert (= ":kw called with 0 arguments, expected at least 1" (errof '(:kw)))
         "keyword call with no argument")
 (assert (= "1 called with 2 arguments, expected 1" (errof '(1 2 3)))

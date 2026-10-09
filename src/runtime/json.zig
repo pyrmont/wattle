@@ -478,7 +478,7 @@ pub fn exactInteger(digits: []const u8, magnitude: f64) bool {
     return true;
 }
 
-/// `(json/decode x [flags])`.
+/// `(json/decode x)` and `(json/decode x flags)`.
 fn nfunDecode(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const view = try args_core.getBytes(argv, 0);
@@ -496,7 +496,7 @@ fn nfunDecode(argv: []repr.Value) raise.Error!repr.Value {
     return result;
 }
 
-/// `(json/encode x [flags])`.
+/// `(json/encode x)` and `(json/encode x flags)`.
 fn nfunEncode(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const flags = if (argv.len > 1) try args_core.getFlags(argv, 1, "ns") else 0;

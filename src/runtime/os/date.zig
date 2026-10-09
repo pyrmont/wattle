@@ -123,7 +123,7 @@ pub fn entries() []const corefn.Entry {
 // Private functions
 // ==========================================================================
 
-/// `(os/date [time [local]])`.
+/// `(os/date)`, `(os/date time)` and `(os/date time local)`.
 fn nfunDate(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     var t_info: sys.struct_tm = undefined;
@@ -142,7 +142,7 @@ fn nfunDate(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromMap(maps.build(.map, &fields));
 }
 
-/// `(os/mktime date-struct [local])`.
+/// `(os/mktime date)` and `(os/mktime date local)`.
 fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     // Zeroed whole, so that no field is left as whatever the frame had.
@@ -180,7 +180,8 @@ fn nfunMktime(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNumber(@floatFromInt(t));
 }
 
-/// `(os/strftime fmt [time [local]])`.
+/// `(os/strftime fmt)`, `(os/strftime fmt time)` and `(os/strftime fmt time
+/// local)`.
 fn nfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const fmt = try args_core.getCString(argv, 0);

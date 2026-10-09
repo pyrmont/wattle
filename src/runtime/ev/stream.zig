@@ -320,7 +320,8 @@ fn setOffset(ov: *Overlapped, position: u64) void {
 // Public functions
 // ==========================================================================
 
-/// `(ev/chunk s n [buf])`.
+/// `(ev/chunk stream n)`, `(ev/chunk stream n buf)` and `(ev/chunk stream n buf
+/// timeout)`.
 pub fn nfunStreamChunk(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
@@ -339,7 +340,8 @@ pub fn nfunStreamClose(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(ev/read s n [buf [timeout]])`.
+/// `(ev/read stream n)`, `(ev/read stream n buf)` and `(ev/read stream n buf
+/// timeout)`.
 pub fn nfunStreamRead(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 4);
     const s = try getStream(argv, 0);
@@ -355,7 +357,7 @@ pub fn nfunStreamRead(argv: []repr.Value) raise.Error!repr.Value {
     return readGeneric(s, buffer, n, false, read_mode_read, 0);
 }
 
-/// `(ev/write s bytes [timeout])`.
+/// `(ev/write stream val)` and `(ev/write stream val timeout)`.
 pub fn nfunStreamWrite(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const s = try getStream(argv, 0);

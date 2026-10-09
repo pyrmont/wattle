@@ -659,7 +659,7 @@ pub fn libAsm(env: *tables.Table) raise.Error!void {
             "Possible fields are:\n\n" ++
             "| Key           | Description                                                                                            |\n" ++
             "| ------------- | ------------------------------------------------------------------------------------------------------ |\n" ++
-            "| :arity        | number of required and optional arguments.                                                             |\n" ++
+            "| :arity        | fixed parameter count of the largest or variadic clause.                                               |\n" ++
             "| :min-arity    | minimum number of arguments function can be called with.                                               |\n" ++
             "| :max-arity    | maximum number of arguments function can be called with.                                               |\n" ++
             "| :vararg       | true if function can take a variable number of arguments.                                              |\n" ++

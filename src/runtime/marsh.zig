@@ -567,7 +567,8 @@ fn nfunEnvLookup(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTable(envLookup(env));
 }
 
-/// `(marshal x [reverse-lookup [buffer [no-cycles]]])`.
+/// `(marshal val)`, `(marshal val reverse-lookup)`, `(marshal val
+/// reverse-lookup buf)` and `(marshal val reverse-lookup buf no-cycles)`.
 fn nfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var rreg: ?*tables.Table = null;
@@ -579,7 +580,8 @@ fn nfunMarshal(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBuffer(buffer);
 }
 
-/// `(unmarshal buffer [lookup])`, which the sandbox can withhold.
+/// `(unmarshal bytes)` and `(unmarshal bytes lookup)`, which the sandbox can
+/// withhold.
 fn nfunUnmarshal(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"unmarshal"}));
     try args_core.arity(argv, 1, 2);

@@ -711,12 +711,13 @@ fn buildEnv(argv: []repr.Value) raise.Error!EnvBlock {
     }
 }
 
-/// `(os/execute args [flags [env]])`.
+/// `(os/execute ind)`, `(os/execute ind flags)` and `(os/execute ind flags
+/// env)`.
 fn nfunExecute(argv: []repr.Value) raise.Error!repr.Value {
     return execute(argv, .execute);
 }
 
-/// `(os/pipe [flags])`.
+/// `(os/pipe)` and `(os/pipe flags)`.
 fn nfunPipe(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{ "fs_write", "fs_temp" }));
     try args_core.arity(argv, 0, 1);
@@ -744,7 +745,8 @@ fn nfunPosixChroot(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(os/posix-exec args [flags [env]])`.
+/// `(os/posix-exec ind)`, `(os/posix-exec ind flags)` and `(os/posix-exec ind
+/// flags env)`.
 fn nfunPosixExec(argv: []repr.Value) raise.Error!repr.Value {
     if (windows) return raise.panic("not supported on Windows");
     return execute(argv, .exec);
@@ -786,7 +788,8 @@ fn nfunProcGetpid(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNumber(@floatFromInt(processId()));
 }
 
-/// `(os/proc-kill p [wait [signal]])`.
+/// `(os/proc-kill proc)`, `(os/proc-kill proc wait)` and `(os/proc-kill proc
+/// wait signal)`.
 fn nfunProcKill(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const proc: *Proc = try args_core.getAbstract(Proc, argv, 0, &proc_type);
@@ -819,7 +822,7 @@ fn nfunProcWait(argv: []repr.Value) raise.Error!repr.Value {
     return procWait(proc);
 }
 
-/// `(os/shell [cmd])`.
+/// `(os/shell)` and `(os/shell str)`.
 fn nfunShell(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"subprocess"}));
     try args_core.arity(argv, 0, 1);
@@ -840,7 +843,8 @@ fn nfunShell(argv: []repr.Value) raise.Error!repr.Value {
     }
 }
 
-/// `(os/sigaction signal [handler])`.
+/// `(os/sigaction signal)`, `(os/sigaction signal handler)` and `(os/sigaction
+/// signal handler interrupt)`.
 fn nfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"signal"}));
     try args_core.arity(argv, 1, 3);
@@ -898,7 +902,7 @@ fn nfunSigaction(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(os/spawn args [flags [env]])`.
+/// `(os/spawn ind)`, `(os/spawn ind flags)` and `(os/spawn ind flags env)`.
 fn nfunSpawn(argv: []repr.Value) raise.Error!repr.Value {
     return execute(argv, .spawn);
 }

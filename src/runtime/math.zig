@@ -407,8 +407,8 @@ fn nfunRand(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNumber(rngDouble(&vm_state.current().rng));
 }
 
-/// `(math/rng-buffer rng n [buf])`. The space is reserved through
-/// `buffers.extra`, which raises before any byte is written.
+/// `(math/rng-buffer rng n)` and `(math/rng-buffer rng n buf)`. The space is
+/// reserved through `buffers.extra`, which raises before any byte is written.
 fn nfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
@@ -420,8 +420,8 @@ fn nfunRngBuffer(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBuffer(buffer);
 }
 
-/// `(math/rng-int rng [max])`. A `max` of zero gives zero, and no `max`
-/// means the whole non-negative `i32` range.
+/// `(math/rng-int rng)` and `(math/rng-int rng max)`. A `max` of zero gives
+/// zero, and no `max` means the whole non-negative `i32` range.
 fn nfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const rng: *Rng = try args_core.getAbstract(Rng, argv, 0, &rngType);
@@ -431,7 +431,8 @@ fn nfunRngInt(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromInteger(rngInt(rng, max));
 }
 
-/// `(math/rng [seed])`, seeding from an integer or from a byte sequence.
+/// `(math/rng)` and `(math/rng seed)`, seeding from an integer or from a byte
+/// sequence.
 fn nfunRngMake(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const rng: *Rng = abstracts.newFor(Rng, &rngType);

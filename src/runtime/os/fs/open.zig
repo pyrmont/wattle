@@ -82,8 +82,8 @@ const WindowsOpen = struct {
 // Public functions
 // ==========================================================================
 
-/// `(os/open path [flags [mode]])`, which returns a stream rather than a
-/// file.
+/// `(os/open path)`, `(os/open path flags)` and `(os/open path flags mode)`,
+/// which returns a stream rather than a file.
 pub fn nfunOpen(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const path = try args_core.getCString(argv, 0);

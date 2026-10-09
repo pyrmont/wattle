@@ -1523,7 +1523,7 @@ pub fn getKeyvals(argv: []const repr.Value, n: usize) raise.Error!Keyvals {
 /// `length`.
 ///
 /// `getSlice`'s general form, and a separate function rather than a widening
-/// of it. `getSlice` is `(x [start [end]])` exactly: it checks its own arity,
+/// of it. `getSlice` accepts a value and up to two indices. It checks its arity,
 /// reads the length out of `argv[0]` and starts at slot 1, which is what every
 /// core builtin taking a slice needs. A module author's ends are not always in
 /// those slots and the length is not always a Janet value's, a wrap width or a
@@ -1554,8 +1554,9 @@ pub fn getRangeAbi(argv: [*]const repr.Value, argc: i32, n: i32, length: i32) ca
     return getRange(argv[0..@intCast(argc)], @intCast(n), length) catch raise.reportToAbi(Range);
 }
 
-/// `(x [start [end]])`, the slice argument every core builtin taking one
-/// uses. It checks its own arity and reads the length out of `argv[0]`.
+/// Gets a slice range from a value and up to two indices.
+///
+/// Checks its own arity and reads the length out of `argv[0]`.
 ///
 /// `access.length` can raise through this frame, which is stranded by nothing
 /// at that point.

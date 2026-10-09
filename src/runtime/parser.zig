@@ -938,9 +938,10 @@ fn nfunParserClone(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(destination);
 }
 
-/// `(parser/consume parser bytes [index])`, returning how many bytes were
-/// read. A byte that puts the parser in the error or dead state stops the
-/// loop and is counted.
+/// Implements `(parser/consume parser bytes)` and
+/// `(parser/consume parser bytes index)`, returning how many bytes were read.
+/// A byte that puts the parser in the error or dead state stops the loop and
+/// is counted.
 fn nfunParserConsume(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 2, 3);
     const parser = try getParser(argv, 0);
@@ -1043,7 +1044,7 @@ fn nfunParserNew(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(parser);
 }
 
-/// `(parser/produce parser [wrap])`.
+/// `(parser/produce parser)` and `(parser/produce parser wrap)`.
 fn nfunParserProduce(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
@@ -1053,8 +1054,8 @@ fn nfunParserProduce(argv: []repr.Value) raise.Error!repr.Value {
     return parserProduce(parser);
 }
 
-/// `(parser/state parser [key])`, with the key looked up in
-/// `state_getters` and every getter run when there is none.
+/// Implements `(parser/state parser)` and `(parser/state parser key)`.
+/// Looks up `key` in `state_getters`, or runs every getter when it is absent.
 fn nfunParserState(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const parser = try getParser(argv, 0);
@@ -1084,8 +1085,8 @@ fn nfunParserStatus(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.span(name), .keyword);
 }
 
-/// `(parser/where parser [line [col]])`, setting the position first where
-/// either is given.
+/// Implements `(parser/where parser)`, `(parser/where parser line)` and
+/// `(parser/where parser line col)`. Sets the position when an index is given.
 fn nfunParserWhere(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const parser = try getParser(argv, 0);

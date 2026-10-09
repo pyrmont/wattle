@@ -1317,7 +1317,8 @@ fn nfunCancel(argv: []repr.Value) raise.Error!repr.Value {
     return argv[0];
 }
 
-/// `(ev/deadline sec [tocancel [body [interrupt]]])`.
+/// `(ev/deadline sec)`, `(ev/deadline sec task)`, `(ev/deadline sec task fib)`
+/// and `(ev/deadline sec task fib interrupt?)`.
 fn nfunDeadline(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 4);
     var sec = try args_core.getNumber(argv, 0);
@@ -1392,7 +1393,8 @@ fn nfunGiveSupervisor(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(ev/go func [value [supervisor]])`.
+/// `(ev/go fib-or-f)`, `(ev/go fib-or-f val)` and `(ev/go fib-or-f val
+/// supervisor)`.
 fn nfunGo(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 3);
     const val = if (argv.len >= 2) argv[1] else wrap.fromNil();
@@ -1502,7 +1504,8 @@ fn nfunSleep(argv: []repr.Value) raise.Error!repr.Value {
     return sleepAwait(sec);
 }
 
-/// `(ev/thread func [value [flags [supervisor]]])`.
+/// `(ev/thread main)`, `(ev/thread main val)`, `(ev/thread main val flags)` and
+/// `(ev/thread main val flags supervisor)`.
 fn nfunThread(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"threads"}));
     try args_core.arity(argv, 1, 4);

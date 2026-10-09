@@ -268,7 +268,7 @@
 
 (defmacro default
   """
-  Defines a default value for an optional argument.
+  Defines sym as val when sym is nil.
   Expands to `(def sym :shadow (if (= nil sym) val sym))`.
   """
   [sym val]

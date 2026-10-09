@@ -40,16 +40,17 @@
 (def cb (delay (ffi/trampoline :default)))
 
 (defn ffi/array
-  """Convert a Wattle array to a buffer that can be passed to FFI functions.
-  For example, to create an array of type `char *` (array of c strings), one
-  could use `(ffi/array ["hello" "world"] :ptr)`. One needs to be careful that
-  array elements are not garbage collected though - the GC can't follow references
-  inside an arbitrary byte buffer."""
-  [arr ctype &opt buf]
-  (default buf !"")
-  (each el arr
-    (ffi/write ctype el buf))
-  buf)
+  """Converts arr to a buffer of values with the C type ctype.
+  Appends to buf when supplied; otherwise creates a buffer.
+  `(ffi/array ["hello" "world"] :ptr)` creates an array of C string pointers.
+  The caller must retain arr while those pointers are in use. The collector
+  does not follow pointers inside the byte buffer."""
+  ([arr ctype] (ffi/array arr ctype nil))
+  ([arr ctype buf]
+    (default buf !"")
+    (each el arr
+      (ffi/write ctype el buf))
+    buf))
 
 (defn on-active
   [app]

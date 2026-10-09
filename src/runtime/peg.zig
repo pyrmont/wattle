@@ -422,8 +422,8 @@ fn nfunPegCompile(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromAbstract(try compilePeg(argv[0]));
 }
 
-/// `(peg/find peg text [start [& [args]]])`, which is the first offset the
-/// pattern matches at, or nil.
+/// `(peg/find peg text)` and `(peg/find peg text start & args)`, which is the
+/// first offset the pattern matches at, or nil.
 fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
     var i = call.start;
@@ -436,7 +436,7 @@ fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(peg/find-all peg text [start [& [args]]])`.
+/// `(peg/find-all peg text)` and `(peg/find-all peg text start & args)`.
 fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
     const ret = arrays.new(0);
@@ -450,20 +450,22 @@ fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromArray(ret);
 }
 
-/// `(peg/match peg text [start [& [args]]])`, which is the captures as an
-/// array, or nil where the pattern does not match.
+/// `(peg/match peg text)` and `(peg/match peg text start & args)`, which is the
+/// captures as an array, or nil where the pattern does not match.
 fn nfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
     const result = try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(call.start)));
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
 
-/// `(peg/replace peg subst text [start [& [args]]])`.
+/// `(peg/replace peg subst text)` and `(peg/replace peg subst text start &
+/// args)`.
 fn nfunPegReplace(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, true);
 }
 
-/// `(peg/replace-all peg subst text [start [& [args]]])`.
+/// `(peg/replace-all peg subst text)` and `(peg/replace-all peg subst text
+/// start & args)`.
 fn nfunPegReplaceAll(argv: []repr.Value) raise.Error!repr.Value {
     return pegReplaceGeneric(argv, false);
 }

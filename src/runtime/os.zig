@@ -434,7 +434,7 @@ fn nfunArch(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.span(osArch()), .keyword);
 }
 
-/// `(os/clock [source [format]])`.
+/// `(os/clock)`, `(os/clock source)` and `(os/clock source format)`.
 fn nfunClock(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"hrtime"}));
     try args_core.arity(argv, 0, 2);
@@ -481,7 +481,7 @@ fn nfunCompiler(argv: []repr.Value) raise.Error!repr.Value {
     return value.fromBytes(std.mem.span(osCompiler()), .keyword);
 }
 
-/// `(os/cpu-count [dflt])`.
+/// `(os/cpu-count)` and `(os/cpu-count dflt)`.
 fn nfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const count = osCpuCount();
@@ -489,7 +489,7 @@ fn nfunCpuCount(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromInteger(count);
 }
 
-/// `(os/cryptorand n [buf])`.
+/// `(os/cryptorand n)` and `(os/cryptorand n buf)`.
 fn nfunCryptorand(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 1, 2);
     const n = try args_core.getInteger(argv, 0);
@@ -536,7 +536,7 @@ fn nfunEnviron(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromTable(t);
 }
 
-/// `(os/exit [x [force]])`.
+/// `(os/exit)`, `(os/exit code)` and `(os/exit code force)`.
 fn nfunExit(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 2);
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"exit"}));
@@ -558,7 +558,7 @@ fn nfunExit(argv: []repr.Value) raise.Error!repr.Value {
     c.exit(status);
 }
 
-/// `(os/getenv variable [dflt])`.
+/// `(os/getenv name)` and `(os/getenv name dflt)`.
 fn nfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"env"}));
     try args_core.arity(argv, 1, 2);
@@ -575,7 +575,7 @@ fn nfunGetenv(argv: []repr.Value) raise.Error!repr.Value {
     return ret;
 }
 
-/// `(os/isatty [file])`.
+/// `(os/isatty)` and `(os/isatty file)`.
 fn nfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const f: ?*io_core.FILE = if (argv.len == 1)
@@ -592,7 +592,7 @@ fn nfunIsatty(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(c.isatty(fd) != 0);
 }
 
-/// `(os/term-size [file])`.
+/// `(os/term-size)` and `(os/term-size file)`.
 fn nfunTermSize(argv: []repr.Value) raise.Error!repr.Value {
     try args_core.arity(argv, 0, 1);
     const f: ?*io_core.FILE = if (argv.len == 1)
@@ -654,7 +654,8 @@ fn nfunSetenv(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromNil();
 }
 
-/// `(os/setlocale [locale [category]])`.
+/// `(os/setlocale)`, `(os/setlocale locale)` and `(os/setlocale locale
+/// category)`.
 fn nfunSetlocale(argv: []repr.Value) raise.Error!repr.Value {
     try vm_lifecycle.sandboxAssert(vm_lifecycle.Sandbox.of(&.{"locale"}));
     try args_core.arity(argv, 0, 2);
