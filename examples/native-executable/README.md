@@ -52,7 +52,7 @@ resolves to the function linked in.
 
 The build specifies the module's name and uses the same string in both
 compilations. Registering it on only one side causes unresolved names to
-unmarshal as nil, matching the C runtime's behaviour. No error is reported.
+unmarshal as nil. No error is reported.
 
 ### Image generation
 
@@ -88,14 +88,10 @@ place of the image path. The event loop determines the exit status. The
 executable does not read `WATTLE_PREFIX` because all required components are
 embedded.
 
-### Comparison with `jpm quickbin`
+### Generated source
 
-`jpm` generates a C file containing the image as a byte array, an `extern`
-declaration for each native function and a `main` that registers functions and
-unmarshals the image. Wattle's build function performs these steps through the
-Zig interface. It generates no C or `main` function because the runtime has no C
-interface. A generated Zig file lists the modules so the executable's source
-does not need their names.
+The build generates a Zig file listing the linked modules. The executable's
+source uses that list to register modules without specifying their names.
 
 ## Tests
 

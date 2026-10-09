@@ -19,16 +19,16 @@ Open `http://localhost:8000/` to see the resulting page.
 
 ## The build
 
-`wattle build web` writes `zig-out/web/greeter/` with four files:
+`wattle build web` writes the following files to `zig-out/web/greeter/`:
 
 | file                    | content                                 |
 | ----------------------- | --------------------------------------- |
 | `wattle-<hash>.wasm`    | the runtime                             |
 | `greeter-<hash>.wimage` | the compiled program                    |
 | `wasi-<hash>.js`        | the WASI support the runtime imports    |
-| `greeter.js`            | an ES module that loads the other three |
+| `greeter.js`            | an ES module that loads the other files |
 
-The three hashed file names use the same `<hash>`. `greeter.js` has a fixed name
+The hashed file names use the same `<hash>`. `greeter.js` has a fixed name
 and fetches the other files from the same directory.
 
 ## The server

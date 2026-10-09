@@ -18,7 +18,7 @@ packages.
     zig build examples/native-consumer      # from the repository root
     zig build test            # from this directory
 
-`greet.zig` defines one nfunction, one abstract type and one registration to
+`greet.zig` defines an nfunction, an abstract type and a registration to
 check interface changes. It is built twice: as the shared object `libgreet` and
 linked into the executable `hello`. See `numarray` for a fuller example of an
 abstract type.
@@ -30,7 +30,7 @@ and checks that line.
 
 An external consumer replaces `.path = "../.."` in `build.zig.zon` with a URL
 and hash. The rest of the build is unchanged.
-`examples/native-abstract/README.md` describes two requirements this example
+`examples/native-abstract/README.md` describes requirements this example
 does not test: the module's Zig version and build configuration must match the
 runtime that loads it. The executable needs no separate compatibility check for
 those settings because its module and runtime are built together.

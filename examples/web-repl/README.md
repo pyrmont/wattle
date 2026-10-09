@@ -131,11 +131,9 @@ As with the command-line client, the first argument is conventionally the
 program name. Standard input is `stdin`, a string or a `Uint8Array`, and returns
 EOF after the last byte. `args` defaults to an empty array and `stdin` to empty
 input. `runImage` returns `{ status, stdout, stderr, error }`, as `eval` does.
-The same instance can run another image or the same image again. On a small
-image under Node, a call takes about 0.01 milliseconds on a loaded instance and
-about a millisecond on a new one. A raise while loading the image or in `main`
-is printed to standard error with its stack trace, and the status is 1. The
-instance can still be used.
+The same instance can run another image or the same image again. A raise while
+loading the image or in `main` is printed to standard error with its stack
+trace, and the status is 1. The instance can still be used.
 
 The core image still contains functions named `eval`, `run-context` and the
 other functions that need the compiler. However, if the `main` function of an
@@ -149,12 +147,12 @@ image calls one, the error is
 
 - every import is from `wasi_snapshot_preview1` and is provided by `wasi.js`,
   and every function provided by `wasi.js` is imported by at least one build. A
-  ReleaseSmall or ReleaseFast build imports 26 functions, and a Debug or
-  ReleaseSafe build imports 32. `res/check/wasm_imports.zig`, which also checks
-  `wattle.wasm`, makes the same check when the binary is built;
+  build's imports depend on its optimize mode. `res/check/wasm_imports.zig`,
+  which also checks `wattle.wasm`, makes the same check when the binary is
+  built;
 
-- the exports are the four functions, `_initialize`, `memory` and
-  `__stack_pointer`;
+- the exports are the runtime functions listed above, `_initialize`, `memory`
+  and `__stack_pointer`;
 
 - `(+ 1 2)` prints `3`, and `(def x 40)` followed by `(+ x 2)` prints `42`;
 

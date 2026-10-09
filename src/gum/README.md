@@ -38,10 +38,10 @@ does not overwrite the edit unless `--force` is given.
 
 ## Arguments
 
-`args.wattle` parses command-line arguments and formats usage text. It is a
-Wattle port of Argy-Bargy. Copy `args.wattle` into a project's `gum/` directory
-with `wattle gum args`, then import it from the caller. With the default
-`--dir`, the copy is in `deps/gum/`:
+`args.wattle` parses command-line arguments and formats usage text. Copy
+`args.wattle` into a project's `gum/` directory with `wattle gum args`, then
+import it from the caller. With the default `--dir`, the copy is in
+`deps/gum/`:
 
 ```clojure
 (import ./deps/gum/args :as args)
@@ -81,9 +81,9 @@ the check, after running it once with the default.
 
 ## Tests
 
-`test.wattle` is a test framework ported from Testament for Janet. Copy
-`test.wattle` into a project's `gum/` directory with `wattle gum test`. A test
-file imports it and ends with a call to `run-tests!`:
+`test.wattle` is a test framework. Copy `test.wattle` into a project's `gum/`
+directory with `wattle gum test`. A test file imports it and ends with a call
+to `run-tests!`:
 
 ```clojure
 (import ../deps/gum/test :prefix "")
@@ -100,7 +100,7 @@ file imports it and ends with a call to `run-tests!`:
 ```
 
 `wattle test` runs each `.wattle` file under `./test` in a separate process. It
-sets four dynamic bindings read by `run-tests!`: `:test/tests` from `--test`,
+sets dynamic bindings read by `run-tests!`: `:test/tests` from `--test`,
 `:test/skips` from `--no-test`, `:test/seed` from `--seed` and `:test/color?`
 when output is a terminal. `run-tests!` exits with status 1 on a test failure
 unless called with `:no-exit?` set to `true`.

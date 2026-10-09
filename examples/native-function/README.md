@@ -26,15 +26,15 @@ uses the same calls as an installed module.
 
 ## Module interface
 
-Three getters provide uniform access to groups of Wattle aggregate types.
+The following getters provide uniform access to Wattle aggregate types.
 
 ### Getters
 
-| the getter | the types | what the module gets |
-| --- | --- | --- |
-| `getBytes` | string, symbol, keyword, buffer | `[]const u8` |
-| `getIndexed` | array, vector, tuple | `Indexed` |
-| `getDictionary` | table, map | `Dictionary` |
+| the getter      | the types                       | what the module gets |
+| --------------- | ------------------------------- | -------------------- |
+| `getBytes`      | string, symbol, keyword, buffer | `[]const u8`         |
+| `getIndexed`    | array, vector, tuple            | `Indexed`            |
+| `getDictionary` | table, map                      | `Dictionary`         |
 
 Each has a `Value` form beside it: `wattle.bytesView`, `wattle.toIndexed` and
 `wattle.toDictionary`, which return `null` where the getter would raise.
@@ -68,12 +68,11 @@ The module reads getter results without retaining them. String, symbol and
 keyword bytes remain stable while the value is reachable. Buffer, array and
 table storage is exposed as `data[0..count]` and can move on a push or put. Each
 getter documents its result's lifetime. The module must finish using a result
-within the call that obtained it; all three nfunctions follow this rule.
+within the call that obtained it; the nfunctions follow this rule.
 
 ### Errors
 
-The runtime rejects incorrect argument types with the same message used for C
-modules:
+The runtime rejects incorrect argument types:
 
 ```
 (url/slug 3)
@@ -89,10 +88,9 @@ The module rejects unknown options through `wattle.panicFormat`:
 
 ### Option lookup
 
-The original C module creates a `JanetTable` on first use, inserts each option,
-roots it with `janet_gcroot` and looks up keywords with `janet_table_get`. This
-module uses `std.StaticStringMap` because both option names and values are known
-at compile time. It requires no runtime table, GC root or collector traversal.
+The module uses `std.StaticStringMap` because both option names and values are
+known at compile time. It requires no runtime table, GC root or collector
+traversal.
 
 ### Value access
 

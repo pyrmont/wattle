@@ -1,10 +1,11 @@
 # Resources
 
 Development scripts, tools, benchmarks, shell completions and editor support.
-Tools are run manually with three exceptions. `zig build` compiles and runs
-`check/wasm_imports.zig` against each wasm32-wasi binary it produces. It also
-compiles `tools/layout.zig` and `tools/pty.zig` into `<prefix>/test`.
-`zig build test` runs the latter through `test/suite-lineedit.wattle`.
+Tools are run manually except for the build integrations below. `zig build`
+compiles and runs `check/wasm_imports.zig` against each wasm32-wasi binary it
+produces. It also compiles `tools/layout.zig` and `tools/pty.zig` into
+`<prefix>/test`. `zig build test` runs the latter through
+`test/suite-lineedit.wattle`.
 
 | directory     | contents                                            |
 | ------------- | --------------------------------------------------- |
@@ -47,10 +48,10 @@ invocation, including one with an unrecognised argument, regenerates the file.
 | `bench-arms.wattle` | whether a corpus's two arms agree       | —             |
 
 Inventory files use the script's name, except for `gates.wattle`, which writes
-`gated.txt`. That script builds each configuration from an empty cache and takes
-four to six minutes. `optionals.wattle` counts a bare `orelse unreachable` as
-well as `.?`. `references.wattle`'s `c-era` class is a bounded backlog. Each
-`.txt` file's header defines its classes.
+`gated.txt`. That script builds each configuration from an empty cache.
+`optionals.wattle` counts a bare `orelse unreachable` as well as `.?`.
+`references.wattle`'s `c-era` class is a bounded backlog. Each `.txt` file's
+header defines its classes.
 
 Inventory rows include `file:line`. `layouts`, `callconv`, `orphans` and
 `references` compare rows by file and name, so a line number that has moved does
@@ -58,19 +59,19 @@ not fail `--check`; regenerate to refresh it.
 
 ### Reports
 
-| script                 | reports                                             |
-| ---------------------- | --------------------------------------------------- |
-| `chronology.sh`        | migration citations, bad `-D` options, dead paths   |
+| script                  | reports                                             |
+| ----------------------- | --------------------------------------------------- |
+| `chronology.sh`         | migration citations, bad `-D` options, dead paths   |
 | `swallowed.wattle`      | raises reported across the C ABI and never consumed |
 | `comments.wattle`       | comment text for reading against `STYLE_GUIDE.md`   |
 | `image-diff.wattle`     | core image size, host paths, and bytes vs a copy    |
 | `image-semantic.wattle` | two images compared by meaning, not source position |
-| `wasm_imports.zig`     | wasm imports from outside `wasi_snapshot_preview1`  |
+| `wasm_imports.zig`      | wasm imports from outside `wasi_snapshot_preview1`  |
 
 `chronology.sh` and `swallowed.wattle` are silent on a clean tree.
 `chronology.sh` looks for migration citations and `-D` options `build.zig` does
 not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and,
-across the whole tree including the top-level documents and `res/`, for the four
+across the whole tree including the top-level documents and `res/`, for the
 retired names listed in its header. The retired-name check uses a fixed pattern.
 It does not detect other retired paths or check whether every referenced file
 exists.
@@ -87,10 +88,10 @@ changes image bytes without changing the semantic comparison. `zig build` runs
 
 ## Testing
 
-| script         | what it runs                                          |
-| -------------- | ----------------------------------------------------- |
-| `contract.sh`  | one or more contracts, one process each               |
-| `leaks.sh`     | the leak check over every contract, or the named ones |
+| script          | what it runs                                          |
+| --------------- | ----------------------------------------------------- |
+| `contract.sh`   | one or more contracts, one process each               |
+| `leaks.sh`      | the leak check over every contract, or the named ones |
 | `matrix.wattle` | the acceptance matrix                                 |
 | `mutate.wattle` | the mutation sweep                                    |
 
@@ -104,8 +105,8 @@ change. [`acceptance-matrix.md`](testing/acceptance-matrix.md) has the
 operational detail.
 
 `mutate.wattle --src <file>` runs a repeatable mutation sweep in source order,
-using one warm-up and one log. `--all` sweeps every source under `src/` and
-takes about thirty hours. A bare invocation prints its usage. An interrupted
+using a warm-up and a log. `--all` sweeps every source under `src/` and
+can take many hours. A bare invocation prints its usage. An interrupted
 sweep leaves its current mutant in the working tree. Read
 [`mutation.md`](testing/mutation.md) first.
 
@@ -155,11 +156,10 @@ discarding the first round of a session. Read it before interpreting results.
 
 Hot-path loop rewrites require measurement even when expected to compile
 identically. A Zig `for` over a sub-slice with a pointer capture keeps both the
-element pointer and the counter live, so each iteration has three induction
-updates where an index loop has two; converting `runtime/value.zig`'s hash probe
-that way cost 1–4% on `methods`. The corpus cannot resolve that difference. Use
-an isolated function benchmark and compare `otool -tV` output from both
-binaries.
+element pointer and the counter live, adding induction updates compared with
+an index loop. Such changes can affect performance below the corpus's
+resolution. Use an isolated function benchmark and compare `otool -tV` output
+from both binaries.
 
 Every corpus has two arms, a `.janet` for the C Janet binary and a `.wattle` for
 Wattle. `res/check/bench-arms.wattle` checks that both implement the same
@@ -172,24 +172,26 @@ it was written. Choose the corpus relevant to the code being changed.
 
 ## Repository scripts
 
-These scripts run manually. `janet-to-wattle.wattle` converts Janet source to
-Wattle syntax. `version.wattle` sets a release version or restores `DEVEL`.
+Scripts in `res/repo/` run manually to prepare releases or convert source files.
 
-`version.wattle 0.1.0` and `version.wattle DEVEL` are steps of `RELEASING.md`.
-Each form sets the version in `build.zig` and the man page sources and
-regenerates the man pages with the `predoc` on the PATH. A release number also
-sets `build.zig.zon`, the banner in `README.md` and the heading of the
-Unreleased section of `CHANGELOG.md`. The script computes every file's new text
-before it writes any, and stops where a file does not have exactly one line to
-set.
+### Release versions
 
-### Script runtime
+`version.wattle` sets a release version or restores `DEVEL`. The release
+process in [RELEASING.md](../RELEASING.md) uses both commands:
 
-Wattle scripts under `res/` use the installed `wattle` on `PATH`. They must run
-independently of the build under test because mutation testing modifies that
-build. Scripts using newer language features require an updated installation.
-Benchmark corpora are the exception: the build under test runs the `.wattle`
-program, and C Janet runs the corresponding `.janet` program.
+```sh
+wattle res/repo/version.wattle 0.1.0
+wattle res/repo/version.wattle DEVEL
+```
+
+Both commands update the version in `build.zig` and the man page sources, then
+regenerate the man pages using `predoc` from `PATH`. A release number also
+updates `build.zig.zon` and the banner in `README.md`. It replaces the
+Unreleased heading in `CHANGELOG.md` with the release number and date.
+`DEVEL` adds an Unreleased section if it is absent.
+
+The script prepares all file changes before writing them. It stops if a line
+selected for replacement is missing or occurs more than once.
 
 ### Source conversion
 
@@ -202,3 +204,11 @@ Conversion replaces individual lexical forms and copies other text unchanged,
 allowing a line-by-line diff. Conversion handles lexical syntax only.
 It leaves `.janet` paths inside strings and macros constructing code such as
 `['if ...]` unchanged.
+
+### Script runtime
+
+Wattle scripts under `res/` use the installed `wattle` on `PATH`. They must run
+independently of the build under test because mutation testing modifies that
+build. Scripts using newer language features require an updated installation.
+Benchmark corpora are the exception: the build under test runs the `.wattle`
+program, and C Janet runs the corresponding `.janet` program.

@@ -10,27 +10,24 @@ strategy and the checks required for a change.
 
 ## Overview
 
-`src/` contains 113 `.zig` files and no C source or header. The runtime has no
-alternative C implementation and calls no upstream Janet C code. Its C calls
-are to libc. The goal is to exclude C source from the tree; libc remains a
-dependency. macOS requires `libSystem` for kernel access, and native module
-loading uses `dlopen`.
+`src/` contains Zig source and no C source. The runtime links libc.
+macOS requires `libSystem` for kernel access, and native module loading uses
+`dlopen`.
 
 Host types, constants and functions use Zig's standard library declarations
 where available: `std.c`, `std.posix`, `std.os.linux` or `std.os.windows`.
 Declarations absent from the standard library are written in Zig beside their
 callers. The runtime supports macOS, Linux with glibc or musl, Windows with
-mingw, WASI and FreeBSD. Branches for other platforms are removed rather than
-ported.
+mingw, WASI and FreeBSD.
 
 The following rules apply throughout the runtime:
 
 - Raises return error unions. The runtime uses no non-local jumps, so `defer`
   and `errdefer` are legal everywhere. See [Raising](#raising).
 
-- The runtime exports no `janet_*` symbols. Native modules call runtime
-  functions through a table of function pointers. Runtime files use `@import`
-  for internal dependencies. See [Boundaries](#boundaries).
+- Native modules call runtime functions through a table of function pointers.
+  Runtime files use `@import` for internal dependencies. See
+  [Boundaries](#boundaries).
 
 - Pointer types follow a fixed set of conventions. `[*c]` is restricted to
   the C boundary. A counted byte range is a slice. A pointer to a single object
@@ -38,25 +35,21 @@ The following rules apply throughout the runtime:
   `[*:0]const u8` only when the terminating NUL is read.
 
 - The build supplies configuration through `options.<name>` or `config`.
-  Compilation settings are never read from a C translation. See
-  [Configuration](#configuration).
+  See [Configuration](#configuration).
 
 ## Source tree
 
-Source files are grouped by compilation. A native module's `.so` compiles
-`src/api/` and the two root files. It must not compile `src/host/` or
+Source files are grouped by compilation. A native module's shared library
+compiles `src/api/` and its root files. It must not compile `src/host/` or
 `src/runtime/`.
 
-| directory      | files | compiled by                              |
-| -------------- | ----- | ---------------------------------------- |
-| `src/api/`     | 7     | a native module's `.so` and the runtime  |
-| `src/host/`    | 2     | the runtime                              |
-| `src/runtime/` | 82    | the runtime, as a single compilation     |
-| `src/boot/`    | 2     | the image generator                      |
-| `src/client/`  | 18    | the `wattle`, executable and web clients |
-
-The counts are of `.zig` files. `src/host/` also has one header and
-`src/runtime/` has three.
+| directory      | compiled by                                      |
+| -------------- | ------------------------------------------------ |
+| `src/api/`     | a native module's shared library and the runtime |
+| `src/host/`    | the runtime                                      |
+| `src/runtime/` | the runtime, as a single compilation             |
+| `src/boot/`    | the image generator                              |
+| `src/client/`  | the `wattle`, executable and web clients         |
 
 `src/gum/` contains optional Wattle source modules distributed with Wattle.
 They are not loaded by default, and a project copies the modules it uses into
@@ -64,8 +57,7 @@ its own source tree. The one exception is `gum/args.wattle`, which the image
 generator evaluates so that `cli-main` in `boot/boot.wattle` can parse the
 `wattle` command line. See [`gum/README.md`](gum/README.md).
 
-Thirteen of the sixteen files in `src/client/` implement the REPL's line editor.
-The `lineedit` module consists of `src/client/lineedit.zig` and the ten files
+The REPL's `lineedit` module consists of `src/client/lineedit.zig` and the files
 under `src/client/lineedit/`. It imports nothing from the runtime and performs
 no terminal I/O. It takes terminal input bytes and returns display bytes.
 The client, the `test/lineedit` step, the contract driver and
@@ -86,10 +78,9 @@ results against each other.
 `-Dlineedit` selects the editor. It is enabled by default, disabled on wasm and
 independent of `-Dev`. With the event loop enabled, the editor waits for input
 through the loop so other fibers can run during editing. Without the loop,
-input reads block.
-
-Windows always uses blocking reads because a completion port cannot wait on a
-console handle. The Windows event loop does not run while a line is open.
+input reads block. Windows always uses blocking reads because a completion port
+cannot wait on a console handle. The Windows event loop does not run while a
+line is open.
 
 While a line is open, `runtime/io.zig`'s `divert` redirects every `write` and
 `putChar` for standard output or standard error to the editor. The editor
@@ -97,22 +88,21 @@ writes the output above the input line and redraws the line below it. The
 redirection is thread-local and ends when the line ends. Output goes directly
 to the streams when no line is open or the editor is disabled.
 
-Three files are directly under `src/`. `src/root.zig` is the runtime's module
-root. It specifies the files compiled for each configuration and imports from
-all three directories. `src/module.zig` is the native module package's root.
-Module authors import only `wattle`. Zig restricts relative imports to the
-module root's directory, so both roots are above the directories they import
-from. `src/lexicon.zig` defines the source lexical tables in a separate module
-imported by the runtime and the line editor.
+`src/root.zig` is the runtime's module root. It specifies the files compiled for
+each configuration and imports from `api/`, `host/` and `runtime/`.
+`src/module.zig` is the native module package's root. Module authors import only
+`wattle`. Zig restricts relative imports to the module root's directory, so both
+roots are above the directories they import from. `src/lexicon.zig` defines the
+source lexical tables in a separate module imported by the runtime and the line
+editor.
 
 `src/api/` contains the interface files for module authors: `abstract_type.zig`,
 `abi.zig`, `constants.zig`, `fingerprint.zig`, `interface.zig`, `raise.zig` and
-`repr.zig`.
-`src/host/` contains `host.zig` and `cabi.zig`.
+`repr.zig`. `src/host/` contains `host.zig` and `cabi.zig`.
 
 The directory layout does not enforce import restrictions. Both package roots
 are at `src/`, so relative imports can cross between directories.
-`api/raise.zig`, for example, imports four runtime files in a branch excluded
+`api/raise.zig`, for example, imports runtime files in a branch excluded
 from native module builds. `examples/native-consumer` checks the separation by
 consuming the package through a path dependency, as an external module would.
 Compiler enforcement would require a separate `api` build module with a named
@@ -126,21 +116,21 @@ already imported by its callers. Functions have one name and are not
 re-exported through a facade. The file layout determines the namespace: `get`
 in `value/tables.zig` is called as `tables.get`.
 
-| directory        | files | contents                                            |
-| ---------------- | ----- | --------------------------------------------------- |
-| `runtime/`       | 35    | subsystems with no subdirectory                     |
-| `value/`         | 13    | a file per Wattle value type                        |
-| `value/helpers/` | 3     | operations on any value                             |
-| `vm/`            | 3     | `entry`, `lifecycle`, `state`                       |
-| `gc/`            | 2     | `mark`, `sweep`                                     |
-| `compiler/`      | 4     | `specials`, `emit`, `optimize`, `regalloc`          |
-| `bytecode/`      | 2     | `verify`, `disasm`                                  |
-| `os/`            | 4     | the host interface                                  |
-| `os/fs/`         | 3     | the file-system interface                           |
-| `ev/`            | 5     | `backend`, `stream`, `channel`, `dispatch`, `locks` |
-| `net/`           | 1     | the host declarations                               |
-| `ffi/`           | 4     | `types`, `classify`, `marshal`, `call`              |
-| `pp/`            | 2     | `format`, `pretty`                                  |
+| directory        | contents                                            |
+| ---------------- | --------------------------------------------------- |
+| `runtime/`       | subsystems with no subdirectory                     |
+| `value/`         | a file per Wattle value type                        |
+| `value/helpers/` | operations on any value                             |
+| `vm/`            | `entry`, `lifecycle`, `state`                       |
+| `gc/`            | `mark`, `sweep`                                     |
+| `compiler/`      | `specials`, `emit`, `optimize`, `regalloc`          |
+| `bytecode/`      | `verify`, `disasm`                                  |
+| `os/`            | the host interface                                  |
+| `os/fs/`         | the file-system interface                           |
+| `ev/`            | `backend`, `stream`, `channel`, `dispatch`, `locks` |
+| `net/`           | the host declarations                               |
+| `ffi/`           | `types`, `classify`, `marshal`, `call`              |
+| `pp/`            | `format`, `pretty`                                  |
 
 Paths below `runtime/` in the table are relative to that directory.
 
@@ -192,13 +182,13 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
 
 - `abi` defines the types shared by the runtime and separately compiled native
   modules: the abstract-type vtable, registration and method rows, abstract
-  head and its recovery offset, signal numbers, build configuration and six
+  head and its recovery offset, signal numbers, build configuration and
   capabilities. It imports only `repr`. `build.zig`'s `wattleModule` supplies
   this module to native module packages so both compilations use the same types.
 
 - `constants` imports `config` and uses `repr` for the tag.
 
-- `host` defines three host-dependent types from `std`: `FILE`, the descriptor
+- `host` defines host-dependent types from `std`: `FILE`, the descriptor
   and the thread handle. It is a separate module because `cabi` also uses these
   types and cannot import a file from `root`. Wattle aggregate types are
   declared beside their operations: `tables.Table`, `fibers.Fiber`,
@@ -218,10 +208,10 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
 - `root` contains the remaining runtime files, including `api/raise.zig`,
   `runtime/corefn.zig`, `os/abi.zig` and `net/abi.zig`.
 
-`build.zig` compiles this graph six times: for the runtime, the host bootstrap
+`build.zig` compiles this graph for the runtime, the host bootstrap
 generator, `test/contracts.zig`, `test/fuzz.zig`, the module-error fixtures and
-`wattle-runtime-test` rooted at `root.zig`. Cross builds compile it a seventh
-time for `zig build examples/native-executable`. That compilation produces a
+`wattle-runtime-test` rooted at `root.zig`. Cross builds also compile it
+for `zig build examples/native-executable`. That compilation produces a
 host client with the target's features to generate the image. All compilations
 use the same modules, so test roots use the runtime's types and constants.
 
@@ -235,11 +225,11 @@ runtime uses a single compilation so internal calls can return error unions.
 
 ## Raising
 
-No configuration uses `setjmp`, `longjmp` or `jmp_buf`. Raising records the
-signal in `Vm.pending_signal` and returns `error.Signal`. To establish a
-protected scope, call `signal.tryInit` before the protected call and
-`signal.restore` afterwards. `signal.tryInit` points `return_reg` at the
-scope's payload so the caller can catch the raise.
+Raises propagate through Zig error unions using ordinary function returns
+rather than jumps. Raising records the signal in `Vm.pending_signal` and
+returns `error.Signal`.  To establish a protected scope, call `signal.tryInit`
+before the protected call and `signal.restore` afterwards. `signal.tryInit`
+points `return_reg` at the scope's payload so the caller can catch the raise.
 
 Every event-loop entry runs under a protected scope or terminates the process
 on a raise. The source environment and Windows cancellation drain use
@@ -282,16 +272,15 @@ use the same wrappers, avoiding a VM check for the nfunction's origin. Casting
 an nfunction pointer into a slot without `raise.stored` compiles but crashes
 when called.
 
-An abstract type's eight raising callbacks use the same wrapper mechanism:
+An abstract type's raising callbacks use the same wrapper mechanism:
 `get`, `put`, `next`, `length`, `call`, `tostring`, `marshal` and `unmarshal`.
 These callbacks use `*T` for the abstract value and error unions for raises.
 `module.define` generates `callconv(.c)` wrappers that report raises through a
 `bool` or an `abi.NResult`, `abi.OptResult`, `abi.SizeResult` or
-`abi.PtrResult`.
-The runtime checks the flag with `raise.unwrap` at each call.
+`abi.PtrResult`. The runtime checks the flag with `raise.unwrap` at each call.
 
 Callers that can propagate errors use `try`. Callers that cannot propagate
-errors convert them to reports using one of four forms:
+errors convert them to reports using the following forms:
 
 | form                     | what it does                                         |
 | ------------------------ | ---------------------------------------------------- |
@@ -304,32 +293,31 @@ errors convert them to reports using one of four forms:
 Use it for an unexpected raise that would leave the runtime inconsistent.
 
 An unconsumed report causes an abort at the next protected scope. The message
-identifies neither the cause nor the caller.
-`res/check/swallowed.wattle` lists every raising function that reaches a
-report through a C-ABI function, and prints "no raising caller reaches a report"
-on a clean tree. Run it for every change to raising code.
+identifies neither the cause nor the caller. `res/check/swallowed.wattle`
+lists every raising function that reaches a report through a C-ABI function,
+and prints "no raising caller reaches a report" on a clean tree. Run it for
+every change to raising code.
 
 ## Binding documentation
 
-A binding's entry table stores documentation under `:doc` and `:sigs`.
-`:doc` contains the docstring prose. `:sigs` contains function signatures, one
-per line, such as `(f a)\n(f a b)`. It is absent for bindings without
-signatures.
+A binding's entry table stores documentation under `:doc` and `:sigs`. `:doc`
+contains the docstring prose. `:sigs` contains function signatures, one per
+line, such as `(f a)\n(f a b)`. It is absent for bindings without signatures.
 `defn` sets both from its arity clauses and docstring. `corefn.reg` sets them
 from its `usage` and `doc` arguments. `doc` and the line editor's hint print
 `:sigs` before `:doc`. `-Ddocstrings=false` omits both keys.
 
-Documented signatures use nested square brackets for optional arguments.
-For example, `(os/date [time [local]])` accepts zero, one or two arguments.
-These brackets indicate optional arguments; they are not Wattle vector
-literals.
+Each supported arity is documented as a separate signature. For example,
+`os/date` has `(os/date)`, `(os/date time)` and `(os/date time local)`.
 
-`doc` reads argument names from `:sigs`: every token after the first token on
-each line, excluding `&`-words and keywords. Matching whole words in the prose
-are displayed in yellow. A word written as `^name` refers to another binding
-and is displayed as `name` in cyan. With colour disabled, both use ordinary
-text and the `^` is omitted. The line editor's hint also omits the `^` and
-does not colour arguments.
+`doc` highlights argument names and references to other bindings in the
+docstring prose. It displays argument names in yellow, matching whole words
+against the names in `:sigs`. Those names are the tokens after the function
+name on each line, excluding `&`-words and keywords. A docstring author can
+reference other bindings by prefixing the binding name with `^`. The name is
+printed in cyan without the `^`. With colour disabled, both appear as ordinary
+text, with the `^` omitted. The line editor's hint also omits the `^` and does
+not colour arguments.
 
 ## Boundaries
 
@@ -338,10 +326,10 @@ boundary checks.
 
 ### The module table
 
-No file in `src/` exports a `janet_*` symbol. `api/interface.zig` defines
-`Runtime`, an `extern struct` of 83 `callconv(.c)` function pointers. Both the
-runtime and native modules compile this file. `runtime/capi.zig` defines the
-83 functions and initialises the struct in `table`.
+`api/interface.zig` defines `Runtime`, an `extern struct` of `callconv(.c)`
+function pointers. Both the runtime and native modules compile this file.
+`runtime/capi.zig` defines the functions and initialises the struct in
+`table`.
 
 `runtime/env.zig` passes the table's address to `_wattle_init`. The shim in
 `module.zig` stores it in `interface.rt`, which module API calls use. Each
@@ -364,7 +352,7 @@ compiled into dynamically loaded modules.
 ### External declarations
 
 `host/cabi.zig` contains the runtime's `extern` declarations for libc and the
-host. None has a Janet name.
+host.
 
 ### Host structures
 
@@ -383,7 +371,7 @@ derives `Selection` from `Config`. Its booleans determine which files
 `root.zig` compiles, through `options.<name>`. Both use a single expression per
 setting, preventing inconsistent inclusion under `Config` and `Selection`.
 
-`*prefix*` specifies the root for three directories: `<prefix>/lib/wattle`
+`*prefix*` specifies the root for these directories: `<prefix>/lib/wattle`
 for modules, `<prefix>/bin` for programs and `<prefix>/share/man` for man pages.
 The runtime starts without a prefix. `WATTLE_PREFIX` and `--prefix` each set a
 single root directory; neither accepts a list. The flag, dynamic binding and
@@ -395,7 +383,7 @@ With an empty prefix, set by `--prefix ""`, the first `:prefix:` lookup or pkg
 command raises. Both error messages name `WATTLE_PREFIX` and `--prefix`.
 
 `wattle/libpath`, `wattle/binpath`, `wattle/manpath` and `wattle/srcpath` take
-no arguments and return four derived directories: `<prefix>/lib/wattle`,
+no arguments and return these derived directories: `<prefix>/lib/wattle`,
 `<prefix>/bin`, `<prefix>/share/man` and `<prefix>/share/wattle`. They raise if
 the prefix is nil or empty. They are functions because `*prefix*` can change
 during execution. `:prefix:` expansion uses the same helper.
@@ -413,7 +401,7 @@ zig build -Dtarget=x86_64-linux-musl --cache-dir /tmp/xc -p /tmp/out
 ```
 
 Checks must use the same configuration conditions as the code they check.
-`res/check/gates.wattle --check` builds thirteen configurations and compares
+`res/check/gates.wattle --check` builds configurations and compares
 their symbol tables against `res/check/gated.txt`. Reading `root.zig` alone
 does not establish which files are compiled. Its comptime block does not list
 every file, and declarations in its `pub const` block are analysed only when
@@ -522,25 +510,25 @@ No header is installed.
 
 The `test` step runs all steps under `test/`:
 
-| step              | what it runs                                     |
-| ----------------- | ------------------------------------------------ |
-| `test`            | the full test run described below                |
-| `test/contracts`  | 68 contracts in a second runtime compilation     |
-| `test/subsystems` | an alias of `test/contracts`                     |
-| `test/runtime`    | in-file `test` blocks rooted at `root.zig`       |
-| `test/lineedit`   | the line editor's in-file `test` blocks          |
+| step              | what it runs                               |
+| ----------------- | ------------------------------------------ |
+| `test`            | the full test run described below          |
+| `test/contracts`  | contracts in a second runtime compilation  |
+| `test/subsystems` | an alias of `test/contracts`               |
+| `test/runtime`    | in-file `test` blocks rooted at `root.zig` |
+| `test/lineedit`   | the line editor's in-file `test` blocks    |
 
 Example build steps are under `examples/`:
 
 | step                         | what it builds                                                   |
 | ---------------------------- | ---------------------------------------------------------------- |
-| `examples`                   | all three examples below                                         |
+| `examples`                   | all examples below                                               |
 | `examples/native-executable` | `examples/native-executable` as `<prefix>/bin/native-executable` |
 | `examples/native-consumer`   | `examples/native-consumer`, a consumer outside the tree          |
 | `examples/web-repl`          | `examples/web-repl`, a WASI reactor, as `<prefix>/web-repl/`     |
 
 `zig build test` runs the contracts, both sets of in-file `test` blocks, fuzz
-corpora, module-error fixtures, CLI checks and 39 suites. Native builds also
+corpora, module-error fixtures, CLI checks and suites. Native builds also
 run `native-executable`.
 
 `test/runtime` and `test/lineedit` each print `All N tests passed.` Add
@@ -548,15 +536,14 @@ run `native-executable`.
 `examples/native-executable/main.wattle` with `examples/native-events`
 linked in.
 
-`-Dinstall-tests=true` installs the contract driver on every target except
-wasm, where the installed driver could not be run. The driver accepts a
-contract name or no argument to run all 68 contracts in a single process.
-The no-argument run is the only check that initialises and tears down the
-runtime 68 times consecutively. It also checks for failures in contracts
-outside the intended scope of a change. Run it without arguments before
-accepting a change.
+`-Dinstall-tests=true` installs the contract driver on every target except wasm,
+where the installed driver could not be run. The driver accepts a contract name
+or no argument to run all contracts in a single process. The no-argument run
+checks repeated runtime initialisation and teardown. It also checks for failures
+in contracts outside the intended scope of a change. Run it without arguments
+before accepting a change.
 
-`build.zig` rejects two source conditions: an unlisted `test/*.zig` file and
+`build.zig` rejects these source conditions: an unlisted `test/*.zig` file and
 an unused file-scope `const`. Test files must be listed in `test/contracts.zig`
 or exempted in `checkContractsListed`'s `exempt` list.
 
@@ -710,12 +697,11 @@ Builds for the development host alone do not check the following constraints.
 - On Windows, `os/execute` and `os/spawn` pass child processes a copy of a
   stream handle from `os/open`. `os/open` uses `FILE_FLAG_OVERLAPPED`, but a
   child's C runtime writes to standard streams without an `OVERLAPPED`
-  structure.
-  Such writes fail on character devices such as `NUL`. `spawnWindows` reopens
-  character devices without the flag and duplicates other handles. It makes
-  the copy inheritable and closes it after `CreateProcessA`. The original
-  stream handle is unchanged. `core/file` handles and pipes created by `:pipe`
-  are passed directly.
+  structure. Such writes fail on character devices such as `NUL`.
+  `spawnWindows` reopens character devices without the flag and duplicates
+  other handles. It makes the copy inheritable and closes it after
+  `CreateProcessA`. The original stream handle is unchanged. `core/file`
+  handles and pipes created by `:pipe` are passed directly.
 
 A musl build links dynamically by default and can load native modules on a
 machine with the musl loader. CI uses `-Dlinkage=static` for musl, whose static
@@ -723,5 +709,4 @@ machine with the musl loader. CI uses `-Dlinkage=static` for musl, whose static
 
 Emulated x86-64 cannot run NaN-boxed builds. The representation packs pointers
 into doubles and depends on an address-space assumption that QEMU does not
-honour. Use `-Dnanbox=false` under emulation. NaN-boxed x86-64 remains untested
-until run on real hardware.
+honour. Use `-Dnanbox=false` under emulation.

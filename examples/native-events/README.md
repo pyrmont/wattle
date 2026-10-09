@@ -9,7 +9,7 @@ pattern. `examples/native-abstract` demonstrates resource management, and
 `examples/native-function` demonstrates argument access without resource
 management.
 
-`digest.zig` implements the module and defines one nfunction:
+`digest.zig` implements the module and defines the hashing nfunction:
 
 ```clojure
 (import digest)
@@ -27,15 +27,15 @@ test uses the same calls as an installed module.
 ## Event-loop interface
 
 Modules provide an event source and use the loop to resume fibers with results.
-Three operations support this interaction.
+The following operations support this interaction.
 
 ### Operations
 
-| operation | what it does | where it may be called |
-| --- | --- | --- |
-| `wattle.await()` | suspends the fiber this nfunction is running on | an nfunction |
-| `wattle.post(loop, cb, ctx)` | asks the loop thread to run `cb(wake, ctx)` | any thread, including a thread that is not running Wattle |
-| `wattle.wake(w, fiber, value)` | puts the fiber back on the run queue | inside a posted callback |
+| operation                      | what it does                                    | where it may be called                                    |
+| ------------------------------ | ----------------------------------------------- | --------------------------------------------------------- |
+| `wattle.await()`               | suspends the fiber this nfunction is running on | an nfunction                                              |
+| `wattle.post(loop, cb, ctx)`   | asks the loop thread to run `cb(wake, ctx)`     | any thread, including a thread that is not running Wattle |
+| `wattle.wake(w, fiber, value)` | puts the fiber back on the run queue            | inside a posted callback                                  |
 
 Before suspending, the nfunction calls `wattle.loop()` and `wattle.rootFiber()`
 to obtain the loop and fiber.
@@ -128,12 +128,12 @@ lifetime requirements.
 
 The test checks:
 
-- Digests for two known inputs and equal results for a buffer and string.
+- Digests for known inputs and equal results for a buffer and string.
 
-- Four concurrent hashes under `ev/gather`, with timing tolerance to check that
+- Concurrent hashes under `ev/gather`, with timing tolerance to check that
   hashing does not block the loop.
 
-- Another fiber running two hundred times while a hash is computed.
+- Another fiber running while a hash is computed.
 
 - A cancellation result from a hash cancelled through `ev/cancel`, followed by
   successful loop operation.

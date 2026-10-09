@@ -18,7 +18,7 @@ inspired by [Clojure][].
 
 ## Language features
 
-- 600+ functions and macros in the core library
+- Core library of functions and macros
 - Parsing expression grammar (PEG) engine
 - Macros and compile-time computation
 - First-class closures
