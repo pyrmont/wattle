@@ -32,8 +32,11 @@ VERBS
   ``.tar.gz``, or a Git repository. A directory is installed as it is. A name
   ending in ``.tar`` or ``.tar.gz`` is downloaded with **curl** and unpacked
   with **tar**. Anything else is cloned with **git**. With no _source_, the
-  current directory is installed. If the application contains ``pkg.wattle`` or
-  ``pkg/init.wattle``, ***apps*** runs the hooks of that script and nothing
+  current directory is installed. The ``info.edn`` of the application needs a
+  ``:group``, a string such as ``net.inqk``, and the application is installed
+  in ``lib/wattle/apps/<group>/<name>``. A _name_ is unique across groups.
+  If the application contains ``hooks.wattle`` or
+  ``hooks/init.wattle``, ***apps*** runs the hooks of that script and nothing
   else. Otherwise ***apps*** builds each ``:exe`` artifact of ``info.edn`` with
   ***build*** ***exe***, installs the program in ``bin``, and installs each
   file in the ``:man`` vector of ``info.edn`` in ``share/man``. The section is

@@ -1,1 +1,1 @@
-{:name "app-program"}
+{:group "org.wattle.examples" :name "app-program"}

@@ -134,15 +134,66 @@
              (nil? (os/stat bin-mod :mode)))
         "removing removes programs, man pages and modules")
 
+;; Placement: an application is in apps/<group>/<name> under lib/wattle, and the
+; group directory goes with its last application.
+(assert-no-error "app-dep1 install for placement" (app/install "./examples/app-dep1"))
+(def dep1-dir (string root "/lib/wattle/apps/org.wattle.examples/app-dep1"))
+(assert (os/stat (string dep1-dir "/manifest.edn") :mode) "the manifest is in the application directory")
+(assert (os/stat (string dep1-dir "/info.edn") :mode) "the info file is copied into the application directory")
+(assert (os/stat (string dep1-dir "/hooks/init.wattle") :mode) "the hooks directory is copied")
+(assert (= "org.wattle.examples" (get (app/manifest "app-dep1") :group)) "the manifest records the group")
+(assert (app/installed? "app-dep1") "an installed application is found by its name")
+(assert (nil? (os/stat (string root "/lib/wattle/pkg") :mode)) "nothing is installed in lib/wattle/pkg")
+
+; A name is unique across groups.
+(let [other (string prefix "-group")]
+  (rmrf other)
+  (assert (os/mkdir other))
+  (spit (string other "/info.edn") "{:group \"org.wattle.other\" :name \"app-dep1\" :man []}")
+  (assert-error-value "the same name in another group"
+                      "application \"app-dep1\" is already installed"
+                      (app/install other))
+  (assert (and (= 1 (length (app/list))) (= "app-dep1" (first (app/list)))) "a refused install adds nothing")
+  (rmrf other))
+(assert-no-error "app-dep1 remove for placement" (app/remove "app-dep1"))
+(assert (nil? (os/stat (string root "/lib/wattle/apps/org.wattle.examples") :mode))
+        "the group directory is removed with its last application")
+(assert (not (app/installed? "app-dep1")) "a removed application is not installed")
+
+; The group is required, and the group and the name are each one directory name.
+(let [bad (string prefix "-bad")]
+  (defn- try-install [info-text]
+    (rmrf bad)
+    (assert (os/mkdir bad))
+    (spit (string bad "/info.edn") info-text)
+    (def result (protect (with-dyns [*err* !""] (app/install bad))))
+    (rmrf bad)
+    result)
+  (let [[ok message] (try-install "{:name \"x\" :man []}")]
+    (assert (and (not ok) (string/find "info.edn needs a :group" message))
+            "an application with no group says that info.edn needs one"))
+  (each [what text] [["an empty group" "{:group \"\" :name \"x\" :man []}"]
+                     ["a group of .." "{:group \"..\" :name \"x\" :man []}"]
+                     ["a group of ." "{:group \".\" :name \"x\" :man []}"]
+                     ["a group with a slash" "{:group \"a/b\" :name \"x\" :man []}"]
+                     ["a group with a backslash" "{:group \"a\\\\b\" :name \"x\" :man []}"]
+                     ["a group that is not a string" "{:group 3 :name \"x\" :man []}"]
+                     ["an empty name" "{:group \"g\" :name \"\" :man []}"]
+                     ["a name of .." "{:group \"g\" :name \"..\" :man []}"]
+                     ["a name with a slash" "{:group \"g\" :name \"a/b\" :man []}"]]
+    (assert (not (first (try-install text))) (string what " is refused")))
+  (assert (= 0 (length (app/list))) "a refused group or name installs nothing")
+  (assert (empty? (os/dir (string root "/lib/wattle/apps"))) "a refused install leaves no directory behind"))
+
 ; An application script's `dependencies` hook is not run, and add-bin records
 ; :has-exe and not :has-bin-script.
 (def hook-dir (string prefix "-hook"))
 (rmrf hook-dir)
 (assert (os/mkdir hook-dir))
-(assert (os/mkdir (string hook-dir "/pkg")))
+(assert (os/mkdir (string hook-dir "/hooks")))
 (spit (string hook-dir "/hookbin") "#!/bin/sh\n")
-(spit (string hook-dir "/info.edn") "{:name \"hook-app\"}")
-(spit (string hook-dir "/pkg/init.wattle")
+(spit (string hook-dir "/info.edn") "{:group \"org.wattle.tests\" :name \"hook-app\"}")
+(spit (string hook-dir "/hooks/init.wattle")
       (string "(defn dependencies [manifest &] (put! manifest :deps-hook-ran true))\n"
               "(defn install [manifest &] (app/add-bin manifest \"hookbin\"))\n"))
 (assert-no-error "hook-app install"
@@ -163,7 +214,7 @@
 
 ; Try installing an application that is missing a script
 (assert-error-value "application missing script"
-                    "application must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man"
+                    "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :artifacts or :man"
                     (app/install "./examples/app-empty"))
 (assert (= 0 (length (app/list))) "check failure 0")
 (assert (= 0 (length (app/list))) "check failure 1")
@@ -208,7 +259,7 @@
   (spit (string info-dir "/docs/man-app.txt") "not a manual page\n")
   (spit (string info-dir "/info.edn") info-text))
 
-(make-info-app "{:name \"man-app\" :man [\"docs/man-app.1\" \"docs/man-app.7\"]}")
+(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\" :man [\"docs/man-app.1\" \"docs/man-app.7\"]}")
 (assert-no-error "info-only install" (with-dyns [*err* !""] (app/install info-dir)))
 (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-app.1")))
         "a .1 file goes to man1")
@@ -238,9 +289,9 @@
     (def bug-dir (string prefix "-bug"))
     (rmrf bug-dir)
     (assert (os/mkdir bug-dir))
-    (assert (os/mkdir (string bug-dir "/pkg")))
-    (spit (string bug-dir "/info.edn") "{:name \"bug-app\"}")
-    (spit (string bug-dir "/pkg/init.wattle") "(defn install [manifest &] (+ 1 nil))\n")
+    (assert (os/mkdir (string bug-dir "/hooks")))
+    (spit (string bug-dir "/info.edn") "{:group \"org.wattle.tests\" :name \"bug-app\"}")
+    (spit (string bug-dir "/hooks/init.wattle") "(defn install [manifest &] (+ 1 nil))\n")
     (def [status text] (run-cli "apps" "install" bug-dir))
     (assert (= 1 status) "a hook that fails exits with status 1")
     (assert (string/has-prefix? "error: could not find method" text)
@@ -257,7 +308,7 @@
 ; where both bindings exist.
 (compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
   (do
-    (make-info-app "{:name \"exe-app\" :artifacts [{:type :exe :name \"x\" :entry \"x.wattle\"}]}")
+    (make-info-app "{:group \"org.wattle.tests\" :name \"exe-app\" :artifacts [{:type :exe :name \"x\" :entry \"x.wattle\"}]}")
     (def [status text] (run-cli "apps" "install" info-dir))
     (assert (= 1 status) "a build that fails exits with status 1")
     (assert (string/find "the Wattle package is not at" text) "the output of the build is shown")
@@ -265,19 +316,19 @@
             "the failure of the build is the last line")
     (assert (= 0 (length (app/list))) "an application whose build fails is not installed")))
 
-(make-info-app "{:name \"man-app\" :man [\"docs/man-app.1\" \"docs/man-app.txt\"]}")
+(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\" :man [\"docs/man-app.1\" \"docs/man-app.txt\"]}")
 (assert-error "a :man entry with no section" (with-dyns [*err* !""] (app/install info-dir)))
 (assert (= 0 (length (app/list))) "a bad :man entry installs nothing")
 (assert (nil? (os/stat (string prefix "/share/man/man1/man-app.1") :mode))
         "a bad :man entry leaves no page behind")
 
-(make-info-app "{:name \"man-app\" :artifacts [{:type :lib :name \"x\" :root \"x.zig\"}]}")
+(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\" :artifacts [{:type :lib :name \"x\" :root \"x.zig\"}]}")
 (assert-error "a :lib artifact without a script" (with-dyns [*err* !""] (app/install info-dir)))
 (assert (= 0 (length (app/list))) "a :lib artifact without a script installs nothing")
 
-(make-info-app "{:name \"man-app\"}")
+(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\"}")
 (assert-error-value "an info file that declares neither"
-                    "application must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man"
+                    "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :artifacts or :man"
                     (app/install info-dir))
 (rmrf info-dir)
 
@@ -303,9 +354,9 @@
   (rmrf src-dir)
   (assert (os/mkdir src-dir))
   (assert (os/mkdir demo-dir))
-  (assert (os/mkdir (string demo-dir "/pkg")))
-  (spit (string demo-dir "/info.edn") "{:name \"demo\"}")
-  (spit (string demo-dir "/pkg/init.wattle")
+  (assert (os/mkdir (string demo-dir "/hooks")))
+  (spit (string demo-dir "/info.edn") "{:group \"org.wattle.tests\" :name \"demo\"}")
+  (spit (string demo-dir "/hooks/init.wattle")
         "(defn install [manifest &] (app/add-file manifest \"demo.wattle\"))\n")
   (spit (string demo-dir "/demo.wattle") "; one\n")
   (defn- module-text [] (slurp demo-module))

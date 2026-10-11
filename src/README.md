@@ -508,11 +508,13 @@ The `info.edn` of an application has a `:group`, a string. By convention it is
 a reverse domain, such as `net.inqk`. Installing an application with no `:group`
 raises an error that says `info.edn` needs one. `:group` and `:name` are each
 one directory name, so neither may be empty, contain a path separator or be
-`..`.
+`.` or `..`. A `:name` is unique across groups. Installing an application whose
+name is installed in any group raises an error, so `apps upgrade` and `apps
+remove` take the name alone.
 
 An application is installed in `<prefix>/lib/wattle/apps/<group>/<name>/`. That
-directory holds the manifest, a copy of `info.edn`, the hook script and, for a
-`:src` artifact, the copied files. Executables are installed in
+directory holds the manifest, a copy of `info.edn`, the hook script (copied as
+`hooks.wattle` or `hooks/`) and, for a `:src` artifact, the copied files. Executables are installed in
 `<prefix>/bin` and man pages in `<prefix>/share/man`. `import` does not search
 the application directory.
 

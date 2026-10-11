@@ -55,8 +55,10 @@ An application may contain these files:
 - ``info.edn``:
   The info file, at the root of the application.
 
-- ``pkg/init.wattle`` or ``pkg.wattle``:
-  The application script. If both exist, ``pkg/init.wattle`` is used.
+- ``hooks/init.wattle`` or ``hooks.wattle``:
+  The application script. If both exist, ``hooks/init.wattle`` is used. The
+  rest of ``hooks`` is installed with it, so the script can import the files
+  beside it.
 
 An application needs an application script or an info file that declares
 ``:artifacts`` or ``:man``.
@@ -64,11 +66,17 @@ An application needs an application script or an info file that declares
 INFO FILE
 =========
 
-The info file holds one map. All keys are optional, but ``:name`` is needed
-when the application is not installed with an explicit name:
+The info file holds one map. All keys are optional, but ``:name`` and
+``:group`` are needed to install an application:
 
 - ``:name``:
-  The name of the application, a string without path separators.
+  The name of the application. It is one directory name and is unique across
+  groups.
+
+- ``:group``:
+  The group of the application, by convention a reverse domain such as
+  ``net.inqk``. It is one directory name. A directory name is not empty, is not
+  ``.`` or ``..`` and contains no path separator.
 
 - ``:vendored``:
   A vector of maps that describe the sources that ``wattle deps vendor`` copies
@@ -88,6 +96,7 @@ Example:
 
 ````
 {:name "greeter"
+ :group "net.inqk"
  :vendored [{:name "greetings"
              :url "https://example.com/greetings.git"
              :prefix "deps/greetings"}]
@@ -138,7 +147,7 @@ Within a hook, these functions add files to the manifest, so that
 - ``app/add-manpage``:
   Adds a man page to the manpath.
 
-Example of ``pkg/init.wattle``:
+Example of ``hooks/init.wattle``:
 
 ````
 (defn install
@@ -157,10 +166,10 @@ All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
   The libpath. Modules added with ``app/add-file`` are here, and ``import``
   finds them. See ``MODULES`` in `wattle(7)`.
 
-- ``lib/wattle/pkg/<name>``:
-  The record of an installed application: ``manifest.edn``, which lists its
-  files, a copy of its info file and application script, and the other files
-  of its ``pkg`` directory.
+- ``lib/wattle/apps/<group>/<name>``:
+  The directory of an installed application: ``manifest.edn``, which lists its
+  files, a copy of its info file and a copy of its application script, with
+  the rest of its ``hooks`` directory.
 
 - ``bin``:
   The binpath, for programs.

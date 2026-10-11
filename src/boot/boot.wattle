@@ -4905,20 +4905,56 @@
         (protect (os/mkdir so-far))))
     (ensuref (= :directory (os/stat path :mode)) "cannot create directory %s" path))
 
-  (defn- app-dir
-    ([] (app-dir nil))
-    ([app-name]
-      (def s (sep))
-      (string (wattle/libpath) s "pkg" (if app-name s) app-name)))
+  (defn- dir-name-problem
+    """
+    Returns nil if name is a string that can be one directory name, and
+    otherwise a phrase that says why it cannot. A name cannot be empty, be `.`
+    or `..`, or contain a path separator.
+    """
+    [name]
+    (cond
+      (not (string? name)) "is not a string"
+      (empty? name) "is empty"
+      (or (= name ".") (= name "..")) "is `.` or `..`"
+      (or (string/find "/" name) (string/find "\\" name)) "contains a path separator"))
 
-  (defn- app-file
-    [app-name filename]
+  (defn- apps-dir
+    """
+    Returns the directory that holds one directory for each group.
+    """
+    []
+    (string (wattle/libpath) (sep) "apps"))
+
+  (defn- app-dir-in
+    """
+    Returns the directory of the application app-name in group, whether or not
+    it is installed.
+    """
+    [group app-name]
     (def s (sep))
-    (string (wattle/libpath) s "pkg" s app-name s filename))
+    (string (apps-dir) s group s app-name))
+
+  (defn- app-group
+    """
+    Returns the group of the installed application app-name, or nil if there is
+    none. A name is unique across groups, so at most one group holds it.
+    """
+    [app-name]
+    (when (and (nil? (dir-name-problem app-name)) (os/stat (apps-dir) :mode))
+      (find #(= :directory (os/stat (app-dir-in $ app-name) :mode)) (sort! (os/dir (apps-dir))))))
+
+  (defn- app-dir
+    """
+    Returns the directory of the installed application app-name, or nil if it
+    is not installed.
+    """
+    [app-name]
+    (when-let [group (app-group app-name)]
+      (app-dir-in group app-name)))
 
   (defn- get-manifest-filename
-    [app-name]
-    (app-file app-name "manifest.edn"))
+    [group app-name]
+    (string (app-dir-in group app-name) (sep) "manifest.edn"))
 
   (defn- get-files [manifest]
     (def files (get manifest :files ![]))
@@ -4967,7 +5003,7 @@
   (defn- sync-manifest
     [manifest]
     (def bn (get manifest :name))
-    (def manifest-name (get-manifest-filename bn))
+    (def manifest-name (get-manifest-filename (get manifest :group) bn))
     (def b !"")
     ; Frozen on the way out: edn tags a mutable value and `parse` reads no
     ; word tag, so what reaches disk is a map of vectors, which `%w` and `%y`
@@ -4981,9 +5017,9 @@
   (defn app/manifest
     "Gets the manifest for a given installed application."
     [app-name]
-    (def name (get-manifest-filename app-name))
-    (ensuref (fexists name) "no application %v found" app-name)
-    (parse (slurp name)))
+    (def group (app-group app-name))
+    (ensuref group "no application %v found" app-name)
+    (parse (slurp (get-manifest-filename group app-name))))
 
   (defn- get-app-module
     [app-name]
@@ -5004,13 +5040,13 @@
       (put! new-env *prefix* fixed-prefix)
       (with-env new-env
         (put! new-env :app-dir (app-dir app-name)) ; get the prefix right
+        (def hooks-module (string "@prefix/lib/wattle/apps/" (get manifest :group) "/" app-name "/hooks"))
         (try
-          (require (string "@prefix/lib/wattle/pkg/" app-name))
+          (require hooks-module)
           ([e f]
-            (def pfx "could not find module @prefix/lib/wattle/pkg/")
             (def msg (if (and (string? e)
-                              (string/has-prefix? pfx e))
-                       "application must contain pkg.wattle or pkg/init.wattle"
+                              (string/has-prefix? (string "could not find module " hooks-module) e))
+                       "application must contain hooks.wattle or hooks/init.wattle"
                        e))
             (propagate msg f))))))
 
@@ -5027,10 +5063,16 @@
   (defn app/list
     "Gets a list of all installed applications in lexical order."
     []
-    (def d (app-dir))
-    (if (os/stat d :mode)
-      (sort! (os/dir d))
-      ![]))
+    (def root (apps-dir))
+    (def names ![])
+    (when (os/stat root :mode)
+      (each group (os/dir root)
+        (def dir (string root (sep) group))
+        (when (= :directory (os/stat dir :mode))
+          (each name (os/dir dir)
+            (when (= :directory (os/stat (string dir (sep) name) :mode))
+              (array/push! names name))))))
+    (sort! names))
 
   (defn- app-remove-unchecked
     [app-name]
@@ -5045,7 +5087,12 @@
       (case (os/stat file :mode)
         :file (os/rm file)
         :directory (os/rmdir file)))
-    (rmrf (app-dir app-name))
+    (def dir (app-dir app-name))
+    (rmrf dir)
+    ; The group directory goes with its last application.
+    (def group-dir (string/slice dir 0 (- (length dir) (length app-name) 1)))
+    (when (empty? (os/dir group-dir))
+      (os/rmdir group-dir))
     nil)
 
   (defn app/remove
@@ -5060,7 +5107,7 @@
   (defn app/installed?
     "Checks whether an application is installed."
     [app-name]
-    (truthy? (os/stat (app-dir app-name) :mode)))
+    (truthy? (app-group app-name)))
 
   (defn- app-add-file-to
     [manifest base src dest chmod-mode]
@@ -5275,36 +5322,41 @@
     (def infofile-src (string path s "info.edn"))
     (def info (when (fexists infofile-src) (parse (slurp infofile-src))))
     ; Check bscript
-    (def bscript-src1 (string path s "pkg" s "init.wattle"))
-    (def bscript-src2 (string path s "pkg.wattle"))
+    (def bscript-src1 (string path s "hooks" s "init.wattle"))
+    (def bscript-src2 (string path s "hooks.wattle"))
     (def bscript-src (cond
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
     (ensure (or bscript-src (get info :artifacts) (get info :man))
-            "application must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man")
+            "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :artifacts or :man")
     ; Detect application name
     (def app-name (get config :name (get info :name)))
     (ensuref app-name
              "unable to infer application name for %v, use :name argument or add :name to info file" path)
-    (ensuref (not (string/check-set "\\/" app-name))
-             "application name %v cannot contain path separators" app-name)
-    (ensure (next app-name) "cannot use empty app-name")
-    (ensuref (not (fexists (get-manifest-filename app-name)))
+    (def name-problem (dir-name-problem app-name))
+    (ensuref (nil? name-problem) "application name %v %s" app-name name-problem)
+    ; Detect application group
+    (def group (get config :group (get info :group)))
+    (ensuref group
+             "unable to find a group for %v, info.edn needs a :group such as \"net.inqk\"" path)
+    (def group-problem (dir-name-problem group))
+    (ensuref (nil? group-problem) "application group %v %s" group group-problem)
+    (ensuref (nil? (app-group app-name))
              "application %v is already installed" app-name)
     ; Setup installed paths
-    (mkdirs (app-dir))
-    (os/mkdir (app-dir app-name))
+    (def dir (app-dir-in group app-name))
+    (mkdirs dir)
     ; Copy infofile
     (when info
-      (copyfile infofile-src (app-file app-name "info.edn")))
-    ; Copy aliased bscript
-    (when (fexists bscript-src2)
-      (copyfile bscript-src2 (app-file app-name "init.wattle")))
-    ; Copy some files into the new location unconditionally
-    (def implicit-sources (string path s "pkg"))
+      (copyfile infofile-src (string dir s "info.edn")))
+    ; Copy the hook script. A hooks directory is copied whole, so that the
+    ; script can import files beside it, and takes precedence over hooks.wattle.
+    (when (and (fexists bscript-src2) (not (fexists bscript-src1)))
+      (copyfile bscript-src2 (string dir s "hooks.wattle")))
+    (def implicit-sources (string path s "hooks"))
     (when (= :directory (os/stat implicit-sources :mode))
-      (copyrf implicit-sources (app-dir app-name)))
-    (def man !{:name app-name :local-source path :files ![]})
+      (copyrf implicit-sources (string dir s "hooks")))
+    (def man !{:name app-name :group group :local-source path :files ![]})
     (merge! man config)
     (sync-manifest man)
     (edefer (do (print "installation error, removing") (app/remove app-name))
@@ -5345,12 +5397,15 @@
     """
     Installs an application from source, which is an existing directory, a name
     ending in .tar or .tar.gz that curl downloads and tar unpacks, or any other
-    name, which git clones. The name of the application is the value mapped to :name
-    in either config or the info file. The :ref in config is a branch or tag and
+    name, which git clones. The name and the group of the application are the
+    values mapped to :name and :group in either config or the info file. Each is
+    one directory name, and the application is installed in apps/group/name
+    under lib/wattle. A name is unique across groups. Raises if the group is
+    missing. The :ref in config is a branch or tag and
     is accepted only for a Git repository. There are 4 hooks called during
     installation (clean, build, install and check). A user can
     register a hook by defining a function with the same name in the application
-    script. An application without pkg.wattle or pkg/init.wattle is built and
+    script. An application without hooks.wattle or hooks/init.wattle is built and
     installed from the :artifacts and :man of its info file instead.
     """
     [source & {:as config}]
@@ -5378,8 +5433,8 @@
       (def files (get man :files ![]))
       (ensuref (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
       (def s (sep))
-      (os/mkdir (string dest-dir s "pkg"))
-      (def install-hook (string dest-dir s "pkg" s "init.wattle"))
+      (os/mkdir (string dest-dir s "hooks"))
+      (def install-hook (string dest-dir s "hooks" s "init.wattle"))
       (edefer (rmrf dest-dir) ; don't leave garbage on failure
         (def install-source ![])
         (defn real-or-plain [path] (if (os/stat path :mode) (os/realpath path) path))
@@ -5391,7 +5446,7 @@
           [dir file]
           (when (string/has-prefix? (string dir s) file)
             (string/triml (slice file (length dir) -1) s)))
-        (when is-backup (copyrf (app-dir app-name) (string dest-dir s "old-pkg")))
+        (when is-backup (copyrf (app-dir app-name) (string dest-dir s "old-app")))
         (each file files
           (def {mode :mode perm :permissions} (os/stat file))
           (def lib-rel (relative-to libpath file))
@@ -5434,8 +5489,8 @@
     (rmrf backup-dir)
     (def backup-source (app/pack app-name backup-dir true))
     (edefer (do
-              (app/install backup-source :name app-name)
-              (copyrf (string backup-source s "old-pkg") (app-dir app-name))
+              (app/install backup-source :name app-name :group (get manifest :group))
+              (copyrf (string backup-source s "old-app") (app-dir app-name))
               (rmrf backup-source))
       (app-remove-unchecked app-name)
       (app/install path :name app-name |(kvs config) |(kvs new-config)))

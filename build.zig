@@ -2195,7 +2195,7 @@ fn addCliChecks(
         apps_missing.expectStdErrMatch(if (reduced_os)
             "apps install is not supported with reduced os"
         else
-            "application must contain pkg.wattle, pkg/init.wattle or an info.edn");
+            "application must contain hooks.wattle, hooks/init.wattle or an info.edn");
         test_step.dependOn(&apps_missing.step);
 
         // A build without `os/spawn` refuses the two commands that run a
