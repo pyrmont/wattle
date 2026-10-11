@@ -1,0 +1,54 @@
+---
+Title: WATTLE-DEPS(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-11
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-deps** - manage the dependencies of a project
+
+SYNOPSIS
+========
+
+**wattle deps** _verb_
+
+DESCRIPTION
+===========
+
+Manage the dependencies of the project in the current directory. Nothing is
+installed under ``*prefix*``. A build made without the OS library does not
+include ***deps***, and each verb exits with status 1 after saying so. **d** is
+a synonym for ***deps***.
+
+VERBS
+=====
+
+- ***vendor***:
+  Copy the entries of ``:vendored`` in ``info.edn`` in the current directory
+  into the current directory. Each entry is a map with a ``:name`` and a
+  ``:url``, which is a source as for ***install*** in `wattle-apps(1)`. It may
+  have a ``:ref``, a branch or tag for a Git repository, a ``:prefix``, the
+  directory to copy into, which is the current directory by default, and
+  ``:paths``, a vector of the paths to copy. A path is a string, or a vector of
+  a path in the source and a path under the ``:prefix``. The whole source is
+  copied if there is no ``:paths``. A file that is already there is replaced.
+  No path may be absolute or contain ``..``. Every entry is checked before any
+  is fetched. See VENDORING in `wattle-applications(7)`.
+
+EXAMPLES
+========
+
+Copy the vendored sources that ``info.edn`` lists into the current directory:
+
+````
+$ wattle deps vendor
+````
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-apps(1)`, `wattle-applications(7)`

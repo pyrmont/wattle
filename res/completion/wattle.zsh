@@ -44,10 +44,11 @@ _wattle() {
     typeset -A opt_args
     local -a subcommands
     subcommands=(
+        'apps:Manage installed applications'
         'build:Build an artifact from source'
         'check:Compile a script without running it'
+        'deps:Manage the dependencies of a project'
         'help:Describe a subcommand'
-        'pkg:Manage installed packages'
         'run:Run a script, evaluate code or start the REPL'
         'test:Run the tests in ./test'
     )
@@ -115,25 +116,28 @@ _wattle() {
                     (( CURRENT-- ))
                     _wattle_check_options && ret=0
                     ;;
-                p|pkg)
+                a|apps)
                     if (( CURRENT == 2 )); then
                         _values 'verb' \
-                            'install[Install a package from a directory, tarball or Git repository]' \
-                            'reinstall[Reinstall a package by name]' \
-                            'uninstall[Uninstall a package by name]' \
-                            'update[Reinstall all installed packages]' \
-                            'clean[Uninstall all orphaned packages]' \
-                            'list[List all installed packages]' \
-                            'vendor[Copy the vendored entries of info.edn into the current directory]' && ret=0
+                            'install[Install an application from a directory, tarball or Git repository]' \
+                            'upgrade[Install an application again from its recorded source]' \
+                            'remove[Remove an application by name]' \
+                            'list[List all installed applications]' && ret=0
                     else
                         case $line[2] in
                             install) _directories && ret=0 ;;
-                            reinstall|uninstall)
-                                local -a packages
-                                packages=(${(f)"$(${words[1]} pkg list 2>/dev/null)"})
-                                _describe -t packages 'package' packages && ret=0
+                            upgrade|remove)
+                                local -a applications
+                                applications=(${(f)"$(${words[1]} apps list 2>/dev/null)"})
+                                _describe -t applications 'application' applications && ret=0
                                 ;;
                         esac
+                    fi
+                    ;;
+                d|deps)
+                    if (( CURRENT == 2 )); then
+                        _values 'verb' \
+                            'vendor[Copy the vendored entries of info.edn into the current directory]' && ret=0
                     fi
                     ;;
                 r|run)
@@ -150,7 +154,8 @@ _wattle() {
                     case "$CURRENT:$line[2]" in
                         2:*) _describe -t subcommands 'subcommand' subcommands && ret=0 ;;
                         3:(b|build)) _values 'target' exe img lib && ret=0 ;;
-                        3:(p|pkg)) _values 'verb' install reinstall uninstall update clean list vendor && ret=0 ;;
+                        3:(a|apps)) _values 'verb' install upgrade remove list && ret=0 ;;
+                        3:(d|deps)) _values 'verb' vendor && ret=0 ;;
                     esac
                     ;;
                 *)

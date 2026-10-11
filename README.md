@@ -273,10 +273,11 @@ Options:
 
 Subcommands:
 
+ a, apps     Manage installed applications.
  b, build    Build an artifact from source.
  c, check    Compile a script without running it and report every error.
+ d, deps     Manage the dependencies of the current project.
  g, gum      Copy Gum modules into a project, or list them.
- p, pkg      Manage installed packages.
  r, run      Run a script, evaluate code or start the REPL.
  t, test     Run the test files in ./test, each in its own process.
 

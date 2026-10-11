@@ -176,4 +176,4 @@ $ wattle -p /usr/local build exe --release small
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-run(1)`, `wattle-pkg(1)`, `wattle-packages(7)`
+`wattle(1)`, `wattle-run(1)`, `wattle-apps(1)`, `wattle-applications(7)`

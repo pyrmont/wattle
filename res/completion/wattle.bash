@@ -24,10 +24,11 @@ _wattle() {
     done
     if [[ $i -lt $cword ]]; then
         case "${words[i]}" in
+            a|apps) sub=apps; sub_at=$i ;;
             b|build) sub=build; sub_at=$i ;;
             c|check) sub=check; sub_at=$i ;;
+            d|deps) sub=deps; sub_at=$i ;;
             h|help) sub=help; sub_at=$i ;;
-            p|pkg) sub=pkg; sub_at=$i ;;
             r|run) sub=run; sub_at=$i ;;
             t|test) sub=test; sub_at=$i ;;
             *) sub="run"; sub_at=$((i - 1)) ;;
@@ -60,7 +61,7 @@ _wattle() {
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$root_flags $run_flags" -- "$cur"))
             else
-                COMPREPLY=($(compgen -W "build check help pkg run test" -- "$cur"))
+                COMPREPLY=($(compgen -W "apps build check deps help run test" -- "$cur"))
                 _filedir wattle
             fi
             ;;
@@ -94,16 +95,21 @@ _wattle() {
                 _filedir wattle
             fi
             ;;
-        pkg)
+        apps)
             if [[ $((cword - sub_at)) -eq 1 ]]; then
-                COMPREPLY=($(compgen -W "install reinstall uninstall update clean list vendor" -- "$cur"))
+                COMPREPLY=($(compgen -W "install upgrade remove list" -- "$cur"))
             else
                 case "${words[sub_at + 1]}" in
                     install) _filedir -d ;;
-                    reinstall|uninstall)
-                        COMPREPLY=($(compgen -W "$("${words[0]}" pkg list 2>/dev/null)" -- "$cur"))
+                    upgrade|remove)
+                        COMPREPLY=($(compgen -W "$("${words[0]}" apps list 2>/dev/null)" -- "$cur"))
                         ;;
                 esac
+            fi
+            ;;
+        deps)
+            if [[ $((cword - sub_at)) -eq 1 ]]; then
+                COMPREPLY=($(compgen -W "vendor" -- "$cur"))
             fi
             ;;
         run)
@@ -131,9 +137,10 @@ _wattle() {
             ;;
         help)
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
-                1:*) COMPREPLY=($(compgen -W "build check pkg run test" -- "$cur")) ;;
+                1:*) COMPREPLY=($(compgen -W "apps build check deps run test" -- "$cur")) ;;
                 2:b|2:build) COMPREPLY=($(compgen -W "exe img lib web" -- "$cur")) ;;
-                2:p|2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list vendor" -- "$cur")) ;;
+                2:a|2:apps) COMPREPLY=($(compgen -W "install upgrade remove list" -- "$cur")) ;;
+                2:d|2:deps) COMPREPLY=($(compgen -W "vendor" -- "$cur")) ;;
             esac
             ;;
     esac

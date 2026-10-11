@@ -4835,7 +4835,7 @@
 
 ;;;
 ;;;
-;;; Package tools
+;;; Application tools
 ;;;
 ;;;
 
@@ -4844,41 +4844,41 @@
   (def- seps {:windows "\\" :cygwin "\\"})
   (defn- sep [] (get seps (os/which) "/"))
 
-  (def- pkg-expected !{})
+  (def- expected-failures !{})
 
-  (defn- pkg-fail
+  (defn- fail
     """
-    Raises message, a string, as an error that wattle pkg prints without a
+    Raises message, a string, as an error that the command line prints without a
     stack trace. The message is recorded so that the command line can tell it
     from an error that was not expected.
     """
     [message]
-    (put! pkg-expected message true)
+    (put! expected-failures message true)
     (error message))
 
-  (defn- pkg-errorf
+  (defn- failf
     """
-    Raises the string that fmt and vals format, as ^pkg-fail does.
+    Raises the string that fmt and vals format, as ^fail does.
     """
     [fmt & vals]
-    (pkg-fail (string/format fmt |vals)))
+    (fail (string/format fmt |vals)))
 
-  (defn- pkg-assert
+  (defn- ensure
     """
-    Raises message as ^pkg-fail does unless x is truthy.
+    Raises message as ^fail does unless x is truthy.
     """
     [x message]
-    (unless x (pkg-fail message)))
+    (unless x (fail message)))
 
-  (defn- pkg-assertf
+  (defn- ensuref
     """
-    Raises the string that fmt and vals format, as ^pkg-fail does, unless x is
+    Raises the string that fmt and vals format, as ^fail does, unless x is
     truthy.
     """
     [x fmt & vals]
-    (unless x (pkg-fail (string/format fmt |vals))))
+    (unless x (fail (string/format fmt |vals))))
 
-  (defn- pkg-root
+  (defn- prefix-root
     """
     Returns the prefix, the root that the library, program and manual
     directories derive from.
@@ -4887,7 +4887,7 @@
     (wattle/libpath) ; raises if there is no prefix or it is empty
     (dyn *prefix*))
 
-  (defn- pkg-mkdirs
+  (defn- mkdirs
     """
     Creates the directory at path and any of its parents that are missing. On
     Windows a forward slash separates as well, so a path that mixes the two
@@ -4903,22 +4903,22 @@
                       (string so-far part)
                       (string so-far s part)))
         (protect (os/mkdir so-far))))
-    (pkg-assertf (= :directory (os/stat path :mode)) "cannot create directory %s" path))
+    (ensuref (= :directory (os/stat path :mode)) "cannot create directory %s" path))
 
-  (defn- pkg-dir
-    ([] (pkg-dir nil))
-    ([pkg-name]
+  (defn- app-dir
+    ([] (app-dir nil))
+    ([app-name]
       (def s (sep))
-      (string (wattle/libpath) s "pkg" (if pkg-name s) pkg-name)))
+      (string (wattle/libpath) s "pkg" (if app-name s) app-name)))
 
-  (defn- pkg-file
-    [pkg-name filename]
+  (defn- app-file
+    [app-name filename]
     (def s (sep))
-    (string (wattle/libpath) s "pkg" s pkg-name s filename))
+    (string (wattle/libpath) s "pkg" s app-name s filename))
 
   (defn- get-manifest-filename
-    [pkg-name]
-    (pkg-file pkg-name "manifest.edn"))
+    [app-name]
+    (app-file app-name "manifest.edn"))
 
   (defn- get-files [manifest]
     (def files (get manifest :files ![]))
@@ -4950,8 +4950,8 @@
             (when (empty? b) (buffer/trim! b) (os/chmod to perm) (break))
             (file/write fto b)
             (buffer/clear! b)))
-        (pkg-errorf "destination file %s cannot be opened for writing" to))
-      (pkg-errorf "source file %s cannot be opened for reading" from)))
+        (failf "destination file %s cannot be opened for writing" to))
+      (failf "source file %s cannot be opened for reading" from)))
 
   (defn- copyrf
     [from to]
@@ -4978,108 +4978,97 @@
     (buffer/format! b "%.99m\n" frozen)
     (spit manifest-name b))
 
-  (defn pkg/manifest
-    "Gets the manifest for a given installed package."
-    [pkg-name]
-    (def name (get-manifest-filename pkg-name))
-    (pkg-assertf (fexists name) "no package %v found" pkg-name)
+  (defn app/manifest
+    "Gets the manifest for a given installed application."
+    [app-name]
+    (def name (get-manifest-filename app-name))
+    (ensuref (fexists name) "no application %v found" app-name)
     (parse (slurp name)))
 
-  (defn- get-pkg-module
-    [pkg-name]
-    (def manifest (pkg/manifest pkg-name))
+  (defn- get-app-module
+    [app-name]
+    (def manifest (app/manifest app-name))
     (def dir (os/cwd))
     (def workdir (get manifest :local-source "."))
-    (def fixed-prefix (os/realpath (pkg-root)))
+    (def fixed-prefix (os/realpath (prefix-root)))
     (try
       (os/cd workdir)
-      ([_] (print "cannot enter source directory " workdir " for package " pkg-name)))
+      ([_] (print "cannot enter source directory " workdir " for application " app-name)))
     (defer (os/cd dir)
       (def new-env (make-env))
       (put! new-env *module-cache* !{})
       (put! new-env *module-loading* !{})
-      (put! new-env *module-make-env* (fn make-pkg-env [&] (make-env new-env)))
+      (put! new-env *module-make-env* (fn make-app-env [&] (make-env new-env)))
       (put! new-env :workdir workdir)
-      (put! new-env :name pkg-name)
+      (put! new-env :name app-name)
       (put! new-env *prefix* fixed-prefix)
       (with-env new-env
-        (put! new-env :pkg-dir (pkg-dir pkg-name)) ; get the prefix right
+        (put! new-env :app-dir (app-dir app-name)) ; get the prefix right
         (try
-          (require (string "@prefix/lib/wattle/pkg/" pkg-name))
+          (require (string "@prefix/lib/wattle/pkg/" app-name))
           ([e f]
             (def pfx "could not find module @prefix/lib/wattle/pkg/")
             (def msg (if (and (string? e)
                               (string/has-prefix? pfx e))
-                       "package must contain pkg.wattle or pkg/init.wattle"
+                       "application must contain pkg.wattle or pkg/init.wattle"
                        e))
             (propagate msg f))))))
 
   (defn- do-hook
-    [module pkg-name hook & args]
+    [module app-name hook & args]
     (def hookf (module/value module (symbol hook)))
     (unless hookf (break))
     (def dir (os/cwd))
     (os/cd (get module :workdir "."))
     (defer (os/cd dir)
-      (print "running hook " hook " for package " pkg-name)
+      (print "running hook " hook " for application " app-name)
       (hookf |args)))
 
-  (defn pkg/list
-    "Gets a list of all installed packages in lexical order."
+  (defn app/list
+    "Gets a list of all installed applications in lexical order."
     []
-    (def d (pkg-dir))
+    (def d (app-dir))
     (if (os/stat d :mode)
       (sort! (os/dir d))
       ![]))
 
-  (defn- pkg-uninstall-unchecked
-    [pkg-name]
-    (def man (pkg/manifest pkg-name))
+  (defn- app-remove-unchecked
+    [app-name]
+    (def man (app/manifest app-name))
     (def all-hooks (get man :hooks ![]))
-    (when (index-of :uninstall all-hooks)
-      (def module (get-pkg-module pkg-name))
-      (do-hook module pkg-name :uninstall man))
+    (when (index-of :remove all-hooks)
+      (def module (get-app-module app-name))
+      (do-hook module app-name :remove man))
     (def files (get man :files []))
     (each file (reverse files)
       (print "remove " file)
       (case (os/stat file :mode)
         :file (os/rm file)
         :directory (os/rmdir file)))
-    (rmrf (pkg-dir pkg-name))
+    (rmrf (app-dir app-name))
     nil)
 
-  (defn pkg/uninstall
+  (defn app/remove
     """
-    Removes a package from the current prefix. There is 1 hook called during
-    uninstallation (uninstall). A user can register a hook by defining a
-    function with the same name in the package script.
+    Removes an application from the current prefix. There is 1 hook called during
+    removal (remove). A user can register a hook by defining a
+    function with the same name in the application script.
     """
-    [pkg-name]
-    (pkg-uninstall-unchecked pkg-name))
+    [app-name]
+    (app-remove-unchecked app-name))
 
-  (defn pkg/prune
-    """
-    Removes every package of the current prefix that is marked for :auto-remove.
-    """
-    []
-    (def to-drop (filter #(get (pkg/manifest $) :auto-remove) (pkg/list)))
-    (print "pruning " (length to-drop) " packages")
-    (each b to-drop
-      (print "uninstalling " b)
-      (pkg-uninstall-unchecked b)))
+  (defn app/installed?
+    "Checks whether an application is installed."
+    [app-name]
+    (truthy? (os/stat (app-dir app-name) :mode)))
 
-  (defn pkg/installed?
-    "Checks whether a package is installed."
-    [pkg-name]
-    (truthy? (os/stat (pkg-dir pkg-name) :mode)))
-
-  (defn- pkg-add-file-to
+  (defn- app-add-file-to
     [manifest base src dest chmod-mode]
     (def files (get-files manifest))
     (def s (sep))
     (def absdest (string base s dest))
     (when (os/stat absdest :mode)
-      (pkg-errorf "collision at %s, file already exists" absdest))
+      (failf "collision at %s, file already exists" absdest))
     (copyfile src absdest)
     (def absdest (os/realpath absdest))
     (array/push! files absdest)
@@ -5088,35 +5077,35 @@
     (print "add " absdest)
     absdest)
 
-  (defn pkg/add-bin
+  (defn app/add-bin
     """
     Adds a file to the "bin" subdirectory of the current prefix. By default,
     files will be set to be executable.
     """
-    ([manifest src] (pkg/add-bin manifest src (last (string/split (sep) src)) 8r755))
-    ([manifest src filename] (pkg/add-bin manifest src filename 8r755))
+    ([manifest src] (app/add-bin manifest src (last (string/split (sep) src)) 8r755))
+    ([manifest src filename] (app/add-bin manifest src filename 8r755))
     ([manifest src filename chmod-mode]
-      (pkg-mkdirs (wattle/binpath))
+      (mkdirs (wattle/binpath))
       (put! manifest :has-exe true)
-      (pkg-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
+      (app-add-file-to manifest (wattle/binpath) src filename chmod-mode)))
 
-  (defn pkg/add-manpage
+  (defn app/add-manpage
     """
     Adds a file to the share/man subdirectory of the current prefix. Files are
     copied inside a directory mansec, under the name filename. By default,
     mansec is "man1" and filename is the name of src.
     """
-    ([manifest src] (pkg/add-manpage manifest src "man1"))
+    ([manifest src] (app/add-manpage manifest src "man1"))
     ([manifest src mansec]
-      (pkg/add-manpage manifest src mansec (last (string/split (sep) src))))
-    ([manifest src mansec filename] (pkg/add-manpage manifest src mansec filename nil))
+      (app/add-manpage manifest src mansec (last (string/split (sep) src))))
+    ([manifest src mansec filename] (app/add-manpage manifest src mansec filename nil))
     ([manifest src mansec filename chmod-mode]
       (def dir (string (wattle/manpath) (sep) mansec))
-      (pkg-mkdirs dir)
+      (mkdirs dir)
       (put! manifest :has-man true)
-      (pkg-add-file-to manifest dir src filename chmod-mode)))
+      (app-add-file-to manifest dir src filename chmod-mode)))
 
-  (defn- pkg-source-kind
+  (defn- source-kind
     """
     Returns :directory for an existing directory, :tarball for a name ending in
     .tar or .tar.gz and :git for anything else.
@@ -5128,7 +5117,7 @@
           (string/has-suffix? ".tar.gz" source)) :tarball
       :git))
 
-  (defn- pkg-run
+  (defn- run-tool
     """
     Runs tool with args. Raises if tool cannot be started or exits with a
     status other than 0. The message of the second error is followed by what
@@ -5138,7 +5127,7 @@
     [tool & args]
     (compif (dyn 'os/execute)
       (do
-        (pkg-mkdirs (wattle/libpath))
+        (mkdirs (wattle/libpath))
         (def path (string (wattle/libpath) (sep) ".stderr"))
         (def err (file/open path :wb))
         (def [ok status] (protect (os/execute [tool |args] :p {:err err})))
@@ -5147,13 +5136,13 @@
         ; stream that prints the message adds the carriage return itself.
         (def text (string/trim (string/replace-all "\r\n" "\n" (string (slurp path)))))
         (rmrf path)
-        (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
+        (ensuref ok "could not run %s, is it on the PATH?" tool)
         (unless (zero? status)
-          (pkg-fail (string tool " exited with status " status
+          (fail (string tool " exited with status " status
                             (if (empty? text) "" (string "\n" text))))))
-      (pkg-errorf "cannot run %s, this build has no os/execute" tool)))
+      (failf "cannot run %s, this build has no os/execute" tool)))
 
-  (defn- pkg-run-live
+  (defn- run-tool-live
     """
     Runs tool with args, which write to the standard streams of this process as
     they run. Raises if tool cannot be started or exits with a status other
@@ -5164,13 +5153,13 @@
     (compif (dyn 'os/execute)
       (do
         (def [ok status] (protect (os/execute [tool |args] :p)))
-        (pkg-assertf ok "could not run %s, is it on the PATH?" tool)
-        (pkg-assertf (zero? status) "%s exited with status %d" label status))
-      (pkg-errorf "cannot run %s, this build has no os/execute" tool)))
+        (ensuref ok "could not run %s, is it on the PATH?" tool)
+        (ensuref (zero? status) "%s exited with status %d" label status))
+      (failf "cannot run %s, this build has no os/execute" tool)))
 
-  (defn- pkg-unpack-root
+  (defn- unpack-root
     """
-    Returns the package root of an unpacked tree: the one directory in dir if
+    Returns the application root of an unpacked tree: the one directory in dir if
     that is all dir holds, and dir otherwise.
     """
     [dir]
@@ -5178,7 +5167,7 @@
     (def only (when (= 1 (length entries)) (string dir (sep) (first entries))))
     (if (and only (= :directory (os/stat only :mode))) only dir))
 
-  (defn- pkg-with-source
+  (defn- with-source
     """
     Calls f with the root directory of source and returns what f returns. A
     directory is passed as it is. A tarball is downloaded and unpacked, and a
@@ -5188,8 +5177,8 @@
     repository.
     """
     [source ref f]
-    (def kind (pkg-source-kind source))
-    (pkg-assertf (or (nil? ref) (= kind :git))
+    (def kind (source-kind source))
+    (ensuref (or (nil? ref) (= kind :git))
              "a ref is accepted only for a Git repository, not %v" source)
     (if (= kind :directory)
       (f source)
@@ -5198,28 +5187,28 @@
         (def tmp (string (wattle/libpath) s ".fetch"))
         (def dest (string tmp s "src"))
         (rmrf tmp)
-        (pkg-mkdirs dest)
+        (mkdirs dest)
         (defer (rmrf tmp)
           (print "fetching " source)
           (case kind
             :tarball (let [archive (string tmp s "archive")]
-                       (pkg-run "curl" "--fail" "--silent" "--show-error" "--location"
+                       (run-tool "curl" "--fail" "--silent" "--show-error" "--location"
                                 "--output" archive "--url" source)
-                       (pkg-run "tar" "-xf" archive "-C" dest))
+                       (run-tool "tar" "-xf" archive "-C" dest))
             :git (do
-                   (pkg-run "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
+                   (run-tool "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
                             |(if ref ["--branch" ref] []) "--" source dest)
                    (rmrf (string dest s ".git"))))
-          (f (pkg-unpack-root dest))))))
+          (f (unpack-root dest))))))
 
-  (defn- pkg-artifacts-of
+  (defn- artifacts-of
     """
     Returns the artifacts of info that have type kind, in order.
     """
     [info kind]
     (filter #(= kind (get $ :type)) (get info :artifacts ![])))
 
-  (defn- pkg-man-section
+  (defn- app-man-section
     """
     Returns the directory of share/man for the manual page file, `man` and the
     digit that ends its name. Raises if the name does not end in a period and a
@@ -5227,18 +5216,18 @@
     """
     [file]
     (def digit (last (string/split "." file)))
-    (pkg-assertf (and (= 1 (length digit)) (string/check-set "123456789" digit))
+    (ensuref (and (= 1 (length digit)) (string/check-set "123456789" digit))
              ":man entry %v must end in a period and a digit from 1 to 9" file)
     (string "man" digit))
 
-  (defn- pkg-default-build
+  (defn- app-default-build
     """
     Builds the :exe artifacts of info in the directory path, by running wattle
     build exe there with the prefix of the install. Does nothing if info
     declares none.
     """
     [path info]
-    (when (next (pkg-artifacts-of info :exe))
+    (when (next (artifacts-of info :exe))
       (def s (sep))
       (def exe0 (dyn :executable "wattle"))
       ; A path with a separator is relative to the current directory, which
@@ -5247,12 +5236,12 @@
       (def dir (os/cwd))
       (os/cd path)
       (defer (os/cd dir)
-        (print "building " (string/join ", " (map #(get $ :name) (pkg-artifacts-of info :exe))))
+        (print "building " (string/join ", " (map #(get $ :name) (artifacts-of info :exe))))
         ; Not captured, so that the output of the build appears as it runs and
         ; Zig can draw its progress on a terminal.
-        (pkg-run-live "wattle build exe" exe "-p" (dyn *prefix*) "build" "exe"))))
+        (run-tool-live "wattle build exe" exe "-p" (dyn *prefix*) "build" "exe"))))
 
-  (defn- pkg-default-install
+  (defn- app-default-install
     """
     Adds to manifest the program of each :exe artifact of info, from zig-out/bin
     under path, and each file in the :man of info. Raises if info declares a
@@ -5260,24 +5249,24 @@
     """
     [manifest path info]
     (def s (sep))
-    (when (next (pkg-artifacts-of info :lib))
-      (pkg-fail "a :lib artifact is installed only by a package script"))
+    (when (next (artifacts-of info :lib))
+      (fail "a :lib artifact is installed only by an application script"))
     (def ext (if (get seps (os/which)) ".exe" ""))
-    ; The manifest is written first on a failure so that the uninstall that
+    ; The manifest is written first on a failure so that the removal that
     ; follows removes the files added so far.
     (edefer (sync-manifest manifest)
-      (each artifact (pkg-artifacts-of info :exe)
+      (each artifact (artifacts-of info :exe)
         (def file (string (get artifact :name) ext))
-        (pkg/add-bin manifest (string path s "zig-out" s "bin" s file) file))
+        (app/add-bin manifest (string path s "zig-out" s "bin" s file) file))
       (each file (get info :man ![])
         ; The separator on Windows is a backslash, so an entry written with
         ; forward slashes is split at both.
         (def base (last (string/split "/" (string/replace-all s "/" file))))
-        (pkg/add-manpage manifest (string path s file) (pkg-man-section file) base))))
+        (app/add-manpage manifest (string path s file) (app-man-section file) base))))
 
-  (defn- pkg-install-dir
+  (defn- app-install-dir
     """
-    Installs the package in the directory path. See ^pkg/install.
+    Installs the application in the directory path. See ^app/install.
     """
     [path & {:as config}]
     (def path (os/realpath path))
@@ -5291,37 +5280,37 @@
     (def bscript-src (cond
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
-    (pkg-assert (or bscript-src (get info :artifacts) (get info :man))
-            "package must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man")
-    ; Detect package name
-    (def pkg-name (get config :name (get info :name)))
-    (pkg-assertf pkg-name
-             "unable to infer package name for %v, use :name argument or add :name to info file" path)
-    (pkg-assertf (not (string/check-set "\\/" pkg-name))
-             "package name %v cannot contain path separators" pkg-name)
-    (pkg-assert (next pkg-name) "cannot use empty pkg-name")
-    (pkg-assertf (not (fexists (get-manifest-filename pkg-name)))
-             "package %v is already installed" pkg-name)
+    (ensure (or bscript-src (get info :artifacts) (get info :man))
+            "application must contain pkg.wattle, pkg/init.wattle or an info.edn that declares :artifacts or :man")
+    ; Detect application name
+    (def app-name (get config :name (get info :name)))
+    (ensuref app-name
+             "unable to infer application name for %v, use :name argument or add :name to info file" path)
+    (ensuref (not (string/check-set "\\/" app-name))
+             "application name %v cannot contain path separators" app-name)
+    (ensure (next app-name) "cannot use empty app-name")
+    (ensuref (not (fexists (get-manifest-filename app-name)))
+             "application %v is already installed" app-name)
     ; Setup installed paths
-    (pkg-mkdirs (pkg-dir))
-    (os/mkdir (pkg-dir pkg-name))
+    (mkdirs (app-dir))
+    (os/mkdir (app-dir app-name))
     ; Copy infofile
     (when info
-      (copyfile infofile-src (pkg-file pkg-name "info.edn")))
+      (copyfile infofile-src (app-file app-name "info.edn")))
     ; Copy aliased bscript
     (when (fexists bscript-src2)
-      (copyfile bscript-src2 (pkg-file pkg-name "init.wattle")))
+      (copyfile bscript-src2 (app-file app-name "init.wattle")))
     ; Copy some files into the new location unconditionally
     (def implicit-sources (string path s "pkg"))
     (when (= :directory (os/stat implicit-sources :mode))
-      (copyrf implicit-sources (pkg-dir pkg-name)))
-    (def man !{:name pkg-name :local-source path :files ![]})
+      (copyrf implicit-sources (app-dir app-name)))
+    (def man !{:name app-name :local-source path :files ![]})
     (merge! man config)
     (sync-manifest man)
-    (edefer (do (print "installation error, uninstalling") (pkg/uninstall pkg-name))
+    (edefer (do (print "installation error, removing") (app/remove app-name))
       (when info
         (put! man :info info))
-      (def module (when bscript-src (get-pkg-module pkg-name)))
+      (def module (when bscript-src (get-app-module app-name)))
       (def clean (get config :clean))
       (def check (get config :check))
       (def all-hooks (if module
@@ -5331,63 +5320,63 @@
       (if module
         (do
           (when clean
-            (do-hook module pkg-name :clean man))
-          (do-hook module pkg-name :build man)
-          (do-hook module pkg-name :install man))
+            (do-hook module app-name :clean man))
+          (do-hook module app-name :build man)
+          (do-hook module app-name :install man))
         (do
-          (pkg-default-build path info)
-          (pkg-default-install man path info)))
-      (if (empty? (get man :files)) (print "no files installed, is this a valid pkg?"))
+          (app-default-build path info)
+          (app-default-install man path info)))
+      (if (empty? (get man :files)) (print "no files installed, is this a valid application?"))
       (sync-manifest man)
       (when (and module check)
-        (do-hook module pkg-name :check man)))
+        (do-hook module app-name :check man)))
     ; A fetched source is a temporary directory, so only its origin is kept.
     (when (get man :source)
       (put! man :local-source nil)
       (sync-manifest man))
-    (print "installed " pkg-name)
+    (print "installed " app-name)
     (when (get man :has-exe)
       (eprintf "executable files have been installed to %s" (wattle/binpath)))
     (when (get man :has-man)
       (eprintf "man pages have been installed to %s" (wattle/manpath)))
-    pkg-name)
+    app-name)
 
-  (defn pkg/install
+  (defn app/install
     """
-    Installs a package from source, which is an existing directory, a name
+    Installs an application from source, which is an existing directory, a name
     ending in .tar or .tar.gz that curl downloads and tar unpacks, or any other
-    name, which git clones. The name of the package is the value mapped to :name
+    name, which git clones. The name of the application is the value mapped to :name
     in either config or the info file. The :ref in config is a branch or tag and
     is accepted only for a Git repository. There are 4 hooks called during
     installation (clean, build, install and check). A user can
-    register a hook by defining a function with the same name in the package
-    script. A package without pkg.wattle or pkg/init.wattle is built and
+    register a hook by defining a function with the same name in the application
+    script. An application without pkg.wattle or pkg/init.wattle is built and
     installed from the :artifacts and :man of its info file instead.
     """
     [source & {:as config}]
     ; A :source in config marks a root that was fetched earlier, so its :ref is
     ; a record and not a request.
     (def ref (if (get config :source) nil (get config :ref)))
-    (def kind (pkg-source-kind source))
-    (pkg-with-source source ref
+    (def kind (source-kind source))
+    (with-source source ref
       (fn [root]
         (if (= kind :directory)
-          (pkg-install-dir root |(kvs config))
-          (pkg-install-dir root :source source |(kvs config))))))
+          (app-install-dir root |(kvs config))
+          (app-install-dir root :source source |(kvs config))))))
 
-  (defn- pkg/pack
+  (defn- app/pack
     """
-    Takes an installed package and creates a package source directory that can be
-    used to reinstall the package on a compatible system. This is used to create
-    backups for installed packages without rebuilding, or make a prebuilt package
+    Takes an installed application and creates an application source directory that can be
+    used to reinstall the application on a compatible system. This is used to create
+    backups for installed applications without rebuilding, or make a prebuilt application
     for other systems.
     """
-    ([pkg-name dest-dir] (pkg/pack pkg-name dest-dir nil))
-    ([pkg-name dest-dir is-backup]
+    ([app-name dest-dir] (app/pack app-name dest-dir nil))
+    ([app-name dest-dir is-backup]
       (var i 0)
-      (def man (pkg/manifest pkg-name))
+      (def man (app/manifest app-name))
       (def files (get man :files ![]))
-      (pkg-assertf (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
+      (ensuref (os/mkdir dest-dir) "could not create directory %v (or it already exists)" dest-dir)
       (def s (sep))
       (os/mkdir (string dest-dir s "pkg"))
       (def install-hook (string dest-dir s "pkg" s "init.wattle"))
@@ -5402,7 +5391,7 @@
           [dir file]
           (when (string/has-prefix? (string dir s) file)
             (string/triml (slice file (length dir) -1) s)))
-        (when is-backup (copyrf (pkg-dir pkg-name) (string dest-dir s "old-pkg")))
+        (when is-backup (copyrf (app-dir app-name) (string dest-dir s "old-pkg")))
         (each file files
           (def {mode :mode perm :permissions} (os/stat file))
           (def lib-rel (relative-to libpath file))
@@ -5410,74 +5399,80 @@
           (def man-rel (relative-to manpath file))
           (case mode
             :directory (if lib-rel
-                         (array/push! install-source `(pkg/add-directory manifest ~lib-rel ~perm))
-                         (pkg-errorf "unexpected directory %v" file))
+                         (array/push! install-source `(app/add-directory manifest ~lib-rel ~perm))
+                         (failf "unexpected directory %v" file))
             :file (do
                     (def filename (string/format "file_%06d" (++ i)))
                     (copyfile file (string dest-dir s filename))
                     (array/push! install-source
                                  (cond
-                                   lib-rel `(pkg/add-file manifest ~filename ~lib-rel ~perm)
-                                   bin-rel `(pkg/add-bin manifest ~filename ~bin-rel ~perm)
+                                   lib-rel `(app/add-file manifest ~filename ~lib-rel ~perm)
+                                   bin-rel `(app/add-bin manifest ~filename ~bin-rel ~perm)
                                    man-rel (let [parts (string/split s man-rel)]
-                                             `(pkg/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
-                                   (pkg-errorf "unexpected file %v" file))))
-            (pkg-errorf "unexpected file %v" file)))
+                                             `(app/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
+                                   (failf "unexpected file %v" file))))
+            (failf "unexpected file %v" file)))
         (def b !"(defn install [manifest]")
         (each form install-source (buffer/format! b "\n  %w" form))
         (buffer/push! b ")\n")
         (spit install-hook b))
       dest-dir))
 
-  (defn pkg/replace
+  (defn app/replace
     """
-    Reinstalls an existing package from a new directory. Similar to
-    pkg/reinstall, but installs the replacement package from any directory.
-    This is necessary to replace a package from a directory other than its
+    Reinstalls an existing application from a new directory. Similar to
+    app/upgrade, but installs the replacement application from any directory.
+    This is necessary to replace an application from a directory other than its
     source.
     """
-    [pkg-name path & {:as new-config}]
-    (def manifest (pkg/manifest pkg-name))
+    [app-name path & {:as new-config}]
+    (def manifest (app/manifest app-name))
     (def config (get manifest :config !{}))
     (def s (sep))
-    (pkg-assertf (= :directory (os/stat path :mode)) "local source %v not available" path)
-    (def backup-dir (string (wattle/libpath) s pkg-name ".backup"))
+    (ensuref (= :directory (os/stat path :mode)) "local source %v not available" path)
+    (def backup-dir (string (wattle/libpath) s app-name ".backup"))
     (rmrf backup-dir)
-    (def backup-pkg-source (pkg/pack pkg-name backup-dir true))
+    (def backup-source (app/pack app-name backup-dir true))
     (edefer (do
-              (pkg/install backup-pkg-source :name pkg-name)
-              (copyrf (string backup-pkg-source s "old-pkg") (pkg-dir pkg-name))
-              (rmrf backup-pkg-source))
-      (pkg-uninstall-unchecked pkg-name)
-      (pkg/install path :name pkg-name |(kvs config) |(kvs new-config)))
-    (rmrf backup-pkg-source)
-    pkg-name)
+              (app/install backup-source :name app-name)
+              (copyrf (string backup-source s "old-pkg") (app-dir app-name))
+              (rmrf backup-source))
+      (app-remove-unchecked app-name)
+      (app/install path :name app-name |(kvs config) |(kvs new-config)))
+    (rmrf backup-source)
+    app-name)
 
-  (defn pkg/reinstall
+  (defn app/upgrade
     """
-    Reinstalls an existing package from its source: the directory it was
-    installed from, or a new download of the tarball or Git repository.
+    Reinstalls the installed application app-name from its source: the
+    directory it was installed from, or a new download of the tarball or Git
+    repository. Reinstalls every installed application, in lexical order, if
+    called with no arguments. Raises if app-name is not installed.
     """
-    [pkg-name & {:as new-config}]
-    (def manifest (pkg/manifest pkg-name))
-    (def source (get manifest :source))
-    (def ref (get manifest :ref))
-    (if source
-      (pkg-with-source source ref
-        (fn [root]
-          (pkg/replace pkg-name root :source source |(if ref [:ref ref] []) |(kvs new-config))))
-      (pkg/replace pkg-name (get manifest :local-source) |(kvs new-config)))
-    pkg-name)
+    ([]
+      (each app-name (app/list)
+        (app/upgrade app-name))
+      nil)
+    ([app-name & {:as new-config}]
+      (def manifest (app/manifest app-name))
+      (def source (get manifest :source))
+      (def ref (get manifest :ref))
+      (if source
+        (with-source source ref
+          (fn [root]
+            (app/replace app-name root :source source |(if ref [:ref ref] []) |(kvs new-config))))
+        (app/replace app-name (get manifest :local-source) |(kvs new-config)))
+      app-name))
 
-  (defn pkg/add-directory
+  (defn app/add-directory
     "Adds a directory during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
-    ([manifest dest] (pkg/add-directory manifest dest nil))
+    ([manifest dest] (app/add-directory manifest dest nil))
     ([manifest dest chmod-mode]
       (def files (get-files manifest))
       (def s (sep))
       (def absdest (string (wattle/libpath) s dest))
       (unless (os/mkdir absdest)
-        (pkg-errorf "collision at %s, directory already exists" absdest))
+        (failf "collision at %s, directory already exists" absdest))
       (def absdest (os/realpath absdest))
       (array/push! files absdest)
       (when chmod-mode
@@ -5485,65 +5480,59 @@
       (print "add " absdest)
       absdest))
 
-  (defn pkg/whois
-    "Given a file path, figures out which package installed it."
+  (defn app/whois
+    "Given a file path, figures out which application installed it."
     [path]
     (def rpath (os/realpath path))
-    (find #(index-of rpath (get (pkg/manifest $) :files [])) (pkg/list)))
+    (find #(index-of rpath (get (app/manifest $) :files [])) (app/list)))
 
-  (defn pkg/add-file
+  (defn app/add-file
     "Adds a file during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
-    ([manifest src] (pkg/add-file manifest src src nil))
-    ([manifest src dest] (pkg/add-file manifest src dest nil))
+    ([manifest src] (app/add-file manifest src src nil))
+    ([manifest src dest] (app/add-file manifest src dest nil))
     ([manifest src dest chmod-mode]
-      (pkg-add-file-to manifest (wattle/libpath) src dest chmod-mode)))
+      (app-add-file-to manifest (wattle/libpath) src dest chmod-mode)))
 
-  (defn pkg/add
+  (defn app/add
     """
     Adds a file or directory during an install relative to the lib/wattle directory of `(dyn *prefix*)`.
-    Added files and directories will be recorded in the package manifest such
-    that they are properly tracked and removed during an upgrade or uninstall.
+    Added files and directories will be recorded in the application manifest such
+    that they are properly tracked and removed during an upgrade or removal.
     """
-    ([manifest src] (pkg/add manifest src src nil))
-    ([manifest src dest] (pkg/add manifest src dest nil))
+    ([manifest src] (app/add manifest src src nil))
+    ([manifest src dest] (app/add manifest src dest nil))
     ([manifest src dest chmod-mode]
       (def s (sep))
       (def mode (os/stat src :mode))
-      (if-not mode (pkg-errorf "file %s does not exist" src))
+      (if-not mode (failf "file %s does not exist" src))
       (case mode
         :directory
-        (let [absdest (pkg/add-directory manifest dest chmod-mode)]
-          (each d (os/dir src) (pkg/add manifest (string src s d) (string dest s d) chmod-mode))
+        (let [absdest (app/add-directory manifest dest chmod-mode)]
+          (each d (os/dir src) (app/add manifest (string src s d) (string dest s d) chmod-mode))
           absdest)
-        :file (pkg/add-file manifest src dest chmod-mode)
-        (pkg-errorf "bad path %s - file is a %s" src mode))))
+        :file (app/add-file manifest src dest chmod-mode)
+        (failf "bad path %s - file is a %s" src mode))))
 
-  (defn pkg/update-all
-    "Reinstalls all packages."
-    [& {:as configs}]
-    (each pkg (pkg/list)
-      (pkg/reinstall pkg |(kvs configs))))
-
-  (defn- pkg-vendor-parts
+  (defn- dep-vendor-parts
     """
     Returns the components of path, a string that is relative to the directory
-    it names a place in, as a vector of strings. Raises as ^pkg-fail does,
+    it names a place in, as a vector of strings. Raises as ^fail does,
     naming what and entry, if path is empty, is absolute or holds a component
     of two dots. A component of one dot is dropped.
     """
     [path what entry]
-    (pkg-assertf (and (string? path) (next path))
+    (ensuref (and (string? path) (next path))
                  "%s of vendored %s must be a non-empty string" what entry)
     (def slashed (string/replace-all "\\" "/" path))
-    (pkg-assertf (not (or (string/has-prefix? "/" slashed)
+    (ensuref (not (or (string/has-prefix? "/" slashed)
                           (and (> (length slashed) 1) (= ":" (string/slice slashed 1 2)))))
                  "%s of vendored %s must be relative, not %v" what entry path)
     (def parts (filter #(not (or (empty? $) (= $ "."))) (string/split "/" slashed)))
-    (pkg-assertf (not (has-value? parts ".."))
+    (ensuref (not (has-value? parts ".."))
                  "%s of vendored %s must stay inside the project, not %v" what entry path)
     parts)
 
-  (defn- pkg-vendor-join
+  (defn- dep-vendor-join
     """
     Returns the path that root, a path, and parts, a vector of components,
     make together.
@@ -5554,40 +5543,40 @@
     (each part parts (set out (string out s part)))
     out)
 
-  (defn- pkg-vendor-plan
+  (defn- dep-vendor-plan
     """
     Returns the plan for entry, one of the maps in :vendored of an info file:
     a map with the keys :name, :url, :ref and :copies. :copies is a vector of
     pairs of the vectors of components of a path in the source and of the path
     in the project, which is under the :prefix of entry. The source path is
-    empty for the whole source. Raises as ^pkg-fail does if entry is not valid.
+    empty for the whole source. Raises as ^fail does if entry is not valid.
     """
     [entry]
-    (pkg-assertf (dictionary? entry) ":vendored must hold maps, not %v" entry)
+    (ensuref (dictionary? entry) ":vendored must hold maps, not %v" entry)
     (def name (get entry :name))
-    (pkg-assertf (and (string? name) (next name)) "a vendored entry needs a :name, not %v" name)
+    (ensuref (and (string? name) (next name)) "a vendored entry needs a :name, not %v" name)
     (def url (get entry :url))
-    (pkg-assertf (and (string? url) (next url)) "vendored %s needs a :url" name)
+    (ensuref (and (string? url) (next url)) "vendored %s needs a :url" name)
     (def ref (get entry :ref))
-    (pkg-assertf (or (nil? ref) (string? ref)) ":ref of vendored %s must be a string" name)
-    (def prefix (pkg-vendor-parts (get entry :prefix ".") ":prefix" name))
+    (ensuref (or (nil? ref) (string? ref)) ":ref of vendored %s must be a string" name)
+    (def prefix (dep-vendor-parts (get entry :prefix ".") ":prefix" name))
     (def paths (get entry :paths))
-    (pkg-assertf (or (nil? paths) (indexed? paths)) ":paths of vendored %s must be a vector" name)
+    (ensuref (or (nil? paths) (indexed? paths)) ":paths of vendored %s must be a vector" name)
     (def copies
       (if paths
         (seq [p :in paths]
           (def [from to] (if (indexed? p) [(get p 0) (get p 1)] [p p]))
-          [(pkg-vendor-parts from ":paths" name)
-           [|prefix |(pkg-vendor-parts to ":paths" name)]])
+          [(dep-vendor-parts from ":paths" name)
+           [|prefix |(dep-vendor-parts to ":paths" name)]])
         [[[] prefix]]))
     {:name name :url url :ref ref :copies copies})
 
-  (defn pkg/vendor
+  (defn dep/vendor
     """
     Copies each entry of :vendored in the info file of the directory dir, the
     current directory by default, into the project. An entry is a map with a
-    :name and a :url, which is a source as ^pkg/install takes it, and
-    optionally a :ref, as ^pkg/install takes it, a :prefix, the directory in
+    :name and a :url, which is a source as ^app/install takes it, and
+    optionally a :ref, as ^app/install takes it, a :prefix, the directory in
     the project that the copies go under, and :paths, a vector of the paths in
     the source to copy, each a string or a pair of a path in the source and a
     path under the prefix. The whole source is copied if there is no :paths.
@@ -5597,29 +5586,29 @@
     [& dir]
     (def root (os/realpath (get dir 0 ".")))
     (def infofile (string root (sep) "info.edn"))
-    (pkg-assertf (fexists infofile) "no info.edn in %s" root)
+    (ensuref (fexists infofile) "no info.edn in %s" root)
     (def vendored (get (parse (slurp infofile)) :vendored))
-    (pkg-assert (and (indexed? vendored) (next vendored)) "info.edn has no :vendored entries")
-    (def plans (map pkg-vendor-plan vendored))
+    (ensure (and (indexed? vendored) (next vendored)) "info.edn has no :vendored entries")
+    (def plans (map dep-vendor-plan vendored))
     (each plan plans
       (def {name :name url :url ref :ref copies :copies} plan)
-      (pkg-with-source url ref
+      (with-source url ref
         (fn [src]
           (each [from to] copies
-            (def from-path (pkg-vendor-join src from))
-            (def to-path (pkg-vendor-join root to))
-            (pkg-assertf (os/lstat from-path :mode)
+            (def from-path (dep-vendor-join src from))
+            (def to-path (dep-vendor-join root to))
+            (ensuref (os/lstat from-path :mode)
                          "vendored %s has no %s in its source" name (if (empty? from) "root" (string/join "/" from)))
-            (pkg-mkdirs (if (= :directory (os/stat from-path :mode))
+            (mkdirs (if (= :directory (os/stat from-path :mode))
                           to-path
-                          (pkg-vendor-join root (slice to 0 -2))))
+                          (dep-vendor-join root (slice to 0 -2))))
             (copyrf from-path to-path))))
       (print "vendored " name))
     (length plans)))
 
 ;;;
 ;;;
-;;; Package artifacts
+;;; Build artifacts
 ;;;
 ;;;
 
@@ -5627,21 +5616,21 @@
 ; `:exe` or `:lib` and a `:name`. An `:exe` has an `:entry`, the Wattle file
 ; that defines `main`, and may have `:libs`, a vector of the names of the
 ; `:lib` artifacts compiled into it. A `:lib` has a `:root`, the Zig root file
-; of a native module. ^pkg/artifacts raises on the first problem and names the
+; of a native module. ^build/artifacts raises on the first problem and names the
 ; artifact and the key. Neither function looks at the file system.
 
-(def- pkg-artifact-allowed-keys
+(def- build-artifact-allowed-keys
   {:exe [:type :name :entry :libs]
    :lib [:type :name :root]
    :web [:type :name :entry]})
 
 ; A `:lib` name is spliced into two symbol names and a string, and an `:exe`
 ; or `:web` name is a file name.
-(def- pkg-artifact-name-chars
+(def- build-artifact-name-chars
   (string "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
           "0123456789_-"))
 
-(defn- pkg-artifact-where
+(defn- build-artifact-where
   "Describes the artifact at index i, by name where it has a usable one."
   [i artifact]
   (def name (get artifact :name))
@@ -5649,54 +5638,54 @@
     (string/format "artifact %d (%s)" i name)
     (string/format "artifact %d" i)))
 
-(defn- pkg-artifact-fail
+(defn- build-artifact-fail
   [i artifact fmt & vals]
-  (error (string "info.edn: " (pkg-artifact-where i artifact) ": "
+  (error (string "info.edn: " (build-artifact-where i artifact) ": "
                  (string/format fmt |vals))))
 
-(defn- pkg-artifact-check-string
+(defn- build-artifact-check-string
   [i artifact key]
   (def val (get artifact key))
   (unless (and (string? val) (not (empty? val)))
-    (pkg-artifact-fail i artifact "%v must be a non-empty string" key)))
+    (build-artifact-fail i artifact "%v must be a non-empty string" key)))
 
-(defn- pkg-artifact-check-name
+(defn- build-artifact-check-name
   [i artifact]
-  (pkg-artifact-check-string i artifact :name)
-  (unless (string/check-set pkg-artifact-name-chars (get artifact :name))
-    (pkg-artifact-fail i artifact ":name may hold only letters, digits, `_` and `-`")))
+  (build-artifact-check-string i artifact :name)
+  (unless (string/check-set build-artifact-name-chars (get artifact :name))
+    (build-artifact-fail i artifact ":name may hold only letters, digits, `_` and `-`")))
 
-(defn- pkg-artifact-check-keys
+(defn- build-artifact-check-keys
   [i artifact kind]
-  (def ok (get pkg-artifact-allowed-keys kind))
+  (def ok (get build-artifact-allowed-keys kind))
   (each k (keys artifact)
     (unless (has-value? ok k)
-      (pkg-artifact-fail i artifact "%v is not a key of %s %v" k
+      (build-artifact-fail i artifact "%v is not a key of %s %v" k
                          (if (= kind :web) "a" "an") kind))))
 
-(defn- pkg-artifact-check-libs
+(defn- build-artifact-check-libs
   [i artifact by-name]
   (def libs (get artifact :libs))
   (when (nil? libs) (break))
   (unless (vector? libs)
-    (pkg-artifact-fail i artifact ":libs must be a vector of names"))
+    (build-artifact-fail i artifact ":libs must be a vector of names"))
   (def seen !{})
   (each n libs
     (when (map? n)
-      (pkg-artifact-fail i artifact
+      (build-artifact-fail i artifact
                   ":libs holds a map, which is reserved for an external library"))
     (unless (string? n)
-      (pkg-artifact-fail i artifact ":libs must hold strings, not %v" n))
+      (build-artifact-fail i artifact ":libs must hold strings, not %v" n))
     (when (get seen n)
-      (pkg-artifact-fail i artifact ":libs names %s twice" n))
+      (build-artifact-fail i artifact ":libs names %s twice" n))
     (put! seen n true)
     (def target (get by-name n))
     (unless target
-      (pkg-artifact-fail i artifact ":libs names %s, which no artifact declares" n))
+      (build-artifact-fail i artifact ":libs names %s, which no artifact declares" n))
     (unless (= :lib (get target :type))
-      (pkg-artifact-fail i artifact ":libs names %s, which is not a :lib" n))))
+      (build-artifact-fail i artifact ":libs names %s, which is not a :lib" n))))
 
-(defn- pkg-artifacts-checked
+(defn- build-artifacts-checked
   [x]
   (unless (map? x)
     (error "info.edn: must hold a map"))
@@ -5711,20 +5700,20 @@
       (errorf "info.edn: artifact %d must be a map" i))
     (def kind (get artifact :type))
     (unless (or (= kind :exe) (= kind :lib) (= kind :web))
-      (pkg-artifact-fail i artifact ":type must be :exe, :lib or :web"))
-    (pkg-artifact-check-name i artifact)
+      (build-artifact-fail i artifact ":type must be :exe, :lib or :web"))
+    (build-artifact-check-name i artifact)
     (def name (get artifact :name))
     (when (get by-name name)
-      (pkg-artifact-fail i artifact ":name is already used by artifact %d"
+      (build-artifact-fail i artifact ":name is already used by artifact %d"
                           (get (get by-name name) :index)))
     (put! by-name name {:index i :type kind})
-    (pkg-artifact-check-string i artifact (if (= kind :lib) :root :entry))
-    (pkg-artifact-check-keys i artifact kind))
+    (build-artifact-check-string i artifact (if (= kind :lib) :root :entry))
+    (build-artifact-check-keys i artifact kind))
   (loop [[i artifact] :pairs artifacts]
-    (pkg-artifact-check-libs i artifact by-name))
+    (build-artifact-check-libs i artifact by-name))
   artifacts)
 
-(defn pkg/artifacts
+(defn build/artifacts
   """
   Checks the `:artifacts` of x, a map read from an info.edn, and returns them.
   With kind, `:exe`, `:lib` or `:web`, returns only the artifacts of that kind, and
@@ -5734,10 +5723,10 @@
   name a `:lib`. Also raises if x declares no artifact of kind, or none called
   name.
   """
-  ([x] (pkg-artifacts-checked x))
-  ([x kind] (pkg/artifacts x kind nil))
+  ([x] (build-artifacts-checked x))
+  ([x kind] (build/artifacts x kind nil))
   ([x kind name]
-    (def chosen (filter #(= kind (get $ :type)) (pkg-artifacts-checked x)))
+    (def chosen (filter #(= kind (get $ :type)) (build-artifacts-checked x)))
     (when (empty? chosen)
       (errorf "info.edn: no %v artifact is declared" kind))
     (if (nil? name)
@@ -5753,7 +5742,7 @@
 ;;;
 ;;;
 
-(defn- pkg-path-parts
+(defn- build-path-parts
   "Splits path at / and at \\, dropping empty parts and . parts and resolving .. parts against the part before."
   [path]
   (def out ![])
@@ -5764,22 +5753,22 @@
       (array/push! out part)))
   out)
 
-(defn- pkg-relative-path
+(defn- build-relative-path
   "Returns the path from the directory from to the path to, which are both absolute."
   [from to]
-  (def f (pkg-path-parts from))
-  (def t (pkg-path-parts to))
+  (def f (build-path-parts from))
+  (def t (build-path-parts to))
   (var i 0)
   (while (and (< i (length f)) (< i (length t)) (= (get f i) (get t i)))
     (++ i))
   (string/join "/" [|(map (fn [_] "..") (slice f i)) |(slice t i)]))
 
-(defn- pkg-zig-string
+(defn- build-zig-string
   "Returns s as the body of a Zig string literal."
   [s]
   (string/replace-all "\"" "\\\"" (string/replace-all "\\" "\\\\" s)))
 
-(defn- pkg-absolute-path
+(defn- build-absolute-path
   "Returns path, or dir followed by path where path is relative."
   [dir path]
   (if (or (string/has-prefix? "/" path) (string/has-prefix? "\\" path)
@@ -5787,7 +5776,7 @@
     path
     (string dir "/" path)))
 
-(defn pkg/zig-files
+(defn build/zig-files
   """
   Returns a table with the text of the build.zig and the build.zig.zon that
   build the artifacts of x, a map read from an info.edn, under :build and :zon.
@@ -5800,18 +5789,18 @@
   unless the optimize mode is Debug. A lib is built as a shared library. A web
   artifact is built as an image and a runtime for a browser, with no docstrings,
   whatever the target is.
-  Raises if ^pkg/artifacts raises for x, kind and name.
+  Raises if ^build/artifacts raises for x, kind and name.
   """
-  ([x kind opts] (pkg/zig-files x kind nil opts))
+  ([x kind opts] (build/zig-files x kind nil opts))
   ([x kind name opts]
-    (def chosen (pkg/artifacts x kind name))
+    (def chosen (build/artifacts x kind name))
     (def libs !{})
     (each artifact (get x :artifacts)
       (when (= :lib (get artifact :type))
         (put! libs (get artifact :name) artifact)))
     (def dir (get opts :dir))
     (defn zig-path [path]
-      (string ".{ .cwd_relative = \"" (pkg-zig-string (pkg-absolute-path dir path)) "\" }"))
+      (string ".{ .cwd_relative = \"" (build-zig-string (build-absolute-path dir path)) "\" }"))
     (def b !"")
     (buffer/push! b
       "const std = @import(\"std\");\n"
@@ -5834,7 +5823,7 @@
         "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize });\n"))
     (var i 0)
     (each artifact chosen
-      (def artifact-name (pkg-zig-string (get artifact :name)))
+      (def artifact-name (build-zig-string (get artifact :name)))
       (case kind
         :web
         (do
@@ -5854,7 +5843,7 @@
           (each lib-name (get artifact :libs [])
             (def lib (get libs lib-name))
             (buffer/format! b "            .{ .name = \"%s\", .root = %s },\n"
-                            (pkg-zig-string lib-name) (zig-path (get lib :root))))
+                            (build-zig-string lib-name) (zig-path (get lib :root))))
           (buffer/push! b
             "        },\n"
             "        .target = target,\n"
@@ -5884,8 +5873,8 @@
       "    .fingerprint = 0x73d368c0c079d65,\n"
       "    .dependencies = .{\n")
     (buffer/format! zon "        .wattle = .{ .path = \"%s\" },\n"
-                    (pkg-zig-string (pkg-relative-path (pkg-absolute-path (get opts :dir) (get opts :gen))
-                                                       (pkg-absolute-path (get opts :dir) (get opts :srcpath)))))
+                    (build-zig-string (build-relative-path (build-absolute-path (get opts :dir) (get opts :gen))
+                                                       (build-absolute-path (get opts :dir) (get opts :srcpath)))))
     (buffer/push! zon
       "    },\n"
       "    .paths = .{ \"build.zig\", \"build.zig.zon\" },\n"
@@ -6063,36 +6052,36 @@
                  :help "Replace a file that differs from the Gum copy."}
       :modules {:splat? true :proxy "module"
                 :help "The module to copy. Lists available modules if empty."}]})
-  (def pkg-config
+  (def apps-config
     {:validate? validate?
-     :short "p"
-     :help "Manage installed packages."
+     :short "a"
+     :help "Manage installed applications."
      :rules []
      :subs
-     ["clean" {:validate? validate?
-               :help "Uninstall all packages that are orphaned."
-               :rules []}
-      "install" {:validate? validate?
-                 :help "Install a package from a directory, a tarball or a Git repository."
+     ["install" {:validate? validate?
+                 :help "Install an application from a directory, a tarball or a Git repository."
                  :rules [:source {:proxy "source"
                                   :help "A directory, a URL ending in .tar or .tar.gz, or a Git repository. The default is the current directory."}
                          :ref {:proxy "ref"
                                :help "The branch or tag to clone. It applies only to a Git repository."}]}
       "list" {:validate? validate?
-              :help "List all installed packages."
+              :help "List all installed applications."
               :rules []}
-      "reinstall" {:validate? validate?
-                   :help "Reinstall a package by name."
-                   :rules [:name {:req? true :proxy "name"
-                                  :help "The name of the installed package."}]}
-      "uninstall" {:validate? validate?
-                   :help "Uninstall a package by name."
-                   :rules [:name {:req? true :proxy "name"
-                                  :help "The name of the installed package."}]}
-      "update" {:validate? validate?
-                :help "Reinstall all installed packages."
-                :rules []}
-      "vendor" {:validate? validate?
+      "remove" {:validate? validate?
+                :help "Remove an application by name."
+                :rules [:name {:req? true :proxy "name"
+                               :help "The name of the installed application."}]}
+      "upgrade" {:validate? validate?
+                 :help "Install an application again from its recorded source."
+                 :rules [:name {:proxy "name"
+                                :help "The name of the installed application. The default is every installed application."}]}]})
+  (def deps-config
+    {:validate? validate?
+     :short "d"
+     :help "Manage the dependencies of the current project."
+     :rules []
+     :subs
+     ["vendor" {:validate? validate?
                 :help "Copy the :vendored entries of info.edn into the current directory."
                 :rules []}]})
   {:validate? validate?
@@ -6110,10 +6099,11 @@
     "--help" {:kind :help :short "h"
               :help "Print this usage summary and exit."}]
    :subs
-   ["build" build-config
+   ["apps" apps-config
+    "build" build-config
     "check" check-config
+    "deps" deps-config
     "gum" gum-config
-    "pkg" pkg-config
     "run" run-config
     "test" test-config]})
 
@@ -6122,9 +6112,9 @@
 ; subcommand is entered once.
 (def- cli-validating-config (cli-config true))
 (each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"] ["build" "web"]
-            ["pkg" "install"] ["pkg" "install" "source" "ref"]
-            ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
-            ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"] ["pkg" "vendor"]]
+            ["apps" "install"] ["apps" "install" "source" "ref"]
+            ["apps" "upgrade"] ["apps" "upgrade" "name"] ["apps" "remove" "name"]
+            ["apps" "list"] ["deps" "vendor"]]
   (cli-parse-args "wattle" cli-validating-config argv))
 
 (defn- apply-color
@@ -6422,9 +6412,9 @@
       (unless src-ok (cli-fail "error: " src))
       ; A relative prefix is relative to the working directory.
       (def [real-ok real] (protect (os/realpath src)))
-      (def srcpath (if real-ok real (pkg-absolute-path dir src)))
+      (def srcpath (if real-ok real (build-absolute-path dir src)))
       (def [ok files]
-        (protect (pkg/zig-files info kind (get (get cmd :params) :name)
+        (protect (build/zig-files info kind (get (get cmd :params) :name)
                                  {:dir dir :srcpath srcpath :gen gen})))
       (unless ok (cli-fail "error: " files))
       (def zon-path (string srcpath "/" cli-zig-build-file ".zon"))
@@ -6440,7 +6430,7 @@
                    (os/proc-wait p)
                    (string/trim out))))
       (unless zig-ok (cli-fail "zig was not found on the PATH, and wattle build needs it"))
-      (pkg-mkdirs gen)
+      (mkdirs gen)
       (each [file text] [[cli-zig-build-file (get files :build)] [(string cli-zig-build-file ".zon") (get files :zon)]]
         (def path (string gen "/" file))
         (unless (and (os/stat path :mode) (= text (slurp path)))
@@ -6463,43 +6453,60 @@
     "lib" (cli-build-artifacts :lib sub)
     "web" (cli-build-artifacts :web sub)))
 
-(defn- cli-pkg-hint
+(defn- cli-apps-hint
   """
   Returns the line that follows the message of err, or nil. The line names the
-  command that installs a package again, for the error that a package is
-  already installed.
+  command that installs an application again, for the error that an application
+  is already installed.
   """
   [err]
-  (def before "package \"")
+  (def before "application \"")
   (def after "\" is already installed")
   (when (and (string? err) (string/has-prefix? before err) (string/has-suffix? after err))
     (def name (string/slice err (length before) (- (length err) (length after))))
-    (string "use 'wattle pkg reinstall " name "' to install it again")))
+    (string "use 'wattle apps upgrade " name "' to install it again")))
 
-(defn- cli-pkg [pkg]
-  (def verb (get pkg :sub))
+(compwhen (dyn 'os/stat)
+
+  (defn- cli-managed
+    """
+    Calls f, which runs a command of apps or deps, after the prefix is checked.
+    An error that the commands raised on purpose is printed without a trace and
+    ends the process with status 1. Any other error propagates.
+    """
+    [f]
+    (cli-require-prefix)
+    (try
+      (f)
+      ([err fib]
+        (unless (and (string? err) (get expected-failures err))
+          (propagate err fib))
+        (eprint "error: " err)
+        (when-let [hint (cli-apps-hint err)] (eprint hint))
+        (os/exit 1)))))
+
+(defn- cli-apps [apps]
+  (def verb (get apps :sub))
   (def params (get verb :params))
-  (compif (dyn 'pkg/list)
-    (do
-      (cli-require-prefix)
-      (try
+  (compif (dyn 'app/list)
+    (cli-managed
+      (fn []
         (case (get verb :cmd)
           "install" (let [ref (get params :ref)]
-                      (pkg/install (get params :source ".") |(if ref [:ref ref] [])))
-          "reinstall" (pkg/reinstall (get params :name))
-          "uninstall" (pkg/uninstall (get params :name))
-          "update" (pkg/update-all)
-          "vendor" (pkg/vendor)
-          "clean" (pkg/prune)
-          "list" (each l (pkg/list) (print l)))
-        ([err fib]
-          ; Only a message that pkg raised on purpose is printed without a trace.
-          (unless (and (string? err) (get pkg-expected err))
-            (propagate err fib))
-          (eprint "error: " err)
-          (when-let [hint (cli-pkg-hint err)] (eprint hint))
-          (os/exit 1))))
-    (cli-fail "pkg " (get verb :cmd) " is not supported with reduced os")))
+                      (app/install (get params :source ".") |(if ref [:ref ref] [])))
+          "upgrade" (if-let [name (get params :name)] (app/upgrade name) (app/upgrade))
+          "remove" (app/remove (get params :name))
+          "list" (each l (app/list) (print l)))))
+    (cli-fail "apps " (get verb :cmd) " is not supported with reduced os")))
+
+(defn- cli-deps [deps]
+  (def verb (get deps :sub))
+  (compif (dyn 'dep/vendor)
+    (cli-managed
+      (fn []
+        (case (get verb :cmd)
+          "vendor" (dep/vendor))))
+    (cli-fail "deps " (get verb :cmd) " is not supported with reduced os")))
 
 (defn- cli-gum
   """
@@ -6545,7 +6552,7 @@
             (each file (get (get by-name name) :files)
               (plan (string source-dir "/" file) (string target-dir "/" file))))
           (plan (string source-dir "/LICENSE") (string target-dir "/LICENSE"))
-          (pkg-mkdirs target-dir)
+          (mkdirs target-dir)
           (each [to content same?] copies
             (unless same? (spit to content))
             (print (if same? "unchanged " "copied ") to)))))
@@ -6590,7 +6597,8 @@
     "test" (cli-test (get sub :opts))
     "build" (cli-build sub)
     "gum" (cli-gum (get sub :opts) (get sub :params))
-    "pkg" (cli-pkg sub)))
+    "apps" (cli-apps sub)
+    "deps" (cli-deps sub)))
 
 ;;;
 ;;;

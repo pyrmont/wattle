@@ -1,0 +1,174 @@
+---
+Title: WATTLE-APPLICATIONS(7)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-11
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-applications** - how Wattle applications are laid out, built and installed
+
+DESCRIPTION
+===========
+
+An application is a directory containing an _info file_, source files (in either
+Wattle or Zig) and documentation. `wattle-apps(1)` installs an application and
+`wattle-build(1)` builds the artifacts that an application declares. This
+page describes what an application contains and where its files are installed.
+
+VENDORING
+=========
+
+Vendoring a dependency refers to the practice of copying into the source tree of
+an application the Wattle source files that the application uses. Within the
+code, vendored dependencies are imported using a relative import:
+
+````
+(import ./vendor/greetings)
+````
+
+Wattle's philosophy is that dependencies that are Wattle source files should be
+part of the application. A vendored copy is the version the application was
+tested with, it changes only when the application's author changes it and the
+application runs without any dependency needing to be installed.
+
+This has trade-offs. An application includes a copy of each dependency and a
+fix to a dependency reaches the application only when its author updates the
+copy. Wattle takes the view that an application's author is, most of the time,
+in the best position to weigh those trade-offs. Because of this
+`wattle-apps(1)` does not provide a mechanism to install Wattle source
+libraries.
+
+The application lists what it vendors under ``:vendored`` in its info file, and
+``wattle deps vendor`` copies each entry into the application. See
+`wattle-deps(1)`. An entry without a ``:ref`` uses the HEAD of the default
+branch of a Git repository each time.
+
+LAYOUT
+======
+
+An application may contain these files:
+
+- ``info.edn``:
+  The info file, at the root of the application.
+
+- ``pkg/init.wattle`` or ``pkg.wattle``:
+  The application script. If both exist, ``pkg/init.wattle`` is used.
+
+An application needs an application script or an info file that declares
+``:artifacts`` or ``:man``.
+
+INFO FILE
+=========
+
+The info file holds one map. All keys are optional, but ``:name`` is needed
+when the application is not installed with an explicit name:
+
+- ``:name``:
+  The name of the application, a string without path separators.
+
+- ``:vendored``:
+  A vector of maps that describe the sources that ``wattle deps vendor`` copies
+  into the application. Each has a ``:name`` and a ``:url``, and may have a
+  ``:ref``, a ``:prefix`` and ``:paths``. See VENDORING above and
+  `wattle-deps(1)`.
+
+- ``:artifacts``:
+  A vector of maps that describe what ``wattle build`` builds. Each has a
+  ``:type`` and a ``:name``. See ``Declarations`` in `wattle-build(1)`.
+
+- ``:man``:
+  A vector of the paths of man pages. The section is the digit that ends the
+  file name, so ``man/greet.1`` is installed in ``man1``.
+
+Example:
+
+````
+{:name "greeter"
+ :vendored [{:name "greetings"
+             :url "https://example.com/greetings.git"
+             :prefix "deps/greetings"}]
+ :artifacts [{:type :exe
+              :name "hello"
+              :entry "main.wattle"}]
+ :man ["man/hello.1"]}
+````
+
+INSTALLATION
+============
+
+An application with an application script is installed by running the hooks
+that the script defines, and nothing else. An application without one is
+installed from its info file: each ``:exe`` artifact is built with
+`wattle-build(1)` and its program is installed in ``bin``, and each file in
+``:man`` is installed in ``share/man``. A ``:lib`` artifact is installed only
+by an application script, and a ``:web`` artifact is not installed.
+
+Hooks
+-----
+
+The application script defines a function for each hook it uses. Each takes the
+application's manifest. The hooks run in this order at installation:
+
+1. ``clean``, only when a clean build is requested
+2. ``build``
+3. ``install``
+4. ``check``, only when a check is requested
+
+The ``remove`` hook runs when the application is removed.
+
+Within a hook, these functions add files to the manifest, so that
+``wattle apps remove`` can remove them:
+
+- ``app/add-file``:
+  Adds a file to the libpath.
+
+- ``app/add-directory``:
+  Adds a directory to the libpath.
+
+- ``app/add``:
+  Adds a file or directory and everything it contains to the libpath.
+
+- ``app/add-bin``:
+  Adds a program to the binpath.
+
+- ``app/add-manpage``:
+  Adds a man page to the manpath.
+
+Example of ``pkg/init.wattle``:
+
+````
+(defn install
+  [manifest &]
+  (app/add-bin manifest "hello")
+  (app/add-manpage manifest "hello.1")
+  (app/add-file manifest "greetings.wattle"))
+````
+
+INSTALLED FILES
+===============
+
+All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
+
+- ``lib/wattle``:
+  The libpath. Modules added with ``app/add-file`` are here, and ``import``
+  finds them. See ``MODULES`` in `wattle(7)`.
+
+- ``lib/wattle/pkg/<name>``:
+  The record of an installed application: ``manifest.edn``, which lists its
+  files, a copy of its info file and application script, and the other files
+  of its ``pkg`` directory.
+
+- ``bin``:
+  The binpath, for programs.
+
+- ``share/man``:
+  The manpath, for man pages.
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-apps(1)`, `wattle-build(1)`, `wattle-deps(1)`, `wattle(7)`

@@ -5,13 +5,13 @@
 (defmacro deftest [_ & body] `(do ~|body))
 
 (defn- refusal
-  "Returns the message of the error `pkg/artifacts` raises for info, or nil."
+  "Returns the message of the error `build/artifacts` raises for info, or nil."
   [info]
-  (def [ok message] (protect (pkg/artifacts info)))
+  (def [ok message] (protect (build/artifacts info)))
   (if ok nil message))
 
 (defn- refuses
-  "Checks that `pkg/artifacts` raises for info with a message holding text."
+  "Checks that `build/artifacts` raises for info with a message holding text."
   [info text]
   (def message (refusal info))
   (is (string? message))
@@ -35,7 +35,7 @@
 
 (deftest valid-info
   (is (nil? (refusal blueshift)))
-  (is (= 2 (length (pkg/artifacts blueshift))))
+  (is (= 2 (length (build/artifacts blueshift))))
   (is (nil? (refusal (declares (exe)))))
   (is (nil? (refusal (declares (lib)))))
   (is (nil? (refusal (declares (web))))))
@@ -90,17 +90,17 @@
   (refuses (libs-of [{:system "curl"}]) "reserved for an external library"))
 
 (deftest select
-  (def exes (pkg/artifacts blueshift :exe))
+  (def exes (build/artifacts blueshift :exe))
   (is (= 1 (length exes)))
   (is (= "blues" (get (first exes) :name)))
-  (def libs (pkg/artifacts blueshift :lib))
+  (def libs (build/artifacts blueshift :lib))
   (is (= "blues_http" (get (first libs) :name)))
   (is (= "blues"
-         (get (first (pkg/artifacts blueshift :exe "blues")) :name)))
+         (get (first (build/artifacts blueshift :exe "blues")) :name)))
   (def two (declares (exe :name "b") (lib) (exe :name "a" :entry "n")))
-  (is (= ["b" "a"] (vec (map #(get $ :name) (pkg/artifacts two :exe)))))
-  (is (= "a" (get (first (pkg/artifacts two :exe "a")) :name)))
-  (defn message [& args] (get (protect (pkg/artifacts |args)) 1))
+  (is (= ["b" "a"] (vec (map #(get $ :name) (build/artifacts two :exe)))))
+  (is (= "a" (get (first (build/artifacts two :exe "a")) :name)))
+  (defn message [& args] (get (protect (build/artifacts |args)) 1))
   (is (string/find "no :exe artifact is called c" (message two :exe "c")))
   (is (string/find "no :exe artifact is called z" (message two :exe "z")))
   (is (string/find "no :lib artifact is declared"
@@ -112,7 +112,7 @@
 (defn- has [text fragment] (not (nil? (string/find fragment text))))
 
 (deftest zig-files-exe
-  (def files (pkg/zig-files blueshift :exe gen-opts))
+  (def files (build/zig-files blueshift :exe gen-opts))
   (is (= (string
            "const std = @import(\"std\");\n"
            "const wattle = @import(\"wattle\");\n\n"
@@ -147,7 +147,7 @@
          (get files :zon))))
 
 (deftest zig-files-lib
-  (def text (get (pkg/zig-files blueshift :lib gen-opts) :build))
+  (def text (get (build/zig-files blueshift :lib gen-opts) :build))
   (is (has text "const mod0 = b.createModule(.{"))
   (is (has text ".root_source_file = .{ .cwd_relative = \"/proj/lib/http.zig\" },"))
   (is (has text "mod0.addImport(\"wattle\", wattle.wattleModule(dep, target, optimize));"))
@@ -159,7 +159,7 @@
 
 (deftest zig-files-web
   (def info {:artifacts [{:type :web :name "page" :entry "app/main.wattle"}]})
-  (def files (pkg/zig-files info :web gen-opts))
+  (def files (build/zig-files info :web gen-opts))
   (is (= (string
            "const std = @import(\"std\");\n"
            "const wattle = @import(\"wattle\");\n\n"
@@ -178,16 +178,16 @@
   ; A web artifact takes no target and no native modules.
   (is (not (has (get files :build) "standardTargetOptions")))
   (is (not (has (get files :build) "wattleExecutable")))
-  (def [ok message] (protect (pkg/zig-files info :exe gen-opts)))
+  (def [ok message] (protect (build/zig-files info :exe gen-opts)))
   (is (not ok))
   (is (has message "no :exe artifact is declared"))
-  (def [ok2 message2] (protect (pkg/zig-files blueshift :web gen-opts)))
+  (def [ok2 message2] (protect (build/zig-files blueshift :web gen-opts)))
   (is (not ok2))
   (is (has message2 "no :web artifact is declared")))
 
 (deftest zig-files-dependency-path
   (defn dep-path [opts]
-    (def zon (get (pkg/zig-files blueshift :exe opts) :zon))
+    (def zon (get (build/zig-files blueshift :exe opts) :zon))
     (def start (+ 9 (get (string/find-all ".path = \"" zon) 0)))
     (slice zon start (string/find "\"" zon start)))
   (is (= "../../../pkg" (dep-path {:dir "/a/proj" :srcpath "/a/pkg"
@@ -207,13 +207,13 @@
 
 (deftest zig-files-paths
   (def info {:artifacts [{:type :exe :name "a" :entry "/abs/main.wattle"}]})
-  (is (has (get (pkg/zig-files info :exe gen-opts) :build)
+  (is (has (get (build/zig-files info :exe gen-opts) :build)
            ".source = .{ .cwd_relative = \"/abs/main.wattle\" },"))
   (def quoted {:artifacts [{:type :exe :name "a" :entry "m\"x.wattle"}]})
-  (is (has (get (pkg/zig-files quoted :exe {:dir "/pr oj" :srcpath "/p" :gen "/g"}) :build)
+  (is (has (get (build/zig-files quoted :exe {:dir "/pr oj" :srcpath "/p" :gen "/g"}) :build)
            ".cwd_relative = \"/pr oj/m\\\"x.wattle\""))
   (def windows {:artifacts [{:type :exe :name "a" :entry "C:\\src\\m.wattle"}]})
-  (is (has (get (pkg/zig-files windows :exe gen-opts) :build)
+  (is (has (get (build/zig-files windows :exe gen-opts) :build)
            ".cwd_relative = \"C:\\\\src\\\\m.wattle\"")))
 
 (deftest zig-files-selection
@@ -221,18 +221,18 @@
     {:artifacts [{:type :lib :name "z" :root "z.zig"}
                  {:type :exe :name "b" :entry "b.wattle" :libs ["z"]}
                  {:type :exe :name "a" :entry "a.wattle"}]})
-  (def all (get (pkg/zig-files many :exe gen-opts) :build))
+  (def all (get (build/zig-files many :exe gen-opts) :build))
   (is (has all "const exe0 = wattle.wattleExecutable"))
   (is (has all "const exe1 = wattle.wattleExecutable"))
   (is (< (string/find ".name = \"b\"," all) (string/find ".name = \"a\"," all)))
   (is (has all ".{ .name = \"z\", .root = .{ .cwd_relative = \"/proj/z.zig\" } },"))
-  (def one (get (pkg/zig-files many :exe "a" gen-opts) :build))
+  (def one (get (build/zig-files many :exe "a" gen-opts) :build))
   (is (not (has one "exe1")))
   (is (not (has one "\"z\"")))
-  (def [ok message] (protect (pkg/zig-files many :exe "nosuch" gen-opts)))
+  (def [ok message] (protect (build/zig-files many :exe "nosuch" gen-opts)))
   (is (not ok))
   (is (has message "no :exe artifact is called nosuch"))
-  (def [ok2 message2] (protect (pkg/zig-files {:artifacts [{:type :lib :name "z" :root "z.zig"}]}
+  (def [ok2 message2] (protect (build/zig-files {:artifacts [{:type :lib :name "z" :root "z.zig"}]}
                                                 :exe gen-opts)))
   (is (not ok2))
   (is (has message2 "no :exe artifact is declared")))

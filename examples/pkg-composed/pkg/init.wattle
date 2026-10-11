@@ -1,3 +1,0 @@
-(defn install
-  [manifest &]
-  (pkg/add-file manifest "mymod.wattle"))

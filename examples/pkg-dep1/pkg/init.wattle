@@ -1,3 +1,0 @@
-(defn install
-  [manifest &]
-  (pkg/add-file manifest "pkg-dep1.wattle"))

@@ -1,7 +1,0 @@
-(import pkg-dep1)
-(import pkg-dep2)
-
-(defn myfn
-  [x]
-  (def y (pkg-dep2/function x))
-  (pkg-dep1/function y))

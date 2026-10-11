@@ -212,7 +212,7 @@ normalises the text, so a `\r` that appears on another platform fails the test.
 
 A value that a program builds is not translated. An error message, a string
 before it is written, and the text of a file read in binary mode all have `\n`,
-so a test of such a value spells the newline `\n`. `pkg-run` replaces `\r\n`
+so a test of such a value spells the newline `\n`. `run-tool` replaces `\r\n`
 with `\n` in what a tool wrote to its standard error, so that the message it
 raises is the same on every platform.
 

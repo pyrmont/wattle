@@ -3,8 +3,9 @@
 # Disable file completion by default; re-enable where a file is expected
 complete -c wattle -f
 
-set -l subcommands build b check c help h pkg p run r test t
-set -l pkg_verbs install reinstall uninstall update clean list vendor
+set -l subcommands apps a build b check c deps d help h run r test t
+set -l apps_verbs install upgrade remove list
+set -l deps_verbs vendor
 
 # A word that is not a subcommand starts an implicit run, so the options of
 # run are offered before a subcommand as well as after it.
@@ -18,9 +19,10 @@ complete -c wattle -n __fish_use_subcommand -s v -l version -d 'Show version and
 complete -c wattle -n __fish_use_subcommand -s h -l help -d 'Show usage and exit'
 
 # Subcommands
+complete -c wattle -n __fish_use_subcommand -a apps -d 'Manage installed applications'
 complete -c wattle -n __fish_use_subcommand -a build -d 'Build an artifact from source'
 complete -c wattle -n __fish_use_subcommand -a check -d 'Compile a script without running it'
-complete -c wattle -n __fish_use_subcommand -a pkg -d 'Manage installed packages'
+complete -c wattle -n __fish_use_subcommand -a deps -d 'Manage the dependencies of a project'
 complete -c wattle -n __fish_use_subcommand -a run -d 'Run a script, evaluate code or start the REPL'
 complete -c wattle -n __fish_use_subcommand -a test -d 'Run the tests in ./test'
 complete -c wattle -n __fish_use_subcommand -a help -d 'Describe a subcommand'
@@ -46,16 +48,16 @@ complete -c wattle -n '__fish_seen_subcommand_from check c' -s b -l bail -d 'Sto
 complete -c wattle -n '__fish_seen_subcommand_from check c' -s h -l help -d 'Show usage and exit'
 complete -c wattle -n '__fish_seen_subcommand_from check c' -F
 
-# pkg
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a install -d 'Install a package from a directory, tarball or Git repository'
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a reinstall -d 'Reinstall a package by name'
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a uninstall -d 'Uninstall a package by name'
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a update -d 'Reinstall all installed packages'
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a clean -d 'Uninstall all orphaned packages'
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a list -d 'List all installed packages'
-complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a vendor -d 'Copy the vendored entries of info.edn into the current directory'
+# apps
+complete -c wattle -n "__fish_seen_subcommand_from apps a; and not __fish_seen_subcommand_from $apps_verbs" -a install -d 'Install an application from a directory, tarball or Git repository'
+complete -c wattle -n "__fish_seen_subcommand_from apps a; and not __fish_seen_subcommand_from $apps_verbs" -a upgrade -d 'Install an application again from its recorded source'
+complete -c wattle -n "__fish_seen_subcommand_from apps a; and not __fish_seen_subcommand_from $apps_verbs" -a remove -d 'Remove an application by name'
+complete -c wattle -n "__fish_seen_subcommand_from apps a; and not __fish_seen_subcommand_from $apps_verbs" -a list -d 'List all installed applications'
 complete -c wattle -n '__fish_seen_subcommand_from install' -a '(__fish_complete_directories)'
-complete -c wattle -n '__fish_seen_subcommand_from reinstall uninstall' -a '(wattle pkg list 2>/dev/null)'
+complete -c wattle -n '__fish_seen_subcommand_from upgrade remove' -a '(wattle apps list 2>/dev/null)'
+
+# deps
+complete -c wattle -n "__fish_seen_subcommand_from deps d; and not __fish_seen_subcommand_from $deps_verbs" -a vendor -d 'Copy the vendored entries of info.edn into the current directory'
 
 # run
 complete -c wattle -n $at_run -s e -l eval -x -d 'Evaluate a string of Wattle'
@@ -80,6 +82,7 @@ complete -c wattle -n '__fish_seen_subcommand_from test t' -s T -l no-test -x -d
 complete -c wattle -n '__fish_seen_subcommand_from test t' -s h -l help -d 'Show usage and exit'
 
 # help
-complete -c wattle -n '__fish_seen_subcommand_from help h; and not __fish_seen_subcommand_from build b check c pkg p run r test t' -a 'build check pkg run test'
+complete -c wattle -n '__fish_seen_subcommand_from help h; and not __fish_seen_subcommand_from apps a build b check c deps d run r test t' -a 'apps build check deps run test'
 complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from build b' -a 'exe img lib web'
-complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from pkg p' -a "$pkg_verbs"
+complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from apps a' -a "$apps_verbs"
+complete -c wattle -n '__fish_seen_subcommand_from help h; and __fish_seen_subcommand_from deps d' -a "$deps_verbs"

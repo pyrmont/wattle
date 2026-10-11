@@ -1,0 +1,3 @@
+(defn install
+  [manifest &]
+  (app/add-file manifest "app-dep1.wattle"))

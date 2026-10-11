@@ -41,7 +41,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-asm.wattle" },
     .{ .path = "test/suite-boot.wattle" },
     .{ .path = "test/suite-buffer.wattle" },
-    .{ .path = "test/suite-pkg.wattle", .needs_os = true },
+    .{ .path = "test/suite-apps.wattle", .needs_os = true },
     .{ .path = "test/suite-capi.wattle" },
     .{ .path = "test/suite-nfuns.wattle" },
     .{ .path = "test/suite-compile.wattle" },
@@ -753,7 +753,7 @@ pub fn build(b: *std.Build) void {
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
     if (!wasm) {
-        for ([_][]const u8{ "wattle.1", "wattle-build.1", "wattle-check.1", "wattle-gum.1", "wattle-run.1", "wattle-test.1", "wattle.7" }) |page| {
+        for ([_][]const u8{ "wattle.1", "wattle-apps.1", "wattle-build.1", "wattle-check.1", "wattle-deps.1", "wattle-gum.1", "wattle-run.1", "wattle-test.1", "wattle-applications.7", "wattle.7" }) |page| {
             const dir = if (std.mem.endsWith(u8, page, ".7")) "man7" else "man1";
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path(b.fmt("man/{s}/{s}", .{ dir, page })), .{ .custom = b.fmt("share/man/{s}", .{dir}) }, page).step);
         }
@@ -2186,17 +2186,17 @@ fn addCliChecks(
         build_missing.expectStdErrMatch("source is required");
         test_step.dependOn(&build_missing.step);
 
-        const pkg_missing = b.addRunArtifact(client);
+        const apps_missing = b.addRunArtifact(client);
         // The prefix is given because the environment of a run may set none, and
-        // the check for a prefix comes before the check for a package script.
-        // A reduced-OS build refuses every `pkg` command before either check.
-        pkg_missing.addArgs(&.{ "-p", "no-such-prefix", "pkg", "install" });
-        pkg_missing.expectExitCode(1);
-        pkg_missing.expectStdErrMatch(if (reduced_os)
-            "pkg install is not supported with reduced os"
+        // the check for a prefix comes before the check for an application script.
+        // A reduced-OS build refuses every `apps` command before either check.
+        apps_missing.addArgs(&.{ "-p", "no-such-prefix", "apps", "install" });
+        apps_missing.expectExitCode(1);
+        apps_missing.expectStdErrMatch(if (reduced_os)
+            "apps install is not supported with reduced os"
         else
-            "package must contain pkg.wattle, pkg/init.wattle or an info.edn");
-        test_step.dependOn(&pkg_missing.step);
+            "application must contain pkg.wattle, pkg/init.wattle or an info.edn");
+        test_step.dependOn(&apps_missing.step);
 
         // A build without `os/spawn` refuses the two commands that run a
         // process, and the message names what the build lacks: reduced OS,
@@ -2216,10 +2216,10 @@ fn addCliChecks(
             test_step.dependOn(&build_refused.step);
         }
 
-        const pkg_help = b.addRunArtifact(client);
-        pkg_help.addArgs(&.{ "help", "pkg", "uninstall" });
-        pkg_help.expectStdOutMatch("Uninstall a package by name.");
-        test_step.dependOn(&pkg_help.step);
+        const apps_help = b.addRunArtifact(client);
+        apps_help.addArgs(&.{ "help", "apps", "remove" });
+        apps_help.expectStdOutMatch("Remove an application by name.");
+        test_step.dependOn(&apps_help.step);
 
         const help_nested = b.addRunArtifact(client);
         help_nested.addArgs(&.{ "help", "build", "img" });

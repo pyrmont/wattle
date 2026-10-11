@@ -27,12 +27,13 @@ Wattle reimplements the virtual machine, compiler and core library from the
 Janet programming language in Zig with a syntax inspired by Clojure. See
 `wattle(7)` for more details on the language itself.
 
-**wattle** has six subcommands:
+**wattle** has seven subcommands:
 
+- ***apps*** - manages installed applications
 - ***build*** - builds a project artifacts
 - ***check*** - checks a file without running it
+- ***deps*** - manages the dependencies of a project
 - ***gum*** - copies Gum modules into a project
-- ***pkg*** - manages installed packages
 - ***run*** - runs a script, evaluates code or starts a REPL
 - ***test*** - runs the tests of a project
 
@@ -79,17 +80,20 @@ Options
 SUBCOMMANDS
 ===========
 
+- `wattle-apps(1)`:
+  Manages installed applications.
+
 - `wattle-build(1)`:
   Builds an image, executables, libraries or web programs.
 
 - `wattle-check(1)`:
   Checks a script without running it.
 
+- `wattle-deps(1)`:
+  Manages the dependencies of a project.
+
 - `wattle-gum(1)`:
   Copies Gum modules into a project.
-
-- `wattle-pkg(1)`:
-  Manages installed packages.
 
 - `wattle-run(1)`:
   Runs a script, evaluates code or starts a REPL.
@@ -148,8 +152,8 @@ Each subcommand's page has further examples.
 SEE ALSO
 ========
 
-`wattle-build(1)`, `wattle-check(1)`, `wattle-gum(1)`, `wattle-pkg(1)`,
-`wattle-run(1)`, `wattle-test(1)`, `wattle(7)`
+`wattle-apps(1)`, `wattle-build(1)`, `wattle-check(1)`, `wattle-deps(1)`,
+`wattle-gum(1)`, `wattle-run(1)`, `wattle-test(1)`, `wattle(7)`
 
 HISTORY
 =======

@@ -378,22 +378,22 @@ derives `Selection` from `Config`. Its booleans determine which files
 `root.zig` compiles, through `options.<name>`. Both use a single expression per
 setting, preventing inconsistent inclusion under `Config` and `Selection`.
 
-`*prefix*` specifies the root for these directories: `<prefix>/lib/wattle`
-for modules, `<prefix>/bin` for programs and `<prefix>/share/man` for man pages.
-The runtime starts without a prefix. `WATTLE_PREFIX` and `--prefix` each set a
-single root directory; neither accepts a list. The flag, dynamic binding and
-module-path template use the name `prefix`. The environment variable adds the
+`*prefix*` specifies the root for these directories: `<prefix>/lib/wattle/apps`
+for installed applications, `<prefix>/bin` for programs and `<prefix>/share/man`
+for man pages. The runtime starts without a prefix. `WATTLE_PREFIX` and
+`--prefix` each set a single root directory; neither accepts a list. The flag
+and dynamic binding use the name `prefix`. The environment variable adds the
 project name as `WATTLE_PREFIX`.
 
-With no prefix, `:prefix:` module patterns are skipped and pkg commands raise.
-With an empty prefix, set by `--prefix ""`, the first `:prefix:` lookup or pkg
-command raises. Both error messages name `WATTLE_PREFIX` and `--prefix`.
+With no prefix, the `apps` commands raise. With an empty prefix, set by
+`--prefix ""`, the first `apps` command raises. Both error messages name
+`WATTLE_PREFIX` and `--prefix`.
 
 `wattle/libpath`, `wattle/binpath`, `wattle/manpath` and `wattle/srcpath` take
 no arguments and return these derived directories: `<prefix>/lib/wattle`,
 `<prefix>/bin`, `<prefix>/share/man` and `<prefix>/share/wattle`. They raise if
 the prefix is nil or empty. They are functions because `*prefix*` can change
-during execution. `:prefix:` expansion uses the same helper.
+during execution.
 
 The image contains no prefix. A binding cannot set the prefix to nil: a nil
 entry in a fiber's environment causes a lookup in the root environment. Only a
@@ -419,6 +419,33 @@ listed in the comptime block are compiled into `wattle-runtime-test`. Tests
 in files imported only through the `pub const` block or another file's
 container-level `const` are not collected. `os/fs/stat.zig` is listed in the
 comptime block solely to include its tests.
+
+## Module path
+
+`:modpath` is a dynamic binding that holds a vector of directories. A bare
+`(import name)` searches them in order. A relative import does not use it.
+The prefix has no shared module directory, so installing software does not make
+a module importable by another program. No environment variable or flag sets
+`:modpath`.
+
+The command sets `:modpath` before it loads any program. `wattle run` looks for
+`info.edn` in the directory of the script: `foo/bar/baz.wattle` uses
+`foo/bar/info.edn`, and `foo.wattle` uses `./info.edn`. It does not search the
+parent directories. `wattle test` and `wattle build` take no script and look
+in the working directory.
+
+`:modpath` is the `deps/` directory of that project, followed by a directory
+for material that is not committed, such as built native modules. The second
+directory holds a `.gitignore` that excludes its contents. A vendored copy in
+`deps/` overrides generated material.
+
+With no `info.edn`, `:modpath` is unset and nothing is printed at start. An
+import that fails while `:modpath` is unset reports that there is no `info.edn`
+beside the script. A script with no project is not warned about.
+
+A compiled executable uses no module path. `wattle build exe` stores the
+program and everything it imported in the executable and links its native
+modules.
 
 ## Versions
 
@@ -452,10 +479,23 @@ most recent release number. For a release, `res/repo/version.wattle` sets that
 number along with the version label. Static and shared library file names have
 no version suffix.
 
-## Installing packages
+## Applications and dependencies
 
-`wattle pkg install [source [ref]]` installs a package. The _source_ argument
-specifies its location and is interpreted in this order:
+A _project_ is a directory that holds an `info.edn`. An _application_ is a
+program that a user runs by name, installed under the prefix. A _dependency_ is
+software that a project requires. A dependency is vendored: its source is
+copied into the project, and nothing is installed for other projects to import.
+`wattle apps` manages applications and `wattle deps` manages the dependencies of
+the current project. Functions that the commands call have the prefixes `app/`,
+`dep/` and `build/`.
+
+### Installing applications
+
+`wattle apps install [source [ref]]` installs an application. `wattle apps
+upgrade [name]` installs the recorded source again, `wattle apps remove name`
+removes an application and `wattle apps list` lists the installed
+applications. The _source_ argument specifies the location of an application
+and is interpreted in this order:
 
 - An existing directory is installed from its current contents.
 - A name ending in `.tar` or `.tar.gz` specifies a tarball. `curl` downloads it
@@ -464,20 +504,34 @@ specifies its location and is interpreted in this order:
 
 Without `source`, the command installs the current directory.
 
-Packages use either an installation script or declarative metadata. If
-`pkg.wattle` or `pkg/init.wattle` exists, installation runs only that script's
-hooks. Otherwise, `info.edn` must declare `:artifacts` or `:man`.
+The `info.edn` of an application has a `:group`, a string. By convention it is
+a reverse domain, such as `net.inqk`. Installing an application with no `:group`
+raises an error that says `info.edn` needs one. `:group` and `:name` are each
+one directory name, so neither may be empty, contain a path separator or be
+`..`.
 
-Each `:exe` artifact is built by `wattle build exe` in the package root, using
+An application is installed in `<prefix>/lib/wattle/apps/<group>/<name>/`. That
+directory holds the manifest, a copy of `info.edn`, the hook script and, for a
+`:src` artifact, the copied files. Executables are installed in
+`<prefix>/bin` and man pages in `<prefix>/share/man`. `import` does not search
+the application directory.
+
+Applications use either an installation script or declarative metadata. If
+`hooks.wattle` or `hooks/init.wattle` exists, installation runs only that
+script's hooks: `clean`, `build`, `install` and `check`. Removal runs its
+`remove` hook. Otherwise, `info.edn` must declare `:artifacts` or `:man`.
+
+Each `:exe` artifact is built by `wattle build exe` in the project root, using
 the default release mode, `safe`. The resulting `zig-out/bin/<name>` is
-installed in `bin`. Packages requiring another mode must use a script.
+installed in `bin`. Applications requiring another mode must use a script.
 Each path in the `:man` vector is installed in `share/man`. The section is the
 digit after the file name's last `.`: `man/predoc.1` is installed in `man1`.
 A file name without a final `.` and a digit from 1 to 9 causes an error.
 
 `:web` and `:lib` artifacts are not installed. Declaring a `:lib` artifact
-without a script causes an error. A package without a script, `:artifacts` or
-`:man` is not installed.
+without a script, and without a `:src` artifact that names it in `:libs`,
+causes an error. An application without a script, `:artifacts` or `:man` is not
+installed.
 
 `ref` specifies a Git branch or tag. It is accepted only for Git repositories;
 using it with a directory or tarball raises an error. The source name is read
@@ -487,28 +541,61 @@ is interpreted as a Git repository.
 Downloaded sources are unpacked into a temporary directory under
 `<prefix>/lib/wattle`. The directory is removed after installation, including
 on failure. If the unpacked tree has a single top-level directory, that
-directory becomes the package root. The manifest records `source` and `ref`,
-but not the temporary path. `pkg reinstall` and `pkg update` download the
-recorded source again, or install from the recorded directory for local sources.
+directory becomes the project root. The manifest records the source, the `ref`
+and the revision, but not the temporary path. The revision is the commit hash
+for a Git repository and a hash of the contents for a tarball or a directory.
+`apps upgrade` downloads the recorded source again, or installs from the
+recorded directory for local sources.
 
 `curl`, `tar` and `git` are located through `PATH`. If a required tool is
-missing, `pkg install` names it in the error. A non-zero exit status also
+missing, `apps install` names it in the error. A non-zero exit status also
 raises an error. The message includes the tool's name and status, followed on
 the next line by its standard error output.
 
 Executable builds do not capture output, allowing immediate display and Zig's
 terminal progress reporting. Their error messages identify `wattle build exe`
-and its exit status. Package scripts run with the caller's privileges. Package
-sources are not verified.
+and its exit status. Application scripts run with the caller's privileges.
+Application sources are not verified.
 
-`pkg vendor` reads `info.edn` in the current directory and copies each entry of
-`:vendored` into the project instead of the prefix. An entry is fetched by the
-same code as `pkg install`, so `:url` is a directory, a tarball or a Git
-repository and `:ref` follows the rule for `ref`. `:prefix` and `:paths` are
-checked for every entry before the first fetch, and a path that is absolute or
-has a `..` component raises an error. An existing file at a destination is
-replaced. Nothing records what was copied. `info.edn` has no `:dependencies`,
-and the manifest of an installed package records none.
+### Scripts
+
+A `:src` artifact is a program installed as source. It has a `:name`, an
+`:entry`, the Wattle file that defines `main`, and `:files`, a required vector
+of paths relative to the project root. `wattle apps install` copies each path,
+recursively, into the application directory. A `:src` artifact may have
+`:libs`, a vector of the names of `:lib` artifacts. Install builds each with
+`wattle build lib` into the application directory, where `:modpath` finds it,
+and raises an error if Zig is not on the `PATH`. `apps upgrade` rebuilds them,
+because the loader refuses a module built with different configuration bits, a
+different Zig version or a different `api` fingerprint.
+
+`wattle run` finds the project beside the script, so in development the entry
+file is at the project root. An installed script has no such limit.
+
+For a `:src` artifact, install writes `<prefix>/bin/<name>`, the binscript. It
+begins with the line `#!/usr/bin/env wattle` and makes one call to `app/run`
+with the group, the name and the entry path. `app/run` finds the application
+directory from the `prefix` binding, sets `:modpath` to its `deps/` directory,
+loads the entry file into an environment that holds the arguments of the call,
+and calls `main` as `wattle run` does. It raises an error that names
+`WATTLE_PREFIX` if the prefix is not set. The binscript does not read
+`info.edn`.
+
+Running an installed script needs `wattle` on the `PATH` and the prefix set. An
+`:exe` contains the runtime, the program and its imports, and needs neither.
+Windows has no shebang lines, so installing a `:src` artifact on Windows raises
+an error.
+
+### Vendoring dependencies
+
+`wattle deps vendor` reads `info.edn` in the current directory and copies each
+entry of `:vendored` into the project. An entry is fetched by the same code as
+`apps install`, so `:url` is a directory, a tarball or a Git repository and
+`:ref` follows the rule for `ref`. `:prefix` and `:paths` are checked for every
+entry before the first fetch, and a path that is absolute or has a `..`
+component raises an error. An existing file at a destination is replaced. The
+command records the revision of each source it copied. `info.edn` has no
+`:dependencies`, and the manifest of an installed application records none.
 
 ## Build steps
 

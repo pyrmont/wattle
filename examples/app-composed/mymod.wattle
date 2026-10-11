@@ -1,0 +1,7 @@
+(import app-dep1)
+(import app-dep2)
+
+(defn myfn
+  [x]
+  (def y (app-dep2/function x))
+  (app-dep1/function y))
