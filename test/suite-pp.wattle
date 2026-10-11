@@ -158,6 +158,18 @@
 (assert-error "could not print as Wattle source" (string/format "%w" (/ 0 0)))
 (assert-error "could not print as Wattle source" (string/format "%w" print))
 (assert-error "could not print as Wattle source" (string/format "%w" !{:a print}))
+
+; A nested dictionary needs more of the shared sort buffer than the outer one
+; has, so printing it moves the buffer. Each pair of the outer dictionary is
+; still read from the moved buffer.
+(let [nested {:group "g" :name "n" :a {:x 1 :y 2 :z 3 :w 4}}
+      deeper {:group "g" :name "n" :a [{:b {:c 1 :d 2 :e 3 :f 4 :g 5 :h 6} :i 7 :j 8 :k 9}]}]
+  (assert (= "{:a {:w 4 :x 1 :y 2 :z 3} :group \"g\" :name \"n\"}" (string/format "%y" nested))
+          "%y prints each pair of a dictionary that holds a larger one")
+  (assert (= "{:a {:w 4 :x 1 :y 2 :z 3} :group \"g\" :name \"n\"}" (string/format "%w" nested))
+          "%w prints each pair of a dictionary that holds a larger one")
+  (assert (deep= (parse (string/format "%y" deeper)) deeper) "%y round trips nested dictionaries")
+  (assert (deep= (parse (string/format "%w" deeper)) deeper) "%w round trips nested dictionaries"))
 (assert-error "could not print as Wattle source" (string/format "%w" ![print]))
 (assert-error "could not print as Wattle source" (string/format "%w" [print]))
 (assert-error "could not print as Wattle source" (string/format "%w" {:a print}))

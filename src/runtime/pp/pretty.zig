@@ -567,7 +567,10 @@ fn printDataKvs(S: *Pretty, kvs: []const tables.Keyval, depth: c_int) raise.Erro
     }.lessThan);
     S.keysort_start += @intCast(len);
 
-    for (buf[0..len], 0..) |j, i| {
+    for (0..len) |i| {
+        // A nested dictionary can grow the shared buffer and move it, so the
+        // index is read from the buffer again for each pair.
+        const j = (S.keysort_buffer orelse unreachable)[@as(usize, @intCast(ks_start)) + i];
         const kv = &kvs[@intCast(j)];
         try if (i != 0) S.pushByte(' ');
         if (try printDataOne(S, kv.key, depth - 1)) return true;
