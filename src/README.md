@@ -137,7 +137,7 @@ Paths below `runtime/` in the table are relative to that directory.
 Files directly in `runtime/` implement the parser, PEG engine, marshaller,
 argument and arity layers, environment and pretty-printer entry point. The
 directory also contains `no_compiler`, the allocator (`gc.zig`), `capi.zig`,
-`edn`, `io`, `json`, `math`, `scan` and `signal`.
+`crypto`, `edn`, `io`, `json`, `math`, `scan` and `signal`.
 
 `value/` implements arrays, buffers, strings, symbols, tuples, tables, fibers,
 functions, abstracts, integer types, vectors, maps, sets and transients.
@@ -458,6 +458,32 @@ beside the script. A script with no project is not warned about.
 A compiled executable uses no module path. `wattle build exe` stores the
 program and everything it imported in the executable and links its native
 modules.
+
+## Cryptographic functions
+
+The `crypto/` functions are registered in every configuration by `env.zig`. Their
+digests, keyed digests and streaming state are those of `std.crypto`, and
+`runtime/crypto.zig` contains no cryptographic code.
+
+An algorithm is the keyword `:sha256`, `:sha512` or `:blake3`. `crypto/hash`
+takes an algorithm and a string or buffer and returns the digest as a string of
+raw bytes: 32 bytes for `:sha256` and `:blake3`, and 64 for `:sha512`. A digest
+is not hex text, and `string/format` with `%02x` spells its bytes.
+`crypto/hasher` returns a hasher for an algorithm, `crypto/update!` adds bytes
+to it and returns it, and `crypto/digest` returns the digest of the bytes added
+so far without changing the hasher. A hasher cannot be marshalled.
+
+`crypto/hmac` takes an algorithm, a key and a string or buffer. It accepts
+`:sha256` and `:sha512` and raises for `:blake3`, whose keyed mode has a fixed
+key length and is not HMAC. `crypto/equal?` compares two strings or buffers in
+time that depends on their lengths and not on where they differ, and returns
+false for different lengths. An argument that is not a string or buffer, or an
+algorithm that is not one of these keywords, raises.
+
+`test/suite-crypto.wattle` checks the functions against digests produced outside
+the runtime: the published SHA-2 vectors, the cases of RFC 4231 and the test
+vectors of BLAKE3, with a reference implementation of BLAKE3 for the longer
+inputs.
 
 ## Versions
 

@@ -1,0 +1,150 @@
+(import ./helper :prefix "" :exit true)
+(start-suite)
+
+; The expected digests were produced outside the runtime: the SHA-2 digests and
+; the HMACs with Python's hashlib and hmac and the RFC 4231 cases, checked with
+; shasum, and the BLAKE3 digests with a reference implementation written from
+; the specification that reproduces its published vectors for the empty input
+; and for one zero byte.
+
+(defn- hex [s] (string/join "" (map #(string/format "%02x" $) s)))
+
+(defn- repeated [byte n]
+  (def b (buffer/new n))
+  (for _ 0 n (buffer/push-byte! b byte))
+  b)
+
+; The input of the specification's test vectors: byte i is i modulo 251.
+(defn- pattern [n]
+  (def b (buffer/new n))
+  (for i 0 n (buffer/push-byte! b (% i 251)))
+  b)
+
+(def two-block "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+
+; crypto/hash
+(assert (= "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+           (hex (crypto/hash :sha256 ""))) "sha256 of the empty string")
+(assert (= "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+           (hex (crypto/hash :sha256 "abc"))) "sha256 of abc")
+(assert (= "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+           (hex (crypto/hash :sha256 two-block))) "sha256 of a message of two blocks")
+(assert (= "2bce1ba628720664be4b9fdd77aae0678e5f0f3f02fc6ff641ec879094f6a404"
+           (hex (crypto/hash :sha256 (pattern 1024)))) "sha256 of 1024 bytes")
+(assert (= "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+           (hex (crypto/hash :sha512 ""))) "sha512 of the empty string")
+(assert (= "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+           (hex (crypto/hash :sha512 "abc"))) "sha512 of abc")
+(assert (= "9af3eed7e9dd11428bb922c6830c32065154532303781f8ea4f20792d616703884d564ebfd2bfa65faed8fc8fd91d9e1d3f12897fbb1e2247632db70ce30573e"
+           (hex (crypto/hash :sha512 (pattern 1024)))) "sha512 of 1024 bytes")
+(assert (= "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+           (hex (crypto/hash :blake3 ""))) "blake3 of the empty string")
+(assert (= "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
+           (hex (crypto/hash :blake3 "abc"))) "blake3 of abc")
+(assert (= "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213"
+           (hex (crypto/hash :blake3 (pattern 1)))) "blake3 of one byte")
+(assert (= "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98"
+           (hex (crypto/hash :blake3 (pattern 64)))) "blake3 of one block")
+(assert (= "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee"
+           (hex (crypto/hash :blake3 (pattern 65)))) "blake3 of a block and a byte")
+(assert (= "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7"
+           (hex (crypto/hash :blake3 (pattern 1024)))) "blake3 of one chunk")
+
+(assert (= 32 (length (crypto/hash :sha256 "x"))) "a sha256 digest is 32 bytes")
+(assert (= 64 (length (crypto/hash :sha512 "x"))) "a sha512 digest is 64 bytes")
+(assert (= 32 (length (crypto/hash :blake3 "x"))) "a blake3 digest is 32 bytes")
+(assert (string? (crypto/hash :sha256 "x")) "a digest is a string")
+(assert (= (crypto/hash :sha256 "abc") (crypto/hash :sha256 (buffer "abc")))
+        "a buffer hashes as the string of the same bytes")
+
+; crypto/hasher, crypto/update! and crypto/digest
+(each algo [:sha256 :sha512 :blake3]
+  (def h (crypto/hasher algo))
+  (assert (= (crypto/hash algo "") (crypto/digest h)) (string algo " hasher of nothing"))
+  (assert (= h (crypto/update! h "ab")) "update! returns the hasher")
+  (def so-far (crypto/digest h))
+  (assert (= (crypto/hash algo "ab") so-far) (string algo " digest of the bytes so far"))
+  (assert (= so-far (crypto/digest h)) "digest leaves the hasher unchanged")
+  (crypto/update! h (buffer "c"))
+  (assert (= (crypto/hash algo "abc") (crypto/digest h)) (string algo " more bytes after a digest")))
+
+(let [h (crypto/hasher :sha256)]
+  (for _ 0 1000 (crypto/update! h (repeated 97 1000)))
+  (assert (= "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0" (hex (crypto/digest h)))
+          "sha256 of a million a in a thousand updates"))
+(let [h (crypto/hasher :sha512)]
+  (for _ 0 1000 (crypto/update! h (repeated 97 1000)))
+  (assert (= "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973ebde0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b" (hex (crypto/digest h)))
+          "sha512 of a million a in a thousand updates"))
+(let [h (crypto/hasher :blake3)
+      data (pattern 1024)]
+  (crypto/update! h (buffer/slice data 0 100))
+  (crypto/update! h (buffer/slice data 100 1024))
+  (assert (= "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7" (hex (crypto/digest h)))
+          "blake3 of a chunk in two updates"))
+(assert (not= (crypto/hasher :sha256) (crypto/hasher :sha256)) "each hasher is its own value")
+(let [a (crypto/hasher :sha256)
+      b (crypto/hasher :sha256)]
+  (crypto/update! a "x")
+  (assert (= (crypto/hash :sha256 "") (crypto/digest b)) "updating one hasher leaves another unchanged"))
+
+; crypto/hmac, RFC 4231
+(assert (= "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+           (hex (crypto/hmac :sha256 (repeated 0x0b 20) "Hi There"))) "hmac-sha256, case 1")
+(assert (= "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854"
+           (hex (crypto/hmac :sha512 (repeated 0x0b 20) "Hi There"))) "hmac-sha512, case 1")
+(def long-message "Test Using Larger Than Block-Size Key - Hash Key First")
+(assert (= "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+           (hex (crypto/hmac :sha256 (repeated 0xaa 131) long-message))) "hmac-sha256, a key longer than the block")
+(assert (= "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598"
+           (hex (crypto/hmac :sha512 (repeated 0xaa 131) long-message))) "hmac-sha512, a key longer than the block")
+(assert (= "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"
+           (hex (crypto/hmac :sha256 "" ""))) "hmac-sha256 of nothing under an empty key")
+(assert (= "b936cee86c9f87aa5d3c6f2e84cb5a4239a5fe50480a6ec66b70ab5b1f4ac6730c6c515421b327ec1d69402e53dfb49ad7381eb067b338fd7b0cb22247225d47"
+           (hex (crypto/hmac :sha512 "" ""))) "hmac-sha512 of nothing under an empty key")
+(assert (= "1d6b3a844fd1f121635920218ed13a2af303510f54585275d7a8c1a96ddc9e9d"
+           (hex (crypto/hmac :sha256 "key" (pattern 1024)))) "hmac-sha256 of 1024 bytes")
+(assert (= 32 (length (crypto/hmac :sha256 "k" "v"))) "an hmac-sha256 is 32 bytes")
+(assert (= 64 (length (crypto/hmac :sha512 "k" "v"))) "an hmac-sha512 is 64 bytes")
+(assert (not= (crypto/hmac :sha256 "a" "v") (crypto/hmac :sha256 "b" "v")) "the key changes the hmac")
+
+; crypto/equal?
+(assert (crypto/equal? "" "") "empty strings are equal")
+(assert (crypto/equal? "abc" "abc") "equal strings")
+(assert (crypto/equal? "abc" (buffer "abc")) "a string and a buffer of the same bytes")
+(assert (crypto/equal? (crypto/hash :sha256 "x") (crypto/hash :sha256 "x")) "equal digests")
+(assert (not (crypto/equal? "abc" "abd")) "a difference in the last byte")
+(assert (not (crypto/equal? "abc" "xbc")) "a difference in the first byte")
+(assert (not (crypto/equal? "abc" "ab")) "a prefix is not equal")
+(assert (not (crypto/equal? "" "a")) "empty and not empty")
+(assert (= false (crypto/equal? "a" "b")) "the result is false, not nil")
+(assert (= true (crypto/equal? "a" "a")) "the result is true")
+
+; Refusals
+(assert-error "an algorithm that is not known" (crypto/hash :md5 "x"))
+(assert-error "an algorithm that is a string" (crypto/hash "sha256" "x"))
+(assert-error "no algorithm" (crypto/hash nil "x"))
+(assert-error "data that is a number" (crypto/hash :sha256 1))
+(assert-error "data that is nil" (crypto/hash :sha256 nil))
+(assert-error "too few arguments to crypto/hash" (crypto/hash :sha256))
+(assert-error "too many arguments to crypto/hash" (crypto/hash :sha256 "x" "y"))
+(assert-error "an unknown algorithm for a hasher" (crypto/hasher :md5))
+(assert-error "update! of a value that is not a hasher" (crypto/update! "x" "y"))
+(assert-error "update! with data that is a number" (crypto/update! (crypto/hasher :sha256) 1))
+(assert-error "digest of a value that is not a hasher" (crypto/digest "x"))
+(assert-error "hmac with blake3" (crypto/hmac :blake3 "k" "v"))
+(assert-error "hmac with an unknown algorithm" (crypto/hmac :md5 "k" "v"))
+(assert-error "hmac with a key that is a number" (crypto/hmac :sha256 1 "v"))
+(assert-error "equal? with a number" (crypto/equal? 1 "a"))
+(assert-error "equal? with one argument" (crypto/equal? "a"))
+(assert-error "marshal of a hasher" (marshal (crypto/hasher :sha256)))
+
+; The messages name the bad algorithm.
+(let [[ok message] (protect (crypto/hash :md5 "x"))]
+  (assert (and (not ok) (string/find ":sha256" message) (string/find ":md5" message))
+          "the error for an unknown algorithm names the choices and the value"))
+(let [[ok message] (protect (crypto/hmac :blake3 "k" "v"))]
+  (assert (and (not ok) (string/find "crypto/hmac" message) (string/find ":blake3" message))
+          "the error for hmac with blake3 names the function and the value"))
+
+(end-suite)

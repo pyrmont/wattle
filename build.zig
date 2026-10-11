@@ -18,9 +18,9 @@ const build_name = "zig";
 /// register does not skip a case -- it refuses to load, and the whole suite is
 /// lost with it.
 ///
-/// `-Dreduced-os=true` registers four `os` bindings and no more. Eight suites
-/// reach past them: `suite-os` tests the OS library, and the other seven use
-/// the filesystem, the environment or a subprocess. The other 33 suites run
+/// `-Dreduced-os=true` registers four `os` bindings and no more. Nine suites
+/// reach past them: `suite-os` tests the OS library, and the other eight use
+/// the filesystem, the environment or a subprocess. The other 36 suites run
 /// under this configuration. `needs_processes` marks a suite that also needs
 /// the process subsystem; no suite sets it now.
 ///
@@ -46,6 +46,7 @@ const test_suites = &[_]Suite{
     .{ .path = "test/suite-nfuns.wattle" },
     .{ .path = "test/suite-compile.wattle" },
     .{ .path = "test/suite-corelib.wattle" },
+    .{ .path = "test/suite-crypto.wattle" },
     .{ .path = "test/suite-debug.wattle" },
     .{ .path = "test/suite-edn.wattle" },
     .{ .path = "test/suite-ev.wattle", .needs_os = true },
