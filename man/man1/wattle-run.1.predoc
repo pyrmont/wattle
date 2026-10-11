@@ -1,0 +1,117 @@
+---
+Title: WATTLE-RUN(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-07
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-run** - run a script, evaluate code or start a REPL
+
+SYNOPSIS
+========
+
+**wattle** [***run***] [_options_] [_script_ [_args_ ...]]
+
+DESCRIPTION
+===========
+
+Options are read until the first argument that does not begin with ``-``.
+That argument is the _script_, and every argument after it is passed to the
+script without being read as an option. Once the script has run, **wattle**
+calls the ``main`` function it defines, if any, with the script's path
+followed by _args_. The same list is bound to ``*args*``. With no _script_,
+and no **-e**, ***run*** starts a REPL. **r** is a synonym for ***run***.
+
+***run*** is the subcommand when no other is named. See `wattle(1)`.
+
+An error that a _script_, a module loaded with **-l** or code given to
+**-e** does not handle ends the process with status 1.
+
+The options are applied in a fixed order, whatever order they are written in:
+first the settings (**-d**, **-s**, **-r**, **-q** and
+**-i**), then **-l**, then **-e**, and last the _script_. A setting therefore
+applies to every library, expression and script, and **-l** runs before every
+**-e**. Several **-e** options and several **-l** options run in the order
+given.
+
+**wattle** exits when the script and any tasks it scheduled on the event loop
+have finished.
+
+OPTIONS
+=======
+
+- **-e**, **--eval** _code_:
+  Evaluate _code_ as Wattle source. The REPL is not started afterwards unless
+  **-r** is also given.
+
+- **-l**, **--lib** _module_:
+  Import _module_ into the environment before continuing, without a prefix, so
+  its bindings are available to later options, the _script_ and the REPL.
+
+- **-i**, **--img**:
+  Treat _script_ as an image made by **wattle** ***build*** ***img*** rather than as
+  source, load it and call its ``main`` function.
+
+- **-r**, **--repl**:
+  Start the REPL after the _script_ or the other options have run.
+
+- **-s**, **--stdin**:
+  Read REPL input as raw lines from standard input and write prompts to
+  standard output. Implies **-r**.
+
+- **-d**, **--debug**:
+  Set ``*debug*`` and ``*redef*``. An error in the REPL enters the debugger,
+  and a top-level definition can be rebound.
+
+- **-q**, **--quiet**:
+  Do not print the banner when the REPL starts.
+
+REPL
+====
+
+The REPL reads a line at a time and evaluates each form once it is complete.
+The prompt shows the line number and any open delimiters. Documentation for a
+binding is shown with ``(doc symbol)``, and ``(doc)`` lists the bindings in
+scope.
+
+Prompts are written to standard error, or to standard output with **-s**.
+
+ENVIRONMENT
+===========
+
+- `WATTLE_HISTFILE`:
+  A file to keep the REPL's history in. Each form submitted at the REPL on a
+  terminal is appended to it, and the forms in it are recalled with the Up
+  key in a later session. If unset, history lasts only until the REPL exits.
+
+`wattle(1)` describes `WATTLE_PREFIX`, `NO_COLOR`, `TERM` and `COLORTERM`.
+
+EXAMPLES
+========
+
+Start the REPL:
+
+````
+$ wattle
+````
+
+Run a script with two arguments:
+
+````
+$ wattle hello.wattle Alice Bob
+````
+
+Evaluate an expression and print its result:
+
+````
+$ wattle -e '(print (+ 1 2 3))'
+````
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-build(1)`, `wattle-check(1)`

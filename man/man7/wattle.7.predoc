@@ -413,7 +413,7 @@ result:
 SEE ALSO
 ========
 
-`wattle(1)`
+`wattle(1)`, `wattle-packages(7)`
 
 The REPL's ``(doc)`` lists available bindings, and ``(doc symbol)`` describes
 one. Example programs are distributed with the Wattle source tree.

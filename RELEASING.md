@@ -53,7 +53,7 @@ The last command prints `0.1.0`. Stage only the version-related files:
 
 ```console
 $ git add build.zig build.zig.zon CHANGELOG.md README.md
-$ git add man/wattle.1 man/wattle.1.predoc man/wattle.7 man/wattle.7.predoc
+$ git add man
 $ git commit -m "Prepare for v0.1.0 release"
 $ git push origin master
 ```
@@ -103,7 +103,7 @@ Commit the reset and push `master`:
 
 ```console
 $ git add build.zig CHANGELOG.md
-$ git add man/wattle.1 man/wattle.1.predoc man/wattle.7 man/wattle.7.predoc
+$ git add man
 $ git commit -m "Reset version to DEVEL"
 $ git push origin master
 ```

@@ -1,0 +1,52 @@
+---
+Title: WATTLE-GUM(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-07
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-gum** - copy Gum modules into a project
+
+SYNOPSIS
+========
+
+**wattle gum** [**-d** _directory_ | **--dir** _directory_]
+               [**-f** | **--force**] [_module_ ...]
+
+DESCRIPTION
+===========
+
+Copy Gum modules into a project. Gum is the set of optional Wattle modules
+installed in ``share/wattle/src/gum`` under ``*prefix*``. **g** is a synonym
+for ***gum***.
+
+With no _module_, ***gum*** prints the name and a description of each module in
+two columns, wrapped as **--help** wraps. With one or more, it copies the files
+of each, which are its source and its licence, into the ``gum`` directory of
+_directory_, and prints ``copied`` or ``unchanged`` and the path of each file.
+A project imports a copy by its path, as in
+``(import ./deps/gum/args :as args)``. A build made without the OS library
+does not include ***gum***, and it exits with status 1 after saying so.
+
+***gum*** checks every _module_ and every destination before it copies a file.
+It exits with status 1 having copied nothing if a _module_ is not one of
+Gum's, or if a destination file exists with content that differs from its
+source. A file with the same content is left as it is.
+
+OPTIONS
+=======
+
+- **-d**, **--dir** _directory_:
+  Copy into ``gum`` under _directory_. The default is ``deps``.
+
+- **-f**, **--force**:
+  Replace a destination file that differs from its source.
+
+SEE ALSO
+========
+
+`wattle(1)`

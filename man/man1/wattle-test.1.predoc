@@ -1,0 +1,77 @@
+---
+Title: WATTLE-TEST(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-07
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-test** - run the tests of a project
+
+SYNOPSIS
+========
+
+**wattle test** [_options_]
+
+DESCRIPTION
+===========
+
+Run the tests. ***test*** runs each file ending in ``.wattle`` under ``./test``,
+in a process of its own. It prints ``seed:`` and the seed. It then prints one
+line for each file, with a mark, the path and the counts of tests and
+assertions. It prints the output of a file that failed after its line, each
+line after a border that is red when colour is on. It ends with the number of
+files and tests and the files that failed. The output of a file that passed is
+not printed. The exit status is 1 if a file failed or no file was run. A test
+file that uses the Gum test module, ``gum/test.wattle``, reads the dynamic
+bindings that **-t**, **-T** and **--seed** set. **t** is a synonym for
+***test***.
+
+OPTIONS
+=======
+
+- **-f**, **--file** _path_:
+  Run only the test file whose path ends with _path_, which is relative to
+  ``./test``. It can be repeated. It is not compatible with **-F**.
+
+- **-F**, **--no-file** _path_:
+  Do not run the test file whose path ends with _path_. It can be repeated. It
+  is not compatible with **-f**.
+
+- **-t**, **--test** _name_:
+  Add _name_ to the dynamic binding ``:test/tests`` in each test file. It can
+  be repeated. It is not compatible with **-T**.
+
+- **-T**, **--no-test** _name_:
+  Add _name_ to the dynamic binding ``:test/skips`` in each test file. It can
+  be repeated. It is not compatible with **-t**.
+
+- **--seed** _seed_:
+  Use the integer _seed_ to seed the generator that shuffles the test files.
+  Each test file also shuffles its tests with it, as ***test*** sets the dynamic
+  binding ``:test/seed``. Without **--seed**, the seed is taken from the clock,
+  so each run has a different order. The same seed gives the same order.
+
+- **-b**, **--bail**:
+  Stop after the first test file that fails.
+
+- **-e**, **--lint-error** _level_, **-w**, **--lint-warn** _level_:
+  Set the lint levels of each test file. They take the same values as for
+  **wattle** ***check***.
+
+EXAMPLES
+========
+
+Run the tests in ``./test``, skipping one file:
+
+````
+$ wattle test --no-file slow.wattle
+````
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-check(1)`

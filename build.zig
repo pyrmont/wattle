@@ -752,8 +752,12 @@ pub fn build(b: *std.Build) void {
     // would be size spent on symbols nothing can reach.
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
-    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("man/wattle.1"), .{ .custom = "share/man/man1" }, "wattle.1").step);
-    if (!wasm) b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path("man/wattle.7"), .{ .custom = "share/man/man7" }, "wattle.7").step);
+    if (!wasm) {
+        for ([_][]const u8{ "wattle.1", "wattle-build.1", "wattle-check.1", "wattle-gum.1", "wattle-run.1", "wattle-test.1", "wattle.7" }) |page| {
+            const dir = if (std.mem.endsWith(u8, page, ".7")) "man7" else "man1";
+            b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path(b.fmt("man/{s}/{s}", .{ dir, page })), .{ .custom = b.fmt("share/man/{s}", .{dir}) }, page).step);
+        }
+    }
     // The package's own files, as `build.zig.zon` lists them, so that a
     // `wattleExecutable` build can name `<prefix>/share/wattle` as its `wattle`
     // dependency by path where no URL and hash are wanted. The copy has the

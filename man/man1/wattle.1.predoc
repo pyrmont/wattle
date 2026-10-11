@@ -1,0 +1,169 @@
+---
+Title: WATTLE(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-07
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle** - run Wattle programs and a Wattle REPL
+
+SYNOPSIS
+========
+
+**wattle** [**-c** | **--color**] [**-C** | **--no-color**] [**-p** _path_ |
+           **--prefix** _path_] _subcommand_ _arguments_
+**wattle** ***help*** _subcommand_
+**wattle** [**-h** | **-v**]
+
+DESCRIPTION
+===========
+
+**wattle** runs programs written in Wattle, a Lisp-like programming language.
+Wattle reimplements the virtual machine, compiler and core library from the
+Janet programming language in Zig with a syntax inspired by Clojure. See
+`wattle(7)` for more details on the language itself.
+
+**wattle** has six subcommands:
+
+- ***build*** - builds a project artifacts
+- ***check*** - checks a file without running it
+- ***gum*** - copies Gum modules into a project
+- ***pkg*** - manages installed packages
+- ***run*** - runs a script, evaluates code or starts a REPL
+- ***test*** - runs the tests of a project
+
+A user can run ``wattle help <subcommand>`` for more information about a
+subcommand.
+
+The default subcommand is ***run***. As a result, this:
+
+````
+$ wattle
+$ wattle hello.wattle
+$ wattle -e '(+ 1 2)'
+````
+
+is equivalent to:
+
+````
+$ wattle run
+$ wattle run hello.wattle
+$ wattle run -e '(+ 1 2)'
+````
+
+Options
+-------
+
+- **-c**, **--color**:
+  Enables ANSI colour for writing to stderr and stdout. If **-C** is also
+  given, **-C** applies.
+
+- **-C**, **--no-color**:
+  Disables ANSI color for writing to stderr and stdout.
+
+- **-p**, **--prefix** _path_:
+  Sets the root directory from which ``lib/wattle``, ``bin`` and ``share/man``
+  derive. This replaces the value taken from `WATTLE_PREFIX`.
+
+- **-v**, **--version**:
+  Prints the version of Wattle and exits.
+
+- **-h**, **--help**:
+  Prints a usage summary and exits. Each subcommand supports **-h**, and prints
+  its own usage.
+
+SUBCOMMANDS
+===========
+
+- `wattle-build(1)`:
+  Builds an image, executables, libraries or web programs.
+
+- `wattle-check(1)`:
+  Checks a script without running it.
+
+- `wattle-gum(1)`:
+  Copies Gum modules into a project.
+
+- `wattle-pkg(1)`:
+  Manages installed packages.
+
+- `wattle-run(1)`:
+  Runs a script, evaluates code or starts a REPL.
+
+- `wattle-test(1)`:
+  Runs the tests of a project.
+
+ENVIRONMENT
+===========
+
+- `WATTLE_PREFIX`:
+  The directory that is used to set the dynamic binding ``*prefix*``. This
+  binding is used to derive the binpath, the libpath and the manpath. The
+  binpath is ``<prefix>/bin`` and is the location into which executables are
+  installed. The libpath is ``<prefix>/lib/wattle`` and is the location into
+  which libraries are installed and loaded. The manpath is
+  ``<prefix>/share/man`` and is the location into which man pages are
+  installed. It can be overridden by **--prefix**. **wattle** can run without a
+  value for ``*prefix*`` being set but it will exit with an error if a user
+  tries to use binpath, libpath and manpath.
+
+- `WATTLE_HISTFILE`:
+  A file to record the history of commands sent to the REPL. See
+  `wattle-run(1)`.
+
+- `NO_COLOR`:
+  If set to a non-empty value, disable colour. Colour is otherwise used when
+  both standard output and standard error are terminals.
+
+- `TERM`, `COLORTERM`:
+  The terminal has 256 colours if `TERM` contains `256color` or `COLORTERM` is
+  set to a non-empty value, and 16 otherwise.
+
+An environment variable set to the empty string is treated as unset.
+
+EXIT STATUS
+===========
+
+**wattle** exits `0` on success and `1` if a script, a subcommand or an option
+raises an error that is not handled. An error in the REPL is printed and does not
+end the session. A program can set its own status with ``(os/exit status)``.
+
+EXAMPLES
+========
+
+Start the REPL, run a script and evaluate an expression:
+
+````
+$ wattle
+$ wattle hello.wattle Alice Bob
+$ wattle -e '(print (+ 1 2 3))'
+````
+
+Each subcommand's page has further examples.
+
+SEE ALSO
+========
+
+`wattle-build(1)`, `wattle-check(1)`, `wattle-gum(1)`, `wattle-pkg(1)`,
+`wattle-run(1)`, `wattle-test(1)`, `wattle(7)`
+
+HISTORY
+=======
+
+Wattle began as a fork of Janet, the language created by Calvin Rose.
+
+Wattle has its own version numbering. Releases follow the ``<major>.<minor>.<patch>``
+numbering pattern. Development versions use ``DEVEL-<commit-hash>``. ``-dirty`` is
+appended when a tracked file differs from the commit.
+
+The version number is available within Wattle at ``wattle/version``.
+
+COPYRIGHT
+=========
+
+Wattle is copyright Michael Camilleri. Janet is copyright Calvin Rose and
+contributors. Both are distributed under the MIT licence.

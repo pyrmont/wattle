@@ -123,7 +123,8 @@ _wattle() {
                             'uninstall[Uninstall a package by name]' \
                             'update[Reinstall all installed packages]' \
                             'clean[Uninstall all orphaned packages]' \
-                            'list[List all installed packages]' && ret=0
+                            'list[List all installed packages]' \
+                            'vendor[Copy the vendored entries of info.edn into the current directory]' && ret=0
                     else
                         case $line[2] in
                             install) _directories && ret=0 ;;
@@ -149,7 +150,7 @@ _wattle() {
                     case "$CURRENT:$line[2]" in
                         2:*) _describe -t subcommands 'subcommand' subcommands && ret=0 ;;
                         3:(b|build)) _values 'target' exe img lib && ret=0 ;;
-                        3:(p|pkg)) _values 'verb' install reinstall uninstall update clean list && ret=0 ;;
+                        3:(p|pkg)) _values 'verb' install reinstall uninstall update clean list vendor && ret=0 ;;
                     esac
                     ;;
                 *)

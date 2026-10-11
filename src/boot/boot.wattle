@@ -5055,56 +5055,14 @@
     function with the same name in the package script.
     """
     [pkg-name]
-    (def breakage
-      (filter (fn [b] (and (not= b pkg-name)
-                           (has-value? (get (pkg/manifest b) :dependencies []) pkg-name)))
-              (pkg/list)))
-    (unless (empty? breakage)
-      (def breakage-list (sort breakage))
-      (pkg-errorf "cannot uninstall %s, breaks dependent packages %n" pkg-name breakage-list))
     (pkg-uninstall-unchecked pkg-name))
-
-  (defn pkg/topolist
-    "Gets topological order of all packages, such that each package is listed after its dependencies."
-    []
-    (def visited !{})
-    (def cycle-detect !{})
-    (def order ![])
-    (def stack ![])
-    (defn visit
-      [b]
-      (array/push! stack b)
-      (if (get visited b) (break))
-      (if (get cycle-detect b) (pkg-errorf "cycle detected in package dependencies: %s" (string/join " -> " stack)))
-      (put! cycle-detect b true)
-      (each d (get (pkg/manifest b) :dependencies []) (visit d))
-      (put! cycle-detect b nil)
-      (put! visited b true)
-      (array/pop! stack)
-      (array/push! order b))
-    (each b (pkg/list) (visit b))
-    order)
 
   (defn pkg/prune
     """
-    Removes all orphaned packages from the current prefix. An orphaned package is a
-    package that is marked for :auto-remove and is not depended on by any other package.
+    Removes every package of the current prefix that is marked for :auto-remove.
     """
     []
-    (def topo (pkg/topolist))
-    (def rtopo (reverse topo))
-    ; Check which auto-remove packages can be dropped
-    ; Iterate in (reverse) topological order, and if we see an auto-remove package and have not already seen
-    ; something that depends on it, then it is a root package and can be pruned.
-    (def exempt !{})
-    (def to-drop ![])
-    (each b rtopo
-      (def m (pkg/manifest b))
-      (if (or (get exempt b) (not (get m :auto-remove)))
-        (do
-          (put! exempt b true)
-          (each d (get m :dependencies []) (put! exempt d true)))
-        (array/push! to-drop b)))
+    (def to-drop (filter #(get (pkg/manifest $) :auto-remove) (pkg/list)))
     (print "pruning " (length to-drop) " packages")
     (each b to-drop
       (print "uninstalling " b)
@@ -5362,12 +5320,6 @@
     (sync-manifest man)
     (edefer (do (print "installation error, uninstalling") (pkg/uninstall pkg-name))
       (when info
-        (def deps (seq [d :in (get info :dependencies ![])]
-                    (string (if (dictionary? d) (get d :name) d))))
-        (def missing (filter (complement pkg/installed?) deps))
-        (when (next missing)
-          (pkg-fail (string "missing dependencies " (string/join ", " missing))))
-        (put! man :dependencies deps)
         (put! man :info info))
       (def module (when bscript-src (get-pkg-module pkg-name)))
       (def clean (get config :clean))
@@ -5378,7 +5330,6 @@
       (put! man :hooks all-hooks)
       (if module
         (do
-          (do-hook module pkg-name :postdeps man)
           (when clean
             (do-hook module pkg-name :clean man))
           (do-hook module pkg-name :build man)
@@ -5407,8 +5358,8 @@
     ending in .tar or .tar.gz that curl downloads and tar unpacks, or any other
     name, which git clones. The name of the package is the value mapped to :name
     in either config or the info file. The :ref in config is a branch or tag and
-    is accepted only for a Git repository. There are 5 hooks called during
-    installation (postdeps, clean, build, install and check). A user can
+    is accepted only for a Git repository. There are 4 hooks called during
+    installation (clean, build, install and check). A user can
     register a hook by defining a function with the same name in the package
     script. A package without pkg.wattle or pkg/init.wattle is built and
     installed from the :artifacts and :man of its info file instead.
@@ -5482,7 +5433,8 @@
     """
     Reinstalls an existing package from a new directory. Similar to
     pkg/reinstall, but installs the replacement package from any directory.
-    This is necessary to replace a package without breaking any dependencies.
+    This is necessary to replace a package from a directory other than its
+    source.
     """
     [pkg-name path & {:as new-config}]
     (def manifest (pkg/manifest pkg-name))
@@ -5569,8 +5521,101 @@
   (defn pkg/update-all
     "Reinstalls all packages."
     [& {:as configs}]
-    (each pkg (pkg/topolist)
-      (pkg/reinstall pkg |(kvs configs)))))
+    (each pkg (pkg/list)
+      (pkg/reinstall pkg |(kvs configs))))
+
+  (defn- pkg-vendor-parts
+    """
+    Returns the components of path, a string that is relative to the directory
+    it names a place in, as a vector of strings. Raises as ^pkg-fail does,
+    naming what and entry, if path is empty, is absolute or holds a component
+    of two dots. A component of one dot is dropped.
+    """
+    [path what entry]
+    (pkg-assertf (and (string? path) (next path))
+                 "%s of vendored %s must be a non-empty string" what entry)
+    (def slashed (string/replace-all "\\" "/" path))
+    (pkg-assertf (not (or (string/has-prefix? "/" slashed)
+                          (and (> (length slashed) 1) (= ":" (string/slice slashed 1 2)))))
+                 "%s of vendored %s must be relative, not %v" what entry path)
+    (def parts (filter #(not (or (empty? $) (= $ "."))) (string/split "/" slashed)))
+    (pkg-assertf (not (has-value? parts ".."))
+                 "%s of vendored %s must stay inside the project, not %v" what entry path)
+    parts)
+
+  (defn- pkg-vendor-join
+    """
+    Returns the path that root, a path, and parts, a vector of components,
+    make together.
+    """
+    [root parts]
+    (def s (sep))
+    (var out root)
+    (each part parts (set out (string out s part)))
+    out)
+
+  (defn- pkg-vendor-plan
+    """
+    Returns the plan for entry, one of the maps in :vendored of an info file:
+    a map with the keys :name, :url, :ref and :copies. :copies is a vector of
+    pairs of the vectors of components of a path in the source and of the path
+    in the project, which is under the :prefix of entry. The source path is
+    empty for the whole source. Raises as ^pkg-fail does if entry is not valid.
+    """
+    [entry]
+    (pkg-assertf (dictionary? entry) ":vendored must hold maps, not %v" entry)
+    (def name (get entry :name))
+    (pkg-assertf (and (string? name) (next name)) "a vendored entry needs a :name, not %v" name)
+    (def url (get entry :url))
+    (pkg-assertf (and (string? url) (next url)) "vendored %s needs a :url" name)
+    (def ref (get entry :ref))
+    (pkg-assertf (or (nil? ref) (string? ref)) ":ref of vendored %s must be a string" name)
+    (def prefix (pkg-vendor-parts (get entry :prefix ".") ":prefix" name))
+    (def paths (get entry :paths))
+    (pkg-assertf (or (nil? paths) (indexed? paths)) ":paths of vendored %s must be a vector" name)
+    (def copies
+      (if paths
+        (seq [p :in paths]
+          (def [from to] (if (indexed? p) [(get p 0) (get p 1)] [p p]))
+          [(pkg-vendor-parts from ":paths" name)
+           [|prefix |(pkg-vendor-parts to ":paths" name)]])
+        [[[] prefix]]))
+    {:name name :url url :ref ref :copies copies})
+
+  (defn pkg/vendor
+    """
+    Copies each entry of :vendored in the info file of the directory dir, the
+    current directory by default, into the project. An entry is a map with a
+    :name and a :url, which is a source as ^pkg/install takes it, and
+    optionally a :ref, as ^pkg/install takes it, a :prefix, the directory in
+    the project that the copies go under, and :paths, a vector of the paths in
+    the source to copy, each a string or a pair of a path in the source and a
+    path under the prefix. The whole source is copied if there is no :paths.
+    A file in the project that has the path of a copy is replaced. Every entry
+    is checked before any is fetched. Returns the number of entries.
+    """
+    [& dir]
+    (def root (os/realpath (get dir 0 ".")))
+    (def infofile (string root (sep) "info.edn"))
+    (pkg-assertf (fexists infofile) "no info.edn in %s" root)
+    (def vendored (get (parse (slurp infofile)) :vendored))
+    (pkg-assert (and (indexed? vendored) (next vendored)) "info.edn has no :vendored entries")
+    (def plans (map pkg-vendor-plan vendored))
+    (each plan plans
+      (def {name :name url :url ref :ref copies :copies} plan)
+      (pkg-with-source url ref
+        (fn [src]
+          (each [from to] copies
+            (def from-path (pkg-vendor-join src from))
+            (def to-path (pkg-vendor-join root to))
+            (pkg-assertf (os/lstat from-path :mode)
+                         "vendored %s has no %s in its source" name (if (empty? from) "root" (string/join "/" from)))
+            (pkg-mkdirs (if (= :directory (os/stat from-path :mode))
+                          to-path
+                          (pkg-vendor-join root (slice to 0 -2))))
+            (copyrf from-path to-path))))
+      (print "vendored " name))
+    (length plans)))
 
 ;;;
 ;;;
@@ -6046,6 +6091,9 @@
                                   :help "The name of the installed package."}]}
       "update" {:validate? validate?
                 :help "Reinstall all installed packages."
+                :rules []}
+      "vendor" {:validate? validate?
+                :help "Copy the :vendored entries of info.edn into the current directory."
                 :rules []}]})
   {:validate? validate?
    :info {:about "The Wattle programming language."}
@@ -6076,7 +6124,7 @@
 (each argv [[] ["check"] ["gum"] ["test"] ["build" "img" "source"] ["build" "exe"] ["build" "lib"] ["build" "web"]
             ["pkg" "install"] ["pkg" "install" "source" "ref"]
             ["pkg" "reinstall" "name"] ["pkg" "uninstall" "name"]
-            ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"]]
+            ["pkg" "update"] ["pkg" "clean"] ["pkg" "list"] ["pkg" "vendor"]]
   (cli-parse-args "wattle" cli-validating-config argv))
 
 (defn- apply-color
@@ -6441,6 +6489,7 @@
           "reinstall" (pkg/reinstall (get params :name))
           "uninstall" (pkg/uninstall (get params :name))
           "update" (pkg/update-all)
+          "vendor" (pkg/vendor)
           "clean" (pkg/prune)
           "list" (each l (pkg/list) (print l)))
         ([err fib]

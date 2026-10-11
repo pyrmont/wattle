@@ -1,4 +1,0 @@
-{
-  :name "sample-pkg-aliases"
-  :dependencies ["sample-dep1" "sample-dep2"]
-}

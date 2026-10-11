@@ -501,6 +501,15 @@ terminal progress reporting. Their error messages identify `wattle build exe`
 and its exit status. Package scripts run with the caller's privileges. Package
 sources are not verified.
 
+`pkg vendor` reads `info.edn` in the current directory and copies each entry of
+`:vendored` into the project instead of the prefix. An entry is fetched by the
+same code as `pkg install`, so `:url` is a directory, a tarball or a Git
+repository and `:ref` follows the rule for `ref`. `:prefix` and `:paths` are
+checked for every entry before the first fetch, and a path that is absolute or
+has a `..` component raises an error. An existing file at a destination is
+replaced. Nothing records what was copied. `info.edn` has no `:dependencies`,
+and the manifest of an installed package records none.
+
 ## Build steps
 
 Run a step with `zig build <step>`. The default step is `install`, so

@@ -1,0 +1,179 @@
+---
+Title: WATTLE-BUILD(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-07
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-build** - build an image, executables, libraries or web programs
+
+SYNOPSIS
+========
+
+**wattle build** ***img*** [**-l** _module_ | **--lib** _module_ ...] _source_
+                 [_output_]
+
+**wattle build** ***exe*** [**-r** _mode_ | **--release** _mode_]
+                 [**-t** _triple_ | **--target** _triple_] [_name_]
+**wattle build** ***lib*** [**-r** _mode_ | **--release** _mode_]
+                 [**-t** _triple_ | **--target** _triple_] [_name_]
+**wattle build** ***web*** [**-r** _mode_ | **--release** _mode_] [_name_]
+
+DESCRIPTION
+===========
+
+**wattle build** creates two kinds of output. An image is made from a source
+file and requires only the Wattle runtime. Executables, native libraries and
+WebAssembly programs are made from the artifacts that a Wattle project declares
+in its info file and require the Zig toolchain.
+
+**wattle build** can be invoked using ***wattle b***.
+
+Subcommands
+-----------
+
+An image is made from a source file, not from a project's info file, and
+requires nothing further.
+
+- ***img***:
+  Loads the module at _source_ and writes an image of
+  its environment to _output_. If _output_ is omitted, it is _source_ with
+  ``.wattle`` replaced by ``.wimage``. `wattle-run(1)` can be used to load
+  the image later.
+
+  - **-l**, **--lib** _module_:
+    Imports _module_ into the environment before _source_ is loaded, as
+    **wattle run** does. Several **-l** options run in the order given.
+
+Executables, native libraries and web programs are made from the artifacts
+declared in the project's info file and require the Zig toolchain. The generated
+files are in ``zig-out`` in the project root.
+
+- ***exe***:
+  Builds the artifacts of ``:type`` ``:exe`` in the project's info file.
+  The output is a standalone executable that contains the Wattle runtime, the
+  compiled program and the native modules it links. If _name_ is given, only
+  that artifact is built.
+
+  - **-r**, **--release** _mode_:
+    Optimises for ``safe``, ``fast`` or ``small``. The default is ``safe``.
+
+  - **-t**, **--target** _triple_:
+    Builds for _triple_, a Zig target such as ``x86_64-linux-musl``. The
+    default is this machine.
+
+- ***lib***:
+  Builds the artifacts of ``:type`` ``:lib`` in the project's info file. The
+  output is a native module. If _name_ is given, only that artifact is built.
+
+  - **-r**, **--release** _mode_:
+    Optimises for ``safe``, ``fast`` or ``small``. The default is ``safe``.
+
+  - **-t**, **--target** _triple_:
+    Builds for _triple_, a Zig target such as ``x86_64-linux-musl``. The
+    default is this machine.
+
+- ***web***:
+  Builds the artifacts of ``:type`` ``:web`` in the project's info file. Each
+  is an image of the program, a Wattle runtime built for WebAssembly that loads
+  an image, and the JavaScript that runs them in a browser. See
+  `<Web programs>` for the files. If _name_ is given, only that artifact is
+  built.
+
+  The runtime is built for ``wasm32-wasi``, so this subcommand takes no **-t**.
+
+  - **-r**, **--release** _mode_:
+    Optimises for ``safe``, ``fast`` or ``small``. The default is ``small``.
+
+Zig toolchain
+-------------
+
+Building executables, native libraries and web programs requires:
+
+1. ***zig*** to be on the user's `PATH`.
+2. The Wattle source, which is included in Wattle releases and which is
+   installed to ``<prefix>/share/wattle``.
+
+No Zig build files are required. **wattle build** creates temporary
+``build.zig`` and ``build.zig.zon`` files using the description of the
+artifacts in the project's info file. It then uses these to build with
+***zig***.
+
+The project's info file is ``info.edn`` in the current directory.
+
+Declarations
+------------
+
+A project author declares the artifacts in the project's info file in a vector
+under the ``:artifacts`` key:
+
+````
+{:name "greeter"
+ :artifacts [{:type :lib
+              :name "greet"
+              :root "greet.zig"}
+             {:type :exe
+              :name "hello"
+              :entry "main.wattle"
+              :libs ["greet"]}]}
+````
+
+Every artifact has:
+
+1. a ``:type`` (``:exe``, ``:lib`` or ``:web``)
+2. a ``:name`` (a unique string of letters, digits, ``_`` and ``-``)
+
+Artifacts of the following types have additional requirements:
+
+- ``:exe``:
+  This requires an ``:entry`` key that maps to the file where ``main`` is
+  defined. It may also include a ``:libs`` key that maps to a vector of native
+  library artifacts that will be linked into it.
+
+- ``:lib``:
+  This requires a ``:root`` key that maps to the Zig root file of a native
+  module.
+
+- ``:web``:
+  This requires an ``:entry`` key that maps to the file where ``main`` is
+  defined.
+
+Web programs
+------------
+
+Web programs are artifacts that are designed to run in a browser environment.
+To do this, **wattle build** ***web*** creates four files in
+``zig-out/web/<name>/``:
+
+1. ``wattle-<hash>.wasm``, the runtime
+2. ``<name>-<hash>.wimage``, the program
+3. ``wasi-<hash>.js``, the WASI support shim
+4. ``<name>.js``, an ES module that exports ``load`` and ``run``
+
+Example programs are distributed with the Wattle source tree.
+
+EXAMPLES
+========
+
+Compile a program into an image and run the image:
+
+````
+$ wattle build img hello.wattle hello.wimage
+$ wattle run -i hello.wimage Alice
+````
+
+Build the executables that the project's info file declares, optimised for
+size:
+
+````
+$ wattle -p /usr/local build exe --release small
+````
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-run(1)`, `wattle-pkg(1)`, `wattle-packages(7)`

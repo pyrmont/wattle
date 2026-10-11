@@ -4,7 +4,7 @@
 complete -c wattle -f
 
 set -l subcommands build b check c help h pkg p run r test t
-set -l pkg_verbs install reinstall uninstall update clean list
+set -l pkg_verbs install reinstall uninstall update clean list vendor
 
 # A word that is not a subcommand starts an implicit run, so the options of
 # run are offered before a subcommand as well as after it.
@@ -53,6 +53,7 @@ complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_su
 complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a update -d 'Reinstall all installed packages'
 complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a clean -d 'Uninstall all orphaned packages'
 complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a list -d 'List all installed packages'
+complete -c wattle -n "__fish_seen_subcommand_from pkg p; and not __fish_seen_subcommand_from $pkg_verbs" -a vendor -d 'Copy the vendored entries of info.edn into the current directory'
 complete -c wattle -n '__fish_seen_subcommand_from install' -a '(__fish_complete_directories)'
 complete -c wattle -n '__fish_seen_subcommand_from reinstall uninstall' -a '(wattle pkg list 2>/dev/null)'
 

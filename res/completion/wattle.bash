@@ -96,7 +96,7 @@ _wattle() {
             ;;
         pkg)
             if [[ $((cword - sub_at)) -eq 1 ]]; then
-                COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur"))
+                COMPREPLY=($(compgen -W "install reinstall uninstall update clean list vendor" -- "$cur"))
             else
                 case "${words[sub_at + 1]}" in
                     install) _filedir -d ;;
@@ -133,7 +133,7 @@ _wattle() {
             case "$((cword - sub_at)):${words[sub_at + 1]}" in
                 1:*) COMPREPLY=($(compgen -W "build check pkg run test" -- "$cur")) ;;
                 2:b|2:build) COMPREPLY=($(compgen -W "exe img lib web" -- "$cur")) ;;
-                2:p|2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list" -- "$cur")) ;;
+                2:p|2:pkg) COMPREPLY=($(compgen -W "install reinstall uninstall update clean list vendor" -- "$cur")) ;;
             esac
             ;;
     esac

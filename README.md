@@ -143,9 +143,10 @@ See the `examples/` directory for all provided example programs.
 
 ## Documentation
 
-The `wattle` CLI utility is documented in the `wattle.1` man page. A brief
-overview of the language is in the `wattle.7` man page. Both are generated from
-[Predoc][] files that are included in `man/`. The files are installed to
+The `wattle` CLI utility is documented in the `wattle.1` man page, and each
+subcommand in a page of its own, such as `wattle-build.1`. A brief overview of
+the language is in the `wattle.7` man page. All are generated from
+[Predoc][] files that are included in `man/man1/` and `man/man7/`. The files are installed to
 `<prefix>/share/man`.
 
 Documentation about bindings is available in the REPL. Use the `(doc symbol-name)` macro to

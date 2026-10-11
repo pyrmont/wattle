@@ -1,0 +1,56 @@
+---
+Title: WATTLE-CHECK(1)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-07
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-check** - compile a script without running it
+
+SYNOPSIS
+========
+
+**wattle check** [_options_] [_script_]
+
+DESCRIPTION
+===========
+
+Compile _script_ without running it and report every error. With no _script_,
+check standard input instead. The exit status is 0 after errors are reported,
+unless **-b** is given. **c** is a synonym for ***check***.
+
+OPTIONS
+=======
+
+- **-e**, **--lint-error** _level_:
+  Set the lint level at which a message stops compilation with an error.
+  _level_ is one of ``none``, ``relaxed``, ``normal``, ``strict`` or ``all``,
+  written without a leading colon, or a number. These are the numbers 0, 1, 2
+  and 3 and infinity. A message is reported when its own level is at most
+  _level_, so ``none`` reports nothing and ``all`` reports every message. The
+  default is ``none``.
+
+- **-w**, **--lint-warn** _level_:
+  Set the lint level at which a message is printed as a warning. _level_ takes
+  the same values as for **-e**. The default is ``normal``.
+
+- **-b**, **--bail**:
+  Stop at the first error in the source and exit with status 1.
+
+EXAMPLES
+========
+
+Check a script for compile errors without running it, stopping at the first:
+
+````
+$ wattle check --bail hello.wattle
+````
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-test(1)`
