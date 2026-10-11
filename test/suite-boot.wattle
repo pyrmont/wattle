@@ -1131,17 +1131,10 @@
 (assert (deep= (distinct (coro (yield 8) (yield 11) (yield 8))) ![8 11]))
 
 ; *prefix* is the root that <prefix>/lib/wattle, <prefix>/bin and
-; <prefix>/share/man derive from, and `:prefix:` expands to the first of them.
-; nil is no prefix, "" is an empty one, and any other string is the root. A
-; runtime starts with none: `WATTLE_PREFIX` and `--prefix` set it. Each state
-; but nil is set here with a dynamic binding.
-(def prefix-template ":prefix:/:all:.wattle")
+; <prefix>/share/man derive from. nil is no prefix, "" is an empty one, and any
+; other string is the root. A runtime starts with none: `WATTLE_PREFIX` and
+; `--prefix` set it. Each state but nil is set here with a dynamic binding.
 (defn- normal [path] (string/replace-all "\\" "/" path))
-
-(with-dyns [*prefix* "/tmp/root"]
-  (assert (= "/tmp/root/lib/wattle/x.wattle"
-             (normal (module/expand-path "x" prefix-template)))
-          ":prefix: expands to <prefix>/lib/wattle"))
 
 ; wattle/libpath, wattle/binpath, wattle/manpath and wattle/srcpath compute
 ; the derived directories from *prefix* each time they are called.
@@ -1164,32 +1157,16 @@
 ; to the root environment. It is the state of a runtime started with neither
 ; `WATTLE_PREFIX` nor `--prefix`, so the cases run only when this one was.
 (unless (or (get root-env :prefix) (dyn *prefix*))
-  (assert (nil? (module/expand-path "x" prefix-template))
-          ":prefix: has no expansion without a prefix")
-  (def [found message] (module/find "nosuchmodule"))
-  (assert (and (nil? found) (string? message))
-          "module/find skips :prefix: without a prefix")
   (each f [wattle/libpath wattle/binpath wattle/manpath wattle/srcpath]
     (def [ok message] (protect (f)))
     (assert (and (not ok) (string/find "WATTLE_PREFIX" message))
             "a derived directory raises without a prefix")))
 
+; The module path does not read *prefix*: a lookup neither raises with an empty
+; prefix nor searches a directory under the prefix.
 (with-dyns [*prefix* ""]
-  (def [ok message] (protect (module/expand-path "x" prefix-template)))
-  (assert (not ok) ":prefix: raises with an empty prefix")
-  (assert (string/find "WATTLE_PREFIX" message) "the error names WATTLE_PREFIX")
-  (assert (string/find "--prefix" message) "the error names --prefix")
-  (def [found-ok _] (protect (module/find "nosuchmodule")))
-  (assert (not found-ok) "module/find raises with an empty prefix")
-  (assert (= "x/y" (string (module/expand-path "x/y" ":all:")))
-          "a template with no :prefix: is unaffected"))
-
-(with-dyns [*prefix* "/tmp/root"]
-  (def paths (module/add-prefix "/tmp/other"))
-  (assert (find #(and (string? (first $))
-                      (string/has-prefix? "/tmp/other/lib/wattle" (first $)))
-                paths)
-          "module/add-prefix adds the lib/wattle directory of a root"))
+  (def [ok result] (protect (module/find "nosuchmodule")))
+  (assert (and ok (nil? (first result))) "module/find does not raise with an empty prefix"))
 
 ; An image imported by its full path goes through the `:image` loader, as it
 ; does when named by module name. The full-path entry once selected `:source`,

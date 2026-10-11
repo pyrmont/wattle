@@ -392,7 +392,18 @@ available:
 ````
 
 ``import`` also accepts ``:as`` or ``:prefix`` to choose the prefix.
-`WATTLE_PREFIX` selects the directory for system modules; see `wattle(1)`.
+
+A name that does not begin with ``.``, ``/`` or ``@`` is a bare import, as in
+``(import greetings)``. It searches the directories in the dynamic binding
+``:modpath``, in order. A relative import does not use ``:modpath``. The
+command sets ``:modpath`` before it loads a program. ``wattle run`` looks for
+``info.edn`` in the directory of the script, and ``wattle test`` and
+``wattle build`` look in the working directory. Neither searches the parent
+directories. ``:modpath`` is the ``deps`` directory of that project followed by
+its ``.wattle`` directory, which holds material that is not committed, such as
+built native modules. With no ``info.edn``, ``:modpath`` is not set and a bare
+import fails. No installed library is importable by another program, and no
+environment variable or option sets ``:modpath``.
 
 ERRORS
 ======

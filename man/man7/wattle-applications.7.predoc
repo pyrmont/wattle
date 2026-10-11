@@ -132,15 +132,6 @@ The ``remove`` hook runs when the application is removed.
 Within a hook, these functions add files to the manifest, so that
 ``wattle apps remove`` can remove them:
 
-- ``app/add-file``:
-  Adds a file to the libpath.
-
-- ``app/add-directory``:
-  Adds a directory to the libpath.
-
-- ``app/add``:
-  Adds a file or directory and everything it contains to the libpath.
-
 - ``app/add-bin``:
   Adds a program to the binpath.
 
@@ -153,8 +144,7 @@ Example of ``hooks/init.wattle``:
 (defn install
   [manifest &]
   (app/add-bin manifest "hello")
-  (app/add-manpage manifest "hello.1")
-  (app/add-file manifest "greetings.wattle"))
+  (app/add-manpage manifest "hello.1"))
 ````
 
 INSTALLED FILES
@@ -163,8 +153,8 @@ INSTALLED FILES
 All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
 
 - ``lib/wattle``:
-  The libpath. Modules added with ``app/add-file`` are here, and ``import``
-  finds them. See ``MODULES`` in `wattle(7)`.
+  The libpath, which holds the applications. ``import`` does not search it.
+  See ``MODULES`` in `wattle(7)`.
 
 - ``lib/wattle/apps/<group>/<name>``:
   The directory of an installed application: ``manifest.edn``, which lists its

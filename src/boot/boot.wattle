@@ -2807,7 +2807,7 @@
 ;;;
 
 (defdyn *prefix*
-  "Path of directory to load system modules from.")
+  "Path of the root that the binpath, the libpath and the manpath derive from.")
 
 (defn make-env
   """
@@ -3199,6 +3199,24 @@
 (defdyn *module-loading* "Dynamic binding for overriding ^module/loading")
 (defdyn *module-loaders* "Dynamic binding for overriding ^module/loaders")
 (defdyn *module-make-env* "Dynamic binding for creating new environments for ^import, ^require, and ^dofile. Overrides ^make-env.")
+(defdyn *modpath*
+  """
+  Dynamic binding for the directories that a bare ^import searches. It is a
+  vector of directory names, searched in order, or nil. A relative import does
+  not use it. The command line sets it from the info.edn of the project.
+  """)
+
+; Version of fexists that works even with a reduced OS
+(defn- fexists
+  [path]
+  (compif (dyn 'os/stat)
+    (= :file (os/stat path :mode))
+    (when-let [f (file/open path :rb)]
+      (def res
+        (try (do (file/read f 1) true)
+          ([err] nil)))
+      (file/close f)
+      res)))
 
 (def module/cache
   "A table, mapping loaded module identifiers to their environments."
@@ -3219,6 +3237,19 @@
   """
   ![])
 
+(defn- modpath-finder
+  """
+  Returns a function that takes the name of a bare import and returns the
+  first file in a directory of ^*modpath* that has the name followed by ext, or
+  nil. ext is a file extension as ^module/add-paths takes it.
+  """
+  [ext]
+  (fn find-in-modpath [path]
+    (when-let [dirs (dyn *modpath*)]
+      (def file (string (module/expand-path path (string ":all:" ext))))
+      (when-let [dir (find #(fexists (string $ "/" file)) dirs)]
+        (string dir "/" file)))))
+
 (defn module/add-paths
   """
   Adds paths to ^module/paths for a given loader such that
@@ -3236,8 +3267,9 @@
   (array/insert! mp dyn-index [(string ":@all:" ext) loader check-dyn-relative])
   (def all-index (find-prefix ".:all:"))
   (array/insert! mp all-index [(string ".:all:" ext) loader check-project-relative])
-  (def prefix-index (find-prefix ":prefix:"))
-  (array/insert! mp prefix-index [(string ":prefix:/:all:" ext) loader check-is-dep])
+  (def modpath-index
+    (or (find-index #(and (function? ($ 0)) (= check-is-dep ($ 2))) mp) 0))
+  (array/insert! mp modpath-index [(modpath-finder ext) loader check-is-dep])
   (def curall-index (find-prefix ":cur:/:all:"))
   (array/insert! mp curall-index [(string ":cur:/:all:" ext) loader check-relative])
   mp)
@@ -3276,24 +3308,6 @@
         (put! load-image-dict key v))))
   env)
 
-; Don't expose this externally yet - could break if custom module/paths is setup.
-(defn module/add-prefix
-  """
-  Adds a custom prefix to ^module/paths by duplicating all entries that begin with `:prefix:` and
-  adding duplicates with the lib/wattle directory of path as the prefix instead.
-  """
-  [path]
-  (def copies ![])
-  (var last-index 0)
-  (def mp (dyn *module-paths* module/paths))
-  (loop [[index entry] :pairs mp]
-    (def pattern (first entry))
-    (when (and (string? pattern) (string/has-prefix? ":prefix:/" pattern))
-      (set last-index index)
-      (array/push! copies [(string/replace ":prefix:" (string path "/lib/wattle") pattern) |(slice entry 1)])))
-  (array/insert! mp (+ 1 last-index) |copies)
-  mp)
-
 (module/add-paths ":native:" :native)
 (module/add-paths "/init.wattle" :source)
 (module/add-paths ".wattle" :source)
@@ -3310,18 +3324,6 @@
               [(fn is-cached [path] (if (in (dyn *module-cache* module/cache) path) path))
                :preload
                check-preloadable])
-
-; Version of fexists that works even with a reduced OS
-(defn- fexists
-  [path]
-  (compif (dyn 'os/stat)
-    (= :file (os/stat path :mode))
-    (when-let [f (file/open path :rb)]
-      (def res
-        (try (do (file/read f 1) true)
-          ([err] nil)))
-      (file/close f)
-      res)))
 
 (defn- mod-filter
   [x path]
@@ -3360,8 +3362,13 @@
                          (when (mod-filter chk path)
                            (module/expand-path path t))))
             paths (filter identity (map expander mp))
-            str-parts (interpose "\n    " paths)]
-        [nil (string "could not find module " path ":\n    " |str-parts)]))))
+            notes (if (and (check-is-dep path) (nil? (dyn *modpath*)))
+                    [|paths "no info.edn beside the script, so no module path is set"]
+                    paths)
+            str-parts (interpose "\n    " notes)]
+        [nil (if (empty? notes)
+               (string "could not find module " path)
+               (string "could not find module " path ":\n    " |str-parts))]))))
 
 (def module/loading
   """
@@ -5438,7 +5445,6 @@
       (edefer (rmrf dest-dir) ; don't leave garbage on failure
         (def install-source ![])
         (defn real-or-plain [path] (if (os/stat path :mode) (os/realpath path) path))
-        (def libpath (real-or-plain (wattle/libpath)))
         (def binpath (real-or-plain (wattle/binpath)))
         (def manpath (real-or-plain (wattle/manpath)))
         (defn relative-to
@@ -5449,19 +5455,15 @@
         (when is-backup (copyrf (app-dir app-name) (string dest-dir s "old-app")))
         (each file files
           (def {mode :mode perm :permissions} (os/stat file))
-          (def lib-rel (relative-to libpath file))
           (def bin-rel (relative-to binpath file))
           (def man-rel (relative-to manpath file))
           (case mode
-            :directory (if lib-rel
-                         (array/push! install-source `(app/add-directory manifest ~lib-rel ~perm))
-                         (failf "unexpected directory %v" file))
+            :directory (failf "unexpected directory %v" file)
             :file (do
                     (def filename (string/format "file_%06d" (++ i)))
                     (copyfile file (string dest-dir s filename))
                     (array/push! install-source
                                  (cond
-                                   lib-rel `(app/add-file manifest ~filename ~lib-rel ~perm)
                                    bin-rel `(app/add-bin manifest ~filename ~bin-rel ~perm)
                                    man-rel (let [parts (string/split s man-rel)]
                                              `(app/add-manpage manifest ~filename ~(first parts) ~(last parts) ~perm))
@@ -5519,54 +5521,11 @@
         (app/replace app-name (get manifest :local-source) |(kvs new-config)))
       app-name))
 
-  (defn app/add-directory
-    "Adds a directory during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
-    ([manifest dest] (app/add-directory manifest dest nil))
-    ([manifest dest chmod-mode]
-      (def files (get-files manifest))
-      (def s (sep))
-      (def absdest (string (wattle/libpath) s dest))
-      (unless (os/mkdir absdest)
-        (failf "collision at %s, directory already exists" absdest))
-      (def absdest (os/realpath absdest))
-      (array/push! files absdest)
-      (when chmod-mode
-        (os/chmod absdest chmod-mode))
-      (print "add " absdest)
-      absdest))
-
   (defn app/whois
     "Given a file path, figures out which application installed it."
     [path]
     (def rpath (os/realpath path))
     (find #(index-of rpath (get (app/manifest $) :files [])) (app/list)))
-
-  (defn app/add-file
-    "Adds a file during an install relative to the lib/wattle directory of `(dyn *prefix*)`."
-    ([manifest src] (app/add-file manifest src src nil))
-    ([manifest src dest] (app/add-file manifest src dest nil))
-    ([manifest src dest chmod-mode]
-      (app-add-file-to manifest (wattle/libpath) src dest chmod-mode)))
-
-  (defn app/add
-    """
-    Adds a file or directory during an install relative to the lib/wattle directory of `(dyn *prefix*)`.
-    Added files and directories will be recorded in the application manifest such
-    that they are properly tracked and removed during an upgrade or removal.
-    """
-    ([manifest src] (app/add manifest src src nil))
-    ([manifest src dest] (app/add manifest src dest nil))
-    ([manifest src dest chmod-mode]
-      (def s (sep))
-      (def mode (os/stat src :mode))
-      (if-not mode (failf "file %s does not exist" src))
-      (case mode
-        :directory
-        (let [absdest (app/add-directory manifest dest chmod-mode)]
-          (each d (os/dir src) (app/add manifest (string src s d) (string dest s d) chmod-mode))
-          absdest)
-        :file (app/add-file manifest src dest chmod-mode)
-        (failf "bad path %s - file is a %s" src mode))))
 
   (defn- dep-vendor-parts
     """
@@ -6205,6 +6164,49 @@
     (truthy? (os/stat path :mode))
     (fexists path)))
 
+(def- cli-hidden-dir
+  """
+  The directory of a project, beside `deps`, that holds material that is not
+  committed, such as built native modules.
+  """
+  ".wattle")
+
+(defn- cli-dir-of
+  """
+  Returns the directory part of path: `foo/bar/baz.wattle` gives `foo/bar` and
+  `foo.wattle` gives `.`. A path in the root directory gives `/`. Windows also
+  separates at a backslash.
+  """
+  [path]
+  (def cuts
+    (sort! (array/concat! ![] (string/find-all "/" path)
+                          (if (= :windows (os/which)) (string/find-all "\\" path) []))))
+  (cond
+    (empty? cuts) "."
+    (zero? (last cuts)) (string/slice path 0 1)
+    (string/slice path 0 (last cuts))))
+
+(defn- cli-project-modpath
+  """
+  Returns the module path of the project whose info.edn is in dir, which is the
+  deps directory and then the directory for material that is not committed,
+  both in the real path of dir where the build can resolve one. Returns nil if
+  dir has no info.edn. Does not look in the parent directories.
+  """
+  [dir]
+  (when (cli-exists? (string dir "/info.edn"))
+    (def root (compif (dyn 'os/realpath) (os/realpath dir) dir))
+    [(string root "/deps") (string root "/" cli-hidden-dir)]))
+
+(defn- cli-set-modpath
+  """
+  Sets the dynamic binding ^*modpath* to the module path of the project in dir.
+  Leaves it unset if dir has no info.edn.
+  """
+  [dir]
+  (when-let [modpath (cli-project-modpath dir)]
+    (setdyn *modpath* modpath)))
+
 (defn- cli-run [opts script]
   (def raw-stdin (get opts "stdin"))
   (def should-repl (or raw-stdin (get opts "repl")))
@@ -6214,6 +6216,9 @@
 
   ; Options are applied in a fixed order, not the order they were written in.
   (when (get opts "debug") (setdyn *debug* true) (setdyn *redef* true))
+
+  (when (> (length script) 0)
+    (cli-set-modpath (cli-dir-of (get script 0))))
 
   (each library (get opts "lib" [])
     (import* library :prefix "" :exit true))
@@ -6256,10 +6261,13 @@
 
 (defn- cli-test-setup
   """
-  Returns the source that sets the dynamic bindings the test files read.
+  Returns the source that sets the dynamic bindings the test files read, which
+  include ^*modpath* when the working directory is a project.
   """
   [opts seed]
   (def out ![(string "(setdyn :test/seed " seed ") (setdyn :test/runner :wattle)")])
+  (when-let [modpath (cli-project-modpath ".")]
+    (array/push! out (string/format "(setdyn *modpath* %q)" modpath)))
   (when (dyn *err-color*) (array/push! out "(setdyn :test/color? true)"))
   (each key ["test" "no-test"]
     (when-let [names (get opts key)]
@@ -6421,11 +6429,13 @@
       (unless (cli-exists? path)
         (eprint "error: could not find file " path)
         (os/exit (if bail? 1 0)))
+      (cli-set-modpath (cli-dir-of path))
       (flycheck path :exit bail? :env (make-env)))
     (flycheck stdin :source :stdin :exit bail?)))
 
 (defn- cli-build-img [image]
   (def params (get image :params))
+  (cli-set-modpath ".")
   (each library (get (get image :opts) "lib" [])
     (import* library :prefix "" :exit true))
   (def path (get params :source))

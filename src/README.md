@@ -431,13 +431,17 @@ a module importable by another program. No environment variable or flag sets
 The command sets `:modpath` before it loads any program. `wattle run` looks for
 `info.edn` in the directory of the script: `foo/bar/baz.wattle` uses
 `foo/bar/info.edn`, and `foo.wattle` uses `./info.edn`. It does not search the
-parent directories. `wattle test` and `wattle build` take no script and look
-in the working directory.
+parent directories. `wattle check` uses the directory of its script in the same
+way. `wattle test` and `wattle build` take no script and look in the working
+directory. `wattle test` runs each test file in its own process and sets
+`:modpath` in that process. `wattle run` with no script, and `wattle check`
+with the script on standard input, set no `:modpath`.
 
-`:modpath` is the `deps/` directory of that project, followed by a directory
-for material that is not committed, such as built native modules. The second
-directory holds a `.gitignore` that excludes its contents. A vendored copy in
-`deps/` overrides generated material.
+`:modpath` is the `deps/` directory of that project, followed by `.wattle/`, the
+directory for material that is not committed, such as built native modules. The
+second directory holds a `.gitignore` that excludes its contents. A vendored
+copy in `deps/` overrides generated material. Both entries are absolute paths,
+and neither directory need exist.
 
 With no `info.edn`, `:modpath` is unset and nothing is printed at start. An
 import that fails while `:modpath` is unset reports that there is no `info.edn`

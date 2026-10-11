@@ -137,10 +137,10 @@
 (assert (= (test-expand "../././././abcd/../def.txt" ":all:") "../def.txt")
         "module/expand-path 8")
 
-; module/expand-path regression
+; module/expand-path has no :prefix: replacement
 (with-dyns [:prefix ".janet/.janet"]
   (assert (= (string (module/expand-path "hello" ":prefix:/:all:.janet"))
-             ".janet/.janet/lib/wattle/hello.janet") "module/expand-path 1"))
+             ":prefix:/hello.janet") "module/expand-path :prefix: is not replaced"))
 
 ; int?
 (assert (int? 1) "int? 1")
@@ -210,8 +210,6 @@
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":name:")) "baz.j") "expand-path :name:")
 (assert (= (string (module/expand-path "foo/bar/baz.j" ":native:"))
            (case (os/which) :windows ".dll" :macos ".dylib" ".so")) "expand-path :native:")
-(assert (= (string (with-dyns [:prefix "/sys"] (module/expand-path "x" ":prefix:"))) "/sys/lib/wattle")
-        "expand-path :prefix:")
 (assert (= (string (with-dyns [:current-file "x/y/z.janet"] (module/expand-path "q" ":cur:"))) "x/y")
         "expand-path :cur:")
 

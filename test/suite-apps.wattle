@@ -54,18 +54,18 @@
 
 ; Install app-dep1 and app-dep2.
 (assert-no-error "app-dep2"
-                 (app/install "./examples/app-dep2"))
+                 (with-dyns [*err* !""] (app/install "./examples/app-dep2")))
 (assert (= 1 (length (app/list))))
-(assert-no-error "app-dep1" (app/install "./examples/app-dep1"))
+(assert-no-error "app-dep1" (with-dyns [*err* !""] (app/install "./examples/app-dep1")))
 (assert (= 2 (length (app/list))))
 
-(assert-no-error "app-dep2 upgrade" (app/upgrade "app-dep2"))
-(assert-no-error "app-dep1 upgrade" (app/upgrade "app-dep1"))
+(assert-no-error "app-dep2 upgrade" (with-dyns [*err* !""] (app/upgrade "app-dep2")))
+(assert-no-error "app-dep1 upgrade" (with-dyns [*err* !""] (app/upgrade "app-dep1")))
 
 (assert (= 2 (length (app/list))) "applications are listed correctly 1")
 
 ; Now install app-composed
-(assert-no-error "app-composed install" (app/install "./examples/app-composed"))
+(assert-no-error "app-composed install" (with-dyns [*err* !""] (app/install "./examples/app-composed")))
 
 ; A directory that does not exist is read as a Git repository, and the error
 ; carries what git wrote where processes can be run.
@@ -79,26 +79,22 @@
 
 (assert (= 3 (length (app/list))) "applications are listed correctly 3")
 
-; Check that we can import the main dependency
-(import mymod)
-(assert (= 288 (mymod/myfn 12)) "using app-composed")
-
-; The prefix is a root: modules go to lib/wattle under it.
+; The prefix is a root: programs go to bin under it.
 (def root (app-rpath prefix))
-(assert (os/stat (string root "/lib/wattle/mymod.wattle" ) :mode)
-        "a module is installed under lib/wattle")
-(assert (nil? (os/stat (string root "/mymod.wattle") :mode))
-        "a module is not installed in the root")
+(assert (os/stat (string root "/bin/app-composed") :mode)
+        "a program is installed under bin")
+(assert (nil? (os/stat (string root "/app-composed") :mode))
+        "a program is not installed in the root")
 
-; Check application file aliases
-(assert-no-error "app-alias install" (app/install "./examples/app-alias"))
+; Check application script aliases: hooks.wattle in place of hooks/init.wattle.
+(assert-no-error "app-alias install" (with-dyns [*err* !""] (app/install "./examples/app-alias")))
 (assert (= 4 (length (app/list))) "applications are listed correctly 5")
-(assert-no-error "import aliases" (import aliases-mod))
-(assert (deep= (range 12) (aliases-mod/fun 12)) "using app-alias")
+(assert (os/stat (string root "/bin/app-alias") :mode) "a hooks.wattle script runs")
 (assert-no-error "aliases remove" (app/remove "app-alias"))
+(assert (nil? (os/stat (string root "/bin/app-alias") :mode)) "removing removes the program")
 
 ; With no name, upgrade installs every application again.
-(assert-no-error "upgrade all" (app/upgrade))
+(assert-no-error "upgrade all" (with-dyns [*err* !""] (app/upgrade)))
 (assert (= 3 (length (app/list))) "upgrading all keeps the applications")
 
 ; Remove each application in turn.
@@ -110,16 +106,14 @@
 ; Now check application listing is again empty
 (assert (= 0 (length (app/list))) "applications are listed correctly 7")
 
-; Programs and man pages go to bin and share/man under the root, and modules
-; to lib/wattle. Upgrading goes through app/pack, which recreates each kind.
+; Programs and man pages go to bin and share/man under the root. Upgrading goes
+; through app/pack, which recreates each kind.
 (def hello (string root "/bin/hello"))
 (def hello-man (string root "/share/man/man1/hello.1"))
-(def bin-mod (string root "/lib/wattle/bin-mod.wattle"))
 (assert-no-error "app-program install"
                  (with-dyns [*err* !""] (app/install "./examples/app-program")))
 (assert (os/stat hello :mode) "a program is installed under bin")
 (assert (os/stat hello-man :mode) "a man page is installed under share/man")
-(assert (os/stat bin-mod :mode) "a module of the same application is under lib/wattle")
 ; WASI and Windows report no permission bits.
 (unless (or (= :windows (os/which)) (= :wasi (os/which)))
   (assert (string/has-prefix? "rwx" (os/stat hello :permissions))
@@ -127,16 +121,15 @@
 (assert (= "app-program" (app/whois hello)) "app/whois finds a program")
 (assert-no-error "app-program upgrade"
                  (with-dyns [*err* !""] (app/upgrade "app-program")))
-(assert (and (os/stat hello :mode) (os/stat hello-man :mode) (os/stat bin-mod :mode))
-        "upgrading recreates programs, man pages and modules")
+(assert (and (os/stat hello :mode) (os/stat hello-man :mode))
+        "upgrading recreates programs and man pages")
 (assert-no-error "app-program remove" (app/remove "app-program"))
-(assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode))
-             (nil? (os/stat bin-mod :mode)))
-        "removing removes programs, man pages and modules")
+(assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode)))
+        "removing removes programs and man pages")
 
 ;; Placement: an application is in apps/<group>/<name> under lib/wattle, and the
 ; group directory goes with its last application.
-(assert-no-error "app-dep1 install for placement" (app/install "./examples/app-dep1"))
+(assert-no-error "app-dep1 install for placement" (with-dyns [*err* !""] (app/install "./examples/app-dep1")))
 (def dep1-dir (string root "/lib/wattle/apps/org.wattle.examples/app-dep1"))
 (assert (os/stat (string dep1-dir "/manifest.edn") :mode) "the manifest is in the application directory")
 (assert (os/stat (string dep1-dir "/info.edn") :mode) "the info file is copied into the application directory")
@@ -231,13 +224,19 @@
 ; for each newline. Standard output goes to its own file, so that the order of
 ; the two does not matter.
 (compwhen (dyn 'os/execute)
+; The path of the executable is made absolute so that a case can change the
+; working directory.
+(def- cli-exe
+  (let [exe (dyn :executable)]
+    (if (string/find "/" exe) (os/realpath exe) exe)))
+
 (defn- run-cli
   [& args]
   (def out-file (string prefix "-cli-out"))
   (def err-file (string prefix "-cli-err"))
   (def out (file/open out-file :wb))
   (def err (file/open err-file :wb))
-  (def status (os/execute [(dyn :executable) "-p" (dyn *prefix*) |args] :p {:out out :err err}))
+  (def status (os/execute [cli-exe "-p" (dyn *prefix*) |args] :p {:out out :err err}))
   (file/close out)
   (file/close err)
   (def text (string (slurp err-file)))
@@ -350,15 +349,15 @@
 (when (and (not= :windows (os/which)) (tool? "curl") (tool? "tar") (tool? "git"))
   (def src-dir (string (os/realpath prefix) "-src"))
   (def demo-dir (string src-dir "/demo"))
-  (def demo-module (string prefix "/lib/wattle/demo.wattle"))
+  (def demo-module (string prefix "/bin/demo"))
   (rmrf src-dir)
   (assert (os/mkdir src-dir))
   (assert (os/mkdir demo-dir))
   (assert (os/mkdir (string demo-dir "/hooks")))
   (spit (string demo-dir "/info.edn") "{:group \"org.wattle.tests\" :name \"demo\"}")
   (spit (string demo-dir "/hooks/init.wattle")
-        "(defn install [manifest &] (app/add-file manifest \"demo.wattle\"))\n")
-  (spit (string demo-dir "/demo.wattle") "; one\n")
+        "(defn install [manifest &] (app/add-bin manifest \"demo\"))\n")
+  (spit (string demo-dir "/demo") "; one\n")
   (defn- module-text [] (slurp demo-module))
   (defn- install-quietly [& args] (with-dyns [*err* !""] (app/install |args)))
   (defn- no-fetch-left [] (nil? (os/stat (string prefix "/lib/wattle/.fetch") :mode)))
@@ -373,7 +372,7 @@
     (def manifest (app/manifest "demo"))
     (assert (= url (get manifest :source)) (string name " records its source"))
     (assert (nil? (get manifest :local-source)) (string name " records no temporary path"))
-    (assert (string/find "one" (module-text)) (string name " installs the module"))
+    (assert (string/find "one" (module-text)) (string name " installs the program"))
     (assert (no-fetch-left) (string name " leaves no temporary directory"))
     (spit demo-module "; changed\n")
     (assert-no-error (string name " upgrade") (with-dyns [*err* !""] (app/upgrade "demo")))
@@ -400,7 +399,7 @@
   (sh "git" "-C" demo-dir "add" "-A")
   (sh |git "commit" "-q" "-m" "one")
   (sh "git" "-C" demo-dir "tag" "v1")
-  (spit (string demo-dir "/demo.wattle") "; two\n")
+  (spit (string demo-dir "/demo") "; two\n")
   (sh |git "commit" "-q" "-a" "-m" "two")
   (def repo (string "file://" demo-dir))
   (assert-no-error "git install" (install-quietly repo))
@@ -481,6 +480,89 @@
   (assert-error "no entries" (vendor))
   (spit (string proj "/info.edn") "{:name \"p\" :dependencies [\"missing\"]}")
   (assert-error "no :vendored" (vendor))
+  (rmrf base))
+
+;;; Module path
+;
+; A bare import searches the directories of *modpath* in order. The command line
+; sets it from the info.edn beside the script, or from the working directory for
+; test and build.
+
+(let [base (string (app-rpath prefix) "-modpath")
+      proj (string base "/proj")
+      deps (string proj "/deps")
+      hidden (string proj "/.wattle")
+      lib (string (app-rpath prefix) "/lib/wattle")]
+  (rmrf base)
+  (each dir [base proj deps hidden (string proj "/sub") (string proj "/test") (string base "/loose")]
+    (assert (os/mkdir dir)))
+  (spit (string proj "/info.edn") "{:group \"org.wattle.tests\" :name \"mp\"}")
+  (spit (string deps "/depmod.wattle") "(def v 1)\n")
+  (spit (string hidden "/depmod.wattle") "(def v 2)\n")
+  (spit (string hidden "/hiddenmod.wattle") "(def v 3)\n")
+  (assert (os/mkdir (string deps "/dirmod")))
+  (spit (string deps "/dirmod/init.wattle") "(def v 4)\n")
+
+  ; module/find with *modpath* set directly.
+  (with-dyns [*modpath* [deps hidden]]
+    (assert (= [(string deps "/depmod.wattle") :source] (module/find "depmod"))
+            "an earlier directory of the module path wins")
+    (assert (= [(string hidden "/hiddenmod.wattle") :source] (module/find "hiddenmod"))
+            "a later directory of the module path is searched")
+    (assert (= [(string deps "/dirmod/init.wattle") :source] (module/find "dirmod"))
+            "a directory with init.wattle is found")
+    (assert (nil? (first (module/find "./depmod"))) "a relative import does not use the module path")
+    (assert (nil? (first (module/find "nothere"))) "a missing module is not found"))
+  (with-dyns [*modpath* [hidden deps]]
+    (assert (= [(string hidden "/depmod.wattle") :source] (module/find "depmod"))
+            "the order of the module path decides"))
+  (assert (nil? (first (module/find "depmod"))) "no module path finds nothing")
+  (let [[found message] (module/find "depmod")]
+    (assert (and (nil? found) (string/find "no info.edn beside the script" message))
+            "a failed bare import without a module path names info.edn"))
+  (with-dyns [*modpath* [deps]]
+    (let [[_ message] (module/find "nothere")]
+      (assert (nil? (string/find "no info.edn" message))
+              "a failed bare import with a module path does not name info.edn")))
+  (let [[_ message] (module/find "./nothere")]
+    (assert (nil? (string/find "no info.edn" message))
+            "a failed relative import does not name info.edn"))
+
+  ; The prefix is not a module root.
+  (each dir [(string (app-rpath prefix) "/lib") lib] (os/mkdir dir))
+  (spit (string lib "/libmod.wattle") "(def v 5)\n")
+  (with-dyns [*prefix* (app-rpath prefix) *modpath* [deps]]
+    (assert (nil? (first (module/find "libmod"))) "lib/wattle under the prefix is not searched"))
+
+  ; The command line.
+  (compwhen (dyn 'os/execute)
+    (do
+      (spit (string proj "/main.wattle")
+            "(import depmod)\n(import hiddenmod)\n(import dirmod)\n(assert (= [1 3 4] [depmod/v hiddenmod/v dirmod/v]))\n")
+      (spit (string proj "/sub/up.wattle") "(import depmod)\n")
+      (spit (string base "/loose/loose.wattle") "(import depmod)\n")
+      (spit (string base "/loose/rel.wattle") "(import ./sibling)\n(assert (= 9 sibling/v))\n")
+      (spit (string base "/loose/sibling.wattle") "(def v 9)\n")
+      (spit (string proj "/test/t.wattle") "(import depmod)\n(assert (= 1 depmod/v))\n")
+
+      (let [[status _] (run-cli "run" (string proj "/main.wattle"))]
+        (assert (= 0 status) "run sets the module path from the info.edn beside the script"))
+      (let [old (os/cwd)]
+        (os/cd proj)
+        (let [[status _] (run-cli "run" "main.wattle")]
+          (assert (= 0 status) "a script in the working directory uses ./info.edn"))
+        (let [[status _] (run-cli "test")]
+          (assert (= 0 status) "test sets the module path from the working directory"))
+        (os/cd old))
+      (let [[status text] (run-cli "run" (string proj "/sub/up.wattle"))]
+        (assert (= 1 status) "run does not look in a parent directory")
+        (assert (string/find "no info.edn beside the script" text)
+                "the failure names info.edn"))
+      (let [[status text] (run-cli "run" (string base "/loose/loose.wattle"))]
+        (assert (= 1 status) "a script with no info.edn has no module path")
+        (assert (string/find "no info.edn beside the script" text) "the failure names info.edn"))
+      (let [[status _] (run-cli "run" (string base "/loose/rel.wattle"))]
+        (assert (= 0 status) "a relative import needs no info.edn"))))
   (rmrf base))
 
 (rmrf prefix)

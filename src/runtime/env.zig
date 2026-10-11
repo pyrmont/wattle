@@ -763,13 +763,6 @@ fn nfunExpandPath(argv: []repr.Value) raise.Error!repr.Value {
         } else if (matches(rest, ":dir:")) {
             try buffers.pushBytes(out, input[0..@intCast(name)]);
             i += 4;
-        } else if (matches(rest, ":prefix:")) {
-            // No prefix means no library directory to expand to, and an
-            // empty one is a root the caller set to nothing.
-            if (repr.checkType(vm_state.dyn("prefix"), repr.Tag.nil)) return wrap.fromNil();
-            try buffers.pushCString(out, try systemRoot());
-            try buffers.pushCString(out, lib_dir);
-            i += 7;
         } else if (matches(rest, ":name:")) {
             try buffers.pushCString(out, input + name);
             i += 5;
@@ -1396,12 +1389,10 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
             "- :cur: -- the directory portion, if any, of (dyn :current-file)\n\n" ++
             "- :dir: -- the directory portion, if any, of the path argument\n\n" ++
             "- :name: -- the name component of path, with extension if given\n\n" ++
-            "- :native: -- the extension used to load natives, .so, .dylib or .dll\n\n" ++
-            "- :prefix: -- the library directory of the prefix, (dyn :prefix) followed by /lib/wattle. " ++
-            "The result is nil where there is no prefix, and the call raises where it is the empty string."),
+            "- :native: -- the extension used to load natives, .so, .dylib or .dll"),
         corefn.reg("wattle/binpath", &nfunBinpath, @src(), "(wattle/binpath)", "Returns the directory programs are installed in, `(dyn :prefix)` followed by /bin. " ++
             "Raises if there is no prefix or if it is the empty string."),
-        corefn.reg("wattle/libpath", &nfunLibpath, @src(), "(wattle/libpath)", "Returns the directory system modules are loaded from, `(dyn :prefix)` followed by /lib/wattle. " ++
+        corefn.reg("wattle/libpath", &nfunLibpath, @src(), "(wattle/libpath)", "Returns the directory that holds the applications, `(dyn :prefix)` followed by /lib/wattle. " ++
             "Raises if there is no prefix or if it is the empty string."),
         corefn.reg("wattle/manpath", &nfunManpath, @src(), "(wattle/manpath)", "Returns the directory man pages are installed in, `(dyn :prefix)` followed by /share/man. " ++
             "Raises if there is no prefix or if it is the empty string."),

@@ -231,12 +231,13 @@ wasmtime run --dir . zig-out/bin/wattle.wasm
 ```
 
 A WASI program sees only the directories which are mapped in, so a script and
-everything it reads have to be in this tree.  A plain build has no default
-`prefix`, so `import` of an installed module needs `WATTLE_PREFIX` set to a root
-whose `lib/wattle` directory is mapped in, here `./lib/wattle`:
+everything it reads have to be in this tree. A plain build has no default
+`prefix`. `wattle run` finds the `deps` directory of a project through the
+`info.edn` beside the script, so a script that imports vendored modules needs no
+prefix:
 
 ```sh
-wasmtime run --dir . --env WATTLE_PREFIX=. zig-out/bin/wattle.wasm script.wattle
+wasmtime run --dir . zig-out/bin/wattle.wasm script.wattle
 ```
 
 `zig build examples/web-repl` builds `examples/web-repl/`, Wattle in a web page: the runtime as a

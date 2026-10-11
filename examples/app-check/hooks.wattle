@@ -1,6 +1,6 @@
 (defn install
   [manifest &]
-  (app/add-file manifest "badmod.wattle"))
+  (app/add-bin manifest "app-check"))
 
 (defn check
   [&]

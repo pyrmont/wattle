@@ -109,7 +109,8 @@ ENVIRONMENT
   binding is used to derive the binpath, the libpath and the manpath. The
   binpath is ``<prefix>/bin`` and is the location into which executables are
   installed. The libpath is ``<prefix>/lib/wattle`` and is the location into
-  which libraries are installed and loaded. The manpath is
+  which applications are installed. It is not searched by ``import``. The
+  manpath is
   ``<prefix>/share/man`` and is the location into which man pages are
   installed. It can be overridden by **--prefix**. **wattle** can run without a
   value for ``*prefix*`` being set but it will exit with an error if a user

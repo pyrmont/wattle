@@ -1,5 +1,4 @@
 (defn install
   [manifest &]
   (app/add-bin manifest "hello")
-  (app/add-manpage manifest "hello.1")
-  (app/add-file manifest "bin-mod.wattle"))
+  (app/add-manpage manifest "hello.1"))
