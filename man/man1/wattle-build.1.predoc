@@ -124,7 +124,7 @@ under the ``:artifacts`` key:
 
 Every artifact has:
 
-1. a ``:type`` (``:exe``, ``:lib`` or ``:web``)
+1. a ``:type`` (``:exe``, ``:lib``, ``:web`` or ``:src``)
 2. a ``:name`` (a unique string of letters, digits, ``_`` and ``-``)
 
 Artifacts of the following types have additional requirements:
@@ -141,6 +141,14 @@ Artifacts of the following types have additional requirements:
 - ``:web``:
   This requires an ``:entry`` key that maps to the file where ``main`` is
   defined.
+
+- ``:src``:
+  A program that ``wattle apps install`` installs as source. ``wattle build``
+  does not build it. This requires an ``:entry`` key that maps to the file where
+  ``main`` is defined and a ``:files`` key that maps to a vector of the paths to
+  install. It may also include a ``:libs`` key that maps to a vector of native
+  library artifacts that are built when it is installed. See
+  `wattle-applications(7)`.
 
 Web programs
 ------------

@@ -38,12 +38,14 @@ VERBS
   If the application contains ``hooks.wattle`` or
   ``hooks/init.wattle``, ***apps*** runs the hooks of that script and nothing
   else. Otherwise ***apps*** builds each ``:exe`` artifact of ``info.edn`` with
-  ***build*** ***exe***, installs the program in ``bin``, and installs each
-  file in the ``:man`` vector of ``info.edn`` in ``share/man``. The section is
-  the digit that ends the file name, so ``man/greet.1`` is installed in
-  ``man1``. A ``:web`` artifact is not installed, and an application with a
-  ``:lib`` artifact needs a script. _ref_ is a branch or tag, and applies only
-  to a Git repository.
+  ***build*** ***exe*** and installs the program in ``bin``. It installs each
+  ``:src`` artifact as source, with a program in ``bin`` that runs it, and
+  installs each file in the ``:man`` vector of ``info.edn`` in ``share/man``.
+  The section is the digit that ends the file name, so ``man/greet.1`` is
+  installed in ``man1``. A ``:web`` artifact is not installed, and a ``:lib``
+  artifact needs a script or a ``:src`` artifact that names it. _ref_ is a
+  branch or tag, and applies only to a Git repository. See
+  `wattle-applications(7)`.
 
 - ***upgrade*** [_name_]:
   Install the application _name_ again from the source it was installed from.

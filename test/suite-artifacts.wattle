@@ -31,6 +31,7 @@
 (defn- exe [& fields] (extend {:type :exe :name "a" :entry "m"} fields))
 (defn- lib [& fields] (extend {:type :lib :name "z" :root "r"} fields))
 (defn- web [& fields] (extend {:type :web :name "w" :entry "m"} fields))
+(defn- src [& fields] (extend {:type :src :name "s" :entry "m" :files ["m"]} fields))
 (defn- declares [& artifacts] {:artifacts (vec artifacts)})
 
 (deftest valid-info
@@ -38,7 +39,9 @@
   (is (= 2 (length (build/artifacts blueshift))))
   (is (nil? (refusal (declares (exe)))))
   (is (nil? (refusal (declares (lib)))))
-  (is (nil? (refusal (declares (web))))))
+  (is (nil? (refusal (declares (web)))))
+  (is (nil? (refusal (declares (src)))))
+  (is (nil? (refusal (declares (src :files ["m" "lib" "docs/a.txt"]))))))
 
 (deftest top-level
   (refuses [] "must hold a map")
@@ -48,8 +51,8 @@
 
 (deftest type-and-name
   (refuses (declares {:name "a" :entry "m"})
-           "artifact 0 (a): :type must be :exe, :lib or :web")
-  (refuses (declares (exe :type :dll)) ":type must be :exe, :lib or :web")
+           "artifact 0 (a): :type must be :exe, :lib, :web or :src")
+  (refuses (declares (exe :type :dll)) ":type must be :exe, :lib, :web or :src")
   (refuses (declares {:type :exe :entry "m"})
            "artifact 0: :name must be a non-empty string")
   (refuses (declares (exe :name "")) ":name must be a non-empty string")
@@ -63,14 +66,33 @@
   (refuses (declares {:type :lib :name "a"})
            "artifact 0 (a): :root must be a non-empty string")
   (refuses (declares {:type :web :name "a"})
+           "artifact 0 (a): :entry must be a non-empty string")
+  (refuses (declares {:type :src :name "a" :files ["m"]})
            "artifact 0 (a): :entry must be a non-empty string"))
+
+(deftest src-files
+  (refuses (declares {:type :src :name "a" :entry "m"})
+           "artifact 0 (a): :files is required")
+  (refuses (declares (src :files "m")) ":files must be a vector of paths")
+  (refuses (declares (src :files ["m" 3])) ":files must hold non-empty strings")
+  (refuses (declares (src :files [""])) ":files must hold non-empty strings")
+  (refuses (declares (src :files ["/etc"])) ":files must hold relative paths")
+  (refuses (declares (src :files ["C:/x"])) ":files must hold relative paths")
+  (refuses (declares (src :files ["\\x"])) ":files must hold relative paths")
+  (refuses (declares (src :files ["../x"])) ":files must stay inside the project")
+  (refuses (declares (src :files ["a/../../x"])) ":files must stay inside the project")
+  (refuses (declares (src :files ["a\\..\\b"])) ":files must stay inside the project")
+  (is (nil? (refusal (declares (src :files ["."])))))
+  (is (nil? (refusal (declares (src :files ["a..b" "..c"]))))))
 
 (deftest unknown-keys
   (refuses (declares (exe :link ["b"])) ":link is not a key of an :exe")
   (refuses (declares (lib :libs [])) ":libs is not a key of an :lib")
   (refuses (declares (exe :root "r")) ":root is not a key of an :exe")
   (refuses (declares (web :libs [])) ":libs is not a key of a :web")
-  (refuses (declares (web :root "r")) ":root is not a key of a :web"))
+  (refuses (declares (web :root "r")) ":root is not a key of a :web")
+  (refuses (declares (src :root "r")) ":root is not a key of a :src")
+  (refuses (declares (exe :files ["m"])) ":files is not a key of an :exe"))
 
 (deftest duplicate-names
   (refuses (declares (exe) (exe :entry "n"))
@@ -87,7 +109,11 @@
   (refuses (libs-of ["z" "z"]) ":libs names z twice")
   (refuses (libs-of ["q"]) ":libs names q, which no artifact declares")
   (refuses (libs-of ["a"]) ":libs names a, which is not a :lib")
-  (refuses (libs-of [{:system "curl"}]) "reserved for an external library"))
+  (refuses (libs-of [{:system "curl"}]) "reserved for an external library")
+  (is (nil? (refusal (declares (lib) (src :libs ["z"])))))
+  (refuses (declares (src :libs ["q"])) ":libs names q, which no artifact declares")
+  (refuses (declares (exe) (src :libs ["a"])) ":libs names a, which is not a :lib")
+  (refuses (declares (lib) (src :libs ["z" "z"])) ":libs names z twice"))
 
 (deftest select
   (def exes (build/artifacts blueshift :exe))

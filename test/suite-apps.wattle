@@ -528,6 +528,25 @@
     (assert (nil? (string/find "no info.edn" message))
             "a failed relative import does not name info.edn"))
 
+  ; A native module is also found under the name that Zig gives a shared
+  ; library, which begins with lib. The name without lib is found first.
+  (let [ext (case (os/which) :windows ".dll" :macos ".dylib" ".so")
+        plain (string deps "/natplain" ext)
+        prefixed (string deps "/libnatplain" ext)
+        only (string hidden "/libnatonly" ext)]
+    (spit prefixed "")
+    (spit only "")
+    (with-dyns [*modpath* [deps hidden]]
+      (assert (= [prefixed :native] (module/find "natplain")) "a lib-prefixed native module is found")
+      (assert (= [only :native] (module/find "natonly")) "a lib-prefixed native module is found in a later directory")
+      (spit plain "")
+      (assert (= [plain :native] (module/find "natplain")) "a native module without lib is found first")
+      (assert (= [only :native] (module/find "libnatonly")) "a lib-prefixed name is found as it is written")
+      (assert (= [(string deps "/depmod.wattle") :source] (module/find "depmod"))
+              "a source module is not found under a lib-prefixed name")
+      (spit (string deps "/libwidget.wattle") "(def v 1)\n")
+      (assert (nil? (first (module/find "widget"))) "only native modules are found under a lib-prefixed name")))
+
   ; The prefix is not a module root.
   (each dir [(string (app-rpath prefix) "/lib") lib] (os/mkdir dir))
   (spit (string lib "/libmod.wattle") "(def v 5)\n")
@@ -563,6 +582,111 @@
         (assert (string/find "no info.edn beside the script" text) "the failure names info.edn"))
       (let [[status _] (run-cli "run" (string base "/loose/rel.wattle"))]
         (assert (= 0 status) "a relative import needs no info.edn"))))
+  (rmrf base))
+
+;;; Source applications
+;
+; A :src artifact installs its :files into the application directory and a
+; program in bin that calls app/run.
+
+(let [base (string (app-rpath prefix) "-src-app")
+      proj (string base "/proj")
+      s "/"
+      app-path (string root "/lib/wattle/apps/org.wattle.tests/sprog")
+      binscript (string root "/bin/sprog-bin")
+      out (string base "/out.txt")
+      info-of (fn [artifact]
+                (string/format "%m" {:group "org.wattle.tests" :name "sprog" :artifacts [artifact]}))
+      src-artifact {:type :src :name "sprog-bin" :entry "main.wattle"
+                    :files ["main.wattle" "lib" "deps"]}
+      try-install (fn [info-text]
+                    (spit (string proj "/info.edn") info-text)
+                    (protect (with-dyns [*err* !""] (app/install proj))))]
+  (rmrf base)
+  (each dir [base proj (string proj "/lib") (string proj "/lib/zig-out")
+             (string proj "/deps") (string proj "/zig-out") (string proj "/zig-out/lib")
+             (string proj "/.wattle")]
+    (assert (os/mkdir dir)))
+  (spit (string proj "/main.wattle")
+        (string "(import ./lib/helper)\n(import depmod)\n"
+                "(defn main [& args]\n"
+                "  (spit (get args 1) (string (string/join \";\" (slice args 2)) \",\" depmod/v \",\" helper/w)))\n"))
+  (spit (string proj "/lib/helper.wattle") "(def w 3)\n")
+  (spit (string proj "/lib/zig-out/nested") "skipped\n")
+  (spit (string proj "/deps/depmod.wattle") "(def v 7)\n")
+  (spit (string proj "/zig-out/lib/stale") "skipped\n")
+  (spit (string proj "/.wattle/stale") "skipped\n")
+
+  (let [[ok _] (try-install (info-of src-artifact))]
+    (assert ok "a :src artifact installs"))
+  (each file ["main.wattle" "lib/helper.wattle" "deps/depmod.wattle" "info.edn" "manifest.edn"]
+    (assert (os/stat (string app-path s file) :mode) (string file " is in the application directory")))
+  (assert (nil? (os/stat (string app-path "/zig-out") :mode)) "zig-out is not copied")
+  (assert (nil? (os/stat (string app-path "/lib/zig-out") :mode)) "a nested zig-out is not copied")
+  (assert (nil? (os/stat (string app-path "/.wattle") :mode)) ".wattle is not copied")
+  (assert (nil? (os/stat (string app-path "/.binscript") :mode)) "the temporary binscript is removed")
+  (let [lines (string/split "\n" (string (slurp binscript)))]
+    (assert (= "#!/usr/bin/env wattle" (first lines)) "the program starts with a shebang line")
+    (assert (= "(app/run \"org.wattle.tests\" \"sprog\" \"main.wattle\")" (get lines 1))
+            "the program calls app/run with the group, the name and the entry"))
+  (unless (or (= :windows (os/which)) (= :wasi (os/which)))
+    (assert (string/has-prefix? "rwx" (os/stat binscript :permissions)) "the program is executable"))
+  (assert (= "sprog" (app/whois binscript)) "app/whois finds the program of a :src artifact")
+
+  (compwhen (dyn 'os/execute)
+    (do
+      (let [[status _] (run-cli binscript out "x" "y")]
+        (assert (= 0 status) "the program runs the entry")
+        (assert (= "x;y,7,3" (string (slurp out)))
+                "the entry gets its arguments, a relative import and the deps of its directory"))
+      (rmrf out)))
+
+  (assert-no-error "upgrade a :src application" (with-dyns [*err* !""] (app/upgrade "sprog")))
+  (assert (and (os/stat binscript :mode) (os/stat (string app-path "/main.wattle") :mode))
+          "upgrading installs the files and the program again")
+  (assert-no-error "remove a :src application" (app/remove "sprog"))
+  (assert (nil? (os/stat binscript :mode)) "removing removes the program")
+  (assert (nil? (os/stat app-path :mode)) "removing removes the application directory")
+
+  ; Refusals leave nothing installed.
+  (defn nothing-left [what]
+    (assert (and (= 0 (length (app/list))) (nil? (os/stat binscript :mode))) what))
+  (let [[ok message] (try-install (info-of (assoc src-artifact :files ["lib"])))]
+    (assert (and (not ok) (string/find ":entry main.wattle of sprog-bin is not among its :files" message))
+            "an :entry outside the :files is refused")
+    (nothing-left "a refused :entry installs nothing"))
+  (let [[ok message] (try-install (info-of (dissoc src-artifact :files)))]
+    (assert (and (not ok) (string/find ":files is required" message))
+            "a :src artifact needs :files")
+    (nothing-left "a :src artifact without :files installs nothing"))
+  (let [[ok message] (try-install (info-of (assoc src-artifact :files ["main.wattle" "nothere"])))]
+    (assert (and (not ok) (string/find ":files names" message) (string/find "nothere" message))
+            "a :files entry that does not exist is refused")
+    (nothing-left "a missing :files entry installs nothing"))
+  (let [[ok message] (try-install (string/format "%m" {:group "org.wattle.tests" :name "sprog"
+                                                       :artifacts [src-artifact
+                                                                   {:type :lib :name "l" :root "l.zig"}]}))]
+    (assert (and (not ok) (string/find "names it in :libs" message))
+            "a :lib that no :src artifact names is refused")
+    (nothing-left "an unnamed :lib installs nothing"))
+  ; A :lib that a :src artifact names is built, and the build fails here: the
+  ; prefix of this suite holds no source of the runtime.
+  (compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
+    (do
+      (spit (string proj "/l.zig") "")
+      (let [[ok _] (try-install (string/format "%m" {:group "org.wattle.tests" :name "sprog"
+                                                     :artifacts [(assoc src-artifact :files ["main.wattle" "lib" "deps" "l.zig"]
+                                                                                     :libs ["l"])
+                                                                 {:type :lib :name "l" :root "l.zig"}]}))]
+        (assert (not ok) "a :src artifact whose :libs fail to build is refused")
+        (nothing-left "a failed :libs build installs nothing"))))
+
+  ; app/run
+  (with-dyns [*prefix* ""]
+    (let [[ok message] (protect (app/run "g" "n" "main.wattle"))]
+      (assert (and (not ok) (string/find "WATTLE_PREFIX" message)) "app/run names WATTLE_PREFIX without a prefix")))
+  (let [[ok message] (protect (app/run "org.wattle.tests" "nothere" "main.wattle"))]
+    (assert (and (not ok) (string/find "does not exist" message)) "app/run refuses an application that is not installed"))
   (rmrf base))
 
 (rmrf prefix)

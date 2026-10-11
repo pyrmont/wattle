@@ -112,9 +112,41 @@ INSTALLATION
 An application with an application script is installed by running the hooks
 that the script defines, and nothing else. An application without one is
 installed from its info file: each ``:exe`` artifact is built with
-`wattle-build(1)` and its program is installed in ``bin``, and each file in
-``:man`` is installed in ``share/man``. A ``:lib`` artifact is installed only
-by an application script, and a ``:web`` artifact is not installed.
+`wattle-build(1)` and its program is installed in ``bin``, each ``:src``
+artifact is installed as described below, and each file in ``:man`` is
+installed in ``share/man``. A ``:lib`` artifact is installed only by an
+application script or by a ``:src`` artifact that names it in ``:libs``, and a
+``:web`` artifact is not installed.
+
+Source programs
+---------------
+
+A ``:src`` artifact is a program that is installed as source. Its ``:files``
+are copied into the application directory. A directory is copied without any
+entry named ``zig-out``, ``.zig-cache``, ``.wattle`` or ``.git``. Each artifact
+in ``:libs`` is built with `wattle-build(1)` in the application directory, so
+that its native module is in ``zig-out/lib`` there. This needs **zig** on the
+``PATH``, and ``wattle apps upgrade`` builds the modules again.
+
+The program in ``bin`` has the name of the artifact and starts with
+``#!/usr/bin/env wattle``. It loads ``:entry`` and calls ``main`` with the path
+of the program followed by the arguments. A bare ``import`` in the program
+searches ``deps``, ``.wattle`` and ``zig-out/lib`` in the application
+directory. Running the program needs **wattle** on the ``PATH`` and the prefix
+set with ``WATTLE_PREFIX``. A program that needs neither is an ``:exe``
+artifact. Windows has no shebang lines, so a ``:src`` artifact cannot be
+installed there.
+
+Example:
+
+````
+{:name "greeter"
+ :group "net.inqk"
+ :artifacts [{:type :src
+              :name "greet"
+              :entry "main.wattle"
+              :files ["main.wattle" "lib" "deps"]}]}
+````
 
 Hooks
 -----

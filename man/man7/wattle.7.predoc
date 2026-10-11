@@ -401,7 +401,8 @@ command sets ``:modpath`` before it loads a program. ``wattle run`` looks for
 ``wattle build`` look in the working directory. Neither searches the parent
 directories. ``:modpath`` is the ``deps`` directory of that project followed by
 its ``.wattle`` directory, which holds material that is not committed, such as
-built native modules. With no ``info.edn``, ``:modpath`` is not set and a bare
+built native modules. A native module is also found under a name that begins
+with ``lib``, so ``(import greet)`` loads ``greet.so`` or ``libgreet.so``. With no ``info.edn``, ``:modpath`` is not set and a bare
 import fails. No installed library is importable by another program, and no
 environment variable or option sets ``:modpath``.
 

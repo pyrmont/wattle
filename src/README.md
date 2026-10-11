@@ -437,11 +437,19 @@ directory. `wattle test` runs each test file in its own process and sets
 `:modpath` in that process. `wattle run` with no script, and `wattle check`
 with the script on standard input, set no `:modpath`.
 
-`:modpath` is the `deps/` directory of that project, followed by `.wattle/`, the
-directory for material that is not committed, such as built native modules. The
-second directory holds a `.gitignore` that excludes its contents. A vendored
-copy in `deps/` overrides generated material. Both entries are absolute paths,
-and neither directory need exist.
+`:modpath` has three entries for the root of that project: `deps/`, `.wattle/`
+and `zig-out/lib`. `.wattle/` is the directory for material that is not
+committed and is not vendored. It holds a `.gitignore` that excludes its
+contents. `zig-out/lib` is where `wattle build lib` writes native modules, so a
+module built in development is importable at once. A vendored copy in `deps/`
+overrides the other two. The entries are absolute paths, and no directory need
+exist. An installed application has the same three entries for its application
+directory.
+
+A bare import of a native module also finds a file whose name begins with `lib`,
+because Zig names a shared library that way on most platforms: `(import greet)`
+loads `greet.so` or `libgreet.so`, and the file without the prefix is used first
+in a directory. Only a native module is found this way.
 
 With no `info.edn`, `:modpath` is unset and nothing is printed at start. An
 import that fails while `:modpath` is unset reports that there is no `info.edn`
@@ -567,13 +575,17 @@ Application sources are not verified.
 
 A `:src` artifact is a program installed as source. It has a `:name`, an
 `:entry`, the Wattle file that defines `main`, and `:files`, a required vector
-of paths relative to the project root. `wattle apps install` copies each path,
-recursively, into the application directory. A `:src` artifact may have
+of paths relative to the project root, which may not be absolute or contain
+`..`. `wattle apps install` copies each path, recursively, into the application
+directory. A directory is copied without any entry named `zig-out`,
+`.zig-cache`, `.wattle` or `.git`. Install raises an error if the `:entry` is
+not among the files, or if a path does not exist. A `:src` artifact may have
 `:libs`, a vector of the names of `:lib` artifacts. Install builds each with
-`wattle build lib` into the application directory, where `:modpath` finds it,
-and raises an error if Zig is not on the `PATH`. `apps upgrade` rebuilds them,
-because the loader refuses a module built with different configuration bits, a
-different Zig version or a different `api` fingerprint.
+`wattle build lib` in the application directory, so that `zig-out/lib` there
+holds them, and raises an error if Zig is not on the `PATH`. The Zig cache of
+that build is removed. `apps upgrade` builds them again, because the loader
+refuses a module built with different configuration bits, a different Zig
+version or a different `api` fingerprint.
 
 `wattle run` finds the project beside the script, so in development the entry
 file is at the project root. An installed script has no such limit.
@@ -581,9 +593,10 @@ file is at the project root. An installed script has no such limit.
 For a `:src` artifact, install writes `<prefix>/bin/<name>`, the binscript. It
 begins with the line `#!/usr/bin/env wattle` and makes one call to `app/run`
 with the group, the name and the entry path. `app/run` finds the application
-directory from the `prefix` binding, sets `:modpath` to its `deps/` directory,
-loads the entry file into an environment that holds the arguments of the call,
-and calls `main` as `wattle run` does. It raises an error that names
+directory from the `prefix` binding, sets `:modpath` to the three entries for
+that directory, loads the entry file into an environment that holds the
+arguments of the call, and calls `main` as `wattle run` does. `main` receives
+the path of the binscript followed by the arguments. It raises an error that names
 `WATTLE_PREFIX` if the prefix is not set. The binscript does not read
 `info.edn`.
 
