@@ -582,10 +582,18 @@ Downloaded sources are unpacked into a temporary directory under
 `<prefix>/lib/wattle`. The directory is removed after installation, including
 on failure. If the unpacked tree has a single top-level directory, that
 directory becomes the project root. The manifest records the source, the `ref`
-and the revision, but not the temporary path. The revision is the commit hash
-for a Git repository and a hash of the contents for a tarball or a directory.
-`apps upgrade` downloads the recorded source again, or installs from the
-recorded directory for local sources.
+and the revision under `:rev`, but not the temporary path. `apps upgrade`
+downloads the recorded source again, or installs from the recorded directory for
+local sources, and records the revision of what it installed.
+
+The revision is the commit hash that `git rev-parse HEAD` gives in the clone,
+for a Git repository. For a tarball or a directory it is `sha256:` followed by
+the SHA-256 of the files of the root in the byte order of their paths. For each
+file the hash takes its path relative to the root, written with `/`, a zero byte
+and the 32 byte SHA-256 digest of its contents. Permissions and times are not
+part of it, and neither is an entry named `.git`, `zig-out`, `.zig-cache` or
+`.wattle`, with everything under it. A symbolic link, or any entry that is
+neither a file nor a directory, raises an error.
 
 `curl`, `tar` and `git` are located through `PATH`. If a required tool is
 missing, `apps install` names it in the error. A non-zero exit status also
@@ -638,9 +646,15 @@ entry of `:vendored` into the project. An entry is fetched by the same code as
 `apps install`, so `:url` is a directory, a tarball or a Git repository and
 `:ref` follows the rule for `ref`. `:prefix` and `:paths` are checked for every
 entry before the first fetch, and a path that is absolute or has a `..`
-component raises an error. An existing file at a destination is replaced. The
-command records the revision of each source it copied. `info.edn` has no
-`:dependencies`, and the manifest of an installed application records none.
+component raises an error. An existing file at a destination is replaced.
+
+When every entry has been copied, the command writes `deps/manifest.edn`, a map
+from the `:name` of each entry to a map of its `:url`, its `:ref` where it has
+one, and `:rev`, the revision of the whole source as `apps install` records it.
+The file is committed with the vendored sources. An entry that is not in
+`:vendored` has no record after the next run, and a run that raises leaves the
+file as it was. `info.edn` has no `:dependencies`, and the manifest of an
+installed application records none.
 
 ## Build steps
 

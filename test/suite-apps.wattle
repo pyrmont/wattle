@@ -360,6 +360,14 @@
   (spit (string demo-dir "/demo") "; one\n")
   (defn- module-text [] (slurp demo-module))
   (defn- install-quietly [& args] (with-dyns [*err* !""] (app/install |args)))
+  (defn- git-out [& args]
+    (def path (string prefix "-git-out"))
+    (def f (file/open path :wb))
+    (os/execute ["git" "-C" demo-dir |args] :p {:out f :err null})
+    (file/close f)
+    (def text (string/trim (string (slurp path))))
+    (rmrf path)
+    text)
   (defn- no-fetch-left [] (nil? (os/stat (string prefix "/lib/wattle/.fetch") :mode)))
 
   ; A tarball and a gzipped tarball each install, record only their source,
@@ -372,6 +380,8 @@
     (def manifest (app/manifest "demo"))
     (assert (= url (get manifest :source)) (string name " records its source"))
     (assert (nil? (get manifest :local-source)) (string name " records no temporary path"))
+    (assert (= "sha256:ba6d11c1cbbd2742f203a78023a872dd35fa5e7e7a4d7265044f9c158665c93e" (get manifest :rev))
+            (string name " records the hash of the unpacked files"))
     (assert (string/find "one" (module-text)) (string name " installs the program"))
     (assert (no-fetch-left) (string name " leaves no temporary directory"))
     (spit demo-module "; changed\n")
@@ -405,10 +415,19 @@
   (assert-no-error "git install" (install-quietly repo))
   (assert (string/find "two" (module-text)) "git install reads the default branch")
   (assert (= repo (get (app/manifest "demo") :source)) "git install records its source")
+  (assert (= (git-out "rev-parse" "HEAD") (get (app/manifest "demo") :rev))
+          "git install records the commit hash")
+  (spit (string demo-dir "/demo") "; three\n")
+  (sh |git "commit" "-q" "-a" "-m" "three")
+  (assert-no-error "git upgrade to a new commit" (with-dyns [*err* !""] (app/upgrade "demo")))
+  (assert (= (git-out "rev-parse" "HEAD") (get (app/manifest "demo") :rev))
+          "upgrading records the new commit hash")
   (assert-no-error "git remove" (app/remove "demo"))
   (assert-no-error "git install at a ref" (install-quietly repo :ref "v1"))
   (assert (string/find "one" (module-text)) "git install at a ref reads that ref")
   (assert (= "v1" (get (app/manifest "demo") :ref)) "git install records its ref")
+  (assert (= (git-out "rev-parse" "v1") (get (app/manifest "demo") :rev))
+          "git install at a ref records the commit hash of the ref")
   (spit demo-module "; changed\n")
   (assert-no-error "git upgrade" (with-dyns [*err* !""] (app/upgrade "demo")))
   (assert (string/find "one" (module-text)) "git upgrade keeps the ref")
@@ -450,6 +469,16 @@
          {:name "some" :url src :prefix "deps/some"
           :paths ["a.wattle" ["lib" "sub"] ["LICENSE" "L"]]}])
   (assert (= 2 (vendor)) "vendor returns the number of entries")
+  (let [record (parse (slurp (string proj "/deps/manifest.edn")))]
+    (assert (and (= 2 (length record)) (get record "some") (get record "whole"))
+            "the record has an entry for each name")
+    (assert (= "sha256:ea7f1e2e15d113680eefe03d09532af6f7f22ac5a91e63ecdeeab80a5f514900"
+               (get-in record ["whole" :rev]))
+            "the record has the hash of the whole source")
+    (assert (= (get-in record ["whole" :rev]) (get-in record ["some" :rev]))
+            "an entry with :paths records the revision of the whole source")
+    (assert (= src (get-in record ["whole" :url])) "the record has the url")
+    (assert (nil? (get-in record ["whole" :ref])) "the record has no ref for an entry without one"))
   (assert (= :file (has "deps/whole/a.wattle")) "an entry without :paths copies the whole source")
   (assert (= :file (has "deps/whole/lib/b.wattle")) "an entry without :paths copies subdirectories")
   (assert (= :file (has "deps/some/a.wattle")) "a string in :paths keeps its name")
@@ -462,6 +491,7 @@
   (vendor)
   (assert (= "(def x 1)\n" (string (slurp (string proj "/deps/whole/a.wattle"))))
           "vendor replaces a file that differs")
+  (def record-before (string (slurp (string proj "/deps/manifest.edn"))))
 
   (info [{:name "bad" :url src :paths ["../x"]}])
   (assert-error "a path above the project" (vendor))
@@ -476,6 +506,8 @@
   (info [{:name "first" :url src :prefix "deps/first"} {:name "bad" :paths ["x"]}])
   (assert-error "a later invalid entry" (vendor))
   (assert (nil? (has "deps/first")) "an invalid entry stops vendor before any copy")
+  (assert (= record-before (string (slurp (string proj "/deps/manifest.edn"))))
+          "a vendor that raises leaves the record as it was")
   (info [])
   (assert-error "no entries" (vendor))
   (spit (string proj "/info.edn") "{:name \"p\" :dependencies [\"missing\"]}")
@@ -583,6 +615,57 @@
       (let [[status _] (run-cli "run" (string base "/loose/rel.wattle"))]
         (assert (= 0 status) "a relative import needs no info.edn"))))
   (rmrf base))
+
+;;; Revisions
+;
+; The manifest of an application records :rev, the commit hash of a Git
+; repository and, for a directory or a tarball, `sha256:` and a hash of the files.
+
+(let [dir (string (app-rpath prefix) "-rev")
+      info "{:group \"org.wattle.tests\" :name \"rev-app\" :man []}"
+      write (fn []
+              (rmrf dir)
+              (each d [dir (string dir "/sub") (string dir "/.git") (string dir "/zig-out")
+                       (string dir "/.wattle") (string dir "/.zig-cache")]
+                (assert (os/mkdir d)))
+              (spit (string dir "/info.edn") info)
+              (spit (string dir "/a") "one")
+              (spit (string dir "/sub/b") "two")
+              (each skipped ["/.git/x" "/zig-out/y" "/.wattle/z" "/.zig-cache/w"]
+                (spit (string dir skipped) "skipped")))
+      install #(with-dyns [*err* !""] (app/install dir))]
+  (write)
+  (assert-no-error "install a directory" (install))
+  (assert (= "sha256:7227ca7add27d7ec142377ed6b8ad91001329151c552ea0d3be6c5afbc5a2b44"
+             (get (app/manifest "rev-app") :rev))
+          "a directory records the hash of its files, without .git, zig-out, .wattle and .zig-cache")
+  (assert (nil? (get (app/manifest "rev-app") :source)) "a directory records no source")
+  (spit (string dir "/a") "one!")
+  (assert-no-error "upgrade a directory" (with-dyns [*err* !""] (app/upgrade "rev-app")))
+  (assert (= "sha256:a11fc8b86771909ccd7d3ad8ea4fd023eb6aaeadbf7d1df3070c3896dcdc4aa5"
+             (get (app/manifest "rev-app") :rev))
+          "upgrading a directory records the hash of the files now there")
+  (assert-no-error "remove a directory" (app/remove "rev-app"))
+
+  ; The order is the byte order of the relative paths, so a file beside a directory
+  ; sorts as its path does.
+  (write)
+  (spit (string dir "/a.txt") "x")
+  (assert-no-error "install a directory with a sibling name" (install))
+  (assert (= "sha256:6c61e80dfeba58ab0876265c732fe4d9a5f8ab591bc3456673c26217ca38f0ae"
+             (get (app/manifest "rev-app") :rev))
+          "files are hashed in the byte order of their paths")
+  (assert-no-error "remove again" (app/remove "rev-app"))
+
+  ; A symbolic link has no revision, and nothing is installed.
+  (unless (= :windows (os/which))
+    (write)
+    (os/link (string dir "/a") (string dir "/link") true)
+    (let [[ok message] (protect (install))]
+      (assert (and (not ok) (string/find "which is a symbolic link" message) (string/find "/link" message))
+              "a symbolic link in a source is refused")
+      (assert (= 0 (length (app/list))) "a source with a symbolic link installs nothing")))
+  (rmrf dir))
 
 ;;; Source applications
 ;

@@ -44,8 +44,9 @@ libraries.
 
 The application lists what it vendors under ``:vendored`` in its info file, and
 ``wattle deps vendor`` copies each entry into the application. See
-`wattle-deps(1)`. An entry without a ``:ref`` uses the HEAD of the default
-branch of a Git repository each time.
+`wattle-deps(1)`, which also describes ``deps/manifest.edn``, where the
+revision of each source is recorded. An entry without a ``:ref`` uses the HEAD
+of the default branch of a Git repository each time.
 
 LAYOUT
 ======
@@ -190,8 +191,10 @@ All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
 
 - ``lib/wattle/apps/<group>/<name>``:
   The directory of an installed application: ``manifest.edn``, which lists its
-  files, a copy of its info file and a copy of its application script, with
-  the rest of its ``hooks`` directory.
+  files and records its source and ``:rev``, the revision of the source, a copy
+  of its info file and a copy of its application script, with the rest of its
+  ``hooks`` directory. The revision is the commit hash for a Git repository, and
+  ``sha256:`` and a hash of the files for a tarball or a directory.
 
 - ``bin``:
   The binpath, for programs.

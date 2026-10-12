@@ -5335,6 +5335,40 @@
           (string/has-suffix? ".tar.gz" source)) :tarball
       :git))
 
+  (defn- run-captured
+    """
+    Runs tool with args and returns what it wrote to its standard output, without
+    trailing white space. Raises if tool cannot be started or exits with a
+    status other than 0. The message of the second error is followed by what
+    tool wrote to its standard error. The standard output of tool is shown, and
+    the string returned is empty, unless show is false. Raises in a build that
+    has no os/execute.
+    """
+    [show tool args]
+    (compif (dyn 'os/execute)
+      (do
+        (mkdirs (wattle/libpath))
+        (def s (sep))
+        (def err-path (string (wattle/libpath) s ".stderr"))
+        (def out-path (string (wattle/libpath) s ".stdout"))
+        (def err (file/open err-path :wb))
+        (def out (if show nil (file/open out-path :wb)))
+        (def [ok status] (protect (os/execute [tool |args] :p (if out {:err err :out out} {:err err}))))
+        (file/close err)
+        (when out (file/close out))
+        ; The tool may end its lines with a carriage return and a newline. The
+        ; stream that prints the message adds the carriage return itself.
+        (def text (string/trim (string/replace-all "\r\n" "\n" (string (slurp err-path)))))
+        (def result (if out (string/trim (string/replace-all "\r\n" "\n" (string (slurp out-path)))) ""))
+        (rmrf err-path)
+        (rmrf out-path)
+        (ensuref ok "could not run %s, is it on the PATH?" tool)
+        (unless (zero? status)
+          (fail (string tool " exited with status " status
+                            (if (empty? text) "" (string "\n" text)))))
+        result)
+      (failf "cannot run %s, this build has no os/execute" tool)))
+
   (defn- run-tool
     """
     Runs tool with args. Raises if tool cannot be started or exits with a
@@ -5343,22 +5377,16 @@
     in a build that has no os/execute.
     """
     [tool & args]
-    (compif (dyn 'os/execute)
-      (do
-        (mkdirs (wattle/libpath))
-        (def path (string (wattle/libpath) (sep) ".stderr"))
-        (def err (file/open path :wb))
-        (def [ok status] (protect (os/execute [tool |args] :p {:err err})))
-        (file/close err)
-        ; The tool may end its lines with a carriage return and a newline. The
-        ; stream that prints the message adds the carriage return itself.
-        (def text (string/trim (string/replace-all "\r\n" "\n" (string (slurp path)))))
-        (rmrf path)
-        (ensuref ok "could not run %s, is it on the PATH?" tool)
-        (unless (zero? status)
-          (fail (string tool " exited with status " status
-                            (if (empty? text) "" (string "\n" text))))))
-      (failf "cannot run %s, this build has no os/execute" tool)))
+    (run-captured true tool args)
+    nil)
+
+  (defn- capture-tool
+    """
+    Runs tool with args and returns what it wrote to its standard output as a
+    string, without trailing white space. Raises as ^run-tool does.
+    """
+    [tool & args]
+    (run-captured false tool args))
 
   (defn- run-tool-live
     """
@@ -5385,21 +5413,94 @@
     (def only (when (= 1 (length entries)) (string dir (sep) (first entries))))
     (if (and only (= :directory (os/stat only :mode))) only dir))
 
+  (def- tree-skipped
+    """
+    The names that are neither copied from a directory of a :src artifact nor
+    included in the revision of a tree: build output, caches, material that is
+    not committed and version control.
+    """
+    ["zig-out" ".zig-cache" ".wattle" ".git"])
+
+  (defn- hex
+    """
+    Returns the bytes of the string s as lower case hexadecimal text.
+    """
+    [s]
+    (string/join "" (map #(string/format "%02x" $) s)))
+
+  (defn- tree-files
+    """
+    Returns the files under dir as paths relative to dir, written with a slash,
+    in byte order. An entry named in ^tree-skipped is left out with everything
+    under it. Raises for an entry that is neither a file nor a directory, a
+    symbolic link included.
+    """
+    [dir]
+    (def out ![])
+    (defn walk [rel]
+      (def here (if (empty? rel) dir (string dir (sep) rel)))
+      (each name (os/dir here)
+        (unless (has-value? tree-skipped name)
+          (def entry (if (empty? rel) name (string rel "/" name)))
+          (def path (string dir (sep) entry))
+          (case (os/lstat path :mode)
+            :file (array/push! out entry)
+            :directory (walk entry)
+            (failf "the revision of a source cannot include %s, which is %s"
+                   path (if (= :link (os/lstat path :mode))
+                          "a symbolic link"
+                          "neither a file nor a directory"))))))
+    (walk "")
+    (sort! out))
+
+  (defn- file-digest
+    """
+    Returns the SHA-256 digest of the file at path as a string of raw bytes.
+    """
+    [path]
+    (def hasher (crypto/hasher :sha256))
+    (if-with [f (file/open path :rb)]
+      (do
+        (def b (buffer/new 0x10000))
+        (forever
+          (file/read f 0x10000 b)
+          (when (empty? b) (break))
+          (crypto/update! hasher b)
+          (buffer/clear! b)))
+      (failf "source file %s cannot be opened for reading" path))
+    (crypto/digest hasher))
+
+  (defn- tree-rev
+    """
+    Returns the revision of the tree under dir, which is `sha256:` and the
+    SHA-256 of the files in order. For each file the hash takes its relative
+    path, a zero byte and the 32 byte SHA-256 digest of its contents. Permissions
+    and times are not part of it. See ^tree-files for the files.
+    """
+    [dir]
+    (def hasher (crypto/hasher :sha256))
+    (each entry (tree-files dir)
+      (crypto/update! hasher entry)
+      (crypto/update! hasher "\0")
+      (crypto/update! hasher (file-digest (string dir (sep) entry))))
+    (string "sha256:" (hex (crypto/digest hasher))))
+
   (defn- with-source
     """
-    Calls f with the root directory of source and returns what f returns. A
-    directory is passed as it is. A tarball is downloaded and unpacked, and a
-    Git repository is cloned, into a temporary directory under the library
-    directory of the prefix. That directory is removed after f returns or
-    raises. Raises if ref, a branch or tag, is given for anything but a Git
-    repository.
+    Calls f with the root directory of source and its revision and returns what f
+    returns. A directory is passed as it is. A tarball is downloaded and
+    unpacked, and a Git repository is cloned, into a temporary directory under
+    the library directory of the prefix. That directory is removed after f
+    returns or raises. The revision is the commit hash for a Git repository and
+    ^tree-rev of the root for a tarball or a directory. Raises if ref, a branch
+    or tag, is given for anything but a Git repository.
     """
     [source ref f]
     (def kind (source-kind source))
     (ensuref (or (nil? ref) (= kind :git))
              "a ref is accepted only for a Git repository, not %v" source)
     (if (= kind :directory)
-      (f source)
+      (f source (tree-rev source))
       (do
         (def s (sep))
         (def tmp (string (wattle/libpath) s ".fetch"))
@@ -5408,6 +5509,7 @@
         (mkdirs dest)
         (defer (rmrf tmp)
           (print "fetching " source)
+          (var rev nil)
           (case kind
             :tarball (let [archive (string tmp s "archive")]
                        (run-tool "curl" "--fail" "--silent" "--show-error" "--location"
@@ -5416,8 +5518,10 @@
             :git (do
                    (run-tool "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
                             |(if ref ["--branch" ref] []) "--" source dest)
+                   (set rev (capture-tool "git" "-C" dest "rev-parse" "HEAD"))
                    (rmrf (string dest s ".git"))))
-          (f (unpack-root dest))))))
+          (def root (unpack-root dest))
+          (f root (or rev (tree-rev root)))))))
 
   (defn- artifacts-of
     """
@@ -5464,17 +5568,10 @@
         ; Zig can draw its progress on a terminal.
         (run-tool-live "wattle build exe" exe "-p" (dyn *prefix*) "build" "exe"))))
 
-  (def- app-src-skipped
-    """
-    The names that are not copied from a directory of a :src artifact: build
-    output, caches, material that is not committed and version control.
-    """
-    ["zig-out" ".zig-cache" ".wattle" ".git"])
-
   (defn- app-copy-src
     """
     Copies the file or directory from to to. A directory is copied with its
-    contents, without any entry named in ^app-src-skipped. Raises if from does
+    contents, without any entry named in ^tree-skipped. Raises if from does
     not exist.
     """
     [from to]
@@ -5484,7 +5581,7 @@
       :directory (do
                    (os/mkdir to)
                    (each y (os/dir from)
-                     (unless (has-value? app-src-skipped y)
+                     (unless (has-value? tree-skipped y)
                        (app-copy-src (string from s y) (string to s y)))))
       (failf ":files names %s, which does not exist" from)))
 
@@ -5692,7 +5789,10 @@
     """
     Installs an application from source, which is an existing directory, a name
     ending in .tar or .tar.gz that curl downloads and tar unpacks, or any other
-    name, which git clones. The name and the group of the application are the
+    name, which git clones. The manifest records the revision of the source
+    under :rev: the commit hash for a Git repository, and for a tarball or a
+    directory `sha256:` and a hash of the files. The name and the group of the
+    application are the
     values mapped to :name and :group in either config or the info file. Each is
     one directory name, and the application is installed in apps/group/name
     under lib/wattle. A name is unique across groups. Raises if the group is
@@ -5709,10 +5809,10 @@
     (def ref (if (get config :source) nil (get config :ref)))
     (def kind (source-kind source))
     (with-source source ref
-      (fn [root]
+      (fn [root rev]
         (if (= kind :directory)
-          (app-install-dir root |(kvs config))
-          (app-install-dir root :source source |(kvs config))))))
+          (app-install-dir root :rev rev |(kvs config))
+          (app-install-dir root :source source :rev rev |(kvs config))))))
 
   (defn- app/pack
     """
@@ -5779,7 +5879,9 @@
     (rmrf backup-dir)
     (def backup-source (app/pack app-name backup-dir true))
     (edefer (do
-              (app/install backup-source :name app-name :group (get manifest :group))
+              (app/install backup-source :name app-name :group (get manifest :group)
+                           |(mapcat (fn [k] (if (get manifest k) [k (get manifest k)] []))
+                                    [:rev :source :ref :local-source]))
               (copyrf (string backup-source s "old-app") (app-dir app-name))
               (rmrf backup-source))
       (app-remove-unchecked app-name)
@@ -5802,11 +5904,16 @@
       (def manifest (app/manifest app-name))
       (def source (get manifest :source))
       (def ref (get manifest :ref))
-      (if source
-        (with-source source ref
-          (fn [root]
-            (app/replace app-name root :source source |(if ref [:ref ref] []) |(kvs new-config))))
-        (app/replace app-name (get manifest :local-source) |(kvs new-config)))
+      (def local (get manifest :local-source))
+      (unless source
+        (ensuref (= :directory (os/stat local :mode)) "local source %v not available" local))
+      (with-source (or source local) ref
+        (fn [root rev]
+          (app/replace app-name root
+                       |(if source [:source source] [])
+                       |(if ref [:ref ref] [])
+                       :rev rev
+                       |(kvs new-config))))
       app-name))
 
   (defn app/whois
@@ -5883,7 +5990,10 @@
     the source to copy, each a string or a pair of a path in the source and a
     path under the prefix. The whole source is copied if there is no :paths.
     A file in the project that has the path of a copy is replaced. Every entry
-    is checked before any is fetched. Returns the number of entries.
+    is checked before any is fetched. Writes deps/manifest.edn, a map from the
+    :name of each entry to a map of its :url, its :ref where it has one and the
+    revision of the source under :rev, as ^app/install records it. The file is
+    written after every entry has been copied. Returns the number of entries.
     """
     [& dir]
     (def root (os/realpath (get dir 0 ".")))
@@ -5892,10 +6002,14 @@
     (def vendored (get (parse (slurp infofile)) :vendored))
     (ensure (and (indexed? vendored) (next vendored)) "info.edn has no :vendored entries")
     (def plans (map dep-vendor-plan vendored))
+    (def record !{})
     (each plan plans
       (def {name :name url :url ref :ref copies :copies} plan)
       (with-source url ref
-        (fn [src]
+        (fn [src rev]
+          (def entry !{:url url :rev rev})
+          (when ref (put! entry :ref ref))
+          (put! record name entry)
           (each [from to] copies
             (def from-path (dep-vendor-join src from))
             (def to-path (dep-vendor-join root to))
@@ -5906,6 +6020,9 @@
                           (dep-vendor-join root (slice to 0 -2))))
             (copyrf from-path to-path))))
       (print "vendored " name))
+    (def deps-dir (string root (sep) "deps"))
+    (mkdirs deps-dir)
+    (spit (string deps-dir (sep) "manifest.edn") (string/format "%.99m\n" (freeze record)))
     (length plans)))
 
 ;;;
