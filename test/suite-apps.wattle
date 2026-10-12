@@ -505,7 +505,8 @@
       (os/cd proj)
       (defer (os/cd cwd)
         (let [[status text] (with-dyns [*prefix* ""] (run-cli "deps" "vendor"))]
-          (assert (= 0 status) "wattle deps vendor runs with an empty prefix")
+          (assert (= 0 status) (string "wattle deps vendor runs with an empty prefix: status "
+                                       status ", " text))
           (assert (nil? (string/find "prefix" text)) "wattle deps vendor does not mention the prefix")))))
 
   (spit (string proj "/deps/whole/a.wattle") "changed\n")
