@@ -806,15 +806,19 @@
               "a :lib that no :src artifact names is refused")
       (nothing-left "an unnamed :lib installs nothing"))
     ; A :lib that a :src artifact names is built, and the build fails here: the
-    ; prefix of this suite holds no source of the runtime.
+    ; prefix of this suite holds no source of the runtime. The command line runs
+    ; the install, so that what the build writes is captured and not shown.
     (compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
       (do
         (spit (string proj "/l.zig") "")
-        (let [[ok _] (try-install (string/format "%m" {:group "org.wattle.tests" :name "sprog"
-                                                       :artifacts [(assoc src-artifact :files ["main.wattle" "lib" "deps" "l.zig"]
-                                                                                       :libs ["l"])
-                                                                   {:type :lib :name "l" :root "l.zig"}]}))]
-          (assert (not ok) "a :src artifact whose :libs fail to build is refused")
+        (spit (string proj "/info.edn")
+              (string/format "%m" {:group "org.wattle.tests" :name "sprog"
+                                   :artifacts [(assoc src-artifact :files ["main.wattle" "lib" "deps" "l.zig"]
+                                                                   :libs ["l"])
+                                               {:type :lib :name "l" :root "l.zig"}]}))
+        (let [[status text] (run-cli "apps" "install" proj)]
+          (assert (= 1 status) "a :src artifact whose :libs fail to build is refused")
+          (assert (string/find "the Wattle package is not at" text) "the output of the build is captured")
           (nothing-left "a failed :libs build installs nothing"))))
 
     ; app/run
