@@ -236,10 +236,7 @@
   (def err-file (string prefix "-cli-err"))
   (def out (file/open out-file :wb))
   (def err (file/open err-file :wb))
-  ; An empty argument is lost on Windows, so an empty prefix is written as
-  ; --prefix= and not as -p followed by an empty string.
-  (def prefix-args (if (empty? (dyn *prefix*)) ["--prefix="] ["-p" (dyn *prefix*)]))
-  (def status (os/execute [cli-exe |prefix-args |args] :p {:out out :err err}))
+  (def status (os/execute [cli-exe "-p" (dyn *prefix*) |args] :p {:out out :err err}))
   (file/close out)
   (file/close err)
   (def text (string (slurp err-file)))

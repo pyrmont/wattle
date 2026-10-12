@@ -100,9 +100,11 @@ fn expectEscape(argument: [*:0]const u8, expected: []const u8) void {
 fn theExecEscaping() void {
     // An argument the splitter would keep whole is passed through.
     expectEscape("simple", "simple");
-    expectEscape("", "");
     expectEscape("a\\b\\c", "a\\b\\c");
     expectEscape("trailing\\\\", "trailing\\\\");
+
+    // An empty argument is quoted, or the splitter would lose it.
+    expectEscape("", "\"\"");
 
     // Each byte the splitter treats as a separator forces quoting.
     expectEscape("two words", "\"two words\"");

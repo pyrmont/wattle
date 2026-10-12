@@ -293,6 +293,11 @@
         (os/execute [|run wattle "-e" """(eprin "e")"""] :p {:err f}))
       (assert (= "e" (string (slurp err-path))) "a file for stderr is descriptor 2")))
 
+  ; An empty argument reaches the child, which counts -e, the code, the empty
+  ; argument and b.
+  (assert (= 4 (os/execute [|run wattle "-e" "(os/exit (length (dyn *args*)))" "" "b"] :p))
+          "an empty argument is passed to the child")
+
   ; Only os/spawn makes pipes; os/execute refuses the keyword.
   (assert (= "expected file|stream, got :pipe"
              (in (protect (os/execute [|run wattle "-e" "nil"] :p {:in :pipe})) 1))
