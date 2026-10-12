@@ -494,8 +494,9 @@ pub fn envKeyOk(key: [*]const u8, len: usize) i32 {
 pub fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) i32 {
     var out: Escaped = .{ .dest = dest, .cap = if (cap > 0) @intCast(cap) else 0 };
 
-    // Quoting is needed only for an argument with a byte in it that the
-    // splitter would otherwise treat as a separator or as a quotation mark.
+    // Quoting is needed for an empty argument, which the splitter would
+    // otherwise lose, and for an argument with a byte in it that the splitter
+    // would treat as a separator or as a quotation mark.
     var scan: usize = 0;
     while (arg[scan] != 0) : (scan += 1) {
         switch (arg[scan]) {
@@ -504,7 +505,7 @@ pub fn escapeArgument(arg: [*:0]const u8, dest: ?[*]u8, cap: i32) i32 {
         }
     }
 
-    if (arg[scan] == 0) {
+    if (arg[scan] == 0 and scan != 0) {
         var index: usize = 0;
         while (arg[index] != 0) : (index += 1) out.byte(arg[index]);
     } else {
@@ -1678,12 +1679,12 @@ fn expectEscape(arg: [:0]const u8, expected: []const u8) !void {
 
 test "an argument without separators is passed through" {
     try expectEscape("simple", "simple");
-    try expectEscape("", "");
     try expectEscape("a\\b\\c", "a\\b\\c");
     try expectEscape("trailing\\\\", "trailing\\\\");
 }
 
 test "an argument with a separator is quoted" {
+    try expectEscape("", "\"\"");
     try expectEscape("two words", "\"two words\"");
     try expectEscape("tab\there", "\"tab\there\"");
     try expectEscape("line\nbreak", "\"line\nbreak\"");

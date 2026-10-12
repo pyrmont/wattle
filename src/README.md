@@ -867,6 +867,10 @@ Builds for the development host alone do not check the following constraints.
   `CreateProcessA`. The original stream handle is unchanged. `core/file`
   handles and pipes created by `:pipe` are passed directly.
 
+- On Windows, `os/execute` and `os/spawn` join their arguments into one command
+  line, which the child splits again. An empty argument is written as `""`, so
+  the child receives it as it does on other systems.
+
 A musl build links dynamically by default and can load native modules on a
 machine with the musl loader. CI uses `-Dlinkage=static` for musl, whose static
 `dlopen` always fails. The musl CI jobs therefore omit the native-module test.
