@@ -19,8 +19,10 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-Manage the applications installed under ``*prefix*``. Modules are installed in
-``lib/wattle``, programs in ``bin`` and man pages in ``share/man`` under it.
+Manage the applications installed under ``*prefix*``. Each application has its
+own directory, ``lib/wattle/apps/<group>/<name>``, and its modules are not
+imported by other applications. Programs are installed in ``bin`` and man pages
+in ``share/man`` under the prefix.
 A build made without the OS library does not include ***apps***, and each verb
 exits with status 1 after saying so. **a** is a synonym for ***apps***.
 

@@ -385,7 +385,8 @@ for man pages. The runtime starts without a prefix. `WATTLE_PREFIX` and
 and dynamic binding use the name `prefix`. The environment variable adds the
 project name as `WATTLE_PREFIX`.
 
-With no prefix, the `apps` commands raise. With an empty prefix, set by
+With no prefix, the `apps` commands raise. The `deps` commands do not read the
+prefix and run without one. With an empty prefix, set by
 `--prefix ""`, the first `apps` command raises. Both error messages name
 `WATTLE_PREFIX` and `--prefix`.
 
@@ -648,13 +649,14 @@ entry of `:vendored` into the project. An entry is fetched by the same code as
 entry before the first fetch, and a path that is absolute or has a `..`
 component raises an error. An existing file at a destination is replaced.
 
-When every entry has been copied, the command writes `deps/manifest.edn`, a map
-from the `:name` of each entry to a map of its `:url`, its `:ref` where it has
-one, and `:rev`, the revision of the whole source as `apps install` records it.
-The file is committed with the vendored sources. An entry that is not in
-`:vendored` has no record after the next run, and a run that raises leaves the
-file as it was. `info.edn` has no `:dependencies`, and the manifest of an
-installed application records none.
+The command needs no prefix and installs nothing. A tarball is unpacked and a
+Git repository is cloned in `.wattle/fetch` in the project, which is removed
+afterwards together with `.wattle` if that is then empty.
+
+The command writes no record of the revision it copied, because the copy belongs
+to the project and may be edited. Two entries may not have the same `:name`.
+`info.edn` has no `:dependencies`, and the manifest of an installed application
+records none.
 
 ## Build steps
 

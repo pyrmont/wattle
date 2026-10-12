@@ -444,6 +444,19 @@
   (assert-error "a ref with a directory" (install-quietly demo-dir :ref "v1"))
   (assert-error "a ref with a tarball"
                 (install-quietly (string "file://" src-dir "/demo.tar") :ref "v1"))
+
+  ; Vendoring needs no prefix. A tarball is unpacked under .wattle in the
+  ; project, which is gone afterwards.
+  (let [proj (string src-dir "/vendor-proj")]
+    (assert (os/mkdir proj))
+    (spit (string proj "/info.edn")
+          (string/format "%y" {:vendored [{:name "fetched" :url (string "file://" src-dir "/demo.tar")
+                                           :prefix "deps/fetched"}]}))
+    (assert (= 1 (with-dyns [*prefix* "" *out* !""] (dep/vendor proj)))
+            "vendor fetches a tarball with an empty prefix")
+    (assert (os/stat (string proj "/deps/fetched/demo") :mode) "the fetched source is copied")
+    (assert (nil? (os/stat (string proj "/.wattle") :mode)) "vendor leaves no .wattle directory behind")
+    (assert (no-fetch-left) "vendor fetches nothing under the prefix"))
   (rmrf src-dir)))
 
 ; dep/vendor copies the :vendored entries of info.edn into a project. The
@@ -469,16 +482,15 @@
          {:name "some" :url src :prefix "deps/some"
           :paths ["a.wattle" ["lib" "sub"] ["LICENSE" "L"]]}])
   (assert (= 2 (vendor)) "vendor returns the number of entries")
-  (let [record (parse (slurp (string proj "/deps/manifest.edn")))]
-    (assert (and (= 2 (length record)) (get record "some") (get record "whole"))
-            "the record has an entry for each name")
-    (assert (= "sha256:ea7f1e2e15d113680eefe03d09532af6f7f22ac5a91e63ecdeeab80a5f514900"
-               (get-in record ["whole" :rev]))
-            "the record has the hash of the whole source")
-    (assert (= (get-in record ["whole" :rev]) (get-in record ["some" :rev]))
-            "an entry with :paths records the revision of the whole source")
-    (assert (= src (get-in record ["whole" :url])) "the record has the url")
-    (assert (nil? (get-in record ["whole" :ref])) "the record has no ref for an entry without one"))
+  (assert (nil? (has "deps/manifest.edn")) "vendor writes no record of the revisions")
+  ; Nothing is hashed, so a symbolic link in a source does not stop vendor.
+  (when (first (protect (os/link (string src "/a.wattle") (string src "/link") true)))
+    (info [{:name "linked" :url src :prefix "deps/linked"}])
+    (assert (= 1 (vendor)) "vendor copies a source that has a symbolic link")
+    (os/rm (string src "/link"))
+    (info [{:name "whole" :url src :prefix "deps/whole"}
+           {:name "some" :url src :prefix "deps/some"
+            :paths ["a.wattle" ["lib" "sub"] ["LICENSE" "L"]]}]))
   (assert (= :file (has "deps/whole/a.wattle")) "an entry without :paths copies the whole source")
   (assert (= :file (has "deps/whole/lib/b.wattle")) "an entry without :paths copies subdirectories")
   (assert (= :file (has "deps/some/a.wattle")) "a string in :paths keeps its name")
@@ -486,12 +498,20 @@
   (assert (= :file (has "deps/some/L")) "a pair in :paths renames a file")
   (assert (nil? (has "deps/some/LICENSE")) "an entry copies only its :paths")
   (assert (empty? (app/list)) "vendor installs no application")
+  (with-dyns [*prefix* ""]
+    (assert (= 2 (vendor)) "vendor copies local sources with an empty prefix"))
+  (compwhen (dyn 'os/execute)
+    (let [cwd (os/cwd)]
+      (os/cd proj)
+      (defer (os/cd cwd)
+        (let [[status text] (with-dyns [*prefix* ""] (run-cli "deps" "vendor"))]
+          (assert (= 0 status) "wattle deps vendor runs with an empty prefix")
+          (assert (nil? (string/find "prefix" text)) "wattle deps vendor does not mention the prefix")))))
 
   (spit (string proj "/deps/whole/a.wattle") "changed\n")
   (vendor)
   (assert (= "(def x 1)\n" (string (slurp (string proj "/deps/whole/a.wattle"))))
           "vendor replaces a file that differs")
-  (def record-before (string (slurp (string proj "/deps/manifest.edn"))))
 
   (info [{:name "bad" :url src :paths ["../x"]}])
   (assert-error "a path above the project" (vendor))
@@ -506,8 +526,16 @@
   (info [{:name "first" :url src :prefix "deps/first"} {:name "bad" :paths ["x"]}])
   (assert-error "a later invalid entry" (vendor))
   (assert (nil? (has "deps/first")) "an invalid entry stops vendor before any copy")
-  (assert (= record-before (string (slurp (string proj "/deps/manifest.edn"))))
-          "a vendor that raises leaves the record as it was")
+  (let [src2 (string base "/src2")]
+    (assert (os/mkdir src2))
+    (spit (string src2 "/other.wattle") "(def z 3)\n")
+    (info [{:name "dup" :url src :prefix "deps/one"} {:name "dup" :url src2 :prefix "deps/two"}])
+    (let [[ok message] (protect (vendor))]
+      (assert (and (not ok) (string/find "dup" message) (string/find "more than one" message))
+              "two entries with one name are refused"))
+    (assert (and (nil? (has "deps/one")) (nil? (has "deps/two")))
+            "a duplicate name stops vendor before any copy")
+    (rmrf src2))
   (info [])
   (assert-error "no entries" (vendor))
   (spit (string proj "/info.edn") "{:name \"p\" :dependencies [\"missing\"]}")
@@ -736,6 +764,22 @@
     (assert-no-error "upgrade a :src application" (with-dyns [*err* !""] (app/upgrade "sprog")))
     (assert (and (os/stat binscript :mode) (os/stat (string app-path "/main.wattle") :mode))
             "upgrading installs the files and the program again")
+
+    ; An upgrade that fails restores the application as it was.
+    (let [manifest-before (app/manifest "sprog")
+          main-before (string (slurp (string app-path "/main.wattle")))
+          binscript-before (string (slurp binscript))]
+      (spit (string proj "/info.edn") (info-of (assoc src-artifact :files ["main.wattle" "nothere"])))
+      (let [[ok _] (protect (with-dyns [*err* !""] (app/upgrade "sprog")))]
+        (assert (not ok) "an upgrade whose source is missing a file fails"))
+      (assert (app/installed? "sprog") "a failed upgrade leaves the application installed")
+      (assert (= main-before (string (slurp (string app-path "/main.wattle"))))
+              "a failed upgrade restores the source files")
+      (assert (= binscript-before (string (slurp binscript))) "a failed upgrade restores the program")
+      (assert (= manifest-before (app/manifest "sprog")) "a failed upgrade restores the manifest")
+      (assert (nil? (os/stat (string root "/lib/wattle/sprog.backup") :mode))
+              "a failed upgrade leaves no backup")
+      (spit (string proj "/info.edn") (info-of src-artifact)))
     (assert-no-error "remove a :src application" (app/remove "sprog"))
     (assert (nil? (os/stat binscript :mode)) "removing removes the program")
     (assert (nil? (os/stat app-path :mode)) "removing removes the application directory")

@@ -5338,19 +5338,20 @@
   (defn- run-captured
     """
     Runs tool with args and returns what it wrote to its standard output, without
-    trailing white space. Raises if tool cannot be started or exits with a
+    trailing white space. The output of tool is held in files in the directory
+    tmp, which is created. Raises if tool cannot be started or exits with a
     status other than 0. The message of the second error is followed by what
     tool wrote to its standard error. The standard output of tool is shown, and
     the string returned is empty, unless show is false. Raises in a build that
     has no os/execute.
     """
-    [show tool args]
+    [tmp show tool args]
     (compif (dyn 'os/execute)
       (do
-        (mkdirs (wattle/libpath))
+        (mkdirs tmp)
         (def s (sep))
-        (def err-path (string (wattle/libpath) s ".stderr"))
-        (def out-path (string (wattle/libpath) s ".stdout"))
+        (def err-path (string tmp s ".stderr"))
+        (def out-path (string tmp s ".stdout"))
         (def err (file/open err-path :wb))
         (def out (if show nil (file/open out-path :wb)))
         (def [ok status] (protect (os/execute [tool |args] :p (if out {:err err :out out} {:err err}))))
@@ -5371,13 +5372,14 @@
 
   (defn- run-tool
     """
-    Runs tool with args. Raises if tool cannot be started or exits with a
+    Runs tool with args, holding its output in the directory tmp as
+    ^run-captured does. Raises if tool cannot be started or exits with a
     status other than 0. The message of the second error is followed by what
     tool wrote to its standard error, which is not shown otherwise. Raises
     in a build that has no os/execute.
     """
-    [tool & args]
-    (run-captured true tool args)
+    [tmp tool & args]
+    (run-captured tmp true tool args)
     nil)
 
   (defn- capture-tool
@@ -5385,8 +5387,8 @@
     Runs tool with args and returns what it wrote to its standard output as a
     string, without trailing white space. Raises as ^run-tool does.
     """
-    [tool & args]
-    (run-captured false tool args))
+    [tmp tool & args]
+    (run-captured tmp false tool args))
 
   (defn- run-tool-live
     """
@@ -5487,23 +5489,23 @@
 
   (defn- with-source
     """
-    Calls f with the root directory of source and its revision and returns what f
-    returns. A directory is passed as it is. A tarball is downloaded and
-    unpacked, and a Git repository is cloned, into a temporary directory under
-    the library directory of the prefix. That directory is removed after f
-    returns or raises. The revision is the commit hash for a Git repository and
-    ^tree-rev of the root for a tarball or a directory. Raises if ref, a branch
-    or tag, is given for anything but a Git repository.
+    Calls f with the root directory of source and a function of no arguments that
+    returns its revision, and returns what f returns. A directory is passed as
+    it is. A tarball is downloaded and unpacked, and a Git repository is cloned,
+    into the temporary directory tmp. That directory is removed after f returns
+    or raises. The revision is the commit hash for a Git repository and
+    ^tree-rev of the root for a tarball or a directory, which is hashed only if
+    the function is called. Raises if ref, a branch or tag, is given for
+    anything but a Git repository.
     """
-    [source ref f]
+    [source ref tmp f]
     (def kind (source-kind source))
     (ensuref (or (nil? ref) (= kind :git))
              "a ref is accepted only for a Git repository, not %v" source)
     (if (= kind :directory)
-      (f source (tree-rev source))
+      (f source (fn [] (tree-rev source)))
       (do
         (def s (sep))
-        (def tmp (string (wattle/libpath) s ".fetch"))
         (def dest (string tmp s "src"))
         (rmrf tmp)
         (mkdirs dest)
@@ -5512,16 +5514,16 @@
           (var rev nil)
           (case kind
             :tarball (let [archive (string tmp s "archive")]
-                       (run-tool "curl" "--fail" "--silent" "--show-error" "--location"
+                       (run-tool tmp "curl" "--fail" "--silent" "--show-error" "--location"
                                 "--output" archive "--url" source)
-                       (run-tool "tar" "-xf" archive "-C" dest))
+                       (run-tool tmp "tar" "-xf" archive "-C" dest))
             :git (do
-                   (run-tool "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
+                   (run-tool tmp "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
                             |(if ref ["--branch" ref] []) "--" source dest)
-                   (set rev (capture-tool "git" "-C" dest "rev-parse" "HEAD"))
+                   (set rev (capture-tool tmp "git" "-C" dest "rev-parse" "HEAD"))
                    (rmrf (string dest s ".git"))))
           (def root (unpack-root dest))
-          (f root (or rev (tree-rev root)))))))
+          (f root (fn [] (or rev (tree-rev root))))))))
 
   (defn- artifacts-of
     """
@@ -5808,11 +5810,11 @@
     ; a record and not a request.
     (def ref (if (get config :source) nil (get config :ref)))
     (def kind (source-kind source))
-    (with-source source ref
+    (with-source source ref (string (wattle/libpath) (sep) ".fetch")
       (fn [root rev]
         (if (= kind :directory)
-          (app-install-dir root :rev rev |(kvs config))
-          (app-install-dir root :source source :rev rev |(kvs config))))))
+          (app-install-dir root :rev (rev) |(kvs config))
+          (app-install-dir root :source source :rev (rev) |(kvs config))))))
 
   (defn- app/pack
     """
@@ -5879,9 +5881,11 @@
     (rmrf backup-dir)
     (def backup-source (app/pack app-name backup-dir true))
     (edefer (do
-              (app/install backup-source :name app-name :group (get manifest :group)
-                           |(mapcat (fn [k] (if (get manifest k) [k (get manifest k)] []))
-                                    [:rev :source :ref :local-source]))
+              ; The install hook reads the packed files from its source
+              ; directory, so the backup is installed from the backup. Copying
+              ; the old application directory over the result then restores the
+              ; old manifest, with its original source.
+              (app/install backup-source :name app-name :group (get manifest :group))
               (copyrf (string backup-source s "old-app") (app-dir app-name))
               (rmrf backup-source))
       (app-remove-unchecked app-name)
@@ -5907,12 +5911,12 @@
       (def local (get manifest :local-source))
       (unless source
         (ensuref (= :directory (os/stat local :mode)) "local source %v not available" local))
-      (with-source (or source local) ref
+      (with-source (or source local) ref (string (wattle/libpath) (sep) ".fetch")
         (fn [root rev]
           (app/replace app-name root
                        |(if source [:source source] [])
                        |(if ref [:ref ref] [])
-                       :rev rev
+                       :rev (rev)
                        |(kvs new-config))))
       app-name))
 
@@ -5990,10 +5994,8 @@
     the source to copy, each a string or a pair of a path in the source and a
     path under the prefix. The whole source is copied if there is no :paths.
     A file in the project that has the path of a copy is replaced. Every entry
-    is checked before any is fetched. Writes deps/manifest.edn, a map from the
-    :name of each entry to a map of its :url, its :ref where it has one and the
-    revision of the source under :rev, as ^app/install records it. The file is
-    written after every entry has been copied. Returns the number of entries.
+    is checked before any is fetched, and two entries may not have the same
+    :name. Records no revision of what it copies. Returns the number of entries.
     """
     [& dir]
     (def root (os/realpath (get dir 0 ".")))
@@ -6002,14 +6004,16 @@
     (def vendored (get (parse (slurp infofile)) :vendored))
     (ensure (and (indexed? vendored) (next vendored)) "info.edn has no :vendored entries")
     (def plans (map dep-vendor-plan vendored))
-    (def record !{})
+    (def seen !{})
+    (each plan plans
+      (def name (get plan :name))
+      (ensuref (nil? (get seen name)) "vendored %s is named by more than one entry" name)
+      (put! seen name true))
+    (def fetch-dir (string root (sep) ".wattle" (sep) "fetch"))
     (each plan plans
       (def {name :name url :url ref :ref copies :copies} plan)
-      (with-source url ref
-        (fn [src rev]
-          (def entry !{:url url :rev rev})
-          (when ref (put! entry :ref ref))
-          (put! record name entry)
+      (with-source url ref fetch-dir
+        (fn [src _]
           (each [from to] copies
             (def from-path (dep-vendor-join src from))
             (def to-path (dep-vendor-join root to))
@@ -6020,9 +6024,10 @@
                           (dep-vendor-join root (slice to 0 -2))))
             (copyrf from-path to-path))))
       (print "vendored " name))
-    (def deps-dir (string root (sep) "deps"))
-    (mkdirs deps-dir)
-    (spit (string deps-dir (sep) "manifest.edn") (string/format "%.99m\n" (freeze record)))
+    ; The directory for fetching is left only if something else is in it.
+    (when (= :directory (os/stat (string root (sep) ".wattle") :mode))
+      (when (empty? (os/dir (string root (sep) ".wattle")))
+        (os/rmdir (string root (sep) ".wattle"))))
     (length plans)))
 
 ;;;
@@ -6848,18 +6853,20 @@
     """
     Calls f, which runs a command of apps or deps, after the prefix is checked.
     An error that the commands raised on purpose is printed without a trace and
-    ends the process with status 1. Any other error propagates.
+    ends the process with status 1. Any other error propagates. The prefix is
+    checked unless no-prefix is true.
     """
-    [f]
-    (cli-require-prefix)
-    (try
-      (f)
-      ([err fib]
-        (unless (and (string? err) (get expected-failures err))
-          (propagate err fib))
-        (eprint "error: " err)
-        (when-let [hint (cli-apps-hint err)] (eprint hint))
-        (os/exit 1)))))
+    ([f] (cli-managed f false))
+    ([f no-prefix]
+      (unless no-prefix (cli-require-prefix))
+      (try
+        (f)
+        ([err fib]
+          (unless (and (string? err) (get expected-failures err))
+            (propagate err fib))
+          (eprint "error: " err)
+          (when-let [hint (cli-apps-hint err)] (eprint hint))
+          (os/exit 1))))))
 
 (defn- cli-apps [apps]
   (def verb (get apps :sub))
@@ -6881,7 +6888,8 @@
     (cli-managed
       (fn []
         (case (get verb :cmd)
-          "vendor" (dep/vendor))))
+          "vendor" (dep/vendor)))
+      true)
     (cli-fail "deps " (get verb :cmd) " is not supported with reduced os")))
 
 (defn- cli-gum
