@@ -236,7 +236,10 @@
   (def err-file (string prefix "-cli-err"))
   (def out (file/open out-file :wb))
   (def err (file/open err-file :wb))
-  (def status (os/execute [cli-exe "-p" (dyn *prefix*) |args] :p {:out out :err err}))
+  ; An empty argument is lost on Windows, so an empty prefix is written as
+  ; --prefix= and not as -p followed by an empty string.
+  (def prefix-args (if (empty? (dyn *prefix*)) ["--prefix="] ["-p" (dyn *prefix*)]))
+  (def status (os/execute [cli-exe |prefix-args |args] :p {:out out :err err}))
   (file/close out)
   (file/close err)
   (def text (string (slurp err-file)))
@@ -505,8 +508,7 @@
       (os/cd proj)
       (defer (os/cd cwd)
         (let [[status text] (with-dyns [*prefix* ""] (run-cli "deps" "vendor"))]
-          (assert (= 0 status) (string "wattle deps vendor runs with an empty prefix: status "
-                                       status ", " text))
+          (assert (= 0 status) "wattle deps vendor runs with an empty prefix")
           (assert (nil? (string/find "prefix" text)) "wattle deps vendor does not mention the prefix")))))
 
   (spit (string proj "/deps/whole/a.wattle") "changed\n")
