@@ -232,9 +232,9 @@ wasmtime run --dir . zig-out/bin/wattle.wasm
 
 A WASI program sees only the directories which are mapped in, so a script and
 everything it reads have to be in this tree. A plain build has no default
-`prefix`. `wattle run` finds the `deps` directory of a project through the
-`info.edn` beside the script, so a script that imports vendored modules needs no
-prefix:
+`prefix`. A script imports vendored modules by a relative path, and
+`wattle run` finds the libs of a project through the `info.edn` beside the
+script, so neither needs a prefix:
 
 ```sh
 wasmtime run --dir . zig-out/bin/wattle.wasm script.wattle
@@ -314,8 +314,10 @@ one release can load into another provided that the interface is the same.
 
 A module can also be linked together with the runtime and an image of a Wattle
 program to create a standalone executable. `wattle build exe` will create the
-executable artifacts specified in the project's `info.edn`. `wattle build lib`
-makes each native module as a shared library. Both need Zig on the `PATH`, and
+native executables specified under `:exes` in the project's `info.edn`, each
+linked with the native libs whose `:for` names it. `wattle build lib` makes
+each native lib as a shared library, copies each source lib to `.wattle` and
+fetches each remote lib. Both need Zig on the `PATH`, and
 the prefix, `WATTLE_PREFIX` or `--prefix`. `<prefix>/share/wattle` must point
 to a copy of the Wattle source. An example `info.edn` file could look like
 this:
@@ -323,8 +325,8 @@ this:
 ```clojure
 {:name "hello"
  :url "https://example.org/hello"
- :artifacts [{:type :lib :name "greet" :root "greet.zig"}
-             {:type :exe :name "hello" :entry "main.wattle" :libs ["greet"]}]}
+ :exes [{:type :native :name "hello" :entry "main.wattle"}]
+ :libs [{:type :native :name "greet" :root "greet.zig" :for ["hello"]}]}
 ```
 
 A user could then build this for their system using:
@@ -336,7 +338,7 @@ wattle build exe --release small
 `examples/native-consumer/info.edn` is a worked example. More details are in
 the man page.
 
-`wattle build web` builds a program for a browser. An artifact of type `:web`
+`wattle build web` builds a program for a browser. An exe of type `:web`
 has a `:name` and an `:entry`, and the command writes `zig-out/web/<name>/`
 with `wattle-<hash>.wasm`, `<name>-<hash>.wimage`, `wasi-<hash>.js` and
 `<name>.js`. The three hashes are one hash, taken from the contents of the three
@@ -349,7 +351,7 @@ call it for each new input. `examples/web-greeter/`, `examples/web-counter/` and
 `examples/web-errors/` are worked examples.
 
 ```clojure
-{:artifacts [{:type :web :name "hello" :entry "main.wattle"}]}
+{:exes [{:type :web :name "hello" :entry "main.wattle"}]}
 ```
 
 A project that needs more than that, such as other Zig packages or its own

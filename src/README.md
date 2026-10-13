@@ -438,14 +438,17 @@ directory. `wattle test` runs each test file in its own process and sets
 `:modpath` in that process. `wattle run` with no script, and `wattle check`
 with the script on standard input, set no `:modpath`.
 
-`:modpath` has three entries for the root of that project: `deps/`, `.wattle/`
-and `zig-out/lib`. `.wattle/` is the directory for material that is not
-committed and is not vendored. It holds a `.gitignore` that excludes its
-contents. `zig-out/lib` is where `wattle build lib` writes native modules, so a
-module built in development is importable at once. A vendored copy in `deps/`
-overrides the other two. The entries are absolute paths, and no directory need
-exist. An installed application has the same three entries for its application
+`:modpath` has two entries for the root of that project: `.wattle/` and
+`zig-out/lib`. `.wattle/` is the directory for material that is not committed.
+It holds a `.gitignore` that excludes its contents. `zig-out/lib` is where
+`wattle build lib` writes native modules, so a module built in development is
+importable at once. The entries are absolute paths, and no directory need
+exist. An installed application has the same two entries for its application
 directory.
+
+`deps/` is not on `:modpath`. Vendored source is part of the source tree and is
+imported by a relative path, as in `(import ./deps/gum/args)`. A bare import
+names a lib that `info.edn` declares in `:libs`.
 
 A bare import of a native module also finds a file whose name begins with `lib`,
 because Zig names a shared library that way on most platforms: `(import greet)`
@@ -528,6 +531,44 @@ copied into the project, and nothing is installed for other projects to import.
 the current project. Functions that the commands call have the prefixes `app/`,
 `dep/` and `build/`.
 
+### Declarations
+
+`info.edn` declares what a project builds in three vectors: `:exes`, the
+programs, `:libs`, the libraries, and `:docs`, the documentation. Each entry
+is a map with a `:type`:
+
+| key | `:type` | other keys |
+| --- | --- | --- |
+| `:exes` | `:native`, `:source`, `:web` | `:name`, `:entry`; `:files` for `:source` |
+| `:libs` | `:native`, `:source`, `:remote` | `:name`, `:for`; `:root` for `:native`, `:files` for `:source`, `:url` and `:ref` or `:hash` for `:remote` |
+| `:docs` | `:man`, `:web` | `:files`, `:for` |
+
+`build/artifacts` checks the three vectors and raises on the first problem,
+naming the entry and the key. A name holds letters, digits, `_` and `-` and is
+unique within its key, so an exe and a lib may share one. A doc has no name.
+`:files` holds relative paths that stay inside the project. The file names of
+a `:man` doc end in a period and a digit from 1 to 9, the section. `:for` is a
+vector of the names of exes of the same project, and a lib may not name a
+`:web` exe. `:artifacts`, `:man` and an exe's `:libs` raise an error that
+names what replaces each.
+
+A lib or a doc is part of each exe that its `:for` names. A `:native` exe is
+built with the `:native` libs that name it linked in. `wattle build lib`
+places every lib on `:modpath`: it copies each path of a `:source` lib's
+`:files` to the same path under `.wattle/<name>/`, builds a `:native` lib into
+`zig-out/lib`, and fetches a `:remote` lib. `wattle run` places none.
+`wattle build web` copies the `:files` of each doc for a `:web` exe into the
+directory of its output.
+
+A `:remote` lib is fetched from `:url` with the code that `apps install` uses.
+A Git repository is pinned by `:ref`, a branch or tag, and a tarball, a `:url`
+that ends in `.tar` or `.tar.gz`, by `:hash`, the `sha256:` tree hash of its
+files as `:rev` records it. The source is kept in `.wattle/.remote/<name>`
+with a record of its pin, its revision and its form, and is fetched again only
+when the `:url` or the pin changes. The `info.edn` of the source must declare a
+lib of the same name as `:native` or `:source`, and the lib takes that form. A
+source with no `info.edn` is vendored instead.
+
 ### Installing applications
 
 `wattle apps install [source [ref]]` installs an application. `wattle apps
@@ -553,26 +594,30 @@ remove` take the name alone.
 
 An application is installed in `<prefix>/lib/wattle/apps/<group>/<name>/`. That
 directory holds the manifest, a copy of `info.edn`, the hook script (copied as
-`hooks.wattle` or `hooks/`) and, for a `:src` artifact, the copied files. Executables are installed in
+`hooks.wattle` or `hooks/`) and, for a `:source` exe, the copied files and its
+libs. Executables are installed in
 `<prefix>/bin` and man pages in `<prefix>/share/man`. `import` does not search
 the application directory.
 
 Applications use either an installation script or declarative metadata. If
 `hooks.wattle` or `hooks/init.wattle` exists, installation runs only that
 script's hooks: `clean`, `build`, `install` and `check`. Removal runs its
-`remove` hook. Otherwise, `info.edn` must declare `:artifacts` or `:man`.
+`remove` hook. Otherwise, `info.edn` must declare `:exes`.
 
-Each `:exe` artifact is built by `wattle build exe` in the project root, using
-the default release mode, `safe`. The resulting `zig-out/bin/<name>` is
-installed in `bin`. Applications requiring another mode must use a script.
-Each path in the `:man` vector is installed in `share/man`. The section is the
-digit after the file name's last `.`: `man/predoc.1` is installed in `man1`.
-A file name without a final `.` and a digit from 1 to 9 causes an error.
+Install installs each `:native` and `:source` exe, with the libs and docs whose
+`:for` names it. A `:native` exe is built by `wattle build exe` in the project
+root, using the default release mode, `safe`, after its `:source` libs are
+copied to `.wattle` there. The resulting `zig-out/bin/<name>` is installed in
+`bin`. Applications requiring another mode must use a script. Each file of a
+`:man` doc is installed in `share/man`, in the section that ends its name:
+`man/predoc.1` is installed in `man1`.
 
-`:web` and `:lib` artifacts are not installed. Declaring a `:lib` artifact
-without a script, and without a `:src` artifact that names it in `:libs`,
-causes an error. An application without a script, `:artifacts` or `:man` is not
-installed.
+A `:web` exe is not installed. A lib or a doc whose `:for` names no installed
+exe is not installed, and a `:web` doc whose `:for` names one causes an error.
+A `:remote` lib is fetched into the project with its tarball or clone under
+`<prefix>/lib/wattle/.fetch`, and the manifest records the `:name`, `:url` and
+`:rev` of each under `:libs`. An application without a script or `:exes` is
+not installed.
 
 `ref` specifies a Git branch or tag. It is accepted only for Git repositories;
 using it with a directory or tarball raises an error. The source name is read
@@ -608,37 +653,39 @@ Application sources are not verified.
 
 ### Scripts
 
-A `:src` artifact is a program installed as source. It has a `:name`, an
+A `:source` exe is a program installed as source. It has a `:name`, an
 `:entry`, the Wattle file that defines `main`, and `:files`, a required vector
 of paths relative to the project root, which may not be absolute or contain
 `..`. `wattle apps install` copies each path, recursively, into the application
 directory. A directory is copied without any entry named `zig-out`,
 `.zig-cache`, `.wattle` or `.git`. Install raises an error if the `:entry` is
-not among the files, or if a path does not exist. A `:src` artifact may have
-`:libs`, a vector of the names of `:lib` artifacts. Install builds each with
-`wattle build lib` in the application directory, so that `zig-out/lib` there
-holds them, and raises an error if Zig is not on the `PATH`. The Zig cache of
-that build is removed. `apps upgrade` builds them again, because the loader
-refuses a module built with different configuration bits, a different Zig
-version or a different `api` fingerprint.
+not among the files, or if a path does not exist.
+
+A `:source` lib for the exe is copied to `.wattle/<name>/` in the application
+directory. A `:native` lib for the exe is built with `wattle build lib` in the
+project, and its shared library is copied to `zig-out/lib` in the application
+directory, so its `:root` need not be among the `:files`. Install raises an
+error if Zig is not on the `PATH`. `apps upgrade` builds the lib again, because
+the loader refuses a module built with different configuration bits, a
+different Zig version or a different `api` fingerprint.
 
 `wattle run` finds the project beside the script, so in development the entry
 file is at the project root. An installed script has no such limit.
 
-For a `:src` artifact, install writes `<prefix>/bin/<name>`, the binscript. It
+For a `:source` exe, install writes `<prefix>/bin/<name>`, the binscript. It
 begins with the line `#!/usr/bin/env wattle` and makes one call to `app/run`
 with the group, the name and the entry path. `app/run` finds the application
-directory from the `prefix` binding, sets `:modpath` to the three entries for
+directory from the `prefix` binding, sets `:modpath` to the two entries for
 that directory, loads the entry file into an environment that holds the
 arguments of the call, and calls `main` as `wattle run` does. `main` receives
 the path of the binscript followed by the arguments. It raises an error that names
 `WATTLE_PREFIX` if the prefix is not set. The binscript does not read
 `info.edn`.
 
-Running an installed script needs `wattle` on the `PATH` and the prefix set. An
-`:exe` contains the runtime, the program and its imports, and needs neither.
-Windows has no shebang lines, so installing a `:src` artifact on Windows raises
-an error.
+Running an installed script needs `wattle` on the `PATH` and the prefix set. A
+`:native` exe contains the runtime, the program and its imports, and needs
+neither. Windows has no shebang lines, so installing a `:source` exe on Windows
+raises an error.
 
 ### Vendoring dependencies
 

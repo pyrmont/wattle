@@ -28,9 +28,9 @@ complete -c wattle -n __fish_use_subcommand -a test -d 'Run the tests in ./test'
 complete -c wattle -n __fish_use_subcommand -a help -d 'Describe a subcommand'
 
 # build
-complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a exe -d 'Build the executables that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a exe -d 'Build the native executables that info.edn declares'
 complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a img -d 'Compile a source file into an image'
-complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a lib -d 'Build the native modules that info.edn declares'
+complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a lib -d 'Place the libs that info.edn declares on the module path'
 complete -c wattle -n '__fish_seen_subcommand_from build b; and not __fish_seen_subcommand_from exe img lib web' -a web -d 'Build the web programs that info.edn declares'
 complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s r -l release -x -a 'safe fast small' -d 'Optimise for safe, fast or small'
 complete -c wattle -n '__fish_seen_subcommand_from exe lib' -s t -l target -x -d 'Build for a Zig target triple'

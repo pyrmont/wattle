@@ -38,7 +38,8 @@ VERBS
   copied if there is no ``:paths``. A file that is already there is replaced.
   No path may be absolute or contain ``..``. Every entry is checked before any
   is fetched, and no two may have the same ``:name``. ***vendor*** records no
-  revision, because the copies belong to the project. See VENDORING in `wattle-applications(7)`.
+  revision, because the copies belong to the project. See VENDORING in
+  `wattle-projects(7)`.
 
 EXAMPLES
 ========
@@ -52,4 +53,4 @@ $ wattle deps vendor
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-apps(1)`, `wattle-applications(7)`
+`wattle(1)`, `wattle-apps(1)`, `wattle-projects(7)`

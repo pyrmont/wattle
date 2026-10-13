@@ -1,0 +1,152 @@
+---
+Title: WATTLE-PROJECTS(7)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-12
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-projects** - how Wattle projects, libraries and dependencies are laid out
+
+DESCRIPTION
+===========
+
+A project is a directory containing an _info file_, source files (in either
+Wattle or Zig) and documentation. `wattle-build(1)` builds the exes and libs
+that a project declares, `wattle-deps(1)` manages the dependencies of a project and
+`wattle-test(1)` runs its tests. This page describes what a project contains.
+
+A project may include one or more _applications_, installable by
+`wattle-apps(1)`. For more information on this, see `wattle-applications(7)`. A
+project that other projects use is a _library_. See `<LIBRARIES>`.
+
+LAYOUT
+======
+
+A project has an ``info.edn`` at its root. This is the _info file_. Every other
+file is optional.
+
+INFO FILE
+=========
+
+The info file holds one map. All keys are optional, but ``:name`` and
+``:group`` are needed to install a project as an application:
+
+- ``:name``:
+  The name of the project. It is one directory name and is unique across
+  groups.
+
+- ``:group``:
+  The group of the project, by convention a reverse domain such as
+  ``org.example``. The value is used in a directory name and so cannot be
+  empty, ``.`` or ``..``. It cannot contain a path separator.
+
+- ``:vendored``:
+  A vector of maps that describe the sources that ``wattle deps vendor`` copies
+  into the project. Each has a ``:name`` and a ``:url``, and may have a
+  ``:ref``, a ``:prefix`` and ``:paths``. See `<VENDORING>` and
+  `wattle-deps(1)`.
+
+- ``:exes``:
+  A vector of maps that describe the programs of the project. Each has a
+  ``:type``, ``:native``, ``:source`` or ``:web``, a ``:name`` and an
+  ``:entry``. See 'Declarations' in `wattle-build(1)`.
+
+- ``:libs``:
+  A vector of maps that describe the libraries of the project. Each has a
+  ``:type``, ``:native``, ``:source`` or ``:remote``, a ``:name`` and may have
+  ``:for``, the names of the exes it is part of. See `<LIBRARIES>`.
+
+- ``:docs``:
+  A vector of maps that describe the documentation of the project. Each has a
+  ``:type``, ``:man`` or ``:web``, ``:files`` and may have ``:for``, the names
+  of the exes it is part of. A ``:man`` doc's section is the digit that ends
+  each file name, so ``man/greet.1`` is in section 1.
+
+Example:
+
+````
+{:name "greeter"
+ :group "org.example"
+ :vendored [{:name "greetings"
+             :url "https://example.org/greetings.git"
+             :prefix "deps/greetings"}]
+ :exes [{:type :native
+         :name "hello"
+         :entry "main.wattle"}]
+ :libs [{:type :source
+         :name "util"
+         :files ["util/"]
+         :for ["hello"]}]
+ :docs [{:type :man
+         :files ["man/hello.1"]
+         :for ["hello"]}]}
+````
+
+LIBRARIES
+=========
+
+A library is code that a project uses and does not run by itself. A project
+declares the libraries it imports by name in ``:libs`` in its info file, and
+``wattle build lib`` places each on the module path. A bare import, as in
+``(import greet)``, finds a library by its ``:name``. See 'MODULES' in
+`wattle(7)`.
+
+There are three kinds of declaration:
+
+- ``:source``:
+  Wattle source files in the project. ``wattle build lib`` copies its
+  ``:files`` to ``.wattle/<name>/``, where each keeps its path.
+
+- ``:native``:
+  A native module, built from its Zig ``:root`` file in ``zig-out/lib``. A
+  native executable whose name the ``:for`` of the library holds links it.
+
+- ``:remote``:
+  A library in another project, fetched from ``:url`` at a pinned ``:ref`` or
+  ``:hash``. Its own info file declares it as ``:source`` or ``:native``, and
+  it is placed as that form.
+
+``.wattle`` holds material that is not committed. ``wattle build lib`` creates
+it with a ``.gitignore`` that excludes its contents.
+
+``wattle apps install`` installs a library only as part of an exe whose name
+its ``:for`` holds. A library with no ``:for`` is not installed. See
+`wattle-applications(7)`.
+
+VENDORING
+=========
+
+Vendoring a dependency refers to the practice of copying into the source tree of
+a project the Wattle source files that the project uses. A vendored dependency
+is not on the module path. Within the code, it is imported using a relative
+import:
+
+````
+(import ./deps/greetings)
+````
+
+A vendored copy is the version the project was tested with, it changes only
+when the project's author changes it and the project runs without any
+dependency being fetched. A project includes a copy of each dependency and a
+fix to a dependency reaches the project only when its author updates the copy.
+
+A ``:remote`` library is the alternative. The project names the source and pins
+a revision of it, and the copy is fetched into ``.wattle`` and is not
+committed. ``:for`` does not affect vendoring: any library of another project
+may be vendored.
+
+The project lists what it vendors under ``:vendored`` in its info file, and
+``wattle deps vendor`` copies each entry into the project. See
+`wattle-deps(1)`. An entry without a ``:ref`` uses the HEAD of the default
+branch of a Git repository each time. The copies belong to the project and may
+be edited, and no record is kept of the revision they came from.
+
+SEE ALSO
+========
+
+`wattle(1)`, `wattle-build(1)`, `wattle-deps(1)`, `wattle-test(1)`,
+`wattle-applications(7)`, `wattle(7)`

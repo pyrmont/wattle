@@ -142,7 +142,7 @@
 (let [other (string prefix "-group")]
   (rmrf other)
   (assert (os/mkdir other))
-  (spit (string other "/info.edn") "{:group \"org.wattle.other\" :name \"app-dep1\" :man []}")
+  (spit (string other "/info.edn") "{:group \"org.wattle.other\" :name \"app-dep1\" :exes []}")
   (assert-error-value "the same name in another group"
                       "application \"app-dep1\" is already installed"
                       (app/install other))
@@ -162,18 +162,18 @@
     (def result (protect (with-dyns [*err* !""] (app/install bad))))
     (rmrf bad)
     result)
-  (let [[ok message] (try-install "{:name \"x\" :man []}")]
+  (let [[ok message] (try-install "{:name \"x\" :exes []}")]
     (assert (and (not ok) (string/find "info.edn needs a :group" message))
             "an application with no group says that info.edn needs one"))
-  (each [what text] [["an empty group" "{:group \"\" :name \"x\" :man []}"]
-                     ["a group of .." "{:group \"..\" :name \"x\" :man []}"]
-                     ["a group of ." "{:group \".\" :name \"x\" :man []}"]
-                     ["a group with a slash" "{:group \"a/b\" :name \"x\" :man []}"]
-                     ["a group with a backslash" "{:group \"a\\\\b\" :name \"x\" :man []}"]
-                     ["a group that is not a string" "{:group 3 :name \"x\" :man []}"]
-                     ["an empty name" "{:group \"g\" :name \"\" :man []}"]
-                     ["a name of .." "{:group \"g\" :name \"..\" :man []}"]
-                     ["a name with a slash" "{:group \"g\" :name \"a/b\" :man []}"]]
+  (each [what text] [["an empty group" "{:group \"\" :name \"x\" :exes []}"]
+                     ["a group of .." "{:group \"..\" :name \"x\" :exes []}"]
+                     ["a group of ." "{:group \".\" :name \"x\" :exes []}"]
+                     ["a group with a slash" "{:group \"a/b\" :name \"x\" :exes []}"]
+                     ["a group with a backslash" "{:group \"a\\\\b\" :name \"x\" :exes []}"]
+                     ["a group that is not a string" "{:group 3 :name \"x\" :exes []}"]
+                     ["an empty name" "{:group \"g\" :name \"\" :exes []}"]
+                     ["a name of .." "{:group \"g\" :name \"..\" :exes []}"]
+                     ["a name with a slash" "{:group \"g\" :name \"a/b\" :exes []}"]]
     (assert (not (first (try-install text))) (string what " is refused")))
   (assert (= 0 (length (app/list))) "a refused group or name installs nothing")
   (assert (empty? (os/dir (string root "/lib/wattle/apps"))) "a refused install leaves no directory behind"))
@@ -207,7 +207,7 @@
 
 ; Try installing an application that is missing a script
 (assert-error-value "application missing script"
-                    "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :artifacts or :man"
+                    "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :exes"
                     (app/install "./examples/app-empty"))
 (assert (= 0 (length (app/list))) "check failure 0")
 (assert (= 0 (length (app/list))) "check failure 1")
@@ -245,41 +245,58 @@
   [status text]))
 
 ; An application with no script is installed from its info file. The case has no
-; :exe artifact, since building one needs a prefix that holds the runtime's
-; source, so it covers the :man entries and the rejections.
+; :native exe, since building one needs a prefix that holds the runtime's source,
+; so it covers a :source exe with :man docs and the rejections. Windows refuses a
+; :source exe, so the install itself is not run there.
 (def info-dir (string prefix "-info"))
 (defn- make-info-app
-  [info-text]
+  [info]
   (rmrf info-dir)
   (assert (os/mkdir info-dir))
   (assert (os/mkdir (string info-dir "/docs")))
+  (spit (string info-dir "/main.wattle") "(defn main [&])\n")
   (spit (string info-dir "/docs/man-app.1") ".TH MAN-PKG 1\n")
   (spit (string info-dir "/docs/man-app.7") ".TH MAN-PKG 7\n")
+  (spit (string info-dir "/docs/other.5") ".TH OTHER 5\n")
   (spit (string info-dir "/docs/man-app.txt") "not a manual page\n")
-  (spit (string info-dir "/info.edn") info-text))
+  (spit (string info-dir "/info.edn") (if (string? info) info (string/format "%m" info))))
 
-(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\" :man [\"docs/man-app.1\" \"docs/man-app.7\"]}")
-(assert-no-error "info-only install" (with-dyns [*err* !""] (app/install info-dir)))
-(assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-app.1")))
-        "a .1 file goes to man1")
-(assert (string/find "MAN-PKG 7" (slurp (string prefix "/share/man/man7/man-app.7")))
-        "a .7 file goes to man7")
-(assert (= [] (get (app/manifest "man-app") :hooks)) "an info-only application has no hooks")
-; The command line prints the message of an error and, for an application that is
-; already installed, the command that installs it again. It prints no trace.
-(compwhen (dyn 'os/execute)
-  (do
-    (def [status text] (run-cli "apps" "install" info-dir))
-    (assert (= 1 status) "installing an installed application exits with status 1")
-    (assert (= text (string "error: application \"man-app\" is already installed" line-end
-                            "use 'wattle apps upgrade man-app' to install it again" line-end))
-            "the message is followed by the hint and nothing else")))
-(assert-no-error "info-only upgrade" (with-dyns [*err* !""] (app/upgrade "man-app")))
-(assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-app.1")))
-        "upgrading an info-only application installs its pages again")
-(assert-no-error "info-only remove" (app/remove "man-app"))
-(assert (nil? (os/stat (string prefix "/share/man/man1/man-app.1") :mode))
-        "removing removes the pages of an info-only application")
+(def- man-exe {:type :source :name "man-app" :entry "main.wattle" :files ["main.wattle"]})
+
+(unless (= :windows (os/which))
+  (make-info-app {:group "org.wattle.tests" :name "man-app"
+                  :exes [man-exe]
+                  :docs [{:type :man :files ["docs/man-app.1" "docs/man-app.7"] :for ["man-app"]}
+                         {:type :man :files ["docs/other.5"]}]
+                  :libs [{:type :source :name "unused" :files ["docs"]}]})
+  (assert-no-error "info-only install" (with-dyns [*err* !""] (app/install info-dir)))
+  (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-app.1")))
+          "a .1 file goes to man1")
+  (assert (string/find "MAN-PKG 7" (slurp (string prefix "/share/man/man7/man-app.7")))
+          "a .7 file goes to man7")
+  (assert (nil? (os/stat (string prefix "/share/man/man5/other.5") :mode))
+          "a doc with no :for is not installed")
+  (assert (nil? (os/stat (string root "/lib/wattle/apps/org.wattle.tests/man-app/.wattle") :mode))
+          "a lib with no :for is not installed")
+  (let [files (get (app/manifest "man-app") :files)]
+    (assert (find #(string/has-suffix? "/man1/man-app.1" $) files) "the manifest records a page")
+    (assert (find #(string/has-suffix? "/bin/man-app" $) files) "the manifest records the program"))
+  (assert (= [] (get (app/manifest "man-app") :hooks)) "an info-only application has no hooks")
+  ; The command line prints the message of an error and, for an application that is
+  ; already installed, the command that installs it again. It prints no trace.
+  (compwhen (dyn 'os/execute)
+    (do
+      (def [status text] (run-cli "apps" "install" info-dir))
+      (assert (= 1 status) "installing an installed application exits with status 1")
+      (assert (= text (string "error: application \"man-app\" is already installed" line-end
+                              "use 'wattle apps upgrade man-app' to install it again" line-end))
+              "the message is followed by the hint and nothing else")))
+  (assert-no-error "info-only upgrade" (with-dyns [*err* !""] (app/upgrade "man-app")))
+  (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-app.1")))
+          "upgrading an info-only application installs its pages again")
+  (assert-no-error "info-only remove" (app/remove "man-app"))
+  (assert (nil? (os/stat (string prefix "/share/man/man1/man-app.1") :mode))
+          "removing removes the pages of an info-only application"))
 
 ; A bug in an application script keeps its stack trace on the command line, since
 ; only the errors that the commands raise on purpose are printed as a message.
@@ -299,7 +316,7 @@
     (assert (= 0 (length (app/list))) "an application whose hook fails is not installed")
     (rmrf bug-dir)))
 
-; The build of an :exe artifact is not captured, so its output reaches the
+; The build of a :native exe is not captured, so its output reaches the
 ; command line as it is written. The prefix of this suite holds no source of the
 ; runtime, so the build fails, and the command line prints what the build wrote
 ; and then the failure of the build. `wattle build exe` needs `os/spawn`, and
@@ -307,7 +324,7 @@
 ; where both bindings exist.
 (compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
   (do
-    (make-info-app "{:group \"org.wattle.tests\" :name \"exe-app\" :artifacts [{:type :exe :name \"x\" :entry \"x.wattle\"}]}")
+    (make-info-app "{:group \"org.wattle.tests\" :name \"exe-app\" :exes [{:type :native :name \"x\" :entry \"x.wattle\"}]}")
     (def [status text] (run-cli "apps" "install" info-dir))
     (assert (= 1 status) "a build that fails exits with status 1")
     (assert (string/find "the Wattle package is not at" text) "the output of the build is shown")
@@ -315,19 +332,37 @@
             "the failure of the build is the last line")
     (assert (= 0 (length (app/list))) "an application whose build fails is not installed")))
 
-(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\" :man [\"docs/man-app.1\" \"docs/man-app.txt\"]}")
-(assert-error "a :man entry with no section" (with-dyns [*err* !""] (app/install info-dir)))
-(assert (= 0 (length (app/list))) "a bad :man entry installs nothing")
-(assert (nil? (os/stat (string prefix "/share/man/man1/man-app.1") :mode))
-        "a bad :man entry leaves no page behind")
+; Declarations that are not valid, and the keys that the three keys replace, are
+; refused before anything is installed.
+(each [what info text]
+      [["a :man doc file with no section"
+        {:exes [] :docs [{:type :man :files ["docs/man-app.1" "docs/man-app.txt"]}]}
+        "must end in a period and a digit from 1 to 9"]
+       [":artifacts" {:artifacts [{:type :lib :name "x" :root "x.zig"}]}
+        ":artifacts is replaced by :exes, :libs and :docs"]
+       [":man" {:man ["docs/man-app.1"]} ":man is replaced by a :docs entry of :type :man"]
+       [":libs in an exe" {:exes [(assoc man-exe :libs ["x"])]} ":libs is replaced by the :for of each lib"]
+       ["a :web doc for an installed exe"
+        {:exes [man-exe] :docs [{:type :web :files ["docs"] :for ["man-app"]}]}
+        "a :web doc is not installed, and its :for names man-app"]]
+  (make-info-app (assoc info :group "org.wattle.tests" :name "man-app"))
+  (let [[ok message] (protect (with-dyns [*err* !""] (app/install info-dir)))]
+    (assert (and (not ok) (string/find text message)) (string what " is refused")))
+  (assert (= 0 (length (app/list))) (string what " installs nothing"))
+  (assert (nil? (os/stat (string prefix "/share/man/man1/man-app.1") :mode))
+          (string what " leaves no page behind")))
 
-(make-info-app "{:group \"org.wattle.tests\" :name \"man-app\" :artifacts [{:type :lib :name \"x\" :root \"x.zig\"}]}")
-(assert-error "a :lib artifact without a script" (with-dyns [*err* !""] (app/install info-dir)))
-(assert (= 0 (length (app/list))) "a :lib artifact without a script installs nothing")
+; A :web doc whose :for names only a :web exe is not installed and is not refused.
+(unless (= :windows (os/which))
+  (make-info-app {:group "org.wattle.tests" :name "man-app"
+                  :exes [man-exe {:type :web :name "page" :entry "main.wattle"}]
+                  :docs [{:type :web :files ["docs"] :for ["page"]}]})
+  (assert-no-error "a :web doc for a :web exe" (with-dyns [*err* !""] (app/install info-dir)))
+  (assert-no-error "remove it" (app/remove "man-app")))
 
 (make-info-app "{:group \"org.wattle.tests\" :name \"man-app\"}")
 (assert-error-value "an info file that declares neither"
-                    "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :artifacts or :man"
+                    "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :exes"
                     (app/install info-dir))
 (rmrf info-dir)
 
@@ -445,6 +480,112 @@
   (assert-error "a ref with a tarball"
                 (install-quietly (string "file://" src-dir "/demo.tar") :ref "v1"))
 
+  ; A :remote lib is fetched from a Git repository at its :ref or from a
+  ; tarball whose tree hash is its :hash, and has the form that the info.edn of
+  ; the source declares. `wattle build lib` fetches it into .wattle/.remote
+  ; and copies a :source form to .wattle, and `apps install` does the same for
+  ; the application directory and records the revision.
+  (let [colour (string src-dir "/colour")
+        plain (string src-dir "/plain")
+        proj (string src-dir "/remote-proj")
+        cgit ["git" "-C" colour "-c" "commit.gpgsign=false" "-c" "user.name=t" "-c" "user.email=t@t"]
+        pgit ["git" "-C" plain "-c" "commit.gpgsign=false" "-c" "user.name=t" "-c" "user.email=t@t"]
+        tarball (string src-dir "/colour.tar")
+        tree-hash "sha256:7e101494b76b28e303ae7249c5f660f5262a8cbb250773f1143b7d54f58e22a2"
+        app-path (string root "/lib/wattle/apps/org.wattle.tests/remote-app")
+        consumer (fn [lib]
+                   (spit (string proj "/info.edn")
+                         (string/format "%m" {:group "org.wattle.tests" :name "remote-app"
+                                              :exes [{:type :source :name "remote-bin" :entry "main.wattle"
+                                                      :files ["main.wattle"]}]
+                                              :libs [(assoc lib :name (get lib :name "colour") :for ["remote-bin"])]})))
+        rev-of (fn [ref]
+                 (def path (string prefix "-git-out"))
+                 (def f (file/open path :wb))
+                 (os/execute ["git" "-C" colour "rev-parse" ref] :p {:out f :err null})
+                 (file/close f)
+                 (def text (string/trim (string (slurp path))))
+                 (rmrf path)
+                 text)]
+    (each dir [colour (string colour "/colour") plain proj] (assert (os/mkdir dir)))
+    (spit (string colour "/info.edn") "{:libs [{:type :source :name \"colour\" :files [\"colour\"]}]}\n")
+    (spit (string colour "/colour/init.wattle") "(def c \"red\")\n")
+    (sh "tar" "-cf" tarball "-C" src-dir "colour")
+    (sh "git" "-C" colour "init" "-q" "-b" "main")
+    (sh "git" "-C" colour "add" "-A")
+    (sh |cgit "commit" "-q" "-m" "one")
+    (sh "git" "-C" colour "tag" "v1")
+    (spit (string colour "/colour/init.wattle") "(def c \"blue\")\n")
+    (sh |cgit "commit" "-q" "-a" "-m" "two")
+    (spit (string plain "/x.wattle") "(def x 1)\n")
+    (sh "git" "-C" plain "init" "-q" "-b" "main")
+    (sh "git" "-C" plain "add" "-A")
+    (sh |pgit "commit" "-q" "-m" "one")
+    (spit (string proj "/main.wattle")
+          (string "(import colour/colour)\n"
+                  "(defn main [& args] (spit (get args 1) colour/c))\n"
+                  "(when (= \"check\" (get (dyn *args*) 1)) (assert (= \"red\" colour/c)))\n"))
+    (def crepo (string "file://" colour))
+
+    (compwhen (dyn 'os/spawn)
+      (let [old (os/cwd)]
+        (os/cd proj)
+        (defer (os/cd old)
+          (consumer {:type :remote :url crepo :ref "v1"})
+          (let [[status _] (run-cli "build" "lib")]
+            (assert (= 0 status) "build lib fetches a :remote lib from Git"))
+          (assert (= :file (os/stat ".wattle/colour/colour/init.wattle" :mode))
+                  "a :remote lib of :source form is copied to .wattle")
+          (assert (= :directory (os/stat ".wattle/.remote/colour" :mode)) "the source is kept in .wattle/.remote")
+          (assert (nil? (os/stat ".wattle/fetch" :mode)) "the clone is removed")
+          (let [rec (parse (slurp ".wattle/.remote/colour.edn"))]
+            (assert (= (rev-of "v1") (get rec :rev)) "the record holds the commit of the :ref")
+            (assert (= :source (get (get rec :form) :type)) "the record holds the form of the source"))
+          (let [[status _] (run-cli "run" "main.wattle" "check")]
+            (assert (= 0 status) "a bare import finds a fetched lib at its :ref"))
+          ; A lib fetched with the same pin is not fetched again.
+          (spit ".wattle/.remote/colour/colour/init.wattle" "(def c \"kept\")\n")
+          (assert (= 0 (first (run-cli "build" "lib" "colour"))) "build lib again")
+          (assert (string/find "kept" (slurp ".wattle/colour/colour/init.wattle"))
+                  "a lib whose pin is unchanged is not fetched again")
+          (consumer {:type :remote :url (string "file://" tarball) :hash tree-hash})
+          (let [[status _] (run-cli "build" "lib")]
+            (assert (= 0 status) "build lib fetches a :remote lib from a tarball with its hash"))
+          (assert (string/find "red" (slurp ".wattle/colour/colour/init.wattle"))
+                  "a changed pin fetches again")
+          (let [[status _] (run-cli "build" "lib")]
+            (assert (= 0 status) "a tarball is not fetched again"))
+          (rmrf ".wattle")
+          (consumer {:type :remote :url (string "file://" tarball) :hash (string "sha256:" (string/repeat "0" 64))})
+          (let [[status text] (run-cli "build" "lib")]
+            (assert (= 1 status) "a tarball whose hash differs is refused")
+            (assert (string/find (string "has the hash " tree-hash) text) "the failure names both hashes"))
+          (assert (nil? (os/stat ".wattle/colour" :mode)) "a refused tarball is not copied")
+          (consumer {:type :remote :name "nosuch" :url crepo :ref "v1"})
+          (let [[status text] (run-cli "build" "lib")]
+            (assert (= 1 status) "a source that does not declare the lib is refused")
+            (assert (string/find "no lib is called nosuch" text) "the failure names the lib"))
+          (consumer {:type :remote :url (string "file://" plain) :ref "main"})
+          (let [[status text] (run-cli "build" "lib")]
+            (assert (= 1 status) "a source with no info.edn is refused")
+            (assert (string/find "has no info.edn" text) "the failure names info.edn"))
+          (rmrf ".wattle"))))
+
+    ; apps install fetches under the prefix and copies the lib into the
+    ; application directory.
+    (consumer {:type :remote :url crepo :ref "v1"})
+    (assert-no-error "install an application with a :remote lib" (install-quietly proj))
+    (assert (= :file (os/stat (string app-path "/.wattle/colour/colour/init.wattle") :mode))
+            "the :remote lib is in the application directory")
+    (assert (= [{:name "colour" :url crepo :rev (rev-of "v1")}] (get (app/manifest "remote-app") :libs))
+            "the manifest records the revision of the :remote lib")
+    (assert (no-fetch-left) "the fetch under the prefix is removed")
+    (let [out (string src-dir "/remote-out")]
+      (let [[status _] (run-cli (string root "/bin/remote-bin") out)]
+        (assert (= 0 status) "the installed program runs"))
+      (assert (= "red" (string (slurp out))) "the installed program imports the :remote lib"))
+    (assert-no-error "remove the application with a :remote lib" (app/remove "remote-app")))
+
   ; Vendoring needs no prefix. A tarball is unpacked under .wattle in the
   ; project, which is gone afterwards.
   (let [proj (string src-dir "/vendor-proj")]
@@ -546,7 +687,7 @@
 ;
 ; A bare import searches the directories of *modpath* in order. The command line
 ; sets it from the info.edn beside the script, or from the working directory for
-; test and build.
+; test and build. The deps directory is not on it.
 
 (let [base (string (app-rpath prefix) "-modpath")
       proj (string base "/proj")
@@ -617,15 +758,20 @@
   (compwhen (dyn 'os/execute)
     (do
       (spit (string proj "/main.wattle")
-            "(import depmod)\n(import hiddenmod)\n(import dirmod)\n(assert (= [1 3 4] [depmod/v hiddenmod/v dirmod/v]))\n")
+            (string "(import depmod)\n(import hiddenmod)\n(import ./deps/dirmod)\n"
+                    "(assert (= [2 3 4] [depmod/v hiddenmod/v dirmod/v]))\n"))
+      (spit (string proj "/onlydeps.wattle") "(import dirmod)\n")
       (spit (string proj "/sub/up.wattle") "(import depmod)\n")
       (spit (string base "/loose/loose.wattle") "(import depmod)\n")
       (spit (string base "/loose/rel.wattle") "(import ./sibling)\n(assert (= 9 sibling/v))\n")
       (spit (string base "/loose/sibling.wattle") "(def v 9)\n")
-      (spit (string proj "/test/t.wattle") "(import depmod)\n(assert (= 1 depmod/v))\n")
+      (spit (string proj "/test/t.wattle") "(import depmod)\n(assert (= 2 depmod/v))\n")
 
       (let [[status _] (run-cli "run" (string proj "/main.wattle"))]
         (assert (= 0 status) "run sets the module path from the info.edn beside the script"))
+      (let [[status text] (run-cli "run" (string proj "/onlydeps.wattle"))]
+        (assert (= 1 status) "a bare import does not find a module in deps")
+        (assert (string/find "dirmod" text) "the failure names the module"))
       (let [old (os/cwd)]
         (os/cd proj)
         (let [[status _] (run-cli "run" "main.wattle")]
@@ -644,13 +790,54 @@
         (assert (= 0 status) "a relative import needs no info.edn"))))
   (rmrf base))
 
+;;; Source libs
+;
+; `wattle build lib` copies each :source lib to .wattle/<name>, where each path
+; of its :files keeps its form, so that a bare import finds it. `wattle run`
+; copies nothing.
+
+(compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
+  (let [proj (string (app-rpath prefix) "-libs")
+        old (os/cwd)]
+    (rmrf proj)
+    (each dir [proj (string proj "/u")] (assert (os/mkdir dir)))
+    (spit (string proj "/info.edn")
+          (string/format "%m" {:exes [{:type :source :name "m" :entry "main.wattle" :files ["main.wattle"]}]
+                               :libs [{:type :source :name "u" :files ["u"] :for ["m"]}
+                                      {:type :source :name "v" :files ["v.wattle"]}]}))
+    (spit (string proj "/u/init.wattle") "(def x 1)\n")
+    (spit (string proj "/v.wattle") "(def y 2)\n")
+    (spit (string proj "/main.wattle") "(import u/u)\n(import v/v)\n(assert (= [1 2] [u/x v/y]))\n")
+    (let [[status _] (run-cli "run" (string proj "/main.wattle"))]
+      (assert (= 1 status) "run does not copy a lib"))
+    (assert (nil? (os/stat (string proj "/.wattle") :mode)) "run creates no .wattle")
+    (os/cd proj)
+    (defer (os/cd old)
+      (let [[status _] (run-cli "build" "lib")]
+        (assert (= 0 status) "build lib copies the :source libs"))
+      (assert (= "*\n" (string (slurp ".wattle/.gitignore"))) ".wattle holds a .gitignore that excludes its contents")
+      (assert (= :file (os/stat ".wattle/u/u/init.wattle" :mode)) "a directory of :files keeps its path")
+      (assert (= :file (os/stat ".wattle/v/v.wattle" :mode)) "a lib with no :for is copied by build lib")
+      (let [[status _] (run-cli "run" "main.wattle")]
+        (assert (= 0 status) "a bare import finds a copied lib"))
+      (spit ".wattle/u/stale" "x")
+      (spit ".wattle/v/kept" "x")
+      (let [[status _] (run-cli "build" "lib" "u")]
+        (assert (= 0 status) "build lib copies the lib it names"))
+      (assert (nil? (os/stat ".wattle/u/stale" :mode)) "a copy made before is removed")
+      (assert (= :file (os/stat ".wattle/v/kept" :mode)) "a lib that is not named is left alone")
+      (let [[status text] (run-cli "build" "lib" "nosuch")]
+        (assert (= 1 status) "build lib refuses a name that no lib has")
+        (assert (string/find "no lib is called nosuch" text) "the failure names the lib")))
+    (rmrf proj)))
+
 ;;; Revisions
 ;
 ; The manifest of an application records :rev, the commit hash of a Git
 ; repository and, for a directory or a tarball, `sha256:` and a hash of the files.
 
 (let [dir (string (app-rpath prefix) "-rev")
-      info "{:group \"org.wattle.tests\" :name \"rev-app\" :man []}"
+      info "{:group \"org.wattle.tests\" :name \"rev-app\" :exes []}"
       write (fn []
               (rmrf dir)
               (each d [dir (string dir "/sub") (string dir "/.git") (string dir "/zig-out")
@@ -664,13 +851,13 @@
       install #(with-dyns [*err* !""] (app/install dir))]
   (write)
   (assert-no-error "install a directory" (install))
-  (assert (= "sha256:7227ca7add27d7ec142377ed6b8ad91001329151c552ea0d3be6c5afbc5a2b44"
+  (assert (= "sha256:618c82e98dd29d949cf87c98bfdcdf4c4f634d0f082df2fd656a3483f8184fa7"
              (get (app/manifest "rev-app") :rev))
           "a directory records the hash of its files, without .git, zig-out, .wattle and .zig-cache")
   (assert (nil? (get (app/manifest "rev-app") :source)) "a directory records no source")
   (spit (string dir "/a") "one!")
   (assert-no-error "upgrade a directory" (with-dyns [*err* !""] (app/upgrade "rev-app")))
-  (assert (= "sha256:a11fc8b86771909ccd7d3ad8ea4fd023eb6aaeadbf7d1df3070c3896dcdc4aa5"
+  (assert (= "sha256:f9bc5ec12ef7edfe5b77c747dab6f052a64444b5975b329c14b07f198ba9543d"
              (get (app/manifest "rev-app") :rev))
           "upgrading a directory records the hash of the files now there")
   (assert-no-error "remove a directory" (app/remove "rev-app"))
@@ -680,7 +867,7 @@
   (write)
   (spit (string dir "/a.txt") "x")
   (assert-no-error "install a directory with a sibling name" (install))
-  (assert (= "sha256:6c61e80dfeba58ab0876265c732fe4d9a5f8ab591bc3456673c26217ca38f0ae"
+  (assert (= "sha256:2534ca780129ed641738ebe4d177bc5a5cb2b241436bcfee19be10245b560180"
              (get (app/manifest "rev-app") :rev))
           "files are hashed in the byte order of their paths")
   (assert-no-error "remove again" (app/remove "rev-app"))
@@ -698,8 +885,9 @@
 
 ;;; Source applications
 ;
-; A :src artifact installs its :files into the application directory and a
-; program in bin that calls app/run.
+; A :source exe installs its :files into the application directory and a
+; program in bin that calls app/run. A :source lib whose :for names it is copied
+; to .wattle there, and a :man doc whose :for names it goes to share/man.
 
 (let [base (string (app-rpath prefix) "-src-app")
       proj (string base "/proj")
@@ -707,8 +895,11 @@
       app-path (string root "/lib/wattle/apps/org.wattle.tests/sprog")
       binscript (string root "/bin/sprog-bin")
       info-of (fn [artifact]
-                (string/format "%m" {:group "org.wattle.tests" :name "sprog" :artifacts [artifact]}))
-      src-artifact {:type :src :name "sprog-bin" :entry "main.wattle"
+                (string/format "%m" {:group "org.wattle.tests" :name "sprog" :exes [artifact]
+                                     :libs [{:type :source :name "util" :files ["util" "extra.wattle"]
+                                             :for ["sprog-bin"]}]
+                                     :docs [{:type :man :files ["sprog.1"] :for ["sprog-bin"]}]}))
+      src-artifact {:type :source :name "sprog-bin" :entry "main.wattle"
                     :files ["main.wattle" "lib" "deps"]}
       try-install (fn [info-text]
                     (spit (string proj "/info.edn") info-text)
@@ -719,30 +910,38 @@
              (string proj "/.wattle")]
     (assert (os/mkdir dir)))
   (spit (string proj "/main.wattle")
-        (string "(import ./lib/helper)\n(import depmod)\n"
+        (string "(import ./lib/helper)\n(import ./deps/depmod)\n(import util/util)\n(import util/extra)\n"
                 "(defn main [& args]\n"
-                "  (spit (get args 1) (string (string/join \";\" (slice args 2)) \",\" depmod/v \",\" helper/w)))\n"))
+                "  (spit (get args 1) (string (string/join \";\" (slice args 2)) \",\" depmod/v \",\" helper/w"
+                "                             \",\" util/v \",\" extra/v)))\n"))
+  (assert (os/mkdir (string proj "/util")))
+  (spit (string proj "/util/init.wattle") "(def v 5)\n")
+  (spit (string proj "/extra.wattle") "(def v 6)\n")
+  (spit (string proj "/sprog.1") ".TH SPROG 1\n")
   (spit (string proj "/lib/helper.wattle") "(def w 3)\n")
   (spit (string proj "/lib/zig-out/nested") "skipped\n")
   (spit (string proj "/deps/depmod.wattle") "(def v 7)\n")
   (spit (string proj "/zig-out/lib/stale") "skipped\n")
   (spit (string proj "/.wattle/stale") "skipped\n")
 
-  ; Windows has no shebang lines, so it refuses a :src artifact and nothing else
+  ; Windows has no shebang lines, so it refuses a :source exe and nothing else
   ; in this section applies.
   (when (= :windows (os/which))
     (let [[ok message] (try-install (info-of src-artifact))]
       (assert (and (not ok) (string/find "Windows" message))
-              "a :src artifact is refused on Windows")
-      (assert (= 0 (length (app/list))) "a refused :src artifact installs nothing")))
+              "a :source exe is refused on Windows")
+      (assert (= 0 (length (app/list))) "a refused :source exe installs nothing")))
   (unless (= :windows (os/which))
     (let [[ok _] (try-install (info-of src-artifact))]
-      (assert ok "a :src artifact installs"))
-    (each file ["main.wattle" "lib/helper.wattle" "deps/depmod.wattle" "info.edn" "manifest.edn"]
+      (assert ok "a :source exe installs"))
+    (each file ["main.wattle" "lib/helper.wattle" "deps/depmod.wattle" "info.edn" "manifest.edn"
+                ".wattle/util/util/init.wattle" ".wattle/util/extra.wattle" ".wattle/.gitignore"]
       (assert (os/stat (string app-path s file) :mode) (string file " is in the application directory")))
     (assert (nil? (os/stat (string app-path "/zig-out") :mode)) "zig-out is not copied")
     (assert (nil? (os/stat (string app-path "/lib/zig-out") :mode)) "a nested zig-out is not copied")
-    (assert (nil? (os/stat (string app-path "/.wattle") :mode)) ".wattle is not copied")
+    (assert (nil? (os/stat (string app-path "/.wattle/stale") :mode)) ".wattle is not copied")
+    (assert (nil? (os/stat (string app-path "/util") :mode)) "the :files of a lib go only to .wattle")
+    (assert (string/find "SPROG 1" (slurp (string root "/share/man/man1/sprog.1"))) "the doc of the exe is installed")
     (assert (nil? (os/stat (string app-path "/.binscript") :mode)) "the temporary binscript is removed")
     (let [lines (string/split "\n" (string (slurp binscript)))]
       (assert (= "#!/usr/bin/env wattle" (first lines)) "the program starts with a shebang line")
@@ -750,18 +949,18 @@
               "the program calls app/run with the group, the name and the entry"))
     (unless (or (= :windows (os/which)) (= :wasi (os/which)))
       (assert (string/has-prefix? "rwx" (os/stat binscript :permissions)) "the program is executable"))
-    (assert (= "sprog" (app/whois binscript)) "app/whois finds the program of a :src artifact")
+    (assert (= "sprog" (app/whois binscript)) "app/whois finds the program of a :source exe")
 
     (compwhen (dyn 'os/execute)
       (do
         (def out (string base "/out.txt"))
         (let [[status _] (run-cli binscript out "x" "y")]
           (assert (= 0 status) "the program runs the entry")
-          (assert (= "x;y,7,3" (string (slurp out)))
-                  "the entry gets its arguments, a relative import and the deps of its directory"))
+          (assert (= "x;y,7,3,5,6" (string (slurp out)))
+                  "the entry gets its arguments, its relative imports, vendored source included, and its libs"))
         (rmrf out)))
 
-    (assert-no-error "upgrade a :src application" (with-dyns [*err* !""] (app/upgrade "sprog")))
+    (assert-no-error "upgrade a :source application" (with-dyns [*err* !""] (app/upgrade "sprog")))
     (assert (and (os/stat binscript :mode) (os/stat (string app-path "/main.wattle") :mode))
             "upgrading installs the files and the program again")
 
@@ -780,8 +979,9 @@
       (assert (nil? (os/stat (string root "/lib/wattle/sprog.backup") :mode))
               "a failed upgrade leaves no backup")
       (spit (string proj "/info.edn") (info-of src-artifact)))
-    (assert-no-error "remove a :src application" (app/remove "sprog"))
+    (assert-no-error "remove a :source application" (app/remove "sprog"))
     (assert (nil? (os/stat binscript :mode)) "removing removes the program")
+    (assert (nil? (os/stat (string root "/share/man/man1/sprog.1") :mode)) "removing removes the doc")
     (assert (nil? (os/stat app-path :mode)) "removing removes the application directory")
 
     ; Refusals leave nothing installed.
@@ -793,33 +993,27 @@
       (nothing-left "a refused :entry installs nothing"))
     (let [[ok message] (try-install (info-of (dissoc src-artifact :files)))]
       (assert (and (not ok) (string/find ":files is required" message))
-              "a :src artifact needs :files")
-      (nothing-left "a :src artifact without :files installs nothing"))
+              "a :source exe needs :files")
+      (nothing-left "a :source exe without :files installs nothing"))
     (let [[ok message] (try-install (info-of (assoc src-artifact :files ["main.wattle" "nothere"])))]
       (assert (and (not ok) (string/find ":files names" message) (string/find "nothere" message))
               "a :files entry that does not exist is refused")
       (nothing-left "a missing :files entry installs nothing"))
-    (let [[ok message] (try-install (string/format "%m" {:group "org.wattle.tests" :name "sprog"
-                                                         :artifacts [src-artifact
-                                                                     {:type :lib :name "l" :root "l.zig"}]}))]
-      (assert (and (not ok) (string/find "names it in :libs" message))
-              "a :lib that no :src artifact names is refused")
-      (nothing-left "an unnamed :lib installs nothing"))
-    ; A :lib that a :src artifact names is built, and the build fails here: the
-    ; prefix of this suite holds no source of the runtime. The command line runs
-    ; the install, so that what the build writes is captured and not shown.
+    ; A :native lib whose :for names a :source exe is built in the project, and
+    ; the build fails here: the prefix of this suite holds no source of the
+    ; runtime. The command line runs the install, so that what the build writes
+    ; is captured and not shown.
     (compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
       (do
         (spit (string proj "/l.zig") "")
         (spit (string proj "/info.edn")
               (string/format "%m" {:group "org.wattle.tests" :name "sprog"
-                                   :artifacts [(assoc src-artifact :files ["main.wattle" "lib" "deps" "l.zig"]
-                                                                   :libs ["l"])
-                                               {:type :lib :name "l" :root "l.zig"}]}))
+                                   :exes [src-artifact]
+                                   :libs [{:type :native :name "l" :root "l.zig" :for ["sprog-bin"]}]}))
         (let [[status text] (run-cli "apps" "install" proj)]
-          (assert (= 1 status) "a :src artifact whose :libs fail to build is refused")
+          (assert (= 1 status) "a :source exe whose native lib fails to build is refused")
           (assert (string/find "the Wattle package is not at" text) "the output of the build is captured")
-          (nothing-left "a failed :libs build installs nothing"))))
+          (nothing-left "a failed lib build installs nothing"))))
 
     ; app/run
     (with-dyns [*prefix* ""]

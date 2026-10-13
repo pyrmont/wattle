@@ -30,7 +30,8 @@
    "man/man1/wattle-build.1.predoc" "man/man1/wattle-check.1.predoc"
    "man/man1/wattle-deps.1.predoc" "man/man1/wattle-gum.1.predoc"
    "man/man1/wattle-run.1.predoc" "man/man1/wattle-test.1.predoc"
-   "man/man7/wattle-applications.7.predoc" "man/man7/wattle.7.predoc"])
+   "man/man7/wattle-applications.7.predoc"
+   "man/man7/wattle-projects.7.predoc" "man/man7/wattle.7.predoc"])
 
 (defn- path [name] (string tools/root "/" name))
 

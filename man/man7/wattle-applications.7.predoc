@@ -1,7 +1,7 @@
 ---
 Title: WATTLE-APPLICATIONS(7)
 Authors: Michael Camilleri <mike@inqk.net>
-Date: 2026-10-11
+Date: 2026-10-12
 Project: Wattle
 Version: DEVEL
 ---
@@ -9,44 +9,16 @@ Version: DEVEL
 NAME
 ====
 
-**wattle-applications** - how Wattle applications are laid out, built and installed
+**wattle-applications** - how Wattle applications are laid out and installed
 
 DESCRIPTION
 ===========
 
-An application is a directory containing an _info file_, source files (in either
-Wattle or Zig) and documentation. `wattle-apps(1)` installs an application and
-`wattle-build(1)` builds the artifacts that an application declares. This
-page describes what an application contains and where its files are installed.
-
-VENDORING
-=========
-
-Vendoring a dependency refers to the practice of copying into the source tree of
-an application the Wattle source files that the application uses. Within the
-code, vendored dependencies are imported using a relative import:
-
-````
-(import ./vendor/greetings)
-````
-
-Wattle's philosophy is that dependencies that are Wattle source files should be
-part of the application. A vendored copy is the version the application was
-tested with, it changes only when the application's author changes it and the
-application runs without any dependency needing to be installed.
-
-This has trade-offs. An application includes a copy of each dependency and a
-fix to a dependency reaches the application only when its author updates the
-copy. Wattle takes the view that an application's author is, most of the time,
-in the best position to weigh those trade-offs. Because of this
-`wattle-apps(1)` does not provide a mechanism to install Wattle source
-libraries.
-
-The application lists what it vendors under ``:vendored`` in its info file, and
-``wattle deps vendor`` copies each entry into the application. See
-`wattle-deps(1)`. An entry without a ``:ref`` uses the HEAD of the default
-branch of a Git repository each time. The copies belong to the project and may
-be edited, and no record is kept of the revision they came from.
+An application is a project that `wattle-apps(1)` installs. This page
+describes what an application contains beyond what any project contains, and
+where its files are installed. The info file, the exes, libs and docs and the
+dependencies of a project are described in `wattle-projects(7)`, and
+`wattle-build(1)` builds the exes and libs that an application declares.
 
 LAYOUT
 ======
@@ -54,7 +26,8 @@ LAYOUT
 An application may contain these files:
 
 - ``info.edn``:
-  The info file, at the root of the application.
+  The info file, at the root of the application. Installing needs its ``:name``
+  and ``:group``. See ``INFO FILE`` in `wattle-projects(7)`.
 
 - ``hooks/init.wattle`` or ``hooks.wattle``:
   The application script. If both exist, ``hooks/init.wattle`` is used. The
@@ -62,91 +35,71 @@ An application may contain these files:
   beside it.
 
 An application needs an application script or an info file that declares
-``:artifacts`` or ``:man``.
-
-INFO FILE
-=========
-
-The info file holds one map. All keys are optional, but ``:name`` and
-``:group`` are needed to install an application:
-
-- ``:name``:
-  The name of the application. It is one directory name and is unique across
-  groups.
-
-- ``:group``:
-  The group of the application, by convention a reverse domain such as
-  ``net.inqk``. It is one directory name. A directory name is not empty, is not
-  ``.`` or ``..`` and contains no path separator.
-
-- ``:vendored``:
-  A vector of maps that describe the sources that ``wattle deps vendor`` copies
-  into the application. Each has a ``:name`` and a ``:url``, and may have a
-  ``:ref``, a ``:prefix`` and ``:paths``. See VENDORING above and
-  `wattle-deps(1)`.
-
-- ``:artifacts``:
-  A vector of maps that describe what ``wattle build`` builds. Each has a
-  ``:type`` and a ``:name``. See ``Declarations`` in `wattle-build(1)`.
-
-- ``:man``:
-  A vector of the paths of man pages. The section is the digit that ends the
-  file name, so ``man/greet.1`` is installed in ``man1``.
-
-Example:
-
-````
-{:name "greeter"
- :group "net.inqk"
- :vendored [{:name "greetings"
-             :url "https://example.com/greetings.git"
-             :prefix "deps/greetings"}]
- :artifacts [{:type :exe
-              :name "hello"
-              :entry "main.wattle"}]
- :man ["man/hello.1"]}
-````
+``:exes``.
 
 INSTALLATION
 ============
 
 An application with an application script is installed by running the hooks
 that the script defines, and nothing else. An application without one is
-installed from its info file: each ``:exe`` artifact is built with
-`wattle-build(1)` and its program is installed in ``bin``, each ``:src``
-artifact is installed as described below, and each file in ``:man`` is
-installed in ``share/man``. A ``:lib`` artifact is installed only by an
-application script or by a ``:src`` artifact that names it in ``:libs``, and a
-``:web`` artifact is not installed.
+installed from its info file. Each exe of ``:type`` ``:native`` or ``:source``
+is installed, with the libs and docs whose ``:for`` names it:
+
+- A ``:native`` exe is built with `wattle-build(1)` and its program is
+  installed in ``bin``. A native lib for it is linked into the program, and a
+  source lib for it is compiled into the program.
+
+- A ``:source`` exe is installed as described in `<Source programs>`.
+
+- Each file of a ``:man`` doc is installed in ``share/man``, in the section
+  that the digit at the end of its name gives.
+
+A ``:remote`` lib is fetched under ``lib/wattle/.fetch`` and has the form its
+own info file declares. The manifest records the ``:name``, ``:url`` and
+``:rev`` of each under ``:libs``.
+
+A ``:web`` exe is not installed. A lib or doc whose ``:for`` names no installed
+exe is not installed, and a ``:web`` doc whose ``:for`` names an installed exe
+is refused. The manifest lists each file installed in ``bin`` and
+``share/man``, so ``wattle apps remove`` removes them with the application
+directory.
 
 Source programs
 ---------------
 
-A ``:src`` artifact is a program that is installed as source. Its ``:files``
+A ``:source`` exe is a program that is installed as source. Its ``:files``
 are copied into the application directory. A directory is copied without any
-entry named ``zig-out``, ``.zig-cache``, ``.wattle`` or ``.git``. Each artifact
-in ``:libs`` is built with `wattle-build(1)` in the application directory, so
-that its native module is in ``zig-out/lib`` there. This needs **zig** on the
+entry named ``zig-out``, ``.zig-cache``, ``.wattle`` or ``.git``. A source lib
+for it is copied to ``.wattle/<name>/`` there. A native lib for it is built
+with `wattle-build(1)` in the project, and the native module is copied to
+``zig-out/lib`` in the application directory. This needs **zig** on the
 ``PATH``, and ``wattle apps upgrade`` builds the modules again.
 
-The program in ``bin`` has the name of the artifact and starts with
+The program in ``bin`` has the name of the exe and starts with
 ``#!/usr/bin/env wattle``. It loads ``:entry`` and calls ``main`` with the path
 of the program followed by the arguments. A bare ``import`` in the program
-searches ``deps``, ``.wattle`` and ``zig-out/lib`` in the application
-directory. Running the program needs **wattle** on the ``PATH`` and the prefix
-set with ``WATTLE_PREFIX``. A program that needs neither is an ``:exe``
-artifact. Windows has no shebang lines, so a ``:src`` artifact cannot be
-installed there.
+searches ``.wattle`` and ``zig-out/lib`` in the application directory, and a
+vendored copy under ``deps`` is imported by a relative path. Running the
+program needs **wattle** on the ``PATH`` and the prefix set with
+``WATTLE_PREFIX``. A program that needs neither is a ``:native`` exe. Windows
+has no shebang lines, so a ``:source`` exe cannot be installed there.
 
 Example:
 
 ````
 {:name "greeter"
  :group "net.inqk"
- :artifacts [{:type :src
-              :name "greet"
-              :entry "main.wattle"
-              :files ["main.wattle" "lib" "deps"]}]}
+ :exes [{:type :source
+         :name "greet"
+         :entry "main.wattle"
+         :files ["main.wattle" "lib" "deps"]}]
+ :libs [{:type :source
+         :name "util"
+         :files ["util/"]
+         :for ["greet"]}]
+ :docs [{:type :man
+         :files ["man/greet.1"]
+         :for ["greet"]}]}
 ````
 
 Hooks
@@ -191,7 +144,8 @@ All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
 
 - ``lib/wattle/apps/<group>/<name>``:
   The directory of an installed application: ``manifest.edn``, which lists its
-  files and records its source and ``:rev``, the revision of the source, a copy
+  files and records its source, ``:rev``, the revision of the source, and the
+  revision of each remote lib, a copy
   of its info file and a copy of its application script, with the rest of its
   ``hooks`` directory. The revision is the commit hash for a Git repository, and
   ``sha256:`` and a hash of the files for a tarball or a directory.
@@ -205,4 +159,4 @@ All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-apps(1)`, `wattle-build(1)`, `wattle-deps(1)`, `wattle(7)`
+`wattle(1)`, `wattle-apps(1)`, `wattle-build(1)`, `wattle-projects(7)`, `wattle(7)`

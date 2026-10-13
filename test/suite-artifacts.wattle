@@ -19,118 +19,182 @@
 
 (def blueshift
   {:name "blueshift"
-   :artifacts [{:type :lib :name "blues_http" :root "lib/http.zig"}
-               {:type :exe :name "blues" :entry "lib/cli.wattle"
-                :libs ["blues_http"]}]})
+   :exes [{:type :native :name "blues" :entry "lib/cli.wattle"}]
+   :libs [{:type :native :name "blues_http" :root "lib/http.zig" :for ["blues"]}]})
 
 (defn- extend
   "Returns base with the key and value pairs of fields added."
   [base fields]
   (if (empty? fields) base (apply assoc base fields)))
 
-(defn- exe [& fields] (extend {:type :exe :name "a" :entry "m"} fields))
-(defn- lib [& fields] (extend {:type :lib :name "z" :root "r"} fields))
+(defn- exe [& fields] (extend {:type :native :name "a" :entry "m"} fields))
 (defn- web [& fields] (extend {:type :web :name "w" :entry "m"} fields))
-(defn- src [& fields] (extend {:type :src :name "s" :entry "m" :files ["m"]} fields))
-(defn- declares [& artifacts] {:artifacts (vec artifacts)})
+(defn- src [& fields] (extend {:type :source :name "s" :entry "m" :files ["m"]} fields))
+(defn- lib [& fields] (extend {:type :native :name "z" :root "r"} fields))
+(defn- slib [& fields] (extend {:type :source :name "u" :files ["u"]} fields))
+(defn- git [& fields] (extend {:type :remote :name "g" :url "https://example.org/g.git" :ref "v1"} fields))
+(def- tree-hash (string "sha256:" (string/repeat "0123456789abcdef" 4)))
+(defn- tar [& fields] (extend {:type :remote :name "t" :url "https://example.org/t.tar.gz" :hash tree-hash} fields))
+(defn- man [& fields] (extend {:type :man :files ["a.1"]} fields))
+(defn- wdoc [& fields] (extend {:type :web :files ["site"]} fields))
+(defn- exes [& decls] {:exes (vec decls)})
+(defn- with-libs [& decls] {:exes [(exe) (web) (src)] :libs (vec decls)})
+(defn- with-docs [& decls] {:exes [(exe) (web) (src)] :docs (vec decls)})
 
 (deftest valid-info
   (is (nil? (refusal blueshift)))
-  (is (= 2 (length (build/artifacts blueshift))))
-  (is (nil? (refusal (declares (exe)))))
-  (is (nil? (refusal (declares (lib)))))
-  (is (nil? (refusal (declares (web)))))
-  (is (nil? (refusal (declares (src)))))
-  (is (nil? (refusal (declares (src :files ["m" "lib" "docs/a.txt"]))))))
+  (def all (build/artifacts blueshift))
+  (is (= 1 (length (get all :exes))))
+  (is (= 1 (length (get all :libs))))
+  (is (= [] (get all :docs)))
+  (is (nil? (refusal (exes (exe)))))
+  (is (nil? (refusal (exes (web)))))
+  (is (nil? (refusal (exes (src)))))
+  (is (nil? (refusal (exes (src :files ["m" "lib" "docs/a.txt"])))))
+  (is (nil? (refusal {:libs [(lib)]})))
+  (is (nil? (refusal {:docs [(man)]})))
+  (is (nil? (refusal (with-libs (lib :for ["a" "s"]) (slib :for ["a"]) (git :for ["s"]) (tar)))))
+  (is (nil? (refusal (with-docs (man :for ["a" "s" "w"] :files ["x.1" "man/y.5"]) (wdoc :for ["w"]))))))
 
 (deftest top-level
   (refuses [] "must hold a map")
-  (refuses {:name "x"} "no :artifacts are declared")
-  (refuses {:artifacts {}} ":artifacts must be a vector")
-  (refuses {:artifacts [1]} "artifact 0 must be a map"))
+  (refuses {:name "x"} "no :exes, :libs or :docs are declared")
+  (refuses {:exes {}} ":exes must be a vector")
+  (refuses {:libs "x"} ":libs must be a vector")
+  (refuses {:docs {}} ":docs must be a vector")
+  (refuses {:exes [1]} "exe 0 must be a map")
+  (refuses {:libs [1]} "lib 0 must be a map")
+  (refuses {:docs [1]} "doc 0 must be a map"))
+
+(deftest replaced-keys
+  (refuses {:artifacts []} ":artifacts is replaced by :exes, :libs and :docs")
+  (refuses {:exes [(exe)] :artifacts []} ":artifacts is replaced")
+  (refuses {:man ["a.1"]} ":man is replaced by a :docs entry of :type :man")
+  (refuses (exes (exe :libs ["z"])) "exe 0 (a): :libs is replaced by the :for of each lib")
+  (refuses (exes (src :libs [])) ":libs is replaced by the :for of each lib"))
 
 (deftest type-and-name
-  (refuses (declares {:name "a" :entry "m"})
-           "artifact 0 (a): :type must be :exe, :lib, :web or :src")
-  (refuses (declares (exe :type :dll)) ":type must be :exe, :lib, :web or :src")
-  (refuses (declares {:type :exe :entry "m"})
-           "artifact 0: :name must be a non-empty string")
-  (refuses (declares (exe :name "")) ":name must be a non-empty string")
-  (refuses (declares (exe :name 3)) ":name must be a non-empty string")
-  (refuses (declares (exe :name "a b")) "may hold only letters, digits"))
+  (refuses (exes {:name "a" :entry "m"}) "exe 0 (a): :type must be :native, :source or :web")
+  (refuses (exes (exe :type :exe)) ":type must be :native, :source or :web")
+  (refuses {:libs [(lib :type :lib)]} "lib 0 (z): :type must be :native, :source or :remote")
+  (refuses {:docs [(man :type :html)]} "doc 0: :type must be :man or :web")
+  (refuses (exes {:type :native :entry "m"}) "exe 0: :name must be a non-empty string")
+  (refuses (exes (exe :name "")) ":name must be a non-empty string")
+  (refuses (exes (exe :name 3)) ":name must be a non-empty string")
+  (refuses (exes (exe :name "a b")) "may hold only letters, digits")
+  (refuses {:libs [(lib :name "a.b")]} "lib 0 (a.b): :name may hold only letters, digits")
+  (refuses {:libs [{:type :native :root "r"}]} "lib 0: :name must be a non-empty string")
+  (refuses {:docs [(man :name "a")]} "doc 0 (a): :name is not a key of a :man doc"))
 
-(deftest entry-and-root
-  (refuses (declares {:type :exe :name "a"})
-           "artifact 0 (a): :entry must be a non-empty string")
-  (refuses (declares (exe :entry "")) ":entry must be a non-empty string")
-  (refuses (declares {:type :lib :name "a"})
-           "artifact 0 (a): :root must be a non-empty string")
-  (refuses (declares {:type :web :name "a"})
-           "artifact 0 (a): :entry must be a non-empty string")
-  (refuses (declares {:type :src :name "a" :files ["m"]})
-           "artifact 0 (a): :entry must be a non-empty string"))
+(deftest required-keys
+  (refuses (exes {:type :native :name "a"}) "exe 0 (a): :entry must be a non-empty string")
+  (refuses (exes (exe :entry "")) ":entry must be a non-empty string")
+  (refuses (exes {:type :web :name "a"}) "exe 0 (a): :entry must be a non-empty string")
+  (refuses (exes {:type :source :name "a" :files ["m"]}) "exe 0 (a): :entry must be a non-empty string")
+  (refuses (exes {:type :source :name "a" :entry "m"}) "exe 0 (a): :files is required")
+  (refuses {:libs [{:type :native :name "a"}]} "lib 0 (a): :root must be a non-empty string")
+  (refuses {:libs [{:type :source :name "a"}]} "lib 0 (a): :files is required")
+  (refuses {:libs [{:type :remote :name "a" :ref "v1"}]} "lib 0 (a): :url must be a non-empty string")
+  (refuses {:docs [{:type :man}]} "doc 0: :files is required")
+  (refuses {:docs [{:type :web}]} "doc 0: :files is required"))
 
-(deftest src-files
-  (refuses (declares {:type :src :name "a" :entry "m"})
-           "artifact 0 (a): :files is required")
-  (refuses (declares (src :files "m")) ":files must be a vector of paths")
-  (refuses (declares (src :files ["m" 3])) ":files must hold non-empty strings")
-  (refuses (declares (src :files [""])) ":files must hold non-empty strings")
-  (refuses (declares (src :files ["/etc"])) ":files must hold relative paths")
-  (refuses (declares (src :files ["C:/x"])) ":files must hold relative paths")
-  (refuses (declares (src :files ["\\x"])) ":files must hold relative paths")
-  (refuses (declares (src :files ["../x"])) ":files must stay inside the project")
-  (refuses (declares (src :files ["a/../../x"])) ":files must stay inside the project")
-  (refuses (declares (src :files ["a\\..\\b"])) ":files must stay inside the project")
-  (is (nil? (refusal (declares (src :files ["."])))))
-  (is (nil? (refusal (declares (src :files ["a..b" "..c"]))))))
+(deftest files
+  (refuses (exes (src :files "m")) ":files must be a vector of paths")
+  (refuses (exes (src :files ["m" 3])) ":files must hold non-empty strings")
+  (refuses (exes (src :files [""])) ":files must hold non-empty strings")
+  (refuses (exes (src :files ["/etc"])) ":files must hold relative paths")
+  (refuses (exes (src :files ["C:/x"])) ":files must hold relative paths")
+  (refuses (exes (src :files ["\\x"])) ":files must hold relative paths")
+  (refuses (exes (src :files ["../x"])) ":files must stay inside the project")
+  (refuses (exes (src :files ["a/../../x"])) ":files must stay inside the project")
+  (refuses (exes (src :files ["a\\..\\b"])) ":files must stay inside the project")
+  (is (nil? (refusal (exes (src :files ["."])))))
+  (is (nil? (refusal (exes (src :files ["a..b" "..c"])))))
+  (refuses {:libs [(slib :files ["../u"])]} "lib 0 (u): :files must stay inside the project")
+  (refuses {:docs [(wdoc :files ["/site"])]} "doc 0: :files must hold relative paths"))
+
+(deftest man-sections
+  (is (nil? (refusal {:docs [(man :files ["a.1" "b.9" "c.d.5"])]})))
+  (refuses {:docs [(man :files ["a.txt"])]}
+           "doc 0: :files of a :man doc must end in a period and a digit from 1 to 9, not \"a.txt\"")
+  (refuses {:docs [(man :files ["a.0"])]} "must end in a period and a digit from 1 to 9")
+  (refuses {:docs [(man :files ["a.12"])]} "must end in a period and a digit from 1 to 9")
+  (refuses {:docs [(man :files ["1"])]} "must end in a period and a digit from 1 to 9")
+  (is (nil? (refusal {:docs [(wdoc :files ["a.txt"])]}))))
 
 (deftest unknown-keys
-  (refuses (declares (exe :link ["b"])) ":link is not a key of an :exe")
-  (refuses (declares (lib :libs [])) ":libs is not a key of an :lib")
-  (refuses (declares (exe :root "r")) ":root is not a key of an :exe")
-  (refuses (declares (web :libs [])) ":libs is not a key of a :web")
-  (refuses (declares (web :root "r")) ":root is not a key of a :web")
-  (refuses (declares (src :root "r")) ":root is not a key of a :src")
-  (refuses (declares (exe :files ["m"])) ":files is not a key of an :exe"))
+  (refuses (exes (exe :link ["b"])) "exe 0 (a): :link is not a key of a :native exe")
+  (refuses (exes (exe :root "r")) ":root is not a key of a :native exe")
+  (refuses (exes (exe :files ["m"])) ":files is not a key of a :native exe")
+  (refuses (exes (exe :for ["a"])) ":for is not a key of a :native exe")
+  (refuses (exes (web :root "r")) ":root is not a key of a :web exe")
+  (refuses (exes (src :root "r")) ":root is not a key of a :source exe")
+  (refuses {:libs [(lib :entry "m")]} "lib 0 (z): :entry is not a key of a :native lib")
+  (refuses {:libs [(lib :files ["m"])]} ":files is not a key of a :native lib")
+  (refuses {:libs [(slib :root "r")]} ":root is not a key of a :source lib")
+  (refuses {:libs [(git :files ["x"])]} ":files is not a key of a :remote lib")
+  (refuses {:docs [(man :entry "m")]} "doc 0: :entry is not a key of a :man doc")
+  (refuses {:docs [(wdoc :root "r")]} ":root is not a key of a :web doc"))
 
 (deftest duplicate-names
-  (refuses (declares (exe) (exe :entry "n"))
-           "artifact 1 (a): :name is already used by artifact 0")
-  (refuses (declares (exe) (lib :name "a"))
-           ":name is already used by artifact 0"))
+  (refuses (exes (exe) (exe :entry "n")) "exe 1 (a): :name is already used by exe 0")
+  (refuses (exes (exe) (src :name "a")) "exe 1 (a): :name is already used by exe 0")
+  (refuses {:libs [(lib) (slib :name "z")]} "lib 1 (z): :name is already used by lib 0")
+  ; A name is unique within its key, so an exe and a lib may share one.
+  (is (nil? (refusal {:exes [(exe :name "x")] :libs [(lib :name "x" :for ["x"])]}))))
 
-(deftest libs
-  (defn libs-of [libs] (declares (lib) (exe :libs libs)))
-  (is (nil? (refusal (libs-of ["z"]))))
-  (is (nil? (refusal (libs-of []))))
-  (refuses (libs-of "z") ":libs must be a vector of names")
-  (refuses (libs-of [3]) ":libs must hold strings")
-  (refuses (libs-of ["z" "z"]) ":libs names z twice")
-  (refuses (libs-of ["q"]) ":libs names q, which no artifact declares")
-  (refuses (libs-of ["a"]) ":libs names a, which is not a :lib")
-  (refuses (libs-of [{:system "curl"}]) "reserved for an external library")
-  (is (nil? (refusal (declares (lib) (src :libs ["z"])))))
-  (refuses (declares (src :libs ["q"])) ":libs names q, which no artifact declares")
-  (refuses (declares (exe) (src :libs ["a"])) ":libs names a, which is not a :lib")
-  (refuses (declares (lib) (src :libs ["z" "z"])) ":libs names z twice"))
+(deftest for
+  (is (nil? (refusal (with-libs (lib :for [])))))
+  (refuses (with-libs (lib :for "a")) "lib 0 (z): :for must be a vector of exe names")
+  (refuses (with-libs (lib :for [3])) ":for must hold strings")
+  (refuses (with-libs (lib :for ["a" "a"])) ":for names a twice")
+  (refuses (with-libs (lib :for ["q"])) ":for names q, which no exe declares")
+  (refuses {:exes [(exe)] :libs [(lib :name "x") (slib :for ["x"])]}
+           "lib 1 (u): :for names x, which no exe declares")
+  (refuses (with-libs (slib :for ["w"])) ":for names w, a :web exe, which takes no lib")
+  (refuses (with-docs (man :for ["q"])) "doc 0: :for names q, which no exe declares")
+  (refuses (with-docs (wdoc :for ["a" "a"])) "doc 0: :for names a twice")
+  (refuses {:docs [(man :for ["a"])]} ":for names a, which no exe declares"))
+
+(deftest remote
+  (is (nil? (refusal {:libs [(git)]})))
+  (is (nil? (refusal {:libs [(tar)]})))
+  (is (nil? (refusal {:libs [(tar :url "https://example.org/t.tar")]})))
+  (refuses {:libs [(git :ref nil)]} "lib 0 (g): :ref must be a non-empty string")
+  (refuses {:libs [(git :ref "")]} ":ref must be a non-empty string")
+  (refuses {:libs [(git :hash tree-hash)]}
+           ":hash is for a tarball, and a Git repository is pinned by :ref")
+  (refuses {:libs [(tar :hash nil)]} "lib 0 (t): :hash must be `sha256:` and 64 lowercase hexadecimal digits")
+  (refuses {:libs [(tar :hash "sha256:abc")]} ":hash must be `sha256:`")
+  (refuses {:libs [(tar :hash (string/ascii-upper tree-hash))]} ":hash must be `sha256:`")
+  (refuses {:libs [(tar :hash (string "sha512:" (string/slice tree-hash 7)))]} ":hash must be `sha256:`")
+  (refuses {:libs [(tar :ref "v1")]} ":ref is for a Git repository, and a tarball is pinned by :hash"))
 
 (deftest select
-  (def exes (build/artifacts blueshift :exe))
-  (is (= 1 (length exes)))
-  (is (= "blues" (get (first exes) :name)))
-  (def libs (build/artifacts blueshift :lib))
-  (is (= "blues_http" (get (first libs) :name)))
-  (is (= "blues"
-         (get (first (build/artifacts blueshift :exe "blues")) :name)))
-  (def two (declares (exe :name "b") (lib) (exe :name "a" :entry "n")))
-  (is (= ["b" "a"] (vec (map #(get $ :name) (build/artifacts two :exe)))))
-  (is (= "a" (get (first (build/artifacts two :exe "a")) :name)))
+  (def natives (build/artifacts blueshift :exes :native))
+  (is (= 1 (length natives)))
+  (is (= "blues" (get (first natives) :name)))
+  (is (= "blues_http" (get (first (build/artifacts blueshift :libs)) :name)))
+  (is (= "blues" (get (first (build/artifacts blueshift :exes :native "blues")) :name)))
+  (def two (exes (exe :name "b") (web) (exe :name "a" :entry "n")))
+  (is (= ["b" "a"] (vec (map #(get $ :name) (build/artifacts two :exes :native)))))
+  (is (= ["b" "w" "a"] (vec (map #(get $ :name) (build/artifacts two :exes)))))
+  (is (= ["b" "w" "a"] (vec (map #(get $ :name) (build/artifacts two :exes nil)))))
+  (is (= "a" (get (first (build/artifacts two :exes :native "a")) :name)))
+  (is (= "w" (get (first (build/artifacts two :exes nil "w")) :name)))
   (defn message [& args] (get (protect (build/artifacts |args)) 1))
-  (is (string/find "no :exe artifact is called c" (message two :exe "c")))
-  (is (string/find "no :exe artifact is called z" (message two :exe "z")))
-  (is (string/find "no :lib artifact is declared"
-                   (message (declares (exe)) :lib))))
+  (is (string/find "no :native exe is called c" (message two :exes :native "c")))
+  (is (string/find "no :native exe is called w" (message two :exes :native "w")))
+  (is (string/find "no lib is called c" (message (with-libs (lib)) :libs nil "c")))
+  (is (string/find "no :native lib is declared" (message (exes (exe)) :libs :native)))
+  (is (string/find "no doc is declared" (message (exes (exe)) :docs))))
+
+(deftest for-selection
+  (def info (with-libs (lib :name "l1" :for ["a"]) (slib :name "l2" :for ["s" "a"]) (lib :name "l3")))
+  (def libs (get (build/artifacts info) :libs))
+  (is (= ["l1" "l2"] (vec (map #(get $ :name) (build/for libs "a")))))
+  (is (= ["l2"] (vec (map #(get $ :name) (build/for libs "s")))))
+  (is (= [] (vec (build/for libs "w")))))
 
 (def gen-opts {:dir "/proj" :srcpath "/opt/w/share/wattle"
                :gen "/proj/.zig-cache/wattle-build"})
@@ -181,10 +245,19 @@
   (is (has text ".linkage = .dynamic,"))
   (is (has text "lib0.linker_allow_shlib_undefined = true;"))
   (is (not (has text "wattleExecutable")))
-  (is (not (has text "b.graph.host"))))
+  (is (not (has text "b.graph.host")))
+  ; A lib is built whether or not its :for names an exe, and only a :native lib
+  ; is built by Zig.
+  (def mixed {:exes [(exe)] :libs [(slib) (lib :name "free" :root "f.zig")]})
+  (def text2 (get (build/zig-files mixed :lib gen-opts) :build))
+  (is (has text2 ".name = \"free\","))
+  (is (not (has text2 "lib1")))
+  (def [ok message] (protect (build/zig-files mixed :lib "u" gen-opts)))
+  (is (not ok))
+  (is (has message "no :native lib is called u")))
 
 (deftest zig-files-web
-  (def info {:artifacts [{:type :web :name "page" :entry "app/main.wattle"}]})
+  (def info {:exes [{:type :web :name "page" :entry "app/main.wattle"}]})
   (def files (build/zig-files info :web gen-opts))
   (is (= (string
            "const std = @import(\"std\");\n"
@@ -201,15 +274,15 @@
            "}\n")
          (get files :build)))
   (is (has (get files :zon) ".wattle = .{ .path = \"../../../opt/w/share/wattle\" },"))
-  ; A web artifact takes no target and no native modules.
+  ; A web exe takes no target and no native modules.
   (is (not (has (get files :build) "standardTargetOptions")))
   (is (not (has (get files :build) "wattleExecutable")))
   (def [ok message] (protect (build/zig-files info :exe gen-opts)))
   (is (not ok))
-  (is (has message "no :exe artifact is declared"))
+  (is (has message "no :native exe is declared"))
   (def [ok2 message2] (protect (build/zig-files blueshift :web gen-opts)))
   (is (not ok2))
-  (is (has message2 "no :web artifact is declared")))
+  (is (has message2 "no :web exe is declared")))
 
 (deftest zig-files-dependency-path
   (defn dep-path [opts]
@@ -232,35 +305,45 @@
                     :gen "/a/proj/.zig-cache/wattle-build"}))))
 
 (deftest zig-files-paths
-  (def info {:artifacts [{:type :exe :name "a" :entry "/abs/main.wattle"}]})
+  (def info (exes (exe :entry "/abs/main.wattle")))
   (is (has (get (build/zig-files info :exe gen-opts) :build)
            ".source = .{ .cwd_relative = \"/abs/main.wattle\" },"))
-  (def quoted {:artifacts [{:type :exe :name "a" :entry "m\"x.wattle"}]})
+  (def quoted (exes (exe :entry "m\"x.wattle")))
   (is (has (get (build/zig-files quoted :exe {:dir "/pr oj" :srcpath "/p" :gen "/g"}) :build)
            ".cwd_relative = \"/pr oj/m\\\"x.wattle\""))
-  (def windows {:artifacts [{:type :exe :name "a" :entry "C:\\src\\m.wattle"}]})
+  (def windows (exes (exe :entry "C:\\src\\m.wattle")))
   (is (has (get (build/zig-files windows :exe gen-opts) :build)
            ".cwd_relative = \"C:\\\\src\\\\m.wattle\"")))
 
 (deftest zig-files-selection
   (def many
-    {:artifacts [{:type :lib :name "z" :root "z.zig"}
-                 {:type :exe :name "b" :entry "b.wattle" :libs ["z"]}
-                 {:type :exe :name "a" :entry "a.wattle"}]})
+    {:exes [{:type :native :name "b" :entry "b.wattle"}
+            {:type :native :name "a" :entry "a.wattle"}
+            {:type :source :name "s" :entry "s.wattle" :files ["s.wattle"]}]
+     :libs [{:type :native :name "z" :root "z.zig" :for ["b"]}
+            {:type :native :name "y" :root "y.zig" :for ["s"]}
+            {:type :source :name "u" :files ["u"] :for ["b"]}]})
   (def all (get (build/zig-files many :exe gen-opts) :build))
   (is (has all "const exe0 = wattle.wattleExecutable"))
   (is (has all "const exe1 = wattle.wattleExecutable"))
+  (is (not (has all "exe2")))
   (is (< (string/find ".name = \"b\"," all) (string/find ".name = \"a\"," all)))
   (is (has all ".{ .name = \"z\", .root = .{ .cwd_relative = \"/proj/z.zig\" } },"))
+  ; Only a :native lib whose :for names the exe is linked into it.
+  (is (not (has all "\"y\"")))
+  (is (not (has all "\"u\"")))
   (def one (get (build/zig-files many :exe "a" gen-opts) :build))
   (is (not (has one "exe1")))
   (is (not (has one "\"z\"")))
   (def [ok message] (protect (build/zig-files many :exe "nosuch" gen-opts)))
   (is (not ok))
-  (is (has message "no :exe artifact is called nosuch"))
-  (def [ok2 message2] (protect (build/zig-files {:artifacts [{:type :lib :name "z" :root "z.zig"}]}
+  (is (has message "no :native exe is called nosuch"))
+  (def [ok1 message1] (protect (build/zig-files many :exe "s" gen-opts)))
+  (is (not ok1))
+  (is (has message1 "no :native exe is called s"))
+  (def [ok2 message2] (protect (build/zig-files {:libs [{:type :native :name "z" :root "z.zig"}]}
                                                 :exe gen-opts)))
   (is (not ok2))
-  (is (has message2 "no :exe artifact is declared")))
+  (is (has message2 "no :native exe is declared")))
 
 (end-suite)

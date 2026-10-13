@@ -4857,152 +4857,240 @@
 ;;;
 ;;;
 
-; A info.edn holds `:artifacts`, a vector of maps. Each map has a `:type` of
-; `:exe`, `:lib`, `:web` or `:src` and a `:name`. An `:exe` has an `:entry`, the
-; Wattle file that defines `main`, and may have `:libs`, a vector of the names
-; of the `:lib` artifacts compiled into it. A `:lib` has a `:root`, the Zig root
-; file of a native module. A `:src` has an `:entry`, `:files`, a vector of the
-; paths that are installed with it, and may have `:libs`, the `:lib` artifacts
-; that are built when it is installed. ^build/artifacts raises on the first
-; problem and names the artifact and the key. Neither function looks at the file
-; system.
+; An info.edn declares what a project builds under three keys, each a vector of
+; maps: `:exes`, the programs, `:libs`, the libraries, and `:docs`, the
+; documentation. Each map is a _declaration_ and has a `:type`, and the keys it
+; may have depend on the key and the type, as `build-decl-keys` lists them. An
+; exe and a lib have a `:name`, unique within its key. A lib and a doc may have
+; `:for`, a vector of the names of the exes it is part of. ^build/artifacts
+; raises on the first problem and names the declaration and the key. Neither
+; function looks at the file system.
 
-(def- build-artifact-allowed-keys
-  {:exe [:type :name :entry :libs]
-   :lib [:type :name :root]
-   :web [:type :name :entry]
-   :src [:type :name :entry :files :libs]})
+(def- build-decl-keys
+  """
+  The keys that a declaration may have, by the key of info.edn that holds it
+  and by its `:type`.
+  """
+  {:exes {:native [:type :name :entry]
+          :source [:type :name :entry :files]
+          :web [:type :name :entry]}
+   :libs {:native [:type :name :for :root]
+          :source [:type :name :for :files]
+          :remote [:type :name :for :url :ref :hash]}
+   :docs {:man [:type :for :files]
+          :web [:type :for :files]}})
 
-; A `:lib` name is spliced into two symbol names and a string, and an `:exe`
-; or `:web` name is a file name.
+(def- build-decl-nouns
+  "The noun that names a declaration under each key of info.edn."
+  {:exes "exe" :libs "lib" :docs "doc"})
+
+(def- build-decl-type-text
+  "The types that each key of info.edn allows, as a message lists them."
+  {:exes ":native, :source or :web"
+   :libs ":native, :source or :remote"
+   :docs ":man or :web"})
+
+; A lib name is spliced into two symbol names and a string, and an exe name is
+; a file name.
 (def- build-artifact-name-chars
   (string "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
           "0123456789_-"))
 
 (defn- build-artifact-where
-  "Describes the artifact at index i, by name where it has a usable one."
-  [i artifact]
-  (def name (get artifact :name))
+  "Describes the declaration at index i under key, by name where it has a usable one."
+  [key i decl]
+  (def name (get decl :name))
+  (def noun (get build-decl-nouns key))
   (if (and (string? name) (not (empty? name)))
-    (string/format "artifact %d (%s)" i name)
-    (string/format "artifact %d" i)))
+    (string/format "%s %d (%s)" noun i name)
+    (string/format "%s %d" noun i)))
 
 (defn- build-artifact-fail
-  [i artifact fmt & vals]
-  (error (string "info.edn: " (build-artifact-where i artifact) ": "
+  [key i decl fmt & vals]
+  (error (string "info.edn: " (build-artifact-where key i decl) ": "
                  (string/format fmt |vals))))
 
 (defn- build-artifact-check-string
-  [i artifact key]
-  (def val (get artifact key))
+  [key i decl k]
+  (def val (get decl k))
   (unless (and (string? val) (not (empty? val)))
-    (build-artifact-fail i artifact "%v must be a non-empty string" key)))
+    (build-artifact-fail key i decl "%v must be a non-empty string" k)))
 
 (defn- build-artifact-check-files
-  [i artifact]
-  (def files (get artifact :files))
+  [key i decl]
+  (def files (get decl :files))
   (when (nil? files)
-    (build-artifact-fail i artifact ":files is required"))
+    (build-artifact-fail key i decl ":files is required"))
   (unless (vector? files)
-    (build-artifact-fail i artifact ":files must be a vector of paths"))
+    (build-artifact-fail key i decl ":files must be a vector of paths"))
   (each file files
     (unless (and (string? file) (not (empty? file)))
-      (build-artifact-fail i artifact ":files must hold non-empty strings, not %v" file))
+      (build-artifact-fail key i decl ":files must hold non-empty strings, not %v" file))
     (def slashed (string/replace-all "\\" "/" file))
     (when (or (string/has-prefix? "/" slashed)
               (and (> (length slashed) 1) (= ":" (string/slice slashed 1 2))))
-      (build-artifact-fail i artifact ":files must hold relative paths, not %v" file))
+      (build-artifact-fail key i decl ":files must hold relative paths, not %v" file))
     (when (has-value? (string/split "/" slashed) "..")
-      (build-artifact-fail i artifact ":files must stay inside the project, not %v" file))))
+      (build-artifact-fail key i decl ":files must stay inside the project, not %v" file))))
+
+(defn- build-artifact-check-man
+  "Raises unless each file of the :man doc decl ends in a period and a digit from 1 to 9."
+  [key i decl]
+  (each file (get decl :files)
+    (def digit (last (string/split "." file)))
+    (unless (and (< (length digit) (length file)) (= 1 (length digit))
+                 (string/check-set "123456789" digit))
+      (build-artifact-fail key i decl
+                           ":files of a :man doc must end in a period and a digit from 1 to 9, not %v"
+                           file))))
 
 (defn- build-artifact-check-name
-  [i artifact]
-  (build-artifact-check-string i artifact :name)
-  (unless (string/check-set build-artifact-name-chars (get artifact :name))
-    (build-artifact-fail i artifact ":name may hold only letters, digits, `_` and `-`")))
+  [key i decl]
+  (build-artifact-check-string key i decl :name)
+  (unless (string/check-set build-artifact-name-chars (get decl :name))
+    (build-artifact-fail key i decl ":name may hold only letters, digits, `_` and `-`")))
 
 (defn- build-artifact-check-keys
-  [i artifact kind]
-  (def ok (get build-artifact-allowed-keys kind))
-  (each k (keys artifact)
+  [key i decl kind]
+  (def ok (get (get build-decl-keys key) kind))
+  (each k (keys decl)
+    (when (and (= key :exes) (= k :libs))
+      (build-artifact-fail key i decl ":libs is replaced by the :for of each lib"))
     (unless (has-value? ok k)
-      (build-artifact-fail i artifact "%v is not a key of %s %v" k
-                         (if (or (= kind :web) (= kind :src)) "a" "an") kind))))
+      (build-artifact-fail key i decl "%v is not a key of a %v %s" k kind
+                           (get build-decl-nouns key)))))
 
-(defn- build-artifact-check-libs
-  [i artifact by-name]
-  (def libs (get artifact :libs))
-  (when (nil? libs) (break))
-  (unless (vector? libs)
-    (build-artifact-fail i artifact ":libs must be a vector of names"))
+(defn- build-artifact-check-remote
+  """
+  Raises unless the :remote lib decl has a :url and the pin for it: :hash, a
+  `sha256:` tree hash, for a tarball, and :ref, a branch or tag, for a Git
+  repository. A :url that ends in .tar or .tar.gz is a tarball.
+  """
+  [key i decl]
+  (build-artifact-check-string key i decl :url)
+  (def url (get decl :url))
+  (if (or (string/has-suffix? ".tar" url) (string/has-suffix? ".tar.gz" url))
+    (do
+      (when (has-key? decl :ref)
+        (build-artifact-fail key i decl ":ref is for a Git repository, and a tarball is pinned by :hash"))
+      (def hash (get decl :hash))
+      (unless (and (string? hash) (= 71 (length hash)) (string/has-prefix? "sha256:" hash)
+                   (string/check-set "0123456789abcdef" (string/slice hash 7)))
+        (build-artifact-fail key i decl
+                             ":hash must be `sha256:` and 64 lowercase hexadecimal digits, the tree hash of the tarball")))
+    (do
+      (when (has-key? decl :hash)
+        (build-artifact-fail key i decl ":hash is for a tarball, and a Git repository is pinned by :ref"))
+      (build-artifact-check-string key i decl :ref))))
+
+(defn- build-artifact-check-for
+  "Raises unless the :for of decl is absent or a vector of the names of exes that may take decl."
+  [key i decl exes]
+  (def names (get decl :for))
+  (when (nil? names) (break))
+  (unless (vector? names)
+    (build-artifact-fail key i decl ":for must be a vector of exe names"))
   (def seen !{})
-  (each n libs
-    (when (map? n)
-      (build-artifact-fail i artifact
-                  ":libs holds a map, which is reserved for an external library"))
+  (each n names
     (unless (string? n)
-      (build-artifact-fail i artifact ":libs must hold strings, not %v" n))
+      (build-artifact-fail key i decl ":for must hold strings, not %v" n))
     (when (get seen n)
-      (build-artifact-fail i artifact ":libs names %s twice" n))
+      (build-artifact-fail key i decl ":for names %s twice" n))
     (put! seen n true)
-    (def target (get by-name n))
-    (unless target
-      (build-artifact-fail i artifact ":libs names %s, which no artifact declares" n))
-    (unless (= :lib (get target :type))
-      (build-artifact-fail i artifact ":libs names %s, which is not a :lib" n))))
+    (def exe (find #(= n (get $ :name)) exes))
+    (unless exe
+      (build-artifact-fail key i decl ":for names %s, which no exe declares" n))
+    (when (and (= key :libs) (= :web (get exe :type)))
+      (build-artifact-fail key i decl ":for names %s, a :web exe, which takes no lib" n))))
+
+(defn- build-artifacts-of
+  "Returns the vector under key of x, or an empty vector. Raises if it is not a vector."
+  [x key]
+  (def decls (get x key []))
+  (unless (vector? decls)
+    (errorf "info.edn: %v must be a vector" key))
+  decls)
 
 (defn- build-artifacts-checked
   [x]
   (unless (map? x)
     (error "info.edn: must hold a map"))
-  (def artifacts (get x :artifacts))
-  (when (nil? artifacts)
-    (error "info.edn: no :artifacts are declared"))
-  (unless (vector? artifacts)
-    (error "info.edn: :artifacts must be a vector"))
-  (def by-name !{})
-  (loop [[i artifact] :pairs artifacts]
-    (unless (map? artifact)
-      (errorf "info.edn: artifact %d must be a map" i))
-    (def kind (get artifact :type))
-    (unless (or (= kind :exe) (= kind :lib) (= kind :web) (= kind :src))
-      (build-artifact-fail i artifact ":type must be :exe, :lib, :web or :src"))
-    (build-artifact-check-name i artifact)
-    (def name (get artifact :name))
-    (when (get by-name name)
-      (build-artifact-fail i artifact ":name is already used by artifact %d"
-                          (get (get by-name name) :index)))
-    (put! by-name name {:index i :type kind})
-    (build-artifact-check-string i artifact (if (= kind :lib) :root :entry))
-    (build-artifact-check-keys i artifact kind)
-    (when (= kind :src)
-      (build-artifact-check-files i artifact)))
-  (loop [[i artifact] :pairs artifacts]
-    (build-artifact-check-libs i artifact by-name))
-  artifacts)
+  (when (has-key? x :artifacts)
+    (error "info.edn: :artifacts is replaced by :exes, :libs and :docs"))
+  (when (has-key? x :man)
+    (error "info.edn: :man is replaced by a :docs entry of :type :man"))
+  (unless (or (has-key? x :exes) (has-key? x :libs) (has-key? x :docs))
+    (error "info.edn: no :exes, :libs or :docs are declared"))
+  (var out {})
+  (each key [:exes :libs :docs]
+    (def decls (build-artifacts-of x key))
+    (def by-name !{})
+    (loop [[i decl] :pairs decls]
+      (unless (map? decl)
+        (errorf "info.edn: %s %d must be a map" (get build-decl-nouns key) i))
+      (def kind (get decl :type))
+      (unless (get (get build-decl-keys key) kind)
+        (build-artifact-fail key i decl ":type must be %s" (get build-decl-type-text key)))
+      (unless (= key :docs)
+        (build-artifact-check-name key i decl)
+        (def name (get decl :name))
+        (when-let [j (get by-name name)]
+          (build-artifact-fail key i decl ":name is already used by %s %d"
+                               (get build-decl-nouns key) j))
+        (put! by-name name i))
+      (build-artifact-check-keys key i decl kind)
+      (case [key kind]
+        [:exes :source] (do (build-artifact-check-string key i decl :entry)
+                            (build-artifact-check-files key i decl))
+        [:libs :native] (build-artifact-check-string key i decl :root)
+        [:libs :source] (build-artifact-check-files key i decl)
+        [:libs :remote] (build-artifact-check-remote key i decl)
+        [:docs :man] (do (build-artifact-check-files key i decl)
+                         (build-artifact-check-man key i decl))
+        [:docs :web] (build-artifact-check-files key i decl)
+        (build-artifact-check-string key i decl :entry)))
+    (set out (assoc out key decls)))
+  (each key [:libs :docs]
+    (loop [[i decl] :pairs (get out key)]
+      (build-artifact-check-for key i decl (get out :exes))))
+  out)
 
 (defn build/artifacts
   """
-  Checks the `:artifacts` of x, a map read from an info.edn, and returns them.
-  With kind, `:exe`, `:lib` or `:web`, returns only the artifacts of that kind, and
-  with name as well, only the one called name. The artifacts are in the order
-  x declares them. Raises an error naming the artifact and the key for a
-  missing or misplaced key, a name used twice, or a `:libs` entry that does not
-  name a `:lib`. Also raises if x declares no artifact of kind, or none called
-  name.
+  Checks the `:exes`, `:libs` and `:docs` of x, a map read from an info.edn,
+  and returns them as a map with those keys, each a vector in the order x
+  declares them. With key, one of the three, returns only that vector, with
+  kind as well, a `:type` or nil for any type, only the declarations of that
+  type, and with name as well, only the one called name. Raises an error naming
+  the declaration and the key for a missing or misplaced key, a name used twice
+  under one key, or a `:for` entry that does not name an exe of x. Raises for
+  `:artifacts`, for `:man` and for `:libs` in an exe, naming what replaces each.
+  With key, also raises if x declares nothing that matches.
   """
   ([x] (build-artifacts-checked x))
-  ([x kind] (build/artifacts x kind nil))
-  ([x kind name]
-    (def chosen (filter #(= kind (get $ :type)) (build-artifacts-checked x)))
+  ([x key] (build/artifacts x key nil nil))
+  ([x key kind] (build/artifacts x key kind nil))
+  ([x key kind name]
+    (def noun (get build-decl-nouns key))
+    (def what (if kind (string/format "%v %s" kind noun) noun))
+    (def chosen (filter #(or (nil? kind) (= kind (get $ :type)))
+                        (get (build-artifacts-checked x) key)))
     (when (empty? chosen)
-      (errorf "info.edn: no %v artifact is declared" kind))
+      (errorf "info.edn: no %s is declared" what))
     (if (nil? name)
       chosen
       (let [found (filter #(= name (get $ :name)) chosen)]
         (when (empty? found)
-          (errorf "info.edn: no %v artifact is called %s" kind name))
+          (errorf "info.edn: no %s is called %s" what name))
         found))))
+
+(defn build/for
+  """
+  Returns the declarations of decls, a vector of libs or docs that
+  ^build/artifacts returned, whose `:for` names the exe called name, in order.
+  """
+  [decls name]
+  (filter #(has-value? (get $ :for []) name) decls))
 
 ;;;
 ;;;
@@ -5417,9 +5505,9 @@
 
   (def- tree-skipped
     """
-    The names that are neither copied from a directory of a :src artifact nor
-    included in the revision of a tree: build output, caches, material that is
-    not committed and version control.
+    The names that are neither copied from a directory of a :source exe or lib
+    nor included in the revision of a tree: build output, caches, material that
+    is not committed and version control.
     """
     ["zig-out" ".zig-cache" ".wattle" ".git"])
 
@@ -5525,12 +5613,21 @@
           (def root (unpack-root dest))
           (f root (fn [] (or rev (tree-rev root))))))))
 
-  (defn- artifacts-of
+  (defn- app-exes-of
     """
-    Returns the artifacts of info that have type kind, in order.
+    Returns the exes of decls, the declarations that ^build/artifacts returns,
+    that have type kind, in order.
     """
-    [info kind]
-    (filter #(= kind (get $ :type)) (get info :artifacts ![])))
+    [decls kind]
+    (filter #(= kind (get $ :type)) (get decls :exes [])))
+
+  (defn- app-for-any
+    """
+    Returns the libs or docs of decls whose :for names any exe of exes, in order.
+    """
+    [decls exes]
+    (def names (map #(get $ :name) exes))
+    (filter (fn [decl] (find #(has-value? names $) (get decl :for []))) decls))
 
   (defn- app-man-section
     """
@@ -5541,7 +5638,7 @@
     [file]
     (def digit (last (string/split "." file)))
     (ensuref (and (= 1 (length digit)) (string/check-set "123456789" digit))
-             ":man entry %v must end in a period and a digit from 1 to 9" file)
+             ":man doc file %v must end in a period and a digit from 1 to 9" file)
     (string "man" digit))
 
   (defn- app-wattle-exe
@@ -5553,22 +5650,19 @@
     (def exe0 (dyn :executable "wattle"))
     (if (string/find (sep) exe0) (os/realpath exe0) exe0))
 
-  (defn- app-default-build
+  (defn- app-run-build
     """
-    Builds the :exe artifacts of info in the directory path, by running wattle
-    build exe there with the prefix of the install. Does nothing if info
-    declares none.
+    Runs wattle build with args in the directory dir, with the prefix of the
+    install. The output is not captured, so that it appears as the build runs
+    and Zig can draw its progress on a terminal. Raises naming `wattle build`
+    and the first of args if the build fails.
     """
-    [path info]
-    (when (next (artifacts-of info :exe))
-      (def exe (app-wattle-exe))
-      (def dir (os/cwd))
-      (os/cd path)
-      (defer (os/cd dir)
-        (print "building " (string/join ", " (map #(get $ :name) (artifacts-of info :exe))))
-        ; Not captured, so that the output of the build appears as it runs and
-        ; Zig can draw its progress on a terminal.
-        (run-tool-live "wattle build exe" exe "-p" (dyn *prefix*) "build" "exe"))))
+    [dir & args]
+    (def exe (app-wattle-exe))
+    (def cwd (os/cwd))
+    (os/cd dir)
+    (defer (os/cd cwd)
+      (run-tool-live (string "wattle build " (first args)) exe "-p" (dyn *prefix*) "build" |args)))
 
   (defn- app-copy-src
     """
@@ -5587,6 +5681,123 @@
                        (app-copy-src (string from s y) (string to s y)))))
       (failf ":files names %s, which does not exist" from)))
 
+  (defn- app-copy-files
+    """
+    Copies each path of files from the directory from to the same path under
+    the directory to, as ^app-copy-src copies it, and creates the directories
+    between. A path is relative and written with `/` or `\\`.
+    """
+    [from to files]
+    (def s (sep))
+    (each file files
+      (def parts (filter #(not (or (empty? $) (= $ "."))) (string/split "/" (string/replace-all "\\" "/" file))))
+      (var src from)
+      (var dest to)
+      (each part parts
+        (set src (string src s part))
+        (set dest (string dest s part)))
+      (unless (empty? parts)
+        (mkdirs (string/slice dest 0 (- (length dest) (length (last parts)) 1))))
+      (app-copy-src src dest)))
+
+  (defn- build/copy
+    """
+    Copies the :files of lib, a :source lib, from the directory from to
+    .wattle/<name> under the directory to, where each keeps its path. Removes
+    a copy made before. Creates .wattle with a .gitignore that excludes its
+    contents if it is missing. Raises if a path of :files does not exist.
+    """
+    [from to lib]
+    (def s (sep))
+    (def hidden (string to s ".wattle"))
+    (mkdirs hidden)
+    (def ignore (string hidden s ".gitignore"))
+    (unless (os/stat ignore :mode) (spit ignore "*\n"))
+    (def dest (string hidden s (get lib :name)))
+    (rmrf dest)
+    (mkdirs dest)
+    (app-copy-files from dest (get lib :files)))
+
+  (defn- build/fetched-dir
+    """
+    Returns the directory under .wattle in the root dir that holds the fetched
+    source of the :remote lib called name. Its record is the file of the same
+    name with .edn added.
+    """
+    [dir name]
+    (def s (sep))
+    (string dir s ".wattle" s ".remote" s name))
+
+  (defn- build/fetched
+    """
+    Returns the record of the :remote lib lib in the root dir, as
+    ^build/fetch writes it, or nil if lib was not fetched there or
+    was fetched with another :url, :ref or :hash.
+    """
+    [dir lib]
+    (def tree (build/fetched-dir dir (get lib :name)))
+    (def file (string tree ".edn"))
+    (when (and (fexists file) (= :directory (os/stat tree :mode)))
+      (def rec (parse (slurp file)))
+      (when (and (= (get rec :url) (get lib :url)) (= (get rec :ref) (get lib :ref))
+                 (= (get rec :hash) (get lib :hash)))
+        rec)))
+
+  (defn- build/fetch
+    """
+    Fetches the source of the :remote lib lib into .wattle/.remote/<name> under
+    the root dir and returns its record, a map of the :url and the :ref or
+    :hash of lib, :rev, the revision of the source as ^app/install records it,
+    and :form, the declaration of the lib in the info.edn of the source without
+    its :for. Returns the record of an earlier fetch with the same :url and pin
+    without fetching. tmp is the directory that a tarball or a clone is fetched
+    in. Raises as ^fail does if the tree hash of a tarball is not its :hash, if
+    the source has no info.edn or declares no lib of the same :name, or if that
+    lib is :remote.
+    """
+    [dir lib tmp]
+    (or (build/fetched dir lib)
+        (do
+          (def name (get lib :name))
+          (def tree (build/fetched-dir dir name))
+          (var rec nil)
+          (with-source (get lib :url) (get lib :ref) tmp
+            (fn [src rev]
+              (def r (rev))
+              (when-let [want (get lib :hash)]
+                (ensuref (= want r) "remote lib %s has the hash %s, and its :hash is %s" name r want))
+              (def info-file (string src (sep) "info.edn"))
+              (ensuref (fexists info-file)
+                       "remote lib %s: the source has no info.edn, so it is vendored and not fetched as a lib" name)
+              (def [ok found] (protect (build/artifacts (parse (slurp info-file)) :libs nil name)))
+              (unless ok (failf "remote lib %s: the source: %s" name found))
+              (def form (dissoc (first found) :for))
+              (ensuref (not= :remote (get form :type))
+                       "remote lib %s: the source declares it as :remote, so it is not the source of the lib" name)
+              (rmrf tree)
+              (mkdirs (string/slice tree 0 (- (length tree) (length name) 1)))
+              (app-copy-src src tree)
+              (set rec {:url (get lib :url) :rev r :form form})
+              (each k [:ref :hash]
+                (when-let [v (get lib k)] (set rec (assoc rec k v))))
+              (spit (string tree ".edn") (string/format "%m\n" rec))))
+          rec)))
+
+  (defn- build/resolve
+    """
+    Returns the declaration that the :remote lib lib has as rec, its record in
+    the root dir, describes it: a :native lib whose :root is an absolute path
+    into the fetched source, or a :source lib that has :from, the directory
+    that its :files are copied from. The :name and :for are those of lib.
+    """
+    [dir lib rec]
+    (def form (get rec :form))
+    (def tree (build/fetched-dir dir (get lib :name)))
+    (def base {:type (get form :type) :name (get lib :name) :for (get lib :for [])})
+    (case (get form :type)
+      :native (assoc base :root (string tree (sep) (get form :root)))
+      :source (assoc base :files (get form :files) :from tree)))
+
   (defn- app-require-zig
     """
     Raises if zig cannot be run, which is the case if it is not on the PATH.
@@ -5601,108 +5812,163 @@
         (ensure (and ok (zero? status)) "could not run zig, is it on the PATH?"))
       (fail "cannot run zig, this build has no os/execute")))
 
-  (defn- app-build-libs
+  (defn- app-native-lib-file
     """
-    Builds the :lib artifacts called names in the directory dir, by running
-    wattle build lib there with the prefix of the install, so that zig-out/lib
-    holds them. Does nothing if names is empty. Raises if Zig is not on the
-    PATH. The Zig cache of the build is removed.
+    Returns the shared library that wattle build lib wrote for the lib called
+    name under zig-out/lib in the directory dir. Raises if there is none.
     """
-    [dir names]
-    (when (next names)
-      (app-require-zig)
-      (def exe (app-wattle-exe))
-      (def s (sep))
-      (def cwd (os/cwd))
-      (os/cd dir)
-      (defer (do (os/cd cwd) (rmrf (string dir s ".zig-cache")))
-        (each name names
-          (print "building " name)
-          (run-tool-live "wattle build lib" exe "-p" (dyn *prefix*) "build" "lib" name)))))
+    [dir name]
+    (def s (sep))
+    (def ext (if (= :macos (os/which)) ".dylib" ".so"))
+    (def lib-dir (string dir s "zig-out" s "lib"))
+    (def found (find #(fexists (string lib-dir s $)) [(string name ext) (string "lib" name ext)]))
+    (ensuref found "wattle build lib wrote no shared library for %s in %s" name lib-dir)
+    (string lib-dir s found))
+
+  (defn- app-resolve-libs
+    """
+    Returns libs with each :remote lib fetched into the directory path, as
+    ^build/fetch fetches it, and replaced by the declaration that
+    ^build/resolve returns for it. The tarball or clone is fetched
+    under lib/wattle/.fetch of the prefix. Adds the :name, :url and :rev of
+    each :remote lib to :libs of manifest, once for each name.
+    """
+    [manifest path libs]
+    (def s (sep))
+    (def fetch-root (string (wattle/libpath) s ".fetch"))
+    (map (fn [lib]
+           (if (= :remote (get lib :type))
+             (do
+               (def rec (build/fetch path lib (string fetch-root s "lib")))
+               ; .fetch holds the source of the application too when that was
+               ; fetched, and is removed here only when nothing is left in it.
+               (when (and (= :directory (os/stat fetch-root :mode)) (empty? (os/dir fetch-root)))
+                 (os/rmdir fetch-root))
+               (def recorded (get manifest :libs ![]))
+               (unless (find #(= (get lib :name) (get $ :name)) recorded)
+                 (array/push! recorded {:name (get lib :name) :url (get lib :url) :rev (get rec :rev)}))
+               (put! manifest :libs recorded)
+               (build/resolve path lib rec))
+             lib))
+         libs))
+
+  (defn- app-default-build
+    """
+    Builds the :native exes of decls in the directory path, by running wattle
+    build exe there with the prefix of the install. First fetches each :remote
+    lib whose :for names a :native exe into path, as ^app-resolve-libs does,
+    and copies each :source lib, and each :remote lib whose source declares it
+    :source, to .wattle in path, so that the build compiles it into the exe.
+    Does nothing if decls declares no :native exe.
+    """
+    [manifest path decls]
+    (def natives (app-exes-of decls :native))
+    (when (next natives)
+      (each lib (app-resolve-libs manifest path (app-for-any (get decls :libs) natives))
+        (when (= :source (get lib :type))
+          (build/copy (get lib :from path) path lib)))
+      (print "building " (string/join ", " (map #(get $ :name) natives)))
+      (app-run-build path "exe")))
 
   (defn- app-add-binscript
     """
-    Adds to manifest the program called artifact-name in the binpath. The
-    program starts with the line #!/usr/bin/env wattle and calls ^app/run with
-    group, app-name and entry, the path of the entry file of the :src artifact
-    artifact-name. dir is the application directory.
+    Adds to manifest the program called exe-name in the binpath. The program
+    starts with the line #!/usr/bin/env wattle and calls ^app/run with group,
+    app-name and entry, the path of the entry file of the :source exe exe-name.
+    dir is the application directory.
     """
-    [manifest dir group app-name artifact-name entry]
+    [manifest dir group app-name exe-name entry]
     (def tmp (string dir (sep) ".binscript"))
     (spit tmp (string "#!/usr/bin/env wattle\n"
                       (string/format "(app/run %q %q %q)\n" group app-name entry)))
     (defer (rmrf tmp)
-      (app/add-bin manifest tmp artifact-name)))
+      (app/add-bin manifest tmp exe-name)))
 
   (defn- app-install-src
     """
-    Installs the :src artifacts of info: copies the :files of each from the
-    directory path into the application directory of manifest, builds the :libs
-    of each there, and adds the program that runs its :entry. Raises if the
-    :entry is not among the :files.
+    Installs the :source exes of decls: copies the :files of each from the
+    directory path into the application directory of manifest, places there
+    each lib whose :for names a :source exe, and adds the program that runs the
+    :entry of each. A :remote lib is fetched into path first, as
+    ^app-resolve-libs does, and has the form its source declares. A :source lib
+    is copied to .wattle, and a :native lib is built in path and its shared
+    library copied to zig-out/lib. Raises if an :entry is not among the
+    :files, or if Zig is not on the PATH and a :native lib is to be built.
     """
-    [manifest path info]
+    [manifest path decls]
     (def s (sep))
     (def group (get manifest :group))
     (def app-name (get manifest :name))
     (def dir (app-dir-in group app-name))
-    (each artifact (artifacts-of info :src)
-      (each file (get artifact :files)
-        (def parts (filter #(not (or (empty? $) (= $ "."))) (string/split "/" (string/replace-all "\\" "/" file))))
-        (var from path)
-        (var to dir)
-        (each part parts
-          (set from (string from s part))
-          (set to (string to s part)))
-        (unless (empty? parts)
-          (mkdirs (string/slice to 0 (- (length to) (length (last parts)) 1))))
-        (app-copy-src from to))
-      (def entry (get artifact :entry))
+    (def sources (app-exes-of decls :source))
+    (each exe sources
+      (app-copy-files path dir (get exe :files))
+      (def entry (get exe :entry))
       (ensuref (fexists (string dir s entry))
-               ":entry %s of %s is not among its :files" entry (get artifact :name))
-      (app-build-libs dir (get artifact :libs ![]))
-      (app-add-binscript manifest dir group app-name (get artifact :name) entry)))
+               ":entry %s of %s is not among its :files" entry (get exe :name)))
+    (each lib (app-resolve-libs manifest path (app-for-any (get decls :libs) sources))
+      (def name (get lib :name))
+      (case (get lib :type)
+        :source (build/copy (get lib :from path) dir lib)
+        :native (do
+                  (app-require-zig)
+                  (print "building " name)
+                  (app-run-build path "lib" name)
+                  (def built (app-native-lib-file path name))
+                  (def lib-dir (string dir s "zig-out" s "lib"))
+                  (mkdirs lib-dir)
+                  (copyfile built (string lib-dir s (last (string/split s built)))))))
+    (each exe sources
+      (app-add-binscript manifest dir group app-name (get exe :name) (get exe :entry))))
 
   (defn- app-default-install
     """
-    Adds to manifest the program of each :exe artifact of info, from zig-out/bin
-    under path, and each file in the :man of info. Copies each :src artifact to
-    the application directory, as ^app-install-src does. Raises if info
-    declares a :lib artifact that no :src artifact names in its :libs.
+    Adds to manifest the program of each :native exe of decls, from zig-out/bin
+    under path, and each file of each :man doc whose :for names a :native or
+    :source exe. Installs each :source exe in the application directory, as
+    ^app-install-src does. A lib or a doc whose :for names no such exe is not
+    installed.
     """
-    [manifest path info]
+    [manifest path decls]
     (def s (sep))
-    (def named !{})
-    (each artifact (artifacts-of info :src)
-      (each name (get artifact :libs ![])
-        (put! named name true)))
-    (each artifact (artifacts-of info :lib)
-      (unless (get named (get artifact :name))
-        (fail "a :lib artifact is installed only by an application script or a :src artifact that names it in :libs")))
+    (def natives (app-exes-of decls :native))
+    (def installed (array/concat! ![] natives (app-exes-of decls :source)))
     (def ext (if (get seps (os/which)) ".exe" ""))
     ; The manifest is written first on a failure so that the removal that
     ; follows removes the files added so far.
     (edefer (sync-manifest manifest)
-      (app-install-src manifest path info)
-      (each artifact (artifacts-of info :exe)
-        (def file (string (get artifact :name) ext))
+      (app-install-src manifest path decls)
+      (each exe natives
+        (def file (string (get exe :name) ext))
         (app/add-bin manifest (string path s "zig-out" s "bin" s file) file))
-      (each file (get info :man ![])
-        ; The separator on Windows is a backslash, so an entry written with
-        ; forward slashes is split at both.
-        (def base (last (string/split "/" (string/replace-all s "/" file))))
-        (app/add-manpage manifest (string path s file) (app-man-section file) base))))
+      (each doc (app-for-any (get decls :docs) installed)
+        (each file (get doc :files)
+          ; The separator on Windows is a backslash, so a path written with
+          ; forward slashes is split at both.
+          (def base (last (string/split "/" (string/replace-all s "/" file))))
+          (app/add-manpage manifest (string path s file) (app-man-section file) base)))))
 
-  (defn- app-check-src
+  (defn- app-decls
     """
-    Raises if the :src artifacts of info are not valid or if the platform has no
-    shebang lines. Does nothing if info declares none.
+    Returns the declarations of info as ^build/artifacts returns them, or nil
+    if info is nil or declares none of :exes, :libs and :docs. Raises as ^fail
+    does if they are not valid, if a :web doc names an exe that is installed in
+    its :for, or if info declares a :source exe on Windows, which has no
+    shebang lines.
     """
     [info]
-    (when (next (artifacts-of info :src))
-      (try (build/artifacts info) ([e] (fail e)))
-      (ensure (nil? (get seps (os/which)))
-              "a :src artifact cannot be installed on Windows, which has no shebang lines")))
+    (when (and info (find #(has-key? info $) [:exes :libs :docs :artifacts :man]))
+      (def decls (try (build/artifacts info) ([e] (fail e))))
+      (def installed (map #(get $ :name) (filter #(not= :web (get $ :type)) (get decls :exes))))
+      (loop [[i doc] :pairs (get decls :docs)
+             :when (= :web (get doc :type))
+             n :in (get doc :for [])]
+        (ensuref (not (has-value? installed n))
+                 "info.edn: doc %d: a :web doc is not installed, and its :for names %s" i n))
+      (when (get seps (os/which))
+        (ensure (not (find #(= :source (get $ :type)) (get decls :exes)))
+                "a :source exe cannot be installed on Windows, which has no shebang lines"))
+      decls))
 
   (defn- app-install-dir
     """
@@ -5720,9 +5986,9 @@
     (def bscript-src (cond
                        (fexists bscript-src1) bscript-src1
                        (fexists bscript-src2) bscript-src2))
-    (when info (app-check-src info))
-    (ensure (or bscript-src (get info :artifacts) (get info :man))
-            "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :artifacts or :man")
+    (def decls (app-decls info))
+    (ensure (or bscript-src (get info :exes))
+            "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :exes")
     ; Detect application name
     (def app-name (get config :name (get info :name)))
     (ensuref app-name
@@ -5770,8 +6036,8 @@
           (do-hook module app-name :build man)
           (do-hook module app-name :install man))
         (do
-          (app-default-build path info)
-          (app-default-install man path info)))
+          (app-default-build man path decls)
+          (app-default-install man path decls)))
       (if (empty? (get man :files)) (print "no files installed, is this a valid application?"))
       (sync-manifest man)
       (when (and module check)
@@ -5803,7 +6069,7 @@
     installation (clean, build, install and check). A user can
     register a hook by defining a function with the same name in the application
     script. An application without hooks.wattle or hooks/init.wattle is built and
-    installed from the :artifacts and :man of its info file instead.
+    installed from the :exes, :libs and :docs of its info file instead.
     """
     [source & {:as config}]
     ; A :source in config marks a root that was fetched earlier, so its :ref is
@@ -6073,25 +6339,25 @@
 (defn build/zig-files
   """
   Returns a table with the text of the build.zig and the build.zig.zon that
-  build the artifacts of x, a map read from an info.edn, under :build and :zon.
-  kind is `:exe`, `:lib` or `:web`. With name, only the artifact called name is built.
-  opts is a map with three directories: :dir, the absolute path of the project,
-  which relative artifact paths are resolved against, :srcpath, the Wattle
+  build the declarations of x, a map read from an info.edn, under :build and
+  :zon. kind is `:exe` for the :native exes, `:lib` for the :native libs or
+  `:web` for the :web exes. With name, only the declaration called name is
+  built. opts is a map with three directories: :dir, the absolute path of the
+  project, which relative paths are resolved against, :srcpath, the Wattle
   package, and :gen, the directory the two files are written to. :srcpath and
   :gen are resolved against :dir where they are relative. An executable is
-  built with the libs it names in :libs linked in, and without docstrings
-  unless the optimize mode is Debug. A lib is built as a shared library. A web
-  artifact is built as an image and a runtime for a browser, with no docstrings,
-  whatever the target is.
-  Raises if ^build/artifacts raises for x, kind and name.
+  built with the :native libs whose :for names it linked in, and without
+  docstrings unless the optimize mode is Debug. A lib is built as a shared
+  library. A web exe is built as an image and a runtime for a browser, with no
+  docstrings, whatever the target is.
+  Raises if ^build/artifacts raises for x and the key, the type and name that
+  kind and name select.
   """
   ([x kind opts] (build/zig-files x kind nil opts))
   ([x kind name opts]
-    (def chosen (build/artifacts x kind name))
-    (def libs !{})
-    (each artifact (get x :artifacts)
-      (when (= :lib (get artifact :type))
-        (put! libs (get artifact :name) artifact)))
+    (def [key type] (case kind :exe [:exes :native] :lib [:libs :native] :web [:exes :web]))
+    (def chosen (build/artifacts x key type name))
+    (def native-libs (filter #(= :native (get $ :type)) (get x :libs [])))
     (def dir (get opts :dir))
     (defn zig-path [path]
       (string ".{ .cwd_relative = \"" (build-zig-string (build-absolute-path dir path)) "\" }"))
@@ -6134,10 +6400,9 @@
           (buffer/format! b "        .name = \"%s\",\n" artifact-name)
           (buffer/format! b "        .source = %s,\n" (zig-path (get artifact :entry)))
           (buffer/push! b "        .natives = &.{\n")
-          (each lib-name (get artifact :libs [])
-            (def lib (get libs lib-name))
+          (each lib (build/for native-libs (get artifact :name))
             (buffer/format! b "            .{ .name = \"%s\", .root = %s },\n"
-                            (build-zig-string lib-name) (zig-path (get lib :root))))
+                            (build-zig-string (get lib :name)) (zig-path (get lib :root))))
           (buffer/push! b
             "        },\n"
             "        .target = target,\n"
@@ -6190,21 +6455,21 @@
 
 (def- modpath-hidden-dir
   """
-  The directory of a root, beside `deps`, that holds material that is not
-  committed.
+  The directory of a root that holds material that is not committed.
   """
   ".wattle")
 
 (defn- modpath-of
   """
   Returns the module path of the root dir, a project or an installed
-  application, as a vector: the deps directory, the directory for material that
-  is not committed and the directory that `wattle build lib` writes native
-  modules to. Each is in the real path of dir where the build can resolve one.
+  application, as a vector: the directory for material that is not committed
+  and the directory that `wattle build lib` writes native modules to. Each is
+  in the real path of dir where the build can resolve one. The deps directory
+  is not on it, so vendored source is imported by a relative path.
   """
   [dir]
   (def root (compif (dyn 'os/realpath) (os/realpath dir) dir))
-  [(string root "/deps") (string root "/" modpath-hidden-dir) (string root "/zig-out/lib")])
+  [(string root "/" modpath-hidden-dir) (string root "/zig-out/lib")])
 
 (defn- run-main
   [env subargs]
@@ -6233,7 +6498,7 @@
   (defn app/run
     """
     Runs the entry file of the installed application app-name in group, which
-    the binscript of a `:src` artifact calls with its own group, name and the
+    the binscript of a `:source` exe calls with its own group, name and the
     path of the entry file relative to the application directory. Sets
     ^*modpath* for the whole program, as the command line does, to the module
     path of the application directory, loads the entry
@@ -6358,7 +6623,7 @@
      :rules []
      :subs
      ["exe" {:validate? validate?
-             :help "Build the executables that info.edn declares."
+             :help "Build the native executables that info.edn declares."
              :rules [|cli-target-rules
                      :name {:proxy "name"
                             :help "The executable to build. The default is every executable."}]}
@@ -6371,10 +6636,10 @@
                      :output {:proxy "output"
                               :help "The image path. The default is the source path with .wimage in place of .wattle."}]}
       "lib" {:validate? validate?
-             :help "Build the native modules that info.edn declares."
+             :help "Place the libs that info.edn declares on the module path: copy source libs, fetch remote libs and build native libs."
              :rules [|cli-target-rules
                      :name {:proxy "name"
-                            :help "The native module to build. The default is every native module."}]}
+                            :help "The lib to place. The default is every lib."}]}
       "web" {:validate? validate?
              :help "Build the web programs that info.edn declares: an image, a runtime for a browser and the JavaScript that loads them."
              :rules [|cli-web-rules
@@ -6771,10 +7036,131 @@
 (def- cli-zig-build-file "build.zig")
 (def- cli-zig-cache ".zig-cache")
 
+(compwhen (dyn 'os/spawn)
+
+  (defn- cli-zig-build
+    """
+    Builds the declarations of kind that info, read from the info.edn in dir,
+    declares, or only the one called name, by writing a build.zig and a
+    build.zig.zon under .zig-cache and running zig build on them in mode. opts
+    holds the options of the command. Exits with status 1 and a message on a
+    failure that is not zig's own.
+    """
+    [kind opts mode dir info name]
+    (def gen (string dir "/" cli-zig-cache "/wattle-build"))
+    (def [src-ok src] (protect (wattle/srcpath)))
+    (unless src-ok (cli-fail "error: " src))
+    ; A relative prefix is relative to the working directory.
+    (def [real-ok real] (protect (os/realpath src)))
+    (def srcpath (if real-ok real (build-absolute-path dir src)))
+    (def [ok files]
+      (protect (build/zig-files info kind name
+                               {:dir dir :srcpath srcpath :gen gen})))
+    (unless ok (cli-fail "error: " files))
+    (def zon-path (string srcpath "/" cli-zig-build-file ".zon"))
+    (unless (fexists zon-path)
+      (cli-fail "the Wattle package is not at " srcpath ": " zon-path " does not exist"))
+    (def [zig-ok _]
+      ; A build without the event loop gives `os/spawn` a file for each pipe
+      ; rather than a stream, and `file/read` reads it.
+      (protect (let [p (os/spawn ["zig" "version"] :p {:out :pipe})
+                     out (compif (dyn 'ev/read)
+                           (ev/read (p :out) :all)
+                           (file/read (p :out) :all))]
+                 (os/proc-wait p)
+                 (string/trim out))))
+    (unless zig-ok (cli-fail "zig was not found on the PATH, and wattle build needs it"))
+    (mkdirs gen)
+    (each [file text] [[cli-zig-build-file (get files :build)] [(string cli-zig-build-file ".zon") (get files :zon)]]
+      (def path (string gen "/" file))
+      (unless (and (os/stat path :mode) (= text (slurp path)))
+        (spit path text)))
+    (def args
+      ["zig" "build" "--build-file" (string gen "/" cli-zig-build-file)
+       "--prefix" (string dir "/zig-out") "--cache-dir" (string dir "/" cli-zig-cache)
+       (string "-Doptimize=" mode)
+       |(if-let [triple (get opts "target")] [(string "-Dtarget=" triple)] [])])
+    (def status (os/execute args :p))
+    (unless (zero? status) (os/exit status))
+    (print "built " kind " in " dir "/zig-out"))
+
+  (defn- cli-copy-web-docs
+    """
+    Copies the :files of each doc whose :for names a :web exe of info, or only
+    the one called name, into zig-out/web/<exe> under dir, where each keeps its
+    path. Exits with status 1 and a message on a failure.
+    """
+    [dir info name]
+    (def docs (get info :docs []))
+    (each exe (build/artifacts info :exes :web name)
+      (def exe-name (get exe :name))
+      (each doc (build/for docs exe-name)
+        (def [ok err] (protect (app-copy-files dir (string dir "/zig-out/web/" exe-name) (get doc :files))))
+        (unless ok (cli-fail "error: " err))
+        (print "copied doc " (string/join ", " (get doc :files)) " to " dir "/zig-out/web/" exe-name))))
+
+  (defn- cli-fetch-libs
+    """
+    Returns chosen, libs that ^build/artifacts returned, with each :remote lib
+    fetched into .wattle under dir, the directory of the project, as
+    ^build/fetch fetches it, and replaced by the declaration that
+    ^build/resolve returns for it. Exits with status 1 and a
+    message on a failure.
+    """
+    [dir chosen]
+    (map (fn [lib]
+           (if (= :remote (get lib :type))
+             (let [[ok rec] (protect (build/fetch dir lib (string dir "/.wattle/fetch")))]
+               (unless ok (cli-fail "error: " rec))
+               (print "fetched lib " (get lib :name) " at " (get rec :rev))
+               (build/resolve dir lib rec))
+             lib))
+         chosen))
+
+  (defn- cli-resolved-info
+    """
+    Returns info with each :remote lib replaced by the :native lib that
+    ^build/resolve returns for it, for a lib fetched into .wattle
+    under dir, and without the others. Exits with status 1 and a message if a
+    :remote lib whose :for names a :native exe is not fetched, for kind `:exe`.
+    """
+    [dir info kind]
+    (def natives (map #(get $ :name) (filter #(= :native (get $ :type)) (get info :exes []))))
+    (def libs ![])
+    (each lib (get info :libs [])
+      (if (= :remote (get lib :type))
+        (if-let [rec (build/fetched dir lib)]
+          (let [resolved (build/resolve dir lib rec)]
+            (when (= :native (get resolved :type))
+              (array/push! libs resolved)))
+          (when (and (= kind :exe) (find #(has-value? natives $) (get lib :for [])))
+            (cli-fail "remote lib " (get lib :name) " is not fetched; run wattle build lib")))
+        (array/push! libs lib)))
+    (if (has-key? info :libs) (assoc info :libs (vec libs)) info))
+
+  (defn- cli-place-libs
+    """
+    Copies each :source lib of chosen, libs that ^cli-fetch-libs returned, to
+    .wattle under dir, the directory of the project, and prints where it went.
+    A :source lib is copied from its :from, or from dir. Exits with status 1
+    and a message on a failure.
+    """
+    [dir chosen]
+    (each lib chosen
+      (when (= :source (get lib :type))
+        (def name (get lib :name))
+        (def [ok err] (protect (build/copy (get lib :from dir) dir lib)))
+        (unless ok (cli-fail "error: " err))
+        (print "copied lib " name " to " dir "/.wattle/" name)))))
+
 (defn- cli-build-artifacts
   """
-  Builds the artifacts of kind, `:exe`, `:lib` or `:web`, that the info.edn in the
-  current directory declares, by writing a build.zig and a build.zig.zon under
+  Builds the declarations of kind, `:exe`, `:lib` or `:web`, that the info.edn
+  in the current directory declares. For `:lib` it first fetches each :remote
+  lib and copies each :source lib to .wattle, and does nothing more if no
+  :native lib is chosen. A :native lib that a :remote lib was fetched as is
+  built and linked from its fetched source. A :native
+  declaration is built by writing a build.zig and a build.zig.zon under
   .zig-cache and running zig build on them. Exits with status 1 and a message
   on a failure that is not zig's own.
   """
@@ -6782,48 +7168,27 @@
   (compif (dyn 'os/spawn)
     (do
       (def opts (get cmd :opts))
+      (def name (get (get cmd :params) :name))
       (def mode (get cli-release-modes (get opts "release" (if (= kind :web) "small" "safe"))))
       (unless mode (cli-fail "release must be safe, fast or small"))
       (def dir (os/realpath (os/cwd)))
       (def info-path (string dir "/info.edn"))
       (unless (fexists info-path) (cli-fail "no info.edn in " dir))
       (def info (parse (slurp info-path)))
-      (def gen (string dir "/" cli-zig-cache "/wattle-build"))
-      (def [src-ok src] (protect (wattle/srcpath)))
-      (unless src-ok (cli-fail "error: " src))
-      ; A relative prefix is relative to the working directory.
-      (def [real-ok real] (protect (os/realpath src)))
-      (def srcpath (if real-ok real (build-absolute-path dir src)))
-      (def [ok files]
-        (protect (build/zig-files info kind (get (get cmd :params) :name)
-                                 {:dir dir :srcpath srcpath :gen gen})))
-      (unless ok (cli-fail "error: " files))
-      (def zon-path (string srcpath "/" cli-zig-build-file ".zon"))
-      (unless (fexists zon-path)
-        (cli-fail "the Wattle package is not at " srcpath ": " zon-path " does not exist"))
-      (def [zig-ok _]
-        ; A build without the event loop gives `os/spawn` a file for each pipe
-        ; rather than a stream, and `file/read` reads it.
-        (protect (let [p (os/spawn ["zig" "version"] :p {:out :pipe})
-                       out (compif (dyn 'ev/read)
-                             (ev/read (p :out) :all)
-                             (file/read (p :out) :all))]
-                   (os/proc-wait p)
-                   (string/trim out))))
-      (unless zig-ok (cli-fail "zig was not found on the PATH, and wattle build needs it"))
-      (mkdirs gen)
-      (each [file text] [[cli-zig-build-file (get files :build)] [(string cli-zig-build-file ".zon") (get files :zon)]]
-        (def path (string gen "/" file))
-        (unless (and (os/stat path :mode) (= text (slurp path)))
-          (spit path text)))
-      (def args
-        ["zig" "build" "--build-file" (string gen "/" cli-zig-build-file)
-         "--prefix" (string dir "/zig-out") "--cache-dir" (string dir "/" cli-zig-cache)
-         (string "-Doptimize=" mode)
-         |(if-let [triple (get opts "target")] [(string "-Dtarget=" triple)] [])])
-      (def status (os/execute args :p))
-      (unless (zero? status) (os/exit status))
-      (print "built " kind " in " dir "/zig-out"))
+      (let [[ok err] (protect (build/artifacts info))]
+        (unless ok (cli-fail "error: " err)))
+      (def native?
+        (if (= kind :lib)
+          (let [[ok chosen] (protect (build/artifacts info :libs nil name))]
+            (unless ok (cli-fail "error: " chosen))
+            (def resolved (cli-fetch-libs dir chosen))
+            (cli-place-libs dir resolved)
+            (truthy? (find #(= :native (get $ :type)) resolved)))
+          true))
+      (when native?
+        (cli-zig-build kind opts mode dir (cli-resolved-info dir info kind) name))
+      (when (= kind :web)
+        (cli-copy-web-docs dir info name)))
     (cli-fail "build " kind " is not supported " cli-no-spawn)))
 
 (defn- cli-build [build]

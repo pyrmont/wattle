@@ -754,7 +754,7 @@ pub fn build(b: *std.Build) void {
     if (!wasm) client.link_gc_sections = false;
     b.installArtifact(client);
     if (!wasm) {
-        for ([_][]const u8{ "wattle.1", "wattle-apps.1", "wattle-build.1", "wattle-check.1", "wattle-deps.1", "wattle-gum.1", "wattle-run.1", "wattle-test.1", "wattle-applications.7", "wattle.7" }) |page| {
+        for ([_][]const u8{ "wattle.1", "wattle-apps.1", "wattle-build.1", "wattle-check.1", "wattle-deps.1", "wattle-gum.1", "wattle-run.1", "wattle-test.1", "wattle-applications.7", "wattle-projects.7", "wattle.7" }) |page| {
             const dir = if (std.mem.endsWith(u8, page, ".7")) "man7" else "man1";
             b.getInstallStep().dependOn(&b.addInstallFileWithDir(b.path(b.fmt("man/{s}/{s}", .{ dir, page })), .{ .custom = b.fmt("share/man/{s}", .{dir}) }, page).step);
         }

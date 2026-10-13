@@ -79,9 +79,9 @@ _wattle() {
                 b|build)
                     if (( CURRENT == 2 )); then
                         _values 'target' \
-                            'exe[Build the executables that info.edn declares]' \
+                            'exe[Build the native executables that info.edn declares]' \
                             'img[Compile a source file into an image]' \
-                            'lib[Build the native modules that info.edn declares]' \
+                            'lib[Place the libs that info.edn declares on the module path]' \
                             'web[Build the web programs that info.edn declares]' && ret=0
                     else
                         local target=$words[2]

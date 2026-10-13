@@ -1,4 +1,4 @@
 {:name "errors"
- :artifacts [{:type :web
-              :name "errors"
-              :entry "main.wattle"}]}
+ :exes [{:type :web
+         :name "errors"
+         :entry "main.wattle"}]}

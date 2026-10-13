@@ -399,9 +399,11 @@ A name that does not begin with ``.``, ``/`` or ``@`` is a bare import, as in
 command sets ``:modpath`` before it loads a program. ``wattle run`` looks for
 ``info.edn`` in the directory of the script, and ``wattle test`` and
 ``wattle build`` look in the working directory. Neither searches the parent
-directories. ``:modpath`` is the ``deps`` directory of that project followed by
-its ``.wattle`` directory, which holds material that is not committed, such as
-built native modules. A native module is also found under a name that begins
+directories. ``:modpath`` is the ``.wattle`` directory of that project, which
+holds material that is not committed, such as copied libraries, followed by its
+``zig-out/lib`` directory, which holds built native modules. Vendored source in
+``deps`` is not on it and is imported by a relative path, as in
+``(import ./deps/gum/args)``. A native module is also found under a name that begins
 with ``lib``, so ``(import greet)`` loads ``greet.so`` or ``libgreet.so``. With no ``info.edn``, ``:modpath`` is not set and a bare
 import fails. No installed library is importable by another program, and no
 environment variable or option sets ``:modpath``.
@@ -425,7 +427,7 @@ result:
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-applications(7)`
+`wattle(1)`, `wattle-projects(7)`, `wattle-applications(7)`
 
 The REPL's ``(doc)`` lists available bindings, and ``(doc symbol)`` describes
 one. Example programs are distributed with the Wattle source tree.
