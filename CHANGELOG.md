@@ -3,7 +3,7 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
-## Unreleased
+## 0.2.1 (2026-10-15)
 
 - Strip debug information from the Windows release build and leave
   `wattle.pdb` out of its archive. The archive shrinks from about 4.2 MB to
