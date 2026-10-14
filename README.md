@@ -317,7 +317,8 @@ program to create a standalone executable. `wattle build exe` will create the
 native executables specified under `:exes` in the project's `info.edn`, each
 linked with the native libs whose `:for` names it. `wattle build lib` makes
 each native lib as a shared library, copies each source lib to `.wattle` and
-fetches each remote lib. Both need Zig on the `PATH`, and
+fetches each remote lib. `wattle build exe` does the same for the source and
+remote libs of the exes it builds. Both need Zig on the `PATH`, and
 the prefix, `WATTLE_PREFIX` or `--prefix`. `<prefix>/share/wattle` must point
 to a copy of the Wattle source. An example `info.edn` file could look like
 this:

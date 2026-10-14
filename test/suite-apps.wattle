@@ -107,7 +107,7 @@
 (assert (= 0 (length (app/list))) "applications are listed correctly 7")
 
 ; Programs and man pages go to bin and share/man under the root. Upgrading goes
-; through app/pack, which recreates each kind.
+; through app-pack, which recreates each kind.
 (def hello (string root "/bin/hello"))
 (def hello-man (string root "/share/man/man1/hello.1"))
 (assert-no-error "app-program install"
@@ -230,19 +230,27 @@
   (let [exe (dyn :executable)]
     (if (or (string/find "/" exe) (string/find "\\" exe)) (os/realpath exe) exe)))
 
-(defn- run-cli
-  [& args]
+(defn- run-cli-with
+  "Runs the wattle executable as `run-cli` does, with the environment variables of env, a map, set while it runs."
+  [env & args]
   (def out-file (string prefix "-cli-out"))
   (def err-file (string prefix "-cli-err"))
   (def out (file/open out-file :wb))
   (def err (file/open err-file :wb))
-  (def status (os/execute [cli-exe "-p" (dyn *prefix*) |args] :p {:out out :err err}))
+  (def status (do
+                 (each [k v] (pairs env) (os/setenv k v))
+                 (defer (each k (keys env) (os/setenv k nil))
+                   (os/execute [cli-exe "-p" (dyn *prefix*) |args] :p {:out out :err err}))))
   (file/close out)
   (file/close err)
   (def text (string (slurp err-file)))
   (rmrf out-file)
   (rmrf err-file)
-  [status text]))
+  [status text])
+
+(defn- run-cli
+  [& args]
+  (run-cli-with {} |args)))
 
 ; An application with no script is installed from its info file. The case has no
 ; :native exe, since building one needs a prefix that holds the runtime's source,
@@ -268,7 +276,7 @@
                   :exes [man-exe]
                   :docs [{:type :man :files ["docs/man-app.1" "docs/man-app.7"] :for ["man-app"]}
                          {:type :man :files ["docs/other.5"]}]
-                  :libs [{:type :source :name "unused" :files ["docs"]}]})
+                  :libs [{:type :source :name "unused" :root "docs"}]})
   (assert-no-error "info-only install" (with-dyns [*err* !""] (app/install info-dir)))
   (assert (string/find "MAN-PKG 1" (slurp (string prefix "/share/man/man1/man-app.1")))
           "a .1 file goes to man1")
@@ -480,18 +488,18 @@
   (assert-error "a ref with a tarball"
                 (install-quietly (string "file://" src-dir "/demo.tar") :ref "v1"))
 
-  ; A :remote lib is fetched from a Git repository at its :ref or from a
-  ; tarball whose tree hash is its :hash, and has the form that the info.edn of
-  ; the source declares. `wattle build lib` fetches it into .wattle/.remote
-  ; and copies a :source form to .wattle, and `apps install` does the same for
-  ; the application directory and records the revision.
+  ; A :remote lib is pinned by its :hash: the commit of a Git repository, or the
+  ; tree hash of a tarball. It has the form that the info.edn of the source
+  ; declares. `wattle build lib` fetches it into .wattle/.remote and copies a
+  ; :source form to .wattle, and `apps install` does the same for the
+  ; application directory and records the revision.
   (let [colour (string src-dir "/colour")
         plain (string src-dir "/plain")
         proj (string src-dir "/remote-proj")
         cgit ["git" "-C" colour "-c" "commit.gpgsign=false" "-c" "user.name=t" "-c" "user.email=t@t"]
         pgit ["git" "-C" plain "-c" "commit.gpgsign=false" "-c" "user.name=t" "-c" "user.email=t@t"]
         tarball (string src-dir "/colour.tar")
-        tree-hash "sha256:7e101494b76b28e303ae7249c5f660f5262a8cbb250773f1143b7d54f58e22a2"
+        tree-hash "sha256:71802e695739a15d10843149586377dcfc31d3a713f8680cf77a0bcbe39fb12a"
         app-path (string root "/lib/wattle/apps/org.wattle.tests/remote-app")
         consumer (fn [lib]
                    (spit (string proj "/info.edn")
@@ -499,16 +507,18 @@
                                               :exes [{:type :source :name "remote-bin" :entry "main.wattle"
                                                       :files ["main.wattle"]}]
                                               :libs [(assoc lib :name (get lib :name "colour") :for ["remote-bin"])]})))
-        rev-of (fn [ref]
+        rev-in (fn [at ref]
                  (def path (string prefix "-git-out"))
                  (def f (file/open path :wb))
-                 (os/execute ["git" "-C" colour "rev-parse" ref] :p {:out f :err null})
+                 (os/execute ["git" "-C" at "rev-parse" ref] :p {:out f :err null})
                  (file/close f)
                  (def text (string/trim (string (slurp path))))
                  (rmrf path)
-                 text)]
+                 text)
+        rev-of (fn [ref] (rev-in colour ref))
+        rev-of-plain (fn [] (rev-in plain "HEAD"))]
     (each dir [colour (string colour "/colour") plain proj] (assert (os/mkdir dir)))
-    (spit (string colour "/info.edn") "{:libs [{:type :source :name \"colour\" :files [\"colour\"]}]}\n")
+    (spit (string colour "/info.edn") "{:libs [{:type :source :name \"colour\" :root \"colour\"}]}\n")
     (spit (string colour "/colour/init.wattle") "(def c \"red\")\n")
     (sh "tar" "-cf" tarball "-C" src-dir "colour")
     (sh "git" "-C" colour "init" "-q" "-b" "main")
@@ -517,12 +527,20 @@
     (sh "git" "-C" colour "tag" "v1")
     (spit (string colour "/colour/init.wattle") "(def c \"blue\")\n")
     (sh |cgit "commit" "-q" "-a" "-m" "two")
+    ; A commit that the default branch does not reach.
+    (sh "git" "-C" colour "checkout" "-q" "-b" "side")
+    (spit (string colour "/colour/init.wattle") "(def c \"green\")\n")
+    (sh |cgit "commit" "-q" "-a" "-m" "side")
+    ; Protocol version 0 serves only the tips of branches and tags by hash, so
+    ; the commit that the cases fetch is not a tip.
+    (sh |cgit "commit" "-q" "--allow-empty" "-m" "side tip")
+    (sh "git" "-C" colour "checkout" "-q" "main")
     (spit (string plain "/x.wattle") "(def x 1)\n")
     (sh "git" "-C" plain "init" "-q" "-b" "main")
     (sh "git" "-C" plain "add" "-A")
     (sh |pgit "commit" "-q" "-m" "one")
     (spit (string proj "/main.wattle")
-          (string "(import colour/colour)\n"
+          (string "(import colour)\n"
                   "(defn main [& args] (spit (get args 1) colour/c))\n"
                   "(when (= \"check\" (get (dyn *args*) 1)) (assert (= \"red\" colour/c)))\n"))
     (def crepo (string "file://" colour))
@@ -531,28 +549,82 @@
       (let [old (os/cwd)]
         (os/cd proj)
         (defer (os/cd old)
-          (consumer {:type :remote :url crepo :ref "v1"})
+          (consumer {:type :remote :url crepo :ref "v1" :hash (rev-of "v1")})
           (let [[status _] (run-cli "build" "lib")]
             (assert (= 0 status) "build lib fetches a :remote lib from Git"))
-          (assert (= :file (os/stat ".wattle/colour/colour/init.wattle" :mode))
-                  "a :remote lib of :source form is copied to .wattle")
+          (assert (= :file (os/stat ".wattle/colour/init.wattle" :mode))
+                  "a :remote lib of :source form is copied to .wattle by its :name")
           (assert (= :directory (os/stat ".wattle/.remote/colour" :mode)) "the source is kept in .wattle/.remote")
           (assert (nil? (os/stat ".wattle/fetch" :mode)) "the clone is removed")
           (let [rec (parse (slurp ".wattle/.remote/colour.edn"))]
-            (assert (= (rev-of "v1") (get rec :rev)) "the record holds the commit of the :ref")
+            (assert (= (rev-of "v1") (get rec :rev)) "the record holds the commit of the :hash")
             (assert (= :source (get (get rec :form) :type)) "the record holds the form of the source"))
           (let [[status _] (run-cli "run" "main.wattle" "check")]
-            (assert (= 0 status) "a bare import finds a fetched lib at its :ref"))
+            (assert (= 0 status) "a bare import finds a fetched lib by its :name"))
           ; A lib fetched with the same pin is not fetched again.
           (spit ".wattle/.remote/colour/colour/init.wattle" "(def c \"kept\")\n")
           (assert (= 0 (first (run-cli "build" "lib" "colour"))) "build lib again")
-          (assert (string/find "kept" (slurp ".wattle/colour/colour/init.wattle"))
+          (assert (string/find "kept" (slurp ".wattle/colour/init.wattle"))
                   "a lib whose pin is unchanged is not fetched again")
           (consumer {:type :remote :url (string "file://" tarball) :hash tree-hash})
           (let [[status _] (run-cli "build" "lib")]
             (assert (= 0 status) "build lib fetches a :remote lib from a tarball with its hash"))
-          (assert (string/find "red" (slurp ".wattle/colour/colour/init.wattle"))
+          (assert (string/find "red" (slurp ".wattle/colour/init.wattle"))
                   "a changed pin fetches again")
+          ; The cache is keyed on the :hash, so a commit on a branch is fetched
+          ; when the :hash changes and not otherwise.
+          (consumer {:type :remote :url crepo :hash (rev-of "main")})
+          (assert (= 0 (first (run-cli "build" "lib"))) "build lib fetches the head of the default branch by :hash")
+          (assert (string/find "blue" (slurp ".wattle/colour/init.wattle")) "the commit of the :hash is fetched")
+          (consumer {:type :remote :url crepo :hash (rev-of "v1")})
+          (assert (= 0 (first (run-cli "build" "lib"))) "build lib fetches an earlier commit by :hash")
+          (assert (string/find "red" (slurp ".wattle/colour/init.wattle")) "a changed :hash fetches again")
+          ; The commit is fetched by its hash where the server allows it, which
+          ; a file:// repository does under protocol version 2, so :ref is not
+          ; needed. Protocol version 0 refuses a fetch by hash and so forces the
+          ; clone, which reaches only the default branch or the :ref.
+          (consumer {:type :remote :url crepo :hash (rev-of "side~1")})
+          (assert (= 0 (first (run-cli "build" "lib"))) "build lib fetches a commit by :hash alone")
+          (assert (string/find "green" (slurp ".wattle/colour/init.wattle")) "the commit is fetched shallowly")
+          (rmrf ".wattle")
+          (def v0 {"GIT_CONFIG_COUNT" "1" "GIT_CONFIG_KEY_0" "protocol.version" "GIT_CONFIG_VALUE_0" "0"})
+          (let [[status text] (run-cli-with v0 "build" "lib")]
+            (assert (= 1 status) "a commit that the default branch does not reach is refused by the clone without a :ref")
+            (assert (string/find (string "commit " (rev-of "side~1") " is not in") text) "the failure names the commit"))
+          (consumer {:type :remote :url crepo :ref "side" :hash (rev-of "side~1")})
+          (assert (= 0 (first (run-cli-with v0 "build" "lib"))) "the clone fetches a commit by :hash and :ref")
+          (assert (string/find "green" (slurp ".wattle/colour/init.wattle")) "the commit of the :ref is fetched")
+          (rmrf ".wattle")
+          (consumer {:type :remote :url crepo :hash (rev-of "v1")})
+          (assert (= 0 (first (run-cli-with v0 "build" "lib"))) "the clone fetches a commit that the default branch reaches")
+          (assert (string/find "red" (slurp ".wattle/colour/init.wattle")) "the commit is checked out")
+          (rmrf ".wattle")
+          (consumer {:type :remote :url crepo :ref "side" :hash (rev-of "side~1")})
+          (assert (= 0 (first (run-cli "build" "lib"))) "build lib fetches a commit by :hash and :ref")
+          ; A commit that the repository does not hold, whichever way it is fetched.
+          (consumer {:type :remote :url crepo :hash (string/repeat "0" 40)})
+          (let [[status text] (run-cli-with v0 "build" "lib")]
+            (assert (= 1 status) "the clone refuses a commit that is not found")
+            (assert (string/find (string "commit " (string/repeat "0" 40) " is not in") text) "the failure names the commit"))
+          (let [[status text] (run-cli "build" "lib")]
+            (assert (= 1 status) "a commit that is not found is refused")
+            (assert (string/find (string "commit " (string/repeat "0" 40) " is not in") text) "the failure names the commit"))
+          ; A missing :hash names the hash that was fetched.
+          (consumer {:type :remote :url crepo})
+          (let [[status text] (run-cli "build" "lib")]
+            (assert (= 1 status) "a Git lib with no :hash is refused")
+            (assert (string/find (string "has no :hash, and the source fetched has the hash " (rev-of "main")) text)
+                    "the failure holds the commit hash to copy"))
+          (consumer {:type :remote :url (string "file://" tarball)})
+          (let [[status text] (run-cli "build" "lib")]
+            (assert (= 1 status) "a tarball lib with no :hash is refused")
+            (assert (string/find (string "has no :hash, and the source fetched has the hash " tree-hash) text)
+                    "the failure holds the tree hash to copy"))
+          (rmrf ".wattle")
+          (consumer {:type :remote :url crepo :ref "v1" :hash (rev-of "v1")})
+          (assert (= 0 (first (run-cli "build" "lib"))) "build lib fetches again")
+          (let [[status _] (run-cli "build" "exe")]
+            (assert (= 1 status) "build exe has no native exe to build"))
           (let [[status _] (run-cli "build" "lib")]
             (assert (= 0 status) "a tarball is not fetched again"))
           (rmrf ".wattle")
@@ -561,11 +633,11 @@
             (assert (= 1 status) "a tarball whose hash differs is refused")
             (assert (string/find (string "has the hash " tree-hash) text) "the failure names both hashes"))
           (assert (nil? (os/stat ".wattle/colour" :mode)) "a refused tarball is not copied")
-          (consumer {:type :remote :name "nosuch" :url crepo :ref "v1"})
+          (consumer {:type :remote :name "nosuch" :url crepo :ref "v1" :hash (rev-of "v1")})
           (let [[status text] (run-cli "build" "lib")]
             (assert (= 1 status) "a source that does not declare the lib is refused")
             (assert (string/find "no lib is called nosuch" text) "the failure names the lib"))
-          (consumer {:type :remote :url (string "file://" plain) :ref "main"})
+          (consumer {:type :remote :url (string "file://" plain) :hash (rev-of-plain)})
           (let [[status text] (run-cli "build" "lib")]
             (assert (= 1 status) "a source with no info.edn is refused")
             (assert (string/find "has no info.edn" text) "the failure names info.edn"))
@@ -573,9 +645,9 @@
 
     ; apps install fetches under the prefix and copies the lib into the
     ; application directory.
-    (consumer {:type :remote :url crepo :ref "v1"})
+    (consumer {:type :remote :url crepo :ref "v1" :hash (rev-of "v1")})
     (assert-no-error "install an application with a :remote lib" (install-quietly proj))
-    (assert (= :file (os/stat (string app-path "/.wattle/colour/colour/init.wattle") :mode))
+    (assert (= :file (os/stat (string app-path "/.wattle/colour/init.wattle") :mode))
             "the :remote lib is in the application directory")
     (assert (= [{:name "colour" :url crepo :rev (rev-of "v1")}] (get (app/manifest "remote-app") :libs))
             "the manifest records the revision of the :remote lib")
@@ -792,22 +864,31 @@
 
 ;;; Source libs
 ;
-; `wattle build lib` copies each :source lib to .wattle/<name>, where each path
-; of its :files keeps its form, so that a bare import finds it. `wattle run`
-; copies nothing.
+; `wattle build lib` places each :source lib under .wattle by its :name: a file
+; :root as <name>.wattle and the contents of a directory :root in <name>, so
+; that a bare import of the :name finds it. `wattle run` copies nothing, and
+; `wattle build exe` places the libs of the exes it builds.
 
 (compwhen (and (dyn 'os/execute) (dyn 'os/spawn))
   (let [proj (string (app-rpath prefix) "-libs")
         old (os/cwd)]
     (rmrf proj)
-    (each dir [proj (string proj "/u")] (assert (os/mkdir dir)))
-    (spit (string proj "/info.edn")
-          (string/format "%m" {:exes [{:type :source :name "m" :entry "main.wattle" :files ["main.wattle"]}]
-                               :libs [{:type :source :name "u" :files ["u"] :for ["m"]}
-                                      {:type :source :name "v" :files ["v.wattle"]}]}))
+    (each dir [proj (string proj "/u") (string proj "/lib") (string proj "/lib/foo")] (assert (os/mkdir dir)))
+    (def write-info
+      (fn [libs]
+        (spit (string proj "/info.edn")
+              (string/format "%m" {:exes [{:type :source :name "m" :entry "main.wattle" :files ["main.wattle"]}]
+                                   :libs libs}))))
+    (write-info [{:type :source :name "u" :root "u" :for ["m"]}
+                 {:type :source :name "v" :root "v.wattle"}
+                 {:type :source :name "w" :root "lib/foo"}])
     (spit (string proj "/u/init.wattle") "(def x 1)\n")
+    (spit (string proj "/u/more.wattle") "(def z 3)\n")
     (spit (string proj "/v.wattle") "(def y 2)\n")
-    (spit (string proj "/main.wattle") "(import u/u)\n(import v/v)\n(assert (= [1 2] [u/x v/y]))\n")
+    (spit (string proj "/lib/foo/init.wattle") "(def q 4)\n")
+    (spit (string proj "/main.wattle")
+          (string "(import u)\n(import u/more)\n(import v)\n(import w)\n"
+                  "(assert (= [1 3 2 4] [u/x more/z v/y w/q]))\n"))
     (let [[status _] (run-cli "run" (string proj "/main.wattle"))]
       (assert (= 1 status) "run does not copy a lib"))
     (assert (nil? (os/stat (string proj "/.wattle") :mode)) "run creates no .wattle")
@@ -816,19 +897,43 @@
       (let [[status _] (run-cli "build" "lib")]
         (assert (= 0 status) "build lib copies the :source libs"))
       (assert (= "*\n" (string (slurp ".wattle/.gitignore"))) ".wattle holds a .gitignore that excludes its contents")
-      (assert (= :file (os/stat ".wattle/u/u/init.wattle" :mode)) "a directory of :files keeps its path")
-      (assert (= :file (os/stat ".wattle/v/v.wattle" :mode)) "a lib with no :for is copied by build lib")
+      (assert (= :file (os/stat ".wattle/u/init.wattle" :mode)) "the contents of a directory :root go to .wattle/<name>")
+      (assert (= :file (os/stat ".wattle/u/more.wattle" :mode)) "the whole directory :root is copied")
+      (assert (nil? (os/stat ".wattle/u/u" :mode)) "a directory :root is not nested")
+      (assert (= :file (os/stat ".wattle/v.wattle" :mode)) "a file :root goes to .wattle/<name>.wattle")
+      (assert (nil? (os/stat ".wattle/v" :mode)) "a file :root makes no directory")
+      (assert (= :file (os/stat ".wattle/w/init.wattle" :mode)) "the name of the :root on disk does not matter")
       (let [[status _] (run-cli "run" "main.wattle")]
-        (assert (= 0 status) "a bare import finds a copied lib"))
+        (assert (= 0 status) "a bare import by :name finds a copied lib"))
       (spit ".wattle/u/stale" "x")
-      (spit ".wattle/v/kept" "x")
+      (spit ".wattle/kept.wattle" "x")
       (let [[status _] (run-cli "build" "lib" "u")]
         (assert (= 0 status) "build lib copies the lib it names"))
       (assert (nil? (os/stat ".wattle/u/stale" :mode)) "a copy made before is removed")
-      (assert (= :file (os/stat ".wattle/v/kept" :mode)) "a lib that is not named is left alone")
+      (assert (= :file (os/stat ".wattle/kept.wattle" :mode)) "a lib that is not named is left alone")
       (let [[status text] (run-cli "build" "lib" "nosuch")]
         (assert (= 1 status) "build lib refuses a name that no lib has")
-        (assert (string/find "no lib is called nosuch" text) "the failure names the lib")))
+        (assert (string/find "no lib is called nosuch" text) "the failure names the lib"))
+      (write-info [{:type :source :name "u" :root "nothere"}])
+      (let [[status text] (run-cli "build" "lib")]
+        (assert (= 1 status) "build lib refuses a :root that does not exist")
+        (assert (string/find ":root names" text) "the failure names :root"))
+      (write-info [{:type :source :name "u" :files ["u"]}])
+      (let [[status text] (run-cli "build" "lib")]
+        (assert (= 1 status) "build lib refuses :files on a :source lib")
+        (assert (string/find ":files is replaced by :root" text) "the failure names :root"))
+      ; build exe places the libs of the native exes it builds, and not the others.
+      (rmrf ".wattle")
+      (spit (string proj "/info.edn")
+            (string/format "%m" {:exes [{:type :native :name "n" :entry "main.wattle"}
+                                        {:type :source :name "m" :entry "main.wattle" :files ["main.wattle"]}]
+                                 :libs [{:type :source :name "u" :root "u" :for ["n"]}
+                                        {:type :source :name "v" :root "v.wattle" :for ["m"]}
+                                        {:type :source :name "w" :root "lib/foo"}]}))
+      (run-cli "build" "exe")
+      (assert (= :file (os/stat ".wattle/u/init.wattle" :mode)) "build exe places the lib of a :native exe")
+      (assert (nil? (os/stat ".wattle/v.wattle" :mode)) "build exe leaves the lib of another exe")
+      (assert (nil? (os/stat ".wattle/w" :mode)) "build exe leaves a lib with no :for"))
     (rmrf proj)))
 
 ;;; Revisions
@@ -886,8 +991,8 @@
 ;;; Source applications
 ;
 ; A :source exe installs its :files into the application directory and a
-; program in bin that calls app/run. A :source lib whose :for names it is copied
-; to .wattle there, and a :man doc whose :for names it goes to share/man.
+; program in bin that calls app/run. A :source lib whose :for names it is placed
+; in .wattle there, and a :man doc whose :for names it goes to share/man.
 
 (let [base (string (app-rpath prefix) "-src-app")
       proj (string base "/proj")
@@ -896,8 +1001,8 @@
       binscript (string root "/bin/sprog-bin")
       info-of (fn [artifact]
                 (string/format "%m" {:group "org.wattle.tests" :name "sprog" :exes [artifact]
-                                     :libs [{:type :source :name "util" :files ["util" "extra.wattle"]
-                                             :for ["sprog-bin"]}]
+                                     :libs [{:type :source :name "util" :root "util" :for ["sprog-bin"]}
+                                            {:type :source :name "extra" :root "extra.wattle" :for ["sprog-bin"]}]
                                      :docs [{:type :man :files ["sprog.1"] :for ["sprog-bin"]}]}))
       src-artifact {:type :source :name "sprog-bin" :entry "main.wattle"
                     :files ["main.wattle" "lib" "deps"]}
@@ -910,7 +1015,7 @@
              (string proj "/.wattle")]
     (assert (os/mkdir dir)))
   (spit (string proj "/main.wattle")
-        (string "(import ./lib/helper)\n(import ./deps/depmod)\n(import util/util)\n(import util/extra)\n"
+        (string "(import ./lib/helper)\n(import ./deps/depmod)\n(import util)\n(import extra)\n"
                 "(defn main [& args]\n"
                 "  (spit (get args 1) (string (string/join \";\" (slice args 2)) \",\" depmod/v \",\" helper/w"
                 "                             \",\" util/v \",\" extra/v)))\n"))
@@ -935,12 +1040,12 @@
     (let [[ok _] (try-install (info-of src-artifact))]
       (assert ok "a :source exe installs"))
     (each file ["main.wattle" "lib/helper.wattle" "deps/depmod.wattle" "info.edn" "manifest.edn"
-                ".wattle/util/util/init.wattle" ".wattle/util/extra.wattle" ".wattle/.gitignore"]
+                ".wattle/util/init.wattle" ".wattle/extra.wattle" ".wattle/.gitignore"]
       (assert (os/stat (string app-path s file) :mode) (string file " is in the application directory")))
     (assert (nil? (os/stat (string app-path "/zig-out") :mode)) "zig-out is not copied")
     (assert (nil? (os/stat (string app-path "/lib/zig-out") :mode)) "a nested zig-out is not copied")
     (assert (nil? (os/stat (string app-path "/.wattle/stale") :mode)) ".wattle is not copied")
-    (assert (nil? (os/stat (string app-path "/util") :mode)) "the :files of a lib go only to .wattle")
+    (assert (nil? (os/stat (string app-path "/util") :mode)) "the :root of a lib goes only to .wattle")
     (assert (string/find "SPROG 1" (slurp (string root "/share/man/man1/sprog.1"))) "the doc of the exe is installed")
     (assert (nil? (os/stat (string app-path "/.binscript") :mode)) "the temporary binscript is removed")
     (let [lines (string/split "\n" (string (slurp binscript)))]

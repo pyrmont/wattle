@@ -4875,7 +4875,7 @@
           :source [:type :name :entry :files]
           :web [:type :name :entry]}
    :libs {:native [:type :name :for :root]
-          :source [:type :name :for :files]
+          :source [:type :name :for :root]
           :remote [:type :name :for :url :ref :hash]}
    :docs {:man [:type :for :files]
           :web [:type :for :files]}})
@@ -4916,6 +4916,18 @@
   (unless (and (string? val) (not (empty? val)))
     (build-artifact-fail key i decl "%v must be a non-empty string" k)))
 
+(defn- build-artifact-check-path
+  "Raises unless path, the value of k in decl, is a non-empty relative path that stays inside the project."
+  [key i decl k path]
+  (unless (and (string? path) (not (empty? path)))
+    (build-artifact-fail key i decl "%v must hold non-empty strings, not %v" k path))
+  (def slashed (string/replace-all "\\" "/" path))
+  (when (or (string/has-prefix? "/" slashed)
+            (and (> (length slashed) 1) (= ":" (string/slice slashed 1 2))))
+    (build-artifact-fail key i decl "%v must hold relative paths, not %v" k path))
+  (when (has-value? (string/split "/" slashed) "..")
+    (build-artifact-fail key i decl "%v must stay inside the project, not %v" k path)))
+
 (defn- build-artifact-check-files
   [key i decl]
   (def files (get decl :files))
@@ -4924,14 +4936,17 @@
   (unless (vector? files)
     (build-artifact-fail key i decl ":files must be a vector of paths"))
   (each file files
-    (unless (and (string? file) (not (empty? file)))
-      (build-artifact-fail key i decl ":files must hold non-empty strings, not %v" file))
-    (def slashed (string/replace-all "\\" "/" file))
-    (when (or (string/has-prefix? "/" slashed)
-              (and (> (length slashed) 1) (= ":" (string/slice slashed 1 2))))
-      (build-artifact-fail key i decl ":files must hold relative paths, not %v" file))
-    (when (has-value? (string/split "/" slashed) "..")
-      (build-artifact-fail key i decl ":files must stay inside the project, not %v" file))))
+    (build-artifact-check-path key i decl :files file)))
+
+(defn- build-artifact-check-root
+  "Raises unless the :source lib decl has a :root that is a relative path inside the project."
+  [key i decl]
+  (def root (get decl :root))
+  (when (nil? root)
+    (build-artifact-fail key i decl ":root is required"))
+  (unless (string? root)
+    (build-artifact-fail key i decl ":root must be a path, a string, not %v" root))
+  (build-artifact-check-path key i decl :root root))
 
 (defn- build-artifact-check-man
   "Raises unless each file of the :man doc decl ends in a period and a digit from 1 to 9."
@@ -4956,32 +4971,42 @@
   (each k (keys decl)
     (when (and (= key :exes) (= k :libs))
       (build-artifact-fail key i decl ":libs is replaced by the :for of each lib"))
+    (when (and (= key :libs) (= kind :source) (= k :files))
+      (build-artifact-fail key i decl ":files is replaced by :root, the file or directory that is the lib"))
     (unless (has-value? ok k)
       (build-artifact-fail key i decl "%v is not a key of a %v %s" k kind
                            (get build-decl-nouns key)))))
 
 (defn- build-artifact-check-remote
   """
-  Raises unless the :remote lib decl has a :url and the pin for it: :hash, a
-  `sha256:` tree hash, for a tarball, and :ref, a branch or tag, for a Git
-  repository. A :url that ends in .tar or .tar.gz is a tarball.
+  Raises unless the :remote lib decl has a :url and, if it has a :hash, a
+  well-formed one. A :url that ends in .tar or .tar.gz is a tarball, whose :hash
+  is `sha256:` and the tree hash and which takes no :ref. Otherwise the :url is a
+  Git repository, whose :hash is a commit hash of 40 hexadecimal digits, or 64
+  for a SHA-256 repository, and whose :ref, a branch or tag, is optional. A
+  missing :hash is raised when the lib is fetched, with the hash of the source.
   """
   [key i decl]
   (build-artifact-check-string key i decl :url)
   (def url (get decl :url))
+  (def hash (get decl :hash))
   (if (or (string/has-suffix? ".tar" url) (string/has-suffix? ".tar.gz" url))
     (do
       (when (has-key? decl :ref)
         (build-artifact-fail key i decl ":ref is for a Git repository, and a tarball is pinned by :hash"))
-      (def hash (get decl :hash))
-      (unless (and (string? hash) (= 71 (length hash)) (string/has-prefix? "sha256:" hash)
-                   (string/check-set "0123456789abcdef" (string/slice hash 7)))
+      (when (and (not (nil? hash))
+                 (not (and (string? hash) (= 71 (length hash)) (string/has-prefix? "sha256:" hash)
+                           (string/check-set "0123456789abcdef" (string/slice hash 7)))))
         (build-artifact-fail key i decl
                              ":hash must be `sha256:` and 64 lowercase hexadecimal digits, the tree hash of the tarball")))
     (do
-      (when (has-key? decl :hash)
-        (build-artifact-fail key i decl ":hash is for a tarball, and a Git repository is pinned by :ref"))
-      (build-artifact-check-string key i decl :ref))))
+      (when (has-key? decl :ref)
+        (build-artifact-check-string key i decl :ref))
+      (when (and (not (nil? hash))
+                 (not (and (string? hash) (has-value? [40 64] (length hash))
+                           (string/check-set "0123456789abcdef" hash))))
+        (build-artifact-fail key i decl
+                             ":hash must be 40 lowercase hexadecimal digits, or 64 for a SHA-256 repository, the commit to fetch")))))
 
 (defn- build-artifact-check-for
   "Raises unless the :for of decl is absent or a vector of the names of exes that may take decl."
@@ -5043,7 +5068,7 @@
         [:exes :source] (do (build-artifact-check-string key i decl :entry)
                             (build-artifact-check-files key i decl))
         [:libs :native] (build-artifact-check-string key i decl :root)
-        [:libs :source] (build-artifact-check-files key i decl)
+        [:libs :source] (build-artifact-check-root key i decl)
         [:libs :remote] (build-artifact-check-remote key i decl)
         [:docs :man] (do (build-artifact-check-files key i decl)
                          (build-artifact-check-man key i decl))
@@ -5584,34 +5609,63 @@
     or raises. The revision is the commit hash for a Git repository and
     ^tree-rev of the root for a tarball or a directory, which is hashed only if
     the function is called. Raises if ref, a branch or tag, is given for
+    anything but a Git repository. With hash, a commit hash, a Git repository
+    is first fetched at depth 1 for that commit alone, which a server that
+    allows a fetch by hash permits. If that fails, the repository is cloned whole
+    from ref, a branch or tag, where that is given and otherwise from its default
+    branch, and the commit is checked out. That raises if the repository has no
+    such commit. Without hash the clone has depth 1. Raises if hash is given for
     anything but a Git repository.
     """
-    [source ref tmp f]
-    (def kind (source-kind source))
-    (ensuref (or (nil? ref) (= kind :git))
-             "a ref is accepted only for a Git repository, not %v" source)
-    (if (= kind :directory)
-      (f source (fn [] (tree-rev source)))
-      (do
-        (def s (sep))
-        (def dest (string tmp s "src"))
-        (rmrf tmp)
-        (mkdirs dest)
-        (defer (rmrf tmp)
-          (print "fetching " source)
-          (var rev nil)
-          (case kind
-            :tarball (let [archive (string tmp s "archive")]
-                       (run-tool tmp "curl" "--fail" "--silent" "--show-error" "--location"
-                                "--output" archive "--url" source)
-                       (run-tool tmp "tar" "-xf" archive "-C" dest))
-            :git (do
-                   (run-tool tmp "git" "-c" "advice.detachedHead=false" "clone" "--quiet" "--depth" "1"
-                            |(if ref ["--branch" ref] []) "--" source dest)
-                   (set rev (capture-tool tmp "git" "-C" dest "rev-parse" "HEAD"))
-                   (rmrf (string dest s ".git"))))
-          (def root (unpack-root dest))
-          (f root (fn [] (or rev (tree-rev root))))))))
+    ([source ref tmp f] (with-source source ref tmp f nil))
+    ([source ref tmp f hash]
+      (def kind (source-kind source))
+      (ensuref (or (nil? ref) (= kind :git))
+               "a ref is accepted only for a Git repository, not %v" source)
+      (ensuref (or (nil? hash) (= kind :git))
+               "a commit hash is accepted only for a Git repository, not %v" source)
+      (if (= kind :directory)
+        (f source (fn [] (tree-rev source)))
+        (do
+          (def s (sep))
+          (def dest (string tmp s "src"))
+          (rmrf tmp)
+          (mkdirs dest)
+          (defer (rmrf tmp)
+            (print "fetching " source)
+            (var rev nil)
+            (case kind
+              :tarball (let [archive (string tmp s "archive")]
+                         (run-tool tmp "curl" "--fail" "--silent" "--show-error" "--location"
+                                  "--output" archive "--url" source)
+                         (run-tool tmp "tar" "-xf" archive "-C" dest))
+              :git (do
+                     (defn clone []
+                       (run-tool tmp "git" "-c" "advice.detachedHead=false" "clone" "--quiet"
+                                |(if hash ["--single-branch" "--no-checkout"] ["--depth" "1"])
+                                |(if ref ["--branch" ref] []) "--" source dest))
+                     (defn checkout []
+                       (run-tool tmp "git" "-C" dest "-c" "advice.detachedHead=false"
+                                 "checkout" "--quiet" "--detach" hash))
+                     (if hash
+                       (do
+                         (def shallow?
+                           (first (protect (do
+                                             (run-tool tmp "git" "-C" dest "init" "--quiet")
+                                             (run-tool tmp "git" "-C" dest "remote" "add" "origin" "--" source)
+                                             (run-tool tmp "git" "-C" dest "fetch" "--quiet" "--depth" "1" "origin" hash)
+                                             (checkout)))))
+                         (unless shallow?
+                           (rmrf dest)
+                           (clone)
+                           (def [ok err] (protect (checkout)))
+                           (ensuref ok "commit %s is not in %s%s" hash source
+                                    (if ref (string " from ref " ref) ""))))
+                       (clone))
+                     (set rev (capture-tool tmp "git" "-C" dest "rev-parse" "HEAD"))
+                     (rmrf (string dest s ".git"))))
+            (def root (unpack-root dest))
+            (f root (fn [] (or rev (tree-rev root)))))))))
 
   (defn- app-exes-of
     """
@@ -5681,6 +5735,17 @@
                        (app-copy-src (string from s y) (string to s y)))))
       (failf ":files names %s, which does not exist" from)))
 
+  (defn- app-join
+    """
+    Returns path, relative and written with `/` or `\\`, under the directory dir.
+    """
+    [dir path]
+    (def s (sep))
+    (var out dir)
+    (each part (filter #(not (or (empty? $) (= $ "."))) (string/split "/" (string/replace-all "\\" "/" path)))
+      (set out (string out s part)))
+    out)
+
   (defn- app-copy-files
     """
     Copies each path of files from the directory from to the same path under
@@ -5700,12 +5765,14 @@
         (mkdirs (string/slice dest 0 (- (length dest) (length (last parts)) 1))))
       (app-copy-src src dest)))
 
-  (defn- build/copy
+  (defn- build-copy-lib
     """
-    Copies the :files of lib, a :source lib, from the directory from to
-    .wattle/<name> under the directory to, where each keeps its path. Removes
+    Places lib, a :source lib, under .wattle in the directory to, from the
+    directory from. A file :root is copied to <name>.wattle and the contents of
+    a directory :root to <name>, so that the lib is imported as `name`. Removes
     a copy made before. Creates .wattle with a .gitignore that excludes its
-    contents if it is missing. Raises if a path of :files does not exist.
+    contents if it is missing. Returns the path that was written. Raises if the
+    :root does not exist.
     """
     [from to lib]
     (def s (sep))
@@ -5713,12 +5780,18 @@
     (mkdirs hidden)
     (def ignore (string hidden s ".gitignore"))
     (unless (os/stat ignore :mode) (spit ignore "*\n"))
-    (def dest (string hidden s (get lib :name)))
+    (def name (get lib :name))
+    (def dest (string hidden s name))
+    (def file-dest (string dest ".wattle"))
     (rmrf dest)
-    (mkdirs dest)
-    (app-copy-files from dest (get lib :files)))
+    (rmrf file-dest)
+    (def src (app-join from (get lib :root)))
+    (case (os/stat src :mode)
+      :file (do (copyfile src file-dest) file-dest)
+      :directory (do (app-copy-src src dest) dest)
+      (failf ":root names %s, which does not exist" src)))
 
-  (defn- build/fetched-dir
+  (defn- build-fetched-dir
     """
     Returns the directory under .wattle in the root dir that holds the fetched
     source of the :remote lib called name. Its record is the file of the same
@@ -5728,44 +5801,45 @@
     (def s (sep))
     (string dir s ".wattle" s ".remote" s name))
 
-  (defn- build/fetched
+  (defn- build-fetched
     """
     Returns the record of the :remote lib lib in the root dir, as
-    ^build/fetch writes it, or nil if lib was not fetched there or
-    was fetched with another :url, :ref or :hash.
+    ^build-fetch writes it, or nil if lib was not fetched there or
+    was fetched with another :url or :hash.
     """
     [dir lib]
-    (def tree (build/fetched-dir dir (get lib :name)))
+    (def tree (build-fetched-dir dir (get lib :name)))
     (def file (string tree ".edn"))
     (when (and (fexists file) (= :directory (os/stat tree :mode)))
       (def rec (parse (slurp file)))
-      (when (and (= (get rec :url) (get lib :url)) (= (get rec :ref) (get lib :ref))
-                 (= (get rec :hash) (get lib :hash)))
+      (when (and (= (get rec :url) (get lib :url)) (= (get rec :hash) (get lib :hash)))
         rec)))
 
-  (defn- build/fetch
+  (defn- build-fetch
     """
     Fetches the source of the :remote lib lib into .wattle/.remote/<name> under
-    the root dir and returns its record, a map of the :url and the :ref or
-    :hash of lib, :rev, the revision of the source as ^app/install records it,
+    the root dir and returns its record, a map of the :url, :hash and :ref if
+    any of lib, :rev, the revision of the source as ^app/install records it,
     and :form, the declaration of the lib in the info.edn of the source without
-    its :for. Returns the record of an earlier fetch with the same :url and pin
-    without fetching. tmp is the directory that a tarball or a clone is fetched
-    in. Raises as ^fail does if the tree hash of a tarball is not its :hash, if
-    the source has no info.edn or declares no lib of the same :name, or if that
-    lib is :remote.
+    its :for. Returns the record of an earlier fetch with the same :url and
+    :hash without fetching. tmp is the directory that a tarball or a clone is
+    fetched in. Raises as ^fail does if lib has no :hash, which names the hash
+    of the source that was fetched, if a tarball has another tree hash, if the
+    commit of a Git repository is not found, if the source has no info.edn or
+    declares no lib of the same :name, or if that lib is :remote.
     """
     [dir lib tmp]
-    (or (build/fetched dir lib)
+    (or (build-fetched dir lib)
         (do
           (def name (get lib :name))
-          (def tree (build/fetched-dir dir name))
+          (def tree (build-fetched-dir dir name))
+          (def want (get lib :hash))
           (var rec nil)
           (with-source (get lib :url) (get lib :ref) tmp
             (fn [src rev]
               (def r (rev))
-              (when-let [want (get lib :hash)]
-                (ensuref (= want r) "remote lib %s has the hash %s, and its :hash is %s" name r want))
+              (ensuref want "remote lib %s has no :hash, and the source fetched has the hash %s" name r)
+              (ensuref (= want r) "remote lib %s has the hash %s, and its :hash is %s" name r want)
               (def info-file (string src (sep) "info.edn"))
               (ensuref (fexists info-file)
                        "remote lib %s: the source has no info.edn, so it is vendored and not fetched as a lib" name)
@@ -5777,26 +5851,26 @@
               (rmrf tree)
               (mkdirs (string/slice tree 0 (- (length tree) (length name) 1)))
               (app-copy-src src tree)
-              (set rec {:url (get lib :url) :rev r :form form})
-              (each k [:ref :hash]
-                (when-let [v (get lib k)] (set rec (assoc rec k v))))
-              (spit (string tree ".edn") (string/format "%m\n" rec))))
+              (set rec {:url (get lib :url) :hash want :rev r :form form})
+              (when-let [v (get lib :ref)] (set rec (assoc rec :ref v)))
+              (spit (string tree ".edn") (string/format "%m\n" rec)))
+            (when (= :git (source-kind (get lib :url))) want))
           rec)))
 
-  (defn- build/resolve
+  (defn- build-resolve
     """
     Returns the declaration that the :remote lib lib has as rec, its record in
     the root dir, describes it: a :native lib whose :root is an absolute path
     into the fetched source, or a :source lib that has :from, the directory
-    that its :files are copied from. The :name and :for are those of lib.
+    that its :root is under. The :name and :for are those of lib.
     """
     [dir lib rec]
     (def form (get rec :form))
-    (def tree (build/fetched-dir dir (get lib :name)))
+    (def tree (build-fetched-dir dir (get lib :name)))
     (def base {:type (get form :type) :name (get lib :name) :for (get lib :for [])})
     (case (get form :type)
       :native (assoc base :root (string tree (sep) (get form :root)))
-      :source (assoc base :files (get form :files) :from tree)))
+      :source (assoc base :root (get form :root) :from tree)))
 
   (defn- app-require-zig
     """
@@ -5828,8 +5902,8 @@
   (defn- app-resolve-libs
     """
     Returns libs with each :remote lib fetched into the directory path, as
-    ^build/fetch fetches it, and replaced by the declaration that
-    ^build/resolve returns for it. The tarball or clone is fetched
+    ^build-fetch fetches it, and replaced by the declaration that
+    ^build-resolve returns for it. The tarball or clone is fetched
     under lib/wattle/.fetch of the prefix. Adds the :name, :url and :rev of
     each :remote lib to :libs of manifest, once for each name.
     """
@@ -5839,7 +5913,7 @@
     (map (fn [lib]
            (if (= :remote (get lib :type))
              (do
-               (def rec (build/fetch path lib (string fetch-root s "lib")))
+               (def rec (build-fetch path lib (string fetch-root s "lib")))
                ; .fetch holds the source of the application too when that was
                ; fetched, and is removed here only when nothing is left in it.
                (when (and (= :directory (os/stat fetch-root :mode)) (empty? (os/dir fetch-root)))
@@ -5848,25 +5922,22 @@
                (unless (find #(= (get lib :name) (get $ :name)) recorded)
                  (array/push! recorded {:name (get lib :name) :url (get lib :url) :rev (get rec :rev)}))
                (put! manifest :libs recorded)
-               (build/resolve path lib rec))
+               (build-resolve path lib rec))
              lib))
          libs))
 
   (defn- app-default-build
     """
     Builds the :native exes of decls in the directory path, by running wattle
-    build exe there with the prefix of the install. First fetches each :remote
-    lib whose :for names a :native exe into path, as ^app-resolve-libs does,
-    and copies each :source lib, and each :remote lib whose source declares it
-    :source, to .wattle in path, so that the build compiles it into the exe.
-    Does nothing if decls declares no :native exe.
+    build exe there with the prefix of the install, which places the libs of the
+    exes. First fetches each :remote lib whose :for names a :native exe into
+    path, as ^app-resolve-libs does, so that the manifest records it. Does
+    nothing if decls declares no :native exe.
     """
     [manifest path decls]
     (def natives (app-exes-of decls :native))
     (when (next natives)
-      (each lib (app-resolve-libs manifest path (app-for-any (get decls :libs) natives))
-        (when (= :source (get lib :type))
-          (build/copy (get lib :from path) path lib)))
+      (app-resolve-libs manifest path (app-for-any (get decls :libs) natives))
       (print "building " (string/join ", " (map #(get $ :name) natives)))
       (app-run-build path "exe")))
 
@@ -5909,7 +5980,7 @@
     (each lib (app-resolve-libs manifest path (app-for-any (get decls :libs) sources))
       (def name (get lib :name))
       (case (get lib :type)
-        :source (build/copy (get lib :from path) dir lib)
+        :source (build-copy-lib (get lib :from path) dir lib)
         :native (do
                   (app-require-zig)
                   (print "building " name)
@@ -6082,14 +6153,14 @@
           (app-install-dir root :rev (rev) |(kvs config))
           (app-install-dir root :source source :rev (rev) |(kvs config))))))
 
-  (defn- app/pack
+  (defn- app-pack
     """
     Takes an installed application and creates an application source directory that can be
     used to reinstall the application on a compatible system. This is used to create
     backups for installed applications without rebuilding, or make a prebuilt application
     for other systems.
     """
-    ([app-name dest-dir] (app/pack app-name dest-dir nil))
+    ([app-name dest-dir] (app-pack app-name dest-dir nil))
     ([app-name dest-dir is-backup]
       (var i 0)
       (def man (app/manifest app-name))
@@ -6145,7 +6216,7 @@
     (ensuref (= :directory (os/stat path :mode)) "local source %v not available" path)
     (def backup-dir (string (wattle/libpath) s app-name ".backup"))
     (rmrf backup-dir)
-    (def backup-source (app/pack app-name backup-dir true))
+    (def backup-source (app-pack app-name backup-dir true))
     (edefer (do
               ; The install hook reads the packed files from its source
               ; directory, so the backup is installed from the backup. Copying
@@ -7103,38 +7174,34 @@
     """
     Returns chosen, libs that ^build/artifacts returned, with each :remote lib
     fetched into .wattle under dir, the directory of the project, as
-    ^build/fetch fetches it, and replaced by the declaration that
-    ^build/resolve returns for it. Exits with status 1 and a
+    ^build-fetch fetches it, and replaced by the declaration that
+    ^build-resolve returns for it. Exits with status 1 and a
     message on a failure.
     """
     [dir chosen]
     (map (fn [lib]
            (if (= :remote (get lib :type))
-             (let [[ok rec] (protect (build/fetch dir lib (string dir "/.wattle/fetch")))]
+             (let [[ok rec] (protect (build-fetch dir lib (string dir "/.wattle/fetch")))]
                (unless ok (cli-fail "error: " rec))
                (print "fetched lib " (get lib :name) " at " (get rec :rev))
-               (build/resolve dir lib rec))
+               (build-resolve dir lib rec))
              lib))
          chosen))
 
   (defn- cli-resolved-info
     """
     Returns info with each :remote lib replaced by the :native lib that
-    ^build/resolve returns for it, for a lib fetched into .wattle
-    under dir, and without the others. Exits with status 1 and a message if a
-    :remote lib whose :for names a :native exe is not fetched, for kind `:exe`.
+    ^build-resolve returns for it, for a lib fetched into .wattle
+    under dir, and without the others.
     """
-    [dir info kind]
-    (def natives (map #(get $ :name) (filter #(= :native (get $ :type)) (get info :exes []))))
+    [dir info]
     (def libs ![])
     (each lib (get info :libs [])
       (if (= :remote (get lib :type))
-        (if-let [rec (build/fetched dir lib)]
-          (let [resolved (build/resolve dir lib rec)]
+        (when-let [rec (build-fetched dir lib)]
+          (let [resolved (build-resolve dir lib rec)]
             (when (= :native (get resolved :type))
-              (array/push! libs resolved)))
-          (when (and (= kind :exe) (find #(has-value? natives $) (get lib :for [])))
-            (cli-fail "remote lib " (get lib :name) " is not fetched; run wattle build lib")))
+              (array/push! libs resolved))))
         (array/push! libs lib)))
     (if (has-key? info :libs) (assoc info :libs (vec libs)) info))
 
@@ -7142,23 +7209,23 @@
     """
     Copies each :source lib of chosen, libs that ^cli-fetch-libs returned, to
     .wattle under dir, the directory of the project, and prints where it went.
-    A :source lib is copied from its :from, or from dir. Exits with status 1
-    and a message on a failure.
+    A :source lib is copied from its :from, or from dir, as ^build-copy-lib
+    copies it. Exits with status 1 and a message on a failure.
     """
     [dir chosen]
     (each lib chosen
       (when (= :source (get lib :type))
-        (def name (get lib :name))
-        (def [ok err] (protect (build/copy (get lib :from dir) dir lib)))
-        (unless ok (cli-fail "error: " err))
-        (print "copied lib " name " to " dir "/.wattle/" name)))))
+        (def [ok dest] (protect (build-copy-lib (get lib :from dir) dir lib)))
+        (unless ok (cli-fail "error: " dest))
+        (print "copied lib " (get lib :name) " to " dest)))))
 
 (defn- cli-build-artifacts
   """
   Builds the declarations of kind, `:exe`, `:lib` or `:web`, that the info.edn
   in the current directory declares. For `:lib` it first fetches each :remote
   lib and copies each :source lib to .wattle, and does nothing more if no
-  :native lib is chosen. A :native lib that a :remote lib was fetched as is
+  :native lib is chosen. For `:exe` it first does the same for the libs whose
+  :for names a :native exe that is built. A :native lib that a :remote lib was fetched as is
   built and linked from its fetched source. A :native
   declaration is built by writing a build.zig and a build.zig.zon under
   .zig-cache and running zig build on them. Exits with status 1 and a message
@@ -7185,8 +7252,12 @@
             (cli-place-libs dir resolved)
             (truthy? (find #(= :native (get $ :type)) resolved)))
           true))
+      (when (= kind :exe)
+        (let [[ok natives] (protect (build/artifacts info :exes :native name))]
+          (when ok
+            (cli-place-libs dir (cli-fetch-libs dir (app-for-any (get info :libs []) natives))))))
       (when native?
-        (cli-zig-build kind opts mode dir (cli-resolved-info dir info kind) name))
+        (cli-zig-build kind opts mode dir (cli-resolved-info dir info) name))
       (when (= kind :web)
         (cli-copy-web-docs dir info name)))
     (cli-fail "build " kind " is not supported " cli-no-spawn)))

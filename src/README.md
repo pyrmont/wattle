@@ -540,13 +540,16 @@ is a map with a `:type`:
 | key | `:type` | other keys |
 | --- | --- | --- |
 | `:exes` | `:native`, `:source`, `:web` | `:name`, `:entry`; `:files` for `:source` |
-| `:libs` | `:native`, `:source`, `:remote` | `:name`, `:for`; `:root` for `:native`, `:files` for `:source`, `:url` and `:ref` or `:hash` for `:remote` |
+| `:libs` | `:native`, `:source`, `:remote` | `:name`, `:for`; `:root` for `:native` and `:source`, `:url`, `:hash` and optionally `:ref` for `:remote` |
 | `:docs` | `:man`, `:web` | `:files`, `:for` |
 
 `build/artifacts` checks the three vectors and raises on the first problem,
 naming the entry and the key. A name holds letters, digits, `_` and `-` and is
 unique within its key, so an exe and a lib may share one. A doc has no name.
-`:files` holds relative paths that stay inside the project. The file names of
+`:files` holds relative paths that stay inside the project, and so does the
+`:root` of a `:source` lib, which is one path to a file or a directory and
+which replaces `:files` there: a `:source` lib with `:files` raises an error
+that names `:root`. The file names of
 a `:man` doc end in a period and a digit from 1 to 9, the section. `:for` is a
 vector of the names of exes of the same project, and a lib may not name a
 `:web` exe. `:artifacts`, `:man` and an exe's `:libs` raise an error that
@@ -554,18 +557,29 @@ names what replaces each.
 
 A lib or a doc is part of each exe that its `:for` names. A `:native` exe is
 built with the `:native` libs that name it linked in. `wattle build lib`
-places every lib on `:modpath`: it copies each path of a `:source` lib's
-`:files` to the same path under `.wattle/<name>/`, builds a `:native` lib into
-`zig-out/lib`, and fetches a `:remote` lib. `wattle run` places none.
+places every lib on `:modpath`: it copies the `:root` of a `:source` lib to
+`.wattle/<name>.wattle` if it is a file and its contents to `.wattle/<name>/`
+if it is a directory, so that the bare import is the `:name`, builds a
+`:native` lib into `zig-out/lib`, and fetches a `:remote` lib. `wattle build
+exe` first places, in the same way, the `:source` libs and the `:remote` libs
+that name a `:native` exe it builds. `wattle run` places none.
 `wattle build web` copies the `:files` of each doc for a `:web` exe into the
 directory of its output.
 
 A `:remote` lib is fetched from `:url` with the code that `apps install` uses.
-A Git repository is pinned by `:ref`, a branch or tag, and a tarball, a `:url`
-that ends in `.tar` or `.tar.gz`, by `:hash`, the `sha256:` tree hash of its
-files as `:rev` records it. The source is kept in `.wattle/.remote/<name>`
-with a record of its pin, its revision and its form, and is fetched again only
-when the `:url` or the pin changes. The `info.edn` of the source must declare a
+`:hash` is required and pins the lib. For a Git repository it is the commit
+hash, 40 hexadecimal digits, or 64 for a SHA-256 repository. The fetch first
+fetches that commit alone at depth 1, which a server that allows a fetch by hash
+permits. Otherwise it clones the default branch, or the branch or tag in the
+optional `:ref`, and checks out the commit. An error is raised if it is not
+found. Only the clone uses `:ref`, which is needed when the default branch does
+not reach the commit and otherwise labels it. For
+a tarball, a `:url` that ends in `.tar` or `.tar.gz`, `:hash` is the `sha256:`
+tree hash of its files as `:rev` records it, and `:ref` raises an error. When
+`:hash` is missing the error prints the hash of the source that was fetched.
+The source is kept in `.wattle/.remote/<name>` with a record of its `:url`,
+`:hash`, revision and form, and is fetched again only when the `:url` or the
+`:hash` changes. The `info.edn` of the source must declare a
 lib of the same name as `:native` or `:source`, and the lib takes that form. A
 source with no `info.edn` is vendored instead.
 
@@ -661,8 +675,8 @@ directory. A directory is copied without any entry named `zig-out`,
 `.zig-cache`, `.wattle` or `.git`. Install raises an error if the `:entry` is
 not among the files, or if a path does not exist.
 
-A `:source` lib for the exe is copied to `.wattle/<name>/` in the application
-directory. A `:native` lib for the exe is built with `wattle build lib` in the
+A `:source` lib for the exe is placed in `.wattle` in the application
+directory by its `:root`, as `wattle build lib` places it. A `:native` lib for the exe is built with `wattle build lib` in the
 project, and its shared library is copied to `zig-out/lib` in the application
 directory, so its `:root` need not be among the `:files`. Install raises an
 error if Zig is not on the `PATH`. `apps upgrade` builds the lib again, because
