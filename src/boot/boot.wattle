@@ -5640,20 +5640,27 @@
                                   "--output" archive "--url" source)
                          (run-tool tmp "tar" "-xf" archive "-C" dest))
               :git (do
+                     ; A fetch or a clone can start `git maintenance run
+                     ; --auto` as a detached process. That process creates and
+                     ; deletes files under .git while this function removes the
+                     ; directory, and the removal then raises. Every Git command
+                     ; here sets maintenance.auto to false.
+                     (defn git [& args]
+                       (run-tool tmp "git" "-c" "maintenance.auto=false" |args))
                      (defn clone []
-                       (run-tool tmp "git" "-c" "advice.detachedHead=false" "clone" "--quiet"
-                                |(if hash ["--single-branch" "--no-checkout"] ["--depth" "1"])
-                                |(if ref ["--branch" ref] []) "--" source dest))
+                       (git "-c" "advice.detachedHead=false" "clone" "--quiet"
+                            |(if hash ["--single-branch" "--no-checkout"] ["--depth" "1"])
+                            |(if ref ["--branch" ref] []) "--" source dest))
                      (defn checkout []
-                       (run-tool tmp "git" "-C" dest "-c" "advice.detachedHead=false"
-                                 "checkout" "--quiet" "--detach" hash))
+                       (git "-C" dest "-c" "advice.detachedHead=false"
+                            "checkout" "--quiet" "--detach" hash))
                      (if hash
                        (do
                          (def shallow?
                            (first (protect (do
-                                             (run-tool tmp "git" "-C" dest "init" "--quiet")
-                                             (run-tool tmp "git" "-C" dest "remote" "add" "origin" "--" source)
-                                             (run-tool tmp "git" "-C" dest "fetch" "--quiet" "--depth" "1" "origin" hash)
+                                             (git "-C" dest "init" "--quiet")
+                                             (git "-C" dest "remote" "add" "origin" "--" source)
+                                             (git "-C" dest "fetch" "--quiet" "--depth" "1" "origin" hash)
                                              (checkout)))))
                          (unless shallow?
                            (rmrf dest)

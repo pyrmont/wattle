@@ -8,6 +8,10 @@ since the most recent release are under Unreleased.
 - Strip debug information from the Windows release build and leave
   `wattle.pdb` out of its archive. The archive shrinks from about 4.2 MB to
   about 2.1 MB.
+- Fix fetching a `:remote` lib or an application from Git failing at random
+  with "No such file or directory" for `.git/objects/maintenance.lock`.
+  Git's automatic maintenance ran in the background while the clone was
+  removed, and is now turned off for these commands.
 
 ## 0.2.0 (2026-10-15)
 
