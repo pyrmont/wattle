@@ -5,6 +5,10 @@ since the most recent release are under Unreleased.
 
 ## Unreleased
 
+- Strip debug information from the Windows release build and leave
+  `wattle.pdb` out of its archive. The archive shrinks from about 4.2 MB to
+  about 2.1 MB.
+
 ## 0.2.0 (2026-10-15)
 
 - Require Zig 0.17.0. A native module must be built with the same Zig

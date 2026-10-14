@@ -51,14 +51,20 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Test
         run: zig build test
+      # The Linux and Windows builds are stripped. A stripped Windows build
+      # still writes a `wattle.pdb` of about 1 MB beside the executable, which
+      # the program does not need, so the step removes it.
       - name: Build
         run: |
           set -eu
           args="-Doptimize=ReleaseFast -p wattle-${{ inputs.version }}"
           if [ -n "${{ matrix.target }}" ]; then
             args="$args -Dtarget=${{ matrix.target }} -Dcpu=baseline -Dstrip=true"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            args="$args -Dstrip=true"
           fi
           zig build $args
+          rm -f "wattle-${{ inputs.version }}"/bin/*.pdb
           cp LICENSE README.md CHANGELOG.md "wattle-${{ inputs.version }}/"
       # The tag's `build.zig` sets the label, so the built program reports the
       # number without its `v`. A different label is a tag on a commit that
