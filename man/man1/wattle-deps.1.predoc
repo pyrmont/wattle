@@ -19,27 +19,34 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-Manage the dependencies of the project in the current directory. Nothing is
-installed under ``*prefix*``. A build made without the OS library does not
-include ***deps***, and each verb exits with status 1 after saying so. **d** is
-a synonym for ***deps***.
+**wattle deps** copies dependencies into the project in the current
+directory. The sources to copy are declared under ``:vendored`` in the
+project's info file. Nothing is installed under ``*prefix*``. See
+`wattle-dependencies(7)` for vendoring and remote libraries.
+
+A build made without the OS library does not include ***deps***. Each verb
+reports this limitation and exits with status 1. **d** is a synonym for
+***deps***.
 
 VERBS
 =====
 
 - ***vendor***:
-  Copy the entries of ``:vendored`` in ``info.edn`` in the current directory
-  into the current directory. Each entry is a map with a ``:name`` and a
-  ``:url``, which is a source as for ***install*** in `wattle-apps(1)`. It may
-  have a ``:ref``, a branch or tag for a Git repository, a ``:prefix``, the
-  directory to copy into, which is the current directory by default, and
-  ``:paths``, a vector of the paths to copy. A path is a string, or a vector of
-  a path in the source and a path under the ``:prefix``. The whole source is
-  copied if there is no ``:paths``. A file that is already there is replaced.
-  No path may be absolute or contain ``..``. Every entry is checked before any
-  is fetched, and no two may have the same ``:name``. ***vendor*** records no
-  revision, because the copies belong to the project. See VENDORING in
-  `wattle-projects(7)`.
+  Copies the sources declared in ``:vendored`` into the project. Each
+  declaration is a map containing ``:name`` and ``:url``. The URL specifies
+  a source as for ***install*** in `wattle-apps(1)`.
+
+  Optional keys select what to copy and where to place it. ``:ref`` selects
+  a Git branch or tag. ``:prefix`` specifies the destination directory and
+  defaults to the current directory. ``:paths`` is a vector of source paths
+  or pairs of source and destination paths. Without ``:paths``, the whole
+  source is copied. See `<VENDORING>` in `wattle-dependencies(7)` for the
+  declaration keys and an example.
+
+  Existing files are replaced. Paths cannot be absolute or contain ``..``.
+  Every declaration is checked before any source is fetched, and names must
+  be unique. Vendoring records no source revision; the copied files become
+  part of the project.
 
 EXAMPLES
 ========
@@ -53,4 +60,4 @@ $ wattle deps vendor
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-apps(1)`, `wattle-projects(7)`
+`wattle(1)`, `wattle-apps(1)`, `wattle-dependencies(7)`, `wattle-projects(7)`

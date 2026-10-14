@@ -19,9 +19,12 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-Compile _script_ without running it and report every error. With no _script_,
-check standard input instead. The exit status is 0 after errors are reported,
-unless **-b** is given. **c** is a synonym for ***check***.
+**wattle check** compiles _script_ without running it and reports compilation
+errors. If no script is specified, the command reads source from standard
+input. **c** is a synonym for ***check***.
+
+By default, the command reports all errors and exits with status 0. With
+**-b**, it stops at the first error and exits with status 1.
 
 OPTIONS
 =======
@@ -29,10 +32,11 @@ OPTIONS
 - **-e**, **--lint-error** _level_:
   Set the lint level at which a message stops compilation with an error.
   _level_ is one of ``none``, ``relaxed``, ``normal``, ``strict`` or ``all``,
-  written without a leading colon, or a number. These are the numbers 0, 1, 2
-  and 3 and infinity. A message is reported when its own level is at most
-  _level_, so ``none`` reports nothing and ``all`` reports every message. The
-  default is ``none``.
+  written without a leading colon. These names correspond to the numeric
+  levels 0, 1, 2, 3 and infinity. A numeric level can also be given directly.
+  A message is reported when its level is at most _level_. As a result,
+  ``none`` reports no messages and ``all`` reports every message. The default
+  is ``none``.
 
 - **-w**, **--lint-warn** _level_:
   Set the lint level at which a message is printed as a warning. _level_ takes

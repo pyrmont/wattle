@@ -19,12 +19,18 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-Manage the applications installed under ``*prefix*``. Each application has its
-own directory, ``lib/wattle/apps/<group>/<name>``, and its modules are not
-imported by other applications. Programs are installed in ``bin`` and man pages
-in ``share/man`` under the prefix.
-A build made without the OS library does not include ***apps***, and each verb
-exits with status 1 after saying so. **a** is a synonym for ***apps***.
+**wattle apps** manages installed applications. An *application* is a project
+with executable programs for installation. See `wattle-applications(7)` for
+the application layout and installation requirements.
+
+Each application is installed in `lib/wattle/apps/<group>/<name>/` under
+``*prefix*``. Programs are installed in `bin/` and manual pages in
+`share/man/`. An application's modules are not made available for import by
+other applications.
+
+A build made without the OS library does not include ***apps***. Each verb
+reports this limitation and exits with status 1. **a** is a synonym for
+***apps***.
 
 VERBS
 =====
@@ -34,20 +40,18 @@ VERBS
   ``.tar.gz``, or a Git repository. A directory is installed as it is. A name
   ending in ``.tar`` or ``.tar.gz`` is downloaded with **curl** and unpacked
   with **tar**. Anything else is cloned with **git**. With no _source_, the
-  current directory is installed. The ``info.edn`` of the application needs a
-  ``:group``, a string such as ``net.inqk``, and the application is installed
-  in ``lib/wattle/apps/<group>/<name>``. A _name_ is unique across groups.
-  If the application contains ``hooks.wattle`` or
-  ``hooks/init.wattle``, ***apps*** runs the hooks of that script and nothing
-  else. Otherwise ***apps*** builds each ``:exe`` artifact of ``info.edn`` with
-  ***build*** ***exe*** and installs the program in ``bin``. It installs each
-  ``:src`` artifact as source, with a program in ``bin`` that runs it, and
-  installs each file in the ``:man`` vector of ``info.edn`` in ``share/man``.
-  The section is the digit that ends the file name, so ``man/greet.1`` is
-  installed in ``man1``. A ``:web`` artifact is not installed, and a ``:lib``
-  artifact needs a script or a ``:src`` artifact that names it. _ref_ is a
-  branch or tag, and applies only to a Git repository. See
-  `wattle-applications(7)`.
+  current directory is installed. The application's info file requires
+  ``:name`` and ``:group``. The group is conventionally a reverse domain such
+  as ``net.inqk``. Installed application names are unique across groups.
+
+  The project declares the programs to install under ``:exes``. Native
+  executables are built and installed in `bin/`. Source executables are
+  copied with a program in `bin/` that runs them. Associated libraries and
+  manual pages are installed with the programs. Web executables are not
+  installed. An application script, if present, replaces this installation
+  with custom hooks. See `wattle-applications(7)`.
+
+  _ref_ specifies a branch or tag and applies only to a Git repository.
 
 - ***upgrade*** [_name_]:
   Install the application _name_ again from the source it was installed from.

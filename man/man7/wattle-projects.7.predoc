@@ -9,144 +9,203 @@ Version: DEVEL
 NAME
 ====
 
-**wattle-projects** - how Wattle projects, libraries and dependencies are laid out
+**wattle-projects** - Wattle project layout and declarations
 
 DESCRIPTION
 ===========
 
-A project is a directory containing an _info file_, source files (in either
-Wattle or Zig) and documentation. `wattle-build(1)` builds the exes and libs
-that a project declares, `wattle-deps(1)` manages the dependencies of a project and
-`wattle-test(1)` runs its tests. This page describes what a project contains.
+A Wattle *project* is a directory with an ``info.edn`` file at its root. A
+project may include Wattle source, Zig source, tests and documentation. Its
+info file declares three kinds of *artifact*: executables, libraries and
+documentation.
 
-A project may include one or more _applications_, installable by
-`wattle-apps(1)`. For more information on this, see `wattle-applications(7)`. A
-project that other projects use is a _library_. See `<LIBRARIES>`.
+An *executable* is a program, a *library* provides modules that programs import
+and *documentation* describes the project or its programs. A project may
+declare any combination of these artifacts. An *application* is a project with
+executables for installation. See `wattle-applications(7)`.
+
+This page describes the project layout and declarations.
 
 LAYOUT
 ======
 
-A project has an ``info.edn`` at its root. This is the _info file_. Every other
-file is optional.
+As described above, Wattle projects require the ``info.edn`` file to be
+located in the project root. The source files and documentation may be arranged
+as the project author prefers. That said, project authors should be aware that
+several commands use particular directories:
+
+- `.wattle/`:
+  Libraries copied or fetched by `wattle-build(1)` are placed here for use
+  during development. This directory is also searched for bare imports.
+  `wattle-build(1)` creates a `.wattle/.gitignore` that excludes its contents.
+  These generated files should not be committed.
+
+- `test/`:
+  `wattle-test(1)` runs each Wattle file under this directory. Most project authors
+  will want to place tests in this directory.
+
+- `zig-out/`:
+  The default output directory for Zig builds. `wattle-build(1)` places
+  generated executables, native libraries and web programs here. Native
+  libraries are in `zig-out/lib/`, which is searched for bare imports during
+  development.
+
+`wattle-run(1)` and `wattle-check(1)` use the info file beside the script,
+without searching parent directories. `wattle-build(1)` and `wattle-test(1)`
+use the info file in the current directory. Running a program does not copy,
+fetch or build libraries. See `<MODULES>` in `wattle(7)`.
 
 INFO FILE
 =========
 
-The info file holds one map. All keys are optional, but ``:name`` and
-``:group`` are needed to install a project as an application:
+The ``info.edn`` file is known as the *info file*. It contains one map
+describing the project. These are its keys:
 
 - ``:name``:
-  The name of the project. It is one directory name and is unique across
-  groups.
+  The project name. Application installation requires a name consisting of
+  one directory name. An installed application name is unique across groups.
 
 - ``:group``:
-  The group of the project, by convention a reverse domain such as
-  ``org.example``. The value is used in a directory name and so cannot be
-  empty, ``.`` or ``..``. It cannot contain a path separator.
-
-- ``:vendored``:
-  A vector of maps that describe the sources that ``wattle deps vendor`` copies
-  into the project. Each has a ``:name`` and a ``:url``, and may have a
-  ``:ref``, a ``:prefix`` and ``:paths``. See `<VENDORING>` and
-  `wattle-deps(1)`.
+  The project group, by convention a reverse domain such as ``org.example``.
+  Application installation requires this value. Like the application name,
+  it cannot be empty, ``.`` or ``..``, or contain a path separator.
 
 - ``:exes``:
-  A vector of maps that describe the programs of the project. Each has a
-  ``:type``, ``:native``, ``:source`` or ``:web``, a ``:name`` and an
-  ``:entry``. See 'Declarations' in `wattle-build(1)`.
+  A vector of executable declarations. See `<EXECUTABLES>`.
 
 - ``:libs``:
-  A vector of maps that describe the libraries of the project. Each has a
-  ``:type``, ``:native``, ``:source`` or ``:remote``, a ``:name`` and may have
-  ``:for``, the names of the exes it is part of. See `<LIBRARIES>`.
+  A vector of library declarations. See `<LIBRARIES>`.
 
 - ``:docs``:
-  A vector of maps that describe the documentation of the project. Each has a
-  ``:type``, ``:man`` or ``:web``, ``:files`` and may have ``:for``, the names
-  of the exes it is part of. A ``:man`` doc's section is the digit that ends
-  each file name, so ``man/greet.1`` is in section 1.
+  A vector of documentation declarations. See `<DOCUMENTATION>`.
 
-Example:
+- ``:vendored``:
+  A vector describing sources copied into the project by
+  ``wattle deps vendor``. See `wattle-dependencies(7)`.
+
+Each key is optional. Commands that read artifact declarations require at
+least one of ``:exes``, ``:libs`` or ``:docs``. An omitted artifact vector is
+empty. Application installation requires ``:name`` and ``:group``.
+
+Each artifact declaration is a map with a ``:type``. An executable or library
+also has a ``:name`` consisting of letters, digits, ``_`` and ``-``. Names
+are unique within each vector; an executable and a library may share a name.
+A documentation declaration has no ``:name``.
+
+A library or documentation declaration may have ``:for``, a vector of
+executable names from the same project. It is part of each named executable.
+Without ``:for``, it is not installed with an executable. A library cannot
+name a web executable in ``:for``.
+
+Paths in ``:files`` and the ``:root`` of a source library are relative to the
+project and cannot contain ``..``. The old keys ``:artifacts`` and ``:man``
+are rejected, as is ``:libs`` within an executable declaration.
+
+EXECUTABLES
+===========
+
+Each declaration in ``:exes`` is a map containing ``:name``, ``:type`` and
+``:entry`` keys. ``:entry`` is a path to the file that defines a function named
+``main``. The executable types are:
+
+- ``:native``:
+  A standalone program built by ``wattle build exe``. The program includes the
+  Wattle runtime, its compiled source and everything it imports. Native
+  libraries whose ``:for`` names the executable are linked into it. Building
+  requires the Zig toolchain.
+
+- ``:source``:
+  A program installed as Wattle source by ``wattle apps install``. It also
+  requires ``:files``, a vector of the files and directories to install.
+  ``wattle build`` does not build this type. Running the installed program
+  requires Wattle. See `wattle-applications(7)`.
+
+- ``:web``:
+  A browser program built by ``wattle build web``. Building requires the Zig
+  toolchain and produces a WebAssembly runtime, a program image and JavaScript.
+  Web executables cannot have associated libraries and are not installed by
+  ``wattle apps install``.
+
+LIBRARIES
+=========
+
+Each entry of ``:libs`` has ``:name`` and ``:type``, and may have ``:for``.
+A library provides modules for import. ``wattle build lib`` places libraries
+on the project's module path, where a bare import uses the declared name.
+The library types are:
+
+- ``:source``:
+  Wattle source. It requires ``:root``, one path to a file or directory in
+  the project. A file is copied to ``.wattle/<name>.wattle``. The contents of
+  a directory are copied to ``.wattle/<name>/``. A source library has no
+  ``:files`` key.
+
+- ``:native``:
+  A native module. It requires ``:root``, the Zig root file. Building requires
+  the Zig toolchain and produces a module in ``zig-out/lib``.
+
+- ``:remote``:
+  A library from another project. It requires ``:url`` and ``:hash``, and may
+  have ``:ref`` for a Git repository. The source project's info file must
+  declare a library of the same name as ``:source`` or ``:native``. The
+  library is placed in that form. See `wattle-dependencies(7)` for fetching
+  and revision requirements.
+
+For example, a source library with ``:name "util"`` and ``:root "lib/util"``
+places `lib/util/init.wattle` at `.wattle/util/init.wattle`, imported as
+``(import util)``. Its ``extra.wattle`` is imported as ``(import util/extra)``.
+A file root is also imported by the declared name, regardless of its file
+name in the project.
+
+``wattle build exe`` will build the source and remote libraries that specify
+the executable using ``:for``.
+
+DOCUMENTATION
+=============
+
+Each entry of ``:docs`` has ``:type`` and ``:files``, a vector of paths, and
+may have ``:for``. The documentation types are:
+
+- ``:man``:
+  Manual pages. Each file name ends in a period and a digit from 1 to 9. The
+  number is its manual section. For example, ``man/hello.1`` is a man page that
+  belongs in section 1.  Application installation copies the specified man
+  pages into `share/man`.
+
+- ``:web``:
+  Web pages. ``wattle build web`` copies associated files beside the generated
+  program. A web documentation declaration cannot name an installed executable
+  in ``:for``.
+
+EXAMPLES
+========
+
+A project with a native executable, a source library and a manual page:
 
 ````
 {:name "greeter"
  :group "org.example"
- :vendored [{:name "greetings"
-             :url "https://example.org/greetings.git"
-             :prefix "deps/greetings"}]
  :exes [{:type :native
          :name "hello"
          :entry "main.wattle"}]
  :libs [{:type :source
          :name "util"
-         :files ["util/"]
+         :root "lib/util"
          :for ["hello"]}]
  :docs [{:type :man
          :files ["man/hello.1"]
          :for ["hello"]}]}
 ````
 
-LIBRARIES
-=========
-
-A library is code that a project uses and does not run by itself. A project
-declares the libraries it imports by name in ``:libs`` in its info file, and
-``wattle build lib`` places each on the module path. A bare import, as in
-``(import greet)``, finds a library by its ``:name``. See 'MODULES' in
-`wattle(7)`.
-
-There are three kinds of declaration:
-
-- ``:source``:
-  Wattle source files in the project. ``wattle build lib`` copies its
-  ``:files`` to ``.wattle/<name>/``, where each keeps its path.
-
-- ``:native``:
-  A native module, built from its Zig ``:root`` file in ``zig-out/lib``. A
-  native executable whose name the ``:for`` of the library holds links it.
-
-- ``:remote``:
-  A library in another project, fetched from ``:url`` at a pinned ``:ref`` or
-  ``:hash``. Its own info file declares it as ``:source`` or ``:native``, and
-  it is placed as that form.
-
-``.wattle`` holds material that is not committed. ``wattle build lib`` creates
-it with a ``.gitignore`` that excludes its contents.
-
-``wattle apps install`` installs a library only as part of an exe whose name
-its ``:for`` holds. A library with no ``:for`` is not installed. See
-`wattle-applications(7)`.
-
-VENDORING
-=========
-
-Vendoring a dependency refers to the practice of copying into the source tree of
-a project the Wattle source files that the project uses. A vendored dependency
-is not on the module path. Within the code, it is imported using a relative
-import:
+Build the executable and run the project's tests:
 
 ````
-(import ./deps/greetings)
+$ wattle build exe hello
+$ wattle test
 ````
-
-A vendored copy is the version the project was tested with, it changes only
-when the project's author changes it and the project runs without any
-dependency being fetched. A project includes a copy of each dependency and a
-fix to a dependency reaches the project only when its author updates the copy.
-
-A ``:remote`` library is the alternative. The project names the source and pins
-a revision of it, and the copy is fetched into ``.wattle`` and is not
-committed. ``:for`` does not affect vendoring: any library of another project
-may be vendored.
-
-The project lists what it vendors under ``:vendored`` in its info file, and
-``wattle deps vendor`` copies each entry into the project. See
-`wattle-deps(1)`. An entry without a ``:ref`` uses the HEAD of the default
-branch of a Git repository each time. The copies belong to the project and may
-be edited, and no record is kept of the revision they came from.
 
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-build(1)`, `wattle-deps(1)`, `wattle-test(1)`,
-`wattle-applications(7)`, `wattle(7)`
+`wattle(1)`, `wattle-build(1)`, `wattle-test(1)`, `wattle(7)`,
+`wattle-applications(7)`, `wattle-dependencies(7)`

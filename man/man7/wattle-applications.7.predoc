@@ -14,75 +14,91 @@ NAME
 DESCRIPTION
 ===========
 
-An application is a project that `wattle-apps(1)` installs. This page
-describes what an application contains beyond what any project contains, and
-where its files are installed. The info file, the exes, libs and docs and the
-dependencies of a project are described in `wattle-projects(7)`, and
-`wattle-build(1)` builds the exes and libs that an application declares.
+An *application* is a project that declares one or more executable programs
+under ``:exes`` for installation. At least one executable must have type
+``:native`` or ``:source``; web executables are not installed.
+
+This page describes how applications are installed, where their files are
+placed and how application scripts customise installation. See
+`wattle-projects(7)` for executable, library and documentation declarations,
+and `wattle-apps(1)` for the commands that manage installed applications.
 
 LAYOUT
 ======
 
-An application may contain these files:
+An application has the layout of a Wattle project. Its info file provides
+the information needed for installation, and it may also include an
+*application script* that defines installation hooks:
 
-- ``info.edn``:
-  The info file, at the root of the application. Installing needs its ``:name``
-  and ``:group``. See ``INFO FILE`` in `wattle-projects(7)`.
+- `./info.edn`:
+  The info file, located in the project root. Installation requires the
+  ``:name`` and ``:group`` keys. See `<INFO FILE>` in `wattle-projects(7)`.
 
-- ``hooks/init.wattle`` or ``hooks.wattle``:
-  The application script. If both exist, ``hooks/init.wattle`` is used. The
-  rest of ``hooks`` is installed with it, so the script can import the files
-  beside it.
+- `hooks/init.wattle`:
+  The application script. `./hooks.wattle` may be used instead. If both files
+  exist, `hooks/init.wattle` is used. The rest of `hooks/` is installed with
+  the script, so it can use relative imports to load the files beside it.
 
-An application needs an application script or an info file that declares
-``:exes``.
+An application requires ``:name`` and ``:group`` in its info file. Both are
+single directory names: neither may be empty, ``.`` or ``..``, or contain a
+path separator. The group is conventionally a reverse domain such as
+``org.example``. Installed application names are unique across groups.
 
 INSTALLATION
 ============
 
-An application with an application script is installed by running the hooks
-that the script defines, and nothing else. An application without one is
-installed from its info file. Each exe of ``:type`` ``:native`` or ``:source``
-is installed, with the libs and docs whose ``:for`` names it:
+Without an application script, ``wattle apps install`` installs the programs
+declared in the info file. Each executable with ``:type :native`` or
+``:type :source`` is installed with the libraries and documentation that
+name it in ``:for``:
 
-- A ``:native`` exe is built with `wattle-build(1)` and its program is
-  installed in ``bin``. A native lib for it is linked into the program, and a
-  source lib for it is compiled into the program.
+- A native executable is built with `wattle-build(1)` and installed in
+  `bin/`. Its associated native libraries are linked into the program, and
+  its imported source libraries are compiled into the program.
 
-- A ``:source`` exe is installed as described in `<Source programs>`.
+- A source executable is installed as described in `<Source programs>`.
 
-- Each file of a ``:man`` doc is installed in ``share/man``, in the section
-  that the digit at the end of its name gives.
+- Each associated manual page is installed in `share/man/`. The digit at
+  the end of the file name determines its manual section.
 
-A ``:remote`` lib is fetched under ``lib/wattle/.fetch`` and has the form its
-own info file declares. The manifest records the ``:name``, ``:url`` and
-``:rev`` of each under ``:libs``.
+A remote library is fetched under `lib/wattle/.fetch/` and installed as the
+source or native library declared in its own info file. The application's
+*manifest* records the installed files and source revisions. Each remote
+library has an entry under ``:libs`` with its ``:name``, ``:url`` and ``:rev``.
 
-A ``:web`` exe is not installed. A lib or doc whose ``:for`` names no installed
-exe is not installed, and a ``:web`` doc whose ``:for`` names an installed exe
-is refused. The manifest lists each file installed in ``bin`` and
-``share/man``, so ``wattle apps remove`` removes them with the application
-directory.
+Web executables are not installed. A library or documentation declaration
+is not installed unless its ``:for`` names an installed executable. A web
+documentation declaration that names an installed executable is an error.
+
+The manifest lists each file installed in `bin/` and `share/man/`.
+``wattle apps remove`` removes these files and the application directory.
+
+If the project includes an application script, installation runs its hooks
+instead of installing from the declarations. See `<Hooks>`.
 
 Source programs
 ---------------
 
-A ``:source`` exe is a program that is installed as source. Its ``:files``
-are copied into the application directory. A directory is copied without any
-entry named ``zig-out``, ``.zig-cache``, ``.wattle`` or ``.git``. A source lib
-for it is copied to ``.wattle/<name>/`` there. A native lib for it is built
-with `wattle-build(1)` in the project, and the native module is copied to
-``zig-out/lib`` in the application directory. This needs **zig** on the
-``PATH``, and ``wattle apps upgrade`` builds the modules again.
+A source executable is installed by copying the paths in its ``:files``
+vector into the application directory. When a directory is copied, entries
+named ``zig-out``, ``.zig-cache``, ``.wattle`` or ``.git`` are excluded.
 
-The program in ``bin`` has the name of the exe and starts with
-``#!/usr/bin/env wattle``. It loads ``:entry`` and calls ``main`` with the path
-of the program followed by the arguments. A bare ``import`` in the program
-searches ``.wattle`` and ``zig-out/lib`` in the application directory, and a
-vendored copy under ``deps`` is imported by a relative path. Running the
-program needs **wattle** on the ``PATH`` and the prefix set with
-``WATTLE_PREFIX``. A program that needs neither is a ``:native`` exe. Windows
-has no shebang lines, so a ``:source`` exe cannot be installed there.
+Associated source libraries are placed in `.wattle/` in the application
+directory, as described in `wattle-projects(7)`. Associated native libraries
+are built with `wattle-build(1)` in the project and copied to `zig-out/lib/`
+in the application directory. Building these modules requires **zig** on
+`PATH`. ``wattle apps upgrade`` builds the modules again.
+
+Installation also creates a *wrapper*, a program in `bin/` with the name of
+the executable. The wrapper starts with ``#!/usr/bin/env wattle``. It loads
+the file specified by ``:entry`` and calls ``main`` with the wrapper's path
+followed by the command-line arguments.
+
+A bare import searches `.wattle/` and `zig-out/lib/` in the application
+directory. Vendored source under `deps/` is imported by a relative path.
+Running the installed program requires **wattle** on `PATH` and the prefix
+set with `WATTLE_PREFIX`. A native executable requires neither. Source
+executables cannot be installed on Windows, which has no shebang lines.
 
 Example:
 
@@ -95,7 +111,7 @@ Example:
          :files ["main.wattle" "lib" "deps"]}]
  :libs [{:type :source
          :name "util"
-         :files ["util/"]
+         :root "util"
          :for ["greet"]}]
  :docs [{:type :man
          :files ["man/greet.1"]
@@ -105,8 +121,15 @@ Example:
 Hooks
 -----
 
-The application script defines a function for each hook it uses. Each takes the
-application's manifest. The hooks run in this order at installation:
+An application script replaces installation from the declarations in
+``info.edn``. The installer also permits a project with an application script
+and no ``:exes`` declarations. This form of installation is discouraged.
+Applications should declare their executable programs under ``:exes``,
+including when hooks perform the installation.
+
+A *hook* is a function defined in the application script. Each hook takes
+the application's manifest as its argument. Installation runs the hooks in
+this order:
 
 1. ``clean``, only when a clean build is requested
 2. ``build``
@@ -119,12 +142,13 @@ Within a hook, these functions add files to the manifest, so that
 ``wattle apps remove`` can remove them:
 
 - ``app/add-bin``:
-  Adds a program to the binpath.
+  Adds a program to the directory for installed executables, the *binpath*.
 
 - ``app/add-manpage``:
-  Adds a man page to the manpath.
+  Adds a manual page to the directory for installed manual pages, the
+  *manpath*.
 
-Example of ``hooks/init.wattle``:
+Example of `hooks/init.wattle`:
 
 ````
 (defn install
@@ -136,27 +160,32 @@ Example of ``hooks/init.wattle``:
 INSTALLED FILES
 ===============
 
-All locations are under ``*prefix*``; see ``WATTLE_PREFIX`` in `wattle(1)`.
+All locations are relative to the installation prefix, ``*prefix*``. See
+`WATTLE_PREFIX` in `wattle(1)`.
 
-- ``lib/wattle``:
-  The libpath, which holds the applications. ``import`` does not search it.
-  See ``MODULES`` in `wattle(7)`.
+- `lib/wattle/`:
+  The directory for installed applications, the *libpath*. ``import`` does
+  not search this directory.
+  See `<MODULES>` in `wattle(7)`.
 
-- ``lib/wattle/apps/<group>/<name>``:
-  The directory of an installed application: ``manifest.edn``, which lists its
-  files and records its source, ``:rev``, the revision of the source, and the
-  revision of each remote lib, a copy
-  of its info file and a copy of its application script, with the rest of its
-  ``hooks`` directory. The revision is the commit hash for a Git repository, and
-  ``sha256:`` and a hash of the files for a tarball or a directory.
+- `lib/wattle/apps/<group>/<name>/`:
+  The directory for an individual application. It contains ``manifest.edn``,
+  a copy of the info file and, when present, the application script and the
+  rest of `hooks/`. Source programs and their libraries are also copied here.
 
-- ``bin``:
-  The binpath, for programs.
+  The manifest records the application's source and its revision under
+  ``:rev``, and the revision of each remote library under ``:libs``. A Git
+  revision is a commit hash. A tarball or directory revision is ``sha256:``
+  followed by a hash of its files.
 
-- ``share/man``:
-  The manpath, for man pages.
+- `bin/`:
+  The binpath, containing installed native executables and source wrappers.
+
+- `share/man/`:
+  The manpath, containing manual pages in subdirectories such as `man1/`.
 
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-apps(1)`, `wattle-build(1)`, `wattle-projects(7)`, `wattle(7)`
+`wattle(1)`, `wattle-apps(1)`, `wattle-build(1)`, `wattle(7)`,
+`wattle-dependencies(7)`, `wattle-projects(7)`

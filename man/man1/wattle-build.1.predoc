@@ -26,23 +26,24 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-**wattle build** creates two kinds of output. An image is made from a source
-file and requires only the Wattle runtime. Executables, libraries and
-WebAssembly programs are made from the exes and libs that a Wattle project
-declares in its info file. A native executable, a native library and a web
-program require the Zig toolchain.
+**wattle build** builds images and project artifacts. An *image* is a saved
+module environment that `wattle-run(1)` can load later. Creating an image
+from a source file requires only the Wattle runtime.
 
-**wattle build** can be invoked using ***wattle b***.
+Project artifacts are executables, libraries and web programs declared in
+the project's info file. Building a native executable, a native library or
+a web program requires the Zig toolchain.
+
+**b** is a synonym for ***build***.
 
 Subcommands
 -----------
 
-An image is made from a source file, not from a project's info file, and
-requires nothing further.
+The ***img*** subcommand takes a source file directly:
 
 - ***img***:
-  Loads the module at _source_ and writes an image of
-  its environment to _output_. If _output_ is omitted, it is _source_ with
+  Loads the module at _source_ and writes an image of its environment to
+  _output_. If _output_ is omitted, it is _source_ with
   ``.wattle`` replaced by ``.wimage``. `wattle-run(1)` can be used to load
   the image later.
 
@@ -50,16 +51,18 @@ requires nothing further.
     Imports _module_ into the environment before _source_ is loaded, as
     **wattle run** does. Several **-l** options run in the order given.
 
-Executables, libraries and web programs are made from the declarations in the
-project's info file. The generated files are in ``zig-out`` in the project
-root, and a copied or fetched library is in ``.wattle``.
+The other subcommands read declarations from ``info.edn`` in the current
+directory. Generated build output is saved in `zig-out/` in the project
+root. Copied and fetched libraries are saved in `.wattle/`.
 
 - ***exe***:
-  Builds the exes of ``:type`` ``:native`` in the project's info file.
-  The output is a standalone executable that contains the Wattle runtime, the
-  compiled program, everything it imports and the native libraries whose
-  ``:for`` names it. A source library that it imports must be placed by
-  ***lib*** first. If _name_ is given, only that exe is built.
+  Builds the executables declared with ``:type :native``. Each program
+  includes the Wattle runtime, its compiled source and everything it imports.
+  Associated native libraries are linked into the program.
+
+  Before building, this subcommand copies or fetches the source and remote
+  libraries whose ``:for`` names the selected executables. There is no need
+  to run ***lib*** first. If _name_ is given, only that executable is built.
 
   - **-r**, **--release** _mode_:
     Optimises for ``safe``, ``fast`` or ``small``. The default is ``safe``.
@@ -69,12 +72,17 @@ root, and a copied or fetched library is in ``.wattle``.
     default is this machine.
 
 - ***lib***:
-  Places the libs in the project's info file on the module path, so that a
-  bare import finds each by its name. A ``:source`` lib is copied to
-  ``.wattle/<name>/``. A ``:remote`` lib is fetched into ``.wattle/.remote/``
-  and then placed as the form its own info file declares. A ``:native`` lib is
-  built as a native module in ``zig-out/lib``. If _name_ is given, only that
-  lib is placed. Only this subcommand places libs: **wattle run** does not.
+  Copies, fetches or builds the declared libraries so that programs can
+  import them by name. If _name_ is given, only that library is prepared.
+
+  A source library is copied to `.wattle/<name>.wattle` if its ``:root`` is
+  a file. If the root is a directory, its contents are copied to
+  `.wattle/<name>/`. A remote library is fetched into `.wattle/.remote/`
+  and then prepared as the source or native library declared in its own
+  info file. A native library is built as a module in `zig-out/lib/`.
+
+  The ***exe*** subcommand also prepares its associated source and remote
+  libraries. `wattle-run(1)` does not copy, fetch or build libraries.
 
   - **-r**, **--release** _mode_:
     Optimises for ``safe``, ``fast`` or ``small``. The default is ``safe``.
@@ -84,11 +92,13 @@ root, and a copied or fetched library is in ``.wattle``.
     default is this machine.
 
 - ***web***:
-  Builds the exes of ``:type`` ``:web`` in the project's info file. Each
-  is an image of the program, a Wattle runtime built for WebAssembly that loads
-  an image, and the JavaScript that runs them in a browser. The ``:files`` of
-  each doc whose ``:for`` names the exe are copied beside them. See
-  `<Web programs>` for the files. If _name_ is given, only that exe is built.
+  Builds the executables declared with ``:type :web``. For each executable,
+  the build produces a program image, a Wattle runtime built for WebAssembly
+  and the JavaScript needed to run the program in a browser.
+
+  Documentation files whose ``:for`` names the executable are copied beside
+  the generated files. See `<Web programs>` for the output files. If _name_
+  is given, only that executable is built.
 
   The runtime is built for ``wasm32-wasi``, so this subcommand takes no **-t**.
 
@@ -102,7 +112,7 @@ Building executables, native libraries and web programs requires:
 
 1. ***zig*** to be on the user's `PATH`.
 2. The Wattle source, which is included in Wattle releases and which is
-   installed to ``<prefix>/share/wattle``.
+   installed to `<prefix>/share/wattle/`.
 
 No Zig build files are required. **wattle build** creates temporary
 ``build.zig`` and ``build.zig.zon`` files from the declarations in the
@@ -112,76 +122,21 @@ source library needs no Zig, and fetching a remote library needs ***git*** or
 
 The project's info file is ``info.edn`` in the current directory.
 
-Declarations
-------------
+Project declarations
+--------------------
 
-A project author declares what the project builds in three vectors of the
-project's info file: ``:exes``, ``:libs`` and ``:docs``.
+The info file declares executables, libraries and documentation under
+``:exes``, ``:libs`` and ``:docs``. See `wattle-projects(7)` for the declaration
+keys, types and examples, and `wattle-dependencies(7)` for remote libraries.
 
-````
-{:name "greeter"
- :exes [{:type :native
-         :name "hello"
-         :entry "main.wattle"}]
- :libs [{:type :native
-         :name "greet"
-         :root "greet.zig"
-         :for ["hello"]}]}
-````
-
-Every exe and lib has a ``:type`` and a ``:name``, a string of letters,
-digits, ``_`` and ``-``. A name is unique among the exes, and among the libs.
-A doc has a ``:type`` and no ``:name``.
-
-An exe has an ``:entry``, the file where ``main`` is defined, and one of these
-types:
-
-- ``:native``:
-  A standalone executable that ***exe*** builds.
-
-- ``:source``:
-  A program that ``wattle apps install`` installs as source. **wattle build**
-  does not build it. It also requires ``:files``, a vector of the paths to
-  install. See `wattle-applications(7)`.
-
-- ``:web``:
-  A program for a browser that ***web*** builds.
-
-A lib may have ``:for``, a vector of the names of the exes it is part of. A
-native exe is built with each native lib whose ``:for`` names it, and a web exe
-takes no lib. A lib has one of these types:
-
-- ``:native``:
-  A native module. It requires ``:root``, the Zig root file.
-
-- ``:source``:
-  Wattle source. It requires ``:files``, a vector of paths. Each is copied to
-  the same path under ``.wattle/<name>/``, so ``:files ["util/"]`` puts
-  ``util/init.wattle`` at ``.wattle/util/util/init.wattle``, which is imported
-  as ``(import util/util)``.
-
-- ``:remote``:
-  A lib that is fetched from ``:url``, a Git repository or a URL ending in
-  ``.tar`` or ``.tar.gz``. A Git repository requires ``:ref``, a branch or tag,
-  and a tarball requires ``:hash``, ``sha256:`` and the tree hash of its files
-  as ``wattle apps install`` records it under ``:rev``. The source must have
-  an info file that declares a lib of the same ``:name``, as ``:native`` or
-  ``:source``, and the lib takes that form. A lib is fetched again only when
-  its ``:url``, ``:ref`` or ``:hash`` changes.
-
-A doc requires ``:files`` and may have ``:for``. A ``:man`` doc is a set of
-manual pages, each named with a period and its section, as in ``hello.1``. A
-``:web`` doc is a set of files for a web exe.
-
-The info file may not have ``:artifacts`` or ``:man``, and an exe may not have
-``:libs``. **wattle build** names what replaces each.
+A source executable is installed by ``wattle apps install`` and is not built
+by this command. See `wattle-applications(7)`.
 
 Web programs
 ------------
 
-Web programs are exes that are designed to run in a browser environment.
-To do this, **wattle build** ***web*** creates four files in
-``zig-out/web/<name>/``:
+A *web program* is an executable intended to run in a browser.
+``wattle build web`` creates four files in `zig-out/web/<name>/`:
 
 1. ``wattle-<hash>.wasm``, the runtime
 2. ``<name>-<hash>.wimage``, the program
@@ -210,5 +165,5 @@ $ wattle -p /usr/local build exe --release small
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-run(1)`, `wattle-apps(1)`, `wattle-projects(7)`,
-`wattle-applications(7)`
+`wattle(1)`, `wattle-apps(1)`, `wattle-run(1)`, `wattle-applications(7)`,
+`wattle-dependencies(7)`, `wattle-projects(7)`

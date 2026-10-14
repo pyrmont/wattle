@@ -1,0 +1,173 @@
+---
+Title: WATTLE-DEPENDENCIES(7)
+Authors: Michael Camilleri <mike@inqk.net>
+Date: 2026-10-14
+Project: Wattle
+Version: DEVEL
+---
+
+NAME
+====
+
+**wattle-dependencies** - dependencies of Wattle projects
+
+DESCRIPTION
+===========
+
+A *dependency* is code from another project that a Wattle project uses.
+A project may include a copy of that code in its source tree or declare a
+remote library in its info file. A copy included in the source tree is
+*vendored* and committed with the project. Remote libraries are fetched into
+`.wattle/` and are not committed.
+
+Installing an application does not make its modules available to other
+projects. Dependencies are obtained for each project. See
+`wattle-projects(7)` for project layout and artifact declarations.
+
+VENDORING
+=========
+
+*Vendoring* is the practice of copying a dependency into the project's
+source tree. The copy becomes part of the project and may be edited by its
+author. Running the project does not require the vendored source to be
+fetched again.
+
+Each project uses its own copy. Changes to the original dependency do not
+affect that copy; the project author must update it to include a fix or a
+new version.
+
+Vendored source is not added to the module path. It is imported by a relative
+path, for example:
+
+````
+(import ./deps/greetings)
+````
+
+The ``:vendored`` key in the info file contains a vector of source
+declarations. ``wattle deps vendor`` copies the specified files into the
+project, replacing files that already exist. Each declaration is a map with
+these keys:
+
+- ``:name``:
+  A non-empty string identifying the source. Every declaration in
+  ``:vendored`` must have a different name.
+
+- ``:url``:
+  A source directory, tarball URL ending in ``.tar`` or ``.tar.gz``, or Git
+  repository, as for ``wattle apps install``.
+
+- ``:ref``:
+  An optional branch or tag for a Git repository. Without it, each invocation
+  uses HEAD of the default branch.
+
+- ``:prefix``:
+  The destination directory, relative to the project. The default is the
+  current directory.
+
+- ``:paths``:
+  An optional vector of paths to copy. Each entry is a string or a vector
+  of two strings. A string specifies the same path in the source and under
+  ``:prefix``. A pair specifies the source path followed by the destination
+  path under ``:prefix``. Without ``:paths``, the whole source is copied.
+
+Paths cannot be absolute or contain ``..``. All entries are checked before
+any source is fetched. Vendoring records no source revision. The committed
+copies determine the version used by the project.
+
+A vendored source needs no ``info.edn`` and no library declaration. ``:for``
+does not affect vendoring. For installation of a source executable, include
+its vendored files in the executable's ``:files``.
+
+REMOTE LIBRARIES
+================
+
+A *remote library* is a library fetched from another project. Its declaration
+is a map in ``:libs`` with ``:type :remote``. The ``:url`` key specifies a Git
+repository or a tarball URL ending in ``.tar`` or ``.tar.gz``. The ``:hash``
+key specifies the exact source revision to use.
+
+Git repositories
+----------------
+
+For a Git repository, ``:hash`` is a commit hash of 40 lowercase hexadecimal
+digits, or 64 for a SHA-256 repository. Fetching first requests that commit
+alone at depth 1. If the server does not allow a fetch by hash, Wattle clones
+the repository instead. Fetching fails if the commit cannot be found.
+
+The optional ``:ref`` specifies a branch or tag for the clone. It is needed
+when the default branch does not reach the pinned commit. Otherwise it only
+labels the commit; it does not select a different revision.
+
+Tarballs
+--------
+
+For a tarball, ``:hash`` is ``sha256:`` followed by 64 lowercase hexadecimal
+digits. This is the tree hash of the extracted files, as application
+installation records it under ``:rev``, rather than a hash of the archive.
+A tarball declaration cannot have ``:ref``.
+
+Fetching
+--------
+
+If ``:hash`` is missing, fetching reports an error with the hash of the
+fetched source. Add that hash to the declaration to pin the revision.
+A library is fetched again only when its ``:url`` or ``:hash`` changes.
+
+``wattle build lib`` fetches and places remote libraries on the module path.
+``wattle build exe`` also fetches and places those associated with the native
+executables it builds. Running a script does not fetch libraries.
+
+The fetched source and its revision record are saved in
+`.wattle/.remote/<name>/`. A source library is copied to
+`.wattle/<name>.wattle` or `.wattle/<name>/`, depending on whether its root is
+a file or directory. A native library is built in `zig-out/lib/`. Programs
+import the library by the name in its declaration:
+
+````
+(import greetings)
+````
+
+A remote library requires a matching library declaration in the source
+project. Source without an info file must be vendored instead. The ``:for``
+of the local declaration associates the library with the project's
+executables. Installation fetches associated remote libraries separately;
+see `wattle-applications(7)`.
+
+EXAMPLES
+========
+
+Vendor selected files into `deps/greetings/`:
+
+````
+{:vendored [{:name "greetings"
+             :url "https://example.org/greetings.git"
+             :ref "v1.0.0"
+             :prefix "deps/greetings"
+             :paths [["src/init.wattle" "init.wattle"] "LICENSE"]}]}
+````
+
+Copy the source:
+
+````
+$ wattle deps vendor
+````
+
+Declare a remote library for a native executable:
+
+````
+{:exes [{:type :native :name "hello" :entry "main.wattle"}]
+ :libs [{:type :remote
+         :name "greetings"
+         :url "https://example.org/greetings.git"
+         :hash "0123456789abcdef0123456789abcdef01234567"
+         :for ["hello"]}]}
+````
+
+The hash must identify a commit in the source repository. A branch or tag in
+``:ref`` does not replace it.
+
+SEE ALSO
+========
+
+`wattle-build(1)`, `wattle-deps(1)`, `wattle(7)`, `wattle-applications(7)`,
+`wattle-projects(7)`

@@ -20,28 +20,34 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-Copy Gum modules into a project. Gum is the set of optional Wattle modules
-installed in ``share/wattle/src/gum`` under ``*prefix*``. **g** is a synonym
-for ***gum***.
+**wattle gum** copies optional Wattle modules into a project. These modules
+are known as *Gum* and are installed in `share/wattle/src/gum/` under
+``*prefix*``. **g** is a synonym for ***gum***.
 
-With no _module_, ***gum*** prints the name and a description of each module in
-two columns, wrapped as **--help** wraps. With one or more, it copies the files
-of each, which are its source and its licence, into the ``gum`` directory of
-_directory_, and prints ``copied`` or ``unchanged`` and the path of each file.
-A project imports a copy by its path, as in
-``(import ./deps/gum/args :as args)``. A build made without the OS library
-does not include ***gum***, and it exits with status 1 after saying so.
+With no module names, the command lists each available module and its
+description in two columns. Descriptions are wrapped in the same way as
+**--help** output.
 
-***gum*** checks every _module_ and every destination before it copies a file.
-It exits with status 1 having copied nothing if a _module_ is not one of
-Gum's, or if a destination file exists with content that differs from its
-source. A file with the same content is left as it is.
+With one or more module names, the command copies each module's source and
+licence into a `gum/` subdirectory under _directory_. It prints ``copied``
+or ``unchanged`` followed by the path of each file. The default destination
+is `deps/gum/`. A project imports a copy by its relative path, as in
+``(import ./deps/gum/args :as args)``.
+
+A build made without the OS library does not include ***gum***. The command
+reports this limitation and exits with status 1.
+
+The command checks all module names and destinations before copying any
+files. An unknown module name or a destination file with different content
+causes it to exit with status 1 without copying files. A destination file
+with the same content is left unchanged. **--force** permits replacement of
+files with different content.
 
 OPTIONS
 =======
 
 - **-d**, **--dir** _directory_:
-  Copy into ``gum`` under _directory_. The default is ``deps``.
+  Copies modules into `gum/` under _directory_. The default is `deps/`.
 
 - **-f**, **--force**:
   Replace a destination file that differs from its source.

@@ -235,8 +235,8 @@ BINDINGS AND CONTROL FLOW
 ``def`` binds a value to a name that cannot be reassigned. ``var`` binds a
 value to a name that ``set`` can reassign. Both accept destructuring patterns.
 ``do`` evaluates its forms in order and returns the last result. The core
-library offers the ``let`` macro that uses these to create bindings within a
-specified scope:
+library provides ``let``, a macro that uses these forms to create bindings
+within a specified scope:
 
 ````
 (def raise 7)
@@ -395,18 +395,27 @@ available:
 
 A name that does not begin with ``.``, ``/`` or ``@`` is a bare import, as in
 ``(import greetings)``. It searches the directories in the dynamic binding
-``:modpath``, in order. A relative import does not use ``:modpath``. The
-command sets ``:modpath`` before it loads a program. ``wattle run`` looks for
-``info.edn`` in the directory of the script, and ``wattle test`` and
-``wattle build`` look in the working directory. Neither searches the parent
-directories. ``:modpath`` is the ``.wattle`` directory of that project, which
-holds material that is not committed, such as copied libraries, followed by its
-``zig-out/lib`` directory, which holds built native modules. Vendored source in
-``deps`` is not on it and is imported by a relative path, as in
-``(import ./deps/gum/args)``. A native module is also found under a name that begins
-with ``lib``, so ``(import greet)`` loads ``greet.so`` or ``libgreet.so``. With no ``info.edn``, ``:modpath`` is not set and a bare
-import fails. No installed library is importable by another program, and no
-environment variable or option sets ``:modpath``.
+``:modpath``, in order. A relative import does not use ``:modpath``.
+
+The command sets this binding before loading a program. `wattle-run(1)`
+looks for ``info.edn`` in the script's directory. `wattle-test(1)` and
+`wattle-build(1)` look in the current directory. These commands do not search
+parent directories.
+
+The module path contains two directories from that project, in this order:
+
+- `.wattle/`, containing copied and fetched libraries that are not committed.
+- `zig-out/lib/`, containing built native modules.
+
+Vendored source in `deps/` is not on the module path. It is imported by a
+relative path, as in ``(import ./deps/gum/args)``. See `wattle-projects(7)`
+for project layout and `wattle-dependencies(7)` for dependencies.
+
+Native modules may have a ``lib`` prefix in their file names. For example,
+``(import greet)`` can load ``greet.so`` or ``libgreet.so``. If there is no
+info file, ``:modpath`` is not set and a bare import fails. Installing an
+application does not make its modules importable by another program. No
+environment variable or command-line option sets ``:modpath``.
 
 ERRORS
 ======
@@ -427,7 +436,8 @@ result:
 SEE ALSO
 ========
 
-`wattle(1)`, `wattle-projects(7)`, `wattle-applications(7)`
+`wattle(1)`, `wattle-applications(7)`, `wattle-dependencies(7)`,
+`wattle-projects(7)`
 
 The REPL's ``(doc)`` lists available bindings, and ``(doc symbol)`` describes
 one. Example programs are distributed with the Wattle source tree.
