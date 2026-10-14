@@ -46,10 +46,12 @@ Review and test the result:
 $ git diff
 $ git diff --check
 $ zig build test
+$ zig build
 $ zig-out/bin/wattle --version
 ```
 
-The last command prints `0.1.0`. Stage only the version-related files:
+`zig build test` does not install the executable, so `zig build` installs it
+before the version check. The last command prints `0.1.0`. Stage only the version-related files:
 
 ```console
 $ git add build.zig build.zig.zon CHANGELOG.md README.md
