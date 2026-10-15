@@ -85,7 +85,9 @@ Alternatively, open GitHub Actions, select the `Release` workflow, choose
 The workflow checks out the tag, runs the tests, builds an archive for macOS
 on aarch64, Linux on x86-64 and aarch64, and Windows on x86-64, and creates a
 draft GitHub release with the archives attached and the release's section of
-`CHANGELOG.md` as its notes. A build whose `wattle --version` is not the tag's
+`CHANGELOG.md` as its notes. Each entry is joined onto one line, because
+GitHub keeps the line breaks of a release's notes and `CHANGELOG.md` is
+wrapped to 80 columns. A build whose `wattle --version` is not the tag's
 number fails. When the workflow succeeds, review the draft release and
 publish it.
 
