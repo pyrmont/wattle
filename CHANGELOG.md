@@ -3,6 +3,12 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
+## Unreleased
+
+- Strip debug information and the static symbol table from the executables
+  that `wattle build exe` builds. `--no-strip` (`-S`) keeps them.
+  `ExecutableOptions` in `build.zig` has a `strip` field, false by default.
+
 ## 0.2.1 (2026-10-15)
 
 - Strip debug information from the Windows release build and leave

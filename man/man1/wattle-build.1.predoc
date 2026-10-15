@@ -18,7 +18,8 @@ SYNOPSIS
                  [_output_]
 
 **wattle build** ***exe*** [**-r** _mode_ | **--release** _mode_]
-                 [**-t** _triple_ | **--target** _triple_] [_name_]
+                 [**-t** _triple_ | **--target** _triple_] [**-S** | **--no-strip**]
+                 [_name_]
 **wattle build** ***lib*** [**-r** _mode_ | **--release** _mode_]
                  [**-t** _triple_ | **--target** _triple_] [_name_]
 **wattle build** ***web*** [**-r** _mode_ | **--release** _mode_] [_name_]
@@ -70,6 +71,10 @@ root. Copied and fetched libraries are saved in `.wattle/`.
   - **-t**, **--target** _triple_:
     Builds for _triple_, a Zig target such as ``x86_64-linux-musl``. The
     default is this machine.
+
+  - **-S**, **--no-strip**:
+    Keeps debug information and the static symbol table in each
+    executable. Without it, both are stripped.
 
 - ***lib***:
   Copies, fetches or builds the declared libraries so that programs can

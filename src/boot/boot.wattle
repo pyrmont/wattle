@@ -6451,6 +6451,7 @@
     (case kind
       :exe
       (buffer/push! b
+        "    const strip = b.option(bool, \"strip\", \"Strip debug information and the static symbol table. The default is true\") orelse true;\n"
         "    const docstrings = optimize == .debug;\n"
         "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize, .docstrings = docstrings });\n"
         "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .debug, .docstrings = docstrings });\n")
@@ -6485,6 +6486,7 @@
             "        },\n"
             "        .target = target,\n"
             "        .optimize = optimize,\n"
+            "        .strip = strip,\n"
             "    });\n")
           (buffer/format! b "    b.installArtifact(exe%d);\n" i))
         (do
@@ -6703,6 +6705,8 @@
      ["exe" {:validate? validate?
              :help "Build the native executables that info.edn declares."
              :rules [|cli-target-rules
+                     "--no-strip" {:kind :flag :short "S"
+                                   :help "Keep debug information and the static symbol table in the executables, which are stripped by default."}
                      :name {:proxy "name"
                             :help "The executable to build. The default is every executable."}]}
       "img" {:validate? validate?
@@ -7157,7 +7161,8 @@
       ["zig" "build" "--build-file" (string gen "/" cli-zig-build-file)
        "--prefix" (string dir "/zig-out") "--cache-dir" (string dir "/" cli-zig-cache)
        (string "-Doptimize=" mode)
-       |(if-let [triple (get opts "target")] [(string "-Dtarget=" triple)] [])])
+       |(if-let [triple (get opts "target")] [(string "-Dtarget=" triple)] [])
+       |(if (get opts "no-strip") ["-Dstrip=false"] [])])
     (def status (os/execute args :p))
     (unless (zero? status) (os/exit status))
     (print "built " kind " in " dir "/zig-out"))

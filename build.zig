@@ -343,6 +343,10 @@ pub const ExecutableOptions = struct {
     /// The target and mode `dep` was instantiated with.
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
+    /// Whether debug information and the static symbol table are left out.
+    /// The natives are linked in as objects, so nothing resolves against the
+    /// executable's symbols when it runs.
+    strip: bool = false,
 };
 
 /// A Janet program, its native modules and the runtime, as one executable.
@@ -1750,6 +1754,7 @@ fn buildExecutable(
     module.addImport("lexicon", graph.lexicon);
     module.addImport("lineedit", lineeditModule(b, target_side.target, target_side.optimize, graph.lexicon));
     module.addImport("cabi", graph.cabi);
+    if (opts.strip) module.strip = true;
 
     // `preload.wattle` sits beside a copy of each host library, so it finds
     // them from its own path.
