@@ -147,7 +147,9 @@
     (setdyn :test/seed nil)
     (freeze ran))
   (def registered ['one 'two 'three 'four 'five 'six])
-  (is (= registered (order-with nil)))
+  ; false rather than nil: `wattle test` sets :test/seed in the environment
+  ; the suite's inherits from, and a nil binding does not hide that one.
+  (is (= registered (order-with false)))
   (is (= (order-with 1) (order-with 1)))
   (def orders (map order-with [1 2 3 4 5 6 7 8]))
   (is (not (all-equal? orders)))
