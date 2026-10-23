@@ -6452,8 +6452,9 @@
       :exe
       (buffer/push! b
         "    const strip = b.option(bool, \"strip\", \"Strip debug information and the static symbol table. The default is true\") orelse true;\n"
+        "    const linkage = b.option(std.lang.LinkMode, \"linkage\", \"Link the executables dynamically or statically. The default is the Wattle package's\");\n"
         "    const docstrings = optimize == .debug;\n"
-        "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize, .docstrings = docstrings });\n"
+        "    const dep = b.dependency(\"wattle\", .{ .target = target, .optimize = optimize, .docstrings = docstrings, .linkage = linkage });\n"
         "    const host = b.dependency(\"wattle\", .{ .target = b.graph.host, .optimize = .debug, .docstrings = docstrings });\n")
       :web
       (buffer/push! b
@@ -6707,6 +6708,8 @@
              :rules [|cli-target-rules
                      "--no-strip" {:kind :flag :short "S"
                                    :help "Keep debug information and the static symbol table in the executables, which are stripped by default."}
+                     "--static" {:kind :flag
+                                 :help "Link the executables statically. It needs a musl target, and a static executable loads no native module at run time."}
                      :name {:proxy "name"
                             :help "The executable to build. The default is every executable."}]}
       "img" {:validate? validate?
@@ -7162,7 +7165,8 @@
        "--prefix" (string dir "/zig-out") "--cache-dir" (string dir "/" cli-zig-cache)
        (string "-Doptimize=" mode)
        |(if-let [triple (get opts "target")] [(string "-Dtarget=" triple)] [])
-       |(if (get opts "no-strip") ["-Dstrip=false"] [])])
+       |(if (get opts "no-strip") ["-Dstrip=false"] [])
+       |(if (get opts "static") ["-Dlinkage=static"] [])])
     (def status (os/execute args :p))
     (unless (zero? status) (os/exit status))
     (print "built " kind " in " dir "/zig-out"))
@@ -7250,6 +7254,8 @@
       (def name (get (get cmd :params) :name))
       (def mode (get cli-release-modes (get opts "release" (if (= kind :web) "small" "safe"))))
       (unless mode (cli-fail "release must be safe, fast or small"))
+      (when (and (get opts "static") (not (string/find "musl" (get opts "target" ""))))
+        (cli-fail "--static needs a musl target, such as -t x86_64-linux-musl"))
       (def dir (os/realpath (os/cwd)))
       (def info-path (string dir "/info.edn"))
       (unless (fexists info-path) (cli-fail "no info.edn in " dir))

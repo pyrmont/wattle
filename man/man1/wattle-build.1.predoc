@@ -19,7 +19,7 @@ SYNOPSIS
 
 **wattle build** ***exe*** [**-r** _mode_ | **--release** _mode_]
                  [**-t** _triple_ | **--target** _triple_] [**-S** | **--no-strip**]
-                 [_name_]
+                 [**--static**] [_name_]
 **wattle build** ***lib*** [**-r** _mode_ | **--release** _mode_]
                  [**-t** _triple_ | **--target** _triple_] [_name_]
 **wattle build** ***web*** [**-r** _mode_ | **--release** _mode_] [_name_]
@@ -75,6 +75,13 @@ root. Copied and fetched libraries are saved in `.wattle/`.
   - **-S**, **--no-strip**:
     Keeps debug information and the static symbol table in each
     executable. Without it, both are stripped.
+
+  - **--static**:
+    Links each executable statically. It needs **--target** with a musl
+    triple, such as ``x86_64-linux-musl``, where an executable is otherwise linked
+    dynamically and needs `/lib/ld-musl-<arch>.so.1` at run time. Native
+    libraries whose ``:for`` names the executable are still linked in, but a
+    static executable cannot load any other native module at run time.
 
 - ***lib***:
   Copies, fetches or builds the declared libraries so that programs can
