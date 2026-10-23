@@ -101,7 +101,7 @@ _wattle() {
                                     '(-r --release)'{-r+,--release=}'[Optimise for safe, fast or small]:mode:(safe fast small)' \
                                     '(-t --target)'{-t+,--target=}'[Build for a Zig target triple]:triple:' \
                                     '(-S --no-strip)'{-S,--no-strip}'[Keep debug information and the static symbol table]' \
-                                    '--static[Link the executables statically]' \
+                                    '--no-static[Link the executables dynamically on a musl target]' \
                                     '1:name:' && ret=0
                                 ;;
                             lib)

@@ -82,7 +82,7 @@ _wattle() {
                         if [[ "$cur" == -* && "${words[sub_at + 1]}" == web ]]; then
                             COMPREPLY=($(compgen -W "-r --release -h --help" -- "$cur"))
                         elif [[ "$cur" == -* && "${words[sub_at + 1]}" == exe ]]; then
-                            COMPREPLY=($(compgen -W "-r --release -t --target -S --no-strip --static -h --help" -- "$cur"))
+                            COMPREPLY=($(compgen -W "-r --release -t --target -S --no-strip --no-static -h --help" -- "$cur"))
                         elif [[ "$cur" == -* ]]; then
                             COMPREPLY=($(compgen -W "-r --release -t --target -h --help" -- "$cur"))
                         fi
