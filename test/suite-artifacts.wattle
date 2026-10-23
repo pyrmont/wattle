@@ -119,6 +119,14 @@
   (is (nil? (refusal {:libs [(slib :root ".")]})))
   (refuses {:docs [(wdoc :files ["/site"])]} "doc 0: :files must hold relative paths"))
 
+(deftest native-c
+  (is (nil? (refusal {:libs [(lib :c-sources ["c/a.c" "c/b.c"] :c-includes ["c"] :c-flags ["-DX=1"])]})))
+  (is (nil? (refusal {:libs [(lib :c-sources [])]})))
+  (refuses {:libs [(lib :c-sources "a.c")]} "lib 0 (z): :c-sources must be a vector of strings")
+  (refuses {:libs [(lib :c-includes ["c" ""])]} ":c-includes must hold non-empty strings, not \"\"")
+  (refuses {:libs [(lib :c-flags [:x])]} ":c-flags must hold non-empty strings, not :x")
+  (refuses {:libs [(slib :c-sources ["a.c"])]} "lib 0 (u): :c-sources is not a key of a :source lib"))
+
 (deftest man-sections
   (is (nil? (refusal {:docs [(man :files ["a.1" "b.9" "c.d.5"])]})))
   (refuses {:docs [(man :files ["a.txt"])]}
@@ -273,6 +281,25 @@
   (def [ok message] (protect (build/zig-files mixed :lib "u" gen-opts)))
   (is (not ok))
   (is (has message "no :native lib is called u")))
+
+(deftest zig-files-c
+  (def info {:exes [(exe)]
+             :libs [(lib :root "z.zig" :for ["a"] :c-sources ["c/a.c" "c/b.c"]
+                         :c-includes ["inc"] :c-flags ["-DX=\"1\""])]})
+  (def exe-text (get (build/zig-files info :exe gen-opts) :build))
+  (is (has exe-text
+           (string "            .{ .name = \"z\", .root = .{ .cwd_relative = \"/proj/z.zig\" }"
+                   ", .c_sources = &.{ .{ .cwd_relative = \"/proj/c/a.c\" }, .{ .cwd_relative = \"/proj/c/b.c\" } }"
+                   ", .c_includes = &.{ .{ .cwd_relative = \"/proj/inc\" } }"
+                   ", .c_flags = &.{ \"-DX=\\\"1\\\"\" } },\n")))
+  (def lib-text (get (build/zig-files info :lib gen-opts) :build))
+  (is (has lib-text "    mod0.addIncludePath(.{ .cwd_relative = \"/proj/inc\" });\n"))
+  (is (has lib-text
+           "    mod0.addCSourceFile(.{ .file = .{ .cwd_relative = \"/proj/c/b.c\" }, .flags = &.{ \"-DX=\\\"1\\\"\" } });\n"))
+  (is (has lib-text "    mod0.link_libc = true;\n"))
+  ; A lib without C has no C fields.
+  (is (not (has (get (build/zig-files blueshift :exe gen-opts) :build) "c_sources")))
+  (is (not (has (get (build/zig-files blueshift :lib gen-opts) :build) "link_libc"))))
 
 (deftest zig-files-web
   (def info {:exes [{:type :web :name "page" :entry "app/main.wattle"}]})

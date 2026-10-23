@@ -142,7 +142,16 @@ The library types are:
 
 - ``:native``:
   A native module. It requires ``:root``, the Zig root file. Building requires
-  the Zig toolchain and produces a module in ``zig-out/lib``.
+  the Zig toolchain and produces a module in ``zig-out/lib``. A native library
+  may also compile C into the module. ``:c-sources`` is a vector of paths to C
+  files, ``:c-includes`` a vector of paths to include directories, and
+  ``:c-flags`` a vector of flags for the C compiler, such as
+  ``"-DHAVE_CONFIG_H"``. The paths are relative to the project. The same C
+  files and flags are compiled into the shared library that ``wattle build
+  lib`` produces and into each executable whose ``:for`` names the library.
+  The Zig root declares the C functions it calls with ``extern fn``. A
+  configuration header that depends on the target is a file in an include
+  directory; nothing generates one.
 
 - ``:remote``:
   A library from another project. It requires ``:url`` and ``:hash``, and may

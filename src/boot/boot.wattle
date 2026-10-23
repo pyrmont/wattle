@@ -4874,7 +4874,7 @@
   {:exes {:native [:type :name :entry]
           :source [:type :name :entry :files]
           :web [:type :name :entry]}
-   :libs {:native [:type :name :for :root]
+   :libs {:native [:type :name :for :root :c-sources :c-includes :c-flags]
           :source [:type :name :for :root]
           :remote [:type :name :for :url :ref :hash]}
    :docs {:man [:type :for :files]
@@ -4947,6 +4947,17 @@
   (unless (string? root)
     (build-artifact-fail key i decl ":root must be a path, a string, not %v" root))
   (build-artifact-check-path key i decl :root root))
+
+(defn- build-artifact-check-strings
+  "Raises unless the value of k in decl is absent or a vector of non-empty strings."
+  [key i decl k]
+  (def vals (get decl k))
+  (when (nil? vals) (break))
+  (unless (vector? vals)
+    (build-artifact-fail key i decl "%v must be a vector of strings" k))
+  (each val vals
+    (unless (and (string? val) (not (empty? val)))
+      (build-artifact-fail key i decl "%v must hold non-empty strings, not %v" k val))))
 
 (defn- build-artifact-check-man
   "Raises unless each file of the :man doc decl ends in a period and a digit from 1 to 9."
@@ -5067,7 +5078,9 @@
       (case [key kind]
         [:exes :source] (do (build-artifact-check-string key i decl :entry)
                             (build-artifact-check-files key i decl))
-        [:libs :native] (build-artifact-check-string key i decl :root)
+        [:libs :native] (do (build-artifact-check-string key i decl :root)
+                            (each k [:c-sources :c-includes :c-flags]
+                              (build-artifact-check-strings key i decl k)))
         [:libs :source] (build-artifact-check-root key i decl)
         [:libs :remote] (build-artifact-check-remote key i decl)
         [:docs :man] (do (build-artifact-check-files key i decl)
@@ -5867,16 +5880,23 @@
   (defn- build-resolve
     """
     Returns the declaration that the :remote lib lib has as rec, its record in
-    the root dir, describes it: a :native lib whose :root is an absolute path
-    into the fetched source, or a :source lib that has :from, the directory
-    that its :root is under. The :name and :for are those of lib.
+    the root dir, describes it: a :native lib whose :root, :c-sources and
+    :c-includes are absolute paths into the fetched source, or a :source lib
+    that has :from, the directory that its :root is under. The :name and :for are those of lib.
     """
     [dir lib rec]
     (def form (get rec :form))
     (def tree (build-fetched-dir dir (get lib :name)))
     (def base {:type (get form :type) :name (get lib :name) :for (get lib :for [])})
     (case (get form :type)
-      :native (assoc base :root (string tree (sep) (get form :root)))
+      :native (do
+                (var out (assoc base :root (string tree (sep) (get form :root))))
+                (each k [:c-sources :c-includes]
+                  (when-let [paths (get form k)]
+                    (set out (assoc out k (vec (map #(string tree (sep) $) paths))))))
+                (when-let [flags (get form :c-flags)]
+                  (set out (assoc out :c-flags flags)))
+                out)
       :source (assoc base :root (get form :root) :from tree)))
 
   (defn- app-require-zig
@@ -6430,7 +6450,9 @@
   :gen are resolved against :dir where they are relative. An executable is
   built with the :native libs whose :for names it linked in, and without
   docstrings unless the optimize mode is Debug. A lib is built as a shared
-  library. A web exe is built as an image and a runtime for a browser, with no
+  library. The :c-sources, :c-includes and :c-flags of a :native lib are
+  compiled into the shared library and into each executable it is linked
+  into. A web exe is built as an image and a runtime for a browser, with no
   docstrings, whatever the target is.
   Raises if ^build/artifacts raises for x and the key, the type and name that
   kind and name select.
@@ -6443,6 +6465,17 @@
     (def dir (get opts :dir))
     (defn zig-path [path]
       (string ".{ .cwd_relative = \"" (build-zig-string (build-absolute-path dir path)) "\" }"))
+    (defn zig-list [vals f]
+      (string "&.{ " (string/join ", " (map f vals)) " }"))
+    (defn zig-quoted [val] (string "\"" (build-zig-string val) "\""))
+    (defn native-c [lib]
+      (def out !"")
+      (each [k field f] [[:c-sources "c_sources" zig-path]
+                         [:c-includes "c_includes" zig-path]
+                         [:c-flags "c_flags" zig-quoted]]
+        (when-let [vals (get lib k)]
+          (buffer/format! out ", .%s = %s" field (zig-list vals f))))
+      (string out))
     (def b !"")
     (buffer/push! b
       "const std = @import(\"std\");\n"
@@ -6486,8 +6519,9 @@
           (buffer/format! b "        .source = %s,\n" (zig-path (get artifact :entry)))
           (buffer/push! b "        .natives = &.{\n")
           (each lib (build/for native-libs (get artifact :name))
-            (buffer/format! b "            .{ .name = \"%s\", .root = %s },\n"
-                            (build-zig-string (get lib :name)) (zig-path (get lib :root))))
+            (buffer/format! b "            .{ .name = \"%s\", .root = %s%s },\n"
+                            (build-zig-string (get lib :name)) (zig-path (get lib :root))
+                            (native-c lib)))
           (buffer/push! b
             "        },\n"
             "        .target = target,\n"
@@ -6503,6 +6537,13 @@
             "        .optimize = optimize,\n"
             "    });\n")
           (buffer/format! b "    mod%d.addImport(\"wattle\", wattle.wattleModule(dep, target, optimize));\n" i)
+          (each path (get artifact :c-includes [])
+            (buffer/format! b "    mod%d.addIncludePath(%s);\n" i (zig-path path)))
+          (each file (get artifact :c-sources [])
+            (buffer/format! b "    mod%d.addCSourceFile(.{ .file = %s, .flags = %s });\n"
+                            i (zig-path file) (zig-list (get artifact :c-flags []) zig-quoted)))
+          (when (get artifact :c-sources)
+            (buffer/format! b "    mod%d.link_libc = true;\n" i))
           (buffer/format! b "    const lib%d = b.addLibrary(.{\n" i)
           (buffer/format! b "        .name = \"%s\",\n" artifact-name)
           (buffer/format! b "        .linkage = .dynamic,\n        .root_module = mod%d,\n    });\n" i)

@@ -330,6 +330,13 @@ pub const ExecutableNative = struct {
     name: []const u8,
     /// The module's Zig root. It imports `wattle` and calls `wattle.entry`.
     root: std.Build.LazyPath,
+    /// C files compiled into the module, both the host shared library and the
+    /// target object.
+    c_sources: []const std.Build.LazyPath = &.{},
+    /// Directories searched by `#include` in `c_sources`.
+    c_includes: []const std.Build.LazyPath = &.{},
+    /// Flags for the C compiler, applied to every file of `c_sources`.
+    c_flags: []const []const u8 = &.{},
 };
 
 /// What `wattleExecutable` builds.
@@ -804,7 +811,7 @@ pub fn build(b: *std.Build) void {
             root: []const u8,
             name: []const u8,
         ) *std.Build.Step.Compile {
-            return nativeCompile(bb, g, t, o, opts, cfg, bb.path(root), name, null);
+            return nativeCompile(bb, g, t, o, opts, cfg, bb.path(root), name, null, .{});
         }
     }.make;
 
@@ -1562,9 +1569,17 @@ fn lexiconModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
     });
 }
 
+/// The C that a native module compiles in, from `ExecutableNative`.
+const NativeC = struct {
+    sources: []const std.Build.LazyPath = &.{},
+    includes: []const std.Build.LazyPath = &.{},
+    flags: []const []const u8 = &.{},
+};
+
 /// A native module compiled against `graph`: a shared library the loader
 /// opens when `static_name` is null, and otherwise an object whose entry
 /// symbols carry `static_name`, for linking into a self-contained executable.
+/// `c` is compiled into either.
 fn nativeCompile(
     b: *std.Build,
     graph: ?RuntimeGraph,
@@ -1575,6 +1590,7 @@ fn nativeCompile(
     root: std.Build.LazyPath,
     name: []const u8,
     static_name: ?[]const u8,
+    c: NativeC,
 ) *std.Build.Step.Compile {
     const wattle_module = b.createModule(.{
         .root_source_file = b.path("src/module.zig"),
@@ -1588,6 +1604,8 @@ fn nativeCompile(
         .optimize = optimize,
     });
     configureCModule(mod, target, options, cfg);
+    for (c.includes) |path| mod.addIncludePath(path);
+    for (c.sources) |file| mod.addCSourceFile(.{ .file = file, .flags = c.flags });
     if (graph) |g| {
         wattle_module.addImport("abi", g.abi);
         wattle_module.addImport("repr", g.repr);
@@ -1783,6 +1801,11 @@ fn buildExecutable(
             'a'...'z', 'A'...'Z', '0'...'9', '_', '-' => {},
             else => std.debug.panic("wattleExecutable: native name '{s}' may hold only letters, digits, '_' and '-'", .{native.name}),
         };
+        const c: NativeC = .{
+            .sources = native.c_sources,
+            .includes = native.c_includes,
+            .flags = native.c_flags,
+        };
         const library = nativeCompile(
             hb,
             host_side.graph,
@@ -1793,6 +1816,7 @@ fn buildExecutable(
             native.root,
             native.name,
             null,
+            c,
         );
         _ = preload_files.addCopyFile(library.getEmittedBin(), b.fmt("{s}.so", .{native.name}));
         preload.appendSlice(gpa, b.fmt(
@@ -1810,6 +1834,7 @@ fn buildExecutable(
             native.root,
             native.name,
             native.name,
+            c,
         );
         module.addObject(object);
         table.appendSlice(gpa, b.fmt(
