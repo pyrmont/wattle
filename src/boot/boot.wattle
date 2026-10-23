@@ -6050,9 +6050,12 @@
 
   (defn- app-install-dir
     """
-    Installs the application in the directory path. See ^app/install.
+    Installs the application in the directory path. See ^app/install. rev is a
+    function of no arguments that returns the revision of the source, and it is
+    called after path is checked for an application and before anything is
+    installed.
     """
-    [path & {:as config}]
+    [path rev & {:as config}]
     (def path (os/realpath path))
     (def s (sep))
     ; Detect info file
@@ -6081,6 +6084,7 @@
     (ensuref (nil? group-problem) "application group %v %s" group group-problem)
     (ensuref (nil? (app-group app-name))
              "application %v is already installed" app-name)
+    (def source-rev (rev))
     ; Setup installed paths
     (def dir (app-dir-in group app-name))
     (mkdirs dir)
@@ -6094,7 +6098,7 @@
     (def implicit-sources (string path s "hooks"))
     (when (= :directory (os/stat implicit-sources :mode))
       (copyrf implicit-sources (string dir s "hooks")))
-    (def man !{:name app-name :group group :local-source path :files ![]})
+    (def man !{:name app-name :group group :local-source path :rev source-rev :files ![]})
     (merge! man config)
     (sync-manifest man)
     (edefer (do (print "installation error, removing") (app/remove app-name))
@@ -6157,8 +6161,8 @@
     (with-source source ref (string (wattle/libpath) (sep) ".fetch")
       (fn [root rev]
         (if (= kind :directory)
-          (app-install-dir root :rev (rev) |(kvs config))
-          (app-install-dir root :source source :rev (rev) |(kvs config))))))
+          (app-install-dir root rev |(kvs config))
+          (app-install-dir root rev :source source |(kvs config))))))
 
   (defn- app-pack
     """

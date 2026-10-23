@@ -209,6 +209,18 @@
 (assert-error-value "application missing script"
                     "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :exes"
                     (app/install "./examples/app-empty"))
+; A directory that is not an application is refused before its revision is
+; taken, so a symbolic link in it, which the revision cannot include, does not
+; change the error.
+(let [not-app (string prefix "-not-app")]
+  (rmrf not-app)
+  (assert (os/mkdir not-app))
+  (spit (string not-app "/a.wattle") "")
+  (when (first (protect (os/link (string not-app "/a.wattle") (string not-app "/link") true)))
+    (assert-error-value "a directory that is not an application"
+                        "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :exes"
+                        (app/install not-app)))
+  (rmrf not-app))
 (assert (= 0 (length (app/list))) "check failure 0")
 (assert (= 0 (length (app/list))) "check failure 1")
 

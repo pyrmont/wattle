@@ -280,7 +280,7 @@
     (def n (scan-number (string/trim (string (:read (p :out) :all)))))
     (os/proc-wait p)
     n)
-  (def held "wattle-suite-io-11-cloexec")
+  (def held "/tmp/wattle-suite-io-11-cloexec")
   (defer (os/rm held)
     (spit held "x")
     (def before (open-fds))
