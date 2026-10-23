@@ -3,7 +3,20 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
-## Unreleased
+## 0.3.0 (2026-10-23)
+
+- Link the executables that `wattle build exe` builds for a musl target,
+  such as `x86_64-linux-musl`, statically, so they start on a host without
+  `/lib/ld-musl-<arch>.so.1`. `--no-static` links them dynamically. A static
+  executable cannot load a native module at run time other than those whose
+  `:for` names it.
+- Allow a `:native` lib in `info.edn` to compile C into the module.
+  `:c-sources` lists the C files, `:c-includes` the include directories and
+  `:c-flags` the flags for the C compiler. `ExecutableNative` in `build.zig`
+  has `c_sources`, `c_includes` and `c_flags` fields.
+- Fix `wattle apps install` hashing a local directory in full before
+  refusing it as not an application. The hash failed when a file under the
+  directory was removed during the walk or the tree held a symbolic link.
 
 ## 0.2.2 (2026-10-15)
 
