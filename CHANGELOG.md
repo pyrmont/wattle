@@ -3,7 +3,14 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
-## Unreleased
+## 0.3.1 (2026-10-24)
+
+- Fix `wattle build exe` and `wattle build web` linking a stale image when a
+  module that the entry file imports, or a file that a macro reads at compile
+  time, changed and the entry file did not. `wattle build img --depfile path`
+  writes a Makefile rule that lists each file read while the image was
+  compiled, and `file/open` puts each path it opens for reading in the table
+  bound to `*files-read*`.
 
 ## 0.3.0 (2026-10-23)
 

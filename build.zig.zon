@@ -1,6 +1,6 @@
 .{
     .name = .wattle,
-    .version = "0.3.0",
+    .version = "0.3.1",
     .dependencies = .{},
     .fingerprint = 0x4082841cbfa0dabd,
     .minimum_zig_version = "0.17.0",
