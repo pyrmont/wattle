@@ -719,6 +719,28 @@ to the project and may be edited. Two entries may not have the same `:name`.
 `info.edn` has no `:dependencies`, and the manifest of an installed application
 records none.
 
+### Image inputs
+
+`wattle build exe` and `wattle build web` make each program's image with
+`wattle build img --depfile`. The image is made again when a file read during
+its compilation changes. These files are the source, each module that `import`
+or `require` loaded, and each file that code run at compile time opened for
+reading.
+
+`build img --depfile path` sets `*files-read*` in the root environment to an
+empty table while it loads the libraries and the source. Each module
+environment has the root environment as its prototype, so the binding is
+visible in every module. When `*files-read*` is bound to a table,
+`file/open` puts in it the path of each file that it opens with a mode
+beginning with `r`. After the image is written, `build img` writes `path` as a
+Makefile rule. The image is the target, and each path in the table that is
+still a file is a prerequisite, written as an absolute path. Zig reads the rule
+after the step runs and runs the step again when a prerequisite changes.
+
+A Zig dependency file lists files and not directories. A file added to a
+directory that the compilation listed does not cause the image to be made
+again.
+
 ## Build steps
 
 Run a step with `zig build <step>`. The default step is `install`, so

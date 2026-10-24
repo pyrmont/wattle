@@ -321,6 +321,7 @@ pub fn libIo(env: *tables.Table) raise.Error!void {
             "represents a flag. n is the buffer size in bytes, and 0 means unbuffered. " ++
             "Returns the new file, or nil if the file cannot be opened. " ++
             "Raises an error if path is a directory. " ++
+            "If ^*files-read* is bound to a table and mode begins with r, puts path in the table. " ++
             "Mode flags:\n\n" ++
             "| Flag | Description                 |\n" ++
             "| ---- | --------------------------- |\n" ++
@@ -751,7 +752,10 @@ fn nfunFopen(argv: []repr.Value) raise.Error!repr.Value {
             }
         }
     }
-    if (f) |handle| return wrap.fromAbstract(makef(@ptrCast(handle), flags, bufsize));
+    if (f) |handle| {
+        if (flags & file_read != 0) recordRead(argv[0]);
+        return wrap.fromAbstract(makef(@ptrCast(handle), flags, bufsize));
+    }
     if (flags & file_error != 0) {
         return pp_format.panicf("failed to open file %s: %s", .{ fname, utils.strerrorSafe(c.errno()) });
     }
@@ -1255,6 +1259,18 @@ fn readChunk(iof: *File, buffer: *buffers.Buffer, n_bytes_max: usize) raise.Erro
         return raise.panic("could not read file");
     }
     buffer.count += @intCast(nread);
+}
+
+/// Puts `path` in the table bound to `*files-read*`, with the value `true`.
+///
+/// `nfunFopen` calls this function for each file that it opens with a mode
+/// beginning with `r`. `wattle build img --depfile` binds the table and writes
+/// its keys as the prerequisites of the image. A binding that is not a table
+/// is ignored. This function cannot raise.
+fn recordRead(path: repr.Value) void {
+    const files = vm_state.dyn("files-read");
+    if (!repr.checkType(files, repr.Tag.table)) return;
+    tables.put(wrap.toTable(files), path, wrap.fromTrue());
 }
 
 /// The flag word a repeated mode flag reports, which is -1 beside

@@ -2207,6 +2207,13 @@
     (file/close f)
     nil))
 
+(defdyn *files-read*
+  """
+  Dynamic binding for a table of paths. When it is bound to a table,
+  ^file/open puts the path of each file that it opens with a mode beginning
+  with `r` in the table, with the value true.
+  """)
+
 (defdyn *pretty-format*
   "Format specifier for the ^pp function")
 
@@ -6762,6 +6769,8 @@
              :help "Compile a source file into an image."
              :rules ["--lib" {:kind :multi :short "l" :proxy "module"
                               :help "Use a module before the source is compiled."}
+                     "--depfile" {:kind :single :proxy "path"
+                                  :help "Write a Makefile rule to path that lists each file read while the image was compiled."}
                      :source {:req? true :proxy "source"
                               :help "The source file to compile."}
                      :output {:proxy "output"
@@ -7145,20 +7154,43 @@
       (flycheck path :exit bail? :env (make-env)))
     (flycheck stdin :source :stdin :exit bail?)))
 
+(defn- cli-dep-path
+  """
+  Returns path as an absolute path with each space escaped by a backslash, as
+  a Makefile rule writes it.
+  """
+  [path]
+  (def full (compif (dyn 'os/realpath) (os/realpath path) path))
+  (string/replace-all " " "\\ " full))
+
 (defn- cli-build-img [image]
   (def params (get image :params))
+  (def opts (get image :opts))
+  (def depfile (get opts "depfile"))
+  (def files-read (if depfile !{}))
   (cli-set-modpath ".")
-  (each library (get (get image :opts) "lib" [])
-    (import* library :prefix "" :exit true))
   (def path (get params :source))
+  ; Set in the root environment rather than with ^with-dyns, because each
+  ; module environment has the root environment as its prototype and not the
+  ; environment of the fiber that loads it.
+  (put! root-env *files-read* files-read)
+  (each library (get opts "lib" [])
+    (import* library :prefix "" :exit true))
   (unless (cli-exists? path) (cli-fail "error: could not find file " path))
   (def e (dofile path))
+  (put! root-env *files-read* nil)
   (def output-path
     (or (get params :output)
         (string
           (if (string/has-suffix? ".wattle" path) (string/slice path 0 -8) path)
           ".wimage")))
-  (spit output-path (make-image e)))
+  (spit output-path (make-image e))
+  ; A file that was read and then removed is left out, because Zig fails the
+  ; step on a prerequisite that does not exist.
+  (when depfile
+    (def deps (sort (map cli-dep-path (filter fexists (keys files-read)))))
+    (spit depfile (string (cli-dep-path output-path) ": "
+                          (string/join " " deps) "\n"))))
 
 (def- cli-release-modes {"safe" "ReleaseSafe" "fast" "ReleaseFast" "small" "ReleaseSmall"})
 

@@ -336,6 +336,32 @@
     (assert (= 0 (length (app/list))) "an application whose hook fails is not installed")
     (rmrf bug-dir)))
 
+; `wattle build img --depfile` writes a Makefile rule. The image is the target,
+; and the source, each module it imports and each file read at compile time are
+; the prerequisites, as absolute paths with each space escaped.
+(compwhen (dyn 'os/execute)
+  (do
+    (def dep-dir (string prefix "-dep dir"))
+    (rmrf dep-dir)
+    (assert (os/mkdir dep-dir))
+    (def dep-data (string dep-dir "/data.txt"))
+    (def dep-helper (string dep-dir "/helper.wattle"))
+    (def dep-main (string dep-dir "/main.wattle"))
+    (def dep-image (string dep-dir "/main.wimage"))
+    (def depfile (string dep-dir "/main.d"))
+    (spit dep-data "hello")
+    (spit dep-helper (string/format "(defmacro data [] (slurp %m))\n(defn hi [] (data))\n" dep-data))
+    (spit dep-main "(import ./helper)\n(defn main [&] (print (helper/hi)))\n")
+    (def [status _] (run-cli "build" "img" "--depfile" depfile dep-main dep-image))
+    (assert (= 0 status) "build img with --depfile exits with status 0")
+    (defn- dep-path [path] (string/replace-all " " "\\ " (os/realpath path)))
+    (assert (= (string (dep-path dep-image) ": "
+                       (string/join " " (sort (map dep-path [dep-data dep-helper dep-main])))
+                       "\n")
+               (string (slurp depfile)))
+            "the rule lists the source, the import and the file read at compile time")
+    (rmrf dep-dir)))
+
 ; The build of a :native exe is not captured, so its output reaches the
 ; command line as it is written. The prefix of this suite holds no source of the
 ; runtime, so the build fails, and the command line prints what the build wrote

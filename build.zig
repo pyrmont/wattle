@@ -475,7 +475,10 @@ pub fn wattleWeb(host: *std.Build.Dependency, opts: WebOptions) Web {
 
     const make_image = b.addRunArtifact(host_side.client);
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
-    make_image.addArgs(&.{ "build", "img" });
+    // The dependency file lists each file read during the compilation, so an
+    // edit to an imported module makes the image again.
+    make_image.addArgs(&.{ "build", "img", "--depfile" });
+    _ = make_image.addDepFileOutputArg2(b.fmt("{s}.d", .{opts.name}), .{});
     make_image.addFileArg2(opts.source, .{});
     const image = make_image.addOutputFileArg2(b.fmt("{s}.wimage", .{opts.name}), .{});
 
@@ -1850,10 +1853,14 @@ fn buildExecutable(
 
     // `-l` rather than `-e`, because a generated path is a file argument and
     // cannot be spliced into an expression; `build img` imports the library
-    // before it compiles the program, so the natives are added first.
+    // before it compiles the program, so the natives are added first. The
+    // dependency file lists each file read during the compilation, so an edit
+    // to an imported module makes the image again.
     const make_image = hb.addRunArtifact(host_side.client);
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
-    make_image.addArgs(&.{ "build", "img", "-l" });
+    make_image.addArgs(&.{ "build", "img", "--depfile" });
+    _ = make_image.addDepFileOutputArg2(b.fmt("{s}.d", .{opts.name}), .{});
+    make_image.addArg("-l");
     make_image.addFileArg2(preload_files.add("preload.wattle", preload.items), .{});
     make_image.addFileArg2(opts.source, .{});
     const image = make_image.addOutputFileArg2(b.fmt("{s}.wimage", .{opts.name}), .{});

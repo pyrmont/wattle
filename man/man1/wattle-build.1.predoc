@@ -14,8 +14,8 @@ NAME
 SYNOPSIS
 ========
 
-**wattle build** ***img*** [**-l** _module_ | **--lib** _module_ ...] _source_
-                 [_output_]
+**wattle build** ***img*** [**-l** _module_ | **--lib** _module_ ...]
+                 [**--depfile** _path_] _source_ [_output_]
 
 **wattle build** ***exe*** [**-r** _mode_ | **--release** _mode_]
                  [**-t** _triple_ | **--target** _triple_] [**-S** | **--no-strip**]
@@ -51,6 +51,12 @@ The ***img*** subcommand takes a source file directly:
   - **-l**, **--lib** _module_:
     Imports _module_ into the environment before _source_ is loaded, as
     **wattle run** does. Several **-l** options run in the order given.
+
+  - **--depfile** _path_:
+    Writes a Makefile rule to _path_. The image is the target, and each file
+    opened for reading while the modules and _source_ were loaded is a
+    prerequisite. ***exe*** and ***web*** use this rule to make an image
+    again when a file that its source imports or reads has changed.
 
 The other subcommands read declarations from ``info.edn`` in the current
 directory. Generated build output is saved in `zig-out/` in the project

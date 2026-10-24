@@ -173,6 +173,22 @@
   (assert (nil? (file/open "wattle-suite-io-11-absent" :r)) "a missing file is nil")
   (assert-error "missing file with :e" (file/open "wattle-suite-io-11-absent" :re)))
 
+; `file/open` puts the path of a file it opens for reading in the table bound to
+; `*files-read*`. A file opened for writing, a file that cannot be opened and a
+; binding that is not a table are not recorded.
+(defer (os/rm path)
+  (spit path "seed")
+  (def files-read !{})
+  (with-dyns [*files-read* files-read]
+    (with [f (file/open path :r)])
+    (with [f (file/open path :rb+)])
+    (with [f (file/open "wattle-suite-io-11-written" :w)])
+    (os/rm "wattle-suite-io-11-written")
+    (file/open "wattle-suite-io-11-absent" :r))
+  (assert (and (= 1 (length files-read)) (get files-read path)) "only the file opened for reading is recorded")
+  (with-dyns [*files-read* {}]
+    (assert-no-error "a binding that is not a table" (with [f (file/open path :r)]))))
+
 ; Printing to a file takes the other branch of the same conversion: a buffer
 ; argument is written raw and everything else goes through `describe`
 (defer (os/rm path)
