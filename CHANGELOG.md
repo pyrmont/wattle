@@ -3,6 +3,8 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
+## Unreleased
+
 ## 0.3.1 (2026-10-24)
 
 - Fix `wattle build exe` and `wattle build web` linking a stale image when a
