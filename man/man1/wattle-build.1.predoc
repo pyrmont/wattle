@@ -15,7 +15,8 @@ SYNOPSIS
 ========
 
 **wattle build** ***img*** [**-l** _module_ | **--lib** _module_ ...]
-                 [**--depfile** _path_] _source_ [_output_]
+                 [**--depfile** _path_] [**--build-version** _label_]
+                 _source_ [_output_]
 
 **wattle build** ***exe*** [**-r** _mode_ | **--release** _mode_]
                  [**-t** _triple_ | **--target** _triple_] [**-S** | **--no-strip**]
@@ -58,9 +59,24 @@ The ***img*** subcommand takes a source file directly:
     prerequisite. ***exe*** and ***web*** use this rule to make an image
     again when a file that its source imports or reads has changed.
 
+  - **--build-version** _label_:
+    Binds `*build-version*` to _label_ while the modules and _source_ are
+    loaded, so code run at compile time can read it with
+    ``(dyn *build-version*)``. Without this option the binding is nil.
+
 The other subcommands read declarations from ``info.edn`` in the current
 directory. Generated build output is saved in `zig-out/` in the project
 root. Copied and fetched libraries are saved in `.wattle/`.
+
+***exe*** and ***web*** derive a version label from the optional
+``:version`` string of ``info.edn`` and pass it to ***img*** with
+**--build-version**. A ``:version`` other than ``DEVEL`` is the label. For
+``DEVEL``, the label is ``DEVEL-`` followed by the abbreviated commit hash of
+the project's Git repository, and ``-dirty`` is appended when tracked files
+differ from that commit. Outside a Git repository the label is ``DEVEL``.
+Without ``:version`` there is no label. The image is made again when the
+label changes. An environment variable read at compile time is not tracked,
+and a change to it does not make the image again.
 
 - ***exe***:
   Builds the executables declared with ``:type :native``. Each program

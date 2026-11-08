@@ -362,6 +362,25 @@
             "the rule lists the source, the import and the file read at compile time")
     (rmrf dep-dir)))
 
+; `wattle build img --build-version label` binds *build-version* to label while
+; the source is compiled, and without the option the binding is nil.
+(compwhen (dyn 'os/execute)
+  (do
+    (def ver-dir (string prefix "-ver"))
+    (rmrf ver-dir)
+    (assert (os/mkdir ver-dir))
+    (def ver-main (string ver-dir "/main.wattle"))
+    (def ver-image (string ver-dir "/main.wimage"))
+    (spit ver-main "(def v (comptime (dyn *build-version*)))\n(defn main [&] (pp v))\n")
+    (defn- ver-run [& args]
+      (def [status _] (run-cli "build" "img" |args ver-main ver-image))
+      (assert (= 0 status) "build img exits with status 0")
+      (get (load-image (slurp ver-image)) 'v))
+    (assert (= "DEVEL-1a2b3c4" (get (ver-run "--build-version" "DEVEL-1a2b3c4") :value))
+            "the binding is the label")
+    (assert (nil? (get (ver-run) :value)) "without --build-version the binding is nil")
+    (rmrf ver-dir)))
+
 ; The build of a :native exe is not captured, so its output reaches the
 ; command line as it is written. The prefix of this suite holds no source of the
 ; runtime, so the build fails, and the command line prints what the build wrote

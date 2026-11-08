@@ -354,6 +354,9 @@ pub const ExecutableOptions = struct {
     /// The natives are linked in as objects, so nothing resolves against the
     /// executable's symbols when it runs.
     strip: bool = false,
+    /// The program's version label, which `*build-version*` is bound to
+    /// while the image is compiled. The binding is nil when this is null.
+    build_version: ?[]const u8 = null,
 };
 
 /// A Janet program, its native modules and the runtime, as one executable.
@@ -409,6 +412,9 @@ pub const WebOptions = struct {
     source: std.Build.LazyPath,
     /// The mode the runtime is built in.
     optimize: std.lang.Optimize = .small,
+    /// The program's version label, which `*build-version*` is bound to
+    /// while the image is compiled. The binding is nil when this is null.
+    build_version: ?[]const u8 = null,
 };
 
 /// What a page needs to run a Wattle program, from `wattleWeb`.
@@ -479,6 +485,8 @@ pub fn wattleWeb(host: *std.Build.Dependency, opts: WebOptions) Web {
     // edit to an imported module makes the image again.
     make_image.addArgs(&.{ "build", "img", "--depfile" });
     _ = make_image.addDepFileOutputArg2(b.fmt("{s}.d", .{opts.name}), .{});
+    // The label is an argument, so a new label makes the image again.
+    if (opts.build_version) |label| make_image.addArgs(&.{ "--build-version", label });
     make_image.addFileArg2(opts.source, .{});
     const image = make_image.addOutputFileArg2(b.fmt("{s}.wimage", .{opts.name}), .{});
 
@@ -1860,6 +1868,8 @@ fn buildExecutable(
     make_image.setName(b.fmt("make image ({s})", .{opts.name}));
     make_image.addArgs(&.{ "build", "img", "--depfile" });
     _ = make_image.addDepFileOutputArg2(b.fmt("{s}.d", .{opts.name}), .{});
+    // The label is an argument, so a new label makes the image again.
+    if (opts.build_version) |label| make_image.addArgs(&.{ "--build-version", label });
     make_image.addArg("-l");
     make_image.addFileArg2(preload_files.add("preload.wattle", preload.items), .{});
     make_image.addFileArg2(opts.source, .{});

@@ -741,6 +741,30 @@ A Zig dependency file lists files and not directories. A file added to a
 directory that the compilation listed does not cause the image to be made
 again.
 
+The image is made again only when one of these files or the version label below
+changes. An environment variable read at compile time is not an input of the
+image, and a change to one does not cause the image to be made again.
+
+### Program versions
+
+The optional `:version` of `info.edn` is a string. `wattle build exe` and
+`wattle build web` exit with an error if it is not, and otherwise derive a
+version label from it in the form of the runtime's own label:
+
+- With no `:version`, there is no label.
+- A `:version` other than `DEVEL` is the label.
+- For `DEVEL`, the commands run `git describe --always --dirty --abbrev=7
+  --match=NONE` in the project directory. The label is `DEVEL-` followed by
+  the output, such as `DEVEL-1a2b3c4-dirty`. Untracked files do not affect
+  it. Without Git, or outside a repository, the label is `DEVEL`.
+
+The commands pass the label to `wattle build img --build-version label`.
+`build img` sets `*build-version*` in the root environment to the label while
+it loads the libraries and the source, as it sets `*files-read*`. Code run at
+compile time reads the label with `(dyn *build-version*)`. Without the option,
+the binding is nil. The label is an argument of the image step, so Zig makes
+the image again when the label changes.
+
 ## Build steps
 
 Run a step with `zig build <step>`. The default step is `install`, so

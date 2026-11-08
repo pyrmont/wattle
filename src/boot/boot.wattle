@@ -2214,6 +2214,13 @@
   with `r` in the table, with the value true.
   """)
 
+(defdyn *build-version*
+  """
+  Dynamic binding for the version label of the program that `wattle build img`
+  compiles, a string, or nil. `wattle build exe` and `wattle build web` set it
+  from the `:version` of info.edn.
+  """)
+
 (defdyn *pretty-format*
   "Format specifier for the ^pp function")
 
@@ -6454,7 +6461,8 @@
   built. opts is a map with three directories: :dir, the absolute path of the
   project, which relative paths are resolved against, :srcpath, the Wattle
   package, and :gen, the directory the two files are written to. :srcpath and
-  :gen are resolved against :dir where they are relative. An executable is
+  :gen are resolved against :dir where they are relative. The optional
+  :build-version of opts is the version label of each exe. An executable is
   built with the :native libs whose :for names it linked in, and without
   docstrings unless the optimize mode is Debug. A lib is built as a shared
   library. The :c-sources, :c-includes and :c-flags of a :native lib are
@@ -6515,6 +6523,8 @@
           (buffer/format! b "    const web%d = wattle.wattleWeb(host, .{\n" i)
           (buffer/format! b "        .name = \"%s\",\n" artifact-name)
           (buffer/format! b "        .source = %s,\n" (zig-path (get artifact :entry)))
+          (when-let [label (get opts :build-version)]
+            (buffer/format! b "        .build_version = \"%s\",\n" (build-zig-string label)))
           (buffer/push! b
             "        .optimize = optimize,\n"
             "    });\n")
@@ -6529,8 +6539,10 @@
             (buffer/format! b "            .{ .name = \"%s\", .root = %s%s },\n"
                             (build-zig-string (get lib :name)) (zig-path (get lib :root))
                             (native-c lib)))
+          (buffer/push! b "        },\n")
+          (when-let [label (get opts :build-version)]
+            (buffer/format! b "        .build_version = \"%s\",\n" (build-zig-string label)))
           (buffer/push! b
-            "        },\n"
             "        .target = target,\n"
             "        .optimize = optimize,\n"
             "        .strip = strip,\n"
@@ -6771,6 +6783,8 @@
                               :help "Use a module before the source is compiled."}
                      "--depfile" {:kind :single :proxy "path"
                                   :help "Write a Makefile rule to path that lists each file read while the image was compiled."}
+                     "--build-version" {:kind :single :proxy "label"
+                                        :help "Bind *build-version* to label while the image is compiled."}
                      :source {:req? true :proxy "source"
                               :help "The source file to compile."}
                      :output {:proxy "output"
@@ -7174,11 +7188,13 @@
   ; module environment has the root environment as its prototype and not the
   ; environment of the fiber that loads it.
   (put! root-env *files-read* files-read)
+  (put! root-env *build-version* (get opts "build-version"))
   (each library (get opts "lib" [])
     (import* library :prefix "" :exit true))
   (unless (cli-exists? path) (cli-fail "error: could not find file " path))
   (def e (dofile path))
   (put! root-env *files-read* nil)
+  (put! root-env *build-version* nil)
   (def output-path
     (or (get params :output)
         (string
@@ -7201,6 +7217,33 @@
 
 (compwhen (dyn 'os/spawn)
 
+  (defn- cli-build-version
+    """
+    Returns the version label of the project in dir, derived from version, the
+    `:version` of its info.edn, or nil if version is nil. For `DEVEL` the label
+    is `DEVEL-` followed by the output of `git describe`, or `DEVEL` where git
+    cannot describe dir. Exits with status 1 and a message if version is not a
+    string.
+    """
+    [dir version]
+    (cond
+      (nil? version) nil
+      (not (string? version)) (cli-fail "error: info.edn: :version must be a string")
+      (not= "DEVEL" version) version
+      (let [null (file/open (if (get seps (os/which)) "NUL" "/dev/null") :wb)
+            [ok out]
+            ; A build without the event loop gives `os/spawn` a file for each
+            ; pipe rather than a stream, and `file/read` reads it.
+            (protect (let [p (os/spawn ["git" "-C" dir "describe" "--always" "--dirty"
+                                        "--abbrev=7" "--match=NONE"]
+                                       :p {:out :pipe :err null})
+                           out (compif (dyn 'ev/read)
+                                 (ev/read (p :out) :all)
+                                 (file/read (p :out) :all))]
+                       (if (zero? (os/proc-wait p)) (string/trim (or out "")) "")))]
+        (file/close null)
+        (if (and ok (not (empty? out))) (string "DEVEL-" out) "DEVEL"))))
+
   (defn- cli-zig-build
     """
     Builds the declarations of kind that info, read from the info.edn in dir,
@@ -7218,7 +7261,8 @@
     (def srcpath (if real-ok real (build-absolute-path dir src)))
     (def [ok files]
       (protect (build/zig-files info kind name
-                               {:dir dir :srcpath srcpath :gen gen})))
+                               {:dir dir :srcpath srcpath :gen gen
+                                :build-version (cli-build-version dir (get info :version))})))
     (unless ok (cli-fail "error: " files))
     (def zon-path (string srcpath "/" cli-zig-build-file ".zon"))
     (unless (fexists zon-path)

@@ -329,6 +329,17 @@
   (is (not ok2))
   (is (has message2 "no :web exe is declared")))
 
+; A :build-version in opts is the build_version of each exe, escaped as a Zig
+; string, and without it the field is absent.
+(deftest zig-files-build-version
+  (def opts (assoc gen-opts :build-version "DEVEL-1a2b3c4-\"x\""))
+  (is (has (get (build/zig-files blueshift :exe opts) :build)
+           "        },\n        .build_version = \"DEVEL-1a2b3c4-\\\"x\\\"\",\n        .target = target,\n"))
+  (def page {:exes [{:type :web :name "page" :entry "app/main.wattle"}]})
+  (is (has (get (build/zig-files page :web opts) :build)
+           "        .build_version = \"DEVEL-1a2b3c4-\\\"x\\\"\",\n        .optimize = optimize,\n"))
+  (is (not (has (get (build/zig-files page :web gen-opts) :build) "build_version"))))
+
 (deftest zig-files-dependency-path
   (defn dep-path [opts]
     (def zon (get (build/zig-files blueshift :exe opts) :zon))
