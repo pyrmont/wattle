@@ -1,0 +1,270 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Wattle",
+  "scopeName": "source.wattle",
+  "fileTypes": [
+    "wattle"
+  ],
+  "patterns": [
+    {
+      "include": "#shebang"
+    },
+    {
+      "include": "#forms"
+    }
+  ],
+  "repository": {
+    "shebang": {
+      "name": "comment.line.shebang.wattle",
+      "match": "\\A(#!).*$",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.wattle"
+        }
+      }
+    },
+    "forms": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#raw-string"
+        },
+        {
+          "include": "#empty-string"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#definition"
+        },
+        {
+          "include": "#special-form"
+        },
+        {
+          "include": "#call-head"
+        },
+        {
+          "include": "#brackets"
+        },
+        {
+          "include": "#prefix"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#keyword"
+        },
+        {
+          "include": "#constant"
+        },
+        {
+          "include": "#short-fn-argument"
+        },
+        {
+          "include": "#invalid"
+        },
+        {
+          "include": "#symbol"
+        }
+      ]
+    },
+    "comment": {
+      "name": "comment.line.semicolon.wattle",
+      "match": "(;).*$",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.comment.wattle"
+        }
+      }
+    },
+    "raw-string": {
+      "name": "string.quoted.other.raw.wattle",
+      "begin": "!?(\\\"{3,})",
+      "end": "\\1",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.wattle"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.wattle"
+        }
+      }
+    },
+    "empty-string": {
+      "name": "string.quoted.double.wattle",
+      "match": "(!?\\\")(\\\")",
+      "captures": {
+        "1": {
+          "name": "punctuation.definition.string.begin.wattle"
+        },
+        "2": {
+          "name": "punctuation.definition.string.end.wattle"
+        }
+      }
+    },
+    "string": {
+      "name": "string.quoted.double.wattle",
+      "begin": "!?\\\"",
+      "end": "\\\"",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.wattle"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.wattle"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.wattle",
+          "match": "\\\\(?:x\\h{2}|u\\h{4}|U\\h{6}|[0nrtzfvab'?e\\\"\\\\])"
+        },
+        {
+          "name": "invalid.illegal.escape.wattle",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "definition": {
+      "patterns": [
+        {
+          "match": "([!#]?\\()\\s*((?:defmacro\\-|defmacro|defn\\-|varfn|defn))(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))\\s+(?![+-]?\\.?[0-9])(?!(?:nil|true|false)(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])))((?:[A-Za-z_$%&*+\\-./<=>?]|!(?![(\\[{\\\"])|[^\\x00-\\x7F])(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.begin.wattle"
+            },
+            "2": {
+              "name": "storage.type.function.wattle"
+            },
+            "3": {
+              "name": "entity.name.function.wattle"
+            }
+          }
+        },
+        {
+          "match": "([!#]?\\()\\s*((?:defdyn|def\\-|var\\-|def|var))(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))\\s+(?![+-]?\\.?[0-9])(?!(?:nil|true|false)(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])))((?:[A-Za-z_$%&*+\\-./<=>?]|!(?![(\\[{\\\"])|[^\\x00-\\x7F])(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.begin.wattle"
+            },
+            "2": {
+              "name": "storage.type.wattle"
+            },
+            "3": {
+              "name": "variable.other.definition.wattle"
+            }
+          }
+        },
+        {
+          "match": "([!#]?\\()\\s*((?:defmacro\\-|defmacro|defdyn|defn\\-|varfn|defn|def\\-|var\\-|def|var))(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.begin.wattle"
+            },
+            "2": {
+              "name": "storage.type.wattle"
+            }
+          }
+        }
+      ]
+    },
+    "special-form": {
+      "match": "([!#]?\\()\\s*((?:quasiquote|when\\-with|with\\-dyns|with\\-vars|with\\-syms|when\\-let|generate|fiber\\-fn|with\\-env|as\\-macro|comptime|compwhen|short\\-fn|unquote|upscope|if\\-with|forever|protect|assertf|default|comment|splice|unless|if\\-not|if\\-let|repeat|catseq|tabseq|edefer|prompt|compif|import|assert|toggle|break|quote|while|match|eachk|eachv|defer|label|delay|as\\?\\->|when|cond|case|loop|forv|each|coro|with|\\-\\?>>|as\\->|set|and|let|for|seq|try|use|doc|\\->>|\\-\\?>|do|fn|if|or|\\->|\\+\\+|\\-\\-|\\+=|\\-=|\\*=|/=|%=))(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))",
+      "captures": {
+        "1": {
+          "name": "punctuation.section.parens.begin.wattle"
+        },
+        "2": {
+          "name": "keyword.control.wattle"
+        }
+      }
+    },
+    "call-head": {
+      "match": "([!#]?\\()\\s*(?![+-]?\\.?[0-9])(?!(?:nil|true|false)(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])))((?:[A-Za-z_$%&*+\\-./<=>?]|!(?![(\\[{\\\"])|[^\\x00-\\x7F])(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.section.parens.begin.wattle"
+        },
+        "2": {
+          "name": "entity.name.function.wattle"
+        }
+      }
+    },
+    "brackets": {
+      "patterns": [
+        {
+          "name": "punctuation.section.parens.begin.wattle",
+          "match": "[!#]?\\("
+        },
+        {
+          "name": "punctuation.section.parens.end.wattle",
+          "match": "\\)"
+        },
+        {
+          "name": "punctuation.section.brackets.begin.wattle",
+          "match": "!?\\["
+        },
+        {
+          "name": "punctuation.section.brackets.end.wattle",
+          "match": "\\]"
+        },
+        {
+          "name": "punctuation.section.braces.begin.wattle",
+          "match": "[!#]?\\{"
+        },
+        {
+          "name": "punctuation.section.braces.end.wattle",
+          "match": "\\}"
+        }
+      ]
+    },
+    "prefix": {
+      "name": "keyword.operator.macro.wattle",
+      "match": "['`~|]"
+    },
+    "number": {
+      "name": "constant.numeric.wattle",
+      "match": "(?<!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))[+-]?(?:\\.[0-9]|[0-9])(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*"
+    },
+    "keyword": {
+      "name": "constant.other.keyword.wattle",
+      "match": "(?<!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])):(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*"
+    },
+    "constant": {
+      "name": "constant.language.wattle",
+      "match": "(?<!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))(?:nil|true|false)(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))"
+    },
+    "short-fn-argument": {
+      "name": "variable.parameter.wattle",
+      "match": "(?<!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))\\$(?:[0-9]+|&)?(?!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))"
+    },
+    "invalid": {
+      "patterns": [
+        {
+          "name": "invalid.illegal.word-tag.wattle",
+          "match": "(?<!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))#(?![{(])(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*"
+        },
+        {
+          "name": "invalid.illegal.reserved.wattle",
+          "match": "(?<!(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F]))[@^](?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*"
+        },
+        {
+          "name": "invalid.illegal.backslash.wattle",
+          "match": "\\\\"
+        }
+      ]
+    },
+    "symbol": {
+      "name": "meta.symbol.wattle",
+      "match": "(?:[A-Za-z_$%&*+\\-./<=>?]|!(?![(\\[{\\\"])|[^\\x00-\\x7F])(?:[A-Za-z0-9_!#$%&*+\\-./:<=>?@^]|[^\\x00-\\x7F])*"
+    }
+  }
+}

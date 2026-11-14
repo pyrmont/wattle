@@ -7,15 +7,15 @@ produces. It also compiles `tools/layout.zig` and `tools/pty.zig` into
 `<prefix>/test`. `zig build test` runs the latter through
 `test/suite-lineedit.wattle`.
 
-| directory     | contents                                            |
-| ------------- | --------------------------------------------------- |
-| `check/`      | checked-in inventories, and reports on the tree     |
-| `testing/`    | drivers that build and run the runtime              |
-| `tools/`      | programs that run the client's line editor          |
-| `bench/`      | benchmarks and their corpora                        |
-| `repo/`       | chores about the repository rather than the runtime |
-| `completion/` | shell completions for the `wattle` command          |
-| `editor/`     | editor support: a Tree-sitter grammar, Neovim files |
+| directory     | contents                                                        |
+| ------------- | --------------------------------------------------------------- |
+| `check/`      | checked-in inventories, and reports on the tree                 |
+| `testing/`    | drivers that build and run the runtime                          |
+| `tools/`      | programs that run the client's line editor                      |
+| `bench/`      | benchmarks and their corpora                                    |
+| `repo/`       | chores about the repository rather than the runtime             |
+| `completion/` | shell completions for the `wattle` command                      |
+| `editor/`     | editor support: Tree-sitter and TextMate grammars, Neovim files |
 
 Scripts share `common.wattle`, which locates the repository root as its parent
 directory. It must remain at this level. `STYLE_GUIDE.md` describes comment and
