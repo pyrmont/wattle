@@ -1143,4 +1143,36 @@
 (assert (deep= !["a"] (peg/match `(cmt (capture "a") ~(fn [c] c)) "a"))
         "and what it captured is what the function is given")
 
+; The most negative count matches everywhere, because no text is 2^31 bytes
+; long. Its negation does not fit an `i32`, so it is compiled as `0`.
+(assert (deep= ![] (peg/match -2147483648 "abc"))
+        "the most negative count matches")
+; A zero-width integer reads no bytes and captures 0.
+(assert (deep= ![0] (peg/match '(int 0) "abc")) "a zero-width int captures 0")
+(assert (deep= ![0] (peg/match '(uint 0) "abc")) "a zero-width uint captures 0")
+
+; A buffer text is pinned while a peg call reads it, so a callback that grows
+; it raises rather than move the bytes the match is reading.
+(do
+  (def b (buffer "abcd"))
+  (defn grow [x] (buffer/push! b (string/repeat "x" 100000)) x)
+  (assert-error-value "a cmt callback cannot grow the text"
+                      "buffer cannot reallocate pinned memory"
+                      (peg/match `(any (cmt (capture 1) ~grow)) b))
+  (assert-error-value "a replace callback cannot grow the text"
+                      "buffer cannot reallocate pinned memory"
+                      (peg/replace-all "b" grow b))
+  (assert-no-error "the pin is released after a raise"
+                   (buffer/push! b (string/repeat "y" 100000)))
+  (assert (= 100004 (length b)) "and the buffer grows again"))
+(do
+  (def b (buffer "ab"))
+  (defn inner [x]
+    (peg/match 1 b)
+    (buffer/push! b (string/repeat "x" 100000))
+    x)
+  (assert-error-value "a nested call on the same text leaves it pinned"
+                      "buffer cannot reallocate pinned memory"
+                      (peg/match `(cmt (capture 1) ~inner) b)))
+
 (end-suite)

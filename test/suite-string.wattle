@@ -159,5 +159,19 @@
 ; string/trim with a set trims that set and not whitespace.
 (assert (= "a" (string/trim "xxaxx" "x")) "string/trim with a set")
 
+; A substitution function that grows a buffer text or pattern does not move
+; the bytes the search reads, because the search reads a copy.
+(do
+  (def b (buffer "abcabc"))
+  (defn grow [_] (buffer/push! b (string/repeat "x" 100000)) "z")
+  (assert (= "zbczbc" (string/replace-all "a" grow b))
+          "string/replace-all searches a copy of a buffer text")
+  (assert (= 200006 (length b)) "and the callback grew the buffer"))
+(do
+  (def p (buffer "a"))
+  (defn grow [_] (buffer/push! p (string/repeat "x" 100000)) "z")
+  (assert (= "zbc" (string/replace p grow "abc"))
+          "string/replace searches with a copy of a buffer pattern"))
+
 (end-suite)
 

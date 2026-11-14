@@ -256,6 +256,14 @@ const PegCall = struct {
     bytes: abi.ByteView,
     subst: repr.Value,
     start: i32,
+    /// The text where it is a buffer, pinned for the length of the call.
+    pinned: ?*buffers.Buffer,
+    was_pinned: bool,
+
+    /// Releases the pin `pegNfunInit` placed on a buffer text.
+    fn unpin(call: *const PegCall) void {
+        if (call.pinned) |buffer| buffers.unpin(buffer, call.was_pinned);
+    }
 };
 
 /// Captured patterns and match state. Internal to this file in C and in Zig,
@@ -426,6 +434,7 @@ fn nfunPegCompile(argv: []repr.Value) raise.Error!repr.Value {
 /// first offset the pattern matches at, or nil.
 fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
+    defer call.unpin();
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
         pegCallReset(&call);
@@ -439,6 +448,7 @@ fn nfunPegFind(argv: []repr.Value) raise.Error!repr.Value {
 /// `(peg/find-all peg text)` and `(peg/find-all peg text start & args)`.
 fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
+    defer call.unpin();
     const ret = arrays.new(0);
     var i = call.start;
     while (i < call.bytes.len) : (i += 1) {
@@ -454,6 +464,7 @@ fn nfunPegFindAll(argv: []repr.Value) raise.Error!repr.Value {
 /// captures as an array, or nil where the pattern does not match.
 fn nfunPegMatch(argv: []repr.Value) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, false);
+    defer call.unpin();
     const result = try pegRule(&call.s, call.s.bytecode, args_core.viewBytes(call.bytes).ptr + @as(usize, @intCast(call.start)));
     return if (result != null) wrap.fromArray(call.s.captures) else wrap.fromNil();
 }
@@ -752,6 +763,16 @@ fn pegNfunInit(argv: []repr.Value, get_replace: bool) raise.Error!PegCall {
     ret.s.linemap = null;
     ret.s.linemaplen = -1;
     ret.s.has_backref = ret.peg.has_backref;
+    // A `cmt` or `replace` callback can grow a buffer text, which would move
+    // the bytes `text_start` points at. Pinned last, after every raise above.
+    const text = argv[if (get_replace) 2 else 1];
+    if (repr.checkType(text, repr.Tag.buffer)) {
+        ret.pinned = wrap.toBuffer(text);
+        ret.was_pinned = buffers.pin(ret.pinned.?);
+    } else {
+        ret.pinned = null;
+        ret.was_pinned = false;
+    }
     return ret;
 }
 
@@ -835,7 +856,11 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
         repr.Tag.number => {
             const n = try pegGetinteger(b, peg);
             const r = reserve(b, 2);
-            if (n < 0) {
+            if (n == std.math.minInt(i32)) {
+                // `-n` does not fit an `i32`. No input is 2^31 bytes long, so
+                // the rule matches everywhere, as `0` does.
+                emit1(r, constants.PegRule.nchar, 0);
+            } else if (n < 0) {
                 emit1(r, constants.PegRule.notnchar, @bitCast(-n));
             } else {
                 emit1(r, constants.PegRule.nchar, @bitCast(n));
@@ -898,7 +923,11 @@ fn pegCompile1(b: *Builder, peg_in: repr.Value) raise.Error!u32 {
 }
 
 /// Sign-extends the low `width` bytes of `from`, the way `(int n)` reads them.
+///
+/// A `width` of 0 returns 0.
 fn pegConvertU64S64(from: u64, width: i32) i64 {
+    // A shift of 64 bits does not fit the `u6` shift amount.
+    if (width == 0) return 0;
     const amount: u6 = @intCast(8 * (8 - width));
     return @as(i64, @bitCast(from << amount)) >> amount;
 }
@@ -1020,6 +1049,7 @@ fn pegPanicf(b: *Builder, comptime format: [:0]const u8, args: anytype) raise.Er
 /// whether the walk stops at the first match.
 fn pegReplaceGeneric(argv: []repr.Value, only_one: bool) raise.Error!repr.Value {
     var call = try pegNfunInit(argv, true);
+    defer call.unpin();
     const ret = buffers.new(0);
     var trail: i32 = 0;
     var i = call.start;

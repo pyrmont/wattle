@@ -83,6 +83,10 @@ const big_endian = (builtin.target.cpu.arch.endian() == .big);
 /// pointer alone.
 const own_foreign: u6 = 1;
 
+/// Bit 1 of the GC header's per-type field: a caller is reading this buffer's
+/// payload through a pointer, so every growth path raises rather than move it.
+const own_pinned: u6 = 2;
+
 // ==========================================================================
 // Types
 // ==========================================================================
@@ -139,7 +143,8 @@ pub const Buffer = struct {
 // Public functions
 // ==========================================================================
 
-/// Refuses to reallocate a buffer that does not own its memory.
+/// Refuses to reallocate a buffer that does not own its memory, or that `pin`
+/// has pinned.
 ///
 /// Called before every reallocation of a buffer payload and never after one.
 /// The callers are `ensure`, `extra` and `nfunBufferTrim`, plus
@@ -147,6 +152,9 @@ pub const Buffer = struct {
 pub fn canRealloc(buffer: *Buffer) raise.Error!void {
     if (isForeign(buffer)) {
         return raise.panic("buffer cannot reallocate foreign memory");
+    }
+    if (buffer.gc.flags.own & own_pinned != 0) {
+        return raise.panic("buffer cannot reallocate pinned memory");
     }
 }
 
@@ -298,6 +306,19 @@ pub fn newFrom(bytes: []const u8) raise.Error!*Buffer {
     return buffer;
 }
 
+/// Stops `buffer`'s payload moving, and returns whether it was already pinned.
+///
+/// Until `unpin`, `ensure`, `extra` and `buffer/trim!` raise on `buffer` where
+/// they would reallocate it. The result is the argument `unpin` takes, so
+/// nested pins of one buffer release in the right order.
+///
+/// This function cannot raise.
+pub fn pin(buffer: *Buffer) bool {
+    const was_pinned = buffer.gc.flags.own & own_pinned != 0;
+    buffer.gc.flags.own |= own_pinned;
+    return was_pinned;
+}
+
 /// Wraps memory the runtime did not allocate.
 ///
 /// `memory` is the payload, `capacity` its size and `count` how much of it is
@@ -393,6 +414,16 @@ pub fn setcount(buffer: *Buffer, count: usize) raise.Error!void {
         @memset(buffer.reserved()[oldcount..count], 0);
     }
     buffer.count = count;
+}
+
+/// Releases a pin `pin` placed on `buffer`.
+///
+/// `was_pinned` is what that `pin` call returned. The buffer stays pinned
+/// where it was pinned before that call.
+///
+/// This function cannot raise.
+pub fn unpin(buffer: *Buffer, was_pinned: bool) void {
+    if (!was_pinned) buffer.gc.flags.own &= ~own_pinned;
 }
 
 // ==========================================================================

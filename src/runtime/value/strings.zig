@@ -786,6 +786,15 @@ fn mapCase(comptime lo: u8, comptime hi: u8, comptime delta: i8, argv: []repr.Va
 /// result owns heap memory, so the caller owes a `defer`.
 fn replacesetup(argv: []repr.Value) raise.Error!ReplaceState {
     try args_core.arity(argv, 3, 4);
+    // A substitution function can grow a buffer pattern or text, which would
+    // move the bytes the search reads. The search reads a string copy instead.
+    if (repr.checkType(argv[1], repr.Tag.function) or repr.checkType(argv[1], repr.Tag.nfunction)) {
+        for ([_]usize{ 0, 2 }) |i| {
+            if (repr.checkType(argv[i], repr.Tag.buffer)) {
+                argv[i] = wrap.fromString(new(wrap.toBuffer(argv[i]).slice()));
+            }
+        }
+    }
     const pat = try args_core.getBytes(argv, 0);
     const subst = argv[1];
     const text = try args_core.getBytes(argv, 2);
