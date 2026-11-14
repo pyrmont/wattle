@@ -588,4 +588,16 @@
 (assert (get (compile (nested-pattern 100000)) :error) "deeply nested def pattern")
 (assert (function? (compile (nested-pattern 20))) "shallow nested def pattern")
 
+; `load_upvalue` and `set_upvalue` encode a slot index in eight bits, so a
+; closure cannot capture a local in a slot above 255.
+(defn closure-over [n]
+  (def lets (string/join " " (map (fn [i] (string "x" i " " i)) (range n))))
+  (string "(let [" lets "] (fn [] x" (- n 1) "))"))
+(assert (= 199 ((eval-string (closure-over 200))))
+        "a closure captures a local in a low slot")
+(def [ok err] (protect (eval-string (closure-over 300))))
+(assert (and (not ok) (string/has-prefix? "cannot capture x" err)
+             (string/has-suffix? ": its slot index is above 255" err))
+        "a closure over a slot above 255 is a compile error")
+
 (end-suite)

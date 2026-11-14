@@ -746,6 +746,12 @@ pub fn resolve(compiler: *Compiler, symbol: [*:0]const u8) raise.Error!Slot {
         result.envindex = -1;
         return result;
     }
+    // `load_upvalue` and `set_upvalue` encode the slot index in eight bits.
+    if (result.index > 0xFF) {
+        recordError(compiler, try pp_format.formatc("cannot capture %q: its slot index is above 255", .{wrap.fromSymbol(symbol)}));
+        result.envindex = -1;
+        return result;
+    }
 
     const original_scope = scope;
     pair.keep = true;
