@@ -230,13 +230,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      # `-fqemu` runs `qemu-riscv32` from PATH, which `qemu-user` installs.
-      # The package it recommends, `qemu-user-binfmt`, registers binfmt
-      # handlers that `-fqemu` does not use.
+      # `-fqemu` runs each suite under `qemu-riscv32`, which `qemu-user`
+      # installs. A suite that spawns the riscv32 binary as a child process
+      # is run by the kernel, so `qemu-user-binfmt` registers the binfmt
+      # handler that routes it to QEMU; without it the spawn fails with
+      # `Exec format error`.
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-user
+          sudo apt-get install -y --no-install-recommends qemu-user qemu-user-binfmt
       # Static for the same reason the musl jobs are: QEMU reported
       # `Could not open '/lib/ld-musl-riscv32.so.1'`, and there is no musl
       # loader for this width on the runner for it to find.
