@@ -187,6 +187,10 @@ pub fn debugFrame(frame: *vm_state.StackFrame) raise.Error!repr.Value {
                 // environment index.
                 if (jsm.death_pc < @as(u32, @intCast(def.?.environments_length))) {
                     const env = funcEnv(func, jsm.death_pc);
+                    // An unmarshalled environment has a negated offset until
+                    // it is checked against its fiber's frames. A rejected
+                    // environment becomes empty, so the reads below skip it.
+                    _ = functions.envValid(env);
                     if (jsm.slot_index < @as(u32, @intCast(env.length))) {
                         if (env.offset > 0) {
                             // On stack.

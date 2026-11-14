@@ -526,12 +526,14 @@ fn chanatUnmarshal(u: *abi.Unmarshal) raise.Error!*Channel {
     // the caller can act on it, and every path past here has the byte clear.
     const is_threaded = try marsh.unmarshalByte(u);
     if (is_threaded != 0) return raise.panic("cannot unmarshal a threaded channel");
-    const abst: *Channel = unwrap(try marsh.unmarshalAbstract(u, @sizeOf(Channel)));
     const is_closed = try marsh.unmarshalByte(u);
     const limit = try marsh.unmarshalInt(u);
     const count = try marsh.unmarshalInt(u);
     if (count < 0) return raise.panic("invalid negative channel count");
     if (count > limit) return raise.panic("invalid channel count");
+    // Allocated after the checks, so a raise above leaves no uninitialised
+    // channel for the collector to finalise.
+    const abst: *Channel = unwrap(try marsh.unmarshalAbstract(u, @sizeOf(Channel)));
     // Unthreaded, and that comes from the byte rather than from a constant:
     // the threaded case raised above.
     chanInit(abst, limit, false);

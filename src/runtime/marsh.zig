@@ -1435,6 +1435,14 @@ fn unmarshalOne(
             scratch_vector.push(&st.lookup, out);
             const def = try unmarshalOneDef(st, data, flags + 1);
             data = def.next;
+            // The VM indexes `envs` by the definition's environment indices,
+            // so the two counts must be equal.
+            if (def.value.environments_length != len) {
+                return pp_format.panicf("invalid function - env count %d does not match funcdef (%d)", .{
+                    @as(i64, @intCast(len)),
+                    @as(i64, @intCast(def.value.environments_length)),
+                });
+            }
             func.def = def.value;
             for (0..len) |i| {
                 const env = try unmarshalOneEnv(st, data, flags + 1);
@@ -2039,6 +2047,11 @@ fn unmarshalOneFiber(
     const stored = fiber.flags.status;
     if (stored > @backingInt(fibers.FiberStatus.alive)) {
         return raise.panic("invalid fiber status");
+    }
+    // A resume reads the frame header below `fiber.frame`, which is before
+    // `fiber.data` when there is no frame.
+    if (frame == 0 and !fibers.finished(fiber) and stored != @backingInt(fibers.FiberStatus.alive)) {
+        return raise.panic("fiber with no stack frames cannot be resumable");
     }
 
     return .{ .value = fiber, .next = data };

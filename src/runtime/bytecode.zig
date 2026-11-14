@@ -480,6 +480,7 @@ pub fn asmFillSourcemap(
         var got = asmItems(entry) orelse return a.fail("expected tuple or vector");
         defer got.free();
         const tuple = got.items;
+        if (tuple.len < 2) return a.fail("sourcemap entry must have 2 elements");
         if (!args_core.checkint(tuple[0])) return a.fail("expected integer");
         if (!args_core.checkint(tuple[1])) return a.fail("expected integer");
         definition.sourcemap.?[index] = .{
@@ -508,6 +509,7 @@ pub fn asmFillSymbolmap(
         var got = asmItems(entry) orelse return a.fail("expected tuple or vector");
         defer got.free();
         const tuple = got.items;
+        if (tuple.len < 4) return a.fail("symbolmap entry must have 4 elements");
         const birth_pc: u32 = if (wrap.isKeyword(tuple[0]) and
             utils.cstrcmp(wrap.toKeyword(tuple[0]), "upvalue") == 0)
             maximum_u32

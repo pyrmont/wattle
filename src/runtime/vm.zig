@@ -1122,7 +1122,7 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
             // `environmentIndices()` is `elen` long by construction, so this
             // walks exactly the range the counter did.
             for (fd.environmentIndices(), 0..) |inherit, i| {
-                if (inherit == -1 or inherit >= self.func.def.?.environments_length) {
+                if (inherit < 0 or inherit >= self.func.def.?.environments_length) {
                     const frame = stackFrame(self.stack);
                     if (frame.env == null) {
                         // Lazy capture of current stack frame

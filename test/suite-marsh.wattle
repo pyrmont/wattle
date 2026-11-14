@@ -452,4 +452,38 @@
   (assert (deep= ["program"] (ev/take native-chan))
           "run-image runs main after the loaders"))
 
+; A function's environment count on the wire equals its definition's.
+(do
+  (def f (do (var x 41) (fn [] x)))
+  (def b (buffer (marshal f)))
+  (assert (= 1 (get b 1)) "the count follows the function lead byte")
+  (put! b 1 0)
+  (assert-error-value "an environment count that disagrees"
+                      "invalid function - env count 0 does not match funcdef (1)"
+                      (unmarshal b)))
+
+; A fiber with no stack frames has a finished status. The five integers are
+; the flag word, with the status in bits 16 to 21, then the frame, the stack
+; start, the stack top and the maximum stack.
+(defn frameless-fiber [status]
+  (unmarshal (string "\xcc\xcd\x00" (string/from-bytes status)
+                     "\x00\x00\x00\x04\x04\x04\xc9")))
+(assert (= :dead (fiber/status (frameless-fiber 0)))
+        "a frameless dead fiber unmarshals")
+(each status [3 9 14]
+  (assert-error-value (string "a frameless fiber with status " status)
+                      "fiber with no stack frames cannot be resumable"
+                      (frameless-fiber status)))
+
+; A channel image is checked before the channel is allocated, so a refused
+; image leaves nothing for the collector to finalise.
+(compwhen (dyn 'ev/chan)
+  (def b (buffer (marshal (ev/chan 3))))
+  (put! b (- (length b) 1) 5)
+  (assert-error-value "a channel count above its limit"
+                      "invalid channel count"
+                      (unmarshal b))
+  (gccollect)
+  (assert true "the collector runs after a refused channel"))
+
 (end-suite)

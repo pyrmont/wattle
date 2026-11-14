@@ -151,7 +151,7 @@ const Row = struct { op: constants.Opcode, type: constants.InstructionType };
 /// The numbers are user-visible, so each is written out and none may move: a
 /// Janet program that assembles bad bytecode sees the figure in the message,
 /// and `test/verify.zig` asserts one per case. The type is what makes the
-/// sixteen returns readable at the site, `return .no_such_constant` rather
+/// seventeen returns readable at the site, `return .no_such_constant` rather
 /// than `return 7`, and a new check must name itself.
 pub const Verdict = enum(u8) {
     ok = 0,
@@ -170,6 +170,7 @@ pub const Verdict = enum(u8) {
     symbol_death_out_of_range = 13,
     symbol_has_no_name = 14,
     arity_test_out_of_range = 15,
+    environment_index_out_of_range = 16,
 
     /// This verdict's number, which is what the message renders.
     pub inline fn number(self: Verdict) u8 {
@@ -197,6 +198,11 @@ pub fn verify(definition: *functions.FuncDef) Verdict {
     // Both fields are untrusted and either may be `maxInt(i32)`, so the
     // vararg slot is taken from the slot count and not added to the arity.
     if (definition.arity > slot_count -% varargs) return .arity_exceeds_slots;
+    // An environment index is `-1`, for the frame that creates the closure, or
+    // an index into that frame's own function's environments.
+    for (definition.environmentIndices()) |inherit| {
+        if (inherit < -1) return .environment_index_out_of_range;
+    }
 
     for (definition.instructions(), 0..) |instruction, index| {
         const opcode = instruction & 0x7f;

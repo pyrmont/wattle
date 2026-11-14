@@ -385,4 +385,21 @@
                           :environments)))
         "one upvalue makes one environment")
 
+; A sourcemap entry has two elements and a symbolmap entry four.
+(assert-error-value "a short sourcemap entry"
+                    "sourcemap entry must have 2 elements"
+                    (asm {:arity 0 :slotcount 1 :bytecode '[(ldi 0 1) (ret 0)]
+                          :sourcemap [[1] [2]]}))
+(assert-error-value "a short symbolmap entry"
+                    "symbolmap entry must have 4 elements"
+                    (asm {:arity 0 :slotcount 1 :bytecode '[(ldi 0 1) (ret 0)]
+                          :symbolmap [[0 1 0]]}))
+; An environment index is -1 or an index into the enclosing function's
+; environments, so -2 fails verification.
+(assert-error-value "an environment index below -1"
+                    "invalid assembly (16)"
+                    (asm {:arity 0 :slotcount 1 :bytecode '[(clo 0 0) (ret 0)]
+                          :closures [{:arity 0 :slotcount 1 :environments [-2]
+                                      :bytecode '[(ldi 0 1) (ret 0)]}]}))
+
 (end-suite)

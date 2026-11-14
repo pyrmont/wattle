@@ -367,7 +367,10 @@ fn theBoundsAreCheckedAtTheirEdge() void {
     expect(verify.verify(&definition).number() == 7);
     definition.constants_length = 0;
 
-    // JINT_SES, a slot and an environment index.
+    // JINT_SES, a slot and an environment index. The environment array is
+    // read too, so it is a real one with the `-1` entry a closure has.
+    var environments = [_]i32{-1};
+    definition.environments = &environments;
     definition.environments_length = 1;
     bytecode[0] = harness.op(constants.Opcode.load_upvalue) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16);
     expect(verify.verify(&definition).number() == 0);
@@ -375,6 +378,14 @@ fn theBoundsAreCheckedAtTheirEdge() void {
     expect(verify.verify(&definition).number() == 4);
     bytecode[0] = harness.op(constants.Opcode.load_upvalue) | (@as(u32, 1) << 8) | (@as(u32, 1) << 16);
     expect(verify.verify(&definition).number() == 8);
+
+    // An environment index below `-1` names no environment.
+    bytecode[0] = harness.op(constants.Opcode.load_upvalue) | (@as(u32, 1) << 8) | (@as(u32, 0) << 16);
+    environments[0] = -2;
+    expect(verify.verify(&definition).number() == 16);
+    environments[0] = -1;
+    expect(verify.verify(&definition).number() == 0);
+    definition.environments = null;
     definition.environments_length = 0;
 }
 
