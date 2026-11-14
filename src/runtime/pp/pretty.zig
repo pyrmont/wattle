@@ -418,6 +418,7 @@ fn containsBadChars(sym: strings.String, issym: bool) bool {
     const len = strings.head(sym).length;
     if (len != 0 and issym and sym[0] >= '0' and sym[0] <= '9') return true;
     if (!lexicon.validUtf8(sym[0..@intCast(len)])) return true;
+    if (lexicon.misplacedHash(sym[0..@intCast(len)])) return true;
     for (sym[0..len]) |ch| {
         if (!lexicon.isSymbolChar(ch)) return true;
     }

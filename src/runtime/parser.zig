@@ -750,7 +750,9 @@ fn wattleDispatch(
             return true;
         },
         else => {
-            if (lexicon.isSymbolChar(character)) {
+            // `#` is a symbol character inside a token, but `##` is not a
+            // word tag.
+            if (character != '#' and lexicon.isSymbolChar(character)) {
                 parser.@"error" = "word tags are not implemented";
                 return true;
             }
@@ -874,6 +876,10 @@ pub fn parserTokenchar(
             parser.@"error" = "invalid utf-8 in keyword";
             return false;
         }
+        if (lexicon.misplacedHash(parser.buf.items[1..@intCast(length)])) {
+            parser.@"error" = "keyword cannot begin or end with #";
+            return false;
+        }
         val = wrap.fromKeyword(symbols.keyword(parser.buf.items[1..@intCast(length)]));
     } else {
         if (starts_with_number) {
@@ -898,6 +904,10 @@ pub fn parserTokenchar(
             } else if (tokenEquals(parser.buf.items, "true")) {
                 val = wrap.fromTrue();
             } else {
+                if (lexicon.misplacedHash(parser.buf.items[0..@intCast(length)])) {
+                    parser.@"error" = "symbol cannot end with #";
+                    return false;
+                }
                 if (starts_with_digit) {
                     parser.@"error" = "symbol literal cannot start with a digit";
                     return false;

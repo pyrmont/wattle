@@ -19,7 +19,7 @@ pub const max_codepoint = 0x10ffff;
 /// One bit per byte value, set where that byte may appear in a symbol.
 /// `isSymbolChar` indexes it.
 const symbol_characters = [8]u32{
-    0x00000000, 0xf7ffec72, 0xc7ffffff, 0x07fffffe,
+    0x00000000, 0xf7ffec7a, 0xc7ffffff, 0x07fffffe,
     0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
 };
 
@@ -79,6 +79,14 @@ pub fn hexDigit(character: u8) ?u4 {
 /// Whether `character` may appear in a symbol.
 pub fn isSymbolChar(character: u8) bool {
     return symbol_characters[character >> 5] & (@as(u32, 1) << @intCast(character & 0x1f)) != 0;
+}
+
+/// Whether `name`, the text of a symbol or of a keyword after its colon,
+/// begins or ends with `#`. No name read from source does: a `#` that begins
+/// a form opens dispatch, and the parser refuses a name with a `#` at either
+/// end.
+pub fn misplacedHash(name: []const u8) bool {
+    return name.len != 0 and (name[0] == '#' or name[name.len - 1] == '#');
 }
 
 /// Whether `character` separates forms: space, tab, newline, carriage return,

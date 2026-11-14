@@ -666,6 +666,17 @@ fn theRefusals() !void {
     expect(refusalIs("#tuple [1 2]", "word tags are not implemented"));
     expect(refusalIs("#,", "unknown dispatch"));
 
+    // `#` is a symbol character inside a token, and dispatch only at the
+    // start of a form. A name may not end in `#`, and a keyword's may not
+    // begin with one.
+    expect(harness.keywordIs(try only(":div#main.post"), "div#main.post"));
+    expect(harness.symbolIs(try only("foo#bar"), "foo#bar"));
+    expect(refusalIs("x# ", "symbol cannot end with #"));
+    expect(refusalIs("a#{1}", "symbol cannot end with #"));
+    expect(refusalIs(":div# ", "keyword cannot begin or end with #"));
+    expect(refusalIs(":#foo ", "keyword cannot begin or end with #"));
+    expect(refusalIs("##", "unknown dispatch"));
+
     // A map literal's keys are checked where they are written, as in Janet.
     expect(refusalIs("{nil 1}", "cannot use nil as a key"));
     expect(refusalIs("{:a}", "map and table literals expect even number of arguments"));

@@ -236,8 +236,12 @@ const Scanner = struct {
             '{' => s.open('}', 2, false),
             else => {
                 // A word tag is refused, and the word is classed with the `#`.
+                // The parser refuses `##` as an unknown dispatch at the first
+                // `#`, so only that byte is classed.
                 var end = start + 1;
-                while (end < s.text.len and lexicon.isSymbolChar(s.text[end])) end += 1;
+                if (next != '#') {
+                    while (end < s.text.len and lexicon.isSymbolChar(s.text[end])) end += 1;
+                }
                 s.paint(start, @max(end, start + 1), .@"error");
                 s.at = @max(end, start + 1);
             },
@@ -405,11 +409,11 @@ pub fn classify(text: []const u8, classes: []Class, predicates: Predicates) void
 /// and otherwise a symbol, which may not begin with a digit.
 fn tokenClass(text: []const u8, predicates: Predicates, call: bool) Class {
     const first = text[0];
-    if (first == ':') return if (lexicon.validUtf8(text[1..])) .keyword else .@"error";
+    if (first == ':') return if (lexicon.validUtf8(text[1..]) and !lexicon.misplacedHash(text[1..])) .keyword else .@"error";
     const digit = first >= '0' and first <= '9';
     if ((digit or first == '-' or first == '+' or first == '.') and predicates.number(text)) return .number;
     if (std.mem.eql(u8, text, "nil") or std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) return .constant;
-    if (digit or !lexicon.validUtf8(text)) return .@"error";
+    if (digit or !lexicon.validUtf8(text) or lexicon.misplacedHash(text)) return .@"error";
     if (predicates.special(text)) return .special;
     if (predicates.bound) |bound| {
         if (bound(text)) return if (call) .call else .bound;

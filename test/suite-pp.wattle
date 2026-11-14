@@ -215,6 +215,14 @@
 (assert (= "abc" (string/format "%w" (symbol "abc"))) "an ordinary symbol has one")
 (assert (= ":1abc" (string/format "%w" (keyword "1abc"))) "and a keyword may begin with a digit")
 
+; A `#` inside a name reads back, and one at either end does not.
+(assert (= ":div#main.post" (string/format "%w" :div#main.post)) "a keyword may hold a #")
+(assert (= "a#b" (string/format "%w" (symbol "a#b"))) "and so may a symbol")
+(assert-error "could not print as Wattle source" (string/format "%w" (symbol "#a")))
+(assert-error "could not print as Wattle source" (string/format "%w" (symbol "a#")))
+(assert-error "could not print as Wattle source" (string/format "%w" (keyword "#a")))
+(assert-error "could not print as Wattle source" (string/format "%w" (keyword "a#")))
+
 ; A set prints as its literal, `#{...}`, under both the writer and the pretty
 ; printer. Before this it had no source form at all -- the writer refused it --
 ; and the pretty printer showed the generic abstract form, `<core/set 1 3 2>`,
