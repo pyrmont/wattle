@@ -252,8 +252,11 @@ fn escapeBufferB(buffer: *buffers.Buffer, source: *buffers.Buffer) raise.Error!v
     const count: usize = @intCast(source.count);
     if (source == buffer) {
         // Reserve the worst case up front so that the buffer cannot resize
-        // underneath the loop that is reading it.
-        try buffers.ensure(source, source.count + 5 * source.count + 3, 1);
+        // underneath the loop that is reading it. The sum is checked in 64
+        // bits, because on a 32-bit target it can wrap a `usize`.
+        const needed = 6 * @as(u64, source.count) + 3;
+        if (needed > std.math.maxInt(i32)) return raise.panic("buffer overflow");
+        try buffers.ensure(source, @intCast(needed), 1);
     }
     // `!` is what Wattle's parser reads a buffer from, where Janet read `@`.
     try buffers.pushU8(buffer, '!');

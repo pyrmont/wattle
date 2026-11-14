@@ -460,4 +460,8 @@
   (assert (and (= 0 spawned) (= 0 (ffi/read :int spawn-status)))
           "a child is started with an empty name and an entry with no ="))
 
+; A result that does not fit the 250-byte buffer is an empty string.
+(assert (= "" (os/strftime (string/repeat "%c" 200) 0))
+        "strftime with a result that does not fit")
+
 (end-suite)

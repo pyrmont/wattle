@@ -112,6 +112,7 @@ pub fn entries() []const corefn.Entry {
             "time is an integer number of seconds since the Unix epoch. " ++
             "The time is formatted according to the same rules as the ISO C89 function strftime(). " ++
             "Only the conversion specifiers a, A, b, B, c, d, H, I, j, m, M, p, S, U, w, W, x, X, y, Y, Z and % are accepted, and any other raises an error. " ++
+            "A result longer than 249 bytes is returned as an empty string. " ++
             "The time is formatted in UTC unless local is truthy, in which case it is formatted for " ++
             "the local timezone. The local timezone is set with the TZ environment variable. " ++
             "See tzset(<time.h>) or _tzset(<time.h>) for further details."),
@@ -197,11 +198,10 @@ fn nfunStrftime(argv: []repr.Value) raise.Error!repr.Value {
     var t_info: sys.struct_tm = undefined;
     try timeToTm(argv, 1, &t_info);
     var buf: [time_fmt_size]u8 = undefined;
-    // The result is deliberately discarded: `strftime` gives back 0 both for
-    // an empty result and for one that did not fit, and what a program sees is
-    // whatever is in the buffer either way.
-    _ = oa.strftime(&buf, buf.len, @ptrCast(fmt), &t_info);
-    return value.fromBytes(std.mem.sliceTo(&buf, 0), .string);
+    // `strftime` returns 0 for a result that does not fit, and the contents
+    // of `buf` are then indeterminate, so the length is the one it returns.
+    const len = oa.strftime(&buf, buf.len, @ptrCast(fmt), &t_info);
+    return value.fromBytes(buf[0..len], .string);
 }
 
 /// The value a date dictionary holds for the keyword `field`, or nil.

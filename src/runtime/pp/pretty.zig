@@ -650,7 +650,9 @@ fn printDataOne(S: *Pretty, x: repr.Value, depth: c_int) raise.Error!bool {
                 // would count the tag's own bytes as content.
                 const count: usize = @intCast(source_buffer.count);
                 if (source_buffer == S.buffer) {
-                    try buffers.ensure(source_buffer, source_buffer.count + 5 * source_buffer.count + tag.len + 3, 1);
+                    const needed = 6 * @as(u64, source_buffer.count) + tag.len + 3;
+                    if (needed > std.math.maxInt(i32)) return raise.panic("buffer overflow");
+                    try buffers.ensure(source_buffer, @intCast(needed), 1);
                 }
                 // A string that is not UTF-8 has no edn text, and nothing is
                 // written for it, the tag included.
@@ -942,8 +944,11 @@ fn prettyLeaf(S: *Pretty, x: repr.Value) raise.Error!void {
     if (repr.checkType(x, repr.Tag.buffer) and wrap.toBuffer(x) == S.buffer) {
         // Printing a buffer into itself. Reserve the worst case first, then
         // escape only what was there when printing started, so that the loop
-        // does not chase its own output.
-        try buffers.ensure(S.buffer, S.buffer.count + S.bufstartlen * 4 + 3, 1);
+        // does not chase its own output. The sum is checked in 64 bits, because
+        // on a 32-bit target it can wrap a `usize`.
+        const needed = @as(u64, S.buffer.count) + 4 * @as(u64, S.bufstartlen) + 3;
+        if (needed > std.math.maxInt(i32)) return raise.panic("buffer overflow");
+        try buffers.ensure(S.buffer, @intCast(needed), 1);
         try S.pushByte('!');
         // `try`, not an abi. Through a `raise.toAbi` wrapper a raise inside
         // the escape becomes a report nobody consumes: the blank width is used
