@@ -3,6 +3,8 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
+## Unreleased
+
 ## 0.4.0 (2026-11-15)
 
 - Require Zig 0.17.1.
