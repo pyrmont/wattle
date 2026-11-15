@@ -289,8 +289,20 @@
   ; permission words (`os_platform`, `os_time`, `os_environ`,
   ; `os_permissions`), and the binding surface (`registry`, `core_env`).
   ; `os_stat` owns a working-directory fixture and cannot be named.
-  ["net_sockets" "ev_core" "os_platform" "os_time" "os_environ"
-   "os_permissions" "registry" "core_env"])
+  ;
+  ; The defect fixes from the Janet review replaced these with the contracts
+  ; over the code they changed: the peg compiler and matcher and the buffer
+  ; pin (`peg`, `buffer_array`), the string search (`string_symbol`), the
+  ; compiler's symbol resolution (`compiler_primitives`, `emit_core`,
+  ; `specials_core`), the verifier and the assembler (`verify`,
+  ; `asm_encode`, `asm_decode`), the unmarshal checks (`marsh`,
+  ; `fiber_core`), the channel image (`ev_core`), closure creation
+  ; (`vm_run`), the stack report (`trace_frames`), `os/strftime`
+  ; (`os_time`) and the printer (`pp_describe`, `pp_format`, `pp_pretty`).
+  ["peg" "buffer_array" "string_symbol" "compiler_primitives" "emit_core"
+   "specials_core" "verify" "asm_encode" "asm_decode" "marsh" "fiber_core"
+   "ev_core" "vm_run" "trace_frames" "os_time" "pp_describe" "pp_format"
+   "pp_pretty"])
 
 ; Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 ; `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty
