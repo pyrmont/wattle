@@ -344,8 +344,10 @@ pub fn statOrLstat(do_lstat: bool, argv: []repr.Value) raise.Error!repr.Value {
 
     var mode: u32 = 0;
     var numbers: [field_count]f64 = @splat(0);
-    if (statRead(@ptrCast(path), do_lstat, &mode, &numbers) == -1) {
-        return wrap.fromNil();
+    switch (statRead(@ptrCast(path), do_lstat, &mode, &numbers)) {
+        -1 => return wrap.fromNil(),
+        host_stat.unsupported => return raise.panic("the statx system call is not available"),
+        else => {},
     }
 
     if (key) |k| {

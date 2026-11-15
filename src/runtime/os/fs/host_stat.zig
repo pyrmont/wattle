@@ -7,10 +7,15 @@
 //! | --- | --- |
 //! | macOS, FreeBSD, WASI | `std.c.Stat` |
 //! | Linux | `statx`, whose structure `std.os.linux.Statx` declares |
+//! | Linux before 4.11, x86-64 and aarch64 | `newfstatat`, over `KStat` |
 //! | mingw | `struct _stat64` and `_stat64`, declared here |
 //!
 //! `std.c.Stat` is `void` on Linux, and `std.os.linux` declares no `Stat` and
-//! no `fstatat`, so the Linux arm calls `statx`. `std.Io.File.Stat` has nine
+//! no `fstatat`, so the Linux arm calls `statx`. A kernel older than 4.11 has
+//! no `statx` and returns `ENOSYS`. On x86-64 and aarch64 the Linux arm then
+//! calls `newfstatat` directly, over the kernel's own structure, which is
+//! declared here as `KStat`. On any other architecture `os/stat` raises.
+//! `std.Io.File.Stat` has nine
 //! fields where `os/stat` reports fifteen. `std.c` declares no `lstat`, so the
 //! three calls are declared here by symbol for every platform but mingw.
 //!
@@ -88,6 +93,58 @@ const freebsd = builtin.target.os.tag == .freebsd;
 /// `std.c.Stat` elsewhere. The Linux arm never names it.
 const Stat = if (windows) WinStat64 else std.c.Stat;
 
+/// The kernel's `struct stat`, which `newfstatat` fills, on the two Linux
+/// architectures that have a fallback for a kernel with no `statx`; `void`
+/// elsewhere. x86-64 has its own layout and aarch64 has the `asm-generic` one.
+const KStat = if (!linux) void else switch (builtin.target.cpu.arch) {
+    .x86_64 => extern struct {
+        dev: u64,
+        ino: u64,
+        nlink: u64,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        pad0: u32,
+        rdev: u64,
+        size: i64,
+        blksize: i64,
+        blocks: i64,
+        atime: i64,
+        atime_nsec: u64,
+        mtime: i64,
+        mtime_nsec: u64,
+        ctime: i64,
+        ctime_nsec: u64,
+        unused: [3]i64,
+    },
+    .aarch64, .aarch64_be => extern struct {
+        dev: u64,
+        ino: u64,
+        mode: u32,
+        nlink: u32,
+        uid: u32,
+        gid: u32,
+        rdev: u64,
+        pad1: u64,
+        size: i64,
+        blksize: i32,
+        pad2: i32,
+        blocks: i64,
+        atime: i64,
+        atime_nsec: u64,
+        mtime: i64,
+        mtime_nsec: u64,
+        ctime: i64,
+        ctime_nsec: u64,
+        unused4: u32,
+        unused5: u32,
+    },
+    else => void,
+};
+
+/// Whether this target has the `newfstatat` fallback.
+pub const has_kstat = KStat != void;
+
 // ==========================================================================
 // Types
 // ==========================================================================
@@ -162,6 +219,7 @@ pub fn descriptorIsDirectory(fd: c_int) ?bool {
         const l = std.os.linux;
         var stx: l.Statx = std.mem.zeroes(l.Statx);
         const rc = l.statx(fd, "", l.AT.EMPTY_PATH, l.STATX.BASIC_STATS, &stx);
+        if (has_kstat and l.errno(rc) == .NOSYS) return descriptorIsDirectoryKStat(fd);
         if (@as(isize, @bitCast(rc)) < 0) return null;
         return (stx.mode & S_IFMT) == S_IFDIR;
     }
@@ -170,8 +228,16 @@ pub fn descriptorIsDirectory(fd: c_int) ?bool {
     return (@as(u32, @intCast(st.mode)) & S_IFMT) == S_IFDIR;
 }
 
+/// `statRead`'s result where the kernel has no `statx` and the architecture
+/// has no `newfstatat` fallback: Linux before 4.11, where `statx` returns
+/// `ENOSYS`, on an architecture other than x86-64 and aarch64. Distinct from
+/// -1, which is a path that cannot be stat'ed, so that `os/stat` raises rather
+/// than returning nil for every path.
+pub const unsupported: i32 = -2;
+
 /// Stats a path and copies out the mode word and one double per numeric field.
-/// Every Janet value `os/stat` produces is built from this.
+/// Every Janet value `os/stat` produces is built from this. Returns 0, -1
+/// where the call failed, or `unsupported`.
 pub fn statRead(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     return if (linux)
         readStatx(path, do_lstat, mode, numbers)
@@ -179,6 +245,45 @@ pub fn statRead(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64
         readWinStat(path, mode, numbers)
     else
         readStdStat(path, do_lstat, mode, numbers);
+}
+
+/// `statRead`'s fallback for a kernel with no `statx`, over `newfstatat`.
+/// Only a target where `has_kstat` is true calls it.
+///
+/// `test/os_stat.zig` calls it directly and compares its result with
+/// `statRead`'s, because every CI kernel has `statx`.
+pub fn statReadKStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
+    const l = std.os.linux;
+    const flags: u32 = if (do_lstat) l.AT.SYMLINK_NOFOLLOW else 0;
+    var st: KStat = undefined;
+    if (@as(isize, @bitCast(newfstatat(l.AT.FDCWD, path, flags, &st))) < 0) return -1;
+
+    zeroAll(numbers);
+    mode.* = st.mode;
+    put(numbers, .dev, @floatFromInt(st.dev));
+    put(numbers, .inode, @floatFromInt(st.ino));
+    put(numbers, .uid, @floatFromInt(st.uid));
+    put(numbers, .gid, @floatFromInt(st.gid));
+    put(numbers, .nlink, @floatFromInt(st.nlink));
+    put(numbers, .rdev, @floatFromInt(st.rdev));
+    put(numbers, .size, @floatFromInt(st.size));
+    put(numbers, .accessed, @floatFromInt(st.atime));
+    put(numbers, .modified, @floatFromInt(st.mtime));
+    put(numbers, .changed, @floatFromInt(st.ctime));
+    put(numbers, .blocks, @floatFromInt(st.blocks));
+    put(numbers, .blocksize, @floatFromInt(st.blksize));
+    return 0;
+}
+
+/// `descriptorIsDirectory`'s fallback for a kernel with no `statx`, over
+/// `newfstatat` with `AT_EMPTY_PATH`. Only a target where `has_kstat` is true
+/// calls it, and `test/os_stat.zig` calls it directly for the reason it calls
+/// `statReadKStat`.
+pub fn descriptorIsDirectoryKStat(fd: c_int) ?bool {
+    const l = std.os.linux;
+    var st: KStat = undefined;
+    if (@as(isize, @bitCast(newfstatat(fd, "", l.AT.EMPTY_PATH, &st))) < 0) return null;
+    return (st.mode & S_IFMT) == S_IFDIR;
 }
 
 // ==========================================================================
@@ -259,12 +364,16 @@ fn readStdStat(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64)
     return 0;
 }
 
-/// The Linux arm, over `statx`.
+/// The Linux arm, over `statx`, or over `KStat` where the kernel has no
+/// `statx` and the architecture has the fallback.
 fn readStatx(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i32 {
     const l = std.os.linux;
     var stx: l.Statx = undefined;
     const flags: u32 = if (do_lstat) l.AT.SYMLINK_NOFOLLOW else 0;
     const rc = l.statx(l.AT.FDCWD, path, flags, l.STATX.BASIC_STATS, &stx);
+    if (l.errno(rc) == .NOSYS) {
+        return if (has_kstat) statReadKStat(path, do_lstat, mode, numbers) else unsupported;
+    }
     if (@as(isize, @bitCast(rc)) < 0) return -1;
 
     zeroAll(numbers);
@@ -282,6 +391,18 @@ fn readStatx(path: [*:0]const u8, do_lstat: bool, mode: *u32, numbers: [*]f64) i
     put(numbers, .blocks, @floatFromInt(stx.blocks));
     put(numbers, .blocksize, @floatFromInt(stx.blksize));
     return 0;
+}
+
+/// The kernel's `newfstatat`, which `std.os.linux` does not declare.
+fn newfstatat(dirfd: c_int, path: [*:0]const u8, flags: u32, st: *KStat) usize {
+    const l = std.os.linux;
+    return l.syscall4(
+        .newfstatat,
+        @as(usize, @bitCast(@as(isize, dirfd))),
+        @intFromPtr(path),
+        @intFromPtr(st),
+        flags,
+    );
 }
 
 /// Zeroes every slot. Called after the syscall succeeds and never before,
@@ -308,5 +429,11 @@ comptime {
     if (windows and builtin.target.cpu.arch == .x86_64) {
         std.debug.assert(@sizeOf(WinStat64) == 56);
         std.debug.assert(@offsetOf(WinStat64, "st_size") == 24);
+    }
+    // The kernel's `struct stat` is 144 bytes on x86-64, with the size at
+    // offset 48, and 128 bytes on aarch64, with the size at the same offset.
+    if (has_kstat) {
+        std.debug.assert(@sizeOf(KStat) == if (builtin.target.cpu.arch == .x86_64) 144 else 128);
+        std.debug.assert(@offsetOf(KStat, "size") == 48);
     }
 }

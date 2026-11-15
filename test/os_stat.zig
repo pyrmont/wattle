@@ -295,6 +295,38 @@ fn theDirectoryTest() void {
     _ = c.fclose(file);
 }
 
+/// The `newfstatat` fallback for a kernel with no `statx` reports what
+/// `statx` reports, for a file, a directory and a link, each through `stat`
+/// and `lstat`, and fails where `statx` fails. Every CI kernel has `statx`, so
+/// the fallback is called directly and `statRead` is the oracle. The
+/// descriptor fallback agrees with `descriptorIsDirectory` the same way.
+fn theKStatFallback() void {
+    if (comptime !host_stat.has_kstat) return;
+    const paths = [_][*:0]const u8{ work_dir, work_file, work_link, "wattle-os-stat-4d71/missing" };
+    for (paths) |path| {
+        for ([_]bool{ false, true }) |do_lstat| {
+            var mode_x: u32 = 0;
+            var mode_k: u32 = 0;
+            var numbers_x: [host_stat.Field.count]f64 = @splat(0);
+            var numbers_k: [host_stat.Field.count]f64 = @splat(0);
+            const rc_x = host_stat.statRead(path, do_lstat, &mode_x, &numbers_x);
+            const rc_k = host_stat.statReadKStat(path, do_lstat, &mode_k, &numbers_k);
+            expect(rc_x == rc_k);
+            expect(mode_x == mode_k);
+            expect(std.mem.eql(f64, &numbers_x, &numbers_k));
+        }
+    }
+
+    const dir = c.fopen(work_dir, "r").?;
+    expect(host_stat.descriptorIsDirectoryKStat(c.fileno(dir)).? == true);
+    _ = c.fclose(dir);
+    const file = c.fopen(work_file, "r").?;
+    expect(host_stat.descriptorIsDirectoryKStat(c.fileno(file)).? == false);
+    expect(c.close(c.fileno(file)) == 0);
+    expect(host_stat.descriptorIsDirectoryKStat(c.fileno(file)) == null);
+    _ = c.fclose(file);
+}
+
 /// An unknown field keyword raises rather than giving nil, and a prefix of a
 /// real one is still unknown. These are reached
 /// inside a Janet string; here they are values.
@@ -326,6 +358,7 @@ pub fn run() void {
     theCoreFunctions();
     theRefusals();
     theDirectoryTest();
+    theKStatFallback();
     vm_lifecycle.deinit();
     cleanPaths();
 }
