@@ -30,6 +30,7 @@ const std = @import("std");
 // Project imports
 // ==========================================================================
 
+const config = @import("config");
 const expect = @import("expect.zig").expect;
 const harness = @import("harness.zig");
 const highlight = @import("lineedit").highlight;
@@ -119,6 +120,10 @@ fn ruleHolds(text: []const u8) !bool {
 /// Every `.wattle` file under the working directory, outside the directories
 /// that are not the tree's, is accepted by the parser, so no byte of any of
 /// them is classed as an error.
+///
+/// Without int types, `test/suite-inttypes.wattle` is not read. The suite
+/// exits at its second top-level form in that build, so its `123:u` literals
+/// are never parsed there, and the parser refuses them.
 fn theTreeHasNoError() !void {
     var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{});
     defer threaded.deinit();
@@ -139,6 +144,7 @@ fn theTreeHasNoError() !void {
             continue;
         }
         if (!std.mem.endsWith(u8, entry.basename, ".wattle")) continue;
+        if (!config.int_types and std.mem.eql(u8, entry.basename, "suite-inttypes.wattle")) continue;
         const text = try entry.dir.readFileAlloc(io, entry.basename, allocator, .limited(buffer_limit));
         defer allocator.free(text);
         if (firstError(text)) |at| {

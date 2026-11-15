@@ -4,8 +4,9 @@
 
 ## The acceptance matrix
 
-`res/testing/matrix.wattle`. Set `contracts-default` at its head to the increment's own contract
-files — that is the only per-increment edit it needs.
+`res/testing/matrix.wattle`. It needs no edit per increment. A `contracts`
+entry runs the contract driver with no argument, which runs every contract its
+configuration compiles.
 
 **`zig fmt` is `zig fmt src test build.zig`, and not `port/` or `res/`.** The spike
 corpora under `port/` are historical sources kept as
@@ -48,25 +49,22 @@ When a part touches something a feature flag selects, ask which flag
 combinations the matrix actually reaches — the population is `zig build -h`'s
 option list, not this file's job list.
 
-**Setting `contracts-default` is not the whole of retargeting the matrix.** Three
-increments in a row tripped over the same thing, in three different ways:
+**A `contracts` entry runs every contract its configuration compiles, and no
+list of names.** The driver run with no argument runs exactly the contracts
+`test/contracts.zig` registers for that configuration. A list of names set per
+increment, with a skip list per entry, failed in four ways: a name that was not
+a file (`pp`), and three contracts a reduced configuration does not compile
+(`ev_core` under `-Dsingle-threaded=true`, `peg` under `-Dpeg=false`,
+`os_process` under `-Dreduced-os=true`). Neither list exists now.
 
-  - Part 17d named `pp`, and the printer's contracts are `pp_describe.c`,
-    `pp_format.c` and `pp_pretty.c`. Twenty entries failed at once with
-    `test/pp.c:1:1: error: CacheCheckFailed`, which names a missing file as
-    though it had a compile error in it.
-  - Part 17d then named `ev_core`, which `-Dsingle-threaded=true` cannot
-    compile, because that configuration has no event loop or channel API.
-  - Part 17e named `peg`, which `-Dpeg=false` cannot compile, because
-    the PEG subsystem is absent.
+**The driver runs under the suites lock.** `os_fs`, `io_core` and `os_stat`
+create fixtures in the working directory, and `os_surface` and
+`filewatch_core` under `/tmp`. Two `contracts` entries run concurrently in the
+same directory on the same host, so two of them running those contracts at
+once would collide. The lock serialises the four-second run, not the build.
 
-So, per increment: **check every name in `contracts-default` is a real `test/*.zig`**,
-and then ask of each reduced configuration whether the types that contract
-names still exist there. When one does not, that is what `skip=` is for --
-`Job("contracts", "no peg", ["-Dpeg=false"], skip=("peg",))`.
-
-**A *suite* a configuration cannot load is `build.zig`'s to skip, not
-`skip=`'s.** `skip=` names contracts. A Wattle suite resolves its bindings at
+**A *suite* a configuration cannot load is `build.zig`'s to skip.** A Wattle
+suite resolves its bindings at
 compile time, so one naming a binding the build did not register refuses to
 load and takes the whole file with it — there is no per-case skip to reach for.
 `build.zig`'s `test_suites` list carries the condition instead: an entry marked
@@ -75,28 +73,10 @@ are marked, which is why the `reduced os` entry became a `full` job at Phase 16
 Part 4 after years as a `contracts` one — until then every suite there failed
 to compile on `test/helper.wattle`'s first line.
 
-**Two more, from Phase 11 Part 20, and the preflight catches neither.**
-
-  - **A contract a configuration does not *compile* fails the same way a
-    missing file does, and its name is not the clue.** `-Dreduced-os=true`
-    compiles no process subsystem, so naming `os_process` in `contracts-default` got
-    `contracts: os_process was not compiled into this binary` and an exit code.
-    The preflight checks that every name is a real contract *file*, and this
-    one is; only `skip=` fixes it. Ask of each reduced configuration not just
-    "do the types this contract names still exist" but "is this contract
-    compiled at all".
-  - **A contract that owns a fixture anywhere may not be named, not only one
-    that writes to the working directory.** `os_surface` writes only under
-    `/tmp` — Phase 10 Part 12 moved it there — and still cannot be named,
-    because two `contracts` entries run concurrently on the same *host* as well
-    as in the same directory, and both would build
-    `/tmp/wattle-os-surface-contract`. The rule below is about a shared fixture;
-    the working directory is only where one usually is.
-
 **Since the hinge, `matrix.wattle` refuses to start rather than letting you find
 this out one entry at a time.** A preflight checks, in about a second and with
-no build at all, that every `contracts-default` name is a real `test/*.zig`, that
-every `-D` option every job passes still exists in `build.zig`, and that
+no build at all, that every `-D` option every job passes still exists in
+`build.zig`, and that
 `zig fmt --check build.zig src test` is clean; it reports
 *all* the problems at once.
 
@@ -109,7 +89,7 @@ before the first build rather than a job. If it refuses, the message names
 every file and the one command that fixes them. That is worth stating as a lesson rather than as a
 feature: **everything above was already written down here, in prose, and it did
 not prevent the mistake.** One session lost two matrix runs to exactly the two
-traps this section describes -- `pp` in `contracts-default`, and six selectors the
+traps this section describes -- `pp` in what was then the contract list, and six selectors the
 hinge had deleted -- and each cost minutes to surface because the run
 discovered them serially. A check that runs before the first build is worth
 more than a paragraph that runs before the first mistake.
@@ -138,7 +118,7 @@ Parts 7 and 8 each did, over thirteen configurations, and `matrix.wattle` covers
 twelve of the thirteen. A cold build in a throwaway cache was 11s then and is
 about 25s now, so the loop cost about what the whole matrix costs (172s at
 `-j2` for twenty-one entries) and checked strictly less — no suites, no
-optimize modes, no Rosetta, no cross-compiles. Set `contracts-default` and run the matrix. Hand-roll a configuration
+optimize modes, no Rosetta, no cross-compiles. Run the matrix. Hand-roll a configuration
 only when the matrix genuinely lacks it, which so far means `-Ddocstrings=false`
 and its successors under `phase_11.md`'s rule 19.
 
@@ -169,8 +149,8 @@ cross-compiles and the reduced-feature configurations (`-Dev=false`,
 arms and still worth the matrix.
 
 Two diagnostics make this quick. **If the failures partition exactly along
-`Job` kind** -- every `full` passing and every `contracts` failing -- it is the
-contract list, because that is the only thing the two kinds differ in. And a
+`Job` kind** -- every `full` failing and every `contracts` passing -- it is a
+suite, because the suites are the only thing the two kinds differ in. And a
 contract that cannot compile in a configuration fails at `cc <name>`, before
 any assertion runs.
 

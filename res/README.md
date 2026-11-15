@@ -99,10 +99,10 @@ changes image bytes without changing the semantic comparison. `zig build` runs
 `leaks.sh` is macOS only; its expectations are in the script, so a difference is
 a non-zero exit.
 
-`matrix.wattle` checks configurations, optimize modes and cross builds. Set
-`contracts-default` at the start of the script to the contracts affected by the
-change. [`acceptance-matrix.md`](testing/acceptance-matrix.md) has the
-operational detail.
+`matrix.wattle` checks configurations, optimize modes and cross builds. It
+needs no edit per change: a `contracts` entry runs every contract its
+configuration compiles. [`acceptance-matrix.md`](testing/acceptance-matrix.md)
+has the operational detail.
 
 `mutate.wattle --src <file>` runs a repeatable mutation sweep in source order,
 using a warm-up and a log. `--all` sweeps every source under `src/` and

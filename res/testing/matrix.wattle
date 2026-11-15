@@ -19,13 +19,11 @@
 ;   full       zig build test. For the entries where a regression *outside* the
 ;              increment's own contracts is the point -- a misplaced #endif shows
 ;              up as a suite failure, not as a contract failure.
-;   contracts  The library, a startup smoke, and the increment's own contracts
-;              run by name from the driver `zig build` installs. 20 seconds. The
-;              shape the reduced-OS entry has always used, because the suites
-;              cannot run there.
+;   contracts  The library, a startup smoke, and every contract the
+;              configuration compiles, from the driver `zig build` installs run
+;              with no argument. The reduced configurations that run the
+;              contracts and not the suites.
 ;   build      The library only. Cross-compiles, which cannot be run here.
-;
-; Set `contracts-default` to the increment's own contract files when a part lands.
 ;
 ; The worker pool is `ev/go` fibers rather than threads. Every job is dominated
 ; by the subprocesses it waits on, and `os/proc-wait` yields, so one thread
@@ -34,275 +32,12 @@
 
 (import ../common :as tools)
 
-; The `pp` trap is retired. It was three C files behind one selector, which
-; `contract.sh` expanded by hand and this did not, so naming `pp` here failed
-; every `contracts` entry at once with `test/pp.c:1:1: error: CacheCheckFailed`
-; -- a compile error in a file that does not exist. Phase 11 Part 5 moved all
-; three to the Zig driver, so each is an ordinary name in both tools.
-;
-; **A contract that creates files in the working directory may not be named
-; here.** `contracts` jobs are the ones that do *not* take the suites lock --
-; only `full` does, because `zig build test` runs the Janet suites -- so two of
-; them run concurrently in the *same* repository working directory. Naming
-; `os_fs` would have two entries creating, renaming and deleting
-; `wattle-os-fs-public-91af` at once, which is exactly the shared-fixture
-; problem the suites lock exists for, one layer down.
-;
-; The same rule one directory out: `os_surface` writes nothing to the working
-; tree but owns a fixture under `/tmp`, which two entries would collide on just
-; as surely. That is rule 53 rather than rule 9.
-;
-; Part 24 is the gate, so this line stopped being an increment's own; every part
-(def contracts-default
-  ; The contracts a `contracts` entry runs by name. Set to what the increment
-  ; in hand could break, not to a coverage sample; the `full` entries run all
-  ; sixty-five.
-  ;
-  ; These are the assertion conversion's own, because every contract's 5,016
-  ; assertions became `test/expect.zig`'s `expect` and a `contracts` entry in a
-  ; release mode is where a compiled-out assertion used to hide:
-  ;
-  ;   `utils`        the contract the gate proof was made in, and the one whose
-  ;                  hash and name-table assertions have no Janet spelling.
-  ;   `gc_mark`      the collector's frame walk, which the suites now drive as
-  ;                  well; a walk defect shows here as an unreachable block.
-  ;   `registry`     the published entry point and the sentinel adapter behind
-  ;                  it.
-  ;   `core_env`     the registration surface, which is what says the core
-  ;                  environment still holds what it held.
-  ;   `signal_core`  `raise.zig` picks its delivery on `config.native_module`,
-  ;                  and a reduced build is where the wrong arm shows as a
-  ;                  wrong signal rather than a compile error.
-  ;   `args_core`    every fault message, which is the largest single body of
-  ;                  assertions in the tree.
-  ;   `os_process`   the Windows declarations and the `pid_t` group.
-  ;   `value_wrap`   the `abi` namespace and the exact bit layout.
-  ;
-  ; (`io_core` and `os_fs` cannot be named: each creates files in the working
-  ; directory, which two concurrent `contracts` entries share, and `os_surface`
-  ; owns a `/tmp` fixture for the same reason. The suites cover them in every
-  ; `full` entry instead.)
-  ;
-  ; Phase 15 Part 1 replaced these with its own: the constructors and the three
-  ; heads (`value_alloc`, `buffer_array`, `tables`, `string_symbol`,
-  ; `value_order`, `utils`), the compiler's registers (`regalloc`,
-  ; `emit_core`), the GC header (`gc_mark`, `gc_sweep`, `signal_core`,
-  ; `value_wrap`) and the widths that travel (`marsh`).
-  ; Phase 15 Part 3 replaced these with the contracts over the families it
-  ; converted: the instruction-shape table and both assembler directions
-  ; (`verify`, `asm_encode`, `asm_decode`, `disasm`), the compile and parse
-  ; statuses (`compiler_primitives`, `emit_core`, `specials_core`,
-  ; `parser_core`), the binding vocabulary (`registry`), the frame flag word
-  ; (`fiber_core`, `trace_frames`, `marsh`) and the integer types
-  ; (`inttypes`).
-  ; Phase 15 Part 5 replaced these with the contracts over the platform seam:
-  ; the retry loops and the `errno` accessor (`filewatch_core`, `ev_loop`,
-  ; `net_sockets`, `os_process`), the structures that stopped being `extern`
-  ; (`ev_core`, `os_surface`), the `callconv(.c)` residue in the value layer
-  ; (`value_alloc`, `string_symbol`, `tables`), and `io.zig`'s handles
-  ; (`pp_format`, `vm_run`). `io_core` and `os_fs` still cannot be named --
-  ; each creates files in the working directory two concurrent entries share.
-  ; `filewatch_core`, `ev_loop`, `net_sockets` and `ev_core` are the part's
-  ; own subjects and none of them can be named here: the first two own a
-  ; `/tmp` fixture two concurrent entries would share, and the event-loop pair
-  ; is not listed at all under `-Dev=false` or `-Dsingle-threaded`, which is
-  ; the trap the header records three times over. The `full` entries run all
-  ; 65 and cover them; these twelve are what a `contracts` entry can ask in
-  ; every configuration.
-  ;
-  ; Phase 15 Part 2 replaced these with the contracts over the bodies it
-  ; rewrote. The part touched 48 files, so this is not "what it changed" but
-  ; what its four *kinds* of change can break: the loops and the copies over
-  ; the value types (`value_alloc`, `buffer_array`, `tables`,
-  ; `string_symbol`), the optionals in the dictionary probe and the ordering
-  ; (`value_access`, `value_order`), the compiler's loops and scope unwraps
-  ; (`compiler_primitives`, `emit_core`, `specials_core`), the parser and the
-  ; marshaller (`parser_core`, `marsh`), and the cast reclassification's own
-  ; subject (`utils`). `io_core` and `os_fs` still cannot be named -- each
-  ; creates files in the working directory two concurrent entries share -- and
-  ; neither can `os_surface` or `filewatch_core`, which own `/tmp` fixtures.
-  ;
-  ; Phase 15 Parts 6 and 7 replaced these, and the phase gate ran with them.
-  ; Part 6 is a rename and Part 7 is prose, so neither has a subject a contract
-  ; can aim at -- but both carry a *deletion* that does: 22 definitions lost
-  ; their `callconv(.c)` and 48 unreferenced `pub` declarations went. So these
-  ; twelve are the contracts over the files those deletions touched: the value
-  ; layer's abi shims and the constructors (`value_wrap`, `value_alloc`,
-  ; `string_symbol`, `tables`), the collector and the scratch table
-  ; (`gc_alloc`, `gc_mark`), the register allocator that became a type with
-  ; methods (`regalloc`, `emit_core`, `compiler_primitives`), the marshaller
-  ; whose abi was rewritten (`marsh`), the signal record whose `cRaiseClear`
-  ; went (`signal_core`), and the binding surface (`registry`). `io_core`,
-  ; `os_fs`, `os_surface` and `filewatch_core` still cannot be named, for the
-  ; reasons above.
-  ;
-  ; Phase 16 replaced these with the contracts over the subsystems whose
-  ; behaviour it changed: the marshaller's lead bytes and its new
-  ; bytes-remaining bound (`marsh`), the peg verifier and matcher (`peg`), the
-  ; bytecode verifier's terminator mask (`verify`), the parser's error path
-  ; (`parser_core`), the collector's roots, interval, scratch and sweep
-  ; (`gc_alloc`, `gc_mark`, `gc_sweep`), the comparison order and the two
-  ; accessors (`value_order`, `value_access`), the boxed integers' division
-  ; and shifts (`inttypes`), the varargs tail (`fiber_core`), the registry
-  ; lookup that became a bisection (`registry`), and the interpreter's shifts
-  ; and its trace (`vm_run`). `ev_loop`, `gc_stress`, `io_core`, `os_fs`,
-  ; `os_surface` and `filewatch_core` are subjects that still cannot be named
-  ; -- the fixture and working-directory reasons above, and `ev_loop` is not
-  ; listed at all under `-Dev=false` or `-Dsingle-threaded=true`. The `full`
-  ; entries run all 65 and cover them.
-  ;
-  ; Phase 18 replaced these with the contracts over the boundary it moved. The
-  ; phase rewrote the marshaller's two state structs and every `marshal*` and
-  ; `unmarshal*` entry point, so `marsh` is the primary subject; the six
-  ; runtime types that implement the two slots are covered by `inttypes`,
-  ; `peg` and `math` (`io_core` and the two ev contracts cannot be named --
-  ; the working-directory and fixture reasons above, and the ev pair is not
-  ; listed under `-Dev=false` or `-Dsingle-threaded=true`). The `tostring`
-  ; slot changed its parameter type, so both of `pp.zig`'s dispatch sites are
-  ; here (`pp_describe`, `pp_pretty`, `pp_format`) along with the contract
-  ; that raises from one (`vm_calls`). `abstract_core` is the vtable those
-  ; slots sit in; `registry` is the abstract-type registry the phase
-  ; published; `gc_mark` tests marking through the module interface; and
-  ; `signal_core` is where a raise flattened through one of the eighteen new
-  ; reporting shims would show as a wrong signal rather than a compile error.
-  ; `core_env` says the registration surface still holds what it held. The
-  ; `full` entries run all 65.
-  ;
-  ; Phase 18 Part 7 replaced these with the contracts over the views it
-  ; published. The part edited no `args.zig` getter and added shims beside
-  ; them, so what a `contracts` entry can break is the layer underneath: every
-  ; fault message the getters raise (`args_core`), and the formatter that
-  ; renders them (`pp_format`); the six aggregates the three views read
-  ; (`string_symbol`, `buffer_array`, `tables`); the unwraps behind each
-  ; getter and the `abi` namespace's bit layout (`value_wrap`); the length
-  ; `getRange` folds against (`value_access`); the file `KV` moved out of and
-  ; the traversal that walks a table (`marsh`); `abi.zig`'s own restructuring,
-  ; since `AbstractType` and `AbstractHead` share the file the views moved into
-  ; (`abstract_core`); and the published boundary (`registry`, `core_env`).
-  ; `io_core`, `os_fs`, `os_surface` and `filewatch_core` still cannot be
-  ; named, for the reasons above. The `full` entries run all 65.
-  ;
-  ; Phase 18 Part 8 keeps Part 7's list and adds the two the constructors
-  ; reach: `value_alloc`, because every constructor allocates through the
-  ; collector, and `gc_mark`, because a composite built by a module is
-  ; reachable only from the value it answered. `buffer_array`, `tables`,
-  ; `string_symbol` and `value_access` were already here and are now the
-  ; constructors' subjects as well as the views'.
-  ;
-  ; Phase 18 Part 10 replaced these with the contracts over the boundary check
-  ; and the two shims. The check went into 65 of `capi.zig`'s 66 entry points
-  ; and eight `args.zig` shims, so what a `contracts` entry can break is every
-  ; fault message those shims still raise (`args_core`) and the formatter that
-  ; renders them (`pp_format`); the probe the check shares with the collector's
-  ; allocator, which this part extracted into `vm/state.zig` (`gc_alloc`,
-  ; `vm_state`); the fiber predicate `wake` tests and the entry points around
-  ; it (`fiber_core`, `vm_entry`); the raise flattening the four new reporting
-  ; crossings go through (`signal_core`); the unwraps and the `abi` namespace
-  ; the message packing uses (`value_wrap`); and the published boundary
-  ; (`registry`, `core_env`). `ev_loop` and `ev_core` are the part's own
-  ; subjects and neither can be named: the pair is not listed at all under
-  ; `-Dev=false` or `-Dsingle-threaded=true`, which is the trap this header
-  ; records four times over. The `full` entries run all 65 and cover them.
-  ;
-  ; The `make_vector` increment replaced these with the contracts over the
-  ; opcode it added and the arms that emit it. An opcode is four tables and
-  ; one interpreter arm, and each table is a separate way to be wrong: the
-  ; instruction-shape table (`verify`), the assembler's name table in both
-  ; directions (`asm_encode`, `asm_decode`, `disasm`), and the optimiser's two
-  ; (`movopt`, `remove_noops`), which decide whether the instruction writes a
-  ; register -- a miss there deletes a live one silently. `vm_run` is the arm
-  ; itself. `compiler_primitives` and `specials_core` are the emitters: the
-  ; value arm and its constant folding, and the parameter list, the
-  ; destructuring pattern and quasiquote. `vectors` is the value the arm
-  ; builds, and `emit_core` the instruction it emits. The three assembler
-  ; contracts are already in the `no assembler` entry's skip list, which is
-  ; what makes them safe to name.
-  ;
-  ; The parser swap replaced these with the contracts over the language it
-  ; changed. Step 7 merged the two parser contracts, so `parser_core` is the
-  ; one parser's one contract and the primary subject here. The positional
-  ; result became a vector across the library, so the value itself
-  ; (`vectors`, `maps`) is here with the callers whose returns changed:
-  ; `math` (`math/frexp`), `string_symbol` (`string/bytes`), `os_process`
-  ; (`os/pipe`), `net_sockets` (`net/address-unpack`) and `fiber_core` (`&
-  ; rest` in the frame push). The compiler and the bytecode now build from a
-  ; vector where they built from a bracket tuple, which is `emit_core`,
-  ; `compiler_primitives` and `specials_core` (the destructuring pattern and
-  ; quasiquote), `verify` and `vm_run`, and the assembler in both directions
-  ; (`asm_encode`, `asm_decode`, `disasm`) -- `disasm` because the decoded
-  ; instruction is a vector and the breakpoint flag it carried is gone. The
-  ; printer's notation is settled in `pp_pretty`, `pp_format` and
-  ; `pp_describe`, a value the pretty printer writes now having to parse.
-  ; `peg` reads a vector as the combinator its tuple is. `registry` and
-  ; `core_env` are the published boundary, which `env.zig`'s new paths reach.
-  ; `net_sockets` is safe to name because the `no net` and `single threaded`
-  ; entries both skip it, and the three assembler contracts because the `no
-  ; assembler` entry does; `io_core`, `os_fs`, `os_surface`, `filewatch_core`
-  ; and the ev pair still cannot be named, for the reasons above. The `full`
-  ; entries run all of them.
-  ; The increments of 2026-09-17 to 19 replaced these, and this run is the
-  ; matrix owed against step 7 as a whole and everything after it, deferred
-  ; five times. The subjects are the value layer and the printer rather than
-  ; the parser: the vector became a single block for a short tail and its
-  ; inline leaf was misaligned on every 32-bit target (`vector`, `vectors`,
-  ; `value_alloc`), which the collector walks rather than marks through a
-  ; header (`gc_alloc`, `gc_mark`, `gc_sweep`); the set gained a literal in
-  ; the writer and edn arrived as `%y` (`pp_format`, `pp_pretty`,
-  ; `pp_describe`, `maps`); and the map, table and string constructors carry
-  ; the rest of the value work (`tables`, `string_symbol`, `value_access`,
-  ; `value_order`, `marsh`). Removing Janet is still under this run, so the
-  ; parser, the compiler's three and the binding surface stay (`parser_core`,
-  ; `compiler_primitives`, `emit_core`, `specials_core`, `registry`,
-  ; `core_env`, `vm_run`).
-  ;
-  ; `gc_stress`, `io_core`, `os_fs`, `os_surface`, `filewatch_core` and the
-  ; ev pair are subjects this cannot name, for the fixture and
-  ; working-directory reasons above; the `full` entries run all 68.
-  ;
-  ; The outstanding-operations increment replaced these with the contracts
-  ; over what it moved off the fiber. A stream now holds a list of operations
-  ; per direction and a fiber holds one `ev_op` in place of its three event
-  ; fields, so the fiber's own layout and its reset are here (`value_alloc`,
-  ; `fiber_core`, `marsh`), and so is the collector, which traces an operation
-  ; from the stream rather than from the fiber and no longer frees an
-  ; event-loop allocation in the sweep (`gc_alloc`, `gc_mark`, `gc_sweep`).
-  ; Every event callback changed its first parameter, so a raise flattened
-  ; through one would show as a wrong signal rather than a compile error
-  ; (`signal_core`), and three stream docstrings changed, which is the
-  ; published surface (`registry`, `core_env`). `vm_run` is the interpreter
-  ; the scheduler resumes through.
-  ;
-  ; `ev_loop`, `ev_core`, `net_sockets` and `filewatch_core` are the
-  ; increment's own subjects and none can be named: the ev pair is not listed
-  ; at all under `-Dev=false` or `-Dsingle-threaded=true`, and the other two
-  ; own fixtures two concurrent entries would share. The `full` entries run
-  ; all 68 and cover them.
-  ;
-  ; The scalar equality increment added `value_order`, which asserts equality
-  ; for every tag and the traversal stack's reset, and which has no fixture
-  ; two concurrent entries share.
-  ;
-  ; The move off translated host headers replaced these with the contracts
-  ; over the host layer it rewrote: the socket layer and its address bytes
-  ; (`net_sockets`), the event loop's kernels and the channel lock
-  ; (`ev_core`), the platform tests, the clocks, the environment and the
-  ; permission words (`os_platform`, `os_time`, `os_environ`,
-  ; `os_permissions`), and the binding surface (`registry`, `core_env`).
-  ; `os_stat` owns a working-directory fixture and cannot be named.
-  ;
-  ; The defect fixes from the Janet review replaced these with the contracts
-  ; over the code they changed: the peg compiler and matcher and the buffer
-  ; pin (`peg`, `buffer_array`), the string search (`string_symbol`), the
-  ; compiler's symbol resolution (`compiler_primitives`, `emit_core`,
-  ; `specials_core`), the verifier and the assembler (`verify`,
-  ; `asm_encode`, `asm_decode`), the unmarshal checks (`marsh`,
-  ; `fiber_core`), the channel image (`ev_core`), closure creation
-  ; (`vm_run`), the stack report (`trace_frames`), `os/strftime`
-  ; (`os_time`) and the printer (`pp_describe`, `pp_format`, `pp_pretty`).
-  ["peg" "buffer_array" "string_symbol" "compiler_primitives" "emit_core"
-   "specials_core" "verify" "asm_encode" "asm_decode" "marsh" "fiber_core"
-   "ev_core" "vm_run" "trace_frames" "os_time" "pp_describe" "pp_format"
-   "pp_pretty"])
+; A `contracts` entry runs the driver with no argument, which runs every
+; contract compiled into that configuration and no other. It needs no list of
+; names and no list of names to skip, and so no edit per increment. It runs
+; under the suites lock below, because contracts such as `os_fs`, `io_core`,
+; `os_surface` and `filewatch_core` create fixtures in the working directory or
+; under `/tmp`, and two entries running them at once would collide.
 
 ; Every command gets a bound. Phase 10 Part 16 lost thirty-six minutes to a
 ; `zig build test` whose `suite-ev.wattle` parked in `kevent` with an empty
@@ -350,40 +85,19 @@
 ; same probe correctly: take is acquire, give is release, and both yield.
 (def suites-lock (ev/chan 1))
 
-; A name somebody will type that is not a file. `pp` was three translation
-; units behind one selector: `contract.sh` expanded it and this did not, so
-; naming it here failed every `contracts` entry at once with
-; `test/pp.c:1:1: error: CacheCheckFailed` -- a compile error in a file that
-; does not exist.
-;
-; Phase 11 Part 5 moved all three to the Zig driver and deleted `contract.sh`'s
-; expansion with them, so `pp` is now wrong in *both* tools rather than in one.
-; The entry stays: the habit outlived the mechanism twice already, and one line
-; here turns it into a sentence before the first build instead of twenty
-; failures seven minutes in.
-(def not-a-file {"pp" ["pp_describe" "pp_pretty" "pp_format"]})
 
-(defn- job [kind name flags & [skip]]
-  ; `skip` names contracts that do not apply to this configuration.
-  ; `test/inttypes.zig` names types a `-Dint-types=false` build does not define,
-  ; and `build.zig` skips it there for the same reason.
-  {:kind kind :name name :flags flags :skip (or skip [])})
+(defn- job [kind name flags]
+  {:kind kind :name name :flags flags})
 
 (defn- preflight
   "Every check that needs no build, run before the first one starts.
 
-  Two classes of harness mistake account for every wasted matrix run this
-  phase: a contract entry that is not a `test/*.zig`, and a `-D` option a
-  selector no longer has. Both are visible from `build.zig` and the
-  filesystem, and both used to surface one entry at a time, minutes apart,
-  as what looked like a compile error or a build failure. AGENTS.md warned
-  about both in prose and the prose did not prevent either.
+  There are two, and they report every problem at once rather than the
+  first. The first is that every `-D` option a job passes still exists in
+  `build.zig`. A removed option used to surface one entry at a time, minutes
+  apart, as what looked like a build failure.
 
-  So they are a check now, they run in about a second, and they report
-  *every* problem at once rather than the first -- because the failure mode
-  being fixed is precisely a slow serial discovery of a list.
-
-  `zig fmt --check` is the third, added in Phase 12 increment 4, and it is
+  `zig fmt --check` is the second, added in Phase 12 increment 4, and it is
   here rather than in CI on purpose. Fifteen files had drifted out of the
   formatter -- eight under `src/`, seven under `test/` -- because nothing
   ran it, and the drift is invisible in review: the diff of a reformat is
@@ -391,7 +105,7 @@
   runs per increment, so it is where a whole-tree property gets enforced. It
   is *not* a per-configuration question and so is not a job: one run over the
   tree, before the first build starts, costing about a second."
-  [jobs contracts]
+  [jobs]
   (def problems !{})
 
   ; `zig fmt --check` names each unformatted file on stdout and exits
@@ -408,15 +122,6 @@
                           (length files) (if (= 1 (length files)) " is" "s are")
                           (string/join "\n    " (sort files))))
          true))
-
-  (each t contracts
-    (if-let [alternatives (not-a-file t)]
-      (put! problems (string/format "contracts names %w, which is not a file: use %s"
-                                   t (string/join ", " alternatives))
-           true)
-      (unless (os/stat (string "test/" t ".zig"))
-        (put! problems (string/format "contracts names %w but there is no test/%s.zig" t t)
-             true))))
 
   (def help-text ((tools/sh "zig build -h" :timeout 120) :out))
   (def known !{})
@@ -452,7 +157,7 @@
   (def joined (string/join "\n" wanted))
   (if (> (length joined) 1500) (string/slice joined 0 1500) joined))
 
-(defn- run-job [j slot contracts]
+(defn- run-job [j slot]
   (def cache (string "/tmp/wattle-mx-" slot))
   (def prefix (string "/tmp/wattle-mx-out-" slot))
   (each p [cache prefix] (tools/rm-rf p))
@@ -519,23 +224,17 @@
                                 (let [text (if (empty? (smoke :err)) (smoke :out) (smoke :err))]
                                   (if (> (length text) 400) (string/slice text 0 400) text)))
                         (secs)]))
-        (each t contracts
-          (unless (has-value? (j :skip) t)
-            ; There is nothing to compile and nothing to link. Phase 11
-            ; Part 1 put the Zig contracts inside a second compilation of
-            ; the runtime -- which is how one reaches a raise-capable
-            ; function with no C-ABI abi between them -- and Part 22 took
-            ; the last C contract, so every name here is a `test/*.zig`
-            ; already inside the driver `build.zig` installs
-            ; under `-Dinstall-tests`. This runs it by name, which is what
-            ; `res/testing/contract.sh` does too.
-            (def run (tools/sh (string prefix "/test/wattle-contract-test " t)
-                               :timeout run-timeout))
-            (unless (tools/ok? run)
-              (return done [j "FAIL"
-                            (string/format "run %s\n%s" t
-                                           (tools/tail (if (empty? (run :err)) (run :out) (run :err)) 400))
-                            (secs)])))))
+        ; Under the suites lock, because two entries running the contracts
+        ; that own fixtures at the same time would collide.
+        (def run (defer (ev/give suites-lock true)
+                   (do (ev/take suites-lock)
+                       (tools/sh (string prefix "/test/wattle-contract-test")
+                                 :timeout run-timeout))))
+        (unless (tools/ok? run)
+          (return done [j "FAIL"
+                        (string/format "contracts\n%s"
+                                       (tools/tail (if (empty? (run :err)) (run :out) (run :err)) 400))
+                        (secs)])))
       [j "PASS" "" (secs)])))
 
 (defn- all-jobs []
@@ -582,38 +281,18 @@
     ; so both are passed unconditionally rather than derived from the host.
     (job "full" "poll backend" ["-Dkqueue=false" "-Depoll=false"])
     (job "full" "no ffi" ["-Dffi=false"])
-    (job "contracts" "no net" ["-Dnet=false"] ["net_sockets"])
-
-    ; `-Dpeg=false` omits the PEG subsystem. The driver does not register
-    ; `peg`, so by-name contract runs must skip it.
-    (job "contracts" "no peg" ["-Dpeg=false"] ["peg"])
-    ; There is no `AssembleResult` without the assembler.
-    (job "contracts" "no assembler" ["-Dassembler=false"]
-         ["asm_encode" "asm_decode" "disasm"])
-    (job "contracts" "no int types" ["-Dint-types=false"] ["inttypes"])
+    (job "contracts" "no net" ["-Dnet=false"])
+    (job "contracts" "no peg" ["-Dpeg=false"])
+    (job "contracts" "no assembler" ["-Dassembler=false"])
+    (job "contracts" "no int types" ["-Dint-types=false"])
     (job "contracts" "no dynamic modules" ["-Ddynamic-modules=false"])
-    ; `Config.ev` folds in `-Dsingle-threaded` and the target, so the two ev
-    ; contracts cannot be compiled here -- neither the channel API nor
-    ; `JanetStream` is declared. The comment above this entry has said
-    ; so since Part 16; Part 17d is the first increment whose own contracts
-    ; include one, and it had to learn that the skip the comment names
-    ; was never actually passed.
-    (job "contracts" "single threaded" ["-Dsingle-threaded=true"]
-         ["ev_core" "ev_loop" "net_sockets"])
-    ; `build.zig` sets `.os_fs = !options.reduced_os`, so the skip list has to
-    ; name all four contracts `test/contracts.zig` gates on `options.os_fs`.
-    ; It named only `os_stat` until increment 8b picked `os_fs` as a subject
-    ; and the entry failed with `os_fs was not compiled into this binary` --
-    ; a harness gap that had simply never been selected for.
-    ;
+    (job "contracts" "single threaded" ["-Dsingle-threaded=true"])
     ; **A `full` entry since Phase 16 Part 4.** It was `contracts` because the
     ; suites could not run at all here -- `test/helper.wattle` named `os/getenv`
     ; and an unknown symbol is a compile error, so every suite refused to load.
     ; The harness asks `compif` now and `build.zig` does not schedule the seven
     ; suites whose fixtures need the OS, so the other 28 run.
-    (job "full" "reduced os" ["-Dreduced-os=true"]
-         ["os_fs" "os_stat" "os_fs_paths" "os_permissions"
-          "os_environ" "os_time" "os_process"])
+    (job "full" "reduced os" ["-Dreduced-os=true"])
     ; `-Dprocesses=false` runs its suites, because a suite that names
     ; `os/spawn` unguarded compiles wherever the build has processes. As a
     ; build-only entry it missed `suite-ev`'s unguarded `:x` cases.
@@ -699,9 +378,6 @@
   (def workers (math/trunc (or (scan-number (or (option argv "-j") "2")) 2)))
   (def log-path (or (option argv "--log") "/tmp/wattle-matrix.log"))
   (def only (option argv "--only"))
-  (def contracts (filter #(not (empty? $))
-                         (string/split "," (or (option argv "--contracts")
-                                               (string/join "," contracts-default)))))
 
   (var jobs (all-jobs))
   (when (has-value? argv "--all-full")
@@ -712,7 +388,7 @@
     (def wanted (string/split "," only))
     (set jobs (filter (fn [j] (any? (map #(string/find $ (j :name)) wanted))) jobs)))
 
-  (preflight jobs contracts)
+  (preflight jobs)
 
   ; The suites lock starts held-by-nobody: one token in the channel.
   (ev/give suites-lock true)
@@ -742,7 +418,7 @@
           (when (>= i (length jobs)) (break))
           (++ next-job)
           (def j (jobs i))
-          (def [_ status detail secs] (run-job j i contracts))
+          (def [_ status detail secs] (run-job j i))
           (put! results (j :name) [status detail secs])
           ; Printed as it lands, not only at the end. A run that is killed --
           ; or wedged -- is then still worth what it had reached.
@@ -761,7 +437,7 @@
     (unless (kind-label (j :kind))
       (tools/die (string/format "matrix.wattle: unknown job kind %w for %w" (j :kind) (j :name)))))
   (def log !"")
-  (buffer/format! log "-j%d, %d contracts\n" workers (length contracts))
+  (buffer/format! log "-j%d\n" workers)
   (each j jobs
     (def name (string (j :name) (kind-label (j :kind))))
     (if-let [entry (results (j :name))]
