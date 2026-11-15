@@ -21,6 +21,7 @@ const builtin = @import("builtin");
 // Project imports
 // ==========================================================================
 
+const abi = @import("abi");
 const abstract_type = @import("../../api/abstract_type.zig");
 const abstracts = @import("../value/abstracts.zig");
 const args_core = @import("../args.zig");
@@ -113,18 +114,28 @@ const prim_names = [_]NamedPrim{
     .{ "ulong", .uint64 },
 };
 
-/// The signature's abstract type. Every field after `gcmark` is null, which
-/// the structure already defaults them to.
+/// The signature's abstract type.
 pub const signature_at = abstract_type.define(Signature, .{
     .name = "core/ffi-signature",
+    .gc = &signatureGc,
     .gcmark = &signatureMark,
 });
 
 /// The FFI struct's abstract type.
 pub const struct_at = abstract_type.define(Struct, .{
     .name = "core/ffi-struct",
+    .gc = &structGc,
     .gcmark = &structMark,
 });
+
+/// Whether a struct type and a signature are threaded abstracts, which a
+/// value sent to another thread may refer to.
+///
+/// A threaded abstract is not traversed by the collector, so it holds a counted
+/// reference to each struct type it names and releases them in its finalizer.
+/// Without the event loop there is no other thread, and the two are ordinary
+/// abstracts whose `gcmark` marks the struct types they name.
+pub const threaded_types = config.ev;
 
 pub const sysv64_enabled = !windows and builtin.target.cpu.arch == .x86_64;
 pub const win64_enabled = windows and builtin.target.cpu.arch == .x86_64;
@@ -367,10 +378,7 @@ pub fn buildStruct(argv: []const repr.Value) raise.Error!*Struct {
         }
     }
 
-    const st: *Struct = @ptrCast(@alignCast(abstracts.newBytes(
-        &struct_at,
-        Struct.allocSize(argv.len),
-    )));
+    const st: *Struct = @ptrCast(@alignCast(newType(&struct_at, Struct.allocSize(argv.len))));
     st.field_count = 0;
     st.size = 0;
     st.alignment = 1;
@@ -390,6 +398,10 @@ pub fn buildStruct(argv: []const repr.Value) raise.Error!*Struct {
             if (j == argv.len) break;
         }
         members[i].type = try decodeType(argv[j]);
+        // Counted before anything else can raise, so the finalizer releases
+        // exactly the members stored.
+        retain(members[i].type);
+        st.field_count = @intCast(i + 1);
         const el_size = typeSize(members[i].type);
         const el_align = typeAlign(members[i].type);
         // `el_align <= 0` in C, on a size_t, which is `el_align == 0`: the
@@ -404,6 +416,13 @@ pub fn buildStruct(argv: []const repr.Value) raise.Error!*Struct {
     st.is_aligned = layout.is_aligned;
     st.field_count = @intCast(member_count);
     return st;
+}
+
+/// Allocates a signature, threaded where `threaded_types` is set.
+///
+/// The caller fills in every field, and calls `retain` on each type it stores.
+pub fn newSignature() *Signature {
+    return @ptrCast(@alignCast(newType(&signature_at, @sizeOf(Signature))));
 }
 
 /// `ffi_cc_enabled`. Whether a build may call a convention is a separate
@@ -497,6 +516,15 @@ pub fn lookupPrim(name: []const u8) i32 {
     return -1;
 }
 
+/// Takes a counted reference to the struct type `t` names, where `t` names
+/// one and `threaded_types` is set.
+///
+/// A struct type or signature calls this for each type it stores, and its
+/// finalizer releases the reference. This function cannot raise.
+pub fn retain(t: Type) void {
+    if (threaded_types and t.prim == .@"struct") _ = abstracts.incref(t.st.?);
+}
+
 /// `type_align`.
 pub fn typeAlign(t: Type) usize {
     if (t.prim == .@"struct") return t.st.?.alignment;
@@ -543,14 +571,42 @@ fn primInfo(prim: Prim) PrimInfo {
     };
 }
 
+/// Allocates an FFI type's abstract, threaded where `threaded_types` is set.
+fn newType(atype: *const abi.AbstractType, size: usize) *anyopaque {
+    return if (threaded_types) abstracts.threaded(atype, size) else abstracts.newBytes(atype, size);
+}
+
+/// Releases the counted reference `retain` took for `t`.
+fn release(t: Type) void {
+    if (threaded_types and t.prim == .@"struct") _ = abstracts.decrefMaybeFree(t.st.?);
+}
+
+/// Implements the `gc` callback of `signature_at`. It releases the struct types
+/// the return type and the arguments name.
+fn signatureGc(sig: *Signature, _: usize) void {
+    release(sig.ret.type);
+    for (sig.args[0..sig.arg_count]) |arg| release(arg.type);
+}
+
+/// Implements the `gcmark` callback of `signature_at`. The collector calls it
+/// only where `threaded_types` is not set.
 fn signatureMark(sig: *Signature, _: usize) void {
+    if (sig.ret.type.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(sig.ret.type.st.?));
     for (sig.args[0..sig.arg_count]) |arg| {
         const t = arg.type;
         if (t.prim == .@"struct") gc_mark.mark(wrap.fromAbstract(t.st.?));
     }
 }
 
-/// `struct_mark`. A nested struct type is an abstract of this same type.
+/// Implements the `gc` callback of `struct_at`. It releases the struct types
+/// the members name.
+fn structGc(st: *Struct, _: usize) void {
+    const members = Struct.fields(st);
+    for (members[0..st.field_count]) |member| release(member.type);
+}
+
+/// `struct_mark`. A nested struct type is an abstract of this same type. The
+/// collector calls it only where `threaded_types` is not set.
 fn structMark(st: *Struct, _: usize) void {
     const members = Struct.fields(st);
     for (members[0..st.field_count]) |member| {

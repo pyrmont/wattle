@@ -301,8 +301,11 @@ fn expectShape(
 }
 
 fn abstractTypes() void {
-    expectShape("(ffi/struct :int32 :double)", "core/ffi-struct", false, true, false, false);
-    expectShape("(ffi/signature :none :void :int32)", "core/ffi-signature", false, true, false, false);
+    // A struct type and a signature have both a finalizer, which releases the
+    // counted references `threaded_types` builds take, and a mark callback,
+    // which the other builds call.
+    expectShape("(ffi/struct :int32 :double)", "core/ffi-struct", true, true, false, false);
+    expectShape("(ffi/signature :none :void :int32)", "core/ffi-signature", true, true, false, false);
     if (has_dynamic_modules) {
         expectShape("(ffi/native)", "core/ffi-native", false, false, false, false);
     }
@@ -909,8 +912,11 @@ fn unmark(head: *abi.AbstractHead) void {
 
 /// A struct type and a signature each mark the struct types they hold. The
 /// inner struct is reachable only through the outer value, so its bit is set
-/// by the outer value's mark callback or not at all.
+/// by the outer value's mark callback or not at all. Where `threaded_types` is
+/// set the collector does not traverse either type, and
+/// `theTypesCountTheStructTypesTheyName` is the case instead.
 fn theMarkCallbacksReachNestedStructs() void {
+    if (ffi_types.threaded_types) return;
     const outer = eval("(ffi/struct :u8 (ffi/struct :u8 :u32))");
     gc_alloc.gcroot(outer);
     defer _ = gc_alloc.gcunroot(outer);
@@ -935,6 +941,31 @@ fn theMarkCallbacksReachNestedStructs() void {
     expect(reachable(held));
     unmark(held);
     unmark(utils.abstractHead(sig));
+}
+
+/// Where `threaded_types` is set, a struct type and a signature each hold a
+/// counted reference to every struct type they name, and their finalizers
+/// release them. The inner type is bound in the environment and the outer
+/// values are not, so a collection frees the outer values and the count
+/// returns to one, the reference the visit record holds.
+fn theTypesCountTheStructTypesTheyName() void {
+    if (!ffi_types.threaded_types) return;
+    const inner_value = eval("(def inner (ffi/struct :u8 :u32))");
+    const inner = utils.abstractHead(wrap.toAbstract(inner_value));
+    expect(inner.gc.data.refcount == 1);
+
+    _ = eval("(ffi/struct :u8 inner ![inner 2])");
+    expect(inner.gc.data.refcount == 3);
+    gc_mark.collect();
+    expect(inner.gc.data.refcount == 1);
+
+    // A `:none` signature records no argument types, so it holds no struct
+    // type to count.
+    if (!hasCallableConvention()) return;
+    _ = eval("(ffi/signature :default inner :u8 inner)");
+    expect(inner.gc.data.refcount == 3);
+    gc_mark.collect();
+    expect(inner.gc.data.refcount == 1);
 }
 
 /// AAPCS64 returns a struct wider than sixteen bytes through a buffer of 128
@@ -1059,6 +1090,7 @@ pub fn run() void {
     anAggregateBehindAStackArgument();
     aVectorPairWithOneRegisterLeft();
     theMarkCallbacksReachNestedStructs();
+    theTypesCountTheStructTypesTheyName();
     theAapcs64ReturnBound();
     theFrameIsScratchOnlyPastTheInlineSize();
     aSignatureOf72StackWordsIsDescribed();

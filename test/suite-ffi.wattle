@@ -119,4 +119,25 @@
     (assert (= 42 (ffi/call f (ffi/signature :default :int))) "a jitfn is callable")
     (assert (= (ffi/read :u32 ret42) (ffi/read :u32 f)) "and its code is readable")))
 
+; A struct type and a signature can be sent to another thread. The parent
+; drops its references and collects before the thread reads the types, so the
+; inner struct type stays alive through the outer type's reference to it.
+(compwhen (and has-ffi (dyn 'ev/thread))
+  (def go (ev/thread-chan 1))
+  (def back (ev/thread-chan 1))
+  (defn- send-types []
+    (def outer (ffi/struct :u8 (ffi/struct :int :double) ![(ffi/struct :u8 :u32) 2]))
+    (def sig (ffi/signature :none (ffi/struct :int :double) outer))
+    (ev/thread (fn []
+                 (ev/take go)
+                 (gccollect)
+                 (ev/give back [(ffi/size outer) (type sig)]))
+               nil :i))
+  (send-types)
+  (gccollect)
+  (gccollect)
+  (ev/give go true)
+  (assert (deep= [40 :core/ffi-signature] (ev/take back))
+          "a thread reads a struct type and a signature after the parent collects"))
+
 (end-suite)

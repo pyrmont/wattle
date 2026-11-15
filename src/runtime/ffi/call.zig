@@ -405,7 +405,7 @@ pub fn nfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
         },
     }
 
-    const abst: *Signature = abstracts.newFor(Signature, &ffi_types.signature_at);
+    const abst = ffi_types.newSignature();
     abst.frame_size = 0;
     abst.cc = cc;
     abst.ret = ret;
@@ -414,6 +414,8 @@ pub fn nfunSignature(argv: []const repr.Value) raise.Error!repr.Value {
     abst.stack_count = stack_count;
     abst.arg_stack_words = alloc_stack_words;
     abst.args = mappings;
+    ffi_types.retain(abst.ret.type);
+    for (abst.args[0..arg_count]) |arg| ffi_types.retain(arg.type);
     return wrap.fromAbstract(abst);
 }
 
