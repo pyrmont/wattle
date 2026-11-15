@@ -852,6 +852,20 @@ fn nfunIsAbstract(argv: []repr.Value) raise.Error!repr.Value {
     return wrap.fromBoolean(repr.checkType(argv[0], repr.Tag.abstract));
 }
 
+/// `(symbol? x)`: a value with the symbol tag that is not a keyword.
+fn nfunIsSymbol(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 1);
+    const x = argv[0];
+    return wrap.fromBoolean(repr.checkType(x, repr.Tag.symbol) and !wrap.isKeyword(x));
+}
+
+/// `(keyword? x)`: a value with the symbol tag that is a keyword.
+fn nfunIsKeyword(argv: []repr.Value) raise.Error!repr.Value {
+    try args_core.fixarity(argv, 1);
+    const x = argv[0];
+    return wrap.fromBoolean(repr.checkType(x, repr.Tag.symbol) and wrap.isKeyword(x));
+}
+
 /// `(dictionary? x)`: a table, a struct, or an abstract whose contents are
 /// pairs.
 fn nfunIsDictionary(argv: []repr.Value) raise.Error!repr.Value {
@@ -1402,6 +1416,20 @@ fn loadLibs(env: *tables.Table) raise.Error!void {
         corefn.reg("int?", &nfunCheckInt, @src(), "(int? x)", "Checks whether x can be exactly represented as a 32 bit signed two's complement integer."),
         corefn.reg("nat?", &nfunCheckNat, @src(), "(nat? x)", "Checks whether x can be exactly represented as a non-negative 32 bit signed two's complement integer."),
         corefn.reg("bytes?", &TypeFlagPredicate(repr.TagSet.bytes).nfun, @src(), "(bytes? x)", "Checks whether x is a string, symbol, keyword, or buffer."),
+        corefn.reg("number?", &TypeFlagPredicate(repr.TagSet.one(.number)).nfun, @src(), "(number? x)", "Checks whether x is a number."),
+        corefn.reg("fiber?", &TypeFlagPredicate(repr.TagSet.one(.fiber)).nfun, @src(), "(fiber? x)", "Checks whether x is a fiber."),
+        corefn.reg("string?", &TypeFlagPredicate(repr.TagSet.one(.string)).nfun, @src(), "(string? x)", "Checks whether x is a string."),
+        corefn.reg("symbol?", &nfunIsSymbol, @src(), "(symbol? x)", "Checks whether x is a symbol."),
+        corefn.reg("keyword?", &nfunIsKeyword, @src(), "(keyword? x)", "Checks whether x is a keyword."),
+        corefn.reg("buffer?", &TypeFlagPredicate(repr.TagSet.one(.buffer)).nfun, @src(), "(buffer? x)", "Checks whether x is a buffer."),
+        corefn.reg("function?", &TypeFlagPredicate(repr.TagSet.one(.function)).nfun, @src(), "(function? x)", "Checks whether x is a function (not an nfunction)."),
+        corefn.reg("nfunction?", &TypeFlagPredicate(repr.TagSet.one(.nfunction)).nfun, @src(), "(nfunction? x)", "Checks whether x is an nfunction."),
+        corefn.reg("table?", &TypeFlagPredicate(repr.TagSet.one(.table)).nfun, @src(), "(table? x)", "Checks whether x is a table."),
+        corefn.reg("map?", &TypeFlagPredicate(repr.TagSet.one(.map)).nfun, @src(), "(map? x)", "Checks whether x is a map."),
+        corefn.reg("array?", &TypeFlagPredicate(repr.TagSet.one(.array)).nfun, @src(), "(array? x)", "Checks whether x is an array."),
+        corefn.reg("vector?", &TypeFlagPredicate(repr.TagSet.one(.vector)).nfun, @src(), "(vector? x)", "Checks whether x is a vector."),
+        corefn.reg("tuple?", &TypeFlagPredicate(repr.TagSet.one(.tuple)).nfun, @src(), "(tuple? x)", "Checks whether x is a tuple."),
+        corefn.reg("boolean?", &TypeFlagPredicate(repr.TagSet.one(.boolean)).nfun, @src(), "(boolean? x)", "Checks whether x is a boolean."),
         corefn.reg("indexed?", &nfunIsIndexed, @src(), "(indexed? x)", "Checks whether x is an array, a vector, a tuple, or an abstract type that implements the indexed protocol."),
         corefn.reg("dictionary?", &nfunIsDictionary, @src(), "(dictionary? x)", "Checks whether x is a table, a map, or an abstract type that implements the dictionary protocol."),
         corefn.reg("lengthable?", &nfunIsLengthable, @src(), "(lengthable? x)", "Checks whether x is a byte sequence, an indexed type, a dictionary, or an abstract type that has a length. A fiber is not."),

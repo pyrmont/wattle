@@ -115,6 +115,34 @@
 (assert (not (abstract? 3)) "not abstract? 3")
 (assert (not (abstract? 5)) "not abstract? 5")
 
+; The type predicates. Each row is the result of one predicate for each value
+; in type-values, in order.
+(def- type-values
+  ![1 nil true !"b" "s" 'sym :kw ![1] [1] !{:a 1} {:a 1} (tuple 1)
+    (fiber/new (fn [] 1)) (fn [] 1) print stdout #{1}])
+(each [pred row] [[number?    "10000000000000000"]
+                  [nil?       "01000000000000000"]
+                  [boolean?   "00100000000000000"]
+                  [buffer?    "00010000000000000"]
+                  [string?    "00001000000000000"]
+                  [symbol?    "00000100000000000"]
+                  [keyword?   "00000010000000000"]
+                  [array?     "00000001000000000"]
+                  [vector?    "00000000100000000"]
+                  [table?     "00000000010000000"]
+                  [map?       "00000000001000000"]
+                  [tuple?     "00000000000100000"]
+                  [fiber?     "00000000000010000"]
+                  [function?  "00000000000001000"]
+                  [nfunction? "00000000000000100"]
+                  [abstract?  "00000000000000011"]]
+  (def got (string/join "" (map (fn [x] (if (pred x) "1" "0")) type-values)))
+  (assert (= row got) (string/format "%v gives %s, expected %s" pred got row)))
+(assert (boolean? false) "boolean? false")
+(assert (keyword? (keyword "sym")) "keyword? of a keyword with a symbol's bytes")
+(assert (not (symbol? (keyword "sym"))) "not symbol? of a keyword")
+(assert (not (keyword? (symbol "kw"))) "not keyword? of a symbol")
+
 ; Module path expansion
 (setdyn :current-file "some-dir/some-file")
 (defn test-expand [path temp]
