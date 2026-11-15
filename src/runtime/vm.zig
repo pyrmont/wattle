@@ -1053,8 +1053,24 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         },
 
         .next => {
+            const ds = self.stack[fB(self.pc)];
+            const key = self.stack[fC(self.pc)];
+            // An array, tuple or vector with a nil key or an index key is read
+            // here. The result is the one `access.nextImpl` returns.
+            switch (repr.typeOf(ds)) {
+                repr.Tag.array, repr.Tag.tuple, repr.Tag.vector => {
+                    const len = seqLength(ds).?;
+                    const following: ?usize = if (isNil(key)) 0 else if (seqIndex(key, len)) |i| i + 1 else null;
+                    if (following) |i| {
+                        self.stack[fA(self.pc)] = if (i < len) wrap.fromInteger(@intCast(i)) else wrap.fromNil();
+                        self.pc += 1;
+                        continue :sw self.nextOp();
+                    }
+                },
+                else => {},
+            }
             self.commit();
-            const v = try access.nextImpl(self.stack[fB(self.pc)], self.stack[fC(self.pc)], true);
+            const v = try access.nextImpl(ds, key, true);
             self.restore();
             self.stack[fA(self.pc)] = v;
             self.pc += 1;
@@ -1410,8 +1426,18 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         },
 
         .in => {
+            const ds = self.stack[fB(self.pc)];
+            const key = self.stack[fC(self.pc)];
             self.commit();
-            const v = try access.in(self.stack[fB(self.pc)], self.stack[fC(self.pc)]);
+            const v = switch (repr.typeOf(ds)) {
+                repr.Tag.table => tables.get(wrap.toTable(ds), key),
+                repr.Tag.map => maps.lookup(wrap.toMap(ds), key),
+                repr.Tag.array, repr.Tag.tuple, repr.Tag.vector => if (seqIndex(key, seqLength(ds).?)) |i|
+                    seqAt(ds, i)
+                else
+                    try access.in(ds, key),
+                else => try access.in(ds, key),
+            };
             self.reload();
             self.stack[fA(self.pc)] = v;
             self.pc += 1;
@@ -1419,12 +1445,21 @@ pub fn runVm(fiber_in: *fibers.Fiber, in: repr.Value) raise.Error!abi.Signal {
         },
 
         .get => {
+            const ds = self.stack[fB(self.pc)];
+            const key = self.stack[fC(self.pc)];
             self.commit();
-            // A missing key gives back nil rather than raising, but a table's
-            // prototype chain, an abstract type's `get` and a `next` callback
-            // are all reachable from here, and any of those may, so the `try`
-            // is not decoration.
-            const v = try access.get(self.stack[fB(self.pc)], self.stack[fC(self.pc)]);
+            // A missing key gives back nil rather than raising, but an
+            // abstract type's `get` and a `next` callback are reachable
+            // through `access.get`, and either may raise.
+            const v = switch (repr.typeOf(ds)) {
+                repr.Tag.table => tables.get(wrap.toTable(ds), key),
+                repr.Tag.map => maps.lookup(wrap.toMap(ds), key),
+                repr.Tag.array, repr.Tag.tuple, repr.Tag.vector => if (seqIndex(key, seqLength(ds).?)) |i|
+                    seqAt(ds, i)
+                else
+                    try access.get(ds, key),
+                else => try access.get(ds, key),
+            };
             self.reload();
             self.stack[fA(self.pc)] = v;
             self.pc += 1;
@@ -1710,6 +1745,45 @@ inline fn methodToFun(method: repr.Value, obj: repr.Value) raise.Error!repr.Valu
 }
 
 /// The frame that sits immediately below `values`.
+/// Returns the element at `i` of an array, tuple or vector.
+///
+/// `ds` must be one of the three and `i` below its length, which `seqLength`
+/// and `seqIndex` establish. Any other `ds` is illegal behaviour.
+inline fn seqAt(ds: repr.Value, i: usize) repr.Value {
+    return switch (repr.typeOf(ds)) {
+        repr.Tag.array => wrap.toArray(ds).slice()[i],
+        repr.Tag.tuple => wrap.toTuple(ds)[i],
+        repr.Tag.vector => vectors.at(wrap.toVector(ds), i),
+        else => unreachable,
+    };
+}
+
+/// Returns `key` as an index below `len`, or null where `key` is not an
+/// integer in that range.
+///
+/// A key that `args_core.checkint` accepts and that lies in `[0, len)` is an
+/// index, and every other key is null.
+inline fn seqIndex(key: repr.Value, len: usize) ?usize {
+    if (!repr.checkType(key, repr.Tag.number)) return null;
+    const d = wrap.toNumber(key);
+    // The negated test is false for NaN as well as for a number out of range.
+    if (!(d >= 0 and d < @as(f64, @floatFromInt(len)))) return null;
+    const i: usize = @intFromFloat(d);
+    if (@as(f64, @floatFromInt(i)) != d) return null;
+    return i;
+}
+
+/// Returns the length of an array, tuple or vector, or null for any other
+/// value.
+inline fn seqLength(ds: repr.Value) ?usize {
+    return switch (repr.typeOf(ds)) {
+        repr.Tag.array => wrap.toArray(ds).count,
+        repr.Tag.tuple => tuples.head(wrap.toTuple(ds)).length,
+        repr.Tag.vector => wrap.toVector(ds).count,
+        else => null,
+    };
+}
+
 inline fn stackFrame(values: [*]repr.Value) *vm_state.StackFrame {
     return @ptrCast(@alignCast(values - frame_size));
 }

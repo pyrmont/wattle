@@ -314,4 +314,26 @@
 (assert (= 2013265920 (brushift 4026531840 33))
         "and so does the unsigned one")
 
+; `in`, `get` and `next` read an array, tuple or vector in the interpreter
+; loop when the key is an index. The results at the edges of that test are the
+; ones the general access functions return.
+(each [kind xs] [[:array ![10 20 30]] [:tuple (tuple 10 20 30)] [:vector [10 20 30]]]
+  (assert (= 30 (in xs 2)) (string "in reads the last index of a " kind))
+  (assert (= 10 (in xs -0.0)) (string "in reads -0.0 as index 0 of a " kind))
+  (assert (= 20 (get xs 1)) (string "get reads an index of a " kind))
+  (assert (nil? (get xs 3)) (string "get past the end of a " kind))
+  (assert (nil? (get xs -1)) (string "get at -1 of a " kind))
+  (assert (nil? (get xs 1.5)) (string "get at a fraction of a " kind))
+  (assert (nil? (get xs math/nan)) (string "get at NaN of a " kind))
+  (assert (nil? (get xs :a)) (string "get at a keyword of a " kind))
+  (assert (= 0 (next xs nil)) (string "next from nil of a " kind))
+  (assert (= 2 (next xs 1)) (string "next from an index of a " kind))
+  (assert (nil? (next xs 2)) (string "next from the last index of a " kind))
+  (assert (= 0 (next xs -1)) (string "next from -1 of a " kind))
+  (assert (nil? (next xs 1.5)) (string "next from a fraction of a " kind))
+  (def [ok err] (protect (in xs 3)))
+  (assert (and (not ok) (string/has-suffix? "in range [0, 3), got 3" err))
+          (string "in past the end of a " kind " raises")))
+(assert (nil? (next [] nil)) "next from nil of an empty vector")
+
 (end-suite)
