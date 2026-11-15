@@ -30,3 +30,5 @@ wattle-image.bin
 # Local working directories
 /tmp
 /notes
+/.agents
+/AGENTS.md
