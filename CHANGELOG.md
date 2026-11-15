@@ -3,7 +3,42 @@
 Each release lists what changed since the release before it. The changes made
 since the most recent release are under Unreleased.
 
-## Unreleased
+## 0.4.0 (2026-11-15)
+
+- Require Zig 0.17.1.
+- Allow `#` inside symbols and keywords, so `:div#main.post` and `foo#bar`
+  each read as one token. A `#` that begins a form still opens dispatch. A
+  name may not end in `#` and a keyword's name may not begin with one, so
+  `x#`, `:div#` and `:#foo` are parse errors, as is `a#{1}`.
+- Give a program built with `wattle build exe` or `wattle build web` a
+  version label from the `:version` string in `info.edn`. A `:version` of
+  `DEVEL` gives `DEVEL-` and the abbreviated hash of the project's commit.
+  Code run at compile time reads the label from `*build-version*`, which
+  `wattle build img --build-version` sets.
+- Allow an `ffi/struct` or `ffi/signature` value to be passed to another
+  thread with `ev/thread`.
+- Make the single-type predicates, such as `number?`, `string?` and
+  `fiber?`, native functions. A call with the wrong number of arguments
+  raises when it runs rather than at compile time, and an abstract type
+  named like a built-in type no longer satisfies that type's predicate.
+- Speed up reading an array, tuple or vector element with `in`, `get` and
+  `next`, and table lookups.
+- Add a TextMate grammar for Wattle source in `res/editor/textmate`.
+- Fix a `peg` callback that grew the buffer being matched moving the bytes
+  the matcher was reading. Growing the buffer now raises. Fix the `peg`
+  compiler panicking on the count -2147483648 and on a zero-width int or
+  uint.
+- Fix a closure over a local in a slot above 255 reading the wrong value.
+  The compiler now raises an error for it.
+- Fix `asm`, the bytecode verifier, unmarshalling and `debug/stack`
+  accepting malformed sourcemaps, environment indices, fibers, channels
+  and captured environments.
+- Fix `os/stat` and `os/lstat` returning nil for every path on Linux
+  before 4.11, which has no `statx`. On x86-64 and aarch64 they fall back to
+  `newfstatat`. On other architectures they raise an error that names
+  `statx` as the call that is not available.
+- Fix `os/strftime` with a result that does not fit its buffer, and
+  printing a buffer into itself.
 
 ## 0.3.1 (2026-10-24)
 
