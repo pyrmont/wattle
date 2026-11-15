@@ -282,6 +282,46 @@ pub inline fn keyEquals(stored: repr.Value, key: repr.Value) bool {
     };
 }
 
+/// Returns whether a stored dictionary key and a lookup key have the same tag
+/// and the same payload bits.
+///
+/// The result equals `keyEquals(stored, key)` whenever `keyNeedsEquals(key)`
+/// is false. Every constructor in each value layout sets the whole payload
+/// word, so two values with one tag and one payload have the same bits.
+pub inline fn keyIdentical(stored: repr.Value, key: repr.Value) bool {
+    return switch (config.value_repr) {
+        .tagged => stored.type == key.type and stored.as.u64 == key.as.u64,
+        .nanbox_64, .nanbox_32 => stored.u64 == key.u64,
+    };
+}
+
+/// Returns whether a stored dictionary key equals a lookup key that is a
+/// string.
+///
+/// `key` must be a string. The result equals `keyEquals(stored, key)` for
+/// such a key, without the switch on the stored key's tag.
+pub inline fn keyEqualsString(stored: repr.Value, key: repr.Value) bool {
+    if (!repr.checkType(stored, repr.Tag.string)) return false;
+    const stored_string = wrap.toString(stored);
+    const key_string = wrap.toString(key);
+    return stored_string == key_string or strings.equal(stored_string, key_string);
+}
+
+/// Returns whether a dictionary lookup for `key` needs `keyEquals` rather
+/// than `keyIdentical`.
+///
+/// A string, tuple, vector or map can equal a stored key at another address,
+/// and an abstract compares through its type's callback. A zero equals the
+/// other signed zero, and nil has the bits of an empty bucket's key. Every
+/// other key equals only a stored key with the same bits.
+pub inline fn keyNeedsEquals(key: repr.Value) bool {
+    return switch (repr.typeOf(key)) {
+        .string, .tuple, .vector, .map, .abstract, .nil => true,
+        .number => wrap.toNumber(key) == 0,
+        else => false,
+    };
+}
+
 /// Returns the hash of a dictionary lookup key, reading a symbol's or
 /// string's stored hash without the call to `hash`.
 ///

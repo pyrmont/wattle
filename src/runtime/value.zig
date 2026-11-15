@@ -95,6 +95,10 @@ const stringHead = utils.stringHead;
 /// else is built from a pointer to something already allocated.
 pub const Bytes = enum { string, symbol, keyword };
 
+/// The three key comparisons a dictionary probe makes: `order.keyEquals`,
+/// `order.keyIdentical` and `order.keyEqualsString`.
+const Compare = enum { equals, identical, string };
+
 // ==========================================================================
 // Public functions
 // ==========================================================================
@@ -136,39 +140,12 @@ pub fn capacityFor(val: usize) usize {
 /// produces one, and a safety-checked build traps at the first index rather
 /// than reading below the array.
 pub fn dictionaryFind(buckets: []const tables.Keyval, key: repr.Value) ?*const tables.Keyval {
-    const cap: i32 = @intCast(buckets.len);
-    const index = mapHash(cap, order.keyHash(key));
-    var first_bucket: ?*const tables.Keyval = null;
-
-    // Index loops, rather than `for (buckets[start..]) |*kv|`. Zig's `for`
-    // over a sub-slice with a pointer capture leaves both the element pointer
-    // and the index live, so the probe runs three induction updates per
-    // iteration where an index runs two. This is the hottest loop in the
-    // tree, and the faster shape is the one it takes.
-    const start: usize = @intCast(index);
-    var i: usize = start;
-    while (i < buckets.len) : (i += 1) {
-        const kv = &buckets[i];
-        if (isNil(kv.key)) {
-            if (isNil(kv.value)) return kv;
-            if (first_bucket == null) first_bucket = kv;
-        } else if (order.keyEquals(kv.key, key)) {
-            return kv;
-        }
-    }
-
-    i = 0;
-    while (i < start) : (i += 1) {
-        const kv = &buckets[i];
-        if (isNil(kv.key)) {
-            if (isNil(kv.value)) return kv;
-            if (first_bucket == null) first_bucket = kv;
-        } else if (order.keyEquals(kv.key, key)) {
-            return kv;
-        }
-    }
-
-    return first_bucket;
+    // The comparison is chosen once per lookup rather than at each bucket. A
+    // symbol or keyword is the most frequent key, so it is tested first.
+    if (repr.checkType(key, repr.Tag.symbol)) return probe(buckets, key, .identical);
+    if (repr.checkType(key, repr.Tag.string)) return probe(buckets, key, .string);
+    if (order.keyNeedsEquals(key)) return probe(buckets, key, .equals);
+    return probe(buckets, key, .identical);
 }
 
 /// The same probe for a key given as bytes rather than as a `Value`.
@@ -189,7 +166,7 @@ pub fn dictionaryFindKeyword(
     const index = mapHash(cap, hash);
     var first_bucket: ?*const tables.Keyval = null;
 
-    // Index loops for the reason `dictionaryFind` states above, and measured
+    // Index loops for the reason `probe` states below, and measured
     // with it: this is the same probe over the same buckets.
     const start: usize = @intCast(index);
     var i: usize = start;
@@ -447,6 +424,15 @@ inline fn mapHash(cap: i32, hash: i32) i32 {
     return @bitCast(@as(u32, @bitCast(hash)) & @as(u32, @bitCast(cap -% 1)));
 }
 
+/// Returns whether a stored key matches a lookup key under `compare`.
+inline fn matches(stored: repr.Value, key: repr.Value, comptime compare: Compare) bool {
+    return switch (compare) {
+        .equals => order.keyEquals(stored, key),
+        .identical => order.keyIdentical(stored, key),
+        .string => order.keyEqualsString(stored, key),
+    };
+}
+
 /// The bucket test the two halves of `dictionaryFindKeyword` share.
 ///
 /// `key` is the bucket's key, `hash` the sought hash and `cstr` the sought
@@ -458,6 +444,47 @@ fn matchesKeyword(key: repr.Value, hash: i32, cstr: []const u8) bool {
     const head = stringHead(str);
     if (head.hash != hash or head.length != cstr.len) return false;
     return std.mem.eql(u8, str[0..cstr.len], cstr);
+}
+
+/// The circular scan behind `dictionaryFind`, with the key comparison fixed
+/// at compile time by `compare`.
+///
+/// `buckets` is the hash array and `key` the key. The result is the one
+/// `dictionaryFind` documents.
+inline fn probe(buckets: []const tables.Keyval, key: repr.Value, comptime compare: Compare) ?*const tables.Keyval {
+    const cap: i32 = @intCast(buckets.len);
+    const index = mapHash(cap, order.keyHash(key));
+    var first_bucket: ?*const tables.Keyval = null;
+
+    // Index loops, rather than `for (buckets[start..]) |*kv|`. Zig's `for`
+    // over a sub-slice with a pointer capture leaves both the element pointer
+    // and the index live, so the probe runs three induction updates per
+    // iteration where an index runs two. This is the hottest loop in the
+    // tree, and the faster shape is the one it takes.
+    const start: usize = @intCast(index);
+    var i: usize = start;
+    while (i < buckets.len) : (i += 1) {
+        const kv = &buckets[i];
+        if (isNil(kv.key)) {
+            if (isNil(kv.value)) return kv;
+            if (first_bucket == null) first_bucket = kv;
+        } else if (matches(kv.key, key, compare)) {
+            return kv;
+        }
+    }
+
+    i = 0;
+    while (i < start) : (i += 1) {
+        const kv = &buckets[i];
+        if (isNil(kv.key)) {
+            if (isNil(kv.value)) return kv;
+            if (first_bucket == null) first_bucket = kv;
+        } else if (matches(kv.key, key, compare)) {
+            return kv;
+        }
+    }
+
+    return first_bucket;
 }
 
 /// Reads four bytes as a little-endian `u32`, for `halfSipHash`.

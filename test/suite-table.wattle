@@ -72,5 +72,30 @@
   (assert (nil? (table/getproto t)) "table/setproto! nil clears")
   (assert (nil? (get t :b)) "table/setproto! nil stops inheriting"))
 
+; A table lookup compares a symbol, keyword, number, boolean or reference key
+; by its bits, a string by its bytes, and any other key by equality. Each kind
+; finds an equal key and misses an unequal one.
+(do
+  (def buf (buffer "b"))
+  (def t !{:k 1 'k 2 "k" 3 1.5 4 0 5 true 6 false 7 buf 8 [1 2] 9 (tuple 1 2) 10})
+  (assert (= 1 (get t :k)) "a keyword key")
+  (assert (= 2 (get t 'k)) "a symbol key with a keyword's name")
+  (assert (= 3 (get t (string "" "k"))) "a string key at another address")
+  (assert (= 4 (get t (/ 3 2))) "a fractional key")
+  (assert (= 5 (get t -0.0)) "-0.0 finds the key 0")
+  (assert (= 6 (get t true)) "the key true")
+  (assert (= 7 (get t false)) "the key false")
+  (assert (= 8 (get t buf)) "a buffer key by identity")
+  (assert (nil? (get t (buffer "b"))) "an equal buffer at another address misses")
+  (assert (= 9 (get t [1 2])) "an equal vector key at another address")
+  (assert (= 10 (get t (tuple 1 2))) "an equal tuple key at another address")
+  (assert (nil? (get t math/nan)) "NaN misses")
+  (assert (nil? (get t 2)) "an absent number misses")
+  (assert (nil? (get t "kk")) "an absent string misses")
+  (assert (nil? (get t :kk)) "an absent keyword misses"))
+(do
+  (def t !{-0.0 :z})
+  (assert (= :z (get t 0)) "0 finds the key -0.0"))
+
 (end-suite)
 
