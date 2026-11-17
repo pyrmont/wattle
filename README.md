@@ -17,7 +17,7 @@ virtual machine, compiler and core library from [Janet][] with a syntax
 inspired by [Clojure][].
 
 A central use case of Wattle is the easy distribution of programs: standalone executables,
-web
+wasm files or custom builds.
 
 ## Language features
 
@@ -319,16 +319,14 @@ release loads into another if the interface is the same.
 
 ## Distributing
 
-A central use case of Wattle is the production of 
-
-The `wattle build` subcommands read the project's `info.edn` and need Zig on
-the `PATH` and the Wattle source under `<prefix>/share/wattle`. The
+A central use case of Wattle is the easy distribution of programs. Powerful
+programs can be built using `wattle build` and an `info.edn`. The
 `wattle-build.1` man page has the details.
 
 ### Standalone executables
 
-`wattle build exe` links the Wattle runtime, the program and the native modules
-declared for it into a standalone executable:
+`wattle build exe` builds and links the Wattle runtime, the program and the
+native modules declared for it into a standalone executable:
 
 ```clojure
 {:name "hello"
@@ -341,7 +339,9 @@ declared for it into a standalone executable:
 wattle build exe --release small
 ```
 
-[`examples/native-consumer/`](examples/native-consumer/) is a worked example.
+[`examples/native-consumer/`](examples/native-consumer/) is a worked example. A
+standalone executable can be cross-compiled by the Zig compiler for other
+architectures.
 
 ### Wasm binaries
 
