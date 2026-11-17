@@ -53,7 +53,7 @@ Wattle has a syntax inspired by Clojure's:
 
 ## Examples
 
-See the `examples/` directory for all provided example programs.
+See the [`examples/`](examples/) directory for all provided example programs.
 
 ### Game of Life
 
@@ -179,7 +179,7 @@ zig build run          # a REPL
 
 Artifacts are installed under `zig-out`: the executable in `zig-out/bin` and
 the static and shared libraries in `zig-out/lib`. **No header is installed** —
-see "Native modules" below.
+see "Extending" below.
 
 ### Supported platforms
 
@@ -218,7 +218,7 @@ Debian and Ubuntu by the `musl` package) on the machine that runs it.
 `-Dlinkage=static` builds a self-contained executable instead. A static musl
 executable loads no native module at run time, so that build turns dynamic
 modules off, and `-Ddynamic-modules=true` with it is a build error. A native is
-then linked in at build time with `wattleExecutable`; see "Extending" below.
+then linked in at build time with `wattleExecutable`; see "Custom builds" below.
 
 #### WASI
 
@@ -240,8 +240,10 @@ script, so neither needs a prefix:
 wasmtime run --dir . zig-out/bin/wattle.wasm script.wattle
 ```
 
-`zig build examples/web-repl` builds `examples/web-repl/`, Wattle in a web page: the runtime as a
-WASI reactor, with the page and its JavaScript host, into `zig-out/web-repl`.
+`zig build examples/web-repl` builds
+[`examples/web-repl/`](examples/web-repl/), Wattle in a web page: the runtime
+as a WASI reactor, with the page and its JavaScript host, into
+`zig-out/web-repl`.
 
 ## Installing
 
@@ -303,25 +305,25 @@ Individual scripts can be run with `wattle program.wattle`.
 
 ## Extending
 
-Wattle can be extended with _native modules_. The native-module interface is
-Zig. `examples/native-abstract/` is a worked example.
+Wattle can be extended with _native modules_ written in Zig. `src/module.zig`
+describes the interface and
+[`examples/native-abstract/`](examples/native-abstract/) is a worked example.
 
-A module records the interface it was built against as a fingerprint. This is
-important at runtime as the module loader will refuse to load a module if the
-fingerprint of the runtime and the fingerprint of the module do not match. The
-fingerprint is independent of Wattle's version so that a module built against
-one release can load into another provided that the interface is the same.
+A module records the interface it was built against as a fingerprint, and the
+loader refuses a module if its fingerprint does not match the runtime's. The
+fingerprint is independent of Wattle's version, so a module built against one
+release loads into another if the interface is the same.
 
-A module can also be linked together with the runtime and an image of a Wattle
-program to create a standalone executable. `wattle build exe` will create the
-native executables specified under `:exes` in the project's `info.edn`, each
-linked with the native libs whose `:for` names it. `wattle build lib` makes
-each native lib as a shared library, copies each source lib to `.wattle` and
-fetches each remote lib. `wattle build exe` does the same for the source and
-remote libs of the exes it builds. Both need Zig on the `PATH`, and
-the prefix, `WATTLE_PREFIX` or `--prefix`. `<prefix>/share/wattle` must point
-to a copy of the Wattle source. An example `info.edn` file could look like
-this:
+## Distributing
+
+The `wattle build` subcommands read the project's `info.edn` and need Zig on
+the `PATH` and the Wattle source under `<prefix>/share/wattle`. The
+`wattle-build.1` man page has the details.
+
+### Executables
+
+`wattle build exe` links the Wattle runtime, the program and the native modules
+declared for it into a standalone executable:
 
 ```clojure
 {:name "hello"
@@ -330,37 +332,35 @@ this:
  :libs [{:type :native :name "greet" :root "greet.zig" :for ["hello"]}]}
 ```
 
-A user could then build this for their system using:
-
 ```sh
 wattle build exe --release small
 ```
 
-`examples/native-consumer/info.edn` is a worked example. More details are in
-the man page.
+[`examples/native-consumer/`](examples/native-consumer/) is a worked example.
 
-`wattle build web` builds a program for a browser. An exe of type `:web`
-has a `:name` and an `:entry`, and the command writes `zig-out/web/<name>/`
-with `wattle-<hash>.wasm`, `<name>-<hash>.wimage`, `wasi-<hash>.js` and
-`<name>.js`. The three hashes are one hash, taken from the contents of the three
-files, so files with the same hash belong together. The `.wasm` is the
-runtime without its parser and compiler, so it loads the image and nothing
-else, and `<name>.js` exports `load`, which fetches and compiles the two files once and
-returns an object whose `run({ args, stdin })` runs the program and returns its
-output. `run` reuses one instance of the runtime between calls, so a page can
-call it for each new input. `examples/web-greeter/`, `examples/web-counter/` and
-`examples/web-errors/` are worked examples.
+### Web programs
+
+`wattle build web` builds a program for a browser. It writes the runtime as a
+`.wasm` file, the program as an image and a JavaScript module that exports
+`load`, which returns an object with a `run({ args, stdin })` method:
 
 ```clojure
 {:exes [{:type :web :name "hello" :entry "main.wattle"}]}
 ```
 
-A project that needs more than that, such as other Zig packages or its own
-build options, can write a `build.zig` and call the `wattleExecutable` function
-of the `wattle` dependency, or `wattleWeb` for a web program. `zig build examples/native-executable` builds
-`examples/native-executable/`, which links `examples/native-events/` in, and
-`examples/native-consumer/build.zig` calls `wattleExecutable` from outside the
-tree.
+[`examples/web-greeter/`](examples/web-greeter/),
+[`examples/web-counter/`](examples/web-counter/) and
+[`examples/web-errors/`](examples/web-errors/) are worked examples.
+
+### Custom builds
+
+A project that needs other Zig packages or its own build options can write a
+`build.zig` that calls the `wattleExecutable` function of the `wattle`
+dependency, or `wattleWeb` for a web program.
+[`examples/native-consumer/build.zig`](examples/native-consumer/build.zig) is
+a worked example, and `zig build examples/native-executable` builds
+[`examples/native-executable/`](examples/native-executable/), which links in
+[`examples/native-events/`](examples/native-events/).
 
 ## Miscellaney
 
