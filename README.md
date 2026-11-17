@@ -16,7 +16,8 @@
 virtual machine, compiler and core library from [Janet][] with a syntax
 inspired by [Clojure][].
 
-A central use case of Wattle is producing delightful standalone executables.
+A central use case of Wattle is the easy distribution of programs: standalone executables,
+web
 
 ## Language features
 
@@ -318,6 +319,8 @@ release loads into another if the interface is the same.
 
 ## Distributing
 
+A central use case of Wattle is the production of 
+
 The `wattle build` subcommands read the project's `info.edn` and need Zig on
 the `PATH` and the Wattle source under `<prefix>/share/wattle`. The
 `wattle-build.1` man page has the details.
@@ -340,7 +343,7 @@ wattle build exe --release small
 
 [`examples/native-consumer/`](examples/native-consumer/) is a worked example.
 
-### Web programs
+### Wasm binaries
 
 `wattle build web` builds a program for a browser. It writes the runtime as a
 `.wasm` file, the program as an image and a JavaScript module that exports
