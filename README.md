@@ -16,6 +16,8 @@
 virtual machine, compiler and core library from [Janet][] with a syntax
 inspired by [Clojure][].
 
+A central use case of Wattle is producing delightful standalone executables.
+
 ## Language features
 
 - Core library of functions and macros
@@ -145,12 +147,12 @@ See the [`examples/`](examples/) directory for all provided example programs.
 
 The `wattle` CLI utility is documented in the `wattle.1` man page, and each
 subcommand in a page of its own, such as `wattle-build.1`. A brief overview of
-the language is in the `wattle.7` man page. All are generated from
-[Predoc][] files that are included in `man/man1/` and `man/man7/`. The files are installed to
-`<prefix>/share/man`.
+the language is in the `wattle.7` man page. All are generated from [Predoc][]
+files that are included in `man/man1/` and `man/man7/`. The files are installed
+to `<prefix>/share/man`.
 
-Documentation about bindings is available in the REPL. Use the `(doc symbol-name)` macro to
-get API documentation for symbols in the core library.
+Documentation about bindings is available in the REPL. Use the `(doc
+symbol-name)` macro to get API documentation for symbols in the core library.
 
 At the REPL
 
@@ -320,7 +322,7 @@ The `wattle build` subcommands read the project's `info.edn` and need Zig on
 the `PATH` and the Wattle source under `<prefix>/share/wattle`. The
 `wattle-build.1` man page has the details.
 
-### Executables
+### Standalone executables
 
 `wattle build exe` links the Wattle runtime, the program and the native modules
 declared for it into a standalone executable:
