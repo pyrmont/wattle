@@ -8,16 +8,16 @@
 [icon]: https://github.com/pyrmont/wattle/actions/workflows/test.yml/badge.svg
 [status]: https://github.com/pyrmont/wattle/actions?query=workflow%3ATest
 
-> [!WARNING]
-> Wattle is experimental. It was written primarily using LLM-based coding
-> agents.
-
 **Wattle** is a Lisp-like programming language. It reimplements in [Zig][] the
 virtual machine, compiler and core library from [Janet][] with a syntax
 inspired by [Clojure][].
 
-A central use case of Wattle is the easy distribution of programs: standalone executables,
-wasm files or custom builds.
+> [!WARNING]
+> Wattle is experimental. It was written primarily using LLM-based coding
+> agents.
+
+Wattle is intended to be used for the easy distribution of programs. Standalone
+executables, wasm files or custom builds are simple to create with Wattle.
 
 ## Language features
 
@@ -54,123 +54,45 @@ Wattle has a syntax inspired by Clojure's:
 | `:ab`       | keyword                 | `#(+ $ 1)`    | short function       |
 | `;`         | comment                 |               |                      |
 
-## Examples
-
-See the [`examples/`](examples/) directory for all provided example programs.
-
-### Game of Life
+## Example
 
 ```clojure
-; A game of life implementation
+(def langs [{:name "Janet" :host "C"}
+            {:name "Clojure" :host "Java"}])
 
-(def- window
-  (seq [x :range [-1 2]
-        y :range [-1 2]
-          :when (not (and (zero? x) (zero? y)))]
-    [x y]))
+(defn describe [{name :name host :host}]
+  (string name " is implemented in " host))
 
-(defn- neighbors
-  [[x y]]
-  (map (fn [[x1 y1]] [(+ x x1) (+ y y1)]) window))
+; conj returns a new vector and leaves langs unchanged
+(def more (conj langs {:name "Wattle" :host "Zig"}))
 
-(defn tick
-  """
-  Get the next state in the Game of Life
-  """
-  [state]
-  (def cell-set (frequencies state))
-  (def neighbor-set (frequencies (mapcat neighbors state)))
-  (seq [coord :keys neighbor-set
-         :let [ncount (get neighbor-set coord)]
-         :when (or (= ncount 3) (and (get cell-set coord) (= ncount 2)))]
-      coord))
-
-(defn draw
-  """
-  Draw cells in the game of life from (x1, y1) to (x2, y2)
-  """
-  [state x1 y1 x2 y2]
-  (def cellset !{})
-  (each cell state (put! cellset cell true))
-  (loop [x :range [x1 (+ 1 x2)]
-           :after (print)
-         y :range [y1 (+ 1 y2)]]
-    (file/write stdout (if (get cellset [x y]) "X " ". ")))
-  (print))
-
-;
-; Run the example
-;
-
-(var *state* [[0 0] [-1 0] [1 0] [1 1] [0 2]])
-
-(for i 0 20
-  (print "generation " i)
-  (draw *state* -7 -7 7 7)
-  (set *state* (tick *state*)))
+(each lang more
+  (print (describe lang)))
 ```
 
-### TCP Echo Server
-
-```clojure
-(defn handler
-  """
-  Simple handler for connections
-  """
-  [stream]
-  (defer (:close stream)
-    (def id (gensym))
-    (def b !"")
-    (print "Connection " id "!")
-    (while (:read stream 1024 b)
-      (printf " %v -> %v" id b)
-      (:write stream b)
-      (buffer/clear! b))
-    (printf "Done %v!" id)
-    (ev/sleep 0.5)))
-
-(net/server "127.0.0.1" "8000" handler)
+```
+Janet is implemented in C
+Clojure is implemented in Java
+Wattle is implemented in Zig
 ```
 
-### FFI
+The [`examples/`](examples/) directory has more programs, including a
+[Game of Life](examples/life.wattle), a [TCP server](examples/tcpserver.wattle)
+and [calls through the FFI](examples/ffi/).
 
-```clojure
-; Use the FFI to call into the C library - no C compiler required
+## Installing
 
-(ffi/context)
+### Pre-built releases
 
-(ffi/defbind strlen :size [s :string])
+Each [release][releases] has an archive for macOS on aarch64, Linux on x86-64
+and aarch64, and Windows on x86-64. An archive is an installation prefix, with
+the `wattle` executable under `bin/`. [CHANGELOG.md](CHANGELOG.md) lists the
+changes in each release.
 
-(print (strlen "Hello, World!"))
-```
+### Building from source
 
-## Documentation
-
-The `wattle` CLI utility is documented in the `wattle.1` man page, and each
-subcommand in a page of its own, such as `wattle-build.1`. A brief overview of
-the language is in the `wattle.7` man page. All are generated from [Predoc][]
-files that are included in `man/man1/` and `man/man7/`. The files are installed
-to `<prefix>/share/man`.
-
-Documentation about bindings is available in the REPL. Use the `(doc
-symbol-name)` macro to get API documentation for symbols in the core library.
-
-At the REPL
-
-```clojure
-(doc apply)
-```
-
-shows documentation for the `apply` function.
-
-To get a list of all bindings in the default environment, use the
-`(all-bindings)` function. You can also use the `(doc)` macro with no arguments
-if you are in the REPL to show bound symbols.
-
-## Building
-
-Wattle is built with [Zig][]. The version is pinned in
-`.zigversion` and is currently **0.17.1**.
+Wattle is built with [Zig][]. The version is pinned in `.zigversion` and is
+currently **0.17.1**.
 
 ```sh
 git clone https://github.com/pyrmont/wattle
@@ -182,9 +104,14 @@ zig build run          # a REPL
 
 Artifacts are installed under `zig-out`: the executable in `zig-out/bin` and
 the static and shared libraries in `zig-out/lib`. **No header is installed** —
-see "Extending" below.
+see "Extending" below. To try out the language, run `zig-out/bin/wattle` where
+it is.
 
-### Supported platforms
+A build from the repository between releases reports its version as `DEVEL`
+and the abbreviated hash of its commit, such as `DEVEL-3c31337`, with `-dirty`
+appended when a tracked file has uncommitted changes.
+
+#### Supported platforms
 
 | platform         | state                                                          |
 | ---------------- | -------------------------------------------------------------- |
@@ -196,7 +123,7 @@ see "Extending" below.
 | wasm32-wasi      | built and fully tested under wasmtime, without the event loop  |
 | 32-bit (riscv32) | built and tested under QEMU, without the FFI                   |
 
-### Compilation options
+#### Compilation options
 
 Use `zig build --help` to see full list of feature flags. To give you a sense,
 the Wattle runtime can be built without the event loop, networking, the PEG
@@ -211,9 +138,7 @@ zig build -Dtarget=wasm32-wasi            # a WASI command-line build
 Cross-compilation needs no extra toolchain: Zig ships the C headers and linkers
 for every supported target.
 
-### Gotchas
-
-#### musl
+#### musl builds
 
 A [musl][] build is dynamically linked and loads native modules, and needs the
 musl loader (`/lib/ld-musl-<arch>.so.1`, standard on Alpine and installed on
@@ -223,7 +148,7 @@ executable loads no native module at run time, so that build turns dynamic
 modules off, and `-Ddynamic-modules=true` with it is a build error. A native is
 then linked in at build time with `wattleExecutable`; see "Custom builds" below.
 
-#### WASI
+#### WASI builds
 
 The WASI build needs no other flag: the target turns off the event loop, the
 FFI, networking, processes and dynamic modules, and builds single-threaded.
@@ -242,25 +167,6 @@ script, so neither needs a prefix:
 ```sh
 wasmtime run --dir . zig-out/bin/wattle.wasm script.wattle
 ```
-
-`zig build examples/web-repl` builds
-[`examples/web-repl/`](examples/web-repl/), Wattle in a web page: the runtime
-as a WASI reactor, with the page and its JavaScript host, into
-`zig-out/web-repl`.
-
-## Installing
-
-If you just want to try out the language, you don't need to install anything:
-build the tree and run `zig-out/bin/wattle` where it is.
-
-Each [release][releases] has an archive for macOS on aarch64, Linux on x86-64
-and aarch64, and Windows on x86-64. An archive is an installation prefix, with
-the `wattle` executable under `bin/`. [CHANGELOG.md](CHANGELOG.md) lists the
-changes in each release.
-
-A build from the repository between releases reports its version as `DEVEL`
-and the abbreviated hash of its commit, such as `DEVEL-3c31337`, with `-dirty`
-appended when a tracked file has uncommitted changes.
 
 ## Using
 
@@ -357,6 +263,11 @@ architectures.
 [`examples/web-counter/`](examples/web-counter/) and
 [`examples/web-errors/`](examples/web-errors/) are worked examples.
 
+`zig build examples/web-repl` builds
+[`examples/web-repl/`](examples/web-repl/), Wattle in a web page: the runtime
+as a WASI reactor, with the page and its JavaScript host, into
+`zig-out/web-repl`.
+
 ### Custom builds
 
 A project that needs other Zig packages or its own build options can write a
@@ -366,6 +277,32 @@ dependency, or `wattleWeb` for a web program.
 a worked example, and `zig build examples/native-executable` builds
 [`examples/native-executable/`](examples/native-executable/), which links in
 [`examples/native-events/`](examples/native-events/).
+
+## Documentation
+
+Each Wattle release includes a binary, `wattle`, that can be used to run
+programs written in Wattle as well as build compiled programs.
+
+`wattle` is documented in the `wattle.1` man page, and each subcommand is
+documented with a page of its own (e.g.`wattle-build.1`). A brief overview of
+the language is in the `wattle.7` man page. All man pages are generated from
+[Predoc][] files that are included in `man/man1/` and `man/man7/`. The files
+are installed to `<prefix>/share/man`.
+
+Documentation about bindings is available in the REPL. Use the `(doc
+symbol-name)` macro to get API documentation for symbols in the core library.
+
+At the REPL
+
+```clojure
+(doc apply)
+```
+
+shows documentation for the `apply` function.
+
+To get a list of all bindings in the default environment, use the
+`(all-bindings)` function. You can also use the `(doc)` macro with no arguments
+if you are in the REPL to show bound symbols.
 
 ## Miscellaney
 
