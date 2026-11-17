@@ -385,6 +385,9 @@ build` does not build it.
   sets the filetype, the comment string and Lisp indenting, and starts
   Tree-sitter with the grammar above. It also has the settings that vim-sexp
   needs to move by Wattle's delimiters.
+- [`res/editor/textmate/`](res/editor/textmate/README.md) is a TextMate
+  grammar with the scope name `source.wattle`. An editor or highlighter that
+  loads TextMate grammars can use it.
 
 Where there is no Wattle support, a Clojure mode is the closest fit for
 `.wattle` source. Any editor with Zig support will do for runtime development.
