@@ -399,6 +399,7 @@ details.
 
 [Clojure]: https://clojure.org
 [Janet]: https://janet-lang.org
+[musl]: https://musl.libc.org
 [Predoc]: https://pyrmont.github.io/predoc
 [releases]: https://github.com/pyrmont/wattle/releases
 [Zig]: https://ziglang.org
