@@ -1,6 +1,7 @@
 # Resources
 
-Development scripts, tools, benchmarks, shell completions and editor support.
+Example programs, development scripts, tools, benchmarks, shell completions
+and editor support.
 Tools are run manually except for the build integrations below. `zig build`
 compiles and runs `check/wasm_imports.zig` against each wasm32-wasi binary it
 produces. It also compiles `tools/layout.zig` and `tools/pty.zig` into
@@ -16,6 +17,7 @@ produces. It also compiles `tools/layout.zig` and `tools/pty.zig` into
 | `repo/`       | chores about the repository rather than the runtime             |
 | `completion/` | shell completions for the `wattle` command                      |
 | `editor/`     | editor support: Tree-sitter and TextMate grammars, Neovim files |
+| `examples/`   | example programs and worked examples of native and web builds   |
 
 Scripts share `common.wattle`, which locates the repository root as its parent
 directory. It must remain at this level. `STYLE_GUIDE.md` describes comment and
@@ -70,8 +72,8 @@ not fail `--check`; regenerate to refresh it.
 
 `chronology.sh` and `swallowed.wattle` are silent on a clean tree.
 `chronology.sh` looks for migration citations and `-D` options `build.zig` does
-not declare in shipped source (`src/`, `test/`, `examples/`, `build.zig`), and,
-across the whole tree including the top-level documents and `res/`, for the
+not declare in shipped source (`src/`, `test/`, `res/examples/`, `build.zig`),
+and, across the whole tree including the top-level documents and `res/`, for the
 retired names listed in its header. The retired-name check uses a fixed pattern.
 It does not detect other retired paths or check whether every referenced file
 exists.

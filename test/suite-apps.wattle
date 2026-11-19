@@ -87,12 +87,12 @@
 ; A directory that does not exist is read as a Git repository, and the error
 ; carries what git wrote where processes can be run.
 (compif (dyn 'os/execute)
-  (let [message (try (app/install "./examples/app-missing") ([e] e))]
+  (let [message (try (app/install "./res/examples/app-missing") ([e] e))]
     (assert (and (string? message)
                  (string/has-prefix? "git exited with status 128\nfatal: repository" message)
                  (string/find "app-missing" message))
             "a missing directory is reported with the message of git"))
-  (assert-error "a missing directory is an error" (app/install "./examples/app-missing")))
+  (assert-error "a missing directory is an error" (app/install "./res/examples/app-missing")))
 
 (assert (= 2 (length (app/list))) "applications are listed correctly 3")
 
@@ -132,7 +132,7 @@
   (def hello (string root "/bin/hello"))
   (def hello-man (string root "/share/man/man1/hello.1"))
   (assert-no-error "app-program install"
-                   (with-dyns [*err* !""] (app/install "./examples/app-program")))
+                   (with-dyns [*err* !""] (app/install "./res/examples/app-program")))
   (assert (os/stat hello :mode) "a program is installed under bin")
   (assert (os/stat hello-man :mode) "a man page is installed under share/man")
   ; WASI reports no permission bits.
@@ -230,7 +230,7 @@
 ; Try installing an application that is missing a script
 (assert-error-value "application missing script"
                     "application must contain hooks.wattle, hooks/init.wattle or an info.edn that declares :exes"
-                    (app/install "./examples/app-empty"))
+                    (app/install "./res/examples/app-empty"))
 ; A directory that is not an application is refused before its revision is
 ; taken, so a symbolic link in it, which the revision cannot include, does not
 ; change the error.

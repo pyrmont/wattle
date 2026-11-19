@@ -64,12 +64,13 @@
 
   The three source trees, the build script, the two top-level documents and
   the style guide under `res/`. Walking a source tree reaches its own
-  READMEs; `res/` is reached for its READMEs and its style guide alone,
-  because its own sources are Janet."""
+  READMEs; the rest of `res/` is reached for its READMEs and its style guide
+  alone, because its own sources are Wattle."""
   []
-  (array/concat! !["src" "test" "examples" "build.zig"
+  (array/concat! !["src" "test" "res/examples" "build.zig"
                   "AGENTS.md" "res/STYLE_GUIDE.md"]
-                (readmes-under "res")))
+                (filter |(not (string/has-prefix? "res/examples/" $))
+                        (readmes-under "res"))))
 
 (defn- extractable? [path]
   (or (string/has-suffix? ".zig" path) (string/has-suffix? ".md" path)))

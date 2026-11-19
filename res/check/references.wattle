@@ -30,8 +30,8 @@
 ;
 ; ## What counts as resolved
 ;
-; **The name is spelled somewhere in code** -- in `src/`, `test/`, `examples/`
-; or `build.zig`, with comments and string literals stripped by
+; **The name is spelled somewhere in code** -- in `src/`, `test/`,
+; `res/examples/` or `build.zig`, with comments and string literals stripped by
 ; `tools/strip-comments`. Deliberately loose about *how* the name is reached,
 ; and loose in the same direction as `orphans.wattle`: a name is resolved if any
 ; file writes it. A loose test gives a small must-be-empty class and no false
@@ -96,7 +96,7 @@
 ;
 ; So the population is both. The site column carries the directory, and the
 ; header counts each separately so that finishing `src/` is still visible when
-; `test/` has not started. `examples/` and `build.zig` stay out: they are a
+; `test/` has not started. `res/examples/` and `build.zig` stay out: they are a
 ; handful of files and neither is a place a reader learns the runtime from.
 ;   unresolved an unresolved camelCase name. Each row is a comment naming a
 ;              declaration that is not there. **The gate is that no row is
@@ -177,7 +177,7 @@
   (def code !"")
   (each path (array/concat! ![] (tools/src-files)
                            (tools/zig-files "test")
-                           (tools/zig-files "examples")
+                           (tools/zig-files "res/examples")
                            !["build.zig"])
     (buffer/push! code (tools/strip-comments (slurp path) false))
     (buffer/push! code "\n"))

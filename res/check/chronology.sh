@@ -11,7 +11,7 @@
 # under `port/`; the section banners of the form `-- what X.zig was`; and this
 # project's own retired header. Each is prose that was true while something was
 # being moved and is false or meaningless now that it has been. Asked of the
-# **shipped source**: `src`, `test`, `examples`, `build.zig`.
+# **shipped source**: `src`, `test`, `res/examples`, `build.zig`.
 #
 # It is *not* asked of `res/`, and that is a decision rather than an omission.
 # An instrument's header that
@@ -52,8 +52,8 @@
 # `res/testing/mutation.md` are exactly that, and they stay out.
 #
 # Both questions skip `.zig-cache`, `zig-out` and `zig-pkg`.
-# `examples/native-consumer` builds a cache of its own inside the tree, and a
-# compiler cache is full of `std` file names that match either pattern.
+# `res/examples/native-consumer` builds a cache of its own inside the tree, and
+# a compiler cache is full of `std` file names that match either pattern.
 # `zig-pkg` is where that build keeps a copy of each package it depends on,
 # which is not this tree's source.
 #
@@ -105,7 +105,7 @@ status=0
 
 if grep -rnE 'Phase [0-9]+|increment [0-9]+[a-z]?|Part [0-9]+[a-z]?|batch [0-9]|SPIKE-?[0-9]+|PLAN\.md|NAMESPACES\.md|phase_1[0-9]\.md|the hinge|selector|src/core/|util\.h|what `[a-z_]+\.zig` was|[a-z_]+_(core|surface|files|time|stat|loop|stream|sockets|pretty|access|alloc|symbol|array|table|frames|flags)\.zig' \
     --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
-    src test examples build.zig |
+    src test res/examples build.zig |
   grep -vE '^[^:]+:[0-9]+:.*(test/[a-z_0-9]+\.zig|@import\("[a-z_0-9]+\.zig"\)|host_stat\.zig|trace_frames\.zig)'
 then
   echo "chronology.sh: the lines above cite the migration rather than the code." >&2
@@ -116,7 +116,7 @@ fi
 
 if grep -rnE '(^|[^/a-z_])types\.zig|stretchy\.zig|NAMESPACES\.md|src/zig' \
     --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
-    src test examples build.zig res AGENTS.md README.md \
+    src test build.zig res AGENTS.md README.md \
     2>/dev/null |
   grep -vE '\.zig-cache|ffi_types\.zig|^src/runtime/ffi/|^res/check/chronology\.sh' |
   grep -vE 'does not exist|There is no'
@@ -143,7 +143,7 @@ export live_options
 retired_options=$(
   grep -rnE --exclude-dir=.zig-cache --exclude-dir=zig-out --exclude-dir=zig-pkg \
       -e '-D[a-z0-9]' \
-      src test examples build.zig |
+      src test res/examples build.zig |
   grep -vE 'does not exist|There is no' |
   awk '
     BEGIN {

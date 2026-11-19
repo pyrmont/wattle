@@ -4,7 +4,7 @@ How the source under `src/` is documented. `AGENTS.md` says how a pass over a
 file is verified; this file says what the result looks like.
 
 The sentence rules, and the rule that a block is dry, also govern the
-READMEs under `src/`, `test/`, `res/` and `examples/`, and the example
+READMEs under `src/`, `test/` and `res/`, and the example
 sources. The header and layout rules are for Zig source. A pass over
 a document changes its shape and not its facts: every count, measurement,
 citation and decision stays, and a reason for a decision is a fact. What a
@@ -68,7 +68,7 @@ what the original did and what this code does, and stops. It names the
 original's behaviour and not its author's intent ("the C original's
 behaviour", never "the C original's choice"), and it does not say that the
 behaviour "is kept": the code beneath is the record of that.
-`examples/native-abstract/numarray.zig` `inRange` and `numArrayPut`.
+`res/examples/native-abstract/numarray.zig` `inRange` and `numArrayPut`.
 
 **Siblings repeat rather than cross-reference.** Every `get*` repeats the
 same `argv` sentence verbatim. A reader lands on one declaration and reads
@@ -181,7 +181,7 @@ is about one call goes there rather than in the `///` block, so the call and
 its reason are read together; the `///` block keeps the summary, the
 parameters, the failure sentence and the calling facts. A `//` line never
 points at the header or another block for its content.
-`examples/native-abstract/numarray.zig` `numArrayUnmarshal`: the reason the
+`res/examples/native-abstract/numarray.zig` `numArrayUnmarshal`: the reason the
 elements are allocated before `wattle.pullAbstract` sits above the
 allocation.
 
@@ -309,9 +309,9 @@ describes". `abi.zig` `AbstractType`: "`module.define` returns",
 See the open question on `module.zig`'s own spelling.
 
 **A `///` block may point at a worked example by its path under
-`examples/`,** in the cross-reference position. `module.zig` `alloc`: "See
-`examples/native-abstract/numarray.zig` for a worked instance." `abi.zig` `Env`:
-"See `examples/native-abstract/numarray.zig`."
+`res/examples/`,** in the cross-reference position. `module.zig` `alloc`: "See
+`res/examples/native-abstract/numarray.zig` for a worked instance." `abi.zig`
+`Env`: "See `res/examples/native-abstract/numarray.zig`."
 
 **Spelling is British.** `module.zig` line 71: "marshalling". `abi.zig` line
 122: "recognise".
@@ -334,10 +334,10 @@ and "a Janet word" a name in the language.
 
 ## Rules read off the examples and the documents
 
-The rules below were read off the pass of 2026-09-07 over the example
-sources, the READMEs and the since-retired design document, and off the
-user's own edit to
-`examples/native-abstract/numarray.zig`. Each cites the site it was read from.
+The rules below were read off the pass of 2026-09-07 over the example sources,
+the READMEs and the since-retired design document, and off the user's own edit
+to `res/examples/native-abstract/numarray.zig`. Each cites the site it was read
+from.
 
 **The header says how the file is reached before its first topic, and does
 not argue for it.** The sentence naming what builds, loads and runs the file
@@ -400,7 +400,7 @@ nfunction's parameters are `argv` slots by number ("`argv` slot 0 is the
 numarray and slot 1 is the factor"), and its failure sentence lists the
 arity and each slot's type. `numarray.zig` `scale`, `numArrayGc`.
 
-**In a file under `examples/`, a name reached through `@import("wattle")` is
+**In a file under `res/examples/`, a name reached through `@import("wattle")` is
 written `wattle.name`.** The alias a reader writes is the author's alias. A
 declaration in the same file stays bare, and a callback slot named as a
 field (`gc`, `put`) stays bare. `numarray.zig` `new`: "`wattle.new` returns
@@ -434,16 +434,18 @@ document: "The tag's type" over "The tag is an `enum` rather than a `u4`."
 **In a Markdown document, a bold lead-in becomes a heading where it opens a
 topic and a plain sentence where it does not; italics define a term and do
 nothing else; a table row is exempt from the 80-column rule and its content
-follows every other rule; a fenced block is code and is not touched, except
-that a `//` comment inside a Zig fence is prose.** `examples/native-events/README.md`
-for the headings; `examples/native-abstract/README.md` for the fence comment.
+follows every other rule; a fenced block is code and is not touched, except that
+a `//` comment inside a Zig fence is prose.**
+`res/examples/native-events/README.md` for the headings;
+`res/examples/native-abstract/README.md` for the fence comment.
 
 **The vocabulary rule's list of words that personify also has:** "buy" and
 "earn" (write "gain", "secure" or "justify"), "hand back" and "hand over"
 (write "return" or "pass"), "answer" (write "return" or "report"), "wear",
 "dissolve", "knock", "bite" and "decide" of anything but a person. A
 metaphor that is not a personification goes too: "a knot to untie", "the
-other side of the same wall", "rotted away". `examples/native-consumer/build.zig`.
+other side of the same wall", "rotted away".
+`res/examples/native-consumer/build.zig`.
 
 **Only a person decides.** A document or a section "records the decision
 that". A configuration, an option, a rule or a constraint "determines",
@@ -451,7 +453,8 @@ that". A configuration, an option, a rule or a constraint "determines",
 it checks, points, resolves at compile time, propagates or flattens. A
 passive ("how nullability is decided") may stand where no actor is named,
 and "wanted" in a passive becomes "needed" or "required".
-`examples/native-abstract/README.md`: "`config` determines `Value`'s layout".
+`res/examples/native-abstract/README.md`: "`config` determines `Value`'s
+layout".
 
 ## Open questions
 

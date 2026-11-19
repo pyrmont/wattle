@@ -1,0 +1,13 @@
+; The debugger. `myfn` calls `debug`, and `debug/fbreak` sets a breakpoint
+; at its fourth instruction, so a call to `myfn` enters the debug REPL twice.
+; `(quit)` leaves the debug REPL and resumes `myfn`. Start the REPL with the
+; debug flag and this file loaded, then call `(myfn)`:
+;
+;     wattle run -d -l ./res/examples/debug -r
+
+(defn myfn
+  []
+  (debug)
+  (for i 0 10 (print i)))
+
+(debug/fbreak myfn 3)

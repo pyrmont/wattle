@@ -400,7 +400,7 @@
 
   `.git`, `.zig-cache` and `zig-out` are excluded from the copy -- the rest of
   the repository is about 13MB and the build needs all of it, because a build
-  reads `build.zig`, `test/` and `examples/` as well as `src/`."""
+  reads `build.zig`, `test/` and `res/examples/` as well as `src/`."""
   []
   (tools/rm-rf workdir)
   (def copy (tools/sh (string "mkdir -p " workdir " && tar -c "

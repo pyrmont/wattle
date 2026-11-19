@@ -22,7 +22,7 @@
 ;
 ; ## What it counts as a reference
 ;
-; The declared name, spelled anywhere in `src/`, `test/`, `examples/` or
+; The declared name, spelled anywhere in `src/`, `test/`, `res/examples/` or
 ; `build.zig` other than at its own declaration, in code rather than in a
 ; comment or a string literal. That is deliberately loose about *how* the name
 ; is reached: `@import` qualified, bare inside its own file, in an `@export`, in
@@ -111,7 +111,7 @@
   (each path (array/concat! ![] (tools/src-files)
                            (tools/zig-files "src/client")
                            (tools/zig-files "test")
-                           (tools/zig-files "examples")
+                           (tools/zig-files "res/examples")
                            !["build.zig"])
     ; `keep-literals` false: a name inside a docstring, a registration string
     ; or an `@import` path is prose or a path rather than a use of the

@@ -102,8 +102,8 @@ editor.
 
 The directory layout does not enforce import restrictions. Both package roots
 are at `src/`, so relative imports can cross between directories.
-`api/raise.zig`, for example, imports runtime files in a branch excluded
-from native module builds. `examples/native-consumer` checks the separation by
+`api/raise.zig`, for example, imports runtime files in a branch excluded from
+native module builds. `res/examples/native-consumer` checks the separation by
 consuming the package through a path dependency, as an external module would.
 Compiler enforcement would require a separate `api` build module with a named
 import of the runtime. The current build does not use that structure.
@@ -211,7 +211,7 @@ config  ->  repr  ->  abi, constants;  host  ->  cabi  ->  root;  lexicon  ->  r
 `build.zig` compiles this graph for the runtime, the host bootstrap
 generator, `test/contracts.zig`, `test/fuzz.zig`, the module-error fixtures and
 `wattle-runtime-test` rooted at `root.zig`. Cross builds also compile it
-for `zig build examples/native-executable`. That compilation produces a
+for `zig build res/examples/native-executable`. That compilation produces a
 host client with the target's features to generate the image. All compilations
 use the same modules, so test roots use the runtime's types and constants.
 
@@ -789,14 +789,14 @@ The `test` step runs all steps under `test/`:
 | `test/runtime`    | in-file `test` blocks rooted at `root.zig` |
 | `test/lineedit`   | the line editor's in-file `test` blocks    |
 
-Example build steps are under `examples/`:
+Example build steps are under `res/examples/`:
 
-| step                         | what it builds                                                   |
-| ---------------------------- | ---------------------------------------------------------------- |
-| `examples`                   | all examples below                                               |
-| `examples/native-executable` | `examples/native-executable` as `<prefix>/bin/native-executable` |
-| `examples/native-consumer`   | `examples/native-consumer`, a consumer outside the tree          |
-| `examples/web-repl`          | `examples/web-repl`, a WASI reactor, as `<prefix>/web-repl/`     |
+| step                             | what it builds                                                       |
+| -------------------------------- | -------------------------------------------------------------------- |
+| `examples`                       | all examples below                                                   |
+| `res/examples/native-executable` | `res/examples/native-executable` as `<prefix>/bin/native-executable` |
+| `res/examples/native-consumer`   | `res/examples/native-consumer`, a consumer outside the tree          |
+| `res/examples/web-repl`          | `res/examples/web-repl`, a WASI reactor, as `<prefix>/web-repl/`     |
 
 `zig build test` runs the contracts, both sets of in-file `test` blocks, fuzz
 corpora, module-error fixtures, CLI checks and suites. Native builds also
@@ -804,7 +804,7 @@ run `native-executable`.
 
 `test/runtime` and `test/lineedit` each print `All N tests passed.` Add
 `--fuzz` to `zig build fuzz` for a fuzzing campaign. `native-executable` builds
-`examples/native-executable/main.wattle` with `examples/native-events`
+`res/examples/native-executable/main.wattle` with `res/examples/native-events`
 linked in.
 
 `-Dinstall-tests=true` installs the contract driver on every target except wasm,
@@ -921,13 +921,13 @@ existing instance can read new input.
 `:web` artifact in `info.edn`. It disables `docstrings` and `sourcemaps` in the
 host dependency to omit both from the program's image.
 
-`-Dwasm-image=true` applies only to `zig build examples/web-repl`. It excludes
-`runtime/compiler.zig`, `runtime/compiler/` and `runtime/parser.zig` from the
-web reactor, and sets `-Ddocstrings=false` and `-Dsourcemaps=false`. The reactor
-exports `wattle_web_run_image` in place of `wattle_web_eval`. Like `wattle -i`,
-it unmarshals an image produced by `make-image` and calls the image's `main`.
-The step installs the binary and `wasi.js`. It omits the page because the page
-submits source for evaluation.
+`-Dwasm-image=true` applies only to `zig build res/examples/web-repl`. It
+excludes `runtime/compiler.zig`, `runtime/compiler/` and `runtime/parser.zig`
+from the web reactor, and sets `-Ddocstrings=false` and `-Dsourcemaps=false`.
+The reactor exports `wattle_web_run_image` in place of `wattle_web_eval`. Like
+`wattle -i`, it unmarshals an image produced by `make-image` and calls the
+image's `main`. The step installs the binary and `wasi.js`. It omits the page
+because the page submits source for evaluation.
 
 The image generator includes the compiler to compile `boot.wattle`.
 `bootConfig` enables `Config.compiler`, so the core image includes every

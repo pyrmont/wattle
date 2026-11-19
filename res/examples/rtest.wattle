@@ -1,0 +1,14 @@
+; Counts how many of a million `math/random` values fall in each hundredth of
+; the range from 0 to 1, and prints the hundred counts.
+;
+;     wattle res/examples/rtest.wattle
+
+(def counts (seq [_ :range [0 100]] 0))
+
+(repeat 1000000
+  (let [x (math/random)
+        intrange (math/floor (* 100 x))
+        oldcount (counts intrange)]
+    (put! counts intrange (if oldcount (+ 1 oldcount) 1))))
+
+(pp counts)

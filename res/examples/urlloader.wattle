@@ -1,0 +1,31 @@
+; An extension of the module system that imports a file from a URL. The
+; loader runs curl to fetch the file. To try it, serve this directory with the
+; static file server in another shell:
+;
+;     wattle res/examples/http-server.wattle 127.0.0.1 8000 res/examples
+;
+; Then start the REPL with this module loaded:
+;
+;     wattle run -l ./res/examples/urlloader -r
+;
+; and import a file from the server:
+;
+;     (import http://127.0.0.1:8000/colors.wattle :as c)
+;     (print (c/color :green "Hello!"))
+
+(defn- load-url
+  [url args]
+  (def p (os/spawn ["curl" url "-s"] :p {:out :pipe}))
+  (def res (dofile (p :out) :source url |args))
+  (:wait p)
+  res)
+
+(defn- check-http-url
+  [path]
+  (if (or (string/has-prefix? "http://" path)
+          (string/has-prefix? "https://" path))
+    path))
+
+; Add the module loader and path tuple to right places
+(array/push! module/paths [check-http-url :wattle-http])
+(put! module/loaders :wattle-http load-url)

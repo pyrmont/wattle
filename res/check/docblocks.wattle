@@ -98,7 +98,7 @@
 
   (def paths (array/concat! ![] (tools/src-files)
                            (tools/zig-files "test")
-                           (tools/zig-files "examples")))
+                           (tools/zig-files "res/examples")))
   (def rows ![])
   (var runs 0)
   (each path paths

@@ -1,0 +1,5 @@
+; Prints `hello, world!`.
+;
+;     wattle res/examples/hello.wattle
+
+(print "hello, world!")

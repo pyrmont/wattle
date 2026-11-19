@@ -332,7 +332,8 @@ pub const Dictionary = extern struct {
 ///
 /// This type is an argument passed to `module.nfuns` and `module.def`,
 /// typically within a function (traditionally called `defs`) that is passed as
-/// an argument to `module.entry`. See `examples/native-abstract/numarray.zig`.
+/// an argument to `module.entry`. See
+/// `res/examples/native-abstract/numarray.zig`.
 pub const Env = opaque {};
 
 /// The status of a fiber.

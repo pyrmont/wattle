@@ -76,9 +76,10 @@ Clojure is implemented in Java
 Wattle is implemented in Zig
 ```
 
-The [`examples/`](examples/) directory has more programs, including a
-[Game of Life](examples/life.wattle), a [TCP server](examples/tcpserver.wattle)
-and [calls through the FFI](examples/ffi/).
+The [`res/examples/`](res/examples/) directory has more programs, including a
+[Game of Life](res/examples/life.wattle), a
+[TCP server](res/examples/tcpserver.wattle) and
+[calls through the FFI](res/examples/ffi/).
 
 ## Installing
 
@@ -216,7 +217,8 @@ Individual scripts can be run with `wattle program.wattle`.
 
 Wattle can be extended with _native modules_ written in Zig. `src/module.zig`
 describes the interface and
-[`examples/native-abstract/`](examples/native-abstract/) is a worked example.
+[`res/examples/native-abstract/`](res/examples/native-abstract/) is a worked
+example.
 
 A module records the interface it was built against as a fingerprint, and the
 loader refuses a module if its fingerprint does not match the runtime's. The
@@ -245,9 +247,9 @@ native modules declared for it into a standalone executable:
 wattle build exe --release small
 ```
 
-[`examples/native-consumer/`](examples/native-consumer/) is a worked example. A
-standalone executable can be cross-compiled by the Zig compiler for other
-architectures.
+[`res/examples/native-consumer/`](res/examples/native-consumer/) is a worked
+example. A standalone executable can be cross-compiled by the Zig compiler for
+other architectures.
 
 ### Wasm binaries
 
@@ -259,13 +261,13 @@ architectures.
 {:exes [{:type :web :name "hello" :entry "main.wattle"}]}
 ```
 
-[`examples/web-greeter/`](examples/web-greeter/),
-[`examples/web-counter/`](examples/web-counter/) and
-[`examples/web-errors/`](examples/web-errors/) are worked examples.
+[`res/examples/web-greeter/`](res/examples/web-greeter/),
+[`res/examples/web-counter/`](res/examples/web-counter/) and
+[`res/examples/web-errors/`](res/examples/web-errors/) are worked examples.
 
-`zig build examples/web-repl` builds
-[`examples/web-repl/`](examples/web-repl/), Wattle in a web page: the runtime
-as a WASI reactor, with the page and its JavaScript host, into
+`zig build res/examples/web-repl` builds
+[`res/examples/web-repl/`](res/examples/web-repl/), Wattle in a web page: the
+runtime as a WASI reactor, with the page and its JavaScript host, into
 `zig-out/web-repl`.
 
 ### Custom builds
@@ -273,10 +275,10 @@ as a WASI reactor, with the page and its JavaScript host, into
 A project that needs other Zig packages or its own build options can write a
 `build.zig` that calls the `wattleExecutable` function of the `wattle`
 dependency, or `wattleWeb` for a web program.
-[`examples/native-consumer/build.zig`](examples/native-consumer/build.zig) is
-a worked example, and `zig build examples/native-executable` builds
-[`examples/native-executable/`](examples/native-executable/), which links in
-[`examples/native-events/`](examples/native-events/).
+[`res/examples/native-consumer/build.zig`](res/examples/native-consumer/build.zig)
+is a worked example, and `zig build res/examples/native-executable` builds
+[`res/examples/native-executable/`](res/examples/native-executable/), which
+links in [`res/examples/native-events/`](res/examples/native-events/).
 
 ## Documentation
 
