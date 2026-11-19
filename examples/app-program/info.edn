@@ -1,1 +1,9 @@
-{:group "org.wattle.examples" :name "app-program"}
+{:name "app-program"
+ :group "org.wattle.examples"
+ :exes [{:type :source
+         :name "hello"
+         :entry "main.wattle"
+         :files ["main.wattle"]}]
+ :docs [{:type :man
+         :files ["man/hello.1"]
+         :for ["hello"]}]}

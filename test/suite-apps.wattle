@@ -52,102 +52,128 @@
   (setdyn *out* !""))
 (assert (empty? (app/list)) "initial app/list")
 
-; Install app-dep1 and app-dep2.
-(assert-no-error "app-dep2"
-                 (with-dyns [*err* !""] (app/install "./examples/app-dep2")))
+; Writes an application named name to a directory beside the prefix, and
+; returns the directory. The application script is at script, a path under the
+; directory, and its install hook adds a program named name. extra is appended
+; to the script.
+(defn- make-hook-app
+  [name script extra]
+  (def dir (string prefix "-" name))
+  (rmrf dir)
+  (assert (os/mkdir dir))
+  (when (string/has-prefix? "hooks/" script)
+    (assert (os/mkdir (string dir "/hooks"))))
+  (spit (string dir "/info.edn")
+        (string/format "%m" {:group "org.wattle.tests" :name name}))
+  (spit (string dir "/" name) (string "#!/bin/sh\necho " name "\n"))
+  (spit (string dir "/" script)
+        (string "(defn install [manifest &] (app/add-bin manifest \"" name "\"))\n"
+                extra))
+  dir)
+
+; Install two applications.
+(def app-a (make-hook-app "app-a" "hooks/init.wattle" ""))
+(def app-b (make-hook-app "app-b" "hooks/init.wattle" ""))
+(assert-no-error "app-b" (with-dyns [*err* !""] (app/install app-b)))
 (assert (= 1 (length (app/list))))
-(assert-no-error "app-dep1" (with-dyns [*err* !""] (app/install "./examples/app-dep1")))
+(assert-no-error "app-a" (with-dyns [*err* !""] (app/install app-a)))
 (assert (= 2 (length (app/list))))
 
-(assert-no-error "app-dep2 upgrade" (with-dyns [*err* !""] (app/upgrade "app-dep2")))
-(assert-no-error "app-dep1 upgrade" (with-dyns [*err* !""] (app/upgrade "app-dep1")))
+(assert-no-error "app-b upgrade" (with-dyns [*err* !""] (app/upgrade "app-b")))
+(assert-no-error "app-a upgrade" (with-dyns [*err* !""] (app/upgrade "app-a")))
 
 (assert (= 2 (length (app/list))) "applications are listed correctly 1")
 
 ; A directory that does not exist is read as a Git repository, and the error
 ; carries what git wrote where processes can be run.
 (compif (dyn 'os/execute)
-  (let [message (try (app/install "./examples/app-dep111111") ([e] e))]
+  (let [message (try (app/install "./examples/app-missing") ([e] e))]
     (assert (and (string? message)
                  (string/has-prefix? "git exited with status 128\nfatal: repository" message)
-                 (string/find "app-dep111111" message))
+                 (string/find "app-missing" message))
             "a missing directory is reported with the message of git"))
-  (assert-error "a missing directory is an error" (app/install "./examples/app-dep111111")))
+  (assert-error "a missing directory is an error" (app/install "./examples/app-missing")))
 
 (assert (= 2 (length (app/list))) "applications are listed correctly 3")
 
 ; The prefix is a root: programs go to bin under it.
 (def root (app-rpath prefix))
-(assert (os/stat (string root "/bin/app-dep1") :mode)
+(assert (os/stat (string root "/bin/app-a") :mode)
         "a program is installed under bin")
-(assert (nil? (os/stat (string root "/app-dep1") :mode))
+(assert (nil? (os/stat (string root "/app-a") :mode))
         "a program is not installed in the root")
 
 ; Check application script aliases: hooks.wattle in place of hooks/init.wattle.
-(assert-no-error "app-alias install" (with-dyns [*err* !""] (app/install "./examples/app-alias")))
+(def app-alias (make-hook-app "app-alias" "hooks.wattle" ""))
+(assert-no-error "app-alias install" (with-dyns [*err* !""] (app/install app-alias)))
 (assert (= 3 (length (app/list))) "applications are listed correctly 5")
 (assert (os/stat (string root "/bin/app-alias") :mode) "a hooks.wattle script runs")
 (assert-no-error "aliases remove" (app/remove "app-alias"))
 (assert (nil? (os/stat (string root "/bin/app-alias") :mode)) "removing removes the program")
+(rmrf app-alias)
 
 ; With no name, upgrade installs every application again.
 (assert-no-error "upgrade all" (with-dyns [*err* !""] (app/upgrade)))
 (assert (= 2 (length (app/list))) "upgrading all keeps the applications")
 
 ; Remove each application in turn.
-(assert-no-error "remove app-dep1" (app/remove "app-dep1"))
+(assert-no-error "remove app-a" (app/remove "app-a"))
 (assert (= 1 (length (app/list))) "applications are listed correctly 6")
-(assert-no-error "remove app-dep2" (app/remove "app-dep2"))
+(assert-no-error "remove app-b" (app/remove "app-b"))
+(rmrf app-b)
 
 ; Now check application listing is again empty
 (assert (= 0 (length (app/list))) "applications are listed correctly 7")
 
 ; Programs and man pages go to bin and share/man under the root. Upgrading goes
-; through app-pack, which recreates each kind.
-(def hello (string root "/bin/hello"))
-(def hello-man (string root "/share/man/man1/hello.1"))
-(assert-no-error "app-program install"
-                 (with-dyns [*err* !""] (app/install "./examples/app-program")))
-(assert (os/stat hello :mode) "a program is installed under bin")
-(assert (os/stat hello-man :mode) "a man page is installed under share/man")
-; WASI and Windows report no permission bits.
-(unless (or (= :windows (os/which)) (= :wasi (os/which)))
-  (assert (string/has-prefix? "rwx" (os/stat hello :permissions))
-          "a program is executable"))
-(assert (= "app-program" (app/whois hello)) "app/whois finds a program")
-(assert-no-error "app-program upgrade"
-                 (with-dyns [*err* !""] (app/upgrade "app-program")))
-(assert (and (os/stat hello :mode) (os/stat hello-man :mode))
-        "upgrading recreates programs and man pages")
-(assert-no-error "app-program remove" (app/remove "app-program"))
-(assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode)))
-        "removing removes programs and man pages")
+; through app-pack, which recreates each kind. Source programs are not
+; installed on Windows.
+(unless (= :windows (os/which))
+  (def hello (string root "/bin/hello"))
+  (def hello-man (string root "/share/man/man1/hello.1"))
+  (assert-no-error "app-program install"
+                   (with-dyns [*err* !""] (app/install "./examples/app-program")))
+  (assert (os/stat hello :mode) "a program is installed under bin")
+  (assert (os/stat hello-man :mode) "a man page is installed under share/man")
+  ; WASI reports no permission bits.
+  (unless (= :wasi (os/which))
+    (assert (string/has-prefix? "rwx" (os/stat hello :permissions))
+            "a program is executable"))
+  (assert (= "app-program" (app/whois hello)) "app/whois finds a program")
+  (assert-no-error "app-program upgrade"
+                   (with-dyns [*err* !""] (app/upgrade "app-program")))
+  (assert (and (os/stat hello :mode) (os/stat hello-man :mode))
+          "upgrading recreates programs and man pages")
+  (assert-no-error "app-program remove" (app/remove "app-program"))
+  (assert (and (nil? (os/stat hello :mode)) (nil? (os/stat hello-man :mode)))
+          "removing removes programs and man pages"))
 
 ;; Placement: an application is in apps/<group>/<name> under lib/wattle, and the
 ; group directory goes with its last application.
-(assert-no-error "app-dep1 install for placement" (with-dyns [*err* !""] (app/install "./examples/app-dep1")))
-(def dep1-dir (string root "/lib/wattle/apps/org.wattle.examples/app-dep1"))
-(assert (os/stat (string dep1-dir "/manifest.edn") :mode) "the manifest is in the application directory")
-(assert (os/stat (string dep1-dir "/info.edn") :mode) "the info file is copied into the application directory")
-(assert (os/stat (string dep1-dir "/hooks/init.wattle") :mode) "the hooks directory is copied")
-(assert (= "org.wattle.examples" (get (app/manifest "app-dep1") :group)) "the manifest records the group")
-(assert (app/installed? "app-dep1") "an installed application is found by its name")
+(assert-no-error "app-a install for placement" (with-dyns [*err* !""] (app/install app-a)))
+(def app-a-dir (string root "/lib/wattle/apps/org.wattle.tests/app-a"))
+(assert (os/stat (string app-a-dir "/manifest.edn") :mode) "the manifest is in the application directory")
+(assert (os/stat (string app-a-dir "/info.edn") :mode) "the info file is copied into the application directory")
+(assert (os/stat (string app-a-dir "/hooks/init.wattle") :mode) "the hooks directory is copied")
+(assert (= "org.wattle.tests" (get (app/manifest "app-a") :group)) "the manifest records the group")
+(assert (app/installed? "app-a") "an installed application is found by its name")
 (assert (nil? (os/stat (string root "/lib/wattle/pkg") :mode)) "nothing is installed in lib/wattle/pkg")
 
 ; A name is unique across groups.
 (let [other (string prefix "-group")]
   (rmrf other)
   (assert (os/mkdir other))
-  (spit (string other "/info.edn") "{:group \"org.wattle.other\" :name \"app-dep1\" :exes []}")
+  (spit (string other "/info.edn") "{:group \"org.wattle.other\" :name \"app-a\" :exes []}")
   (assert-error-value "the same name in another group"
-                      "application \"app-dep1\" is already installed"
+                      "application \"app-a\" is already installed"
                       (app/install other))
-  (assert (and (= 1 (length (app/list))) (= "app-dep1" (first (app/list)))) "a refused install adds nothing")
+  (assert (and (= 1 (length (app/list))) (= "app-a" (first (app/list)))) "a refused install adds nothing")
   (rmrf other))
-(assert-no-error "app-dep1 remove for placement" (app/remove "app-dep1"))
-(assert (nil? (os/stat (string root "/lib/wattle/apps/org.wattle.examples") :mode))
+(assert-no-error "app-a remove for placement" (app/remove "app-a"))
+(assert (nil? (os/stat (string root "/lib/wattle/apps/org.wattle.tests") :mode))
         "the group directory is removed with its last application")
-(assert (not (app/installed? "app-dep1")) "a removed application is not installed")
+(assert (not (app/installed? "app-a")) "a removed application is not installed")
+(rmrf app-a)
 
 ; The group is required, and the group and the name are each one directory name.
 (let [bad (string prefix "-bad")]
@@ -221,9 +247,12 @@
 (assert (= 0 (length (app/list))) "check failure 1")
 
 ; Try installing an application that fails check
+(def app-check (make-hook-app "app-check" "hooks.wattle"
+                              "(defn check [&] (error \"Check failed!\"))\n"))
 (assert-error-value "application check hook fails"
                     "Check failed!"
-                    (app/install "./examples/app-check" :check true))
+                    (app/install app-check :check true))
+(rmrf app-check)
 (assert (= 0 (length (app/list))) "check failure 0")
 (assert (= 0 (length (app/list))) "check failure 1")
 

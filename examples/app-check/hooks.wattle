@@ -1,7 +1,0 @@
-(defn install
-  [manifest &]
-  (app/add-bin manifest "app-check"))
-
-(defn check
-  [&]
-  (error "Check failed!"))

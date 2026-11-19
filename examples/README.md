@@ -69,17 +69,10 @@ client.
 
 ## Applications
 
-Each directory is an application for `wattle apps install`, and
-`test/suite-apps.wattle` installs each one.
-
-| example                       | what it shows                                  |
-| ----------------------------- | ---------------------------------------------- |
-| [`app-program`](app-program/) | installing a program and a manual page         |
-| [`app-alias`](app-alias/)     | `hooks.wattle` in place of `hooks/init.wattle` |
-| [`app-check`](app-check/)     | a `check` hook that fails                      |
-| [`app-empty`](app-empty/)     | a directory that is not an application         |
-| [`app-dep1`](app-dep1/)       | one of two applications installed together     |
-| [`app-dep2`](app-dep2/)       | the other of the two                           |
+| example                       | what it shows                                       |
+| ----------------------------- | --------------------------------------------------- |
+| [`app-program`](app-program/) | an application that installs a program and its page |
+| [`app-empty`](app-empty/)     | a directory that is not an application              |
 
 ## Native modules
 

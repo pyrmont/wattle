@@ -1,3 +1,0 @@
-(defn install
-  [manifest &]
-  (app/add-bin manifest "app-dep2"))
