@@ -1,2 +1,7 @@
+; Reads lines from standard input until end of file, and prints each line
+; after `line: `.
+;
+;     wattle examples/lineloop.wattle < file
+
 (while (not (empty? (def line (getline))))
   (prin "line: " line))

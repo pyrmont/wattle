@@ -1,4 +1,7 @@
-; Example of dst bytecode assembly
+; A function written in bytecode assembly. `asm` assembles a recursive
+; Fibonacci function, and the script prints its first ten values.
+;
+;     wattle examples/assembly.wattle
 
 ; Fibonacci sequence, implemented with naive recursion.
 (def fibasm
@@ -17,8 +20,6 @@
                   :done
                   (ret 0)          ; return $0
 ]}))
-
-; Test it
 
 (defn testn
   [n]

@@ -1,4 +1,7 @@
-; Return an array of primes. This is a trivial and extremely naive algorithm.
+; Prints the primes below 100. Each number is divided by every prime found
+; before it.
+;
+;     wattle examples/primes.wattle
 
 (defn primes
   "Returns a list of prime numbers less than n."

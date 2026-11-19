@@ -1,4 +1,7 @@
-; Ansi terminal colors
+; ANSI terminal colours. `color` wraps a string in the escape codes for a
+; colour, and the script prints the name of each colour in that colour.
+;
+;     wattle examples/colors.wattle
 
 (def- colormap
   {:black 30

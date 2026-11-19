@@ -1,3 +1,8 @@
+; Subprocesses run from fibers. An `os/execute` call suspends only the fiber
+; that makes it, so the three calls in each group run at the same time.
+;
+;     wattle examples/async-execute.wattle
+
 (defn dowork [name n]
   (print name " starting work...")
   (os/execute [(dyn :executable) "-e" (string "(os/sleep " n ")")] :p)

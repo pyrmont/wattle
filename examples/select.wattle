@@ -1,3 +1,10 @@
+; `ev/rselect` over five channels. Five writers each give three items to a
+; channel of their own, and seven readers each take from whichever channel
+; has an item. The readers wait after the last item, so the script does not
+; exit.
+;
+;     wattle examples/select.wattle
+
 (def channels
   (seq [:repeat 5] (ev/chan 4)))
 

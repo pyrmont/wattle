@@ -1,3 +1,10 @@
+; An echo server on 127.0.0.1 port 8000. Each connection runs in a fiber of
+; its own, which waits a second before it echoes each read, so the server
+; serves several clients at the same time. `examples/tcpclient.wattle` is a
+; client.
+;
+;     wattle examples/tcpserver.wattle
+
 (defn handler
   "Simple handler for connections."
   [stream]

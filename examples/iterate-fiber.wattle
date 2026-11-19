@@ -1,3 +1,9 @@
+; Iterating over a fiber with `each`. The first fiber calls `os/sleep`
+; between yields and the second calls `ev/sleep`. `each` takes every value
+; from both.
+;
+;     wattle examples/iterate-fiber.wattle
+
 (def f
   (coro
     (for i 0 10

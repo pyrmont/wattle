@@ -1,3 +1,5 @@
-; Prints hello
+; Prints `hello, world!`.
+;
+;     wattle examples/hello.wattle
 
 (print "hello, world!")

@@ -1,3 +1,9 @@
+; A buffered channel with one writer and seven readers. The writer gives ten
+; items and the readers take them in turn. The readers wait on the channel
+; after the last item, so the script does not exit.
+;
+;     wattle examples/channel.wattle
+
 (def c (ev/chan 4))
 
 (defn writer []

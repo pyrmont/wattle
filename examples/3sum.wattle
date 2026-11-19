@@ -1,3 +1,8 @@
+; Solves 3SUM: finds the sets of three indices whose elements sum to zero.
+; A table maps each element to its index, so each pair needs one lookup.
+;
+;     wattle examples/3sum.wattle
+
 (defn sum3
   "Solve the 3SUM problem in O(n^2) time."
   [s]

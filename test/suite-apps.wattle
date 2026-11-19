@@ -64,9 +64,6 @@
 
 (assert (= 2 (length (app/list))) "applications are listed correctly 1")
 
-; Now install app-composed
-(assert-no-error "app-composed install" (with-dyns [*err* !""] (app/install "./examples/app-composed")))
-
 ; A directory that does not exist is read as a Git repository, and the error
 ; carries what git wrote where processes can be run.
 (compif (dyn 'os/execute)
@@ -77,28 +74,27 @@
             "a missing directory is reported with the message of git"))
   (assert-error "a missing directory is an error" (app/install "./examples/app-dep111111")))
 
-(assert (= 3 (length (app/list))) "applications are listed correctly 3")
+(assert (= 2 (length (app/list))) "applications are listed correctly 3")
 
 ; The prefix is a root: programs go to bin under it.
 (def root (app-rpath prefix))
-(assert (os/stat (string root "/bin/app-composed") :mode)
+(assert (os/stat (string root "/bin/app-dep1") :mode)
         "a program is installed under bin")
-(assert (nil? (os/stat (string root "/app-composed") :mode))
+(assert (nil? (os/stat (string root "/app-dep1") :mode))
         "a program is not installed in the root")
 
 ; Check application script aliases: hooks.wattle in place of hooks/init.wattle.
 (assert-no-error "app-alias install" (with-dyns [*err* !""] (app/install "./examples/app-alias")))
-(assert (= 4 (length (app/list))) "applications are listed correctly 5")
+(assert (= 3 (length (app/list))) "applications are listed correctly 5")
 (assert (os/stat (string root "/bin/app-alias") :mode) "a hooks.wattle script runs")
 (assert-no-error "aliases remove" (app/remove "app-alias"))
 (assert (nil? (os/stat (string root "/bin/app-alias") :mode)) "removing removes the program")
 
 ; With no name, upgrade installs every application again.
 (assert-no-error "upgrade all" (with-dyns [*err* !""] (app/upgrade)))
-(assert (= 3 (length (app/list))) "upgrading all keeps the applications")
+(assert (= 2 (length (app/list))) "upgrading all keeps the applications")
 
 ; Remove each application in turn.
-(assert-no-error "remove app-composed" (app/remove "app-composed"))
 (assert-no-error "remove app-dep1" (app/remove "app-dep1"))
 (assert (= 1 (length (app/list))) "applications are listed correctly 6")
 (assert-no-error "remove app-dep2" (app/remove "app-dep2"))

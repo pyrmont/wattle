@@ -1,3 +1,9 @@
+; Fibers that sleep with `ev/sleep`. Three workers started with `ev/call` and
+; three started with `ev/go` run at the same time, and their output
+; interleaves.
+;
+;     wattle examples/evsleep.wattle
+
 (defn worker
   "Run for a number of iterations."
   [name iterations]

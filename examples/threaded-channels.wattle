@@ -1,3 +1,9 @@
+; A channel between threads. A fiber on the main thread gives values to an
+; `ev/thread-chan`. A second thread, started with `ev/do-thread`, takes them
+; until the fiber closes the channel.
+;
+;     wattle examples/threaded-channels.wattle
+
 (def chan (ev/thread-chan 10))
 
 (ev/spawn

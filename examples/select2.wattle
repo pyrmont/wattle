@@ -1,8 +1,8 @@
-;;;
-;;; examples/select2.janet
-;;;
-;;; Mix reads and writes in select.
-;;;
+; `ev/rselect` with reads and a write. Workers give items to four channels,
+; and the loop at the end takes from them or gives `:thing` to a fifth
+; channel, and prints each result. The script runs until it is stopped.
+;
+;     wattle examples/select2.wattle
 
 (def c1 (ev/chan 40))
 (def c2 (ev/chan 40))

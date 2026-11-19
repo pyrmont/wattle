@@ -1,3 +1,8 @@
+; Tables with weak keys, weak values, or both. After `gccollect`, an entry
+; whose weak key or weak value is not referenced elsewhere is removed.
+;
+;     wattle examples/weak-tables.wattle
+
 (def weak-k (table/weak-keys 10))
 (def weak-v (table/weak-values 10))
 (def weak-kv (table/weak 10))

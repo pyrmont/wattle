@@ -1,3 +1,9 @@
+; A chat server on 127.0.0.1 port 8000. A client sends a name and then
+; messages, and the server sends each message to every other client. A client
+; can connect with `nc 127.0.0.1 8000`.
+;
+;     wattle examples/chatserver.wattle
+
 (def conmap !{})
 
 (defn broadcast [em msg]

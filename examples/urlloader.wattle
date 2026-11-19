@@ -1,15 +1,17 @@
-; An example of using Janet's extensible module system to import files from
-; URL. To try this, run `janet -l ./examples/urlloader.janet` from the command
-; line, and then at the REPL type:
+; An extension of the module system that imports a file from a URL. The
+; loader runs curl to fetch the file. To try it, serve this directory with the
+; static file server in another shell:
 ;
-; (import https://raw.githubusercontent.com/janet-lang/janet/master/examples/colors.janet :as c)
+;     wattle examples/http-server.wattle 127.0.0.1 8000 examples
 ;
-; This will import a file using curl. You can then try:
+; Then start the REPL with this module loaded:
 ;
-; (print (c/color :green "Hello!"))
+;     wattle run -l ./examples/urlloader -r
 ;
-; This is a bit of a toy example (it just shells out to curl), but it is very
-; powerful and will work well in many cases.
+; and import a file from the server:
+;
+;     (import http://127.0.0.1:8000/colors.wattle :as c)
+;     (print (c/color :green "Hello!"))
 
 (defn- load-url
   [url args]

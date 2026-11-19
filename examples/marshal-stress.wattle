@@ -1,3 +1,8 @@
+; Times `marshal` and a collection on nested tables. Each step builds c
+; clients with c projects each and c tasks per project, for c from 30 to 79.
+;
+;     wattle examples/marshal-stress.wattle
+
 (defn init-db [c]
   (def res !{:clients !{}})
   (var i 0)

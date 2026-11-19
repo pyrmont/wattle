@@ -1,4 +1,7 @@
-; Switch to python
+; Replaces the process with `python` through `os/posix-exec`. The last `print`
+; does not run. `python` must be on the PATH.
+;
+;     wattle examples/posix-exec.wattle
 
 (print "running in Wattle")
 (os/posix-exec ["python"] :p)

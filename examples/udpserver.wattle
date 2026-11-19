@@ -1,3 +1,8 @@
+; A UDP echo server on 127.0.0.1 port 8009. It sends each datagram back to
+; its sender. `examples/udpclient.wattle` is a client.
+;
+;     wattle examples/udpserver.wattle
+
 (def server (net/listen "127.0.0.1" "8009" :datagram))
 (while true
   (def buf !"")

@@ -1,4 +1,7 @@
-; A game of life implementation
+; Conway's Game of Life. A state is a list of live cells, and the script
+; prints twenty generations of a glider.
+;
+;     wattle examples/life.wattle
 
 (def- window
   (seq [x :range [-1 2]
@@ -34,10 +37,6 @@
          y :range [y1 (+ 1 y2)]]
     (file/write stdout (if (get cellset [x y]) "X " ". ")))
   (print))
-
-;
-; Run the example
-;
 
 (var *state* [[0 0] [-1 0] [1 0] [1 1] [0 2]])
 

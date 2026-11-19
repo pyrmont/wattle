@@ -1,3 +1,9 @@
+; A lock and a read-write lock shared by threads. Each `ev/spawn-thread` runs
+; a task in a new thread. A task under the `ev/rwlock` reads alongside other
+; readers and writes alone. The tasks under the `ev/lock` work one at a time.
+;
+;     wattle examples/evlocks.wattle
+
 (defn sleep
   "Sleep the entire thread, not just a single fiber."
   [n]

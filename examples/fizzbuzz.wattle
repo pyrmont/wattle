@@ -1,4 +1,6 @@
-; A simple fizz buzz example
+; Fizz buzz from 1 to 100, written with `loop` and its `:let` modifier.
+;
+;     wattle examples/fizzbuzz.wattle
 
 (loop [i :range [1 101]
        :let [fizz (zero? (% i 3))

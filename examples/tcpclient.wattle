@@ -1,3 +1,8 @@
+; A client for `examples/tcpserver.wattle`. It connects to 127.0.0.1 port
+; 8000, writes a message, and prints the reply.
+;
+;     wattle examples/tcpclient.wattle
+
 (with [conn (net/connect "127.0.0.1" "8000")]
   (printf "Connected to %q!" conn)
   (:write conn "Echo...")

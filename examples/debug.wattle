@@ -1,4 +1,9 @@
-; Load this file and run (myfn) to see the debugger
+; The debugger. `myfn` calls `debug`, and `debug/fbreak` sets a breakpoint
+; at its fourth instruction, so a call to `myfn` enters the debug REPL twice.
+; `(quit)` leaves the debug REPL and resumes `myfn`. Start the REPL with the
+; debug flag and this file loaded, then call `(myfn)`:
+;
+;     wattle run -d -l ./examples/debug -r
 
 (defn myfn
   []
@@ -6,6 +11,3 @@
   (for i 0 10 (print i)))
 
 (debug/fbreak myfn 3)
-
-; Enable debugging in repl with
-; (setdyn :debug true)

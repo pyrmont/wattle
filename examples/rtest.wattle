@@ -1,4 +1,7 @@
-; How random is the RNG really?
+; Counts how many of a million `math/random` values fall in each hundredth of
+; the range from 0 to 1, and prints the hundred counts.
+;
+;     wattle examples/rtest.wattle
 
 (def counts (seq [_ :range [0 100]] 0))
 

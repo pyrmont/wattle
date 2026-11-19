@@ -1,25 +1,27 @@
-; An example implementation of functional, lazy
-; sequences, as in clojure. The lazy seq is essentially
-; A lazy linked list, where the next value is a function
-; that must be called (realizing it), and the memoized.
-; Use with (import "./path/to/this/file" :prefix "seq.")
+; An implementation of lazy sequences. A sequence is a function that returns
+; nil when the sequence is empty, and otherwise returns a vector of the first
+; value and the rest of the sequence. The function computes the vector on its
+; first call and returns the same vector on later calls. Import it with:
+;
+;     (import "./examples/lazyseqs" :prefix "seq.")
 
 (defmacro dolazy
-  "Lazily evaluate a series of expressions. Returns a function that  returns the result of the last expression. Will only evaluate the  body once, and then memoizes the result."
+  "Returns a function that evaluates forms on its first call and returns the
+  value of the last one. Later calls return that value without evaluating
+  forms again."
   [& forms]
   (def state (gensym))
   (def loaded (gensym))
-  `(do 
+  `(do
      (var ~state nil)
      (var ~loaded nil)
      (fn []
-       (if ~loaded 
-         ~state 
+       (if ~loaded
+         ~state
          (do
            (set ~loaded true)
            (set ~state (do ~|forms)))))))
 
-; Use tuples instead of maps to save memory
 (def- HEAD 0)
 (def- TAIL 1)
 
@@ -27,78 +29,80 @@
   "The empty sequence."
   [] nil)
 
-(defmacro cons
-  "Create a new sequence by prepending a value to the original sequence."
-  [h t]
-  (def x (tuple h t))
-  (fn [] x))
+(defn cons
+  "Returns a sequence of h followed by the values of s."
+  [h s]
+  (fn [] [h s]))
 
 (defn lazy-empty?
-  "Check if a sequence is empty."
+  "Returns true if s has no values."
   [s]
   (not (s)))
 
 (defn head
-  "Get the next value of the sequence."
+  "Returns the first value of s."
   [s]
   (get (s) HEAD))
 
 (defn tail
-  "Get the rest of a sequence"
+  "Returns the sequence of the values of s after the first."
   [s]
   (get (s) TAIL))
 
 (defn lazy-range
-  "Return a sequence of integers [start, end)."
-  [start end &]
-  (if end
-    (if (< start end)
-      (dolazy (tuple start (lazy-range (+ 1 start) end)))
-      empty-seq)
-    (lazy-range 0 start)))
+  "Returns a sequence of the integers from start up to but not including end.
+  With one argument, start is 0."
+  ([end] (lazy-range 0 end))
+  ([start end]
+    (dolazy
+      (when (< start end)
+        [start (lazy-range (+ 1 start) end)]))))
 
 (defn lazy-map
-  "Return a sequence that is the result of applying f to each value in s."
+  "Returns a sequence of the results of calling f on each value of s."
   [f s]
   (dolazy
     (def x (s))
-    (if x (tuple (f (get x HEAD)) (map f (get x TAIL))))))
+    (when x
+      [(f (get x HEAD)) (lazy-map f (get x TAIL))])))
 
 (defn realize
-  "Force evaluation of a lazy sequence."
+  "Computes every value of s."
   [s]
   (when (s) (realize (tail s))))
 
 (defn realize-map
-  "Evaluate f on each member of the sequence. Forces evaluation."
+  "Calls f on each value of s in turn."
   [f s]
   (when (s) (f (head s)) (realize-map f (tail s))))
 
 (defn lazy-drop
-  "Ignores the first n values of the sequence and returns the rest."
-  [n s]
-  (dolazy
-    (def x (s))
-    (if (and x (pos? n)) ((lazy-drop (- n 1) (get x TAIL))))))
-
-(defn lazy-take
-  "Returns at most the first n values of s."
+  "Returns the sequence of the values of s after the first n."
   [n s]
   (dolazy
     (def x (s))
     (if (and x (pos? n))
-      (tuple (get x HEAD) (lazy-take (- n 1) (get x TAIL))))))
+      ((lazy-drop (- n 1) (get x TAIL)))
+      x)))
+
+(defn lazy-take
+  "Returns a sequence of at most the first n values of s."
+  [n s]
+  (dolazy
+    (def x (s))
+    (when (and x (pos? n))
+      [(get x HEAD) (lazy-take (- n 1) (get x TAIL))])))
 
 (defn randseq
-  "Return a sequence of random numbers."
+  "Returns an infinite sequence of random numbers."
   []
-  (dolazy (tuple (math/random) (randseq))))
+  (dolazy [(math/random) (randseq)]))
 
 (defn lazy-take-while
-  "Returns a sequence of values until the predicate is false."
+  "Returns a sequence of the values of s up to the first one for which pred is
+  false."
   [pred s]
   (dolazy
     (def x (s))
-    (when x
-      (def thehead (get HEAD x))
-      (if thehead (tuple thehead (lazy-take-while pred (get TAIL x)))))))
+    (when (and x (pred (get x HEAD)))
+      [(get x HEAD) (lazy-take-while pred (get x TAIL))])))
