@@ -58,9 +58,9 @@ const wasi = builtin.target.os.tag == .wasi;
 const windows = builtin.target.os.tag == .windows;
 
 /// Whether `posix_spawn_file_actions_addchdir` is available, and under which
-/// of its two spellings. glibc, macOS from 10.15 and FreeBSD have the `_np`
-/// spelling; musl, mingw and wasi-libc have neither.
-pub const spawn_chdir = (builtin.target.os.tag == .linux and builtin.target.abi.isGnu()) or darwin or freebsd;
+/// of its two spellings. glibc, musl from 1.1.24, macOS from 10.15 and FreeBSD
+/// have the `_np` spelling; mingw and wasi-libc have neither.
+pub const spawn_chdir = (builtin.target.os.tag == .linux and (builtin.target.abi.isGnu() or builtin.target.abi.isMusl())) or darwin or freebsd;
 pub const spawn_chdir_np = spawn_chdir;
 
 // ==========================================================================

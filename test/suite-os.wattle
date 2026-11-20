@@ -434,8 +434,9 @@
     (assert (= alone piped) "the ends of a pipe kept here do not reach the child"))
 
   ; :cd starts the child in the directory it names. The posix_spawn action it
-  ; needs exists on macOS and glibc, and this runtime refuses :cd elsewhere.
-  (compwhen (= :macos (os/which))
+  ; needs exists on macOS, FreeBSD, glibc and musl, and this runtime refuses :cd
+  ; elsewhere.
+  (compwhen (or (= :macos (os/which)) (= :linux (os/which)) (= :freebsd (os/which)))
     (assert (= 0 (os/execute ["/bin/sh" "-c" """test "$(pwd -P)" = /"""] :p {:cd "/"}))
             "a child starts in the directory :cd names")))
 
